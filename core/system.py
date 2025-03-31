@@ -12,7 +12,7 @@ _build_and_compile_dag:
 Creates the _RemoteProcessorWrapper actor handles for each processor. (TODO: Need to handle resource requests like GPUs here).
 Uses ray.dag.InputNode and binds the process_wrapper method of the remote actors. Assumes a relatively flat DAG for now.
 Creates a MultiOutputNode to gather results.
-Calls dag.experimental_compile with recommended flags.
+Calls cursor. dag.experimental_compile with recommended flags.
 execute:
 Snapshotting: Iterates through known component types, gets the committed DataFrame from the querier, and crucially .collect()s it to create a serializable snapshot. This is a key step but potentially expensive. Schemas are also collected.
 DAG Execution: Prepares input for the DAG (snapshot, schemas, dt, args) and calls compiled_dag.execute_async. (TODO: Refine arg/kwarg passing).
@@ -27,7 +27,8 @@ import time
 import asyncio
 from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
 from collections import defaultdict
-from dataclasses import is_dataclass, fields
+import pyarrow as pa # Import pyarrow
+# from dataclasses import is_dataclass, fields # No longer needed for Pydantic-based components
 
 import daft
 from daft import DataFrame # Use specific import for clarity
@@ -58,7 +59,14 @@ class _SnapshotQueryInterface:
             # Return empty DataFrame with the correct schema if not in snapshot
             schema = self._schemas.get(component_type)
             if schema:
-                return daft.DataFrame.empty(schema=schema)
+                # Use from_arrow to create an empty DataFrame with schema
+                try:
+                    arrow_schema = schema.to_pyarrow_schema()
+                    empty_arrow_table = pa.Table.from_batches([], schema=arrow_schema)
+                    return daft.from_arrow(empty_arrow_table)
+                except Exception as e:
+                    print(f"ERROR (_SnapshotQueryInterface): Failed to create empty Daft DataFrame for {component_type.__name__}: {e}")
+                    raise e # Re-raise
             else:
                 # This indicates an issue - the processor is querying a type
                 # that wasn't even known/snapshotted at the start of the step.
@@ -79,23 +87,21 @@ class _SnapshotQueryInterface:
             next_df = self.get_component(component_types[i])
             joined_df = joined_df.join(next_df, on="entity_id", how="inner")
 
-        # Select only the entity_id and the requested component struct columns
-        select_cols = ["entity_id"]
-        # Need a way to get struct names without access to the store instance... Pass schemas?
-        # We passed schemas, let's use them.
-        select_cols.extend([self._schemas[ct].column_names()[1] for ct in component_types if ct in self._schemas]) # Assumes struct is 2nd col
-        # Robustness: Check if struct name retrieval works as expected.
-
-        # Filter select_cols to only those present in the final joined_df
-        final_cols = [c for c in select_cols if c in joined_df.column_names()]
+        # Select entity_id and all component fields, avoiding duplicate entity_id
+        select_cols_set = {"entity_id"}
+        for ct in component_types:
+            schema = self._schemas.get(ct)
+            if schema:
+                 select_cols_set.update(name for name in schema.column_names() if name != "entity_id")
+        
+        final_cols = [c for c in list(select_cols_set) if c in joined_df.column_names]
 
         return joined_df.select(*(daft.col(c) for c in final_cols))
 
     def component_for_entity(self, entity_id: int, component_type: Type[_C]) -> Optional[_C]:
         """
-        Retrieves a Python component instance from the snapshot DataFrame.
-        Note: This requires the snapshot DF to be collected, which might impact
-        performance if large snapshots are sent.
+        Retrieves a Python component instance from the snapshot DataFrame (flat schema).
+        Note: This requires the snapshot DF to be collected.
         """
         df = self.get_component(component_type)
         if df is None:
@@ -108,22 +114,17 @@ class _SnapshotQueryInterface:
         if len(collected) == 0:
             return None
 
-        if not is_dataclass(component_type):
-             print(f"Warning: Cannot reconstruct non-dataclass component {component_type.__name__} (Snapshot)")
-             return None
         try:
-            row_dict = collected.to_pydict()
-            struct_name = self._schemas[component_type].column_names()[1] # Get struct name from schema
-            struct_contents_list = row_dict.get(struct_name)
-            if not struct_contents_list: return None
-            struct_data = struct_contents_list[0]
-            if struct_data is None: return None
+            row_dict_list = collected.to_pydict()
+            # Extract the single row's data into a flat dict
+            component_data = {k: v[0] for k, v in row_dict_list.items() if k != "entity_id"}
+            if not component_data:
+                return None
 
-            valid_field_names = {f.name for f in fields(component_type) if f.init}
-            kwargs = {k: v for k, v in struct_data.items() if k in valid_field_names}
-            return component_type(**kwargs)
+            # Use Pydantic model_validate method to instantiate the component
+            return component_type.model_validate(component_data)
         except Exception as e:
-            print(f"ERROR: Failed reconstructing {component_type.__name__} from snapshot for entity {entity_id}: {e}")
+            print(f"ERROR (_SnapshotQueryInterface): Failed reconstructing {component_type.__name__} from snapshot for entity {entity_id}: {e}")
             return None
 
     # Add other necessary methods like get_entity_type_for_entity if processors need them,
@@ -158,14 +159,15 @@ class _RemoteProcessorWrapper:
     def __init__(self, processor_cls: Type[Processor], processor_init_args: tuple, processor_init_kwargs: dict):
         # Instantiate the actual processor within the actor
         self._processor: Processor = processor_cls(*processor_init_args, **processor_init_kwargs)
-        print(f"RemoteProcessorWrapper: Initialized processor {self._processor.__class__.__name__} in actor {ray.get_runtime_context().get_actor_id()}")
+        # print(f"RemoteProcessorWrapper: Initialized processor {self._processor.__class__.__name__} in actor {ray.get_runtime_context().get_actor_id()}")
 
-    async def process_wrapper(self,
-                              snapshot: Dict[Type[Component], Optional[DataFrame]],
-                              component_schemas: Dict[Type[Component], daft.Schema],
-                              dt: float,
-                              *args: Any,
-                              **kwargs: Any) -> Dict[Type[Component], List[DataFrame]]:
+    # Make the wrapper synchronous
+    def process_wrapper(self,
+                        snapshot: Dict[Type[Component], Optional[DataFrame]],
+                        component_schemas: Dict[Type[Component], daft.Schema],
+                        dt: float,
+                        *args: Any,
+                        **kwargs: Any) -> Dict[Type[Component], List[DataFrame]]:
         """
         Executes the wrapped processor's process method using proxy interfaces.
 
@@ -187,9 +189,14 @@ class _RemoteProcessorWrapper:
         try:
             # Check if the user-defined process method is async
             if asyncio.iscoroutinefunction(self._processor.process):
-                 await self._processor.process(proxy_querier, proxy_updater, dt, *args, **kwargs)
+                 # If the user *did* provide an async process, run it synchronously
+                 # in the actor's event loop. This might be okay for many cases,
+                 # but true async execution within the DAG node might require
+                 # different handling if this wrapper itself were async.
+                 # For now, run it blocking within the sync wrapper.
+                 asyncio.run(self._processor.process(proxy_querier, proxy_updater, dt, *args, **kwargs))
             else:
-                 # Run synchronous processor method (Ray actor handles threading if needed)
+                 # Run synchronous processor method directly
                  self._processor.process(proxy_querier, proxy_updater, dt, *args, **kwargs)
             print(f"RemoteProcessorWrapper actor {ray.get_runtime_context().get_actor_id()}: Finished {self._processor.__class__.__name__}.process.")
         except Exception as e:
@@ -200,7 +207,14 @@ class _RemoteProcessorWrapper:
             raise e
 
         # Return the updates captured by the proxy updater
-        return proxy_updater.get_captured_updates()
+        # Collect the DataFrame plans before returning
+        captured_updates = proxy_updater.get_captured_updates()
+        collected_updates = {}
+        for comp_type, df_plan_list in captured_updates.items():
+            # Filter out None plans just in case, and collect valid ones
+            collected_updates[comp_type] = [df_plan.collect() for df_plan in df_plan_list if df_plan is not None]
+
+        return collected_updates
 
 
 # --- Ray DAG System Implementation ---
@@ -234,8 +248,8 @@ class RayDagSystem(System):
             ray.init(ignore_reinit_error=True)
 
         print("RayDagSystem Initialized.")
-        print(f"  Ray version: {ray.__version__}")
-        print(f"  Ray cluster resources: {ray.available_resources()}")
+        # print(f"  Ray version: {ray.__version__}")
+        # print(f"  Ray cluster resources: {ray.available_resources()}")
 
 
     def add_processor(self, processor: Processor, priority: Optional[int] = None) -> None:
@@ -287,13 +301,13 @@ class RayDagSystem(System):
 
     def _build_and_compile_dag(self):
         """Builds the Ray DAG from the current processors and compiles it."""
-        print("RayDagSystem: Building and compiling execution DAG...")
         if not self._sorted_processors:
             print("RayDagSystem Warning: No processors added. DAG will be empty.")
             self._dag_built = True
             self._compiled_dag = None # No DAG to execute
             return
 
+        print("RayDagSystem: Building DAG...")
         # Create remote actor wrappers if they don't exist
         for processor in self._sorted_processors:
             ptype = type(processor)
@@ -311,27 +325,19 @@ class RayDagSystem(System):
         from ray.dag import InputNode, MultiOutputNode
 
         with InputNode() as input_data:
-            # Input data expected to be: (snapshot_dict, schemas_dict, dt, *args, **kwargs) tuple?
-            # Or just pass snapshot and dt? Let's refine this.
-            # InputNode provides a tuple: (snapshot, schemas, dt_args_kwargs_tuple)
-            # Need to unpack dt, *args, **kwargs inside bind? Ray DAGs might pass them directly.
-            # Let's assume InputNode provides (snapshot, schemas, dt, *args, **kwargs)
-
-            # Processors run mostly in parallel, reading the same initial snapshot.
-            # Dependencies would arise if one processor needed the *output* of another
-            # *before* the commit phase, which isn't the standard ECS pattern here.
+            # Expected input: (snapshot, schemas, dt, args_tuple, kwargs_dict)
             output_nodes = []
             for processor in self._sorted_processors:
                 ptype = type(processor)
                 actor_handle = self._remote_actors[ptype]
                 # Bind the process_wrapper method to the input node
-                # The arguments provided to dag.execute() will be passed here.
+                # Pass arguments individually using indices
                 bound_node = actor_handle.process_wrapper.bind(
                     input_data[0], # snapshot
                     input_data[1], # schemas
                     input_data[2], # dt
-                    *input_data[3:] # args, kwargs (check if Ray DAGs handle * expansion)
-                    # If * doesn't expand, we might need to pass args/kwargs as a tuple/dict
+                    input_data[3], # args_tuple
+                    input_data[4]  # kwargs_dict
                 )
                 output_nodes.append(bound_node)
 
@@ -341,10 +347,13 @@ class RayDagSystem(System):
         # Compile the DAG
         try:
             # Enable optimizations based on documentation
+            # Disable GPU overlap for now due to cudaErrorInsufficientDriver
+            print("RayDagSystem: Compiling DAG...")
             self._compiled_dag = dag.experimental_compile(
-                _overlap_gpu_communication=True, # From docs
+                # _overlap_gpu_communication=True, # Disabled
                 enable_asyncio=True # Seems beneficial based on async actor wrapper
             )
+            print("RayDagSystem: DAG compiled successfully.")
             self._dag_built = True
             print("RayDagSystem: DAG built and compiled successfully.")
         except Exception as e:
@@ -355,7 +364,7 @@ class RayDagSystem(System):
             self._dag_built = False
 
 
-    def execute(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args: Any, **kwargs: Any) -> None:
+    async def execute(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args: Any, **kwargs: Any) -> None:
         """
         Executes the compiled Ray DAG for one simulation step.
 
@@ -365,19 +374,20 @@ class RayDagSystem(System):
             dt: Time delta.
             *args, **kwargs: Additional arguments for processors.
         """
+        print("RayDagSystem Execute: Entered.")
         if not self._dag_built:
             self._build_and_compile_dag()
 
         if self._compiled_dag is None:
             if not self._processors:
-                 print("RayDagSystem Execute: No processors to run.")
+                 # print("RayDagSystem Execute: No processors to run.")
                  return # Nothing to do
             else:
                  # This indicates a compilation failure previously
                  raise RuntimeError("RayDagSystem cannot execute because DAG compilation failed.")
 
         # 1. Create Snapshot of initial state
-        print("RayDagSystem Execute: Creating state snapshot...")
+        print("RayDagSystem Execute: Creating snapshot...")
         snapshot_start = time.time()
         snapshot: Dict[Type[Component], Optional[DataFrame]] = {}
         schemas: Dict[Type[Component], daft.Schema] = {}
@@ -403,37 +413,27 @@ class RayDagSystem(System):
         print(f"RayDagSystem Execute: Snapshot created ({(time.time() - snapshot_start):.4f}s).")
 
         # 2. Execute the Compiled DAG asynchronously
-        print(f"RayDagSystem Execute: Submitting data to compiled DAG...")
+        # print(f"RayDagSystem Execute: Submitting data to compiled DAG...")
         dag_execute_start = time.time()
         # Prepare arguments for the DAG's InputNode
-        # TODO: Verify how *args, **kwargs are best passed through DAG input
-        dag_input = (snapshot, schemas, dt) + args # Combine dt and args
-        # Need to handle kwargs separately? Maybe pass as a dict?
-        # Let's assume for now that args contains everything needed or handle kwargs later.
-        if kwargs:
-             print("RayDagSystem Warning: kwargs are not currently passed through the DAG execution. Ignoring.")
+        dag_input = (snapshot, schemas, dt, args, kwargs) # Pass args and kwargs explicitly
 
-        # Use execute_async for compatibility with async actors/methods
-        dag_future = self._compiled_dag.execute_async(dag_input)
-        print(f"RayDagSystem Execute: DAG submitted ({(time.time() - dag_execute_start):.4f}s). Waiting for results...")
+        # Use execute_async and await it. This returns CompiledDAGFuture(s).
+        print(f"RayDagSystem Execute: Calling execute_async...") # Logging
+        dag_futures_or_list = await self._compiled_dag.execute_async(*dag_input)
+        print(f"RayDagSystem Execute: execute_async returned ({type(dag_futures_or_list)}).") # Logging
 
-        # 3. Wait for DAG completion and gather results
+        # 3. Gather results by awaiting the CompiledDAGFuture(s)
+        print(f"RayDagSystem Execute: Awaiting results...") # Logging
         dag_gather_start = time.time()
         try:
-            # Use asyncio.run to wait for the async execution to complete
-            # This might block if called from a non-async context, which is expected here.
-            # Consider using ray.get if execute_async isn't strictly needed?
-            # Let's stick with execute_async and await properly.
-            # We need an event loop to await the future.
-            async def wait_for_dag():
-                return await dag_future
-
-            # Run the async wait function in the current event loop or a new one
-            # results = asyncio.run(wait_for_dag()) # Simplest for now
-            # Alternative if already in an event loop:
-            results = ray.get(dag_future) # ray.get can handle awaitables
-
-            print(f"RayDagSystem Execute: DAG results received ({(time.time() - dag_gather_start):.4f}s).")
+            if isinstance(dag_futures_or_list, list):
+                # If it's a list, await each future in the list
+                results = [await fut for fut in dag_futures_or_list]
+            else:
+                # If it's a single future, await it
+                results = [await dag_futures_or_list] # Wrap in list for consistent processing
+            print(f"RayDagSystem Execute: Results awaited.") # Logging
 
         except Exception as e:
             print(f"!!! ERROR during Ray DAG execution or result gathering: {e}")
@@ -443,9 +443,9 @@ class RayDagSystem(System):
             # Don't proceed to queue updates if DAG failed
             raise RuntimeError("Ray DAG execution failed.") from e
 
-
         # 4. Queue gathered updates via the main UpdateManager
-        print("RayDagSystem Execute: Queueing updates from DAG results...")
+        # Results should now be a list of dictionaries
+        print(f"RayDagSystem Execute: Queueing updates from DAG results ({type(results)})...") # Add logging
         queue_start = time.time()
         total_updates_queued = 0
         # Results should be a list corresponding to the MultiOutputNode outputs
@@ -463,4 +463,69 @@ class RayDagSystem(System):
         else:
              print(f"RayDagSystem Warning: Unexpected result type from MultiOutputNode: {type(results)}. Expected list.")
 
-        print(f"RayDagSystem Execute: Queued {total_updates_queued} update DataFrames from {len(results or [])} processors ({(time.time() - queue_start):.4f}s).")
+        # print(f"RayDagSystem Execute: Queued {total_updates_queued} update DataFrames from {len(results or [])} processors ({(time.time() - queue_start):.4f}s).")
+
+
+# --- Sequential System Implementation ---
+
+class SequentialSystem(System):
+    """
+    Executes processors sequentially in a predefined order based on priority.
+    """
+    def __init__(self):
+        self._processors: Dict[Type[Processor], Processor] = {}
+        self._processor_priorities: Dict[Type[Processor], int] = {}
+        self._sorted_processors: List[Processor] = []
+
+    def _sort_processors(self):
+        """Sorts processors based on priority (descending)."""
+        self._sorted_processors = sorted(
+            self._processors.values(),
+            key=lambda p: self._processor_priorities[type(p)],
+            reverse=True
+        )
+
+    def add_processor(self, processor: Processor, priority: Optional[int] = None) -> None:
+        """Adds a processor instance."""
+        if not isinstance(processor, Processor):
+            raise TypeError("Can only add Processor instances.")
+        
+        ptype = type(processor)
+        if ptype in self._processors:
+            print(f"SequentialSystem Warning: Replacing existing processor of type {ptype.__name__}")
+        
+        self._processors[ptype] = processor
+        self._processor_priorities[ptype] = priority if priority is not None else processor.priority
+        self._sort_processors()
+        # print(f"SequentialSystem: Added processor {ptype.__name__}.")
+
+    def remove_processor(self, processor_type: Type[Processor]) -> None:
+        """Removes all processors of a specific type."""
+        if processor_type in self._processors:
+            del self._processors[processor_type]
+            del self._processor_priorities[processor_type]
+            self._sort_processors()
+            # print(f"SequentialSystem: Removed processor {processor_type.__name__}.")
+        else:
+            print(f"SequentialSystem Warning: Processor type {processor_type.__name__} not found.")
+
+    def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
+        """Gets the managed instance of a specific processor type."""
+        return self._processors.get(processor_type)
+
+    def execute(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args: Any, **kwargs: Any) -> None:
+        """
+        Executes processors sequentially based on their priority.
+        """
+        # print(f"SequentialSystem: Executing {len(self._sorted_processors)} processors...")
+        for processor in self._sorted_processors:
+            # print(f"  - Running: {processor.__class__.__name__}")
+            try:
+                processor.process(querier, updater, dt, *args, **kwargs)
+            except Exception as e:
+                print(f"!!! ERROR in processor {processor.__class__.__name__}: {e}")
+                import traceback
+                traceback.print_exc()
+                # Optionally re-raise or decide how to handle processor errors
+                # raise e
+        # print("SequentialSystem: Finished executing processors.")

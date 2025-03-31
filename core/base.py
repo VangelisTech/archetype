@@ -2,13 +2,19 @@
 """Defines the foundational types and abstract base classes for the ECS system."""
 
 from typing import Any, Type, Set, TypeVar, Optional, Dict
-from dataclasses import dataclass, field
+# from dataclasses import dataclass, field # No longer needed for Component base
 from abc import ABC, abstractmethod
 import time
 from collections import defaultdict
 import datetime
 # Import daft early, even if only used by subclasses, to ensure it's available
 import daft
+# Import LanceModel and ensure pydantic is available
+try:
+    from lancedb.pydantic import LanceModel
+except ImportError:
+    # Provide a fallback or raise a clearer error if lancedb is missing
+    raise ImportError("LanceDB library not found. Please install it: pip install lancedb")
 
 # --- Forward Declarations ---
 # These help type hints work even if classes are defined later or in other files.
@@ -51,9 +57,9 @@ class EntityType:
     def __repr__(self) -> str: return self.__str__()
 
 # --- Component Base ---
-@dataclass
-class Component:
-    """Base class for all components. Must be a dataclass."""
+# Inherit from LanceModel to leverage Pydantic validation and LanceDB schema features
+class Component(LanceModel):
+    """Base class for all components. Inherits from LanceModel."""
     # Components should define their own fields.
     # We avoid adding a base entity_id here as it's managed by the store/dataframe.
     pass

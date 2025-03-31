@@ -3,14 +3,21 @@
 Manages the storage and state of components using Daft DataFrames.
 
 Key aspects of this implementation:
-_ComponentData: This internal dataclass bundles the component_type, its Daft schema, the actual dataframe, and the struct_name.
-_component_data Dictionary: The store uses this dictionary (Type[Component] -> _ComponentData) as its main internal state.
-Schema Caching: The schema is generated once (in _create_daft_schema) and stored within the _ComponentData object, effectively caching it.
-Lazy DataFrame Initialization: DataFrames within _ComponentData start as None. They are created/updated only when apply_updates is called with relevant data.
-apply_updates: Implements the anti-join/concat pattern, modifying the dataframe attribute of the correct _ComponentData object. It collects the result to materialize the state.
-clear_dead_entities: Iterates through the _component_data values and filters the DataFrames within them.
-Collected Data Cache: _collected_component_data holds copies of the committed state after collection, intended for observers who need a static view from the end of the last step. update_collected_data_cache populates this.
-Entity Type Mapping: Methods for managing the entity_id -> EntityType mapping are included here.
+- Component data is stored historically, with each row representing the state
+  of a component for an entity at a specific step.
+- Includes an `entity_id`, a `step` column, an `is_active` flag, and component fields.
+- Updates append new rows with the current step number.
+- Component removal appends a row with `is_active=False`.
+- Provides methods to query the latest state or the state at a specific step.
+
+_ComponentData: Internal dataclass bundling component_type, Daft schema, and the historical dataframe.
+_component_data Dictionary: Main internal state (Type[Component] -> _ComponentData).
+Schema Generation: Schema includes `entity_id`, `step`, `is_active`, and component fields.
+apply_updates: Appends new state rows with the current step.
+clear_dead_entities: Currently only removes EntityType mapping. Historical data is kept.
+remove_entity_from_component: Appends a record marking the component as inactive for the entity at the current step.
+get_latest_component_df: Retrieves the most recent active state for each entity.
+get_component_df_at_step: Retrieves the active state for each entity as it was at a specific step.
 """
 
 from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
@@ -18,6 +25,7 @@ from dataclasses import dataclass, fields, is_dataclass
 import daft
 from daft import col, lit, DataType, Schema
 import daft.expressions as F
+import pyarrow as pa # Need pyarrow for schema manipulation
 import datetime
 import time
 import inspect # Keep for potential future use with non-dataclasses
@@ -28,62 +36,43 @@ from .base import Component, EntityType, _C
 # --- Internal Data Structure ---
 @dataclass
 class _ComponentData:
-    """Internal structure to hold schema and DataFrame for a component type."""
+    """Internal structure to hold schema and historical DataFrame for a component type."""
     component_type: Type[Component]
-    schema: Schema
-    dataframe: Optional[daft.DataFrame] = None # Lazily initialized or loaded
-    struct_name: str = ""
+    schema: daft.Schema
+    dataframe: Optional[daft.DataFrame] = None # Stores historical data
+    # struct_name: str = "" # Removed struct_name as it wasn't clearly used
 
-    def __post_init__(self):
-        if not self.struct_name:
-             self.struct_name = self.component_type.__name__.lower()
+    # def __post_init__(self):
+    #     if not self.struct_name:
+    #          self.struct_name = self.component_type.__name__.lower()
 
 
 # --- Component Store Implementation ---
 class EcsComponentStore:
     """
-    Manages the committed state of components, stored internally using
-    a _ComponentData structure for each component type.
+    Manages the historical state of components, stored internally using
+    a _ComponentData structure for each component type. Each row includes
+    entity_id, step, is_active, and component data.
     """
     def __init__(self):
         # Stores _ComponentData objects, keyed by component type
         self._component_data: Dict[Type[Component], _ComponentData] = {}
         # Maps entity IDs to their defined EntityType
         self._entity_type_map: Dict[int, EntityType] = {}
-        # Cache for collected data (copies of committed state for observers)
-        self._collected_component_data: Dict[Type[Component], Optional[daft.DataFrame]] = {}
-
-    def _get_component_struct_name(self, component_type: Type[Component]) -> str:
-        """Helper to get the conventional struct column name."""
-        return component_type.__name__.lower()
 
     def _create_daft_schema(self, component_type: Type[Component]) -> Schema:
-        """Creates the Daft Schema for a component type's DataFrame."""
-        if not is_dataclass(component_type):
-            raise TypeError(f"Component type {component_type.__name__} must be a dataclass.")
+        """
+        Creates the Daft Schema for a component type's historical DataFrame.
+        Includes entity_id, step, is_active, and component fields.
+        """
+        component_arrow_schema: pa.Schema = component_type.to_arrow_schema()
+        # Insert core fields: entity_id, step, is_active
+        composite_arrow_schema = component_arrow_schema.insert(0, pa.field("entity_id", pa.int64()))
+        composite_arrow_schema = composite_arrow_schema.insert(1, pa.field("step", pa.int64()))
+        composite_arrow_schema = composite_arrow_schema.insert(2, pa.field("is_active", pa.bool_()))
 
-        struct_name = self._get_component_struct_name(component_type)
-        daft_fields = {}
-        for f in fields(component_type):
-            # Skip fields that shouldn't be part of the Daft schema (e.g., non-init fields)
-            if not f.init:
-                 continue
-            py_type = f.type
-            try:
-                # Attempt direct conversion
-                daft_fields[f.name] = DataType.from_py_type(py_type)
-            except TypeError:
-                # Fallback to Python object type for complex/unsupported types
-                # Consider logging a warning here
-                print(f"Warning: Using DataType.python() for field '{f.name}' in component '{component_type.__name__}'. Serialization may be limited.")
-                daft_fields[f.name] = DataType.python()
-
-        # Base schema includes entity_id and the component struct
-        schema_dict = {
-            "entity_id": DataType.int64(),
-            struct_name: DataType.struct(daft_fields)
-        }
-        return Schema.from_py_dict(schema_dict)
+        final_daft_schema = Schema.from_pyarrow_schema(composite_arrow_schema)
+        return final_daft_schema
 
     def register_component(self, component_type: Type[Component]) -> _ComponentData:
         """
@@ -91,187 +80,251 @@ class EcsComponentStore:
         and internal data structure if it doesn't exist. Returns the _ComponentData.
         """
         if component_type not in self._component_data:
-            print(f"Store: Registering component type {component_type.__name__}")
+            # print(f"Store: Registering component type {component_type.__name__}")
             schema = self._create_daft_schema(component_type)
             self._component_data[component_type] = _ComponentData(
                 component_type=component_type,
                 schema=schema,
                 dataframe=None # Initialize with no DataFrame
             )
-            self._collected_component_data[component_type] = None
         return self._component_data[component_type]
 
     def get_component_data_container(self, component_type: Type[Component]) -> Optional[_ComponentData]:
          """Gets the internal _ComponentData container, registering if necessary."""
+         # Auto-registering logic remains the same
          if component_type not in self._component_data:
-             # Auto-register if accessed but not explicitly registered?
-             # Or should registration be mandatory via World? Let's auto-register for now.
-             print(f"Store: Auto-registering {component_type.__name__} on access.")
              return self.register_component(component_type)
          return self._component_data.get(component_type)
 
     def get_component_schema(self, component_type: Type[Component]) -> Optional[Schema]:
-        """Gets the Daft Schema for a component type."""
+        """Gets the Daft Schema for a component type (includes history columns)."""
         container = self.get_component_data_container(component_type)
         return container.schema if container else None
 
     def get_component_df(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
-        """Gets the current committed Daft DataFrame for a component type."""
+        """
+        Gets the full historical Daft DataFrame for a component type,
+        including all steps. Returns None if the component is not registered
+        or has no data.
+        """
         container = self.get_component_data_container(component_type)
         return container.dataframe if container else None
 
-    def get_collected_component_data(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
-        """Gets the final, collected DataFrame from the last completed step."""
-        # Ensure type is known, even if no data exists yet
-        if component_type not in self._collected_component_data:
-             self.register_component(component_type)
-        df = self._collected_component_data.get(component_type)
-        # Perform a quick check if it's already collected and not empty
-        # Note: len() might trigger collection if df is a plan. Be cautious.
-        # Relying on the fact that _collected_component_data holds *collected* DFs.
-        if df is not None and len(df) > 0:
-             return df
-        return None
+    # --- New Methods for Querying History ---
 
-    def update_collected_data_cache(self):
-        """Copies the current committed state to the collected cache for observers."""
-        print("Store: Updating collected data cache for observers...")
-        for comp_type, data_container in self._component_data.items():
-            if data_container.dataframe is not None:
-                # Ensure we store a *collected* copy if it's currently a plan
-                # Note: This incurs cost but ensures observers get static data.
-                # Optimization: only collect if the df reference changed since last cache update?
-                collected_df = data_container.dataframe.collect()
-                if len(collected_df) > 0:
-                     self._collected_component_data[comp_type] = collected_df
-                else:
-                     # Store None if empty after collection
-                     self._collected_component_data[comp_type] = None
-            else:
-                self._collected_component_data[comp_type] = None
-        print("Store: Collected data cache updated.")
-
-
-    def apply_updates(self, component_type: Type[Component], aggregated_updates_df: daft.DataFrame) -> None:
+    def get_latest_component_df(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
         """
-        Applies aggregated updates to a component type's DataFrame using
-        anti-join + concat + collect pattern. Modifies the DataFrame within
-        the internal _ComponentData structure.
+        Gets a DataFrame representing the latest active state for each entity
+        for the given component type. Returns a DataFrame plan or None.
+        """
+        container = self.get_component_data_container(component_type)
+        if container is None or container.dataframe is None:
+            # print(f"Store GetLatest: No data for {component_type.__name__}")
+            return None
+
+        df = container.dataframe
+        # print(f"Store GetLatest [{component_type.__name__}]: Input DF len (plan): {len(df)}") # Might trigger compute
+
+        # Find the latest step for each entity
+        # Ensure step column is used correctly
+        latest_steps = df.groupby("entity_id").agg(F.max(col("step")).alias("latest_step"))
+        # print(f"Store GetLatest [{component_type.__name__}]: Found latest steps.")
+
+        # Join back to get the full row for the latest step
+        # Use the correct column names from the original df and the aggregation result
+        latest_df = df.join(latest_steps, left_on=["entity_id", "step"], right_on=["entity_id", "latest_step"])
+        # print(f"Store GetLatest [{component_type.__name__}]: Joined back.")
+
+        # Filter out inactive Entities
+        active_latest_df = latest_df.where(col("is_active"))
+
+        # Select only original columns defined in the schema (excluding 'latest_step')
+        final_df = active_latest_df.select(*[col(name) for name in container.schema.column_names()])
+        # print(f"Store GetLatest [{component_type.__name__}]: Selected final columns. Returning plan.")
+
+        # Return the plan for flexibility, let caller collect if needed
+        return final_df
+
+
+    def get_component_df_at_step(self, component_type: Type[Component], step: int) -> Optional[daft.DataFrame]:
+        """
+        Gets a DataFrame representing the active state for each entity
+        for the given component type as it existed exactly at the specified step.
+        If an entity had no update at that specific step, but was active before,
+        it finds the most recent state up to that step. Returns a DataFrame plan or None.
+        """
+        container = self.get_component_data_container(component_type)
+        if container is None or container.dataframe is None:
+            return None
+
+        df = container.dataframe
+
+        # 1. Filter history to include only steps up to the target step
+        relevant_history = df.where(col("step") <= step)
+
+        # 2. Find the maximum step for each entity within that relevant history
+        latest_relevant_steps = relevant_history.groupby("entity_id").agg(
+            F.max(col("step")).alias("latest_relevant_step")
+        )
+
+        # 3. Join back to the relevant history to get the full row corresponding to that latest relevant step
+        df_at_step_candidates = relevant_history.join(
+            latest_relevant_steps,
+            left_on=["entity_id", "step"],
+            right_on=["entity_id", "latest_relevant_step"]
+        )
+
+        # 4. Filter out entities where the state at that latest relevant step was inactive
+        active_df_at_step = df_at_step_candidates.where(col("is_active"))
+
+        # 5. Select only the original schema columns to present a clean state view
+        final_df = active_df_at_step.select(*[col(name) for name in container.schema.column_names()])
+
+        # Return the plan
+        return final_df
+
+    # --- Modified State Update Methods ---
+
+    def apply_updates(self, component_type: Type[Component], aggregated_updates_df: daft.DataFrame, current_step: int) -> None:
+        """
+        Appends aggregated updates to a component type's historical DataFrame.
+        Adds the current_step and sets is_active=True for the new rows.
         """
         data_container = self.get_component_data_container(component_type)
         if not data_container:
              print(f"ERROR: Store cannot apply updates. Component type {component_type.__name__} not registered.")
              return # Or raise?
 
-        # Collect updates to get count and ensure it's materialized for joins
-        # This is a potential performance bottleneck if updates are huge, but simplifies logic.
-        # Alternative: Keep updates as plans for anti-join? Daft's optimizer might handle it.
-        # Let's try keeping it as a plan first.
-        # update_count = len(aggregated_updates_df.collect()) # Potential cost
-        # print(f"Store: Applying aggregated update plan for {component_type.__name__}...")
+        if len(aggregated_updates_df.collect()) == 0: # Check if there are any updates
+            # print(f"Store ApplyUpdates [{component_type.__name__}]: No updates to apply for step {current_step}.")
+            return
 
-        # Ensure aggregated updates have the correct schema (casting)
-        expected_schema = data_container.schema
+        # Add step and is_active columns to the updates
+        # Ensure casting to handle potential type inference issues
+        updates_with_meta = aggregated_updates_df.with_column(
+            "step", lit(current_step).cast(DataType.int64())
+        ).with_column(
+            "is_active", lit(True).cast(DataType.bool())
+        )
+
+        # Ensure schema alignment before concat
         try:
-             # Important: Ensure the update plan has the correct schema before joining/concatenating
-             updates_casted = aggregated_updates_df.cast_to_schema(expected_schema)
+            # Ensure the *incoming* df matches the store's schema
+            target_schema = data_container.schema
+            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Schema BEFORE select/cast:")
+            updates_with_meta.print_schema()
+            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Target Schema:")
+            target_schema.print_schema()
+
+            # --- Added Step: Explicitly select columns in target order ---
+            ordered_cols = [col(name) for name in target_schema.column_names()]
+            updates_reordered = updates_with_meta.select(*ordered_cols)
+            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Schema AFTER select/reorder:")
+            updates_reordered.print_schema()
+            # --- End Added Step ---
+
+            updates_to_apply = updates_reordered.cast_schema(target_schema) # Use reordered DF
+            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Cast successful.")
         except Exception as e:
-             print(f"ERROR: Store failed to cast aggregated updates for {component_type.__name__}. Update aborted. Error: {e}")
-             # Consider logging the problematic dataframe's schema here
-             # print(f"Update schema: {aggregated_updates_df.schema()}")
-             # print(f"Expected schema: {expected_schema}")
-             return
+            print(f"ERROR: Store ApplyUpdates [{component_type.__name__}] schema alignment/casting failed for step {current_step}. Error: {e}")
+            print("Update Schema (before select/cast):")
+            updates_with_meta.print_schema() # Log the schema that failed
+            print("Target Schema:")
+            target_schema.print_schema()
+            return # Abort update if schema mismatch
 
-        original_df = data_container.dataframe # This might be None or an empty DF
+        original_df = data_container.dataframe
+        # print(f"Store ApplyUpdates [{component_type.__name__}]: Appending updates for step {current_step}.")
 
-        if original_df is None or len(original_df.collect()) == 0: # Check length after collect
-            # Component type didn't exist or was empty, updates are the new full set
-            print(f"Store: Creating new committed DF for {component_type.__name__} from updates.")
-            # Collect here to materialize the final state for this component
-            new_committed_df = updates_casted.collect()
-            if len(new_committed_df) > 0:
-                 data_container.dataframe = new_committed_df
-            else:
-                 # Ensure dataframe is None if updates resulted in empty
-                 data_container.dataframe = None
+        # Use the casted DataFrame 'updates_to_apply'
+        if original_df is None:
+            data_container.dataframe = updates_to_apply
+            print(f"Store ApplyUpdates [{component_type.__name__}]: Assigned initial DataFrame plan for step {current_step}. Is None: {data_container.dataframe is None}")
         else:
-            # --- Anti-join + Concat Strategy ---
-            # Keep rows from the original DF that are *not* in the updates (based on entity_id)
-            original_unupdated_part = original_df.anti_join(updates_casted, on="entity_id")
+            # Append new updates to existing historical data
+            # Concat assumes schemas are compatible (hence the cast above)
+            # Use the DataFrame instance method concat
+            data_container.dataframe = original_df.concat(other=updates_to_apply)
+            print(f"Store ApplyUpdates [{component_type.__name__}]: Concatenated DataFrame plan for step {current_step}. Is None: {data_container.dataframe is None}")
 
-            # Combine the unupdated part with the new/updated rows
-            # Ensure both parts are DataFrames, not None
-            if original_unupdated_part is not None:
-                 new_committed_df_plan = daft.concat(original_unupdated_part, updates_casted)
-            else: # Should not happen if original_df wasn't empty, but safety check
-                 new_committed_df_plan = updates_casted
+        # print(f"Store ApplyUpdates [{component_type.__name__}]: Completed append for step {current_step}.")
+        # We keep the dataframe as a plan, collection happens on read if needed
 
-            # Collect here to materialize the final state for this component
-            new_committed_df = new_committed_df_plan.collect()
-            print(f"Store: Updated committed DF for {component_type.__name__}. New total: {len(new_committed_df)}")
 
-            if len(new_committed_df) > 0:
-                data_container.dataframe = new_committed_df
-            else:
-                 # Set to None if the update resulted in an empty state
-                 data_container.dataframe = None
-
-    def clear_dead_entities(self, dead_entity_ids: Set[int]):
-        """Removes entities from all component DataFrames."""
+    def clear_dead_entities(self, dead_entity_ids: Set[int], current_step: int):
+        """
+        Removes EntityType mapping for dead entities.
+        NOTE: This method NO LONGER removes data from component DataFrames to preserve history.
+              Downstream systems should handle not generating updates for dead entities.
+              Alternatively, tombstones could be added here in a future iteration.
+        """
         if not dead_entity_ids:
             return
-        print(f"Store: Clearing {len(dead_entity_ids)} dead entities from committed state...")
-        dead_list = list(dead_entity_ids) # Daft's is_in works well with lists
+        # print(f"Store: Clearing type mapping for {len(dead_entity_ids)} dead entities at step {current_step}.")
+        dead_list = list(dead_entity_ids) # Keep for map clearing
 
-        types_affected: List[str] = []
-        for component_type, data_container in self._component_data.items():
-            df = data_container.dataframe
-            if df is None or len(df.collect()) == 0: # Check after collect
-                continue
-
-            original_len = len(df.collect()) # Collect to get accurate length before filtering
-            # Filter out dead entities. Use ~ for negation.
-            filtered_df_plan = df.where(~col("entity_id").is_in(dead_list))
-            filtered_df = filtered_df_plan.collect() # Collect to apply filter
-
-            if len(filtered_df) < original_len:
-                 types_affected.append(component_type.__name__)
-                 if len(filtered_df) > 0:
-                      data_container.dataframe = filtered_df
-                 else:
-                      # Set to None if component data becomes empty
-                      data_container.dataframe = None
-
-        if types_affected:
-             print(f"  - Removed dead entities from: {', '.join(types_affected)}")
-        else:
-             print("  - No component data matched the dead entity IDs.")
+        # --- Data Removal Logic Removed ---
+        # The historical data remains untouched.
 
         # Remove entity type mappings for dead entities
+        cleared_count = 0
         for entity_id in dead_list:
-            self._entity_type_map.pop(entity_id, None)
+            if self._entity_type_map.pop(entity_id, None):
+                 cleared_count += 1
+        # if cleared_count > 0:
+        #      print(f"  - Cleared {cleared_count} entity type mappings.")
 
-    def remove_entity_from_component(self, entity: int, component_type: Type[Component]):
-        """Implements immediate removal of a component from a specific entity."""
+
+    def remove_entity_from_component(self, entity: int, component_type: Type[Component], current_step: int):
+        """
+        Appends a record indicating a component is no longer active for a specific entity
+        at the given step. Preserves the history of when it was active.
+        """
         data_container = self._component_data.get(component_type)
-        if not data_container or data_container.dataframe is None:
-            print(f"Store Immediate Remove: Component {component_type.__name__} not found or empty.")
+        # Ensure component is registered and has a schema
+        if not data_container:
+            print(f"Store Immediate Remove: Component {component_type.__name__} not registered.")
             return
+        if data_container.dataframe is None:
+             print(f"Store Immediate Remove: No history for {component_type.__name__} to append removal record to.")
+             # Optionally, we could create the dataframe here with just the removal record.
+             # For now, let's assume removal only makes sense if there was prior state.
+             return
 
-        df = data_container.dataframe
-        original_len = len(df.collect())
-        filtered_df_plan = df.where(col("entity_id") != entity)
-        filtered_df = filtered_df_plan.collect()
+        schema = data_container.schema
+        # print(f"Store: Appending inactive record for entity {entity}, component {component_type.__name__} at step {current_step}")
 
-        if len(filtered_df) < original_len:
-             print(f"Store: Immediately removing {component_type.__name__} from entity {entity}")
-             if len(filtered_df) > 0:
-                 data_container.dataframe = filtered_df
-             else:
-                 # Set to None if component data becomes empty
-                 data_container.dataframe = None
-        else:
-             print(f"Store Immediate Remove: Entity {entity} not found in {component_type.__name__}.")
+        # Create data for the removal record (inactive state)
+        removal_data = {
+            "entity_id": [entity],
+            "step": [current_step],
+            "is_active": [False]
+        }
+        # Add None for all other component-specific fields
+        for field_name in schema.column_names():
+            if field_name not in removal_data:
+                # TODO: Determine correct null value based on field_type if needed?
+                # For now, None should work for Daft's from_pydict -> cast_schema
+                removal_data[field_name] = [None]
+
+        try:
+            # Create a Daft DataFrame for the single removal record
+            removal_df = daft.from_pydict(removal_data)
+            # Cast to the full component schema to ensure compatibility for concat
+            removal_df = removal_df.cast_schema(schema)
+
+            # Append the removal record to the historical DataFrame using instance method
+            if data_container.dataframe is not None:
+                data_container.dataframe = data_container.dataframe.concat(other=removal_df)
+            else:
+                # If history was empty, the removal record becomes the history
+                data_container.dataframe = removal_df
+            # print(f"Store: Appended inactive record successfully.")
+        except Exception as e:
+            print(f"ERROR: Store failed to append inactive record for entity {entity}, comp {component_type.__name__} at step {current_step}. Error: {e}")
+            print("Removal Data Dict:", removal_data)
+            print("Target Schema:")
+            schema.print_schema()
 
 
     # --- Entity Type Mapping ---

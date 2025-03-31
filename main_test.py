@@ -4,21 +4,33 @@ Toy example to test the Daft-Ray ECS implementation.
 """
 
 import time
-from dataclasses import dataclass, field
+# from dataclasses import dataclass, field # No longer needed for components
 
 # Import core ECS components from the 'core' directory
 from core.base import Component, Processor, System
 from core.world import EcsWorld
 from core.managers import EcsQueryInterface, EcsUpdateManager
-from core.system import RayDagSystem # Import our Ray system
+from core.system import SequentialSystem # Import SequentialSystem
+# Import Daft for DataFrame operations
+import daft
+import pyarrow as pa
+import daft.expressions as F # Import F
+
+# --- Ray Setup (REMOVED) ---
+# # Connect to existing Ray instance in Anyscale
+# import ray
+# if not ray.is_initialized():
+# ... (removed Ray init block) ...
+# else:
+#     print("Ray already initialized.")
 
 # --- Define Components ---
-@dataclass
+# Components inherit from Component (which is now a LanceModel)
 class Position(Component):
     x: float = 0.0
     y: float = 0.0
 
-@dataclass
+# Components inherit from Component (which is now a LanceModel)
 class Velocity(Component):
     vx: float = 0.0
     vy: float = 0.0
@@ -29,63 +41,32 @@ class MovementProcessor(Processor):
     priority = 10 # Give it a priority
 
     def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
-        # Get entities with both Position and Velocity using the querier
-        # This returns a Daft DataFrame plan
+        # Get entities with Position and Velocity fields
         movable_df_plan = querier.get_components(Position, Velocity)
 
-        # Check if the plan is potentially empty early to avoid unnecessary computation
-        # Note: This collect() might have performance implications if the join is large,
-        # but for processors it can prevent submitting empty updates.
-        # Consider removing this check if performance profiling shows it's a bottleneck.
-        if len(movable_df_plan.collect()) == 0:
-            # print("MovementProcessor: No entities with Position and Velocity found.")
-            return
-
-        print(f"MovementProcessor: Processing {len(movable_df_plan.collect())} entities...") # Re-collecting here for count, less efficient
-
-        # Define Daft expressions for the update logic
-        pos_col = daft.col("position")
-        vel_col = daft.col("velocity")
-
-        # Calculate new position
-        new_pos_df = movable_df_plan.with_columns(
+        # Calculate new x and y values directly
+        # Assumes get_components returns a DataFrame with columns: entity_id, x, y, vx, vy
+        update_plan = movable_df_plan.with_columns(
             {
-                "new_x": pos_col["x"] + vel_col["vx"] * dt,
-                "new_y": pos_col["y"] + vel_col["vy"] * dt,
+                "x": F.col("x") + F.col("vx") * dt,
+                "y": F.col("y") + F.col("vy") * dt,
             }
-        )
-
-        # Create the updated Position struct
-        # Important: Include all fields of the Position component in the struct
-        updated_position_struct = daft.expressions.struct(
-            {
-                "x": daft.col("new_x"),
-                "y": daft.col("new_y")
-                # Add other Position fields here if they existed
-            }
-        ).alias("position") # Alias must match the component struct name
-
-        # Select only the entity_id and the updated struct
-        position_update_plan = new_pos_df.select(
-            daft.col("entity_id"), updated_position_struct
-        )
-
+        ).select("entity_id", "x", "y") # Select required fields for Position update
+        
         # Queue the update using the updater
-        # The UpdateManager handles casting and final commit
-        updater.add_update(Position, position_update_plan)
-        # print(f"MovementProcessor: Queued Position updates.") # Can be noisy
+        # UpdateManager will ensure only entity_id, x, y are kept if others were selected
+        updater.add_update(Position, update_plan)
+
 
 # --- Main Test Execution ---
 if __name__ == "__main__":
     print("Starting ECS Test...")
 
-    # 1. Initialize the System (RayDagSystem in this case)
-    # Assumes Ray is running or can be started locally
+    # 1. Initialize the System (Use SequentialSystem)
     try:
-        ecs_system = RayDagSystem()
+        ecs_system = SequentialSystem()
     except Exception as e:
-        print(f"Error initializing RayDagSystem: {e}")
-        print("Please ensure Ray is installed and can be initialized.")
+        print(f"Error initializing SequentialSystem: {e}")
         exit()
 
     # 2. Initialize the World with the System
@@ -122,29 +103,33 @@ if __name__ == "__main__":
     # Add Velocity later to test updates
     world.add_component(entity3, Velocity(vx=-1, vy=-1))
 
-
     print(f"Entities created: {entity1}, {entity2}, {entity3}")
 
     # 7. Run the initial process step to commit initial components
     print("\nRunning initial processing step (commit initial state)...")
     world.process(dt=0.0) # dt=0 for initial commit
 
-    # 8. Verify Initial State (using get_collected_component_data)
+    # 8. Verify Initial State (using get_component to get latest active state)
     print("\n--- Initial State Verification ---")
-    pos_df = world.get_collected_component_data(Position)
-    vel_df = world.get_collected_component_data(Velocity)
+    # Get plans for the latest active state
+    pos_df_plan = world.get_component(Position)
+    vel_df_plan = world.get_component(Velocity)
+
+    # Collect the DataFrames to show them
+    pos_df = pos_df_plan.collect() if pos_df_plan is not None else None
+    vel_df = vel_df_plan.collect() if vel_df_plan is not None else None
 
     if pos_df:
         print("Initial Positions:")
         pos_df.show()
     else:
-        print("No initial Position data collected.")
+        print("No initial Position data found.") # Adjusted message
 
     if vel_df:
         print("Initial Velocities:")
         vel_df.show()
     else:
-        print("No initial Velocity data collected.")
+        print("No initial Velocity data found.") # Adjusted message
 
     print("----------------------------------")
 
@@ -157,11 +142,13 @@ if __name__ == "__main__":
         world.process(dt)
 
         # Optional: Query and print state after each step for debugging
-        pos_df_step = world.get_collected_component_data(Position)
-        if pos_df_step:
+        pos_df_step_plan = world.get_component(Position) # Get latest active state plan
+        if pos_df_step_plan:
             print(f"\n--- State after Step {step_num} ---")
             print("Positions:")
-            pos_df_step.show()
+            # Collect the plan before showing
+            pos_df_collected = pos_df_step_plan.collect()
+            pos_df_collected.show()
             print("-----------------------------")
         else:
              print(f"\n--- No Position data after Step {step_num} ---")

@@ -14,16 +14,21 @@ Deferred Component Removal (Basic): Implemented remove_component(immediate=False
 
 from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
 from itertools import count as _count
-from dataclasses import dataclass, fields, is_dataclass
+from itertools import count as _step_counter
+# from dataclasses import is_dataclass # No longer needed for this check
+from lancedb.pydantic import model_to_dict # Import helper
 
 import daft
 from daft import col, lit, DataType, Schema
 import daft.expressions as F
+import asyncio # Import asyncio
 
 # Import from our new structure
 from .base import Component, EntityType, Processor, System, _C
 from .store import EcsComponentStore
 from .managers import EcsQueryInterface, EcsUpdateManager
+
+import time # Import the time module
 
 # --- EcsWorld Implementation ---
 
@@ -55,6 +60,10 @@ class EcsWorld:
         self._dead_entities: Set[int] = set() # Entities marked for deletion next step
         self._entity_types: Dict[str, EntityType] = {} # Definitions of entity types
 
+        # Step counter
+        self._step_counter = _step_counter(start=0)
+        self._current_step: int = -1 # Will be 0 on the first process call
+
         print(f"EcsWorld initialized with System: {system.__class__.__name__}")
 
     # --- Simulation Loop ---
@@ -66,19 +75,24 @@ class EcsWorld:
             dt: Time delta for the current step.
             *args, **kwargs: Additional arguments to pass down to processors.
         """
-        print(f"\n--- World: Processing Step (dt={dt:.4f}) ---")
         start_time = time.time()
+
+        # Increment step counter at the beginning of the process
+        self._current_step = next(self._step_counter)
+        print(f"\n--- World: Processing Step {self._current_step} (dt={dt:.4f}) ---")
 
         # 1. Initialization Phase
         # Clear pending updates from the previous step and query caches
-        self._updater.clear_pending_updates()
-        self._querier.clear_caches()
+        # --- MOVED TO END OF METHOD ---
+        # self._updater.clear_pending_updates()
+        # self._querier.clear_caches()
         print("  Phase 1: Init Complete.")
 
         # 2. Entity Cleanup Phase
         # Remove entities marked dead in the previous step from the store
         if self._dead_entities:
-            self._store.clear_dead_entities(self._dead_entities)
+            # Pass current step to potentially mark removals in history (though current impl only clears map)
+            self._store.clear_dead_entities(self._dead_entities, self._current_step)
             self._dead_entities.clear() # Clear the marking set for the current step
             print(f"  Phase 2: Cleanup Complete (Cleared dead entities).")
         else:
@@ -91,6 +105,7 @@ class EcsWorld:
         exec_start = time.time()
         try:
             # The system interacts with the querier and updater
+            # Call execute directly (assuming system.execute is synchronous)
             self._system.execute(self._querier, self._updater, dt, *args, **kwargs)
             print(f"  Phase 3: Processor Execution Complete ({(time.time() - exec_start):.4f}s).")
         except Exception as e:
@@ -108,15 +123,19 @@ class EcsWorld:
         # Aggregate and apply all updates queued by processors during execution
         print("  Phase 4: Committing Updates...")
         commit_start = time.time()
-        self._updater.commit_updates()
+        # Pass current step to UpdateManager for applying updates with the correct step number
+        self._updater.commit_updates(self._current_step)
         print(f"  Phase 4: Update Commit Complete ({(time.time() - commit_start):.4f}s).")
 
         # 5. Collection Phase (for Observers)
-        # Update the store's cache of collected data for external readers
-        print("  Phase 5: Collecting Data...")
-        collect_start = time.time()
-        self._store.update_collected_data_cache()
-        print(f"  Phase 5: Data Collection Complete ({(time.time() - collect_start):.4f}s).")
+        # --- Collection Phase Removed --- (No longer needed with historical store)
+        print("  Phase 5: Collection Removed.")
+
+        # --- MOVED FROM PHASE 1 ---
+        # Clear updates and caches *after* commit and before the next step begins
+        self._updater.clear_pending_updates()
+        self._querier.clear_caches()
+        # --- END MOVED SECTION ---
 
         end_time = time.time()
         print(f"--- World: Step Complete (Total Time: {(end_time - start_time):.4f}s) ---")
@@ -145,9 +164,10 @@ class EcsWorld:
             # Remove from all component stores directly
             # We need to know which components *might* have this entity. Iterate all known types.
             # This could be slow if many component types exist.
-            # An alternative: have the store maintain an entity->components mapping?
+            # Store now handles removal by appending an inactive record.
             for comp_type in self._store._component_data.keys():
-                 self._store.remove_entity_from_component(entity_id, comp_type)
+                 # Pass current step for the inactive record
+                 self._store.remove_entity_from_component(entity_id, comp_type, self._current_step)
             # Remove entity type mapping
             self._store.remove_entity_type_mapping(entity_id)
             # Ensure it's not also marked for deferred deletion
@@ -195,34 +215,26 @@ class EcsWorld:
             print(f"ERROR: Cannot create update DF. Component type {component_type.__name__} not registered.")
             return None
 
-        # Construct the struct data from the instance
-        if not is_dataclass(component_instance):
-             print(f"ERROR: Component instance {component_instance} is not a dataclass.")
+        # Construct the flat dictionary from the instance using pydantic helper
+        try:
+            # model_to_dict excludes fields with default values if not explicitly set
+            # Use include/exclude if specific fields are needed, or ensure defaults are handled.
+            # For now, assume model_to_dict provides the necessary fields.
+            component_field_data = model_to_dict(component_instance)
+        except Exception as e:
+             print(f"ERROR: Failed to convert component instance {component_instance} to dict: {e}")
              return None
 
-        struct_data = {}
-        valid_field_names = {f.name for f in fields(component_type) if f.init}
-        for field_name in valid_field_names:
-            if hasattr(component_instance, field_name):
-                struct_data[field_name] = getattr(component_instance, field_name)
-            else:
-                # Handle cases where field exists but isn't set? Or rely on dataclass defaults.
-                # For safety, maybe skip if not present, or raise error? Let's skip.
-                print(f"Warning: Field '{field_name}' not found on component instance for update DF.")
-
-
-        # Create the dict for Daft conversion
-        struct_name = comp_data.struct_name
-        update_dict = {
-            "entity_id": [entity_id],
-             struct_name: [struct_data] # Store struct dict inside a list
-        }
+        # Create the flat dict for Daft conversion, adding entity_id
+        update_dict = {"entity_id": [entity_id]}
+        update_dict.update({k: [v] for k, v in component_field_data.items()}) # Wrap values in lists
 
         # Create DataFrame plan
         try:
              # Let Daft infer the schema initially
              update_df = daft.from_pydict(update_dict)
-             # We rely on add_update in UpdateManager to cast to the final schema
+             # We rely on add_update in UpdateManager to ensure columns match store schema
+             print(f"World Helper: Created FLAT update_df for {component_type.__name__} on entity {entity_id}") # MODIFIED log
              return update_df
         except Exception as e:
              print(f"ERROR: Failed creating Daft DataFrame for component update: {e}")
@@ -234,11 +246,11 @@ class EcsWorld:
         Queues the addition or replacement of a component for an entity.
         The change will be applied during the commit phase of the current step.
         """
-        # Type Check: Ensure the entity's type allows this component
-        entity_type = self.get_entity_type_for_entity(entity_id)
+        # Note: Type checking against EntityType can still be done here if desired.
+        # entity_type = self.get_entity_type_for_entity(entity_id)
         component_type = type(component_instance)
-        if entity_type and not entity_type.allows_component(component_type):
-             raise TypeError(f"World: Component type {component_type.__name__} not allowed for entity {entity_id}'s type '{entity_type.name}'")
+        # if entity_type and not entity_type.allows_component(component_type):
+        #      raise TypeError(f"World: Component type {component_type.__name__} not allowed for entity {entity_id}'s type '{entity_type.name}'")
 
         # Create the single-row update DataFrame plan
         update_df = self._create_component_update_df(entity_id, component_instance)
@@ -247,6 +259,7 @@ class EcsWorld:
             return
 
         # Queue the update via the UpdateManager
+        # UpdateManager should handle adding step/is_active during commit
         self._updater.add_update(component_type, update_df)
         # print(f"World: Queued add/replace {component_type.__name__} for entity {entity_id}") # Noisy
 
@@ -262,27 +275,21 @@ class EcsWorld:
             entity_id: The ID of the entity.
             component_type: The type of component to remove.
             immediate: If True, attempts immediate removal (use with caution).
-                       If False (default), queues a removal (TODO: Not Implemented yet).
+                       If False (default), this is NOT SUPPORTED in this version.
+                       Deferred removal requires changes to EcsUpdateManager.
         """
         if not immediate:
-            # TODO: Implement deferred component removal.
-            # This would likely involve queueing a special "null" update or a separate removal list.
-            # Option A: Queue an update with the struct column set to None.
-            # Option B: Add a separate mechanism to UpdateManager/Store for removals.
-            # Option A seems more aligned with the update flow.
-            print(f"World: Queuing removal of {component_type.__name__} for entity {entity_id}...")
-            update_dict = {"entity_id": [entity_id], self._store._get_component_struct_name(component_type): [None]}
-            try:
-                 update_df = daft.from_pydict(update_dict)
-                 self._updater.add_update(component_type, update_df) # Queue the 'None' update
-                 print(f"World: Queued null update for removing {component_type.__name__} from entity {entity_id}.")
-            except Exception as e:
-                 print(f"ERROR: Failed creating Daft DataFrame for component removal: {e}")
-
-            # raise NotImplementedError("Deferred component removal via queueing is not fully implemented yet.")
+            # The new approach requires appending an inactive record via the store.
+            # This should ideally be queued via the UpdateManager and handled during commit.
+            raise NotImplementedError(
+                "Deferred component removal (immediate=False) is not supported. "
+                "It requires changes to EcsUpdateManager to queue and process removal actions." )            
+            # If implemented, it would likely involve:
+            # self._updater.queue_removal(entity_id, component_type)
         else:
-            print(f"World: Immediately removing {component_type.__name__} from entity {entity_id}")
-            self._store.remove_entity_from_component(entity_id, component_type)
+            # Append inactive record immediately using the current step
+            print(f"World: Immediately appending inactive record for {component_type.__name__} from entity {entity_id} at step {self._current_step}")
+            self._store.remove_entity_from_component(entity_id, component_type, self._current_step)
             self._querier.clear_caches() # State changed immediately
 
     # Querying Facade (delegates to Querier)
@@ -304,13 +311,6 @@ class EcsWorld:
         if entity_id in self._dead_entities:
             return None
         return self._querier.component_for_entity(entity_id, component_type)
-
-    def get_collected_component_data(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
-         """
-         Facade for accessing the final, collected data copy from the last step,
-         via EcsQueryInterface. Useful for observers.
-         """
-         return self._querier.get_collected_component_data(component_type)
 
     # Processor/System Management Facade (delegates to System)
     def add_processor(self, processor_instance: Processor, priority: Optional[int] = None):
@@ -375,9 +375,6 @@ class EcsWorld:
              comp_type = type(comp)
              if not entity_type.allows_component(comp_type):
                   raise TypeError(f"[Pre-check failed] Component {comp_type.__name__} not allowed for EntityType '{entity_type.name}'")
-             if not is_dataclass(comp):
-                  raise TypeError(f"Component {comp} must be a dataclass instance.")
-
 
          # Create entity and assign type in the store
          entity_id = self.create_entity()
