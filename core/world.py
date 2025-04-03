@@ -57,7 +57,6 @@ class EcsWorld:
 
         # Entity Management
         self._entity_count = _count(start=1) # Simple incrementing ID generator
-        self._dead_entities: Set[int] = set() # Entities marked for deletion next step
         self._entity_types: Dict[str, EntityType] = {} # Definitions of entity types
 
         # Step counter
@@ -79,60 +78,12 @@ class EcsWorld:
 
         # Increment step counter at the beginning of the process
         self._current_step = next(self._step_counter)
-        print(f"\n--- World: Processing Step {self._current_step} (dt={dt:.4f}) ---")
 
-        # 1. Initialization Phase
-        # Clear pending updates from the previous step and query caches
-        # --- MOVED TO END OF METHOD ---
-        # self._updater.clear_pending_updates()
-        # self._querier.clear_caches()
-        print("  Phase 1: Init Complete.")
-
-        # 2. Entity Cleanup Phase
-        # Remove entities marked dead in the previous step from the store
-        if self._dead_entities:
-            # Pass current step to potentially mark removals in history (though current impl only clears map)
-            self._store.clear_dead_entities(self._dead_entities, self._current_step)
-            self._dead_entities.clear() # Clear the marking set for the current step
-            print(f"  Phase 2: Cleanup Complete (Cleared dead entities).")
-        else:
-            print(f"  Phase 2: Cleanup Complete (No dead entities).")
-
-
-        # 3. Processor Execution Phase
-        # Delegate execution to the configured System strategy
-        print(f"  Phase 3: Executing Processors via {self._system.__class__.__name__}...")
-        exec_start = time.time()
-        try:
-            # The system interacts with the querier and updater
-            # Call execute directly (assuming system.execute is synchronous)
-            self._system.execute(self._querier, self._updater, dt, *args, **kwargs)
-            print(f"  Phase 3: Processor Execution Complete ({(time.time() - exec_start):.4f}s).")
-        except Exception as e:
-             print(f"!!! ERROR during System execution: {e}")
-             # Depending on severity, might want to re-raise or halt
-             import traceback
-             traceback.print_exc()
-             print(f"  Phase 3: Processor Execution FAILED.")
-             # Decide whether to proceed with commit or skip? Skipping commit for safety.
-             print("--- World: Step Processing Aborted Due to Execution Error ---")
-             return # Exit processing early
-
-
-        # 4. Update Commit Phase
-        # Aggregate and apply all updates queued by processors during execution
-        print("  Phase 4: Committing Updates...")
-        commit_start = time.time()
-        # Pass current step to UpdateManager for applying updates with the correct step number
+        
+        self._system.execute(self._querier, self._updater, dt, *args, **kwargs)
         self._updater.commit_updates(self._current_step)
-        print(f"  Phase 4: Update Commit Complete ({(time.time() - commit_start):.4f}s).")
 
-        # 5. Collection Phase (for Observers)
-        # --- Collection Phase Removed --- (No longer needed with historical store)
-        print("  Phase 5: Collection Removed.")
-
-        # --- MOVED FROM PHASE 1 ---
-        # Clear updates and caches *after* commit and before the next step begins
+        
         self._updater.clear_pending_updates()
         self._querier.clear_caches()
         # --- END MOVED SECTION ---
@@ -206,66 +157,27 @@ class EcsWorld:
         return False
 
     # Component Management
-    def _create_component_update_df(self, entity_id: int, component_instance: Component) -> Optional[daft.DataFrame]:
-        """Internal helper to create a single-row DataFrame plan for an update."""
-        component_type = type(component_instance)
-        # Ensure component type is known to the store
-        comp_data = self._store.get_component_data_container(component_type)
-        if not comp_data: # Should have been registered by now
-            print(f"ERROR: Cannot create update DF. Component type {component_type.__name__} not registered.")
-            return None
-
-        # Construct the flat dictionary from the instance using pydantic helper
-        try:
-            # model_to_dict excludes fields with default values if not explicitly set
-            # Use include/exclude if specific fields are needed, or ensure defaults are handled.
-            # For now, assume model_to_dict provides the necessary fields.
-            component_field_data = model_to_dict(component_instance)
-        except Exception as e:
-             print(f"ERROR: Failed to convert component instance {component_instance} to dict: {e}")
-             return None
-
-        # Create the flat dict for Daft conversion, adding entity_id
-        update_dict = {"entity_id": [entity_id]}
-        update_dict.update({k: [v] for k, v in component_field_data.items()}) # Wrap values in lists
-
-        # Create DataFrame plan
-        try:
-             # Let Daft infer the schema initially
-             update_df = daft.from_pydict(update_dict)
-             # We rely on add_update in UpdateManager to ensure columns match store schema
-             print(f"World Helper: Created FLAT update_df for {component_type.__name__} on entity {entity_id}") # MODIFIED log
-             return update_df
-        except Exception as e:
-             print(f"ERROR: Failed creating Daft DataFrame for component update: {e}")
-             return None
-
-
     def add_component(self, entity_id: int, component_instance: Component):
         """
-        Queues the addition or replacement of a component for an entity.
-        The change will be applied during the commit phase of the current step.
+        Adds or replaces a component for an entity directly in the store.
+        The change is recorded with the current step number.
         """
-        # Note: Type checking against EntityType can still be done here if desired.
-        # entity_type = self.get_entity_type_for_entity(entity_id)
         component_type = type(component_instance)
-        # if entity_type and not entity_type.allows_component(component_type):
-        #      raise TypeError(f"World: Component type {component_type.__name__} not allowed for entity {entity_id}'s type '{entity_type.name}'")
+        if not isinstance(component_instance, Component):
+             print(f"World Error: Attempted to add non-component object: {component_instance}")
+             return
 
-        # Create the single-row update DataFrame plan
-        update_df = self._create_component_update_df(entity_id, component_instance)
-        if update_df is None:
-            print(f"World: Failed to create update DF for {component_type.__name__} on entity {entity_id}. Update skipped.")
-            return
-
-        # Queue the update via the UpdateManager
-        # UpdateManager should handle adding step/is_active during commit
-        self._updater.add_update(component_type, update_df)
-        # print(f"World: Queued add/replace {component_type.__name__} for entity {entity_id}") # Noisy
-
-        # Invalidate relevant part of query cache immediately?
-        # For simplicity, clear_caches() at start of step handles this broadly.
-        # Finer-grained invalidation is complex.
+        try:
+            # Delegate directly to the store's add_component method
+            # Pass the current step number from the world
+            self._store.add_component(entity_id, component_instance, step=self._current_step)
+            print(f"World: Added/Updated {component_type.__name__} for entity {entity_id} at step {self._current_step}")
+        except Exception as e:
+            # Catch potential errors during store interaction
+            print(f"World Error: Failed to add component {component_type.__name__} for entity {entity_id} via store: {e}")
+            # Optionally re-raise or handle more gracefully
+            import traceback
+            traceback.print_exc()
 
     def remove_component(self, entity_id: int, component_type: Type[Component], immediate: bool = False):
         """
@@ -326,70 +238,6 @@ class EcsWorld:
     def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
         """Gets a processor instance from the underlying System."""
         return self._system.get_processor(processor_type)
-
-    # Entity Type Management
-    def register_entity_type(self, entity_type: EntityType) -> None:
-        """Registers a predefined EntityType."""
-        if not isinstance(entity_type, EntityType):
-             raise TypeError("Can only register EntityType instances.")
-        if entity_type.name in self._entity_types:
-             # Allow re-registration if identical? Or enforce unique names? Enforce unique.
-             raise ValueError(f"EntityType '{entity_type.name}' already registered.")
-        self._entity_types[entity_type.name] = entity_type
-        print(f"World: Registered EntityType '{entity_type.name}'.")
-
-    def create_entity_type(self, name: str, allowed_components: Optional[Set[Type[Component]]] = None) -> EntityType:
-        """Creates and registers a new EntityType."""
-        if name in self._entity_types:
-            raise ValueError(f"EntityType '{name}' already exists.")
-        entity_type = EntityType(name, allowed_components)
-        self.register_entity_type(entity_type) # Use the registration method
-        return entity_type
-
-    def get_entity_type(self, name: str) -> Optional[EntityType]:
-        """Gets a registered EntityType by name."""
-        return self._entity_types.get(name)
-
-    def create_typed_entity(self, entity_type_name: str, *components: Component) -> int:
-         """
-         Creates a new entity ID, assigns it an EntityType, and queues
-         initial components for addition.
-
-         Args:
-             entity_type_name: The name of a registered EntityType.
-             *components: Initial components to add to the entity.
-
-         Returns:
-             The newly created entity ID.
-
-         Raises:
-             ValueError: If the entity_type_name is not registered.
-             TypeError: If any initial components are not allowed by the EntityType.
-         """
-         entity_type = self.get_entity_type(entity_type_name)
-         if not entity_type:
-             raise ValueError(f"EntityType '{entity_type_name}' not registered.")
-
-         # Perform pre-checks on components *before* creating entity ID
-         for comp in components:
-             comp_type = type(comp)
-             if not entity_type.allows_component(comp_type):
-                  raise TypeError(f"[Pre-check failed] Component {comp_type.__name__} not allowed for EntityType '{entity_type.name}'")
-
-         # Create entity and assign type in the store
-         entity_id = self.create_entity()
-         self._store.set_entity_type_for_entity(entity_id, entity_type)
-         print(f"World: Creating typed entity {entity_id} ('{entity_type.name}'). Queuing components...")
-
-         # Queue initial components using the standard add_component method
-         for comp in components:
-             self.add_component(entity_id, comp)
-
-         return entity_id
-
-    def get_entity_type_for_entity(self, entity_id: int) -> Optional[EntityType]:
-        """Gets the EntityType assigned to a specific entity ID."""
-        return self._store.get_entity_type_for_entity(entity_id) # Delegate to store
 
     # Component Type Registration (Optional - often handled implicitly)
     def register_component(self, component_type: Type[Component]) -> None:

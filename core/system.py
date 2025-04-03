@@ -529,3 +529,25 @@ class SequentialSystem(System):
                 # Optionally re-raise or decide how to handle processor errors
                 # raise e
         # print("SequentialSystem: Finished executing processors.")
+
+class GraphSystem(System):
+    """
+    Executes processors in parallel using a graph structure. 
+
+    Processors are networkX nodes, and edges are communication channels and relationships. 
+    """
+    def __init__(self):
+        self._nodes: Dict[Type[Processor], Processor] = {}
+        self._edges: Dict[Type[Processor], List[Type[Processor]]] = {}
+
+    def add_nodes(self, processor: Processor, priority: Optional[int] = None) -> None:
+        """Adds a processor instance."""
+        if not isinstance(processor, Processor):
+            raise TypeError("Can only add Processor instances.")
+        
+    def add_edges(self, processor: Processor, dependencies: List[Type[Processor]]) -> None:
+        """Adds a processor instance."""
+        if not isinstance(processor, Processor):
+            raise TypeError("Can only add Processor instances.")
+        
+        

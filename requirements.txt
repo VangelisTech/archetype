@@ -1,0 +1,6 @@
+daft[ray]
+pyarrow
+pandas
+streamlit
+matplotlib
+pyglet 

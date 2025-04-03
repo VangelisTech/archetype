@@ -10,11 +10,9 @@ import datetime
 # Import daft early, even if only used by subclasses, to ensure it's available
 import daft
 # Import LanceModel and ensure pydantic is available
-try:
-    from lancedb.pydantic import LanceModel
-except ImportError:
-    # Provide a fallback or raise a clearer error if lancedb is missing
-    raise ImportError("LanceDB library not found. Please install it: pip install lancedb")
+
+from lancedb.pydantic import LanceModel
+
 
 # --- Forward Declarations ---
 # These help type hints work even if classes are defined later or in other files.

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Manages the storage and state of components using Daft DataFrames.
+Manages the storage and state of components using LanceDB tables.
 
 Key aspects of this implementation:
 - Component data is stored historically, with each row representing the state
@@ -10,44 +10,24 @@ Key aspects of this implementation:
 - Component removal appends a row with `is_active=False`.
 - Provides methods to query the latest state or the state at a specific step.
 
-_ComponentData: Internal dataclass bundling component_type, Daft schema, and the historical dataframe.
-_component_data Dictionary: Main internal state (Type[Component] -> _ComponentData).
-Schema Generation: Schema includes `entity_id`, `step`, `is_active`, and component fields.
-apply_updates: Appends new state rows with the current step.
-clear_dead_entities: Currently only removes EntityType mapping. Historical data is kept.
-remove_entity_from_component: Appends a record marking the component as inactive for the entity at the current step.
-get_latest_component_df: Retrieves the most recent active state for each entity.
-get_component_df_at_step: Retrieves the active state for each entity as it was at a specific step.
+Uses a Daft Catalog and Session to manage persistent storage:
+- Each component type gets its own table in the catalog
+- Tables are created with a schema derived from the component's Pydantic model
+- Schema includes `entity_id`, `step`, `is_active`, and component fields
+- Updates are processed through Daft DataFrames before being committed to tables
+- Queries use Daft's DataFrame API to filter and transform data efficiently
+- Component instances are reconstructed from table data using Pydantic validation
 """
 
-from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
-from dataclasses import dataclass, fields, is_dataclass
+from typing import Dict, List, Type, Optional
 import daft
-from daft import col, lit, DataType, Schema
+from daft import col, lit, DataType as DT, Catalog, Session
 import daft.expressions as F
 import pyarrow as pa # Need pyarrow for schema manipulation
-import datetime
-import time
-import inspect # Keep for potential future use with non-dataclasses
 
 # Import base types from our new structure
-from .base import Component, EntityType, _C
+from core.base import Component
 
-# --- Internal Data Structure ---
-@dataclass
-class _ComponentData:
-    """Internal structure to hold schema and historical DataFrame for a component type."""
-    component_type: Type[Component]
-    schema: daft.Schema
-    dataframe: Optional[daft.DataFrame] = None # Stores historical data
-    # struct_name: str = "" # Removed struct_name as it wasn't clearly used
-
-    # def __post_init__(self):
-    #     if not self.struct_name:
-    #          self.struct_name = self.component_type.__name__.lower()
-
-
-# --- Component Store Implementation ---
 class EcsComponentStore:
     """
     Manages the historical state of components, stored internally using
@@ -55,290 +35,314 @@ class EcsComponentStore:
     entity_id, step, is_active, and component data.
     """
     def __init__(self):
-        # Stores _ComponentData objects, keyed by component type
-        self._component_data: Dict[Type[Component], _ComponentData] = {}
-        # Maps entity IDs to their defined EntityType
-        self._entity_type_map: Dict[int, EntityType] = {}
+        self.components: Dict[Type[Component], daft.DataFrame] = {}
+        self.entities: Dict[int, List[Type[Component]]] = {}
 
-    def _create_daft_schema(self, component_type: Type[Component]) -> Schema:
+    def _create_composite_arrow_schema(self, component: Type[Component]) -> pa.Schema:
         """
         Creates the Daft Schema for a component type's historical DataFrame.
         Includes entity_id, step, is_active, and component fields.
         """
-        component_arrow_schema: pa.Schema = component_type.to_arrow_schema()
+        component_arrow_schema: pa.Schema = component.to_arrow_schema()
         # Insert core fields: entity_id, step, is_active
         composite_arrow_schema = component_arrow_schema.insert(0, pa.field("entity_id", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(1, pa.field("step", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(2, pa.field("is_active", pa.bool_()))
 
-        final_daft_schema = Schema.from_pyarrow_schema(composite_arrow_schema)
-        return final_daft_schema
+        return composite_arrow_schema
 
-    def register_component(self, component_type: Type[Component]) -> _ComponentData:
+
+    def create_df_for_composite(self, component_type: Type[Component]) -> daft.DataFrame:
+        """
+        Creates a table for a component type's historical DataFrame.
+        """
+        df_schema = self._create_composite_arrow_schema(component_type)
+        df = daft.from_arrow(df_schema.empty_table())
+        
+        return df
+
+    
+    def register_component(self, component_type: Type[Component]) -> daft.Table:
         """
         Ensures a component type is known to the store, creating its schema
         and internal data structure if it doesn't exist. Returns the _ComponentData.
         """
-        if component_type not in self._component_data:
-            # print(f"Store: Registering component type {component_type.__name__}")
-            schema = self._create_daft_schema(component_type)
-            self._component_data[component_type] = _ComponentData(
-                component_type=component_type,
-                schema=schema,
-                dataframe=None # Initialize with no DataFrame
-            )
-        return self._component_data[component_type]
+        if not self.components.get(component_type):
+            self.components[component_type] = self.create_df_for_composite(component_type)
 
-    def get_component_data_container(self, component_type: Type[Component]) -> Optional[_ComponentData]:
-         """Gets the internal _ComponentData container, registering if necessary."""
-         # Auto-registering logic remains the same
-         if component_type not in self._component_data:
-             return self.register_component(component_type)
-         return self._component_data.get(component_type)
+        return self.components.get(component_type)
 
-    def get_component_schema(self, component_type: Type[Component]) -> Optional[Schema]:
-        """Gets the Daft Schema for a component type (includes history columns)."""
-        container = self.get_component_data_container(component_type)
-        return container.schema if container else None
-
-    def get_component_df(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
+    def add_component(self, entity_id: int, component: Component, step: Optional[int] = -1) -> None:  
         """
-        Gets the full historical Daft DataFrame for a component type,
-        including all steps. Returns None if the component is not registered
-        or has no data.
+        Adds a component to the store for an entity.
         """
-        container = self.get_component_data_container(component_type)
-        return container.dataframe if container else None
+        df = self.register_component(type(component))
 
-    # --- New Methods for Querying History ---
+        component_dict = component.model_dump()
+        component_dict["entity_id"] = entity_id
+        component_dict["step"] = step
+        component_dict["is_active"] = True
 
-    def get_latest_component_df(self, component_type: Type[Component]) -> Optional[daft.DataFrame]:
+        #adding the component to the dataframe
+        self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
+
+    def get_latest_state(self, df: daft.DataFrame) -> Optional[daft.DataFrame]:
         """
         Gets a DataFrame representing the latest active state for each entity
         for the given component type. Returns a DataFrame plan or None.
         """
-        container = self.get_component_data_container(component_type)
-        if container is None or container.dataframe is None:
-            # print(f"Store GetLatest: No data for {component_type.__name__}")
-            return None
-
-        df = container.dataframe
-        # print(f"Store GetLatest [{component_type.__name__}]: Input DF len (plan): {len(df)}") # Might trigger compute
-
-        # Find the latest step for each entity
-        # Ensure step column is used correctly
+        # Get the latest step for each entity
         latest_steps = df.groupby("entity_id").agg(F.max(col("step")).alias("latest_step"))
-        # print(f"Store GetLatest [{component_type.__name__}]: Found latest steps.")
 
         # Join back to get the full row for the latest step
-        # Use the correct column names from the original df and the aggregation result
         latest_df = df.join(latest_steps, left_on=["entity_id", "step"], right_on=["entity_id", "latest_step"])
-        # print(f"Store GetLatest [{component_type.__name__}]: Joined back.")
 
         # Filter out inactive Entities
         active_latest_df = latest_df.where(col("is_active"))
 
         # Select only original columns defined in the schema (excluding 'latest_step')
-        final_df = active_latest_df.select(*[col(name) for name in container.schema.column_names()])
-        # print(f"Store GetLatest [{component_type.__name__}]: Selected final columns. Returning plan.")
-
-        # Return the plan for flexibility, let caller collect if needed
+        final_df = active_latest_df.select(*[col(name) for name in df.column_names()])
+        
         return final_df
 
-
-    def get_component_df_at_step(self, component_type: Type[Component], step: int) -> Optional[daft.DataFrame]:
+    def get_state_at_step(self, df: daft.DataFrame, step: Optional[int] = None) -> Optional[daft.DataFrame]:
         """
         Gets a DataFrame representing the active state for each entity
         for the given component type as it existed exactly at the specified step.
         If an entity had no update at that specific step, but was active before,
         it finds the most recent state up to that step. Returns a DataFrame plan or None.
         """
-        container = self.get_component_data_container(component_type)
-        if container is None or container.dataframe is None:
-            return None
+        # Filter to the specific step
+        if step is not None:
+            step_df = df.where(col("step") <= step)
+        else:
+            step_df = df
 
-        df = container.dataframe
+        # Get the latest step for each entity
+        final_df = self.get_latest_state(step_df)
 
-        # 1. Filter history to include only steps up to the target step
-        relevant_history = df.where(col("step") <= step)
+        return final_df
+    
+    def get_components(self, component_types: Optional[List[Type[Component]]] = None, step: Optional[int] = None) -> daft.DataFrame:
+        """For Processors to get the latest combined state of all components"""
+        if component_types is None:
+            component_types = self.components.keys()
+        
+        df = None
+        for component in component_types:
+            if df is None:
+                df = self.get_state_at_step(self.components[component], step)
+            else:
+                df = df.join(self.get_state_at_step(self.components[component], step), on=["entity_id", "step", "is_active"])
+        return df
+    
+    def update_components(self, df: daft.DataFrame, components: List[Component]) -> None:
+        """Once a processor has applied its changes to the joined dataframe, we need to then update the individual component instances"""
+        
+    
+    def get_all_components_history(self) -> daft.DataFrame:
+        df = None
+        for component in self.components:
+            if df is None:
+                df = self.components[component]
+            else:
+                df = df.join(self.components[component], on=["entity_id", "step", "is_active"])
+        return df
+    
+    def remove_entity(self, entity_id: int, step: Optional[int] = None) -> None:
+        """
+        Sets the is_active flag to False for an entity.
+        """
+        
+        df = self.get_components(step=step)
+        df = df.where(col("entity_id") == entity_id) \
+               .with_columns({"is_active": lit(False)})
+        self.update_components(df)
+    
+    def remove_component(self, entity_id: int, component_type: Type[Component]) -> None:
+        """
+        Sets the is_active flag to False for an entity.
+        """
+       
 
-        # 2. Find the maximum step for each entity within that relevant history
-        latest_relevant_steps = relevant_history.groupby("entity_id").agg(
-            F.max(col("step")).alias("latest_relevant_step")
+
+class EcsComponentSessionStore:
+    """
+    Manages the historical state of components, stored internally using
+    a _ComponentData structure for each component type. Each row includes
+    entity_id, step, is_active, and component data.
+    """
+    def __init__(self, catalog: Catalog):
+        self._session = Session()
+        self._session.attach(catalog, alias="ecs_catalog")
+        self._namespace = "components"
+
+        self._session.set_namespace(self._namespace)
+
+    def _create_composite_arrow_schema(self, component: Type[Component]) -> pa.Schema:
+        """
+        Creates the Daft Schema for a component type's historical DataFrame.
+        Includes entity_id, step, is_active, and component fields.
+        """
+        component_arrow_schema: pa.Schema = component.to_arrow_schema()
+        # Insert core fields: entity_id, step, is_active
+        composite_arrow_schema = component_arrow_schema.insert(0, pa.field("entity_id", pa.int64()))
+        composite_arrow_schema = composite_arrow_schema.insert(1, pa.field("step", pa.int64()))
+        composite_arrow_schema = composite_arrow_schema.insert(2, pa.field("is_active", pa.bool_()))
+
+        return composite_arrow_schema
+
+
+    def get_table_name(self, component_type: Type[Component]) -> str:
+        """
+        Returns the table name for a component type.
+        """
+        return f"{self._namespace}.{component_type.__name__}"
+
+    def create_table_for_composite(self, component_type: Type[Component]) -> pa.Table:
+        """
+        Creates a table for a component type's historical DataFrame.
+        """
+        table_name = self.get_table_name(component_type)
+        table_schema = self._create_composite_arrow_schema(component_type)
+        table = self._session.create_table(
+            table_name,
+            daft.from_arrow(table_schema.empty_table())
         )
+        return table
 
-        # 3. Join back to the relevant history to get the full row corresponding to that latest relevant step
-        df_at_step_candidates = relevant_history.join(
-            latest_relevant_steps,
-            left_on=["entity_id", "step"],
-            right_on=["entity_id", "latest_relevant_step"]
-        )
+    
+    def register_component(self, component_type: Type[Component]) -> daft.Table:
+        """
+        Ensures a component type is known to the store, creating its schema
+        and internal data structure if it doesn't exist. Returns the _ComponentData.
+        """
+        table_name = self.get_table_name(component_type)
+        
+        if not self._session.has_table(table_name):
+            self.create_table_for_composite(component_type)
 
-        # 4. Filter out entities where the state at that latest relevant step was inactive
-        active_df_at_step = df_at_step_candidates.where(col("is_active"))
+        table = self._session.get_table(table_name)
+        return table
 
-        # 5. Select only the original schema columns to present a clean state view
-        final_df = active_df_at_step.select(*[col(name) for name in container.schema.column_names()])
+    def add_component(self, entity_id: int, component: Component, step: Optional[int] = -1) -> None:  
+        """
+        Adds a component to the store for an entity.
+        """
+        table = self.register_component(type(component))
+        df = daft.from_pydict(component.model_dump())
+        df = daft.with_columns({
+            "entity_id": lit(entity_id),
+            "step": lit(step),
+            "is_active": lit(True),
+        })
+        table.append(df)
 
-        # Return the plan
+    def read_table(self, component_type: Type[Component]) -> daft.DataFrame:
+        """
+        Reads the table for a component type.
+        """
+        table = self._session.get_table(self.get_table_name(component_type))
+        return table.read()
+
+    def get_latest_state(self, df: daft.DataFrame) -> Optional[daft.DataFrame]:
+        """
+        Gets a DataFrame representing the latest active state for each entity
+        for the given component type. Returns a DataFrame plan or None.
+        """
+        # Get the latest step for each entity
+        latest_steps = df.groupby("entity_id").agg(F.max(col("step")).alias("latest_step"))
+
+        # Join back to get the full row for the latest step
+        latest_df = df.join(latest_steps, left_on=["entity_id", "step"], right_on=["entity_id", "latest_step"])
+
+        # Filter out inactive Entities
+        active_latest_df = latest_df.where(col("is_active"))
+
+        # Select only original columns defined in the schema (excluding 'latest_step')
+        final_df = active_latest_df.select(*[col(name) for name in df.column_names()])
+        
         return final_df
 
-    # --- Modified State Update Methods ---
-
-    def apply_updates(self, component_type: Type[Component], aggregated_updates_df: daft.DataFrame, current_step: int) -> None:
+    def get_state_at_step(self, df: daft.DataFrame, step: int) -> Optional[daft.DataFrame]:
         """
-        Appends aggregated updates to a component type's historical DataFrame.
-        Adds the current_step and sets is_active=True for the new rows.
+        Gets a DataFrame representing the active state for each entity
+        for the given component type as it existed exactly at the specified step.
+        If an entity had no update at that specific step, but was active before,
+        it finds the most recent state up to that step. Returns a DataFrame plan or None.
         """
-        data_container = self.get_component_data_container(component_type)
-        if not data_container:
-             print(f"ERROR: Store cannot apply updates. Component type {component_type.__name__} not registered.")
-             return # Or raise?
+        # Filter to the specific step
+        step_df = df.where(col("step") <= step)
 
-        if len(aggregated_updates_df.collect()) == 0: # Check if there are any updates
-            # print(f"Store ApplyUpdates [{component_type.__name__}]: No updates to apply for step {current_step}.")
-            return
+        # Get the latest step for each entity
+        final_df = self.get_latest_state(step_df)
 
-        # Add step and is_active columns to the updates
-        # Ensure casting to handle potential type inference issues
-        updates_with_meta = aggregated_updates_df.with_column(
-            "step", lit(current_step).cast(DataType.int64())
-        ).with_column(
-            "is_active", lit(True).cast(DataType.bool())
-        )
+        return final_df
 
-        # Ensure schema alignment before concat
-        try:
-            # Ensure the *incoming* df matches the store's schema
-            target_schema = data_container.schema
-            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Schema BEFORE select/cast:")
-            updates_with_meta.print_schema()
-            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Target Schema:")
-            target_schema.print_schema()
-
-            # --- Added Step: Explicitly select columns in target order ---
-            ordered_cols = [col(name) for name in target_schema.column_names()]
-            updates_reordered = updates_with_meta.select(*ordered_cols)
-            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Schema AFTER select/reorder:")
-            updates_reordered.print_schema()
-            # --- End Added Step ---
-
-            updates_to_apply = updates_reordered.cast_schema(target_schema) # Use reordered DF
-            print(f"Store ApplyUpdates [{component_type.__name__}] Step {current_step}: Cast successful.")
-        except Exception as e:
-            print(f"ERROR: Store ApplyUpdates [{component_type.__name__}] schema alignment/casting failed for step {current_step}. Error: {e}")
-            print("Update Schema (before select/cast):")
-            updates_with_meta.print_schema() # Log the schema that failed
-            print("Target Schema:")
-            target_schema.print_schema()
-            return # Abort update if schema mismatch
-
-        original_df = data_container.dataframe
-        # print(f"Store ApplyUpdates [{component_type.__name__}]: Appending updates for step {current_step}.")
-
-        # Use the casted DataFrame 'updates_to_apply'
-        if original_df is None:
-            data_container.dataframe = updates_to_apply
-            print(f"Store ApplyUpdates [{component_type.__name__}]: Assigned initial DataFrame plan for step {current_step}. Is None: {data_container.dataframe is None}")
-        else:
-            # Append new updates to existing historical data
-            # Concat assumes schemas are compatible (hence the cast above)
-            # Use the DataFrame instance method concat
-            data_container.dataframe = original_df.concat(other=updates_to_apply)
-            print(f"Store ApplyUpdates [{component_type.__name__}]: Concatenated DataFrame plan for step {current_step}. Is None: {data_container.dataframe is None}")
-
-        # print(f"Store ApplyUpdates [{component_type.__name__}]: Completed append for step {current_step}.")
-        # We keep the dataframe as a plan, collection happens on read if needed
-
-
-    def clear_dead_entities(self, dead_entity_ids: Set[int], current_step: int):
-        """
-        Removes EntityType mapping for dead entities.
-        NOTE: This method NO LONGER removes data from component DataFrames to preserve history.
-              Downstream systems should handle not generating updates for dead entities.
-              Alternatively, tombstones could be added here in a future iteration.
-        """
-        if not dead_entity_ids:
-            return
-        # print(f"Store: Clearing type mapping for {len(dead_entity_ids)} dead entities at step {current_step}.")
-        dead_list = list(dead_entity_ids) # Keep for map clearing
-
-        # --- Data Removal Logic Removed ---
-        # The historical data remains untouched.
-
-        # Remove entity type mappings for dead entities
-        cleared_count = 0
-        for entity_id in dead_list:
-            if self._entity_type_map.pop(entity_id, None):
-                 cleared_count += 1
-        # if cleared_count > 0:
-        #      print(f"  - Cleared {cleared_count} entity type mappings.")
-
-
-    def remove_entity_from_component(self, entity: int, component_type: Type[Component], current_step: int):
-        """
-        Appends a record indicating a component is no longer active for a specific entity
-        at the given step. Preserves the history of when it was active.
-        """
-        data_container = self._component_data.get(component_type)
-        # Ensure component is registered and has a schema
-        if not data_container:
-            print(f"Store Immediate Remove: Component {component_type.__name__} not registered.")
-            return
-        if data_container.dataframe is None:
-             print(f"Store Immediate Remove: No history for {component_type.__name__} to append removal record to.")
-             # Optionally, we could create the dataframe here with just the removal record.
-             # For now, let's assume removal only makes sense if there was prior state.
-             return
-
-        schema = data_container.schema
-        # print(f"Store: Appending inactive record for entity {entity}, component {component_type.__name__} at step {current_step}")
-
-        # Create data for the removal record (inactive state)
-        removal_data = {
-            "entity_id": [entity],
-            "step": [current_step],
-            "is_active": [False]
-        }
-        # Add None for all other component-specific fields
-        for field_name in schema.column_names():
-            if field_name not in removal_data:
-                # TODO: Determine correct null value based on field_type if needed?
-                # For now, None should work for Daft's from_pydict -> cast_schema
-                removal_data[field_name] = [None]
-
-        try:
-            # Create a Daft DataFrame for the single removal record
-            removal_df = daft.from_pydict(removal_data)
-            # Cast to the full component schema to ensure compatibility for concat
-            removal_df = removal_df.cast_schema(schema)
-
-            # Append the removal record to the historical DataFrame using instance method
-            if data_container.dataframe is not None:
-                data_container.dataframe = data_container.dataframe.concat(other=removal_df)
+    def get_components(self, component_types: List[Type[Component]]) -> Dict[Type[Component], daft.DataFrame]:
+        shared_df = None
+        # Get tables for each component type
+        for component in component_types:
+            df = self.read_table(component)
+            latest_df = self.get_latest_state(df)
+            if shared_df is None:
+                shared_df = latest_df
             else:
-                # If history was empty, the removal record becomes the history
-                data_container.dataframe = removal_df
-            # print(f"Store: Appended inactive record successfully.")
-        except Exception as e:
-            print(f"ERROR: Store failed to append inactive record for entity {entity}, comp {component_type.__name__} at step {current_step}. Error: {e}")
-            print("Removal Data Dict:", removal_data)
-            print("Target Schema:")
-            schema.print_schema()
+                shared_df = shared_df.join(latest_df, on=["entity_id", "step", "is_active"])
+
+        return shared_df
+    
+    def remove_entity(self, entity_id: int) -> None:
+        """
+        Sets the is_active flag to False for an entity.
+        """
+        for component in self._component_types:
+            self.remove_component(entity_id, component)
+    
+    def remove_component(self, entity_id: int, component_type: Type[Component]) -> None:
+        """
+        Sets the is_active flag to False for an entity.
+        """
+        table = self.register_component(component_type)
+        table.update(daft.DataFrame({"is_active": False}))
 
 
-    # --- Entity Type Mapping ---
-    def get_entity_type_for_entity(self, entity_id: int) -> Optional[EntityType]:
-        """Gets the EntityType associated with an entity ID."""
-        return self._entity_type_map.get(entity_id)
 
-    def set_entity_type_for_entity(self, entity_id: int, entity_type: EntityType):
-        """Sets the EntityType for an entity ID."""
-        if entity_id in self._entity_type_map and self._entity_type_map[entity_id] != entity_type:
-             # Handle changing type? For now, maybe warn or error.
-             print(f"Warning: Changing EntityType for entity {entity_id} from {self._entity_type_map[entity_id]} to {entity_type}")
-        self._entity_type_map[entity_id] = entity_type
+    
 
-    def remove_entity_type_mapping(self, entity_id: int):
-        """Removes the EntityType mapping for an entity ID."""
-        self._entity_type_map.pop(entity_id, None)
+if __name__ == "__main__":
+    from core.base import Component
+    from daft.catalog import Catalog
+    class Position(Component):
+        x: float = 0.0
+        y: float = 0.0
+        z: float = 0.0
+
+    class Velocity(Component):
+        vx: float = 0.0
+        vy: float = 0.0
+        vz: float = 0.0
+
+    class Acceleration(Component):
+        ax: float = 0.0
+        ay: float = 0.0
+        az: float = 0.0
+
+    catalog = Catalog.from_pydict({})
+    store = EcsComponentStore(catalog)
+
+    for i in range(10):
+        store.add_component(i, Position(x=3, y=2, z=3))
+        store.add_component(i, Velocity(vx=1, vy=2, vz=3))
+        store.add_component(i, Acceleration(ax=1, ay=2, az=3))
+  
+
+    components = store.get_components([Position, Velocity, Acceleration])
+
+    components.collect() # OMG I LOVE THIS (Thanks Daft for the collect method)
+    components.show()
+
+    def yulk(df: daft.DataFrame) -> daft.DataFrame:
+        return print(df.filter(col("is_active")).show())
+
+
