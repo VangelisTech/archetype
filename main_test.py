@@ -60,37 +60,20 @@ class KineticEnergy(Component):
 
 
 # --- Define a simple Processor ---
-class PhysicsProcessor(Processor): # Processors simply implement a "process" method
+class KinematicsProcessor(Processor): # Processors simply implement a "process" method
     """Updates Position based on Velocity."""
-    priority = 10 # Give it a priority (Optional)
 
-    def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
+    def process(self, dt: float, *args, **kwargs) -> None:
         
-        # Define required components for this processor
-        components = [
-            Position, 
-            Velocity, 
-            Acceleration, 
-            Mass, 
-            Momentum, 
-            Force, 
-            KineticEnergy
-        ]
-        # Get Entities with all required Components
-        df_plan = querier.get_components(components) 
+        components = [Position, Velocity, Acceleration, Mass, Momentum, Force, KineticEnergy]
+        self.state_df = self.querier.get_components(components)
         
-        # Avoid processing if the DataFrame plan is None or likely empty
-        # (A more robust check might involve collecting a small sample or schema)
-        if df_plan is None:
+        if self.state_df is None:
              print("PhysicsProcessor: No entities found with required components.")
              return
 
-        # Need to collect before checking emptiness reliably, but this adds overhead.
-        # A potential optimization is to let Daft handle empty DFs in `with_columns`.
-        # For now, assume `get_components` returns a valid plan even if empty later.
-
         # Calculate updates using Daft expressions
-        update_df_plan = df_plan.with_columns(
+        update_df_plan = self.state_df.with_columns(
             {
                 # Update Position based on Velocity and Acceleration
                 "x": F.col("x") + F.col("vx") * dt + 0.5 * F.col("ax") * dt * dt,
@@ -104,25 +87,35 @@ class PhysicsProcessor(Processor): # Processors simply implement a "process" met
                 "ax": F.col("ax"),
                 "ay": F.col("ay"),
                 "az": F.col("az"),
-                # Update Momentum based on new Velocity and Mass
-                "px": (F.col("vx") + F.col("ax") * dt) * F.col("mass"),
-                "py": (F.col("vy") + F.col("ay") * dt) * F.col("mass"),
-                "pz": (F.col("vz") + F.col("az") * dt) * F.col("mass"),
-                 # Update Force (F=ma, assuming mass is constant)
-                "fx": F.col("ax") * F.col("mass"),
-                "fy": F.col("ay") * F.col("mass"),
-                "fz": F.col("az") * F.col("mass"),
-                # Update Kinetic Energy based on new Velocity and Mass
-                "kex": 0.5 * F.col("mass") * (F.col("vx") + F.col("ax") * dt) * (F.col("vx") + F.col("ax") * dt),
-                "key": 0.5 * F.col("mass") * (F.col("vy") + F.col("ay") * dt) * (F.col("vy") + F.col("ay") * dt),
-                "kez": 0.5 * F.col("mass") * (F.col("vz") + F.col("az") * dt) * (F.col("vz") + F.col("az") * dt),
             }
         )
 
         # Queue the update using the updater
         # The updater expects the list of component types being updated
-        updater.add_update(components, update_df_plan)
+        self.updater.add_update(components, update_df_plan)
 
+class EnergyProcessor(Processor):
+    """Updates Kinetic Energy based on Velocity and Mass."""
+
+    def process(self, dt: float, *args, **kwargs) -> None:
+        components = [Velocity, Mass, KineticEnergy]
+        self.state_df = self.querier.get_components(components)
+
+        if self.state_df is None:
+            print("EnergyProcessor: No entities found with required components.")
+            return
+
+        # Calculate updates using Daft expressions
+        update_df_plan = self.state_df.with_columns(
+            {
+                # Update Kinetic Energy based on Velocity and Mass
+                "kex": 0.5 * F.col("mass") * (F.col("vx") + F.col("ax") * dt) * (F.col("vx") + F.col("ax") * dt),
+                "key": 0.5 * F.col("mass") * (F.col("vy") + F.col("ay") * dt) * (F.col("vy") + F.col("ay") * dt),
+                "kez": 0.5 * F.col("mass") * (F.col("vz") + F.col("az") * dt) * (F.col("vz") + F.col("az") * dt),
+            }
+        )
+        
+        
 
 # --- Pyglet Visualization Setup ---
 WINDOW_WIDTH = 800

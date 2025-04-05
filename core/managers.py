@@ -20,155 +20,74 @@ class EcsQueryInterface:
     def __init__(self, component_store: EcsComponentStore):
         self._store = component_store
 
-    def _get_latest_or_empty(self, components: List[Type[Component]]) -> daft.DataFrame:
-        """
-        Internal helper to get the latest active DataFrame for a type,
-        or an empty DataFrame with the correct schema if none exists.
-        """
-        component_df = self._store.get_latest_component_df(component_type)
-        if component_df is not None:
-            # Return the plan for the latest active state
-            return df_plan
-        else:
-            # No active data. Get schema (this will auto-register) and return empty DF.
-            schema = self._store.get_component_schema(component_type)
-            try:
-                arrow_schema = schema.to_pyarrow_schema()
-                empty_arrow_table = pa.Table.from_batches([], schema=arrow_schema)
-                return daft.from_arrow(empty_arrow_table)
-            except Exception as e:
-                print(f"ERROR: Failed to create empty Daft DataFrame for {component_type.__name__}: {e}")
-                raise e
-            
-        # Should not happen if store registration works
-        raise ValueError(f"QueryInterface: Could not get schema for unregistered component type {component_type.__name__}")
-
     def get_component(self, component_type: Type[Component]) -> daft.DataFrame:
         """
-        Gets a DataFrame plan representing the latest active state for a component type.
-        Returns an empty DataFrame with the correct schema if the component
-        has no active entities.
+        Gets the latest active state for a specific component type.
         """
-        return self._get_latest_or_empty(component_type)
+        df = self._store.get_component(component_type)
 
-    def get_components(self, components: Union[List[Component],List[Type[Component]]]) -> daft.DataFrame:
+        # Prep Sorted Bucket Merge Join  (THE COOLEST DATA ENGINEERING HACK EVER)
+        df = df.where(col("is_active")).exclude("is_active") \
+            .sort(col("step")) \
+            .repartition(col("step"))
+        
+        return df
+    
+    def get_combined_state_history(self, *component_types: Type[Component]) -> List[daft.DataFrame]:
         """
-        Gets a Daft DataFrame *plan* for entities that have ALL specified
-        component types in their latest active state.
-        The plan includes columns for 'entity_id' and the component fields.
-        Returns an empty DataFrame with just 'entity_id' if no types are specified
-        or if no entities possess all components in their latest active state.
+        Gets the latest active state for all specified component types.
+
+        Joins component DataFrames on entity_id, step, and is_active to maintain proper historical state
+        and ensure we only join active records from the same step together.
         """
-        if not components:
-            raise ValueError("No Components Specified")
+        if not component_types:
+            component_types = self._store.components.keys()
 
-        # Start with the latest active state of the first component's DataFrame
-        base_df = self._get_latest_or_empty(components)
-
-        joined_df = base_df # Start the join chain
-
-        # Iteratively join with the latest active state of the rest of the component DataFrames
-        for i in range(1, len(components)):
-            next_comp_type = components[i]
-            next_df = self._get_latest_or_empty(next_comp_type)
-
-            # Perform an inner join on entity_id
-            # Joining latest active state DFs naturally filters for entities having all components actively.
-            joined_df = joined_df.join(next_df, on="entity_id", how="inner")
-
-        # Select entity_id and all unique component fields from the latest active schemas
-        # Note: The schema from _get_latest_or_empty includes step/is_active.
-        # We should select based on the component store's full schema.
-        select_cols_set = {"entity_id"}
-        all_required_columns = [col("entity_id")] # Track columns needed for the final select
-
-        for comp_type in components:
-            schema = self._store.get_component_schema(comp_type) # Get the full historical schema
-            if schema:
-                 # Get all field names from the component's full schema
-                 comp_cols = set(schema.column_names())
-                 # Track required columns, avoiding duplicates (like entity_id, step, is_active)
-                 for col_name in comp_cols:
-                     if col_name not in select_cols_set:
-                          select_cols_set.add(col_name)
-                          all_required_columns.append(col(col_name))
-            else:
-                 # Should not happen if _get_latest_or_empty worked
-                 print(f"Warning: Could not get schema for {comp_type.__name__} during get_components select.")
-        # entity_id is guaranteed to be in all_required_columns due to initialization
-
-        # Select the columns. Daft handles potential name conflicts from joins if any.
-        # The join result should contain all necessary columns from the involved latest-state DFs.
-        try:
-            return joined_df.select(*all_required_columns)
-        except Exception as e:
-            print(f"Error during final select in get_components: {e}")
-            print("Attempting selection on joined schema:")
-            joined_df.print_schema()
-            print("Columns attempted:", [str(c) for c in all_required_columns])
-            # Return empty on error? Or re-raise? Let's return empty with entity_id.
-            return daft.DataFrame.from_pydict({"entity_id": []}).cast_to_schema(
-                Schema.from_py_dict({"entity_id": DataType.int64()})
+        df = self.get_component(component_types[0])
+        for component_type in component_types[1:]:
+            new_df = self.get_component(component_type)
+            df = df.join(
+                new_df, 
+                on=["entity_id", "step"],
+                prefix=f"{component_type.__name__.lower()}.",
+                how="inner",
+                strategy="sort_merge"
             )
 
+        return df
 
-    def component_for_entity(self, entity_id: int, component_type: Type[Component]) -> Optional[Component]:
+    def get_latest_active_state_from_step(self, *component_types: Type[Component], step: Optional[int] = None) -> daft.DataFrame:
         """
-        Retrieves a Python instance of a component for a specific entity based on its
-        *latest active state* from the historical store. Uses caching.
-        Returns None if the entity doesn't exist, doesn't have the component active,
-        or the component cannot be reconstructed.
+        Gets the latest active state for all specified component types from a specific step.
         """
-        cache_key = (entity_id, component_type)
-        if cache_key in self._component_instance_cache:
-            return self._component_instance_cache[cache_key]
+        df = self.get_combined_state_history(*component_types)
+        
+        # Filter to only include steps up to and including the specified step
+        if step is not None:
+            df = df.where(col("step") <= step)
+        
+        # Calculate the latest step for each entity (Potentially non-uniform latest step)
+        latest_steps = df.groupby("entity_id").agg(F.max(col("step")).alias("latest_step"))
 
-        # Get the latest active state DataFrame plan for this component type
-        df_plan = self._store.get_latest_component_df(component_type)
-        if df_plan is None:
-             self._component_instance_cache[cache_key] = None
-             return None
+        # Join back to get the full row for the latest step
+        latest_df = df.join(
+            latest_steps,
+            left_on=["entity_id", "step"],
+            right_on=["entity_id", "latest_step"],
+            how="inner",
+            strategy="sort_merge"
+        )
 
-        # Filter the latest active plan for the specific entity
-        # Since it's latest active, we don't need to check is_active here
-        result_df = df_plan.where(col("entity_id") == entity_id).limit(1)
+        # Select only original columns defined in the schema (excluding 'latest_step')
+        final_df = latest_df.select(*[col(name) for name in df.column_names()])
+        
+        return final_df
 
-        # Collect the result (triggers computation)
-        collected = result_df.collect()
-
-        instance: Optional[Component] = None
-        if len(collected) == 0:
-            # Entity doesn't have this component active in the latest state
-            instance = None
-        else:
-            # Reconstruct the Pydantic model (LanceModel subclass) from the row dictionary
-            try:
-                row_dict_list = collected.to_pydict()
-                # Extract the single row's data into a flat dict
-                # Exclude entity_id, step, is_active as they are not part of the component model
-                component_data = {
-                    k: v[0] for k, v in row_dict_list.items()
-                    if k not in ("entity_id", "step", "is_active")
-                }
-
-                if not component_data:
-                    instance = None
-                else:
-                    # Instantiate the Pydantic model
-                    instance = component_type.model_validate(component_data)
-            except Exception as e:
-                print(f"ERROR: Failed reconstructing latest {component_type.__name__} for entity {entity_id}: {e}")
-                instance = None
-
-        # Store the result (including None) in the cache
-        self._component_instance_cache[cache_key] = instance
-        return instance
-
-    def get_entity_type_for_entity(self, entity_id: int) -> Optional[EntityType]:
-        """Gets the EntityType associated with an entity ID from the store."""
-        return self._store.get_entity_type_for_entity(entity_id)
-
-    # get_collected_component_data removed as the cache mechanism is gone
+    def get_components(self, *component_types: Type[Component], step: Optional[int] = None) -> daft.DataFrame:
+        """
+        Gets the latest active state for all specified component types.
+        """
+        return self.get_latest_active_state_from_step(*component_types, step=step)
 
 
 # --- Update Manager ---

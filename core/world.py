@@ -99,6 +99,60 @@ class EcsWorld:
         entity_id = next(self._entity_count)
         print(f"World: Created entity {entity_id}")
         return entity_id
+    
+    def create_entity(self, entity_id: int, *components: Component, step: Optional[int] = -1) -> None:
+        """
+        Adds an entity to the store.
+        """
+        entity = next(_entity_count)
+        
+        component_types = [type(component) for component in components]
+
+        # Register all component types for this entity
+        if entity_id not in self.entities.keys():
+            self.entities[entity_id] = []
+
+        for component_type in component_types:
+            
+
+        # Find component types that are not already registered
+        for component in components:
+            component_type = type(component)
+
+            if component_type not in self.entities[entity_id]:
+                self.entities[entity_id].append(component_type)
+
+            if component_type not in self.components.keys():
+                self._register_component(component_type)
+
+            component_dict = component.model_dump()
+            component_dict["entity_id"] = entity_id
+            component_dict["step"] = step
+            component_dict["is_active"] = True
+
+            df.concat(daft.from_pydict(component_dict))
+
+
+        entity_row_df = daft.from_pydict(component.field_names())
+        
+        # Build entity row for all attached components
+        
+
+        df = self.get_components(component_types, step)
+
+
+        # Map incoming component keys to dataframe columns and a
+
+
+
+        for component in components:
+            self._register_component(type(component))
+
+            
+
+            #adding the component to the dataframe
+            self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
+
 
     def delete_entity(self, entity_id: int, immediate: bool = False):
         """

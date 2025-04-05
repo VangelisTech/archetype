@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Defines the foundational types and abstract base classes for the ECS system."""
 
-from typing import Any, Type, Set, TypeVar, Optional, Dict
+from typing import Any, Type, Set, TypeVar, Optional, Dict, List
 # from dataclasses import dataclass, field # No longer needed for Component base
 from abc import ABC, abstractmethod
 import time
@@ -21,39 +21,6 @@ class EcsQueryInterface: pass
 class EcsUpdateManager: pass
 class EcsWorld: pass
 
-# --- Entity Type ---
-class EntityType:
-    """Defines a category of entities and the components they are allowed to have."""
-    def __init__(self, name: str, allowed_components: Optional[Set[Type['Component']]] = None):
-        self.name = name
-        # If None, all components are allowed. If empty set, none are allowed initially.
-        self.allowed_components: Optional[Set[Type['Component']]] = allowed_components
-
-    def allows_component(self, component_type: Type['Component']) -> bool:
-        """Checks if this entity type allows the given component type."""
-        # None means wildcard (allow all)
-        if self.allowed_components is None:
-            return True
-        # Ensure it's checked against the set
-        if isinstance(self.allowed_components, set):
-             return component_type in self.allowed_components
-        return False # Should not happen if initialized correctly
-
-    def add_allowed_component(self, component_type: Type['Component']) -> None:
-        """Adds a component type to the set of allowed components."""
-        if self.allowed_components is None:
-            # Changed behavior: Convert wildcard to explicit set on first addition
-            self.allowed_components = {component_type}
-        elif isinstance(self.allowed_components, set):
-            self.allowed_components.add(component_type)
-        else:
-             # Should not happen
-             raise TypeError("allowed_components is not a valid set or None.")
-
-
-    def __str__(self) -> str: return f"EntityType('{self.name}')"
-    def __repr__(self) -> str: return self.__str__()
-
 # --- Component Base ---
 # Inherit from LanceModel to leverage Pydantic validation and LanceDB schema features
 class Component(LanceModel):
@@ -70,18 +37,21 @@ class Processor(ABC):
     Base class for systems that process entities and components.
     Processors should read from the QueryInterface and write via the UpdateManager.
     """
-    priority: int = 0 # Execution priority (higher runs first in sequential systems)
+    def __init__(self, querier: 'EcsQueryInterface', updater: 'EcsUpdateManager', component_types: Optional[List[Type['Component']]]):
+        self.querier = querier
+        self.updater = updater
+        self.component_types = component_types
+
+        self.state_df = self.querier.get_components(self.component_types) # Gets latest step for all entities maping component fields to df columns. 
 
     @abstractmethod
-    def process(self, querier: 'EcsQueryInterface', updater: 'EcsUpdateManager', dt: float, *args: Any, **kwargs: Any) -> None:
+    def process(self, *args: Any, **kwargs: Any) -> None:
         """
         The core logic of the processor.
 
         Args:
-            querier: Interface to read committed component state.
-            updater: Interface to queue component updates.
-            dt: Time delta for the current step.
             *args, **kwargs: Additional arguments passed from the world's process cycle.
+            
         """
         raise NotImplementedError
 

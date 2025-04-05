@@ -20,6 +20,9 @@ Uses a Daft Catalog and Session to manage persistent storage:
 """
 
 from typing import Dict, List, Type, Optional
+from itertools import count as _count
+from itertools import count as _step_counter
+
 import daft
 from daft import col, lit, DataType as DT, Catalog, Session
 import daft.expressions as F
@@ -27,6 +30,7 @@ import pyarrow as pa # Need pyarrow for schema manipulation
 
 # Import base types from our new structure
 from core.base import Component
+
 
 class EcsComponentStore:
     """
@@ -37,132 +41,110 @@ class EcsComponentStore:
     def __init__(self):
         self.components: Dict[Type[Component], daft.DataFrame] = {}
         self.entities: Dict[int, List[Type[Component]]] = {}
+        self._entity_count = _count(start=1)
+        self._step_counter = _step_counter(start=0)
+        self._dead_entities = set()
+    
+    def register_component(self, component_type: Type[Component]) -> None:
+        """
+        Ensures a component type is known to the store, creating its schema
+        and internal data structure if it doesn't exist setting composite to 
+        a blank daft.DataFrame with the correct schema
+        """
+        # Get the arrow schema for the component type
+        component_arrow_schema: pa.Schema = component_type.to_arrow_schema()
 
-    def _create_composite_arrow_schema(self, component: Type[Component]) -> pa.Schema:
-        """
-        Creates the Daft Schema for a component type's historical DataFrame.
-        Includes entity_id, step, is_active, and component fields.
-        """
-        component_arrow_schema: pa.Schema = component.to_arrow_schema()
         # Insert core fields: entity_id, step, is_active
         composite_arrow_schema = component_arrow_schema.insert(0, pa.field("entity_id", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(1, pa.field("step", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(2, pa.field("is_active", pa.bool_()))
 
-        return composite_arrow_schema
-
-
-    def create_df_for_composite(self, component_type: Type[Component]) -> daft.DataFrame:
-        """
-        Creates a table for a component type's historical DataFrame.
-        """
-        df_schema = self._create_composite_arrow_schema(component_type)
-        df = daft.from_arrow(df_schema.empty_table())
+        df = daft.from_arrow(composite_arrow_schema.empty_table())
         
-        return df
+        self.components[component_type] = df.collect()
 
-    
-    def register_component(self, component_type: Type[Component]) -> daft.Table:
+
+    def get_component(self, component_type: Type[Component]) -> daft.DataFrame:
         """
-        Ensures a component type is known to the store, creating its schema
-        and internal data structure if it doesn't exist. Returns the _ComponentData.
+        Gets the latest active state for a specific component type.
         """
         if not self.components.get(component_type):
-            self.components[component_type] = self.create_df_for_composite(component_type)
+            self.components[component_type] = self._create_df_for_composite(component_type)
 
         return self.components.get(component_type)
+    
+    # Update Methods
+    def update_component(self, update_df: daft.DataFrame, component: Component) -> None:
+        """Once a processor has applied its changes to the joined dataframe, we need to then update the individual component instances"""
+        
+        original_df = self.get_component(type(component))
+        updated_df = original_df.concat(update_df)
 
-    def add_component(self, entity_id: int, component: Component, step: Optional[int] = -1) -> None:  
-        """
-        Adds a component to the store for an entity.
-        """
-        df = self.register_component(type(component))
+        # Set dead entities to inactive
+        updated_df = updated_df.where(col("entity_id") == self._dead_entities) \
+            .with_column("is_active", lit(False))
 
+        self.components[type(component)] = updated_df
+    
+    def add_component(self, entity_id: int, component: Component, step: Optional[int] = -1, is_active: Optional[bool] = True) -> None:  
+        """
+        A convenience method for updating composites from component instances directly. 
+        """
+        
+        df = self.get_component(type(component))
+
+        # Create a dictionary from the component's model fields
         component_dict = component.model_dump()
         component_dict["entity_id"] = entity_id
         component_dict["step"] = step
-        component_dict["is_active"] = True
+        component_dict["is_active"] = is_active
 
         #adding the component to the dataframe
         self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
-
-    def get_latest_state(self, df: daft.DataFrame) -> Optional[daft.DataFrame]:
+ 
+    def create_entity(self, *components: Component) -> int:
         """
-        Gets a DataFrame representing the latest active state for each entity
-        for the given component type. Returns a DataFrame plan or None.
+        Creates a new entity in the store.
         """
-        # Get the latest step for each entity
-        latest_steps = df.groupby("entity_id").agg(F.max(col("step")).alias("latest_step"))
+        entity = next(self._entity_count)
 
-        # Join back to get the full row for the latest step
-        latest_df = df.join(latest_steps, left_on=["entity_id", "step"], right_on=["entity_id", "latest_step"])
+        # Add entity to components
+        for component in components:
+            self.add_component(entity, component)
 
-        # Filter out inactive Entities
-        active_latest_df = latest_df.where(col("is_active"))
+        # Add entity to entities
+        self.entities[entity] = [type(component) for component in components]
 
-        # Select only original columns defined in the schema (excluding 'latest_step')
-        final_df = active_latest_df.select(*[col(name) for name in df.column_names()])
-        
-        return final_df
-
-    def get_state_at_step(self, df: daft.DataFrame, step: Optional[int] = None) -> Optional[daft.DataFrame]:
-        """
-        Gets a DataFrame representing the active state for each entity
-        for the given component type as it existed exactly at the specified step.
-        If an entity had no update at that specific step, but was active before,
-        it finds the most recent state up to that step. Returns a DataFrame plan or None.
-        """
-        # Filter to the specific step
-        if step is not None:
-            step_df = df.where(col("step") <= step)
-        else:
-            step_df = df
-
-        # Get the latest step for each entity
-        final_df = self.get_latest_state(step_df)
-
-        return final_df
+        return entity
     
-    def get_components(self, component_types: Optional[List[Type[Component]]] = None, step: Optional[int] = None) -> daft.DataFrame:
-        """For Processors to get the latest combined state of all components"""
-        if component_types is None:
-            component_types = self.components.keys()
-        
-        df = None
-        for component in component_types:
-            if df is None:
-                df = self.get_state_at_step(self.components[component], step)
-            else:
-                df = df.join(self.get_state_at_step(self.components[component], step), on=["entity_id", "step", "is_active"])
-        return df
-    
-    def update_components(self, df: daft.DataFrame, components: List[Component]) -> None:
-        """Once a processor has applied its changes to the joined dataframe, we need to then update the individual component instances"""
-        
-    
-    def get_all_components_history(self) -> daft.DataFrame:
-        df = None
-        for component in self.components:
-            if df is None:
-                df = self.components[component]
-            else:
-                df = df.join(self.components[component], on=["entity_id", "step", "is_active"])
-        return df
-    
-    def remove_entity(self, entity_id: int, step: Optional[int] = None) -> None:
+    def remove_entity(self, entity_id: int, step: int, immediate: bool = False) -> None:
         """
         Sets the is_active flag to False for an entity.
         """
-        
-        df = self.get_components(step=step)
-        df = df.where(col("entity_id") == entity_id) \
-               .with_columns({"is_active": lit(False)})
-        self.update_components(df)
+        if entity_id in self._dead_entities:
+            return
+
+        self._dead_entities.add(entity_id)
+
+        # If immediate, remove the entity from all components otherwise, QueryInterface will handle it 
+        if immediate:
+            for component_type in self.entities[entity_id]:
+                df = self.get_component(component_type)
+
+                # Find the row for the entity at the given step and set is_active to False
+                df = df.where(col("entity_id") == entity_id) \
+                    .where(col("step") == step) \
+                    .with_column("is_active", lit(False))
+                
+                # Replace original composite with updated one
+                self.components[component_type] = df 
+            
     
-    def remove_component(self, entity_id: int, component_type: Type[Component]) -> None:
+    def remove_component(self, component_type: Type[Component]) -> None:
         """
-        Sets the is_active flag to False for an entity.
+        Removes a row from the  from the store.
         """
+        self.components[component_type] = None
        
 
 
