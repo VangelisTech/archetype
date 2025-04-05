@@ -32,18 +32,15 @@ import pyarrow as pa # Need pyarrow for schema manipulation
 from core.base import Component
 
 
-class EcsComponentStore:
+class ComponentStore:
     """
     Manages the historical state of components, stored internally using
     a _ComponentData structure for each component type. Each row includes
     entity_id, step, is_active, and component data.
     """
-    def __init__(self):
+    def __init__(self, world: World):
         self.components: Dict[Type[Component], daft.DataFrame] = {}
-        self.entities: Dict[int, List[Type[Component]]] = {}
-        self._entity_count = _count(start=1)
-        self._step_counter = _step_counter(start=0)
-        self._dead_entities = set()
+        self.world = world
     
     def register_component(self, component_type: Type[Component]) -> None:
         """
@@ -69,7 +66,7 @@ class EcsComponentStore:
         Gets the latest active state for a specific component type.
         """
         if not self.components.get(component_type):
-            self.components[component_type] = self._create_df_for_composite(component_type)
+            self.components[component_type] = self.register_component(component_type)
 
         return self.components.get(component_type)
     
@@ -78,15 +75,11 @@ class EcsComponentStore:
         """Once a processor has applied its changes to the joined dataframe, we need to then update the individual component instances"""
         
         original_df = self.get_component(type(component))
-        updated_df = original_df.concat(update_df)
+        new_df = original_df.concat(update_df)
 
-        # Set dead entities to inactive
-        updated_df = updated_df.where(col("entity_id") == self._dead_entities) \
-            .with_column("is_active", lit(False))
-
-        self.components[type(component)] = updated_df
+        self.components[type(component)] = new_df.collect()
     
-    def add_component(self, entity_id: int, component: Component, step: Optional[int] = -1, is_active: Optional[bool] = True) -> None:  
+    def add_component(self, entity_id: int, component: Component, step: int) -> None:  
         """
         A convenience method for updating composites from component instances directly. 
         """
@@ -97,36 +90,22 @@ class EcsComponentStore:
         component_dict = component.model_dump()
         component_dict["entity_id"] = entity_id
         component_dict["step"] = step
-        component_dict["is_active"] = is_active
+        component_dict["is_active"] = True
 
-        #adding the component to the dataframe
+        # adding the component record to the dataframe
         self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
- 
-    def create_entity(self, *components: Component) -> int:
-        """
-        Creates a new entity in the store.
-        """
-        entity = next(self._entity_count)
-
-        # Add entity to components
-        for component in components:
-            self.add_component(entity, component)
-
-        # Add entity to entities
-        self.entities[entity] = [type(component) for component in components]
-
-        return entity
     
     def remove_entity(self, entity_id: int, step: int, immediate: bool = False) -> None:
         """
         Sets the is_active flag to False for an entity.
         """
-        if entity_id in self._dead_entities:
+        if entity_id in self.world._dead_entities:
             return
 
-        self._dead_entities.add(entity_id)
+        self.world._dead_entities.update(entity_id)
 
-        # If immediate, remove the entity from all components otherwise, QueryInterface will handle it 
+        # If immediate, remove the entity from all components otherwise
+        # This is not recommended as the UpdateManager per
         if immediate:
             for component_type in self.entities[entity_id]:
                 df = self.get_component(component_type)
@@ -138,14 +117,36 @@ class EcsComponentStore:
                 
                 # Replace original composite with updated one
                 self.components[component_type] = df 
-            
     
-    def remove_component(self, component_type: Type[Component]) -> None:
+    def remove_component_from_entity(self, entity_id: int, component_type: Type[Component]) -> None:
         """
-        Removes a row from the  from the store.
+        Removes a component from an entity.
         """
-        self.components[component_type] = None
-       
+        #drop component_type from set  
+        self.world.entities[entity_id].pop(component_type)
+
+    #def remove_component(self, component_type: Type[Component]) -> None:
+    #    """
+    #    Removes a 
+    #    """
+    #    # Get active entities for the component type
+    #    df = self.get_component(component_type)
+#
+    #    active_entities = df.select("entity_id")\
+    #                        .where(col("is_active"))
+#
+    #    # Remove the component from the active entities
+    #    for entity in active_entities["entity_id"]:
+    #        self.remove_component_from_entity(entity, component_type)
+    #    
+    #    # Finally, remove the component from the store
+    #    del self.components[component_type]
+    
+    def get_column_names(self, component_type: Type[Component]) -> List[str]:
+        """
+        Returns the column names for a component type.
+        """
+        return self.components[component_type].column_names()
 
 
 class EcsComponentSessionStore:
@@ -160,6 +161,8 @@ class EcsComponentSessionStore:
         self._namespace = "components"
 
         self._session.set_namespace(self._namespace)
+
+        raise NotImplementedError("This is not implemented yet")
 
     def _create_composite_arrow_schema(self, component: Type[Component]) -> pa.Schema:
         """
@@ -294,7 +297,7 @@ class EcsComponentSessionStore:
 
 if __name__ == "__main__":
     from core.base import Component
-    from daft.catalog import Catalog
+
     class Position(Component):
         x: float = 0.0
         y: float = 0.0
@@ -310,8 +313,7 @@ if __name__ == "__main__":
         ay: float = 0.0
         az: float = 0.0
 
-    catalog = Catalog.from_pydict({})
-    store = EcsComponentStore(catalog)
+    store = ComponentStore()
 
     for i in range(10):
         store.add_component(i, Position(x=3, y=2, z=3))
@@ -321,10 +323,10 @@ if __name__ == "__main__":
 
     components = store.get_components([Position, Velocity, Acceleration])
 
-    components.collect() # OMG I LOVE THIS (Thanks Daft for the collect method)
+    components.collect() 
     components.show()
 
     def yulk(df: daft.DataFrame) -> daft.DataFrame:
-        return print(df.filter(col("is_active")).show())
+        return print(df..show())
 
 

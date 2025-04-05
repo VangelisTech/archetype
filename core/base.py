@@ -32,17 +32,15 @@ class Component(LanceModel):
 _C = TypeVar('_C', bound=Component)
 
 # --- Processor Base Class ---
+
+
 class Processor(ABC):
     """
     Base class for systems that process entities and components.
     Processors should read from the QueryInterface and write via the UpdateManager.
     """
-    def __init__(self, querier: 'EcsQueryInterface', updater: 'EcsUpdateManager', component_types: Optional[List[Type['Component']]]):
-        self.querier = querier
-        self.updater = updater
-        self.component_types = component_types
-
-        self.state_df = self.querier.get_components(self.component_types) # Gets latest step for all entities maping component fields to df columns. 
+    def __init__(self, world: World):
+        self.world = world
 
     @abstractmethod
     def process(self, *args: Any, **kwargs: Any) -> None:
@@ -88,3 +86,4 @@ class System(ABC):
     def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
          """Gets the first found instance of a specific processor type."""
          return None
+

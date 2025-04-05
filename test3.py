@@ -20,15 +20,13 @@ import numpy as np # For math operations in UDFs if needed
 # ray.init(ignore_reinit_error=True, num_cpus=4)
 
 # --- ECS Core Imports ---
-try:
+
     from core.base import Component, Processor, System
-    from core.store import EcsComponentStore
+    from core.store import ComponentStore
     from core.managers import EcsQueryInterface, EcsUpdateManager
     from core.world import EcsWorld
-    from core.system import RayDagSystem
-except ImportError:
-    print("Failed to import ECS modules. Ensure test script is runnable relative to 'core'.")
-    exit(1)
+    from core.systems import RayDagSystem
+
 
 
 # --- 3D 6DOF Components ---

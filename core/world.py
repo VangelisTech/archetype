@@ -3,7 +3,7 @@
 The main EcsWorld class, orchestrating the ECS lifecycle, managers, and systems.
 
 Key features of EcsWorld:
-Composition: Holds instances of EcsComponentStore, EcsQueryInterface, EcsUpdateManager, and the crucial System.
+Composition: Holds instances of ComponentStore, EcsQueryInterface, EcsUpdateManager, and the crucial System.
 System Dependency: Requires a System instance upon initialization, making the execution strategy explicit.
 process Loop: Clearly defines the 5 phases (Init, Cleanup, Execute, Commit, Collect) and delegates calls to the appropriate managers or the system.
 Facade Methods: Provides a clean public API for common ECS operations (entity creation/deletion, component addition/removal/querying, processor management), hiding the internal manager interactions.
@@ -22,51 +22,47 @@ import daft
 from daft import col, lit, DataType, Schema
 import daft.expressions as F
 import asyncio # Import asyncio
+from dependency_injector import containers, providers
+from dependency_injector.wiring import inject, Provide
 
 # Import from our new structure
 from .base import Component, EntityType, Processor, System, _C
-from .store import EcsComponentStore
-from .managers import EcsQueryInterface, EcsUpdateManager
-
+from .store import ComponentStore
+from .managers import QueryInterface, UpdateManager
+from .systems import SequentialSystem
 import time # Import the time module
+
+
 
 # --- EcsWorld Implementation ---
 
-class EcsWorld:
+class World:
     """
     Orchestrates the ECS simulation loop, manages entities, components,
     and processor execution via a configured System.
     Provides the main user-facing API for interacting with the ECS.
     """
-    def __init__(self, system: System):
-        """
-        Initializes the EcsWorld.
+    @inject
+    def __init__(self):
+        self._store = ComponentStore()
+        self._querier = QueryInterface(self)
+        self._updater = UpdateManager(self)
+        self._system = SequentialSystem(self)
 
-        Args:
-            system: The System instance responsible for processor execution
-                    (e.g., SequentialSystem, RayDagSystem).
-        """
-        if not isinstance(system, System):
-             raise TypeError("EcsWorld must be initialized with an instance of a System subclass.")
+        # Flags
+        self._verbose = True
 
-        # Core Managers
-        self._store = EcsComponentStore()
-        self._querier = EcsQueryInterface(self._store)
-        self._updater = EcsUpdateManager(self._store)
-        self._system = system # System for processor execution
-
-        # Entity Management
-        self._entity_count = _count(start=1) # Simple incrementing ID generator
-        self._entity_types: Dict[str, EntityType] = {} # Definitions of entity types
+        # Entity Management 
+        self.entities: Dict[int, List[Type[Component]]] = {}
+        self._entity_count = _count(start=1)
+        self._dead_entities = set()
 
         # Step counter
         self._step_counter = _step_counter(start=0)
         self._current_step: int = -1 # Will be 0 on the first process call
 
-        print(f"EcsWorld initialized with System: {system.__class__.__name__}")
-
     # --- Simulation Loop ---
-    def process(self, dt: float, *args: Any, **kwargs: Any):
+    def step(self, dt: float, *inputs: Any, **kwargs: Any):
         """
         Orchestrates a single simulation time step through all phases.
 
@@ -74,141 +70,60 @@ class EcsWorld:
             dt: Time delta for the current step.
             *args, **kwargs: Additional arguments to pass down to processors.
         """
-        start_time = time.time()
-
         # Increment step counter at the beginning of the process
         self._current_step = next(self._step_counter)
 
-        
-        self._system.execute(self._querier, self._updater, dt, *args, **kwargs)
-        self._updater.commit_updates(self._current_step)
+        # Execute the system
+        self._system.execute(self, dt, *args, **kwargs)
 
-        
         self._updater.clear_pending_updates()
         self._querier.clear_caches()
-        # --- END MOVED SECTION ---
+        
 
         end_time = time.time()
         print(f"--- World: Step Complete (Total Time: {(end_time - start_time):.4f}s) ---")
 
     # --- Public API Facade ---
 
-    # Entity Management
-    def create_entity(self) -> int:
-        """Creates a new, unique entity ID."""
-        entity_id = next(self._entity_count)
-        print(f"World: Created entity {entity_id}")
-        return entity_id
+    def add_entity(self, *components: Component, step: Optional[int] = None) -> int:
+        """
+        Adds a new entity to the store.
+        """
+        entity = next(self._entity_count)
+
+        if step is None:
+            step = self._current_step # If no step is provided, use the current step, init yields -1
+
+        # Add entity to components
+        for component in components:
+            self._store.add_component(entity, component, step)
+
+        # Add entity to entities
+        self.entities[entity] = [type(component) for component in components]
+
+        return entity
     
-    def create_entity(self, entity_id: int, *components: Component, step: Optional[int] = -1) -> None:
+    def remove_entity(self, entity_id: int, step: int, immediate: bool = False) -> None:
         """
-        Adds an entity to the store.
-        """
-        entity = next(_entity_count)
-        
-        component_types = [type(component) for component in components]
-
-        # Register all component types for this entity
-        if entity_id not in self.entities.keys():
-            self.entities[entity_id] = []
-
-        for component_type in component_types:
-            
-
-        # Find component types that are not already registered
-        for component in components:
-            component_type = type(component)
-
-            if component_type not in self.entities[entity_id]:
-                self.entities[entity_id].append(component_type)
-
-            if component_type not in self.components.keys():
-                self._register_component(component_type)
-
-            component_dict = component.model_dump()
-            component_dict["entity_id"] = entity_id
-            component_dict["step"] = step
-            component_dict["is_active"] = True
-
-            df.concat(daft.from_pydict(component_dict))
-
-
-        entity_row_df = daft.from_pydict(component.field_names())
-        
-        # Build entity row for all attached components
-        
-
-        df = self.get_components(component_types, step)
-
-
-        # Map incoming component keys to dataframe columns and a
-
-
-
-        for component in components:
-            self._register_component(type(component))
-
-            
-
-            #adding the component to the dataframe
-            self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
-
-
-    def delete_entity(self, entity_id: int, immediate: bool = False):
-        """
-        Marks an entity for deletion at the start of the next step,
-        or attempts to delete it immediately.
-
-        Args:
-            entity_id: The ID of the entity to delete.
-            immediate: If True, attempt to remove immediately. Use with caution,
-                       especially during processor execution. Best used between steps.
-        """
-        if immediate:
-            print(f"World: Immediately deleting entity {entity_id}")
-            # Remove from all component stores directly
-            # We need to know which components *might* have this entity. Iterate all known types.
-            # This could be slow if many component types exist.
-            # Store now handles removal by appending an inactive record.
-            for comp_type in self._store._component_data.keys():
-                 # Pass current step for the inactive record
-                 self._store.remove_entity_from_component(entity_id, comp_type, self._current_step)
-            # Remove entity type mapping
-            self._store.remove_entity_type_mapping(entity_id)
-            # Ensure it's not also marked for deferred deletion
-            self._dead_entities.discard(entity_id)
-            # Clear query cache as state changed instantly
-            self._querier.clear_caches()
-            print(f"World: Immediate deletion of entity {entity_id} complete.")
-        else:
-            # Check if entity logically exists before marking (might already be dead)
-            if self.entity_exists(entity_id):
-                 print(f"World: Marking entity {entity_id} for deletion at start of next step.")
-                 self._dead_entities.add(entity_id)
-            else:
-                 print(f"World: Entity {entity_id} already deleted or never existed. Cannot mark for deletion.")
-
-
-    def entity_exists(self, entity_id: int) -> bool:
-        """
-        Checks if an entity ID currently exists in the committed state
-        and is not marked for deletion in the current step.
-        Note: This check might involve computation if data is not collected.
+        Sets the is_active flag to False for an entity.
         """
         if entity_id in self._dead_entities:
-            return False
-        # Check if the entity has an entry in the type map (fastest check)
-        if self._store.get_entity_type_for_entity(entity_id) is not None:
-             return True
-        # Fallback: Check if it exists in *any* component DataFrame. This is slower.
-        # Consider optimizing if this becomes a bottleneck.
-        for comp_type in self._store._component_data.keys():
-             df = self._store.get_component_df(comp_type)
-             if df is not None:
-                  # Need to collect to check existence accurately
-                  if len(df.where(col("entity_id") == entity_id).limit(1).collect()) > 0:
-                       return True
-        return False
+            return
+
+        self._dead_entities.add(entity_id)
+
+        # If immediate, remove the entity from all components otherwise, QueryInterface will handle it 
+        if immediate:
+            for component_type in self.entities[entity_id]:
+                df = self.get_component(component_type)
+
+                # Find the row for the entity at the given step and set is_active to False
+                df = df.where(col("entity_id") == entity_id) \
+                    .where(col("step") == step) \
+                    .with_column("is_active", lit(False))
+                
+                # Replace original composite with updated one
+                self.components[component_type] = df 
 
     # Component Management
     def add_component(self, entity_id: int, component_instance: Component):
@@ -216,22 +131,7 @@ class EcsWorld:
         Adds or replaces a component for an entity directly in the store.
         The change is recorded with the current step number.
         """
-        component_type = type(component_instance)
-        if not isinstance(component_instance, Component):
-             print(f"World Error: Attempted to add non-component object: {component_instance}")
-             return
-
-        try:
-            # Delegate directly to the store's add_component method
-            # Pass the current step number from the world
-            self._store.add_component(entity_id, component_instance, step=self._current_step)
-            print(f"World: Added/Updated {component_type.__name__} for entity {entity_id} at step {self._current_step}")
-        except Exception as e:
-            # Catch potential errors during store interaction
-            print(f"World Error: Failed to add component {component_type.__name__} for entity {entity_id} via store: {e}")
-            # Optionally re-raise or handle more gracefully
-            import traceback
-            traceback.print_exc()
+        self._store.add_component(entity_id, component_instance, step=self._current_step)
 
     def remove_component(self, entity_id: int, component_type: Type[Component], immediate: bool = False):
         """
@@ -240,32 +140,16 @@ class EcsWorld:
         Args:
             entity_id: The ID of the entity.
             component_type: The type of component to remove.
-            immediate: If True, attempts immediate removal (use with caution).
-                       If False (default), this is NOT SUPPORTED in this version.
-                       Deferred removal requires changes to EcsUpdateManager.
         """
-        if not immediate:
-            # The new approach requires appending an inactive record via the store.
-            # This should ideally be queued via the UpdateManager and handled during commit.
-            raise NotImplementedError(
-                "Deferred component removal (immediate=False) is not supported. "
-                "It requires changes to EcsUpdateManager to queue and process removal actions." )            
-            # If implemented, it would likely involve:
-            # self._updater.queue_removal(entity_id, component_type)
-        else:
-            # Append inactive record immediately using the current step
-            print(f"World: Immediately appending inactive record for {component_type.__name__} from entity {entity_id} at step {self._current_step}")
+       
             self._store.remove_entity_from_component(entity_id, component_type, self._current_step)
             self._querier.clear_caches() # State changed immediately
 
-    # Querying Facade (delegates to Querier)
-    def get_component(self, component_type: Type[_C]) -> daft.DataFrame:
-        """Facade for EcsQueryInterface.get_component."""
-        return self._querier.get_component(component_type)
+    # Querying Facade (delegates to Querier
 
     def get_components(self, *component_types: Type[Component]) -> daft.DataFrame:
-        """Facade for EcsQueryInterface.get_components."""
-        return self._querier.get_components(*component_types)
+        """Facade for QueryInterface.get_latest_active_state_from_step."""
+        return self._querier.get_latest_active_state_from_step(*component_types, step=self._current_step)
 
     def component_for_entity(self, entity_id: int, component_type: Type[_C]) -> Optional[_C]:
         """
@@ -301,3 +185,6 @@ class EcsWorld:
          """
          self._store.register_component(component_type)
 
+
+class NetworkWorld(World):
+    pass

@@ -35,108 +35,55 @@ from daft import DataFrame # Use specific import for clarity
 
 # Import from our new structure
 from .base import Component, EntityType, Processor, System, _C
-from .store import EcsComponentStore
+from .store import ComponentStore
 from .managers import EcsQueryInterface, EcsUpdateManager
 
-# --- Manual System Implementation ---
 
-class ManualSystem(System):
-    """
-    Manually executes processors in a loop.
-    """
-    def __init__(self, querier: EcsQueryInterface, updater: EcsUpdateManager,):
-        self._processors: Dict[Type[Processor], Processor] = {}
-
-    def execute(self, dt: float, *args: Any, **kwargs: Any) -> None:
-        raise NotImplementedError("ManualSystem must implement execution logic of processors")
-    
-    def add_processor(self, processor: Processor, priority: Optional[int] = None) -> None:
-        """Adds a processor instance."""
-        if not isinstance(processor, Processor):
-            raise TypeError("Can only add Processor instances.")
-        
-        ptype = type(processor)
-        if ptype in self._processors.keys():
-            print(f"SequentialSystem Warning: Replacing existing processor of type {ptype.__name__}")
-        
-        self._processors[ptype] = processor
-
-
-    def remove_processor(self, processor_type: Type[Processor]) -> None:
-        """Removes all processors of a specific type."""
-        if processor_type in self._processors:
-            del self._processors[processor_type]
-        else:
-            print(f"SequentialSystem Warning: Processor type {processor_type.__name__} not found.")
-
-    def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
-        """Gets the managed instance of a specific processor type."""
-        return self._processors.get(processor_type)
-    
 # --- Sequential System Implementation --
 class SequentialSystem(System):
     """
-    Executes processors sequentially in a predefined order based on priority.
+    Executes processors sequentially.
     """
-    def __init__(self):
+    def __init__(self, world: World):
+        self._world = world
         self._processors: Dict[Type[Processor], Processor] = {}
-        self._processor_priorities: Dict[Type[Processor], int] = {}
-        self._sorted_processors: List[Processor] = []
+        
 
-    def _sort_processors(self):
-        """Sorts processors based on priority (descending)."""
-        self._sorted_processors = sorted(
-            self._processors.values(),
-            key=lambda p: self._processor_priorities[type(p)],
-            reverse=True
-        )
-
-    def add_processor(self, processor: Processor, priority: Optional[int] = None) -> None:
+    def add_processor(self, processor: Processor) -> None:
         """Adds a processor instance."""
-        if not isinstance(processor, Processor):
-            raise TypeError("Can only add Processor instances.")
         
         ptype = type(processor)
         if ptype in self._processors:
             print(f"SequentialSystem Warning: Replacing existing processor of type {ptype.__name__}")
         
         self._processors[ptype] = processor
-        self._processor_priorities[ptype] = priority if priority is not None else processor.priority
-        self._sort_processors()
-        # print(f"SequentialSystem: Added processor {ptype.__name__}.")
+
+        if self._world.verbose:
+            print(f"SequentialSystem: Added processor {ptype.__name__}.")
+
 
     def remove_processor(self, processor_type: Type[Processor]) -> None:
         """Removes all processors of a specific type."""
         if processor_type in self._processors:
             del self._processors[processor_type]
-            del self._processor_priorities[processor_type]
-            self._sort_processors()
-            # print(f"SequentialSystem: Removed processor {processor_type.__name__}.")
+            if self._world.verbose:
+                print(f"SequentialSystem: Removed processor {processor_type.__name__}.")
         else:
-            print(f"SequentialSystem Warning: Processor type {processor_type.__name__} not found.")
+                print(f"SequentialSystem Warning: Processor type {processor_type.__name__} not found.")
 
     def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
         """Gets the managed instance of a specific processor type."""
         return self._processors.get(processor_type)
 
-    def execute(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args: Any, **kwargs: Any) -> None:
-        """
-        Executes processors sequentially based on their priority.
-        """
-        # print(f"SequentialSystem: Executing {len(self._sorted_processors)} processors...")
-        for processor in self._sorted_processors:
-            # print(f"  - Running: {processor.__class__.__name__}")
-            try:
-                processor.process(querier, dt, *args, **kwargs)
-                
-            except Exception as e:
-                print(f"!!! ERROR in processor {processor.__class__.__name__}: {e}")
-                import traceback
-                traceback.print_exc()
-                # Optionally re-raise or decide how to handle processor errors
-                # raise e
-        # print("SequentialSystem: Finished executing processors.")
+    def execute(self, dt: float, *args: Any, **kwargs: Any) -> None:
+        
+        for processor in self._processors.values():
+            processor.process(dt, *args, **kwargs)
+        
+        self._world._updater.collect(step=self._world._current_step)
 
+
+                
 class GraphSystem(System):
     """
     Executes processors in parallel using a graph structure. 
@@ -145,20 +92,62 @@ class GraphSystem(System):
 
     State is maintained within components which 
     """
-    def __init__(self):
+    def __init__(self, world: World):
+        self._world = world
+        
         self._graph = nx.DiGraph()
-        self._state = ComponentStore()
+        
         self._nodes: Dict[Type[Processor], Processor] = {}
         self._edges: Dict[Type[Processor], List[Type[Processor]]] = {}
+
+
+    def add_node(self, processor: Processor) -> None:
+        """Adds an entity state processor"""
+        if not isinstance(processor, Processor):
+            raise TypeError("Can only add Processor instances.")
+        
+        self._graph.add_node(processor)
 
     def add_nodes(self, processor: Processor, priority: Optional[int] = None) -> None:
         """Adds a processor instance."""
         if not isinstance(processor, Processor):
             raise TypeError("Can only add Processor instances.")
         
+    def remove_node(self, processor: Processor) -> None:
+        """Removes a processor instance."""
+        if not isinstance(processor, Processor):
+            raise TypeError("Can only remove Processor instances.")
+        
+        self._graph.remove_node(processor)
+
+    def 
+
+    
+        
     def add_edges(self, processor: Processor, dependencies: List[Type[Processor]]) -> None:
         """Adds a processor instance."""
         if not isinstance(processor, Processor):
             raise TypeError("Can only add Processor instances.")
+        
+
+    def get_subgraph(self, processors: List[Type[Processor]]) -> nx.DiGraph:
+        """Returns a subgraph of the current graph."""
+        return self._graph.subgraph(processors)
+    
+    def get_node(self, entity_id: int) -> Processor:
+
+        return self._nodes[]
+    
+    def get_neighbors(self, entity_id: int) -> List[Processor]:
+        return self._edges[entity_id]
+    
+    def execute_processors(self):
+        pass
+
+    def execute_connectivity_function(self):
+        pass
+
+    
+    
         
         

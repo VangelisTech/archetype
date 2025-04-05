@@ -10,12 +10,12 @@ import time
 from core.base import Component, Processor, System
 from core.world import EcsWorld
 from core.managers import EcsQueryInterface, EcsUpdateManager
-from core.system import SequentialSystem # Import SequentialSystem
+from core.systems import SequentialSystem # Import SequentialSystem
 # Import Daft for DataFrame operations
 import daft
-import pyarrow as pa
-import daft.expressions as F # Import F
+from daft import col, lit
 
+import pyarrow as pa
 # Import Pyglet for visualization
 import pyglet
 from pyglet import shapes
@@ -62,37 +62,37 @@ class KineticEnergy(Component):
 # --- Define a simple Processor ---
 class KinematicsProcessor(Processor): # Processors simply implement a "process" method
     """Updates Position based on Velocity."""
+    def __init__(self, world: World):
+        self.world = world
 
-    def process(self, dt: float, *args, **kwargs) -> None:
+    def process(self, dt: float) -> None:
         
-        components = [Position, Velocity, Acceleration, Mass, Momentum, Force, KineticEnergy]
-        self.state_df = self.querier.get_components(components)
+        components = [Position, Velocity, Acceleration]
+        state_df = self.world.get_components(components) # Naive to step 
         
-        if self.state_df is None:
-             print("PhysicsProcessor: No entities found with required components.")
-             return
-
         # Calculate updates using Daft expressions
-        update_df_plan = self.state_df.with_columns(
+        update_df = state_df.with_columns(
             {
                 # Update Position based on Velocity and Acceleration
-                "x": F.col("x") + F.col("vx") * dt + 0.5 * F.col("ax") * dt * dt,
-                "y": F.col("y") + F.col("vy") * dt + 0.5 * F.col("ay") * dt * dt,
-                "z": F.col("z") + F.col("vz") * dt + 0.5 * F.col("az") * dt * dt,
+                "x": col("x") + col("vx") * dt + 0.5 * col("ax") * dt * dt,
+                "y": col("y") + col("vy") * dt + 0.5 * col("ay") * dt * dt,
+                "z": col("z") + col("vz") * dt + 0.5 * col("az") * dt * dt,
                 # Update Velocity based on Acceleration
-                "vx": F.col("vx") + F.col("ax") * dt,
-                "vy": F.col("vy") + F.col("ay") * dt,
-                "vz": F.col("vz") + F.col("az") * dt,
+                "vx": col("vx") + col("ax") * dt,
+                "vy": col("vy") + col("ay") * dt,
+                "vz": col("vz") + col("az") * dt,
                 # Acceleration remains constant (in this simple model)
-                "ax": F.col("ax"),
-                "ay": F.col("ay"),
-                "az": F.col("az"),
+                "ax": col("ax"),
+                "ay": col("ay"),
+                "az": col("az"),
+                "red_herring": lit("foo"),
             }
         )
 
         # Queue the update using the updater
-        # The updater expects the list of component types being updated
-        self.updater.add_update(components, update_df_plan)
+        self.world.commit(update_df, components) # requires list of component types
+
+class MomentumProcessor(Processor):
 
 class EnergyProcessor(Processor):
     """Updates Kinetic Energy based on Velocity and Mass."""
@@ -109,15 +109,53 @@ class EnergyProcessor(Processor):
         update_df_plan = self.state_df.with_columns(
             {
                 # Update Kinetic Energy based on Velocity and Mass
-                "kex": 0.5 * F.col("mass") * (F.col("vx") + F.col("ax") * dt) * (F.col("vx") + F.col("ax") * dt),
-                "key": 0.5 * F.col("mass") * (F.col("vy") + F.col("ay") * dt) * (F.col("vy") + F.col("ay") * dt),
-                "kez": 0.5 * F.col("mass") * (F.col("vz") + F.col("az") * dt) * (F.col("vz") + F.col("az") * dt),
+                "kex": 0.5 * col("mass") * (col("vx") + col("ax") * dt) * (col("vx") + col("ax") * dt),
+                "key": 0.5 * col("mass") * (col("vy") + col("ay") * dt) * (col("vy") + col("ay") * dt),
+                "kez": 0.5 * col("mass") * (col("vz") + col("az") * dt) * (col("vz") + col("az") * dt),
             }
         )
-        
-        
+
+class CollisionProcessor(Processor):
+    def __init__(self, querier: EcsQueryInterface, updater: EcsUpdateManager):
+        super().__init__(querier, updater)
+
+    def process(self, dt: float, *args, **kwargs) -> None:
+        components = [Position] 
+        self.state_df = self.querier.get_components(components)
+
+
+class RenderProcessor:
+    def __init__(self, renderer, clear_color=(0, 0, 0)):
+        super().__init__()
+        self.renderer = renderer
+        self.clear_color = clear_color
+
+    def process(self):
+        # Clear the window:
+        self.renderer.clear(self.clear_color)
+        # Create a destination Rect for the texture:
+        destination = SDL_Rect(0, 0, 0, 0)
+        # This will iterate over every Entity that has this Component, and blit it:
+        for ent, rend in esper.get_component(Renderable):
+            destination.x = int(rend.x)
+            destination.y = int(rend.y)
+            destination.w = rend.w
+            destination.h = rend.h
+            SDL_RenderCopy(self.renderer.renderer, rend.texture, None, destination)
+        self.renderer.present()        
 
 # --- Pyglet Visualization Setup ---
+class WindowProcessor(Processor):
+    def __init__(self, window_width: int, window_height: int):
+        super().__init__(world)
+
+        self.window_width = window_width
+        self.window_height = window_height
+        self.window = pyglet.window.Window(WINDOW_WIDTH, WINDOW_HEIGHT, caption='Daft ECS Simulation')
+
+    def process(self, dt: float, *args, **kwargs) -> None:
+        pass
+
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
 window = pyglet.window.Window(WINDOW_WIDTH, WINDOW_HEIGHT, caption='Daft ECS Simulation')
@@ -151,7 +189,7 @@ if __name__ == "__main__":
 
     # 4. Run the initial process step to commit initial components
     print("\nRunning initial processing step (commit initial state)...")
-    world.process(dt=0.0) # dt=0 for initial commit
+    world.process(t=0.0) # dt=0 for initial commit
 
     # 5. Pyglet Update Function
     def update(dt):

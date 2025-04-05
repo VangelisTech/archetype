@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "dependency-injector>=4.46.0",
     "getdaft>=0.4.8",
     "lancedb>=0.21.2",
     "networkx>=3.4.2",
