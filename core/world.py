@@ -66,7 +66,7 @@ class World:
         self._current_step: int = -1 # Will be 0 on the first process call
 
     # --- Simulation Loop ---
-    def step(self, dt: float, *inputs: Any):
+    def step(self, dt: float):
         """
         Orchestrates a single simulation time step through all phases.
 
@@ -79,7 +79,7 @@ class World:
         self._current_step = next(self._step_counter)
 
         # Execute the system
-        self._system.execute(self, dt, *inputs)
+        self._system.execute(dt)
 
         self._updater.clear_pending_updates()
         self._querier.clear_caches()
@@ -156,9 +156,8 @@ class World:
         """Facade for QueryInterface.get_latest_active_state_from_step."""
         df = self._querier.get_latest_active_state_from_step(*component_types, step=self._current_step)
 
-        if df is None or df.is_empty():
+        if df is None:
             print(f"No entities found for components {component_types}.")
-            return None
         
         return df
 
@@ -189,14 +188,12 @@ class World:
     def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
         """Gets a processor instance from the underlying System."""
         return self._system.get_processor(processor_type)
-
-    # Component Type Registration (Optional - often handled implicitly)
-    def register_component(self, component_type: Type[Component]) -> None:
-         """
-         Explicitly registers a component type with the underlying store,
-         primarily to pre-calculate its schema. Often called implicitly.
-         """
-         self._store.register_component(component_type)
+    
+    def commit(self, update_df: daft.DataFrame, components: List[Type[Component]]):
+        """
+        Commits a DataFrame of updates to the store.
+        """
+        self._updater.commit(update_df, components)
 
 
 class NetworkWorld(World):

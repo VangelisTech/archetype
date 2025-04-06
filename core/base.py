@@ -16,11 +16,7 @@ class World: pass
 
 # --- Component Base ---
 # Inherit from LanceModel to leverage Pydantic validation and LanceDB schema features
-class Component(LanceModel):
-    """Base class for all components. Inherits from LanceModel."""
-    # Components should define their own fields.
-    # We avoid adding a base entity_id here as it's managed by the store/dataframe.
-    pass
+Component = LanceModel
 
 # --- Processor Base Class ---
 class Processor(ABC):

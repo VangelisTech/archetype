@@ -33,6 +33,8 @@ from .base import Component
 if TYPE_CHECKING:
     from .world import World 
 
+from lancedb.pydantic import LanceModel
+
 class ComponentStore:
     """
     Manages the historical state of components, stored internally using
@@ -44,7 +46,7 @@ class ComponentStore:
         self.components: Dict[Type[Component], daft.DataFrame] = {}
         self.world = world
     
-    def register_component(self, component_type: Type[Component]) -> None:
+    def register_component(self, component_type: LanceModel) -> None:
         """
         Ensures a component type is known to the store, creating its schema
         and internal data structure if it doesn't exist setting composite to 
@@ -94,8 +96,11 @@ class ComponentStore:
         component_dict["step"] = step
         component_dict["is_active"] = True
 
+        # Prep Concat
+        component_df = daft.from_pylist([component_dict])
+
         # adding the component record to the dataframe
-        self.components[type(component)] = df.concat(daft.from_pydict(component_dict))
+        self.components[type(component)] = df.concat(component_df[df.column_names])
     
     def remove_entity(self, entity_id: int, step: int, immediate: bool = False) -> None:
         """
@@ -148,7 +153,7 @@ class ComponentStore:
         """
         Returns the column names for a component type.
         """
-        return self.components[component_type].column_names()
+        return self.components[component_type].column_names
 
 
 class EcsComponentSessionStore:

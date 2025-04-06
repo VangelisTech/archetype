@@ -72,12 +72,12 @@ class SequentialSystem(System):
         """Gets the managed instance of a specific processor type."""
         return self._processors.get(processor_type)
 
-    def execute(self, dt: float, *inputs: Any) -> None:
+    def execute(self, dt: float) -> None:
         
         for processor in self._processors.values():
-            processor.process(dt, *inputs)
+            processor.process(dt)
         
-        self._world._updater.collect(step=self._world._current_step)
+        self._world._updater.collect_and_push_step(step=self._world._current_step)
 
 
                 

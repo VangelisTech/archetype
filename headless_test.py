@@ -9,9 +9,6 @@ from core import Component, World, TimedProcessor
 
 # Import Daft for DataFrame operations
 from daft import col
-from daft import functions as F
-
-
 
 # --- Define Components ---
 # Components inherit from Component (lancedb.pydantic.LanceModel)
@@ -37,7 +34,7 @@ class MovementProcessor(TimedProcessor): # Processors simply implement a "proces
     def process(self, dt: float) -> None:
         # Get the latest state of the components
         components = [Position, Velocity,Radius]
-        state_df = self.world.get_components(components) # Naive to step 
+        state_df = self.world.get_components(*components) # Naive to step 
         
         # Calculate 2D Frictionless Kinematics
         update_df = state_df.with_columns(
@@ -65,7 +62,7 @@ class WallCollisionProcessor(TimedProcessor):
 
     def process(self, dt: float) -> None:
         components = [Position, Velocity, Radius] 
-        state_df = self.world.get_components(components)
+        state_df = self.world.get_components(*components)
 
         # Wall Collision Detection (Find entities that are colliding with the walls)
         collision_check_df = state_df.with_columns(
@@ -86,8 +83,8 @@ class WallCollisionProcessor(TimedProcessor):
         # Only update entities that actually hit a wall
         update_df = collision_check_df.where(col("flip_vx") | col("flip_vy")) \
                                       .with_columns({
-                                          "vx": F.if_else(col("flip_vx"), col("vx") * -1, col("vx")),
-                                          "vy": F.if_else(col("flip_vy"), col("vy") * -1, col("vy"))
+                                          "vx": col("flip_vx").if_else(col("vx") * -1, col("vx")),
+                                          "vy": col("flip_vy").if_else(col("vy") * -1, col("vy"))
                                       })
 
         self.world.commit(update_df, components)

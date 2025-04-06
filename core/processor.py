@@ -1,6 +1,6 @@
 from .base import Processor
 from typing import Any, TYPE_CHECKING
-import daft
+
 
 # Conditionally import World for type checking only
 if TYPE_CHECKING:

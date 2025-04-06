@@ -94,5 +94,3 @@ def set_daft_execution_config(
     pass
 
 
-if __name__ == "__main__":
-    
