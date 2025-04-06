@@ -22,21 +22,18 @@ Serialization: We are sending collected Daft DataFrames in the snapshot. This re
 Async: Uses async def for the wrapper and execute_async for the DAG, aligning with modern Ray practices.
 """
 
-import ray
-import time
-import asyncio
-from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
-from collections import defaultdict
-import pyarrow as pa 
+
+from typing import Any, Dict, List, Type, Optional, TYPE_CHECKING
 import networkx as nx
 
 import daft
-from daft import DataFrame # Use specific import for clarity
 
 # Import from our new structure
-from .base import Component, EntityType, Processor, System, _C
-from .store import ComponentStore
-from .managers import EcsQueryInterface, EcsUpdateManager
+from .base import Processor, System
+
+# Conditionally import World for type checking only
+if TYPE_CHECKING:
+    from .world import World 
 
 
 # --- Sequential System Implementation --
@@ -44,7 +41,7 @@ class SequentialSystem(System):
     """
     Executes processors sequentially.
     """
-    def __init__(self, world: World):
+    def __init__(self, world: 'World'):
         self._world = world
         self._processors: Dict[Type[Processor], Processor] = {}
         
@@ -58,7 +55,7 @@ class SequentialSystem(System):
         
         self._processors[ptype] = processor
 
-        if self._world.verbose:
+        if self._world._verbose:
             print(f"SequentialSystem: Added processor {ptype.__name__}.")
 
 
@@ -75,10 +72,10 @@ class SequentialSystem(System):
         """Gets the managed instance of a specific processor type."""
         return self._processors.get(processor_type)
 
-    def execute(self, dt: float, *args: Any, **kwargs: Any) -> None:
+    def execute(self, dt: float, *inputs: Any) -> None:
         
         for processor in self._processors.values():
-            processor.process(dt, *args, **kwargs)
+            processor.process(dt, *inputs)
         
         self._world._updater.collect(step=self._world._current_step)
 
@@ -92,7 +89,7 @@ class GraphSystem(System):
 
     State is maintained within components which 
     """
-    def __init__(self, world: World):
+    def __init__(self, world: 'World'):
         self._world = world
         
         self._graph = nx.DiGraph()
@@ -120,28 +117,39 @@ class GraphSystem(System):
         
         self._graph.remove_node(processor)
 
-    def 
-
-    
-        
     def add_edges(self, processor: Processor, dependencies: List[Type[Processor]]) -> None:
-        """Adds a processor instance."""
-        if not isinstance(processor, Processor):
-            raise TypeError("Can only add Processor instances.")
-        
+        """Adds edges representing dependencies between processors."""
+        if processor not in self._graph:
+            raise ValueError(f"Processor {processor} not in graph.")
+        for dep in dependencies:
+            # Assuming dependencies are processor *types* or instances already in the graph
+            # You might need a way to resolve types to instances if they aren't already nodes
+            if dep not in self._graph:
+                 raise ValueError(f"Dependency {dep} not in graph.")
+            self._graph.add_edge(dep, processor) # Edge from dependency to processor
 
     def get_subgraph(self, processors: List[Type[Processor]]) -> nx.DiGraph:
-        """Returns a subgraph of the current graph."""
-        return self._graph.subgraph(processors)
+        """Returns a subgraph containing the specified processors."""
+        # Ensure nodes exist before creating subgraph
+        nodes_in_graph = [p for p in processors if p in self._graph]
+        return self._graph.subgraph(nodes_in_graph)
     
-    def get_node(self, entity_id: int) -> Processor:
-
-        return self._nodes[]
+    def get_node(self, processor_instance: Processor) -> Processor:
+        """Gets the processor instance if it exists in the graph."""
+        if processor_instance in self._graph:
+            return processor_instance
+        raise ValueError(f"Processor {processor_instance} not found in graph.")
     
-    def get_neighbors(self, entity_id: int) -> List[Processor]:
-        return self._edges[entity_id]
+    def get_neighbors(self, processor_instance: Processor) -> List[Processor]:
+        """Gets the neighbors (predecessors and successors) of a processor."""
+        if processor_instance not in self._graph:
+            raise ValueError(f"Processor {processor_instance} not found in graph.")
+        # networkx neighbors includes both predecessors and successors
+        return list(self._graph.neighbors(processor_instance))
     
     def execute_processors(self):
+        # Implementation depends on how you want to execute the graph
+        # (e.g., topological sort for sequential execution of parallelizable steps)
         pass
 
     def execute_connectivity_function(self):

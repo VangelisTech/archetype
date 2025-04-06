@@ -7,15 +7,12 @@ import time
 # from dataclasses import dataclass, field # No longer needed for components
 
 # Import core ECS components from the 'core' directory
-from core.base import Component, Processor, System
-from core.world import EcsWorld
-from core.managers import EcsQueryInterface, EcsUpdateManager
-from core.systems import SequentialSystem # Import SequentialSystem
+from core import Component, Processor, World, SequentialSystem
+
 # Import Daft for DataFrame operations
 import daft
 from daft import col, lit
 
-import pyarrow as pa
 # Import Pyglet for visualization
 import pyglet
 from pyglet import shapes
@@ -93,17 +90,16 @@ class KinematicsProcessor(Processor): # Processors simply implement a "process" 
         self.world.commit(update_df, components) # requires list of component types
 
 class MomentumProcessor(Processor):
+    pass
 
 class EnergyProcessor(Processor):
     """Updates Kinetic Energy based on Velocity and Mass."""
 
     def process(self, dt: float, *args, **kwargs) -> None:
         components = [Velocity, Mass, KineticEnergy]
-        self.state_df = self.querier.get_components(components)
+        self.state_df = self.world.get_components(components)
 
-        if self.state_df is None:
-            print("EnergyProcessor: No entities found with required components.")
-            return
+        
 
         # Calculate updates using Daft expressions
         update_df_plan = self.state_df.with_columns(

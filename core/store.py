@@ -19,18 +19,19 @@ Uses a Daft Catalog and Session to manage persistent storage:
 - Component instances are reconstructed from table data using Pydantic validation
 """
 
-from typing import Dict, List, Type, Optional
-from itertools import count as _count
-from itertools import count as _step_counter
+from typing import Dict, List, Type, Optional, TYPE_CHECKING
 
 import daft
-from daft import col, lit, DataType as DT, Catalog, Session
+from daft import col, lit, Catalog, Session
 import daft.expressions as F
-import pyarrow as pa # Need pyarrow for schema manipulation
+import pyarrow as pa
 
 # Import base types from our new structure
-from core.base import Component
+from .base import Component
 
+# Conditionally import World for type checking only
+if TYPE_CHECKING:
+    from .world import World 
 
 class ComponentStore:
     """
@@ -38,7 +39,8 @@ class ComponentStore:
     a _ComponentData structure for each component type. Each row includes
     entity_id, step, is_active, and component data.
     """
-    def __init__(self, world: World):
+
+    def __init__(self, world: 'World'):
         self.components: Dict[Type[Component], daft.DataFrame] = {}
         self.world = world
     
@@ -65,8 +67,8 @@ class ComponentStore:
         """
         Gets the latest active state for a specific component type.
         """
-        if not self.components.get(component_type):
-            self.components[component_type] = self.register_component(component_type)
+        if self.components.get(component_type) is None:
+            self.register_component(component_type)
 
         return self.components.get(component_type)
     
@@ -296,7 +298,7 @@ class EcsComponentSessionStore:
     
 
 if __name__ == "__main__":
-    from core.base import Component
+    from .base import Component
 
     class Position(Component):
         x: float = 0.0
@@ -327,6 +329,6 @@ if __name__ == "__main__":
     components.show()
 
     def yulk(df: daft.DataFrame) -> daft.DataFrame:
-        return print(df..show())
+        print(df.show())
 
 

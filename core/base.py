@@ -1,15 +1,8 @@
 # -*- coding: utf-8 -*-
 """Defines the foundational types and abstract base classes for the ECS system."""
 
-from typing import Any, Type, Set, TypeVar, Optional, Dict, List
-# from dataclasses import dataclass, field # No longer needed for Component base
+from typing import Any, Type, Optional
 from abc import ABC, abstractmethod
-import time
-from collections import defaultdict
-import datetime
-# Import daft early, even if only used by subclasses, to ensure it's available
-import daft
-# Import LanceModel and ensure pydantic is available
 
 from lancedb.pydantic import LanceModel
 
@@ -17,9 +10,9 @@ from lancedb.pydantic import LanceModel
 # --- Forward Declarations ---
 # These help type hints work even if classes are defined later or in other files.
 # Using strings for forward references within the same file is also common.
-class EcsQueryInterface: pass
-class EcsUpdateManager: pass
-class EcsWorld: pass
+class QueryInterface: pass
+class UpdateManager: pass
+class World: pass
 
 # --- Component Base ---
 # Inherit from LanceModel to leverage Pydantic validation and LanceDB schema features
@@ -29,26 +22,19 @@ class Component(LanceModel):
     # We avoid adding a base entity_id here as it's managed by the store/dataframe.
     pass
 
-_C = TypeVar('_C', bound=Component)
-
 # --- Processor Base Class ---
-
-
 class Processor(ABC):
     """
     Base class for systems that process entities and components.
     Processors should read from the QueryInterface and write via the UpdateManager.
     """
-    def __init__(self, world: World):
-        self.world = world
-
     @abstractmethod
-    def process(self, *args: Any, **kwargs: Any) -> None:
+    def process(self, *inputs: Any) -> None:
         """
         The core logic of the processor.
 
         Args:
-            *args, **kwargs: Additional arguments passed from the world's process cycle.
+            *inputs: Additional arguments passed from the world's process cycle.
             
         """
         raise NotImplementedError
@@ -60,7 +46,7 @@ class System(ABC):
     Implementations can define sequential, parallel, or DAG-based execution.
     """
     @abstractmethod
-    def execute(self, querier: 'EcsQueryInterface', updater: 'EcsUpdateManager', dt: float, *args: Any, **kwargs: Any) -> None:
+    def execute(self, dt: float, *args: Any, **kwargs: Any) -> None:
         """
         Executes the managed processors.
 
@@ -73,7 +59,7 @@ class System(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def add_processor(self, processor: Processor, priority: Optional[int] = None) -> None:
+    def add_processor(self, processor: Processor) -> None:
         """Adds a processor to be managed by this system."""
         raise NotImplementedError
 

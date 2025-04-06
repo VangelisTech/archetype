@@ -1,24 +1,22 @@
-from typing import Dict, List, Type, Tuple, Optional, Union, Set
-from collections import defaultdict
-from functools import lru_cache
-# from dataclasses import fields, is_dataclass # No longer needed as we've moved to Pydantic
+from typing import List, Type, Optional, Set, TYPE_CHECKING
 import daft
-from daft import col, lit, DataType, Schema, DataFrame
-from daft.expressions import Expression
-import daft.expressions as F
-import pyarrow as pa # Import pyarrow
+from daft import col, lit 
+import daft.expressions as F # Keep F
 
 # Import from our new structure
-from .base import Component, EntityType
-from .store import ComponentStore # Needs the store to interact with
-from .world import World
+from .base import Component
+
+# Conditionally import World for type checking only
+if TYPE_CHECKING:
+    from .world import World
+    
 # --- Query Interface ---
 class QueryInterface:
     """
     Provides read-only access to the *latest active* ECS state,
     derived from the historical ComponentStore.
     """
-    def __init__(self, world: World):
+    def __init__(self, world: 'World'):
         self._world = world
 
     def get_component(self, component_type: Type[Component]) -> daft.DataFrame:
@@ -57,6 +55,7 @@ class QueryInterface:
 
         return df
 
+
     def get_latest_active_state_from_step(self, *component_types: Type[Component], step: Optional[int] = None) -> daft.DataFrame:
         """
         Gets the latest active state for all specified component types from a specific step.
@@ -94,7 +93,7 @@ class UpdateManager:
 
 
     """
-    def __init__(self, world: World):
+    def __init__(self, world: 'World'):
         self._world = world
         self.components_to_update: Set[Type[Component]] = set()
         self.combined_state_df = None

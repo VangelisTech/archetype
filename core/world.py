@@ -12,26 +12,25 @@ Helper Method: Includes _create_component_update_df to simplify adding component
 Deferred Component Removal (Basic): Implemented remove_component(immediate=False) by queueing a None update, though this requires the store/join logic to correctly interpret None structs as removals (which Daft's anti-join/concat should handle naturally if the None row makes it to apply_updates).
 """
 
-from typing import Any, Dict, List, Set, Type, Tuple, TypeVar, Iterable, Optional
+from typing import Any, Dict, List, Set, Type, Optional, TYPE_CHECKING
 from itertools import count as _count
 from itertools import count as _step_counter
-# from dataclasses import is_dataclass # No longer needed for this check
-from lancedb.pydantic import model_to_dict # Import helper
 
 import daft
-from daft import col, lit, DataType, Schema
-import daft.expressions as F
-import asyncio # Import asyncio
-from dependency_injector import containers, providers
-from dependency_injector.wiring import inject, Provide
+from daft import col, lit
 
-# Import from our new structure
-from .base import Component, EntityType, Processor, System, _C
+# Import base types needed at runtime
+from .base import Component, Processor
 from .store import ComponentStore
 from .managers import QueryInterface, UpdateManager
 from .systems import SequentialSystem
 import time # Import the time module
 
+# Conditionally import for type checking only
+if TYPE_CHECKING:
+    from .store import ComponentStore
+    from .managers import QueryInterface, UpdateManager
+    from .systems import SequentialSystem
 
 
 # --- EcsWorld Implementation ---
@@ -42,12 +41,17 @@ class World:
     and processor execution via a configured System.
     Provides the main user-facing API for interacting with the ECS.
     """
-    @inject
     def __init__(self):
-        self._store = ComponentStore()
-        self._querier = QueryInterface(self)
-        self._updater = UpdateManager(self)
-        self._system = SequentialSystem(self)
+        # Import locally within __init__ to avoid top-level circular dependency
+        # This is another common pattern to resolve circular imports needed for instantiation
+        from .store import ComponentStore
+        from .managers import QueryInterface, UpdateManager
+        from .systems import SequentialSystem
+
+        self._store: 'ComponentStore' = ComponentStore(self)
+        self._querier: 'QueryInterface' = QueryInterface(self)
+        self._updater: 'UpdateManager' = UpdateManager(self)
+        self._system: 'SequentialSystem' = SequentialSystem(self)
 
         # Flags
         self._verbose = True
@@ -62,7 +66,7 @@ class World:
         self._current_step: int = -1 # Will be 0 on the first process call
 
     # --- Simulation Loop ---
-    def step(self, dt: float, *inputs: Any, **kwargs: Any):
+    def step(self, dt: float, *inputs: Any):
         """
         Orchestrates a single simulation time step through all phases.
 
@@ -70,11 +74,12 @@ class World:
             dt: Time delta for the current step.
             *args, **kwargs: Additional arguments to pass down to processors.
         """
+        start_time = time.time() # Define start_time
         # Increment step counter at the beginning of the process
         self._current_step = next(self._step_counter)
 
         # Execute the system
-        self._system.execute(self, dt, *args, **kwargs)
+        self._system.execute(self, dt, *inputs)
 
         self._updater.clear_pending_updates()
         self._querier.clear_caches()
@@ -141,17 +146,23 @@ class World:
             entity_id: The ID of the entity.
             component_type: The type of component to remove.
         """
-       
-            self._store.remove_entity_from_component(entity_id, component_type, self._current_step)
-            self._querier.clear_caches() # State changed immediately
+        
+        self._store.remove_entity_from_component(entity_id, component_type, self._current_step)
+        self._querier.clear_caches() # State changed immediately
 
     # Querying Facade (delegates to Querier
 
     def get_components(self, *component_types: Type[Component]) -> daft.DataFrame:
         """Facade for QueryInterface.get_latest_active_state_from_step."""
-        return self._querier.get_latest_active_state_from_step(*component_types, step=self._current_step)
+        df = self._querier.get_latest_active_state_from_step(*component_types, step=self._current_step)
 
-    def component_for_entity(self, entity_id: int, component_type: Type[_C]) -> Optional[_C]:
+        if df is None or df.is_empty():
+            print(f"No entities found for components {component_types}.")
+            return None
+        
+        return df
+
+    def component_for_entity(self, entity_id: int, component_type: Type[Component]) -> Optional[Component]:
         """
         Facade for EcsQueryInterface.component_for_entity.
         Retrieves a Python component instance from committed state. Returns None if
@@ -164,9 +175,11 @@ class World:
 
     # Processor/System Management Facade (delegates to System)
     def add_processor(self, processor_instance: Processor, priority: Optional[int] = None):
-        """Adds a processor to the underlying System."""
-        self._system.add_processor(processor_instance, priority)
-        print(f"World: Added processor {processor_instance.__class__.__name__} to {self._system.__class__.__name__}.")
+        """Adds a processor to the underlying System, injecting the world reference."""
+        processor_instance.world = self # Inject world reference
+        self._system.add_processor(processor_instance)
+        if self._verbose:
+            print(f"World: Added processor {processor_instance.__class__.__name__} to {self._system.__class__.__name__}.")
 
     def remove_processor(self, processor_type: Type[Processor]):
         """Removes processors of a given type from the underlying System."""
