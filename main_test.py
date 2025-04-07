@@ -112,7 +112,7 @@ class EnergyProcessor(Processor):
         )
 
 class CollisionProcessor(Processor):
-    def __init__(self, querier: EcsQueryInterface, updater: EcsUpdateManager):
+    def __init__(self, querier: EcsQueryManager, updater: EcsUpdateManager):
         super().__init__(querier, updater)
 
     def process(self, dt: float, *args, **kwargs) -> None:

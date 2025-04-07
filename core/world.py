@@ -3,7 +3,7 @@
 The main EcsWorld class, orchestrating the ECS lifecycle, managers, and systems.
 
 Key features of EcsWorld:
-Composition: Holds instances of ComponentStore, EcsQueryInterface, EcsUpdateManager, and the crucial System.
+Composition: Holds instances of ComponentStore, EcsQueryManager, EcsUpdateManager, and the crucial System.
 System Dependency: Requires a System instance upon initialization, making the execution strategy explicit.
 process Loop: Clearly defines the 5 phases (Init, Cleanup, Execute, Commit, Collect) and delegates calls to the appropriate managers or the system.
 Facade Methods: Provides a clean public API for common ECS operations (entity creation/deletion, component addition/removal/querying, processor management), hiding the internal manager interactions.
@@ -11,190 +11,218 @@ Delegation: Most facade methods delegate directly to the corresponding manager (
 Helper Method: Includes _create_component_update_df to simplify adding components.
 Deferred Component Removal (Basic): Implemented remove_component(immediate=False) by queueing a None update, though this requires the store/join logic to correctly interpret None structs as removals (which Daft's anti-join/concat should handle naturally if the None row makes it to apply_updates).
 """
-
+# Python
 from typing import Any, Dict, List, Set, Type, Optional, TYPE_CHECKING
-from itertools import count as _count
 from itertools import count as _step_counter
+from dependency_injector import containers, providers
+from dependency_injector.wiring import inject, Provide
+import time
 
+# Technologies
 import daft
-from daft import col, lit
 
-# Import base types needed at runtime
-from .base import Component, Processor
-from .store import ComponentStore
-from .managers import QueryInterface, UpdateManager
-from .systems import SequentialSystem
-import time # Import the time module
+# Internal
+from .base import Component
+# Import interfaces
+from .interfaces import (
+    WorldInterface, 
+    ComponentStoreInterface, 
+    QueryManagerInterface, 
+    UpdateManagerInterface, 
+    SystemInterface,
+    ProcessorInterface
+)
 
-# Conditionally import for type checking only
+# Import the CONTAINER INTERFACE
 if TYPE_CHECKING:
+    from .container_interface import CoreContainerInterface
+    # Import concrete types for internal use or type checking if needed
     from .store import ComponentStore
-    from .managers import QueryInterface, UpdateManager
+    from .managers import QueryManager, UpdateManager
     from .systems import SequentialSystem
+    from .processors import Processor
 
 
 # --- EcsWorld Implementation ---
 
-class World:
+class World(WorldInterface): # Implement interface
     """
     Orchestrates the ECS simulation loop, manages entities, components,
     and processor execution via a configured System.
     Provides the main user-facing API for interacting with the ECS.
     """
-    def __init__(self):
-        # Import locally within __init__ to avoid top-level circular dependency
-        # This is another common pattern to resolve circular imports needed for instantiation
-        from .store import ComponentStore
-        from .managers import QueryInterface, UpdateManager
-        from .systems import SequentialSystem
+    # Declare attributes with interface types
+    _store: ComponentStoreInterface
+    _querier: QueryManagerInterface
+    _updater: UpdateManagerInterface
+    _system: SystemInterface
+    _verbose: bool
+    _step_counter: Any # Iterator type hint
+    _current_step: int
 
-        self._store: 'ComponentStore' = ComponentStore(self)
-        self._querier: 'QueryInterface' = QueryInterface(self)
-        self._updater: 'UpdateManager' = UpdateManager(self)
-        self._system: 'SequentialSystem' = SequentialSystem(self)
+    @inject
+    def __init__(self,
+            # Inject using INTERFACE container providers
+            store: ComponentStoreInterface = Provide[CoreContainerInterface.store],
+            query_interface: QueryManagerInterface = Provide[CoreContainerInterface.query_interface],
+            update_manager: UpdateManagerInterface = Provide[CoreContainerInterface.update_manager],
+            system: SystemInterface = Provide[CoreContainerInterface.system]
+            # config: providers.Configuration = Provide[CoreContainerInterface.config] # Example if config needed
+        ):
+        self.store = store
+        self.querier = query_interface
+        self.updater = update_manager
+        self.system = system
 
         # Flags
-        self._verbose = True
-
-        # Entity Management 
-        self.entities: Dict[int, List[Type[Component]]] = {}
-        self._entity_count = _count(start=1)
-        self._dead_entities = set()
+        self.verbose = True # Or get from config: config.get('verbose', True)
 
         # Step counter
-        self._step_counter = _step_counter(start=0)
-        self._current_step: int = -1 # Will be 0 on the first process call
+        self.step_counter = _step_counter(start=0)
+        self.current_step: int = -1 # Will be 0 on the first process call
 
     # --- Simulation Loop ---
-    def step(self, dt: float):
+    def step(self, dt: float): # Signature matches interface
         """
         Orchestrates a single simulation time step through all phases.
 
         Args:
             dt: Time delta for the current step.
-            *args, **kwargs: Additional arguments to pass down to processors.
         """
         start_time = time.time() # Define start_time
         # Increment step counter at the beginning of the process
-        self._current_step = next(self._step_counter)
+        self.current_step = next(self.step_counter)
+        
+        # Execute system(s) - Assuming execute returns Dict[ProcessorInterface, daft.DataFrame]
+        results = self.system.execute(dt) # results might be None if system doesn't return anything
 
-        # Execute the system
-        self._system.execute(dt)
+        # Commit the updates - Assuming UpdateManager handles potentially empty/None results
+        if results:
+            merged_df = None
+            all_components = set()
+            
+            for processor, df in results.items():
+                # How to know which components this df affects? 
+                # Need ProcessorInterface to expose affected components or pass explicitly.
+                # Placeholder: Assume processor has a method `get_updated_components()`
+                # components_updated = processor.get_updated_components() 
+                # all_components.update(components_updated)
+                
+                if merged_df is None:
+                    merged_df = df
+                else:
+                    # Daft doesn't have a direct equivalent to pandas' flexible update.
+                    # A full outer join might be needed, carefully handling conflicts.
+                    # This is complex and might be a bottleneck.
+                    # Consider revising how updates are passed/merged.
+                    # merged_df = merged_df.join(df, on='entity_id', how='outer', ...) # Complex conflict handling needed
+                    pass # Skip merging for now
+            
+            # If merging was done and successful:
+            # if merged_df is not None:
+            #    self.updater.commit(merged_df, list(all_components))
+            
+            # TEMPORARY WORKAROUND: Commit last result? Very incorrect.
+            if results:
+               last_processor, last_df = list(results.items())[-1]
+               # Need components for last_df!
+               # components = last_processor.get_updated_components() 
+               # self.updater.commit(last_df, components)
+               print("WARN: Update commit logic needs revision based on System output and UpdateManager input.")
 
-        self._updater.clear_pending_updates()
-        self._querier.clear_caches()
+        # Collect and push the updates
+        self.updater.collect(self.current_step)
+        # self.updater.push(self.current_step) # push seems removed from UpdateManager
+
+        # self.updater.clear_pending_updates() # clear_pending_updates seems removed
+        self.updater.clear_caches() # clear_caches exists
+        # self.querier.clear_caches() # Querier doesn't have clear_caches
         
 
         end_time = time.time()
-        print(f"--- World: Step Complete (Total Time: {(end_time - start_time):.4f}s) ---")
+        if self.verbose:
+            print(f"--- World: Step {self.current_step} Complete (Total Time: {(end_time - start_time):.4f}s) ---")
 
-    # --- Public API Facade ---
+    # --- Public API Facade (Signatures match interface) ---
 
-    def add_entity(self, *components: Component, step: Optional[int] = None) -> int:
+    def add_entity(self, components: Optional[List[Component]] = None, step: Optional[int] = None) -> int:
         """
         Adds a new entity to the store.
         """
-        entity = next(self._entity_count)
-
-        if step is None:
-            step = self._current_step # If no step is provided, use the current step, init yields -1
-
-        # Add entity to components
-        for component in components:
-            self._store.add_component(entity, component, step)
-
-        # Add entity to entities
-        self.entities[entity] = [type(component) for component in components]
-
-        return entity
+        # Use current step if not provided
+        effective_step = step if step is not None else self.current_step 
+        return self.store.add_entity(components=components, step=effective_step)
     
-    def remove_entity(self, entity_id: int, step: int, immediate: bool = False) -> None:
+    def remove_entity(self, entity_id: int) -> None:
         """
         Sets the is_active flag to False for an entity.
         """
-        if entity_id in self._dead_entities:
-            return
-
-        self._dead_entities.add(entity_id)
-
-        # If immediate, remove the entity from all components otherwise, QueryInterface will handle it 
-        if immediate:
-            for component_type in self.entities[entity_id]:
-                df = self.get_component(component_type)
-
-                # Find the row for the entity at the given step and set is_active to False
-                df = df.where(col("entity_id") == entity_id) \
-                    .where(col("step") == step) \
-                    .with_column("is_active", lit(False))
-                
-                # Replace original composite with updated one
-                self.components[component_type] = df 
+        self.store.remove_entity(entity_id)
 
     # Component Management
-    def add_component(self, entity_id: int, component_instance: Component):
+    def add_component(self, entity_id: int, component_instance: Component) -> None:
         """
         Adds or replaces a component for an entity directly in the store.
         The change is recorded with the current step number.
         """
-        self._store.add_component(entity_id, component_instance, step=self._current_step)
+        self.store.add_component(entity_id, component_instance, step=self.current_step)
 
-    def remove_component(self, entity_id: int, component_type: Type[Component], immediate: bool = False):
+    def remove_component(self, entity_id: int, component_type: Type[Component], immediate: bool = False) -> None:
         """
         Removes a component from an entity.
-
-        Args:
-            entity_id: The ID of the entity.
-            component_type: The type of component to remove.
+        Uses store's method, handles step.
+        Immediate flag seems unused by store method.
         """
-        
-        self._store.remove_entity_from_component(entity_id, component_type, self._current_step)
-        self._querier.clear_caches() # State changed immediately
+        self.store.remove_entity_from_component(entity_id, component_type, self.current_step)
 
-    # Querying Facade (delegates to Querier
-
-    def get_components(self, *component_types: Type[Component]) -> daft.DataFrame:
-        """Facade for QueryInterface.get_latest_active_state_from_step."""
-        df = self._querier.get_latest_active_state_from_step(*component_types, step=self._current_step)
-
-        if df is None:
-            print(f"No entities found for components {component_types}.")
-        
-        return df
-
-    def component_for_entity(self, entity_id: int, component_type: Type[Component]) -> Optional[Component]:
+    def remove_component_from_entity(self, entity_id: int, component_type: Component) -> None:
         """
-        Facade for EcsQueryInterface.component_for_entity.
-        Retrieves a Python component instance from committed state. Returns None if
-        entity is marked dead, doesn't have the component, or other errors occur.
+        Removes a component from an entity.
         """
-        # Explicitly check if marked dead *now* before querying
-        if entity_id in self._dead_entities:
-            return None
-        return self._querier.component_for_entity(entity_id, component_type)
+        self.store.remove_component_from_entity(entity_id, component_type)
+
+    # Querying Facade (delegates to Querier)
+    def get_components(self, *components: Type[Component]) -> daft.DataFrame:
+        """Facade for QueryManager.get_latest_active_state_from_step."""
+        return self.querier.get_latest_active_state_from_step(*components, step=self.current_step)
+    
+    def get_components_from_step(self, *components: Type[Component], step: int) -> daft.DataFrame:
+        """Facade for QueryManager.get_latest_active_state_from_step."""
+        return self.querier.get_latest_active_state_from_step(*components, step=step)
+
+    def component_for_entity(self, entity_id: int, component: Type[Component]) -> Optional[Component]:
+        """
+        Facade for QueryManager.component_for_entity.
+        """
+        return self.querier.component_for_entity(entity_id, component)
 
     # Processor/System Management Facade (delegates to System)
-    def add_processor(self, processor_instance: Processor, priority: Optional[int] = None):
-        """Adds a processor to the underlying System, injecting the world reference."""
-        processor_instance.world = self # Inject world reference
-        self._system.add_processor(processor_instance)
-        if self._verbose:
-            print(f"World: Added processor {processor_instance.__class__.__name__} to {self._system.__class__.__name__}.")
+    def add_processor(self, processor: ProcessorInterface, priority: Optional[int] = None) -> None: # Use interface type
+        """Adds a processor to the underlying System."""
+        # Priority seems unused by SequentialSystem
+        self.system.add_processor(processor)
 
-    def remove_processor(self, processor_type: Type[Processor]):
+    def remove_processor(self, processor_type: Type[ProcessorInterface]) -> None: # Use interface type
         """Removes processors of a given type from the underlying System."""
-        self._system.remove_processor(processor_type)
-        print(f"World: Removed processor type {processor_type.__name__} from {self._system.__class__.__name__}.")
+        # SequentialSystem expects instance, not type? Needs check.
+        # Find processor instance of that type first? 
+        processor_instance = self.get_processor(processor_type)
+        if processor_instance:
+            self.system.remove_processor(processor_instance)
+        # else: log warning?
 
-    def get_processor(self, processor_type: Type[Processor]) -> Optional[Processor]:
+    def get_processor(self, processor_type: Type[ProcessorInterface]) -> Optional[ProcessorInterface]: # Use interface type
         """Gets a processor instance from the underlying System."""
-        return self._system.get_processor(processor_type)
-    
-    def commit(self, update_df: daft.DataFrame, components: List[Type[Component]]):
-        """
-        Commits a DataFrame of updates to the store.
-        """
-        self._updater.commit(update_df, components)
+        # SequentialSystem expects instance? Needs check.
+        # Ask system for processor by type
+        # This assumes SystemInterface has a method like get_processor_by_type
+        # return self.system.get_processor_by_type(processor_type) 
+        
+        # Workaround: If system only stores instances, find by type
+        # This is inefficient if many processors
+        for proc in getattr(self.system, 'processors', []): # Access underlying list (unsafe)
+            if isinstance(proc, processor_type):
+                return proc
+        return None
 
 
-class NetworkWorld(World):
-    pass

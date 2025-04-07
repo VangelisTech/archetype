@@ -23,7 +23,7 @@ import numpy as np # For math operations in UDFs if needed
 
     from core.base import Component, Processor, System
     from core.store import ComponentStore
-    from core.managers import EcsQueryInterface, EcsUpdateManager
+    from core.managers import EcsQueryManager, EcsUpdateManager
     from core.world import EcsWorld
     from core.systems import RayDagSystem
 
@@ -163,7 +163,7 @@ class ForceTorqueProcessor(Processor):
     """Calculates forces and torques acting on entities."""
     priority = 30 # Run first
 
-    def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
+    def process(self, querier: EcsQueryManager, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
         # Get entities with physics properties (needed for mass->gravity)
         entities_plan = querier.get_components(PhysicsProperties) # Only need this to know who exists
 
@@ -222,7 +222,7 @@ class LinearMotionProcessor(Processor):
     """Integrates linear velocity and position from forces."""
     priority = 20 # Run after forces
 
-    def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
+    def process(self, querier: EcsQueryManager, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
         required = [Position, Velocity, AccumulatedForce, PhysicsProperties]
         entities_plan = querier.get_components(*required)
 
@@ -271,7 +271,7 @@ class AngularMotionProcessor(Processor):
     """Integrates angular velocity and orientation from torques."""
     priority = 15 # Run after forces/torques calculated
 
-    def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
+    def process(self, querier: EcsQueryManager, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
         required = [Orientation, AngularVelocity, AccumulatedTorque, PhysicsProperties]
         entities_plan = querier.get_components(*required)
 
@@ -335,7 +335,7 @@ class StatsProcessor(Processor):
     """Updates simple step count."""
     priority = 0 # Run last
 
-    def process(self, querier: EcsQueryInterface, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
+    def process(self, querier: EcsQueryManager, updater: EcsUpdateManager, dt: float, *args, **kwargs) -> None:
         entities_plan = querier.get_components(StepStats)
 
         try:

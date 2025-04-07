@@ -1,65 +1,70 @@
-from typing import List, Type, Optional, Set, TYPE_CHECKING
-import daft
-from daft import col, lit 
-import daft.expressions as F # Keep F
+from typing import List, Optional, Set, TYPE_CHECKING
+from dependency_injector.wiring import inject, Provide
 
-# Import from our new structure
+# Technologies
+from daft import col, lit, DataFrame
+
+# Internal
 from .base import Component
+# Import interfaces
+from .interfaces import QueryManagerInterface, UpdateManagerInterface, ComponentStoreInterface 
 
-# Conditionally import World for type checking only
+# Import the CONTAINER INTERFACE
 if TYPE_CHECKING:
-    from .world import World
+    from .container_interface import CoreContainerInterface
+    # Keep ComponentStore concrete type for Provide marker resolution if needed by DI?
+    # Let's try without first, relying on the interface injection.
+    # from .store import ComponentStore
+
 
 # --- Query Interface ---
-class QueryInterface:
+class QueryManager(QueryManagerInterface): # Implement interface
     """
     Provides read-only access to the *latest active* ECS state,
     derived from the historical ComponentStore.
     """
-    def __init__(self, world: 'World'):
-        self._world = world
+    @inject
+    def __init__(self,
+            # Inject using INTERFACE container and INTERFACE type hint
+            store: ComponentStoreInterface = Provide[CoreContainerInterface.store]
+        ):
+        self._store = store
 
-    def get_component(self, component_type: Type[Component]) -> daft.DataFrame:
+    def get_component(self, component: Component) -> DataFrame:
         """
         Gets the latest active state for a specific component type.
         """
-        df = self._world._store.get_component(component_type)
-
-        # Prep Sorted Bucket Merge Join  
-        df = df.sort(col("step")) \
-               .repartition(None,"step")
-        
-        return df
+        return self._store.get_component(component)
     
-    def get_combined_state_history(self, *component_types: Type[Component]) -> List[daft.DataFrame]:
+    def get_combined_state_history(self, *components: Component) -> List[DataFrame]:
         """
         Gets the latest active state for all specified component types.
 
         Joins component DataFrames on entity_id, step, and is_active to maintain proper historical state
         and ensure we only join active records from the same step together.
         """
-        if not component_types:
-            component_types = self._world._store.components.keys()
+        if not components:
+            components = self._store.components.keys()
 
-        df = self.get_component(component_types[0])
-        for component_type in component_types[1:]:
-            new_df = self.get_component(component_type)
+        df = self.get_component(components[0])
+        for component in components[1:]:
+            new_df = self.get_component(component)
             df = df.join(
                 new_df, 
                 on=["entity_id", "step", "is_active"],
-                prefix=f"{component_type.__name__.lower()}.",
-                how="inner",
+                prefix=f"{component.__name__.lower()}.",
+                how="outer",
                 strategy="hash" # "sort_merge" Not Supported Yet
-            )
+            ).collect()
 
         return df
 
 
-    def get_latest_active_state_from_step(self, *component_types: Type[Component], step: Optional[int] = None) -> daft.DataFrame:
+    def get_latest_active_state_from_step(self, *components: Component, step: Optional[int] = None) -> DataFrame:
         """
         Gets the latest active state for all specified component types from a specific step.
         """
-        df = self.get_combined_state_history(*component_types)
+        df = self.get_combined_state_history(*components)
         
         # Filter to only include steps up to and including the specified step
         if step is not None:
@@ -83,7 +88,8 @@ class QueryInterface:
         return final_df
 
 # --- Update Manager ---
-class UpdateManager:
+
+class UpdateManager(UpdateManagerInterface): # Implement interface
     """
     Responsible for applying materialized state updates from processors
     to components. 
@@ -92,12 +98,16 @@ class UpdateManager:
 
 
     """
-    def __init__(self, world: 'World'):
-        self._world = world
-        self.components_to_update: Set[Type[Component]] = set()
+    @inject # Keep inject decorator
+    def __init__(self,
+            # Inject using INTERFACE container and INTERFACE type hint
+            store: ComponentStoreInterface = Provide[CoreContainerInterface.store]
+        ):
+        self._store = store
+        self.components_to_update: Set[Component] = set()
         self.df = None
 
-    def commit(self, update_df: daft.DataFrame, components: List[Type[Component]]):
+    def commit(self, update_df: DataFrame, components: List[Component]):
         """
         Commits a new update to the component store.
         """
@@ -108,17 +118,17 @@ class UpdateManager:
             self.df = self.df.sort(col("entity_id")) \
                         .join(update_df,
                             on=["entity_id", "is_active"], 
-                            how="inner", 
+                            how="outer", 
                             strategy="hash"
                         )
         
         # Track which components need to be updated
         self.components_to_update.update(components)
 
-    def collect_and_push_step(self, step: int):
+    def collect(self, step: int):
         """Materialized updates."""
         # Remove dead entities
-        #self.remove_dead_entities()
+        self.remove_dead_entities()
         
         try:
             self.df.collect()
@@ -126,21 +136,21 @@ class UpdateManager:
             print(e)
 
         # Update dead entities
-        #self.update_dead_entities()
-        #self.remove_dead_entities()
+        self.update_dead_entities()
+        self.remove_dead_entities()
 
         # Update Store
         for component in self.components_to_update:
-            columns = self._world._store.get_column_names(component)
+            columns = self._store.get_column_names(component)
             update_df = self.df.select(*columns) \
                         .with_column("step", lit(step))
-            self._world._store.update_component(update_df, component)
+            self._store.update_component(update_df, component)
 
         self.clear_caches()
 
     def remove_dead_entities(self):
         """Remove dead entities from the dataframe."""
-        self.df = self.df.where(col("entity_id") != self._world._dead_entities)
+        self.df = self.df.where(col("entity_id") != self._store._dead_entities)
 
     def update_dead_entities(self):
         """Update the world's dead entities."""
@@ -153,7 +163,7 @@ class UpdateManager:
         new_dead_entities = set(new_dead_entities["entity_id"])
 
         # Update the world's dead entities
-        self._world._dead_entities.update(new_dead_entities)
+        self._store._dead_entities.update(new_dead_entities)
 
     def clear_caches(self):
         self.components_to_update = set()

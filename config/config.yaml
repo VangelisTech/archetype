@@ -1,0 +1,91 @@
+aws:
+  s3:
+    key_id: null
+    access_key: null 
+    session_token: null
+    expiry: null
+    region_name: "us-east-1"
+    endpoint_url: null
+    buffer_time: 900
+    max_connections: 100
+    retry_initial_backoff_ms: 100
+    connect_timeout_ms: 30000
+    read_timeout_ms: 30000
+    num_tries: 3
+    retry_mode: "standard"
+    anonymous: false
+    use_ssl: true
+    verify_ssl: true
+    check_hostname_ssl: true
+    requester_pays: false
+    force_virtual_addressing: true
+    profile_name: "default"
+
+gcp:
+  gcs:
+    project_id: null
+    credentials: null
+    token: null
+    anonymous: false
+    max_connections: 100
+    retry_initial_backoff_ms: 100
+    connect_timeout_ms: 30000
+    read_timeout_ms: 30000
+    num_tries: 3
+
+azure:
+  storage_account: null
+  access_key: null
+  sas_token: null
+  bearer_token: null
+  tenant_id: null
+  client_id: null
+  client_secret: null
+  use_fabric_endpoint: false
+  anonymous: false
+  endpoint_url: null
+  use_ssl: true
+
+daft:
+  io:
+    http:
+      bearer_token: null
+  
+  context:
+    max_task_backlog: null
+    force_client_mode: false
+
+  execution:
+    scan_tasks_min_size_bytes: 134217728  # 128MB
+    scan_tasks_max_size_bytes: 268435456  # 256MB
+    max_sources_per_scan_task: 10
+    
+    broadcast_join_size_bytes_threshold: 104857600  # 100MB
+    sort_merge_join_sort_with_aligned_boundaries: true
+    hash_join_partition_size_leniency: 0.2
+    
+    sample_size_for_sort: 1000000
+    num_preview_rows: 10
+    
+    parquet_split_row_groups_max_files: 10
+    parquet_target_filesize: 134217728  # 128MB
+    parquet_target_row_group_size: 134217728  # 128MB
+    parquet_inflation_factor: 2.0
+    csv_target_filesize: 134217728  # 128MB
+    csv_inflation_factor: 2.0
+    
+    shuffle_aggregation_default_partitions: 200
+    partial_aggregation_threshold: 0.7071 # 1/sqrt(2)
+    high_cardinality_aggregation_threshold: 0.7071 # 1/sqrt(2)
+    
+    read_sql_partition_size_bytes: 134217728  # 128MB
+    enable_aqe: true
+    enable_native_executor: true
+    default_morsel_size: 10000
+    
+    shuffle_algorithm: "flight"
+    pre_shuffle_merge_threshold: 10
+    flight_shuffle_dirs: ["/tmp/daft/shuffle"]
+    
+    enable_ray_tracing: false
+    scantask_splitting_level: 1

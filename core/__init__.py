@@ -4,15 +4,16 @@ Core package for ECS implementation.
 
 from .base import Component
 from .world import World
-from .processor import TimedProcessor
+from .processors import Processor
 
 __all__ = [
     "Component",
     "World", 
-    "TimedProcessor"
+    "Processor",
 ]
 
 
 
-
+def create_world():
+    return World()
     
