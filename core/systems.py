@@ -1,5 +1,5 @@
 # Python
-from typing import Any, Dict, List, Type, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Type, Optional, Set, TYPE_CHECKING, Tuple
 import logging # Use standard logging
 from dependency_injector import containers, providers
 from dependency_injector.wiring import inject, Provide
@@ -7,9 +7,10 @@ from dependency_injector.wiring import inject, Provide
 
 # Technologies
 import daft
+from daft import col # Import col
 
 # Internal 
-from .base import BaseSystem
+from .base import BaseSystem, Component
 # Import interfaces
 from .interfaces import SystemInterface, ProcessorInterface, WorldInterface
 
@@ -56,42 +57,84 @@ class SequentialSystem(BaseSystem, SystemInterface): # Implement interface
                  return p
         return None
 
-    def execute(self, dt: float, **kwargs) -> Optional[Dict[ProcessorInterface, daft.DataFrame]]: 
+    def _merge_processor_results(self, processor_results: Dict[ProcessorInterface, daft.DataFrame]) -> Optional[daft.DataFrame]:
+        """Merges results from multiple processors into a single DataFrame."""
+        merged_df: Optional[daft.DataFrame] = None
+        processor_order: List[ProcessorInterface] = list(processor_results.keys()) 
+
+        if not processor_results:
+            return None
+
+        logger.debug(f"Merging results from {len(processor_order)} processors.")
+        for processor in processor_order:
+            df = processor_results[processor]
+
+            if df is None:
+                logger.warning(f"Unexpected None result from {processor.__class__.__name__} passed to merge.")
+                continue
+
+            if "entity_id" not in df.column_names:
+                 logger.warning(f"Processor {processor.__class__.__name__} result missing 'entity_id'. Skipping merge for this result.")
+                 continue
+
+            # Perform the merge/join
+            if merged_df is None:
+                merged_df = df
+                logger.debug(f"Initialized merged_df with result from {processor.__class__.__name__}")
+            else:
+                logger.debug(f"Merging result from {processor.__class__.__name__} into merged_df")
+                merged_df = merged_df.join(
+                    df,
+                    on="entity_id",
+                    how="outer",
+                )
+                # TODO: Implement robust coalescing logic here if needed.
+                logger.debug(f"Merged_df columns after join with {processor.__class__.__name__}: {merged_df.column_names}")
+
+        logger.debug(f"Final merged_df columns: {merged_df.column_names if merged_df else 'None'}")
+        return merged_df
+
+    def _process_single_processor(self, processor: ProcessorInterface, dt: float) -> Optional[daft.DataFrame]:
+        """Handles the preprocess, process, and result validation for a single processor."""
+        processor_name = processor.__class__.__name__
+        try:
+            logger.debug(f"Preprocessing for {processor_name}")
+            state_df = processor.preprocess()
+        except Exception as e:
+            logger.error(f"Error during preprocess for {processor_name}: {e}", exc_info=True)
+            return None  # Indicate failure
+
+        try:
+            logger.debug(f"Processing for {processor_name} with state_df length: {len(state_df) if state_df is not None else 'None'}")
+            result_df = processor.process(dt=dt, state_df=state_df)
+        except Exception as e:
+            logger.error(f"Error during process for {processor_name}: {e}", exc_info=True)
+            return None # Indicate failure
+
+        if result_df is None:
+            logger.debug(f"Processor {processor_name} returned None from process.")
+            return None # Intentionally returned None
+        elif isinstance(result_df, daft.DataFrame):
+            return result_df # Successful processing, return DataFrame
+        else:
+            # Raise error for incorrect type immediately
+            raise ValueError(f"Processor {processor_name} process method did not return a Daft DataFrame or None, got: {type(result_df)}")
+
+    def execute(self, dt: float, **kwargs) -> Optional[daft.DataFrame]:
         """
-        Executes processors sequentially: preprocess -> process.
-        Collects non-None results from the process step.
+        Executes processors sequentially, merges results, and returns the merged state.
         Assumes dt is passed as a positional or keyword argument.
         """
-        self.results = {} 
-        
-        for processor in self.processors:
-            
-            # Step 1: Preprocess (returns a DataFrame, possibly empty)
-            try:
-                logger.debug(f"Preprocessing for {processor.__class__.__name__}")
-                state_df = processor.preprocess()
-            except Exception as e:
-                logger.error(f"Error during preprocess for {processor.__class__.__name__}: {e}", exc_info=True)
-                continue # Skip this processor for the step
-            
-            # logger.debug(f"Processing for {processor.__class__.__name__} with state_df length: {len(state_df) if state_df is not None else 'None'}")
-            # Step 2: Process (always called, operates on potentially empty DataFrame)
-            try:
-                result_df = processor.process(dt=dt, state_df=state_df) # Pass state_df and dt
-            except Exception as e:
-                logger.error(f"Error during process for {processor.__class__.__name__}: {e}", exc_info=True)
-                continue # Skip this processor for the step
+        processor_results: Dict[ProcessorInterface, daft.DataFrame] = {}
 
-            # Step 3: Store result if not None (process might return None intentionally)
-            if result_df is None:
-                # Optional: Log that processor returned None, e.g., for debugging specific logic
-                logger.debug(f"Processor {processor.__class__.__name__} returned None from process.")
-            else:
-                # Basic check: is it actually a DataFrame?
-                if isinstance(result_df, daft.DataFrame):
-                     self.results[processor] = result_df
-                else: # Log warning if unexpected type returned
-                    logger.warning(f"Processor {processor.__class__.__name__} process method did not return a Daft DataFrame or None, got: {type(result_df)}")
-        
-        return self.results 
+        for processor in self.processors:
+            result_df = self._process_single_processor(processor, dt)
+            if result_df is not None:
+                processor_results[processor] = result_df
+
+        # Merge the collected results
+        merged_df = self._merge_processor_results(processor_results)
+
+        return merged_df
+
 

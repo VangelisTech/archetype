@@ -45,8 +45,6 @@ class MovementProcessor(Processor): # Inherit from new base Processor
 
     def process(self, dt: float, state_df: DataFrame) -> Optional[DataFrame]:
         """Applies movement calculation based on Velocity."""
-        # state_df is provided by the base preprocess method
-        # No need for empty checks here
 
         # Calculate 2D Frictionless Kinematics
         update_df = state_df.with_columns(
@@ -56,11 +54,7 @@ class MovementProcessor(Processor): # Inherit from new base Processor
             }
         )
 
-        # Return *only* the updated columns + necessary keys ('entity_id')
-        # The base preprocess should provide entity_id, is_active, step ? check QueryManager
-        # Assume QueryManager provides entity_id, step, is_active
-        # We modified Position (x, y)
-        return update_df.select("entity_id", "x", "y")
+        return update_df
 
 
 class WallCollisionProcessor(Processor): # Inherit from new base Processor

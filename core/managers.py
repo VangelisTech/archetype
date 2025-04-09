@@ -147,7 +147,6 @@ class UpdateManager(UpdateManagerInterface):
     Also handles updating the set of dead entities based on 'is_active' flag.
     """
     _store: ComponentStoreInterface 
-    _components_to_update: Set[Type[Component]] 
     _merged_df: Optional[DataFrame] 
 
     @inject 
@@ -155,28 +154,23 @@ class UpdateManager(UpdateManagerInterface):
             store: ComponentStoreInterface = Provide[CoreContainerInterface.store]
         ):
         self._store = store
-        self._components_to_update = set()
         self._merged_df = None
 
-    def commit(self, merged_update_df: DataFrame, components_updated_in_step: List[Type[Component]]):
+    def commit(self, merged_update_df: DataFrame):
         """
-        Stores the single, merged DataFrame containing all updates for the current step,
-        along with the set of component types potentially affected.
+        Stores the single, merged DataFrame containing all updates for the current step.
         """
-        # Previous logic for merging multiple commits is removed.
-        # World now performs the merge before calling commit.
         if self._merged_df is not None:
              logger.warning("UpdateManager commit called multiple times within a step. Overwriting previous commit.")
 
         logger.debug(f"Committing merged DataFrame with columns: {merged_update_df.column_names}")
         self._merged_df = merged_update_df
-        self._components_to_update = set(components_updated_in_step)
-        logger.debug(f"Components to potentially update: {[c.__name__ for c in self._components_to_update]}")
 
     def collect(self, step: int):
         """Materializes updates from the committed merged DataFrame.
         
-        Splits the merged DataFrame based on component schemas and sends
+        Iterates through all registered components in the store, checks if the
+        merged DataFrame contains relevant columns for each, and sends
         individual updates to the ComponentStore.
         Also updates the store's list of dead entities.
         """
@@ -185,86 +179,79 @@ class UpdateManager(UpdateManagerInterface):
             self.clear_caches() # Ensure caches are cleared even if no work done
             return
         
-        if not self._components_to_update:
-            logger.debug("Collect called with no components marked for update. Skipping store updates.")
-            # Still might need to update dead entities if the df exists
-            # Let's proceed to dead entity logic regardless
-            # self.clear_caches()
-            # return
-        
         # --- Dead Entity Handling (Moved before potential materialization) ---
-        # Update the store's set of dead entities based on the 'is_active' column
-        # in the merged DataFrame *before* potentially filtering rows.
         self.update_dead_entities(self._merged_df)
-
-        # Remove dead entities from the DataFrame we will use for component updates
         active_update_df = self.remove_dead_entities(self._merged_df)
 
-        # Optimization: If active_update_df becomes empty after removing dead entities, maybe skip store updates?
-        # Requires checking length, which triggers compute. Let Daft handle empty selects for now.
-        # if len(active_update_df) == 0:
-        #    logger.debug("No active entities remain in the update DataFrame after removing dead ones.")
-        #    self.clear_caches()
-        #    return
+        if active_update_df is None: # Handle case where remove_dead_entities returns None
+             logger.debug("No active update DataFrame after dead entity removal. Skipping store updates.")
+             self.clear_caches()
+             return
         
         # --- Update Component Store ---
-        logger.debug(f"Collecting updates for step {step} for components: {[c.__name__ for c in self._components_to_update]}")
+        # Get all registered component types from the store
+        # Assumes store.components is a Dict[Type[Component], DataFrame]
+        registered_components = list(self._store.components.keys()) 
+        if not registered_components:
+             logger.warning("No components registered in the store. Cannot perform updates.")
+             self.clear_caches()
+             return
+
+        logger.debug(f"Collecting updates for step {step}. Checking against registered components: {[c.__name__ for c in registered_components]}")
         update_triggered = False
-        for component in self._components_to_update:
+        merged_df_columns = set(active_update_df.column_names) # Cache column names for faster lookups
+
+        for component_type in registered_components:
             try:
-                # Get expected columns from the store for this component type
-                store_columns = self._store.get_column_names(component)
+                store_columns = self._store.get_column_names(component_type)
                 if not store_columns:
-                    logger.warning(f"Component type {component.__name__} not registered or has no columns in store. Skipping update.")
+                    logger.warning(f"Component type {component_type.__name__} not registered or has no columns in store. Skipping update.")
                     continue
 
-                # Select only the columns relevant to this component from the *active* merged df
-                # Ensure essential keys like entity_id, step, is_active are included if expected by store
-                cols_to_select = [c for c in store_columns if c in active_update_df.column_names]
-                
-                # Check if essential key 'entity_id' is available for selection
-                if "entity_id" not in cols_to_select:
-                     if "entity_id" in active_update_df.column_names:
-                          cols_to_select.insert(0, "entity_id") # Add if missing but available
-                     else:
-                          logger.error(f"Cannot select for component {component.__name__}: 'entity_id' missing in active_update_df. Skipping.")
-                          continue
-                
-                # Perform the selection
-                update_select_df = active_update_df.select(*[col(c) for c in cols_to_select])
+                # Determine relevant columns present in the merged df for this component
+                # Include entity_id explicitly if not already in store_columns (it should be)
+                relevant_store_cols = set(store_columns)
+                cols_to_select_names = list(relevant_store_cols.intersection(merged_df_columns))
 
-                # Optimization: Check if selection is empty? Avoids compute but adds check.
-                # if len(update_select_df) == 0:
-                #    logger.debug(f"Selection for {component.__name__} resulted in empty DataFrame. Skipping store update.")
-                #    continue
+                # Crucial check: Do we have more than just 'entity_id' (or other keys)? 
+                # If only 'entity_id' matches, there's no actual component data to update.
+                # Need a robust way to identify non-key columns. Assuming store_columns includes them.
+                has_data_columns = any(c != 'entity_id' and c != 'step' and c != 'is_active' for c in cols_to_select_names)
+                
+                if not has_data_columns:
+                    logger.debug(f"No data columns for {component_type.__name__} found in merged DataFrame. Skipping store update.")
+                    continue
+                
+                # Ensure 'entity_id' is always included if available in the source df
+                if "entity_id" in merged_df_columns and "entity_id" not in cols_to_select_names:
+                    cols_to_select_names.insert(0, "entity_id")
+                elif "entity_id" not in cols_to_select_names:
+                    logger.error(f"Cannot select for component {component_type.__name__}: 'entity_id' missing in active_update_df and store columns? Skipping.")
+                    continue # Cannot proceed without entity_id
+
+                # Perform the selection
+                logger.debug(f"Selecting columns for {component_type.__name__}: {cols_to_select_names}")
+                update_select_df = active_update_df.select(*[col(c) for c in cols_to_select_names])
 
                 # Add the current step literal column
-                # Ensure 'step' isn't already selected if it happens to be a component field
                 if "step" in update_select_df.column_names:
-                     # If 'step' is a data field, maybe rename the literal or handle differently?
-                     # Assume for now we overwrite or store expects it.
-                     logger.debug(f"Column 'step' already exists in selection for {component.__name__}. Overwriting with step literal {step}.")
+                     logger.debug(f"Column 'step' already exists in selection for {component_type.__name__}. Overwriting with step literal {step}.")
                      update_final_df = update_select_df.with_column("step", lit(step))
                 else:
                     update_final_df = update_select_df.with_column("step", lit(step))
 
-                # Send the specific component update DataFrame to the store
-                # This is where the computation for this component's update happens.
-                logger.debug(f"Updating store for component {component.__name__} with {len(update_final_df)} rows (requires compute). Columns: {update_final_df.column_names}")
-                self._store.update_component(update_final_df, component)
+                logger.debug(f"Updating store for component {component_type.__name__} with {len(update_final_df)} rows (requires compute). Columns: {update_final_df.column_names}")
+                self._store.update_component(update_final_df, component_type)
                 update_triggered = True
 
             except Exception as e:
-                # Catch errors during individual component updates
-                logger.error(f"Error collecting update for component {component.__name__}: {e}", exc_info=True)
-                # Continue to next component
+                logger.error(f"Error collecting update for component {component_type.__name__}: {e}", exc_info=True)
 
         if update_triggered:
              logger.debug(f"Finished component store updates for step {step}.")
         else:
-             logger.debug(f"No component store updates were triggered for step {step}.")
+             logger.debug(f"No component store updates were triggered for step {step} based on merged DataFrame columns.")
 
-        # Clear caches after processing the step
         self.clear_caches()
 
     def remove_dead_entities(self, df: DataFrame) -> DataFrame:
@@ -316,7 +303,6 @@ class UpdateManager(UpdateManagerInterface):
              logger.debug("No potentially dead entities found via is_active=False flag.")
 
     def clear_caches(self):
-        """Clears the cached merged DataFrame and component list for the next step."""
+        """Clears the cached merged DataFrame for the next step."""
         logger.debug("Clearing UpdateManager caches.")
         self._merged_df = None
-        self._components_to_update = set()
