@@ -13,7 +13,7 @@ Helper Method: Includes _create_component_update_df to simplify adding component
 Deferred Component Removal (Basic): Implemented remove_component(immediate=False) by queueing a None update, though this requires the store/join logic to correctly interpret None structs as removals (which Daft's anti-join/concat should handle naturally if the None row makes it to apply_updates).
 """
 # Python
-from typing import Any, Dict, List, Set, Type, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Set, Type, Optional, TYPE_CHECKING, Union
 from itertools import count as _step_counter
 from dependency_injector import containers, providers
 from dependency_injector.wiring import inject, Provide
@@ -186,7 +186,6 @@ class World(WorldInterface): # Implement interface
 
         # Clear caches for the next step
         self.updater.clear_caches()
-        # self.querier.clear_caches() # Querier doesn't have caches currently
 
         end_time = time.time()
         step_end_msg = f"--- World: Step {self.current_step} Complete (Total Time: {(end_time - start_time):.4f}s) ---"
@@ -232,18 +231,18 @@ class World(WorldInterface): # Implement interface
 
     # Querying Facade (delegates to Querier)
     def get_components(self, *components: Component) -> daft.DataFrame:
-        """Facade for QueryManager.get_latest_active_state_from_step."""
-        return self.querier.get_latest_active_state_from_step(*components, step=self.current_step)
+        """Facade for QueryManager.get_components."""
+        return self.querier.get_components(*components, steps=self.current_step)
     
-    def get_components_from_step(self, *components: Component, step: int) -> daft.DataFrame:
-        """Facade for QueryManager.get_latest_active_state_from_step."""
-        return self.querier.get_latest_active_state_from_step(*components, step=step)
+    def get_components_from_steps(self, *components: Component, steps: Union[int, List[int]]) -> daft.DataFrame:
+        """Facade for QueryManager.get_components."""
+        return self.querier.get_components(*components, steps=steps)
 
-    def component_for_entity(self, entity_id: int, component: Component) -> Optional[Component]:
+    def get_component_for_entities(self, entity_ids: Union[int, List[int]], component: Component) -> Optional[Component]:
         """
         Facade for QueryManager.component_for_entity.
         """
-        return self.querier.component_for_entity(entity_id, component)
+        return self.querier.get_component_for_entities(entity_ids, component)
 
     # Processor/System Management Facade (delegates to System)
     def add_processor(self, processor: ProcessorInterface) -> None: 
@@ -261,16 +260,9 @@ class World(WorldInterface): # Implement interface
 
     def get_processor(self, processor_type: ProcessorInterface) -> Optional[Processor]:
         """Gets a processor instance from the underlying System."""
-        # SequentialSystem expects instance? Needs check.
-        # Ask system for processor by type
-        # This assumes SystemInterface has a method like get_processor_by_type
-        # return self.system.get_processor_by_type(processor_type) 
-        
-        # Workaround: If system only stores instances, find by type
-        # This is inefficient if many processors
-        for proc in getattr(self.system, 'processors', []): # Access underlying list (unsafe)
+        for proc in self.system.processors.keys(): 
             if isinstance(proc, processor_type):
-                return proc
+                return self.system.processors[proc]
         return None
 
 

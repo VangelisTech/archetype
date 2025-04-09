@@ -64,15 +64,20 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
 
         # Create empty DataFrame
         df = daft.from_arrow(composite_arrow_schema.empty_table())
-        df = df.repartition(None,"step")
+        df = df.repartition(
+            num=None,
+            partition_by="step"
+        )
         
-        self.components[component_type] = df.collect() # Ensure Empty DataFrame is materialized
+        self.components[component_type] = df
         logger.debug(f"Registered component type: {component_type.__name__}")
 
 
-    def get_component(self, component_type: Type[Component]) -> Optional[DataFrame]:
-        """Gets the DataFrame for a component type, registering it if needed.
-           Raises exception if registration fails critically.
+    def get_component(self, component_type: Type[Component]) -> DataFrame:
+        """
+        Gets the DataFrame for a component type, registering it if needed.
+        Raises exception if registration fails critically.
+        Eagerly materializes the DataFrame to fetch latest state.
         """
         if component_type not in self.components:
             try:
@@ -80,7 +85,10 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
             except Exception as e:
                  raise RuntimeError(f"Failed to register component {component_type.__name__}") from e
 
-        return self.components.get(component_type)
+        df = self.components.get(component_type)
+
+        # Materialize upon retrieval for latest state 
+        return df.collect() # possibly empty df, but that's ok
     
     # Update Methods
     def update_component(self, update_df: DataFrame, component_type: Type[Component]) -> None:
@@ -147,7 +155,11 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
 
         self._dead_entities.update(entity_id)
     
-    def remove_component_from_entity(self, entity_id: int, component_type: Type[Component], steps: Optional[Union[int, List[int]]] = None) -> None:
+    def remove_component_from_entity(self, 
+            entity_id: int, 
+            component_type: Type[Component], 
+            steps: Optional[Union[int, List[int]]] = None
+        ) -> None:
         """
         Removes a component from an entity.
         """
@@ -171,7 +183,6 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
     
     def get_column_names(self, component_type: Type[Component]) -> List[str]:
         """
-        Returns the column names for a component type.
+        Returns a list of column names for a component type.
         """
-        df = self.get_component(component_type)
-        return df.column_names
+        return self.components[component_type].column_names

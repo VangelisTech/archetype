@@ -26,26 +26,26 @@ class SequentialSystem(BaseSystem, SystemInterface): # Implement interface
     """
     Executes processors sequentially following the preprocess -> process pattern.
     """
-    processors: Set[ProcessorInterface] # Use interface type
+    processors: Dict[ProcessorInterface, ProcessorInterface] # Use interface type
     results: Dict[ProcessorInterface, daft.DataFrame] # Use interface type
 
     @inject
     def __init__(self):
-        self.processors = set() 
+        self.processors = {} 
         self.results = {}
 
     def add_processor(self, processor: ProcessorInterface) -> None: # Use interface type
         """Adds a processor instance."""
         if processor in self.processors:
             logger.warning(f"SequentialSystem: Replacing existing processor: {processor.__class__.__name__}") 
-        self.processors.add(processor)
+        self.processors[processor] = processor
 
     def remove_processor(self, processor: ProcessorInterface) -> None: # Use interface type
         """Removes a specific processor instance."""
         # Note: This now removes a specific instance, not all of type.
         # To remove by type, the loop logic would be needed again.
         if processor in self.processors:
-            self.processors.remove(processor)
+            self.processors.pop(processor)
         else:
              logger.warning(f"SequentialSystem: Attempted to remove processor not found: {processor.__class__.__name__}")
 
@@ -56,20 +56,19 @@ class SequentialSystem(BaseSystem, SystemInterface): # Implement interface
                  return p
         return None
 
-    # Update execute signature to match BaseSystem/SystemInterface if needed
-    # Pass dt explicitly, return type matches interface Optional[Dict...]
     def execute(self, dt: float, **kwargs) -> Optional[Dict[ProcessorInterface, daft.DataFrame]]: 
         """
         Executes processors sequentially: preprocess -> process.
         Collects non-None results from the process step.
         Assumes dt is passed as a positional or keyword argument.
         """
-        self.results = {} # Reset results for this step
-        # logger.debug(f"Executing system with processors: {[p.__class__.__name__ for p in self.processors]}")
+        self.results = {} 
+        
         for processor in self.processors:
-            # logger.debug(f"Preprocessing for {processor.__class__.__name__}")
+            
             # Step 1: Preprocess (returns a DataFrame, possibly empty)
             try:
+                logger.debug(f"Preprocessing for {processor.__class__.__name__}")
                 state_df = processor.preprocess()
             except Exception as e:
                 logger.error(f"Error during preprocess for {processor.__class__.__name__}: {e}", exc_info=True)
@@ -94,5 +93,5 @@ class SequentialSystem(BaseSystem, SystemInterface): # Implement interface
                 else: # Log warning if unexpected type returned
                     logger.warning(f"Processor {processor.__class__.__name__} process method did not return a Daft DataFrame or None, got: {type(result_df)}")
         
-        return self.results # Return the collected results dictionary
+        return self.results 
 

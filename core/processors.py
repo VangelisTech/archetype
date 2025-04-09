@@ -46,26 +46,18 @@ class Processor(BaseProcessor, ProcessorInterface):
         in `_components_used` from the world.
         Returns an empty DataFrame if no components are specified or no entities found.
         """
-        components_to_fetch = self.get_components_used()
-        if not components_to_fetch:
-            # Return an empty DataFrame, ideally with a schema hint if possible,
-            # but Daft usually handles concat/joins with truly empty frames.
-            # We need at least entity_id for joins later? Check world.get_components return.
-            # For now, assume world.get_components handles empty list query or returns None/empty.
-            return daft.from_pylist([]) # Safest empty DF
+        components = self.get_components_used()
 
-        # Fetch components from the world (expects get_components to handle None/empty)
-        state_df = self.world.get_components(*components_to_fetch)
+        # Fetch lastest component state for steps <= step_number
+        state_df = self.world.get_components(*components) # World inserts step number
 
-        # Ensure a DataFrame is returned, even if empty
-        if state_df is None:
-             # This case might indicate an issue in world.get_components
-             # Log warning? For now, return empty.
-             return daft.from_pylist([])
-        
-        # Optimization: Check if DF is empty after query? Maybe not needed if Daft handles it.
-        # if len(state_df) == 0:
-        #     return state_df # Return the empty DF
+        # Other Built-in State Fetching methods at World Facade include: 
+        #
+        # If your processor needs a specific step or multiple steps 
+        # state_df = self.world.get_components_from_steps(*components, steps=steps)
+        #
+        # OR IF your processor needs a specific entity or multiple entities
+        # state_df = self.world.get_component_for_entities(*components, steps=steps)
 
         return state_df
 
@@ -82,5 +74,38 @@ class Processor(BaseProcessor, ProcessorInterface):
         Returns:
             Optional[daft.DataFrame]: DataFrame with updated component data + keys,
                                       or None if no update should be committed.
+
+        Example:
+        ```python
+        class Position(Component):
+            x: float = 0.0 # m
+            y: float = 0.0 # m
+
+        class Velocity(Component):
+            vx: float = 0.0 # m/s
+            vy: float = 0.0 # m/s
+
+        class MovementProcessor(Processor): # Inherit from Processor
+            def __init__(self):
+                super().__init__() # Handles world injection
+
+                # Declare components used 
+                self._components_used: List[Type[Component]] = [Position, Velocity]
+
+            # No need to implement preprocess since we want latest step state
+
+            def process(self, dt: float, state_df: DataFrame) -> Optional[DataFrame]:
+
+                # Calculate 2D Frictionless Kinematics
+                update_df = state_df.with_columns(
+                    {
+                        "x": col("x") + col("vx") * dt,
+                        "y": col("y") + col("vy") * dt,
+                    }
+                )
+
+                return update_df
+        
+        ```
         """
         raise NotImplementedError

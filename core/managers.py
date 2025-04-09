@@ -4,6 +4,7 @@ from dependency_injector.wiring import inject, Provide
 import logging
 
 # Technologies
+import daft
 from daft import col, lit, DataFrame
 
 # Internal
@@ -30,92 +31,113 @@ class QueryManager(QueryManagerInterface):
         ):
         self._store = store # Dependency Injection Ensures Singleton Instance of ComponentStore
     
-    def get_components(self, *component_types: Type[Component], step: Union[int, List[int]]) -> List[DataFrame]:
+    def get_components(self, *component_types: Type[Component], steps: Union[int, List[int]]) -> DataFrame:
         """
         Fetches combined DataFrames for all active entities at the specified step(s).
         """
         
-        # Determine which transform function to use based on step type
-        if isinstance(step, int):
-            transform_func = self.get_latest_active_state_from_step
-        elif isinstance(step, list):
-            transform_func = self.get_state_at_steps
-        else:
-            raise ValueError(f"Invalid step type: {type(step)}")
-        
         # Build list of DataFrames to join
         join_df = None # Initialize before loop
         for component_type in component_types:
-            original_df = self._store.get_component(component_type)
+            component_df = self._store.get_component(component_type)
 
-            # Apply the transform function to the original DataFrame
-            df = original_df.if_else(step, )
+            if isinstance(steps, int):
+                processed_df = self._get_latest_active_state_from_step(component_df, steps)
+            elif isinstance(steps, list):
+                processed_df = self._get_state_at_steps(component_df, steps)
+            else:
+                # Should be unreachable but here if upstream changes
+                raise ValueError(f"Invalid step type: {type(steps)}")
             
-            # Filter out inactive entities and drop the is_active column
-            df = df.where(col("is_active")).exclude("is_active")
+            final_df = self._prep_df_for_join(processed_df, component_type)
             
-            # Sort by entity_id and step for final join
-            final_df = df.sort("entity_id", "step")
-
+            # Accumulate the join
             if join_df is None:
+                # Set initial dataframe as base for join
                 join_df = final_df
             else:
                 # Accumulate the join
                 join_df = join_df.join(
-                    final_df, # Join the newly processed component df
+                    final_df, 
                     on=["entity_id", "step"],
-                    # Use appropriate prefix for the *newly added* columns from final_df
-                    # This might require getting column names specific to the component
-                    # prefix=f"{component_type.__name__.lower()}." # Prefix might apply incorrectly here
-                    # Need to be careful about column naming with repeated joins.
-                    # Consider selecting only component-specific columns + keys before join.
                     how="outer",
                     strategy="sort_merge"
                 )
 
-        return join_df
+        return join_df # Should always be a DataFrame, possibly empty
+    
+    def _prep_df_for_join(self, df: DataFrame, component_type: Type[Component]) -> DataFrame:
+        """
+        Prepares a DataFrame for joining by filtering, sorting, and prefixing state columns.
+        Returns an empty DataFrame with the correct prefixed schema if the input is empty.
+        """
+        # Get the original column names (needed for schema generation if empty)
+        # Assume df schema is consistent even if empty, fetched from store initially
+        key_cols = {"entity_id", "step", "is_active"} # Include is_active as it's in the input df
+        original_state_cols = [c for c in df.column_names if c not in key_cols]
+        prefixed_state_cols = [f"{component_type.__name__.lower()}.{col}" for col in original_state_cols]
+
+        # --- Process non-empty DataFrame --- 
+        prepped_df = df.where(col("is_active")) \
+                       .exclude("is_active") \
+                       .sort("entity_id", "step")
+
+        # Create rename mapping
+        rename_map = {
+            orig_col: prefixed_col
+            for orig_col, prefixed_col in zip(original_state_cols, prefixed_state_cols)
+        }
+
+        # Rename the state columns
+        final_df = prepped_df.rename_columns(rename_map)
+
+        return final_df
+
+    def _get_latest_active_state_from_step(self, df: DataFrame, step: int) -> DataFrame:
+        """
+        Gets the latest active state for components up to a specific step.
+        Returns an empty DataFrame if no relevant history exists.
+        """
+        # Filter for records up to the specified step
+        relevant_history_df = df.where(col("step") <= step)
 
 
-    def get_latest_active_state_from_step(self, df: DataFrame, step: int) -> DataFrame:
-        """
-        Gets the latest active state for all specified component types from a specific step.
-        """
-        # Filter out inactive entities up to the specified step
-        new_df = df.where(col("step") <= step) 
-            
         # Get the latest step for each entity 
-        # (Some Components may not have been updated in last step for some entities)
-        latest_steps = new_df.groupby("entity_id") \
-                         .max(col("step") \
-                         .alias("latest_step"))
+        latest_steps_df = relevant_history_df.groupby("entity_id") \
+                                             .max(col("step").alias("latest_step")) \
+                                             .sort("entity_id", "latest_step")
         
-        # If the smallest latest step is the step we're looking for
-        # then all components had a state at that step, skip the join
-        if latest_steps.min(col("latest_step")) == step:
-            final_df = df.where(col("step") == step)
-            
-        else:
-            # Join back to get the full row for the latest step
-            new_df = new_df.join(
-                latest_steps,
-                left_on=["entity_id", "step"],
-                right_on=["entity_id", "latest_step"],
-                how="inner",
-                strategy="sort_merge"
-            )
+        # Join back to get the full row for the latest step
+        latest_state_df = relevant_history_df.join(
+            latest_steps_df,
+            left_on=["entity_id", "step"],
+            right_on=["entity_id", "latest_step"],
+            how="inner",
+            strategy="sort_merge" 
+        ).sort("entity_id", "step") # Ensure sort order for next join
 
-            # Select only original columns defined in the schema (excluding 'latest_step' and 'step')
-            final_df = new_df.select(*df.column_names)
+        # Select only original columns 
+        final_df = latest_state_df.select(*df.column_names) 
         
         return final_df
 
-    def get_state_at_steps(self, df: DataFrame, steps: List[int]) -> DataFrame:
+    def _get_state_at_steps(self, df: DataFrame, steps: List[int]) -> DataFrame:
         """
-        Gets the state of all specified component types at the specified steps.
+        Gets the state of components at specific discrete steps.
+        Returns an empty DataFrame if no matching steps are found.
         """
         return df.where(col("step").is_in(steps))
-
-
+    
+    def get_component_for_entities(self, entity_ids: Union[int, List[int]], component_type: Type[Component], steps: Union[int, List[int]]) -> Optional[Component]:
+        """
+        Fetches the latest active state for a specific component from a specific entity.
+        Returns None if no matching steps are found or if the component is not found.
+        """
+        if isinstance(entity_ids, int):
+            entity_ids = [entity_ids]
+        
+        df = self.get_components(component_type, steps)
+        return df.where(col("entity_id").is_in(entity_ids))
 
 class UpdateManager(UpdateManagerInterface):
     """
