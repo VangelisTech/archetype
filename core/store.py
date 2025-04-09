@@ -19,8 +19,9 @@ Uses a Daft Catalog and Session to manage persistent storage:
 - Component instances are reconstructed from table data using Pydantic validation
 """
 
-from typing import Dict, List, Optional 
+from typing import Dict, List, Optional, Type, Union
 from itertools import count as _count
+from logging import getLogger
 import daft
 from daft import col, DataFrame
 import pyarrow as pa
@@ -30,6 +31,8 @@ from .base import Component
 # Import interface
 from .interfaces import ComponentStoreInterface
 
+logger = getLogger(__name__)
+
 class ComponentStore(ComponentStoreInterface): # Implement interface
     """
     Manages the historical state of components, stored internally using
@@ -38,71 +41,87 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
     """
 
     def __init__(self):
-        self.components: Dict[Component, DataFrame] = {}
+        self.components: Dict[Type[Component], DataFrame] = {}
         self.entities: Dict[int, List[Component]] = {}
 
         # Entity Management 
         self._entity_count = _count(start=1)
         self._dead_entities = set()
 
-    def register_component(self, component: Component) -> None:
+    def register_component(self, component_type: Type[Component]) -> None:
         """
         Ensures a component type is known to the store, creating its schema
         and internal data structure if it doesn't exist setting composite to 
         a blank daft.DataFrame with the correct schema
         """
-        # Get the arrow schema for the component type
-        component_arrow_schema: pa.Schema = component.to_arrow_schema()
+        
+        component_arrow_schema: pa.Schema = component_type.to_arrow_schema()
 
-        # Insert core fields: entity_id, step, is_active
+        # Insert core fields
         composite_arrow_schema = component_arrow_schema.insert(0, pa.field("entity_id", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(1, pa.field("step", pa.int64()))
         composite_arrow_schema = composite_arrow_schema.insert(2, pa.field("is_active", pa.bool_()))
 
+        # Create empty DataFrame
         df = daft.from_arrow(composite_arrow_schema.empty_table())
         df = df.repartition(None,"step")
         
-        self.components[component] = df
+        self.components[component_type] = df.collect() # Ensure Empty DataFrame is materialized
+        logger.debug(f"Registered component type: {component_type.__name__}")
 
 
-    def get_component(self, component: Component) -> daft.DataFrame:
+    def get_component(self, component_type: Type[Component]) -> Optional[DataFrame]:
+        """Gets the DataFrame for a component type, registering it if needed.
+           Raises exception if registration fails critically.
         """
-        Gets the latest active state for a specific component type.
-        """
-        if self.components.get(component) is None:
-            self.register_component(component)
-        elif len(self.components.get(component)) == 0:
-            return None
+        if component_type not in self.components:
+            try:
+                self.register_component(component_type)
+            except Exception as e:
+                 raise RuntimeError(f"Failed to register component {component_type.__name__}") from e
 
-        return self.components.get(component)
+        return self.components.get(component_type)
     
     # Update Methods
-    def update_component(self, update_df: daft.DataFrame, component: Component) -> None:
-        """Once a processor has applied its changes to the joined dataframe, we need to then update the individual component instances"""
+    def update_component(self, update_df: DataFrame, component_type: Type[Component]) -> None:
+        """
+        Concatenates new update data to the existing component DataFrame.
+        Eagerly materializes the DataFrame to ensure it's in memory.
+        Important for entity initialization. 
         
-        original_df = self.get_component(component)
-        new_df = original_df.concat(update_df)
+        """
+        original_df = self.get_component(component_type)
 
-        self.components[component] = new_df # Formal Storage assignment, Must Collect to update component state
+        # Schema alignment and concat logic (user's version with try/except around concat)
+        update_df_aligned = update_df.select(*original_df.column_names) # Align columns first
+        try:
+            # IMPORTANT: Processor MUST return full schema for any component type,
+            # otherwise, we'll have issues with column alignment.
+            # Responsibility lies with Processor developer to ensure this
+            new_df = original_df.concat(update_df_aligned) # FROM DAFT DOC: DataFrames being concatenated must have exactly the same schema.
+        except Exception as e:
+            logger.error(f"Error concatenating DataFrames for {component_type.__name__}: {e}", exc_info=True)
+            raise ValueError(f"Schema mismatch or concat error for {component_type.__name__}") from e
+
+        self.components[component_type] = new_df
     
-    def add_component(self, entity_id: int, component: Component, step: int) -> None:  
+    def add_component(self, entity_id: int, component_instance: Component, step: int) -> None:  
         """
-        A convenience method for updating composites from component instances directly. 
+        Adds/updates a component from an instance.
+        Relies on get_component to auto-register.
         """
-        
-        df = self.get_component(component)
+        component_type = type(component_instance)
 
-        # Create a dictionary from the component's model fields
-        component_dict = component.model_dump()
+        # Prepare data row
+        component_dict = component_instance.model_dump()
         component_dict["entity_id"] = entity_id
         component_dict["step"] = step
         component_dict["is_active"] = True
 
-        # Prep Concat
-        component_df = daft.from_pylist([component_dict])
+        # Create single-row DataFrame
+        component_df = daft.from_pylist([component_dict]) # Expects List[Dict[str, Any]]
 
-        # adding the component record to the dataframe
-        self.components[component] = df.concat(component_df[df.column_names])
+        self.update_component(component_df, component_type)
 
     def add_entity(self, components: Optional[List[Component]] = None, step: Optional[int] = -1) -> int:
         """
@@ -128,32 +147,31 @@ class ComponentStore(ComponentStoreInterface): # Implement interface
 
         self._dead_entities.update(entity_id)
     
-    def remove_component_from_entity(self, entity_id: int, component: Component) -> None:
+    def remove_component_from_entity(self, entity_id: int, component_type: Type[Component], steps: Optional[Union[int, List[int]]] = None) -> None:
         """
         Removes a component from an entity.
         """
-        self.entities[entity_id].pop(component)
-        self.components[component] = self.components[component].where(col("entity_id") != entity_id)
+        # Remove Entity from Entity Dictionary
+        if entity_id in self.entities.keys():
+            self.entities[entity_id].pop(component_type)
 
-    def remove_component(self, component: Component) -> None:
+        # Remove Entity from Component DataFrame
+        df = self.get_component(component_type)
+        df = df.where(col("entity_id") != entity_id)
+        self.components[component_type] = df
+
+    def remove_entity_from_component(self, entity_id: int, component_type: Type[Component], steps: Optional[Union[int, List[int]]] = None) -> None:
         """
-        Removes a 
+        Removes a entity from a component. 
+        Alias for remove_component_from_entity which does the same thing.
+        (remove entity/component relationship)
         """
-        # Get active entities for the component type
-        df = self.get_component(component)
+        self.remove_component_from_entity(entity_id, component_type, steps)
 
-        active_entities = df.select("entity_id")\
-                            .where(col("is_active"))
-
-        # Remove the component from the active entities
-        for entity in active_entities["entity_id"]:
-            self.remove_component_from_entity(entity, component)
-        
-        # Finally, remove the component from the store
-        del self.components[component]
     
-    def get_column_names(self, component: Component) -> List[str]:
+    def get_column_names(self, component_type: Type[Component]) -> List[str]:
         """
         Returns the column names for a component type.
         """
-        return self.components[component].column_names
+        df = self.get_component(component_type)
+        return df.column_names

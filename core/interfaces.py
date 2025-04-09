@@ -46,7 +46,7 @@ class WorldInterface(Protocol):
     store: ComponentStoreInterface
     querier: QueryManagerInterface
     updater: UpdateManagerInterface
-    system: SystemInterface
+    system: 'SystemInterface' # Use forward reference here
     current_step: int
 
     # Public Methods
@@ -58,9 +58,9 @@ class WorldInterface(Protocol):
     def get_components(self, *components: Type[Component]) -> DataFrame: ...
     def get_components_from_step(self, *components: Type[Component], step: int) -> DataFrame: ...
     def component_for_entity(self, entity_id: int, component: Type[Component]) -> Optional[Component]: ...
-    def add_processor(self, processor: ProcessorInterface, priority: Optional[int] = None) -> None: ... # Use ProcessorInterface
-    def remove_processor(self, processor_type: Type[ProcessorInterface]) -> None: ... # Use ProcessorInterface type
-    def get_processor(self, processor_type: Type[ProcessorInterface]) -> Optional[ProcessorInterface]: ... # Use ProcessorInterface type
+    def add_processor(self, processor: 'ProcessorInterface', priority: Optional[int] = None) -> None: ... # Use ProcessorInterface
+    def remove_processor(self, processor_type: Type['ProcessorInterface']) -> None: ... # Use ProcessorInterface type
+    def get_processor(self, processor_type: Type['ProcessorInterface']) -> Optional['ProcessorInterface']: ... # Use ProcessorInterface type
 
 
 @runtime_checkable
@@ -68,13 +68,11 @@ class ProcessorInterface(BaseProcessor, Protocol):
     """Interface for Processors"""
     world: WorldInterface 
 
-    def process(self, dt: float) -> None: ... # From Processor base
-
 @runtime_checkable
 class SystemInterface(Protocol):
     """Interface for system orchestration."""
     
-    def execute(self, *args: Any, **kwargs: Any) -> Optional[Dict[ProcessorInterface, DataFrame]]: ... # Return type from SequentialSystem
-    def add_processor(self, processor: ProcessorInterface) -> None: ... # Use ProcessorInterface
-    def remove_processor(self, processor: ProcessorInterface) -> None: ... # Use ProcessorInterface
-    def get_processor(self, processor: ProcessorInterface) -> Optional[ProcessorInterface]: ... # Use ProcessorInterface
+    def execute(self, *args: Any, **kwargs: Any) -> Optional[Dict[ProcessorInterface, DataFrame]]: ... # Corrected return type
+    def add_processor(self, processor: ProcessorInterface) -> None: ... 
+    def remove_processor(self, processor: ProcessorInterface) -> None: ... 
+    def get_processor(self, processor: ProcessorInterface) -> Optional[ProcessorInterface]: ...
