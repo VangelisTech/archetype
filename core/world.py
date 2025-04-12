@@ -98,16 +98,18 @@ class World(WorldInterface): # Implement interface
         # 1. Execute system(s) and get merged results
         merged_df = self.system.execute(dt=dt)
 
-
-
-        self.updater.commit(merged_df) # Pass only the DataFrame
         
 
+        # 2. Commit the merged DataFrame 
+        logger.debug("Triggering updater commit.")
+        self.updater.commit(merged_df) 
+        
         # 3. Collect and push the updates
         logger.debug("Triggering updater collect.")
         self.updater.collect(self.current_step)
 
         # Clear caches for the next step
+        logger.debug("Clearing caches.")
         self.updater.clear_caches()
 
         end_time = time.time()

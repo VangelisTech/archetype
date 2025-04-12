@@ -56,6 +56,14 @@ class KineticEnergy(Component):
     kez: float = 0.0 # Joules
 
 
+class Physics(Component):
+    position: Position
+    velocity: Velocity
+    acceleration: Acceleration
+    mass: Mass
+    momentum: Momentum
+    force: Force
+
 # --- Define a simple Processor ---
 class KinematicsProcessor(Processor): # Processors simply implement a "process" method
     """Updates Position based on Velocity."""

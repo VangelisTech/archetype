@@ -68,6 +68,8 @@ class ProcessorInterface(BaseProcessor, Protocol):
     """Interface for Processors"""
     world: WorldInterface 
 
+    def process(self, dt: float, state_df: DataFrame) -> Optional[DataFrame]: ...
+
 @runtime_checkable
 class SystemInterface(Protocol):
     """Interface for system orchestration."""

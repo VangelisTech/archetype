@@ -1,3 +1,4 @@
+\
 # -*- coding: utf-8 -*-
 """
 Manages the storage and state of components using versioned LanceDB tables,
@@ -12,7 +13,7 @@ Key aspects of this implementation:
 - Queries need to consult the catalog to find relevant tables for specific steps/versions.
 """
 
-from typing import Dict, List, Optional, Type, Union, Any, Tuple
+from typing import Dict, List, Optional, Type, Union, Any
 from itertools import count as _count
 from logging import getLogger
 import hashlib
