@@ -13,22 +13,34 @@ class UpdateManager:
         self.step_updates = {}
 
     def commit(self, sig: Tuple[Type[Component], ...], df: DataFrame, step: int):
+        logger.debug(f"UpdateManager.commit: Materializing and storing data for signature {sig} at step {step}.")
         self._store.archetypes[sig] = df.collect()
 
     def collect(self, updated_archetypes: Dict[str, DataFrame], step: int):
-        """Collects the updates for the current step."""
+        """Collects the updates for the current step by concatenating with existing archetype data."""
+        if not updated_archetypes:
+            logger.debug(f"UpdateManager.collect (step {step}): No new archetypes to process.")
+            return
 
-        for hash, df in updated_archetypes.items():
-            sig = self._store._hash2sig[hash]
-            before_df = self._store.archetypes[sig]
-
+        logger.debug(f"UpdateManager.collect (step {step}): Processing {len(updated_archetypes)} archetypes.")
+        for sig_hash, current_step_lazy_df in updated_archetypes.items():
+            sig = self._store._hash2sig.get(sig_hash)
+            if not sig:
+                logger.warning(f"UpdateManager.collect (step {step}): Unknown sig_hash {sig_hash}. Skipping.")
+                continue
             
-
-            new_df = before_df.concat(materialized_step_df)
-
-            self._store.archetype_data_by_hash(hash)
-            logger.debug(f"UpdateManager.collect: Delegated update for sig_hash {hash} to ArchetypeStore.")
+            if sig in self._store.archetypes:
+                before_df_lazy = self._store.archetypes[sig]
+                logger.debug(f"UpdateManager.collect (step {step}): Concatenating new data for existing archetype {sig}.")
+                new_combined_lazy_df = before_df_lazy.concat(current_step_lazy_df)
+            else:
+                logger.debug(f"UpdateManager.collect (step {step}): New archetype {sig}. Using its data directly.")
+                new_combined_lazy_df = current_step_lazy_df
+            
+            self._store.archetypes[sig] = new_combined_lazy_df
+            logger.debug(f"UpdateManager.collect (step {step}): Updated store for archetype {sig} (hash: {sig_hash}).")
 
     def reset(self):
+        logger.debug("UpdateManager.reset called.")
         self.step_updates = {}
 
