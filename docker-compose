@@ -1,0 +1,52 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Lightweight message broker
+  # ---------------------------------------------------------------------------
+  nats:
+    image: nats:2.10-alpine          # JetStream support baked‑in
+    container_name: nats
+    command: ["-js", "-m", "8222"]   # enable JetStream, expose monitoring
+    ports:
+      - "4222:4222"   # client  (NATS protocol)
+      - "8222:8222"   # metrics (http://localhost:8222)
+    restart: unless-stopped
+  
+  # ---------------------------------------------------------------------------
+  # Unity Catalog
+  # ---------------------------------------------------------------------------
+  unity_catalog:
+    image: /unity-catalog:latest
+    container_name: unity-catalog
+    ports:
+      - "4222:4222"   # client  (NATS protocol)
+      - "8222:8222"   # metrics (http://localhost:8222)
+  # ---------------------------------------------------------------------------
+  # OpenAI‑compatible vLLM server
+  # ---------------------------------------------------------------------------
+  vllm:
+    image: vllm/vllm-openai:latest   # official image  :contentReference[oaicite:0]{index=0}
+    container_name: vllm
+    runtime: nvidia                  # need the host’s GPUs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia         # Docker >= 23.0 GPU syntax
+              capabilities: ["gpu"]
+    environment:
+      # put your token in an .env file or export on the CLI
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-""}
+    volumes:
+      # share model cache so repeated restarts don’t re‑download
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    ports:
+      - "8000:8000"                  # OpenAI‑style endpoint
+    command: >
+      --model mistralai/Mistral-7B-Instruct-v0.1
+      --tensor-parallel-size 2
+      --max-model-len 8192
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ecs_net
