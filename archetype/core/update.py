@@ -1,8 +1,7 @@
 from daft import DataFrame
 from .store import ArchetypeStore
-from .base import Component
-from typing import Optional, Dict, Tuple, Type
-import daft
+from typing import Dict
+from daft import col
 from logging import getLogger
 
 logger = getLogger(__name__)
@@ -10,37 +9,16 @@ logger = getLogger(__name__)
 class UpdateManager:
     def __init__(self, store: ArchetypeStore):
         self._store = store
-        self.step_updates = {}
 
-    def commit(self, sig: Tuple[Type[Component], ...], df: DataFrame, step: int):
-        logger.debug(f"UpdateManager.commit: Materializing and storing data for signature {sig} at step {step}.")
-        self._store.archetypes[sig] = df.collect()
+    async def collect(self, updates: Dict[str, DataFrame], step: int):
+        for sig_hash, df in updates.items():
+            # Add the step column to the dataframe
+            df = df.with_column("step", col("step").lit(step))
 
-    def collect(self, updated_archetypes: Dict[str, DataFrame], step: int):
-        """Collects the updates for the current step by concatenating with existing archetype data."""
-        if not updated_archetypes:
-            logger.debug(f"UpdateManager.collect (step {step}): No new archetypes to process.")
-            return
-
-        logger.debug(f"UpdateManager.collect (step {step}): Processing {len(updated_archetypes)} archetypes.")
-        for sig_hash, current_step_lazy_df in updated_archetypes.items():
-            sig = self._store._hash2sig.get(sig_hash)
-            if not sig:
-                logger.warning(f"UpdateManager.collect (step {step}): Unknown sig_hash {sig_hash}. Skipping.")
-                continue
+            # Get the signature from the hash
+            sig = self._store._hash2sig[sig_hash]
             
-            if sig in self._store.archetypes:
-                before_df_lazy = self._store.archetypes[sig]
-                logger.debug(f"UpdateManager.collect (step {step}): Concatenating new data for existing archetype {sig}.")
-                new_combined_lazy_df = before_df_lazy.concat(current_step_lazy_df)
-            else:
-                logger.debug(f"UpdateManager.collect (step {step}): New archetype {sig}. Using its data directly.")
-                new_combined_lazy_df = current_step_lazy_df
-            
-            self._store.archetypes[sig] = new_combined_lazy_df
-            logger.debug(f"UpdateManager.collect (step {step}): Updated store for archetype {sig} (hash: {sig_hash}).")
+            # Upsert the data into the table
+            await self._store.upsert(sig, df.to_arrow())
 
-    def reset(self):
-        logger.debug("UpdateManager.reset called.")
-        self.step_updates = {}
 

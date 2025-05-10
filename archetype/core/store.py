@@ -12,15 +12,17 @@ from functools import lru_cache
 import lancedb
 from lancedb.pydantic import LanceModel
 from lancedb.table import AsyncTable
-
+import pandas as pd
 from .base import Component
 
 logger = getLogger(__name__)
 
+# Partition keys are the keys that are used to partition the data in the table.
+# We only partition by step because we want to be able to query the latest data for an archetype.
+PARTITION_KEYS = ["simulation", "run", "step"]
 
-PARTITION_KEYS = ["step", "run", "simulation"]
-
-
+# Data is the type of data that can be added to the table.
+DATA = Union[List[Dict[str, Any]], pd.DataFrame, pa.Table, pa.RecordBatch]
 
 class BaseArchetypeTable(Component):
     simulation: str 
@@ -46,7 +48,7 @@ class ArchetypeStore:
         self.run = run or f"sim_{str(ulid.ULID())}"
         
         # Initialize internal properties
-        self.archetypes: Dict[Tuple[Component, ...], DataFrame] = {} # Primary mapping for signature -> dataframe
+        self._latest_cache: Dict[str, DataFrame] = {} # Cache of the latest data for each archetype
         self._entity2sig: Dict[int, Tuple[Component, ...]] = {} # Necessary mapping for entity_id -> signature
         self._hash2sig: Dict[str, Tuple[Component, ...]] = {} # Convenience mapping for hash -> signature
         self._entity_counter = _count(start=1)
@@ -92,7 +94,31 @@ class ArchetypeStore:
                 archetype_schema = archetype_schema.append(renamed_field)
             
         return archetype_schema
+    
+    async def _ensure_table(self, sig: Tuple[Component, ...]) -> AsyncTable:
+        """
+        Ensure that the table for the given archetype signature exists.
+        """
+        hash = self._create_archetype_hash(sig)
+        schema = self._build_archetype_schema(sig)
 
+        # Create the table if it doesn't exist
+        table = await self.async_db.create_table(
+            hash, schema=schema, exist_ok=True
+        )
+
+        return table, hash
+
+    def _update_latest_cache(self, sig: Tuple[Component, ...]) -> None:
+        """
+        Get the latest dataframe for an archetype.
+        """
+        table, hash = self._ensure_table(sig)
+
+        df = daft.from_arrow(table) \
+            .where(col("is_active")) 
+
+        self._latest_cache[hash] = df
     #--------------------------------------------------------------------------
     # ComponentStoreInterface methods
     #--------------------------------------------------------------------------
@@ -101,25 +127,17 @@ class ArchetypeStore:
     def get_sig_from_entity(self, entity_id: int) -> Tuple[Component, ...]:
         return self._entity2sig[entity_id]
 
-    def add_entity(self, components: List[Component], step: int = 0) -> int:
+    async def add_entity(self, components: List[Component], step: int = 0) -> int:
         """
         Add an entity to the store.
         """
         if len(components) == 0:
             raise ValueError("Cannot create an entity with no components")
-        
-        sig = self._sig_from_components(components)
-        archetype_schema = self._build_archetype_schema(sig)
-
-        if sig not in self.archetypes:
-            df = daft.from_arrow(archetype_schema.empty_table()).repartition(None, PARTITION_KEYS[0:2])
-            self.archetypes[sig] = df
-        else:
-            df = self.archetypes[sig]
-
-
-        # Add the entity to the table
+            
+        # Get the next entity id
         entity_id = next(self._entity_counter)
+
+        # Create the base archetype row
         base_archetype_dict = BaseArchetypeTable(
             simulation=self.simulation,
             run=self.run,
@@ -128,6 +146,7 @@ class ArchetypeStore:
             is_active=True
         ).model_dump()
 
+        # Create the entity data dict
         entity_data_dict = base_archetype_dict.copy()
         for component_instance in components:
             prefix = self._get_component_prefix(component_instance.__class__)
@@ -135,12 +154,16 @@ class ArchetypeStore:
             for key, value in component_dump.items():
                 entity_data_dict[prefix + key] = value
         
-        df_row = daft.from_pylist([entity_data_dict])
+        # Get the table and hash for the archetype
+        sig = self._sig_from_components(components)
+        table, hash = await self._ensure_table(sig)
 
-        # Merge insert the base row and component rows
-        self.archetypes[sig] = self.archetypes[sig].concat(df_row)
-        self._entity2sig[entity_id] = sig
-        self._hash2sig[self._create_archetype_hash(sig)] = sig
+        # Add the entity to the table
+        await table.add(entity_data_dict)
+
+        # Update the cache
+        self._update_latest_cache(sig)
+
 
         return entity_id
     
@@ -148,7 +171,7 @@ class ArchetypeStore:
         sig = self._entity2sig[entity_id]
 
         # Query the entity staet at the lastest step
-        df = self.archetypes[sig] \
+        df = self.tables[sig] \
             .where(col("entity_id") == entity_id) \
             .where(col("step") == step) \
             .limit(1)
@@ -157,7 +180,7 @@ class ArchetypeStore:
         df = df.with_column("is_active", col("is_active").lit(False))
 
         # Add the row to the df
-        self.archetypes[sig] = self.archetypes[sig].concat(df)
+        self.tables[sig] = self.tables[sig].concat(df)
         
         # Update the entity2sig mapping to pop the entity_id, keeping in mind its an lru_cache
         return self._entity2sig.pop(entity_id) #returns key error if not found
@@ -179,10 +202,10 @@ class ArchetypeStore:
             # raise ValueError(f"Unknown signature hash: {sig_hash}")
             return
 
-        if sig not in self.archetypes:
-            logger.info(f"ArchetypeStore: Signature for hash {sig_hash} ({sig}) was not actively in self.archetypes. It will be set with the updated_df.")
+        if sig not in self.tables:
+            logger.info(f"ArchetypeStore: Signature for hash {sig_hash} ({sig}) was not actively in self.tables. It will be set with the updated_df.")
 
-        self.archetypes[sig] = updated_df
+        self.tables[sig] = updated_df
         logger.debug(f"ArchetypeStore: Updated data for archetype {sig} (hash: {sig_hash}) using provided DataFrame for step {step}.")
 
 
@@ -195,28 +218,23 @@ class ArchetypeStore:
             raise ValueError("Must request at least one component type")
 
         # Get archetype dataframes that contain all of the requested component types (definition of an archetype is that all components must be present)
-        sigs = [sig for sig in self.archetypes.keys() if all(C in sig for C in component_types)]
+        sigs = [sig for sig in self.tables.keys() if all(C in sig for C in component_types)]
         
         # We need to return a dictionary of archetypes, keyed by the signature hash, in order for us to be able to return the transformations upon update 
         # Since signatures can become quite large,and we are passing this around a lot, we use the hash as the key
-        archetypes = {self._create_archetype_hash(sig): self.archetypes[sig] for sig in sigs} 
+        archetypes = {self._create_archetype_hash(sig): self.tables[sig] for sig in sigs} 
 
         # When we return the processed archetypes we can use the hash2sig to get the signature.
         # This allows us to keep the signatures small and manageable.
         return archetypes
 
 
-    async def flush(self):
-        for sig,df in self.archetypes.items():
-
-            archetype_name = self._create_archetype_hash(sig)
-            archetype_schema = self._build_archetype_schema(sig)
-            # Get or Create the Archetype Table
-            self._sig2table[sig] = await self.async_db.create_table(
-                archetype_name, 
-                schema=archetype_schema, 
-                exist_ok= True 
-            )
-
-            await self._sig2table[sig].merge_insert(df.to_arrow())
-
+    async def upsert(self, sig: Tuple[Component, ...], data: DATA):
+        table = await self.ensure_table(sig)
+        # Upsert the data into the table
+        await table.merge_insert(["entity_id", "step"]) \
+            .when_not_matched_insert_all() \
+            .execute(data)
+        
+        # Update the latest cache
+        self._update_latest_cache(sig)
