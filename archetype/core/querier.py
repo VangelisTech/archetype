@@ -5,9 +5,9 @@ from typing import List, Type, Optional, Union
 
 from .store import ArchetypeStore
 from .base import Component
+from .interfaces import Querier
 
-
-class QueryManager:
+class DaftQuerier(Querier):
     def __init__(self, store: ArchetypeStore):
         self._store = store
 
@@ -38,6 +38,7 @@ class QueryManager:
                 archetypes[sig] = df
 
         return archetypes
+    
     
 
     

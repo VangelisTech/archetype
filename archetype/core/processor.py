@@ -9,9 +9,8 @@ if TYPE_CHECKING:
 class Processor(BaseProcessor):
 
     components: Tuple[Type[Component], ...] = None
-    entities: Union[int, List[int]] = None
     priority: int = 0
-    def query(self, world: World, step: int) -> DataFrame:
+    def preprocess(self, world: World, step: int) -> DataFrame:
         if not self.components:
             raise ValueError("Processor must have at least one component set at self._components. Use @processor(Component1, Component2) decorator")
         return world.query(self.components, step=step, entities=self.entities)

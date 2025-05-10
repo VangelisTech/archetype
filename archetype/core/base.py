@@ -1,17 +1,28 @@
-from typing import Any, Type, Optional, List, Dict
+from typing import Any, Type, Optional, List, Dict, TYPE_CHECKING
 from abc import ABC, abstractmethod
 import daft
 
 # Note: World is defined in another module and should be imported or forward-referenced as needed.
 from lancedb.pydantic import LanceModel
 
+if TYPE_CHECKING:
+    from .interfaces import World # Changed to import World protocol from interfaces
+    from .interfaces import Component # Import Component protocol
+
 
 # -- Entity Base --- 
 # Entity is just an uint64 managed in the component store 
 
 # --- Component Base ---
-class Component(LanceModel):
+# class BaseComponent(ABC): # REMOVE THIS
+#     pass
+
+# Optional: Users can inherit directly from lancedb.pydantic.LanceModel
+# or you can provide a convenience base like this:
+class DefaultComponentBase(LanceModel):
+    """ A convenience base class for components, inheriting from LanceModel. """
     pass
+
 
 # --- Processor Base Class ---
 class BaseProcessor(ABC):
@@ -20,7 +31,7 @@ class BaseProcessor(ABC):
     Follows a preprocess -> process pattern.
     """
     # Add attribute to hold the list of components
-    _components_used: List[Type[Component]]
+    _components_used: List[Type[Component]] # This will now refer to the Component protocol
 
     @abstractmethod
     def _fetch_state(self, world: 'World', step: int) -> daft.DataFrame:

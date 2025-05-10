@@ -2,12 +2,14 @@ import re
 import time
 from typing import List, Type, Optional, Union
 from daft import DataFrame
-from .processor import Processor
-from .base import Component
+from .processor import ArchetypeProcessor
+from .base import BaseComponent
 import ulid
 
-class World:
-    def __init__(self, store, querier, updater, system, checkpoint_interval: Optional[int] = 6000):
+from .interfaces import Processor, System, Store, Querier, Updater, World
+
+class ArchetypeWorld:
+    def __init__(self, store: Store, querier: Querier, updater: Updater, system: System, checkpoint_interval: Optional[int] = 6000):
         self.store      = store
         self.querier    = querier
         self.updater    = updater
@@ -35,7 +37,10 @@ class World:
         end = time.time()
         print(f"Step {self.current_step} done in {end-start:.3f}s")
 
-    # FACADE METHODS ----
+    # ---------------------------------------------------------------------
+    # Entity Management (Store Facade Methods)
+    # ---------------------------------------------------------------------
+
     def spawn(self,
               components: List[Component],
               step: Optional[int] = None
@@ -47,9 +52,9 @@ class World:
         """Mark an entity dead (is_active=False)."""
         self.store.remove_entity(entity_id, step or self.current_step)
 
-    def remove(self, entity_id: int, comp_type: Type[Component]) -> None:
-        """Remove a component from an entity."""
-        self.store.remove_component_from_entity(entity_id, comp_type)
+    # ---------------------------------------------------------------------
+    # QueryManager Facade
+    # ---------------------------------------------------------------------
 
     def query(self,
               *components: Type[Component],
@@ -63,8 +68,8 @@ class World:
             entities = entities
         )
     
-    def commit(self, archetypes: Dict[str, DataFrame]):
-        self.updater.commit(archetypes)
+    def update(self, archetypes: Dict[str, DataFrame]):
+        self.updater(archetypes)
 
     # 4) Processor installation
     def add_processor(self, proc: Processor) -> None:
