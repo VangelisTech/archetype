@@ -1,11 +1,19 @@
+from archetype import make_world, Component, Processor, processor
+from daft import col, DataFrame
 
+# Define Components
 
-# Define a processor for movement
-class MovementProcessor:
-    def __init__(self):
-        self.components_used = [Position, Velocity, Acceleration, Jerk]
+class Position(Component):
+    x: float
+    y: float
 
-    def process(self, df: daft.DataFrame, dt: float):
+class Velocity(Component):
+    vx: float
+    vy: float
+
+@processor(Position, Velocity, priority=1, )
+class MovementProcessor(Processor):
+    def process(self, df: DataFrame, dt: float):
         return df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
@@ -16,8 +24,9 @@ class MovementProcessor:
 
 # Simulation setup
 if __name__ == "__main__":
-    # Initialize DeltaCAT with Iceberg catalog
-    warehouse = "s3://my-bucket/my/key/prefix"  # Replace with your S3 path
+    sim_name = "toy_simulation"
+    uri = "../data" 
+    world = make_world(sim_name, uri)
 
 
 

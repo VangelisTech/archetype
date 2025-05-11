@@ -8,7 +8,7 @@ import ulid
 from .interfaces import iSystem, iStore, iQuerier, iUpdater, iWorld
 
 class World(iWorld):
-    def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem, checkpoint_interval: Optional[int] = 6000):
+    def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem):
         # Inject dependencies
         self.store      = store
         self.querier    = querier
@@ -18,23 +18,15 @@ class World(iWorld):
         # Initialize the world state
         self.id: str = str(ulid.ULID())
         self.current_step = 0
-        self.checkpoint_interval = checkpoint_interval
-
-        # Generate a unique ID for this World
         
 
-    def step(self, dt: float, ):
+    def step(self, dt: float):
         start = time.time()
         # 1) run all processors in sequence
-        updated_archetypes = self.system.execute(self, self.current_step, dt)
+        updated_archetypes = self.execute(self, self.current_step, dt)
 
         # 2) Materialize changes into the ArchetypeStore
-        self.updater.collect(updated_archetypes, self.current_step)
-        
-
-        # 3) optionally write dirty archetypes to Iceberg
-        if self.current_step % self.checkpoint_interval == 0:
-            self.store.flush()
+        self.update(updated_archetypes, self.current_step)
 
         self.current_step += 1
         end = time.time()
@@ -71,10 +63,25 @@ class World(iWorld):
             entities = entities
         )
     
+    # ---------------------------------------------------------------------
+    # UpdateManager Facade
+    # ---------------------------------------------------------------------
+
     def update(self, archetypes: Dict[str, DataFrame]):
         self.updater(archetypes)
 
-    # 4) Processor installation
+    # ---------------------------------------------------------------------
+    # System Facade
+    # ---------------------------------------------------------------------
+
     def add_processor(self, proc: Processor) -> None:
         """Install a Processor into the sequential system."""
         self.system.add_processor(proc)
+
+    def remove_processor(self, proc: Processor) -> None:
+        """Remove a Processor from the sequential system."""
+        self.system.remove_processor(proc)
+
+    def execute(self, step: int, dt: float) -> Dict[str, DataFrame]:
+        """Execute the system for a single step."""
+        return self.system.execute(self, step, dt)
