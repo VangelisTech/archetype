@@ -1,5 +1,5 @@
 from itertools import count as _count
-from typing import Dict, Tuple, List, Type, Optional, Any, Union
+from typing import Dict, Tuple, List, Type, Optional
 from logging import getLogger
 from hashlib import blake2b
 import ulid 
@@ -10,11 +10,9 @@ import daft
 from daft import col, DataFrame
 from functools import lru_cache
 import lancedb
-from lancedb.pydantic import LanceModel
 from lancedb.table import AsyncTable, DATA
 from lancedb.index import BTree
-import pandas as pd
-from .base import Component
+from .interfaces import Component, iStore
 
 logger = getLogger(__name__)
 
@@ -35,7 +33,7 @@ class BaseArchetypeTable(Component):
 def _get_datetime_str() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') # ISO 8601
 
-class ArchetypeStore:
+class ArchetypeStore(iStore):
     
     async def __init__(self, 
         uri: str, 

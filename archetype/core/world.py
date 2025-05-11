@@ -1,24 +1,27 @@
-import re
 import time
-from typing import List, Type, Optional, Union
+from typing import List, Type, Optional, Union, Dict
 from daft import DataFrame
-from .processor import ArchetypeProcessor
-from .base import BaseComponent
+from .processor import Processor
+from .base import Component
 import ulid
 
-from .interfaces import Processor, System, Store, Querier, Updater, World
+from .interfaces import iSystem, iStore, iQuerier, iUpdater, iWorld
 
-class ArchetypeWorld:
-    def __init__(self, store: Store, querier: Querier, updater: Updater, system: System, checkpoint_interval: Optional[int] = 6000):
+class World(iWorld):
+    def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem, checkpoint_interval: Optional[int] = 6000):
+        # Inject dependencies
         self.store      = store
         self.querier    = querier
         self.updater    = updater
         self.system     = system
+
+        # Initialize the world state
+        self.id: str = str(ulid.ULID())
         self.current_step = 0
         self.checkpoint_interval = checkpoint_interval
 
         # Generate a unique ID for this World
-        self.id: str = str(ulid.ULID())
+        
 
     def step(self, dt: float, ):
         start = time.time()

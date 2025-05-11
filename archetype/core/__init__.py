@@ -1,31 +1,27 @@
 from .store import ArchetypeStore
 from .querier       import QueryManager
 from .updater      import UpdateManager
-from .system        import SequentialSystem
-from .world          import World
+from .system        import SimpleSystem
+from .world          import World 
 from .base           import Component
-from .processor      import processor, Processor
+from .processor      import Processor
 
-
-import daft
-
-def make_world(session: daft.Session) -> World:
-    store   = ArchetypeStore()
+def make_world(uri: str, simulation: str | None = None, run: str | None = None) -> World:
+    store   = ArchetypeStore(uri, simulation, run)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
-    system  = SequentialSystem()
+    system  = SimpleSystem(querier=querier)
     world   = World(
-        session=session,
         store=store,
         querier=querier,
         updater=updater,
-        system=system
+        system=system, 
+        
     )
     return world
 
 __all__ = [
     "World",
-    "processor",
     "Processor",
     "Component",
     "make_world"

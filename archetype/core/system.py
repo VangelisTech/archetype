@@ -1,23 +1,21 @@
 from daft import DataFrame
-from typing import List, Union, Dict, TYPE_CHECKING
+from typing import List, Union, Dict, Type
 from .base import BaseSystem
 from .processor import Processor
+from .interfaces import iQuerier
 
-# Added for World type hint to resolve linter error
-if TYPE_CHECKING:
-    from .world import World
-
-class System(BaseSystem):
-    def __init__(self):
+class SimpleSystem(BaseSystem):
+    def __init__(self, querier: iQuerier):
         self.processors: List[Processor] = []
+        self.querier = querier
 
     def add_processor(self, proc: Processor):
         self.processors.append(proc)
 
-    def remove_processor(self, proc: Processor):
+    def remove_processor(self, proc: Type[Processor]):
         self.processors.remove(proc)
-
-    def execute(self, world: 'World', step: Union[int, List[int]]) -> Dict[str, DataFrame]:
+    
+    def execute(self, step: Union[int, List[int]]) -> Dict[str, DataFrame]:
         """
         Executes all registered processors sequentially by priority.
         Modifications by a processor to an archetype are visible to subsequent processors
@@ -34,7 +32,7 @@ class System(BaseSystem):
         modified_archetypes: Dict[str, DataFrame] = {}
 
         for proc in sorted(self.processors, key=lambda x: x.priority):
-            queried_archetypes = proc.query(world, step)
+            queried_archetypes = proc.preprocess(self.querier, step)
 
             for hash, queried_df in queried_archetypes.items():
                 df = modified_archetypes.get(hash, queried_df)
@@ -45,7 +43,7 @@ class System(BaseSystem):
                 
                 modified_archetypes[hash] = transformed_df
             
-            
+
                     
 
         return modified_archetypes

@@ -1,14 +1,16 @@
 from daft import DataFrame
-from .store import ArchetypeStore
 from typing import Dict
 from daft import col
 from logging import getLogger
-
+from .interfaces import iUpdater, iStore
 logger = getLogger(__name__)
 
-class UpdateManager:
-    def __init__(self, store: ArchetypeStore):
+class UpdateManager(iUpdater):
+    def __init__(self, store: iStore):
         self._store = store
+
+    async def __call__(self, updates: Dict[str, DataFrame], step: int):
+        await self.collect(updates, step)
 
     async def collect(self, updates: Dict[str, DataFrame], step: int):
         for sig_hash, df in updates.items():

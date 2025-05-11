@@ -1,16 +1,4 @@
-import daft
-from daft import col
-import uuid
-import deltacat as dc
-from deltacat import IcebergCatalog
-from deltacat.catalog.iceberg import IcebergCatalogConfig
-from pyiceberg.catalog import CatalogType
-from pyiceberg.partitioning import PartitionSpec, PartitionField
-from pyiceberg.transforms import BucketTransform
-from deltacat.storage.iceberg.model import SchemaMapper, PartitionSchemeMapper
 
-# Import components defined with Iceberg schemas
-from archetype.core.components import Position, Velocity, Acceleration, Jerk
 
 # Define a processor for movement
 class MovementProcessor:
