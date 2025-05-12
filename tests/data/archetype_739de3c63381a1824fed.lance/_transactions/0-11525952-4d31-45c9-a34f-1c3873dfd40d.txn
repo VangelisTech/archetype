@@ -1,0 +1,4 @@
+$11525952-4d31-45c9-a34f-1c3873dfd40d²Û*
+simulation ÿÿÿÿÿÿÿÿÿ*string8Zdefault%run ÿÿÿÿÿÿÿÿÿ*string8Zdefault*	entity_id ÿÿÿÿÿÿÿÿÿ*int648Zdefault%step ÿÿÿÿÿÿÿÿÿ*int648Zdefault)	is_active ÿÿÿÿÿÿÿÿÿ*bool8Zdefault-position__x ÿÿÿÿÿÿÿÿÿ*double8Zdefault-position__y ÿÿÿÿÿÿÿÿÿ*double8Zdefault.velocity__vx ÿÿÿÿÿÿÿÿÿ*double8Zdefault.velocity__vy ÿÿÿÿÿÿÿÿÿ*double8Zdefault"'
+lance.auto_cleanup.older_than14days"!
+lance.auto_cleanup.interval20

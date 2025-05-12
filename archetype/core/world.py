@@ -20,13 +20,13 @@ class World(iWorld):
         self.current_step = 0
         
 
-    def step(self, dt: float):
+    async def step(self, dt: float):
         start = time.time()
         # 1) run all processors in sequence
-        updated_archetypes = self.execute(self, self.current_step, dt)
+        updated_archetypes = await self.execute(self.current_step, dt)
 
         # 2) Materialize changes into the ArchetypeStore
-        self.update(updated_archetypes, self.current_step)
+        await self.update(updated_archetypes, self.current_step)
 
         self.current_step += 1
         end = time.time()
@@ -36,16 +36,16 @@ class World(iWorld):
     # Entity Management (Store Facade Methods)
     # ---------------------------------------------------------------------
 
-    def spawn(self,
-              components: List[Component],
+    async def spawn(self,
+              *components: Component,
               step: Optional[int] = None
              ) -> int:
         """Create a new entity with these components."""
-        return self.store.add_entity(components, step or self.current_step)
+        return await self.store.add_entity(components, step or self.current_step)
 
-    def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
+    async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
-        self.store.remove_entity(entity_id, step or self.current_step)
+        await self.store.remove_entity(entity_id, step or self.current_step)
 
     # ---------------------------------------------------------------------
     # QueryManager Facade
@@ -54,21 +54,23 @@ class World(iWorld):
     def query(self,
               *components: Type[Component],
               step: Optional[int] = None,
-              entities: Optional[Union[int, List[int]]] = None
              ) -> DataFrame:
         """Fetch the latest live state of these components at the given step."""
         return self.querier(
-            *components,
-            step = step if step is not None else self.current_step,
-            entities = entities
+            list(components),
+            step = step if step is not None else self.current_step
         )
+
+    async def get_history(self, *components: Type[Component]) -> Dict[str, DataFrame]:
+        """Fetch the history of these components at the given step."""
+        return await self.querier.get_history(*components)
     
     # ---------------------------------------------------------------------
     # UpdateManager Facade
     # ---------------------------------------------------------------------
 
-    def update(self, archetypes: Dict[str, DataFrame]):
-        self.updater(archetypes)
+    async def update(self, archetypes: Dict[str, DataFrame], step: int):
+        await self.updater(archetypes, step)
 
     # ---------------------------------------------------------------------
     # System Facade
@@ -84,4 +86,4 @@ class World(iWorld):
 
     def execute(self, step: int, dt: float) -> Dict[str, DataFrame]:
         """Execute the system for a single step."""
-        return self.system.execute(self, step, dt)
+        return self.system.execute(step, dt)

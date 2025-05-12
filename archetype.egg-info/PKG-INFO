@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: archetype
+Version: 0.1.0
+Summary: Lazy Distributed Dataframe-Based ECS Simulation Engine using Daft for processing and LanceDB for storage
+Author: everettVT
+Author-email: everett@vangelis.tech
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: getdaft>=0.4.13
+Requires-Dist: daft[lance]
+Requires-Dist: pyarrow>=16.0.0
+Requires-Dist: lancedb>=0.22.0
+Requires-Dist: python-ulid>=3.0.0
+Requires-Dist: pytest>=8.3.5
+Requires-Dist: datasets>=3.6.0
+Requires-Dist: pytest-asyncio>=0.26.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: requires-python
+
+# 

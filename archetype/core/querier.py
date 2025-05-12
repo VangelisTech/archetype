@@ -1,52 +1,45 @@
 # Python
 from daft import col, DataFrame
-from typing import List, Type, Optional, Union
+from typing import List, Type, Optional, Union, Dict, Sequence
 
-from .store import ArchetypeStore
 from .base import Component
-from .interfaces import iQuerier
+from .interfaces import iQuerier, iStore
 
 class QueryManager(iQuerier):
-    def __init__(self, store: ArchetypeStore):
+    def __init__(self, store: iStore):
         self._store = store
 
-    def __call__(self,
-        *component_types: Type[Component], 
-        steps: Union[int, List[int]],
-        entities: Optional[Union[int, List[int]]] = None 
-        ) -> DataFrame:
+    async def __call__(self,
+        component_types: Sequence[Type[Component]],
+        step: Union[int, List[int]],
+        ) -> Dict[str, DataFrame]:
         
-        if isinstance(steps, int):
-            steps = [steps]
-
-        if isinstance(entities, int):
-            entities = [entities]
-
-        return self.query(*component_types, steps=steps, entities=entities)
-
-    def query(self,
-        *component_types: Type[Component], 
-        steps: Union[int, List[int]],
-        entities: Optional[Union[int, List[int]]] = None 
-        ) -> DataFrame:
-
-        archetypes = self._store.get_archetypes(*component_types)
-
-        if entities is None:
-            for sig, df in archetypes.items():
-                df = df.where(col("step").is_in(steps)) 
-                df = df.where(col("is_active"))
-                archetypes[sig] = df
+        if isinstance(step, int):
+            current_step_list = [step]
         else:
-            for sig, df in archetypes.items():
-                df = df.where(col("step").is_in(steps)) 
-                df = df.where(col("entity_id").is_in(entities)) 
-                df = df.where(col("is_active"))
-                archetypes[sig] = df
+            current_step_list = step
+
+        return await self.query(*component_types, step=current_step_list)
+
+    async def query(self,
+        *component_types: Type[Component], 
+        step: List[int],
+        ) -> Dict[str, DataFrame]:
+
+        archetypes = await self._store.get_archetypes(*component_types)
+
+        for sig_hash, df in archetypes.items():
+            filtered_df = df.where(col("step").is_in(step)) \
+                            .where(col("is_active"))
+            archetypes[sig_hash] = filtered_df
 
         return archetypes
     
-    
+    def get_history(self, *component_types: Type[Component], include_all_runs: bool = False) -> DataFrame:
+        """Fetch the history of these components at the given step."""
+        archetypes = self._store.get_history(*component_types, include_all_runs=include_all_runs)
+        
+        return archetypes
 
     
 

@@ -1,3 +1,5 @@
+import lancedb
+import os
 from .store import ArchetypeStore
 from .querier       import QueryManager
 from .updater      import UpdateManager
@@ -6,11 +8,14 @@ from .world          import World
 from .base           import Component
 from .processor      import Processor, processor
 
-def make_world(uri: str, simulation: str | None = None, run: str | None = None) -> World:
-    store   = ArchetypeStore(uri, simulation, run)
+async def make_world(uri: str, simulation: str | None = None, run: str | None = None) -> World:
+    async_db_client = await lancedb.connect_async(uri, api_key=os.environ.get("LANCEDB_API_KEY"))
+    
+    store   = ArchetypeStore(async_db_client, simulation, run)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system  = SimpleSystem(querier=querier)
+    
     world   = World(
         store=store,
         querier=querier,

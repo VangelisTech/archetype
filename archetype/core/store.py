@@ -4,7 +4,6 @@ from logging import getLogger
 from hashlib import blake2b
 import ulid 
 from datetime import datetime, timezone
-import os
 import pyarrow as pa
 import daft
 from daft import col, DataFrame
@@ -35,20 +34,18 @@ def _get_datetime_str() -> str:
 
 class ArchetypeStore(iStore):
     
-    async def __init__(self, 
-        uri: str, 
-        simulation: Optional[str] = None, # 
+    def __init__(self, 
+        async_db_client: lancedb.AsyncConnection, # Changed from uri to async_db_client
+        simulation: Optional[str] = None, 
         run: Optional[str] = None,
-        
     ):
-        self.async_db = await lancedb.connect_async(uri, api_key=os.environ.get("LANCEDB_API_KEY"))
+        self.async_db = async_db_client # Use the passed-in client
         self.simulation = simulation or f"sim_{_get_datetime_str()}"
         self.run = run or f"sim_{str(ulid.ULID())}"
         
         # Initialize internal properties
-        self._latest_cache: Dict[str, DataFrame] = {} # Cache of the latest data for each archetype
-        self._entity2sig: Dict[int, Tuple[Component, ...]] = {} # Necessary mapping for entity_id -> signature
-        self._hash2sig: Dict[str, Tuple[Component, ...]] = {} # Convenience mapping for hash -> signature
+        self._entity2sig: Dict[int, Tuple[Type[Component], ...]] = {} # Necessary mapping for entity_id -> signature
+        self._hash2sig: Dict[str, Tuple[Type[Component], ...]] = {} # Convenience mapping for hash -> signature
         self._entity_counter = _count(start=1)
 
     #--------------------------------------------------------------------------
@@ -57,18 +54,19 @@ class ArchetypeStore(iStore):
     
     @staticmethod
     def _sig_from_components(components: List[Component]) -> Tuple[Type[Component], ...]:
-        # Get the signature of the components
-        sig = tuple(sorted(type(c) for c in components))
+        # Get the signature of the components by sorting their types by name
+        component_types = [type(c) for c in components]
+        sig = tuple(sorted(component_types, key=lambda t: t.__name__))
         return sig
     
     @staticmethod
     def _create_archetype_hash(sig: Tuple[Type[Component], ...]) -> str:
         # Create a hash of the signature
         h = blake2b(digest_size=10)
-        for comp in sig:
-            h.update(comp.__name__.encode())
-        hash = h.hexdigest()
-        return f"archetype_{hash}"
+        for comp_type in sig:
+            h.update(comp_type.__name__.encode())
+        hash_val = h.hexdigest()
+        return f"archetype_{hash_val}"
     
     @staticmethod
     def _get_component_prefix(component_type: Type[Component]) -> str:
@@ -87,38 +85,41 @@ class ArchetypeStore(iStore):
 
             # Rename the fields of the component schema with the prefix
             for field_name in component_schema.names:
-                field = component_schema.field_by_name(field_name)
+                field = component_schema.field(field_name)
                 renamed_field = field.with_name(prefix + field_name)
                 archetype_schema = archetype_schema.append(renamed_field)
             
         return archetype_schema
     
-    async def _ensure_table(self, sig: Tuple[Component, ...]) -> AsyncTable:
+    async def _ensure_table(self, sig: Tuple[Type[Component], ...]) -> Tuple[AsyncTable, str]:
         """
         Ensure that the table for the given archetype signature exists.
         """
-        hash = self._create_archetype_hash(sig)
+        hash_val = self._create_archetype_hash(sig)
         schema = self._build_archetype_schema(sig)
 
         # Create the table if it doesn't exist
-        if hash not in self.async_db.table_names():
+        table_names = await self.async_db.table_names() # Await here
+        if hash_val not in table_names:
             table = await self.async_db.create_table(
-                hash, schema=schema, exist_ok=False
+                hash_val, schema=schema, exist_ok=True # Failsafe to not overwrite existing table, that would be bad
             )
-            # Index the table
-            table.create_index("entity_id", config=BTree(unique=False))
-            table.create_index("step", config=BTree(unique=False))
-        else:
-            table = await self.async_db.open_table(hash)
+            await table.create_index("entity_id", config=BTree(), replace=True) 
+            await table.create_index("step", config=BTree(), replace=True)
 
-        return table, hash
+            self._hash2sig[hash_val] = sig # Set Once
+        else:
+            table = await self.async_db.open_table(hash_val)
+
+        
+        return table, hash_val
 
     #--------------------------------------------------------------------------
     # ComponentStoreInterface methods
     #--------------------------------------------------------------------------
 
     @lru_cache(maxsize=1000)
-    def get_sig_from_entity(self, entity_id: int) -> Tuple[Component, ...]:
+    def get_sig_from_entity(self, entity_id: int) -> Tuple[Type[Component], ...]:
         return self._entity2sig[entity_id]
 
     async def add_entity(self, components: List[Component], step: int = 0) -> int:
@@ -150,34 +151,27 @@ class ArchetypeStore(iStore):
         
         # Get the table and hash for the archetype
         sig = self._sig_from_components(components)
-        table, hash = await self._ensure_table(sig)
+        table, hash_val = await self._ensure_table(sig) # Use hash_val
 
         # Add the entity to the table
-        await table.add(entity_data_dict)
+        # Assuming entity_data_dict is now correctly formatted for LanceDB
+        # (e.g., a list of dicts, or a PyArrow table)
+        await table.add([entity_data_dict]) # Ensure data is in a list or correct format
 
-        # Update the cache
-        self._latest_cache[hash] = daft.from_arrow(table)
-
-
+        self._entity2sig[entity_id] = sig # Store mapping
         return entity_id
     
-    def remove_entity(self, entity_id: int, step: int = None) -> None:
+    async def remove_entity(self, entity_id: int, step: int) -> None:
+        if entity_id not in self._entity2sig:
+            logger.error(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
+            return 
         sig = self._entity2sig[entity_id]
-
-        # Query the entity staet at the lastest step
-        df = self.tables[sig] \
-            .where(col("entity_id") == entity_id) \
-            .where(col("step") == step) \
-            .limit(1)
-
-        # Set is_active to False at the given step
-        df = df.with_column("is_active", col("is_active").lit(False))
-
-        # Add the row to the df
-        self.tables[sig] = self.tables[sig].concat(df)
-        
-        # Update the entity2sig mapping to pop the entity_id, keeping in mind its an lru_cache
-        return self._entity2sig.pop(entity_id) #returns key error if not found
+        table, hash_val = await self._ensure_table(sig)
+        await table.update(
+            where=f"simulation == '{self.simulation}' AND run == '{self.run}' AND entity_id == {entity_id} AND step == {step}",
+            updates={"is_active": False}
+        )
+        self._entity2sig.pop(entity_id, None)
 
     # Wont support adding or removing components in-situ, only with entity creation and deletion. 
     # User's can work around this by creating a new entity with the desired components and deleting the old one in the same step.
@@ -186,38 +180,92 @@ class ArchetypeStore(iStore):
     # Query helpers used by Processor._fetch_state and QueryManager
     # ---------------------------------------------------------------------
 
-    def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:       
+    def _get_matching_signatures(self, component_types: Tuple[Type[Component], ...]) -> List[Tuple[Type[Component], ...]]:
         if not component_types:
             raise ValueError("Must request at least one component type")
+        target_component_types = set(component_types) # Create a set for issubset
+        matching_sigs = [
+            sig for sig in self._hash2sig.values() 
+            if target_component_types.issubset(set(sig))
+        ]
+        return matching_sigs
 
-        # Get archetype dataframes that contain all of the requested component types (definition of an archetype is that all components must be present)
-        hashes = [hash for hash in self._latest_cache.keys() if all(C in self._hash2sig[hash] for C in component_types)]
+    async def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
+        """
+        Returns a dictionary of all archetypes whose component signatures include all of the specified component types.
+
+        Args:
+            *component_types: Type[Component]   The component types to get the archetypes for.
+
+        Returns:
+            archetypes: Dict[str, DataFrame]    A dictionary of archetype hashes to their latest data.
+        """
+        if not component_types:
+            raise ValueError("Must request at least one component type")
         
-        # We need to return a dictionary of archetypes, keyed by the signature hash, in order for us to be able to return the transformations upon update 
-        # Since signatures can become quite large,and we are passing this around a lot, we use the hash as the key
-        archetypes = self._latest_cache[hashes] 
+        matching_sigs = self._get_matching_signatures(component_types)
 
-        # When we return the processed archetypes we can use the hash2sig to get the signature.
-        # This allows us to keep the signatures small and manageable.
+        archetypes = {}
+        for sig in matching_sigs:
+            table, hash_val = await self._ensure_table(sig)
+            arrow_table = await table.query(
+                where=f"simulation == '{self.simulation}' AND run == '{self.run}'"
+            ).to_arrow()
+            try:
+                # Filter and group by entity_id to get the latest step for each entity
+                latest_df = daft.from_arrow(arrow_table)
+            
+            except Exception as e: # Broad exception for now, Lance/Daft might raise specific errors
+                logger.error(f"Error reading lance table {table.name} for cache update: {e}")
+
+            archetypes[hash_val] = latest_df
+        
         return archetypes
+
+    async def get_history(self, *component_types: Type[Component], include_all_runs: bool = False) -> DataFrame:
+        """
+        Get the full history of the given component types.
+        """
+        matching_sigs = self._get_matching_signatures(component_types)
+        history = {}
+        for sig in matching_sigs:
+            table, hash_val = await self._ensure_table(sig)
+            
+            try: 
+                await table.optimize()
+            except Exception as e:
+                logger.error(f"Error optimizing lance table {table.name}: {e}")
+
+
+            try: 
+                if include_all_runs:
+                    arrow_table = await table.query(where=f"simulation == '{self.simulation}'").to_arrow()
+                else:
+                    arrow_table = await table.query(where=f"simulation == '{self.simulation}' AND run == '{self.run}'").to_arrow()
+
+                df = daft.from_arrow(arrow_table)
+            except Exception as e:
+                logger.error(f"Error reading lance table {table.name} for cache update: {e}")
+
+            history[hash_val] = df
+
+        return history
 
     # ---------------------------------------------------------------------
     # Update Manager Interface
     # ---------------------------------------------------------------------
 
-    async def upsert(self, sig: Tuple[Component, ...], data: DATA):
-        table = await self._ensure_table(sig)
+    async def upsert(self, sig: Tuple[Type[Component], ...], data: DATA, step: int):
+        table, hash_val = await self._ensure_table(sig) # Use hash_val
         # Upsert the data into the table
-        await table.merge_insert(on=PARTITION_KEYS) \
+        await table.merge_insert(on=["entity_id", "step", "run", "simulation"]) \
+            .when_matched_update_all() \
             .when_not_matched_insert_all() \
             .execute(data)
-        
-        # Update the latest cache
-        self._latest_cache[hash] = daft.from_arrow(table)
 
-    async def update(self, sig: Tuple[Component, ...], data: DATA):
-        table = await self._ensure_table(sig)
+    async def update(self, sig: Tuple[Type[Component], ...], data: DATA, step: int):
+        table, hash_val = await self._ensure_table(sig) # Use hash_val
         # Update the data in the table
         await table.add(data, mode='append')
 
-        self._latest_cache[hash] = daft.from_arrow(table)
+

@@ -20,6 +20,15 @@
 .cursor/
 .cursorignore
 
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.mypy_cache/
+.mypy_cache/
+.mypy_cache/
+
+
 *.duckdb*
 *.wal
 *.tmp/

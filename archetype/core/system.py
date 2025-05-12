@@ -13,9 +13,17 @@ class SimpleSystem(BaseSystem):
         self.processors.append(proc)
 
     def remove_processor(self, proc: Type[Processor]):
-        self.processors.remove(proc)
+        processor_to_remove = None
+        for p_instance in self.processors:
+            if isinstance(p_instance, proc):
+                processor_to_remove = p_instance
+                break
+        if processor_to_remove:
+            self.processors.remove(processor_to_remove)
+        else:
+            pass
     
-    def execute(self, step: Union[int, List[int]]) -> Dict[str, DataFrame]:
+    async def execute(self, step: Union[int, List[int]], dt: float) -> Dict[str, DataFrame]:
         """
         Executes all registered processors sequentially by priority.
         Modifications by a processor to an archetype are visible to subsequent processors
@@ -31,17 +39,18 @@ class SimpleSystem(BaseSystem):
 
         modified_archetypes: Dict[str, DataFrame] = {}
 
-        for proc in sorted(self.processors, key=lambda x: x.priority):
-            queried_archetypes = proc.preprocess(self.querier, step)
+        for proc_instance in sorted(self.processors, key=lambda x: x.priority):
+            queried_archetypes = await proc_instance.preprocess(self.querier, step)
 
-            for hash, queried_df in queried_archetypes.items():
-                df = modified_archetypes.get(hash, queried_df)
-                transformed_df = proc.process(df)
+            for archetype_hash, queried_df in queried_archetypes.items():
+                df_to_process = modified_archetypes.get(archetype_hash, queried_df)
+                
+                transformed_df = proc_instance.process(df_to_process, dt)
 
                 if transformed_df is None:
-                    raise ValueError("Processor returned an empty dataframe. Please return the input dataframe if processor.process() logically chooses to make no changes.")
+                    raise ValueError(f"Processor {type(proc_instance).__name__} returned None. It should return the input DataFrame if no changes were intended.")
                 
-                modified_archetypes[hash] = transformed_df
+                modified_archetypes[archetype_hash] = transformed_df
             
 
                     

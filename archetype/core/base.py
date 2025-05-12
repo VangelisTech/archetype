@@ -1,4 +1,4 @@
-from typing import Any, Type, Optional, List, Dict
+from typing import Any, Type, Optional, Dict, Tuple
 from abc import ABC, abstractmethod
 import daft
 from .interfaces import Component, iQuerier
@@ -10,24 +10,25 @@ class BaseProcessor(ABC):
     Follows a preprocess -> process pattern.
     """
     # Add attribute to hold the list of components
-    _components_used: List[Type[Component]] # This will now refer to the Component protocol
+    priority: int
+    components: Tuple[Type[Component], ...]
 
     @abstractmethod
-    def _fetch_state(self, querier: iQuerier, step: int) -> daft.DataFrame:
+    def preprocess(self, querier: iQuerier, step: int) -> Dict[str, daft.DataFrame]:
         """
-        Fetches and prepares the initial data DataFrame for the process method.
-        Should return an empty DataFrame with the correct schema if no data is relevant.
+        Fetches and prepares the initial data DataFrames for the process method, keyed by archetype hash.
+        Should return an empty dictionary if no data is relevant.
         """
         raise NotImplementedError
 
     @abstractmethod
     def process(self, state_df: daft.DataFrame) -> Optional[daft.DataFrame]:
         """
-        The core transformation logic of the processor, operating on the DataFrame
-        provided by preprocess.
+        The core transformation logic of the processor, operating on a DataFrame.
+        If preprocess returns a Dict, the System is responsible for how this method gets its DataFrame.
 
         Args:
-            state_df: The input DataFrame prepared by the preprocess method.
+            state_df: The input DataFrame prepared by the preprocess method or provided by the system.
 
         Returns:
             Optional[daft.DataFrame]: DataFrame with updated data + keys (entity_id, etc.)
@@ -60,8 +61,7 @@ class BaseSystem(ABC):
             *args, **kwargs: Additional arguments passed from the world's process cycle (e.g., dt).
 
         Returns:
-            Optional[Dict[BaseProcessor, daft.DataFrame]]: A dictionary mapping processor
-                                                           instances to their resulting
-                                                               update DataFrames, or None/empty.
+            Dict[str, daft.DataFrame]: A dictionary mapping archetype hashes to their resulting
+                                       update DataFrames.
         """
         raise NotImplementedError

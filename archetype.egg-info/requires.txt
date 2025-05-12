@@ -1,0 +1,8 @@
+getdaft>=0.4.13
+daft[lance]
+pyarrow>=16.0.0
+lancedb>=0.22.0
+python-ulid>=3.0.0
+pytest>=8.3.5
+datasets>=3.6.0
+pytest-asyncio>=0.26.0
