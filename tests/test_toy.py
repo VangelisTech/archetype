@@ -1,7 +1,11 @@
 from archetype import make_world, Component, Processor, processor
 from daft import col, DataFrame
+from daft.session import Session
+from daft import Catalog
+from pyiceberg.catalog.sql import SqlCatalog
 import pytest 
-
+import asyncio
+import os
 # Define Components
 class Position(Component):
     x: float
@@ -22,22 +26,27 @@ class MovementProcessor(Processor):
 
 
 @pytest.mark.asyncio 
-async def test_toy(): # Make the test function async
-    # Simulation setup
-    sim_name = "toy_simulation_pytest"
-    uri = "tests/data"
-    # Ensure this directory exists or can be created by LanceDB, or use a temp path.
+async def test_toy(sim_name, tmpdir): # Make the test function async
     
-    world = await make_world(uri=uri, simulation=sim_name) # Await the async make_world
+    # create a pyiceberg catalog backed by sqlite
+    catalog = SqlCatalog(
+        "default",
+        **{
+            "uri": f"sqlite:///{tmpdir}/catalog.db",
+            "warehouse": f"file://{tmpdir}",
+        },
+    )
+
+    world = await make_world(uri=tmpdir, simulation=sim_name, catalog=catalog) # Await the async make_world
 
     # Add Processors
     # Pass an instance if your system expects an instance
-    world.add_processor(MovementProcessor()) 
+    world.add_processor(MovementProcessor())
 
-    # Spawn Entities 
-    await world.spawn(Position(x=0.0, y=0.0), Velocity(vx=1.0, vy=1.0))
-    await world.spawn(Position(x=10.0, y=5.0), Velocity(vx=2.0, vy=-1.0))
-    await world.spawn(Position(x=-5.0, y=-10.0), Velocity(vx=-0.5, vy=0.5))
+    # Spawn Entities
+    world.spawn(Position(x=0.0, y=0.0), Velocity(vx=1.0, vy=1.0))
+    world.spawn(Position(x=10.0, y=5.0), Velocity(vx=2.0, vy=-1.0))
+    world.spawn(Position(x=-5.0, y=-10.0), Velocity(vx=-0.5, vy=0.5))
 
     # Run some steps
     for _ in range(10):
@@ -56,3 +65,10 @@ async def test_toy(): # Make the test function async
     # For debugging, you can print the dataframe:
     # print("\nTest Query Result:")
     # print(position_data_df.to_pandas()) # if you want to see it as pandas
+
+if __name__ == "__main__":
+    tmpdir = os.path.join(os.path.dirname(__file__), "tmp")
+    sim_name = __file__.__name__
+
+    # Run the test
+    asyncio.run(test_toy(sim_name, tmpdir))
