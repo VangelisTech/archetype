@@ -1,11 +1,7 @@
-from archetype import make_world, Component, Processor, processor
+from archetype import make_simple_world, Component, Processor, processor
 from daft import col, DataFrame
-from daft.session import Session
-from daft import Catalog
-from pyiceberg.catalog.sql import SqlCatalog
-import pytest 
-import asyncio
-import os
+import pytest
+
 # Define Components
 class Position(Component):
     x: float
@@ -15,32 +11,31 @@ class Velocity(Component):
     vx: float
     vy: float
 
-@processor(Position, Velocity, priority=1) # Corrected: decorator takes a list
+@processor(Position, Velocity, priority=1)
 class MovementProcessor(Processor):
-    def process(self, df: DataFrame, dt: float): # Assuming dt is passed by the system
+    def process(self, df: DataFrame, dt: float):
         return df.with_columns({
-            # Assuming column names from _fetch_state are namespaced
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
 
+@pytest.fixture
+def sim_name() -> str:
+    """Provides a default simulation name for tests."""
+    return "test_toy_sim"
 
-@pytest.mark.asyncio 
-async def test_toy(sim_name, tmpdir): # Make the test function async
-    
-    # create a pyiceberg catalog backed by sqlite
-    catalog = SqlCatalog(
-        "default",
-        **{
-            "uri": f"sqlite:///{tmpdir}/catalog.db",
-            "warehouse": f"file://{tmpdir}",
-        },
-    )
+@pytest.fixture
+def db_uri(tmp_path) -> str:
+    """Provides a URI to a temporary directory for the SQLite database."""
+    # tmp_path is a pathlib.Path object provided by pytest
+    # ArchetypeStore will append its own filename (e.g., catalog.db) to this path
+    return str(tmp_path) # Return the directory path
 
-    world = await make_world(uri=tmpdir, simulation=sim_name, catalog=catalog) # Await the async make_world
+
+def test_toy(sim_name: str, db_uri: str): # Use the fixtures
+    world = make_simple_world(uri=db_uri, simulation=sim_name)
 
     # Add Processors
-    # Pass an instance if your system expects an instance
     world.add_processor(MovementProcessor())
 
     # Spawn Entities
@@ -50,25 +45,16 @@ async def test_toy(sim_name, tmpdir): # Make the test function async
 
     # Run some steps
     for _ in range(10):
-        await world.step(dt=0.1) # Pass dt to world.step
+        world.step(dt=0.1)
 
     # Query back results
-    position_archetypes = await world.get_history(Position) 
-    position_data_df = list(position_archetypes.values())
-    position_data_df.show()
-    # Basic assertion: Check if the query returned any data
-    assert position_data_df is not None, "Query should return a DataFrame, not None."
-    # Ensure that the DataFrame has a method to count rows, e.g. .count_rows() or len()
-    # For Daft, it's len(df)
-    assert len(position_data_df) > 0, "Query should return some position data."
+    session = world.get_session()
+    tables = session.list_tables()
+    assert len(tables) == 1, "Should be exactly one table."
     
-    # For debugging, you can print the dataframe:
-    # print("\nTest Query Result:")
-    # print(position_data_df.to_pandas()) # if you want to see it as pandas
+    position_df = session.read_table(tables[0])
+    assert position_df is not None, "Query should return a DataFrame, not None."
+    assert len(position_df) == 3 # Assuming 3 entities were spawned
 
 if __name__ == "__main__":
-    tmpdir = os.path.join(os.path.dirname(__file__), "tmp")
-    sim_name = __file__.__name__
-
-    # Run the test
-    asyncio.run(test_toy(sim_name, tmpdir))
+    test_toy()

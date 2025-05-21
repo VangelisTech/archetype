@@ -1,18 +1,21 @@
+# Standard Python Libraries
 from itertools import count as _count
-from typing import Dict, Tuple, List, Type, Optional, Union
+from typing import Dict, Tuple, List, Type, Optional
 from logging import getLogger
 from hashlib import blake2b
-import os
 import ulid 
-from datetime import datetime, timezone, timedelta
-
+from datetime import datetime, timezone
+from functools import lru_cache
 # Technologies
-import pyarrow as pa
 import daft
-from daft import col, DataFrame
+from daft import col, DataFrame, Schema
 from daft.expressions import lit
 from daft.session import Session
-from daft import Catalog, Table
+from daft.catalog import Catalog, Table
+from pyiceberg.catalog.sql import SqlCatalog
+import pyarrow as pa    
+from lancedb.pydantic import LanceModel
+# Internals
 from .interfaces import Component, iStore
 
 logger = getLogger(__name__)
@@ -32,9 +35,38 @@ BaseArchetypeTableSchema = pa.schema([
 PARTITION_KEYS = ["simulation", "run", "step"]
     
     
-def _get_datetime_str() -> str:
+def get_datetime_str() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') # ISO 8601
 
+def sig_from_components(components: List[Component]) -> Tuple[Type[Component], ...]:
+    # Get the signature of the components by sorting their types by name
+    component_types = [type(c) for c in components]
+    sig = tuple(sorted(component_types, key=lambda t: t.__name__))
+    return sig
+
+
+def get_component_prefix(component_type: Type[Component]) -> str:
+    """Generate a standardized prefix for a component type's fields."""
+    return component_type.__name__.lower() + "__"
+
+@lru_cache(maxsize=None, typed=True)
+def sig2hash(sig: Tuple[Type[Component], ...]) -> str:
+    # Create a hash of the signature
+    h = blake2b(digest_size=10)
+    for comp_type in sig:
+        h.update(comp_type.__name__.encode())
+    hash_val = h.hexdigest()
+    return f"archetype_{hash_val}"
+
+
+def convert_component_to_pyarrow_schema(component_type: Type[Component]) -> pa.Schema:
+    if issubclass(component_type, LanceModel):
+        return component_type.to_arrow_schema()
+    else:
+        # TODO: Implement conversion of non-LanceModel components to PyArrow schema
+        # Currently this is unreachable. 
+        raise ValueError(f"Component {component_type} is not a subclass of LanceModel")
+    
 class ArchetypeStore(iStore):
     """
     The ArchetypeStore is a component that manages the storage and retrieval of archetype tables. 
@@ -49,96 +81,85 @@ class ArchetypeStore(iStore):
     
     """
     def __init__(self, 
+        uri: str,
         simulation: Optional[str] = None, 
         run: Optional[str] = None,
+        namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
     ):
         
-        self.simulation = simulation or f"sim_{_get_datetime_str()}"
+        self.simulation = simulation or f"sim_{get_datetime_str()}"
         self.run = run or f"run_{str(ulid.ULID())}"
-        self.namespace = "archetype"
+        self.namespace = namespace or "archetype"
 
         # Initialize the catalog
-        self.catalog = catalog or Catalog.from_pydict({
-            self.namespace:{}
-        })  
+        self.catalog = catalog or Catalog.from_iceberg(
+            SqlCatalog(
+                "default",
+                **{
+                    "uri": f"sqlite:///{uri}/catalog.db",
+                    "warehouse": f"file://{uri}",
+                },
+            )
+        )
+
 
         # Initialize the session
-        self.sess = Session.attach(self.catalog) 
+        self.sess = Session()
+        self.sess.attach(object=self.catalog) 
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
 
         # Initialize internal properties
-        self._entity2sig: Dict[int, Tuple[Type[Component], ...]] = {} # Necessary mapping for entity_id -> signature
-        self._hash2sig: Dict[str, Tuple[Type[Component], ...]] = {} # Convenience mapping for hash -> signature
-        self._sig2schema: Dict[Tuple[Type[Component], ...], pa.Schema] = {} # Convenience mapping for signature -> schema
+        self._entity2sig: Dict[int, Tuple[Type[Component], ...]] = {} # Necessary mapping for entity_id -> archetype signature
         self._entity_counter = _count(start=1)
 
     #--------------------------------------------------------------------------
     # Helper methods
     #--------------------------------------------------------------------------
     
-    @staticmethod
-    def _sig_from_components(components: List[Component]) -> Tuple[Type[Component], ...]:
-        # Get the signature of the components by sorting their types by name
-        component_types = [type(c) for c in components]
-        sig = tuple(sorted(component_types, key=lambda t: t.__name__))
-        return sig
-    
-    @staticmethod
-    def _create_archetype_hash(sig: Tuple[Type[Component], ...]) -> str:
-        # Create a hash of the signature
-        h = blake2b(digest_size=10)
-        for comp_type in sig:
-            h.update(comp_type.__name__.encode())
-        hash_val = h.hexdigest()
-        return f"archetype_{hash_val}"
-    
-    @staticmethod
-    def _get_component_prefix(component_type: Type[Component]) -> str:
-        """Generate a standardized prefix for a component type's fields."""
-        return component_type.__name__.lower() + "__"
-    
-    
+
+    def _get_component_schema(self, component_type: Type[Component]) -> pa.Schema:
+        component_schema = convert_component_to_pyarrow_schema(component_type)
+        prefix = get_component_prefix(component_type)
+
+        # Rename the fields of the component schema with the prefix
+        for i, field_name in enumerate(component_schema.names):
+            field = component_schema.field(field_name)
+            renamed_field = field.with_name(prefix + field_name)
+            component_schema = component_schema.set(i, renamed_field)
+
+        return component_schema
+
+    @lru_cache(maxsize=None, typed=True)
     def _get_archetype_schema(self, sig: Tuple[Type[Component], ...]) -> pa.Schema:
         """
         Get the schema for an archetype from a list of components.
         """
-        if sig in self._sig2schema:
-            return self._sig2schema[sig] # Return the cached schema
-        
+    
         archetype_schema = BaseArchetypeTableSchema
         for component_type in sig:
-            component_schema = component_type.to_arrow_schema()
-            prefix = self._get_component_prefix(component_type)
-
-            # Rename the fields of the component schema with the prefix
-            for field_name in component_schema.names:
-                field = component_schema.field(field_name)
-                renamed_field = field.with_name(prefix + field_name)
-                archetype_schema = archetype_schema.append(renamed_field)
+            component_schema = self._get_component_schema(component_type)
+            archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
         
-        self._sig2schema[sig] = archetype_schema
         return archetype_schema
     
     def _ensure_table(self, sig: Tuple[Type[Component], ...]) -> Table:
         """
-        Ensure that the table for the given archetype signature exists.
+        Ensure that the table for the given archetype signature exists in the Daft session.
+        Returns the table name (hash_val).
         """
-        hash_val = self._create_archetype_hash(sig)
-        schema = self._get_archetype_schema(sig)
-
+        hash_val = sig2hash(sig)
+        pyarrow_schema = self._get_archetype_schema(sig)
+        daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
+        try:
+            table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
+            logger.info(f"Created Daft table {hash_val} with schema: {daft_schema}")
+        except Exception as e:
+            logger.error(f"Error creating Daft table {hash_val}: {e}")
+            raise
         
-        table = self.sess.create_table_if_not_exists(hash_val, source=schema)
-
-        # Store hash mapping
-        if table not in self._hash2sig:
-            self._hash2sig[hash_val] = sig 
-
         return table
-        
-
-
 
     def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], schema: pa.Schema) -> DataFrame:
         """
@@ -158,12 +179,12 @@ class ArchetypeStore(iStore):
             "is_active": lit(True)
         })
 
-        for component_instance in components:
-            prefix = self._get_component_prefix(component_instance.__class__)
-            df = df.with_columns({prefix + key: lit(value) for key, value in component_instance.model_dump().items()})
+        for c in components:
+            prefix = get_component_prefix(type(c))
+            df = df.with_columns({prefix + key: lit(value) for key, value in c.model_dump().items()})
 
         # Store entity mapping
-        self._entity2sig[entity_id] = sig 
+        self._entity2sig[entity_id] = sig_from_components(components)
         
         return df
 
@@ -171,118 +192,122 @@ class ArchetypeStore(iStore):
     # ComponentStoreInterface methods
     #--------------------------------------------------------------------------
 
-    async def add_entity(self, components: List[Component], step: int = 0) -> int:
+    def add_entity(self, components: List[Component], step: int = 0) -> int:
         """
         Add an entity to the store.
         """
-
         if len(components) == 0:
             raise ValueError("Cannot create an entity with no components")
         
-        # Get the next entity id
         entity_id = next(self._entity_counter)
-        sig = self._sig_from_components(components)
-        schema = self._get_archetype_schema(sig)
+        sig = sig_from_components(components)
+        pyarrow_schema = self._get_archetype_schema(sig)
 
-        # Create the archetype row
-        df = self._new_archetype_row(entity_id, step, components, schema)
-
-        # Append the archetype row to the table
-        self.append_table(df)
+        df_row = self._new_archetype_row(entity_id, step, components, pyarrow_schema)
+        table = self._ensure_table(sig)
+        try:
+            table.append(df_row)
+            logger.debug(f"Appended entity {entity_id} to table {table.name}")
+        except Exception as e:
+            logger.error(f"Error appending entity {entity_id} to table {table.name}: {e}")
+            raise
 
         return entity_id
     
-    async def remove_entity(self, entity_id: int, step: int) -> None:
+    def remove_entity(self, entity_id: int, step: int) -> None:
         if entity_id not in self._entity2sig:
-            logger.error(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
-            return 
+            logger.warn(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
+            return
+        
         sig = self._entity2sig[entity_id]
-        table = await self._ensure_table(sig)
-        await table.update(
-            where=f"simulation == '{self.simulation}' AND run == '{self.run}' AND entity_id == {entity_id} AND step == {step}",
-            updates={"is_active": False}
-        )
-        self._entity2sig.pop(entity_id, None)
+        table = self._ensure_table(sig) # Ensure table exists
 
-    # NOTE: ---------------------------------------------------------------
-    # Wont support adding or removing components in-situ, only with entity creation and deletion. 
-    # User's can work around this by creating a new entity with the desired components and deleting the old one in the same step.
+        entity_df = table.to_dataframe().where(
+            (col("entity_id") == lit(entity_id)) & 
+            (col("step") == lit(step)) & 
+            (col("simulation") == lit(self.simulation)) & 
+            (col("run") == lit(self.run))
+        ) 
+        entity_df = entity_df.with_column(
+            "is_active", 
+            lit(False)
+        )
+        try: 
+            self.sess.sql(f"""
+                UPDATE {table.name} 
+                SET is_active = FALSE 
+                WHERE entity_id = {entity_id} 
+                AND step = {step} 
+                AND simulation = '{self.simulation}' 
+                AND run = '{self.run}'
+            """)
+            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {table.name} for step {step}.")
+        except Exception as e:
+            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {table.name} for step {step}: {e}")
+            raise
 
     # ---------------------------------------------------------------------
     # Query helpers used by Processor._fetch_state and QueryManager
     # ---------------------------------------------------------------------
-
-    def _get_matching_signatures(self, component_types: Tuple[Type[Component], ...]) -> List[Tuple[Type[Component], ...]]:
-        if not component_types:
-            raise ValueError("Must request at least one component type")
-        target_component_types = set(component_types) # Create a set for issubset
-        matching_sigs = [
-            sig for sig in self._hash2sig.values() 
-            if target_component_types.issubset(set(sig))
-        ]
-        return matching_sigs
-
-    async def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
+    def _does_table_contain_components(self, *component_types: Type[Component], table: Table) -> bool:
         """
-        Returns a dictionary of all archetypes whose component signatures include all of the specified component types.
+        Given a table, returns a list of tables that contain columns from the specified component types.
+        """
+        required_columns = set()
+        for ct in component_types:
+            prefix = get_component_prefix(ct)
+            # Assuming components have fields, otherwise this needs adjustment
+            # This also assumes component_type.model_fields is a valid way to get field names
+            if hasattr(ct, 'model_fields'):
+                for field_name in ct.model_fields.keys():
+                    required_columns.add(prefix + field_name)
+            else:
+                # Fallback or error if model_fields is not present
+                logger.warning(f"Component type {ct.__name__} does not have 'model_fields'. Cannot determine required columns for table check.")
+
+
+        table_columns = set(table.to_dataframe().column_names)
+        return required_columns.issubset(table_columns)
+
+
+    def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
+        """
+        Given a list of component types, returns a dictionary of dataframes queried from tables whose column signatures include ALL of the specified component types.
+        Data is read from Daft-managed tables.
 
         Args:
             *component_types: Type[Component]   The component types to get the archetypes for.
 
         Returns:
-            archetypes: Dict[str, DataFrame]    A dictionary of archetype hashes to their latest data.
+            archetypes: Dict[str, DataFrame]    A dictionary of archetype hashes to their latest data as Daft DataFrames.
         """
         if not component_types:
             raise ValueError("Must request at least one component type")
+
+        # Find all tables that contain columns from target_component_types
+        archetypes_dfs: Dict[str, DataFrame] = {}
+        for table in self.sess.list_tables():
+            if self._does_table_contain_components(*component_types, table):
+                try:
+                    archetypes_dfs[table.name] = table.to_dataframe() \
+                        .where(col("simulation") == self.simulation) \
+                        .where(col("run") == self.run) \
+                        .repartition(None, *PARTITION_KEYS)
+                except Exception as e:
+                    logger.error(f"Error reading or processing Daft table {table.name}: {e}")
+                    continue # Skip this table on error
         
-        matching_sigs = self._get_matching_signatures(component_types)
+        return archetypes_dfs
 
-        archetypes = {}
-        for sig in matching_sigs:
-            table = await self._ensure_table(sig)
-            try:
-                table_uri = os.path.join(self.async_db.uri, table.name + ".lance")
-                latest_df = daft.read_lance(table_uri) \
-                    .where(col("simulation") == self.simulation) \
-                    .where(col("run") == self.run) \
-                    .repartition(None, *PARTITION_KEYS)
-            
-            except Exception as e: # Broad exception for now, Lance/Daft might raise specific errors
-                logger.error(f"Error reading lance table {table.name} for cache update: {e}")
-
-            archetypes[table.name] = latest_df
-        
-        return archetypes
-
-    async def optimize(self,
-        *component_types: Type[Component],
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: Optional[bool] = None,
-        retrain: Optional[bool] = None
-        ) -> None:
+    def append(self, table_name: str, df: DataFrame) -> None:
         """
-        Optimize the LanceDB tables for the given component types.
+        Append a table with a new dataframe.
         """
-        matching_sigs = self._get_matching_signatures(component_types)
-        
-        for sig in matching_sigs:
-            table = await self._ensure_table(sig)
-            
-            try: 
-                await table.optimize(
-                cleanup_older_than=cleanup_older_than, 
-                delete_unverified=delete_unverified, 
-                retrain=retrain
-                )
-            except Exception as e:
-                logger.error(f"Error optimizing lance table {table.name}: {e}")
+        table = self.sess.get_table(table_name)
+        try: 
+            table.append(df)
+        except Exception as e:
+            logger.error(f"Error appending dataframe to table {table_name}: {e}")
+            raise
 
 
-    # ---------------------------------------------------------------------
-    # Update Manager Interface
-    # ---------------------------------------------------------------------
-
-    def append_table(self, tablename: str, data: daft.DataFrame, step: int):
-        table = self.sess.open_table(tablename)
-        # Update the data in the table
-        table.add(data, mode='append')

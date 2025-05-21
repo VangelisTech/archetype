@@ -1,13 +1,12 @@
 from daft import DataFrame
-from typing import List, Union, Dict, Type
+from typing import List, Dict, Type
 from .base import BaseSystem
 from .processor import Processor
 from .interfaces import iQuerier
 
 class SimpleSystem(BaseSystem):
-    def __init__(self, querier: iQuerier):
+    def __init__(self, ):
         self.processors: List[Processor] = []
-        self.querier = querier
 
     def add_processor(self, proc: Processor):
         self.processors.append(proc)
@@ -23,7 +22,7 @@ class SimpleSystem(BaseSystem):
         else:
             pass
     
-    async def execute(self, step: Union[int, List[int]], dt: float) -> Dict[str, DataFrame]:
+    def execute(self, querier: iQuerier, step: int, dt: float) -> Dict[str, DataFrame]:
         """
         Executes all registered processors sequentially by priority.
         Modifications by a processor to an archetype are visible to subsequent processors
@@ -40,16 +39,14 @@ class SimpleSystem(BaseSystem):
         modified_archetypes: Dict[str, DataFrame] = {}
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
-            queried_archetypes = await proc_instance.preprocess(self.querier, step)
+            queried_archetypes = proc_instance.preprocess(querier, step)
 
             for archetype_hash, queried_df in queried_archetypes.items():
                 df_to_process = modified_archetypes.get(archetype_hash, queried_df)
                 
                 transformed_df = proc_instance.process(df_to_process, dt)
+                transformed_df = proc_instance.postprocess(transformed_df, step)
 
-                if transformed_df is None:
-                    raise ValueError(f"Processor {type(proc_instance).__name__} returned None. It should return the input DataFrame if no changes were intended.")
-                
                 modified_archetypes[archetype_hash] = transformed_df
             
 

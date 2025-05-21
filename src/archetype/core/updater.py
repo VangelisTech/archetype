@@ -8,11 +8,14 @@ class UpdateManager(iUpdater):
     def __init__(self, store: iStore):
         self._store = store
 
-    async def __call__(self, updates: Dict[str, DataFrame], step: int):
-        await self.collect(updates, step)
-
-    async def collect(self, updates: Dict[str, DataFrame], step: int):
+    def __call__(self, updates: Dict[str, DataFrame]):
         for tablename, df in updates.items():
-            await self._store.upsert(tablename, df, step)
+            try: 
+                self.update(tablename, df)
+            except Exception as e:
+                logger.error(f"Error updating table {tablename}: {e}")
+
+    def update(self, tablename: str, df: DataFrame):
+        self._store.append(tablename, df)
 
 

@@ -1,13 +1,14 @@
 import time
-from typing import List, Type, Optional, Union, Dict
+from typing import List, Type, Optional, Dict
 from daft import DataFrame
+from daft.session import Session
 from .processor import Processor
 from .base import Component
 import ulid
 
 from .interfaces import iSystem, iStore, iQuerier, iUpdater, iWorld
 
-class World(iWorld):
+class SimpleWorld(iWorld):
     def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem):
         # Inject dependencies
         self.store      = store
@@ -20,13 +21,13 @@ class World(iWorld):
         self.current_step = 0
         
 
-    async def step(self, dt: float):
+    def step(self, dt: float):
         start = time.time()
         # 1) run all processors in sequence
-        updated_archetypes = await self.execute(self.current_step, dt)
+        updated_archetypes = self.execute(self.querier, self.current_step, dt)
 
         # 2) Materialize changes into the ArchetypeStore
-        await self.update(updated_archetypes, self.current_step)
+        self.updater(updated_archetypes)
 
         self.current_step += 1
         end = time.time()
@@ -36,16 +37,20 @@ class World(iWorld):
     # Entity Management (Store Facade Methods)
     # ---------------------------------------------------------------------
 
-    async def spawn(self,
+    def spawn(self,
               *components: Component,
               step: Optional[int] = None
              ) -> int:
         """Create a new entity with these components."""
-        return await self.store.add_entity(components, step or self.current_step)
+        return self.store.add_entity(list(components), step or self.current_step)
 
-    async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
+    def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
-        await self.store.remove_entity(entity_id, step or self.current_step)
+        self.store.remove_entity(entity_id, step or self.current_step)
+
+    def get_session(self) -> Session:
+        """Get the Daft Session for this world."""
+        return self.store.sess
 
     # ---------------------------------------------------------------------
     # QueryManager Facade
@@ -58,19 +63,25 @@ class World(iWorld):
         """Fetch the latest live state of these components at the given step."""
         return self.querier(
             list(components),
-            step = step if step is not None else self.current_step
+            step = step or self.current_step
         )
-
-    async def get_history(self, *components: Type[Component]) -> Dict[str, DataFrame]:
-        """Fetch the history of these components at the given step."""
-        return await self.querier.get_history(*components)
+    
+    def get_history(self,
+              *components: Type[Component],
+              step: List[int] = None,
+             ) -> DataFrame:
+        """Fetch the latest live state of these components at the given step."""
+        return self.querier.query(
+            *components,
+            step = step
+        )
     
     # ---------------------------------------------------------------------
     # UpdateManager Facade
     # ---------------------------------------------------------------------
 
-    async def update(self, archetypes: Dict[str, DataFrame], step: int):
-        await self.updater(archetypes, step)
+    def update(self, archetypes: Dict[str, DataFrame]):
+        self.updater(archetypes)
 
     # ---------------------------------------------------------------------
     # System Facade
@@ -84,6 +95,6 @@ class World(iWorld):
         """Remove a Processor from the sequential system."""
         self.system.remove_processor(proc)
 
-    def execute(self, step: int, dt: float) -> Dict[str, DataFrame]:
+    def execute(self, querier: iQuerier, step: int, dt: float) -> Dict[str, DataFrame]:
         """Execute the system for a single step."""
-        return self.system.execute(step, dt)
+        return self.system.execute(querier, step, dt)

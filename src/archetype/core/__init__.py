@@ -1,22 +1,18 @@
-import lancedb
-import os
 from .store import ArchetypeStore
 from .querier import QueryManager
 from .updater import UpdateManager
 from .system import SimpleSystem
-from .world import World 
+from .world import SimpleWorld 
 from .base import Component
 from .processor import Processor, processor
 
-async def make_world(uri: str, simulation: str | None = None, run: str | None = None) -> World:
-    async_db_client = await lancedb.connect_async(uri, api_key=os.environ.get("LANCEDB_API_KEY"))
-    
-    store   = ArchetypeStore(async_db_client, simulation, run)
+def make_simple_world(uri: str, simulation: str | None = None, run: str | None = None) -> SimpleWorld:    
+    store   = ArchetypeStore(uri, simulation, run)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
-    system  = SimpleSystem(querier=querier)
+    system  = SimpleSystem()
     
-    world   = World(
+    world = SimpleWorld(
         store=store,
         querier=querier,
         updater=updater,
@@ -25,9 +21,9 @@ async def make_world(uri: str, simulation: str | None = None, run: str | None = 
     return world
 
 __all__ = [
-    "World",
+    "SimpleWorld",
     "Processor",
     "processor",
     "Component",
-    "make_world"
+    "make_simple_world"
 ]
