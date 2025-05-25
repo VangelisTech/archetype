@@ -15,13 +15,13 @@ from daft.catalog import Catalog, Table
 from pyiceberg.catalog.sql import SqlCatalog
 import pyarrow as pa    
 from lancedb.pydantic import LanceModel
+import time
 # Internals
 from .interfaces import Component, iStore
 
 logger = getLogger(__name__)
 
-# Partition keys are the keys that are used to partition the data in the table.
-# We only partition by step because we want to be able to query the latest data for an archetype.
+
 
 
 
@@ -51,12 +51,10 @@ def get_component_prefix(component_type: Type[Component]) -> str:
 
 @lru_cache(maxsize=None, typed=True)
 def sig2hash(sig: Tuple[Type[Component], ...]) -> str:
-    # Create a hash of the signature
-    h = blake2b(digest_size=10)
+    hash_val = ""
     for comp_type in sig:
-        h.update(comp_type.__name__.encode())
-    hash_val = h.hexdigest()
-    return f"archetype_{hash_val}"
+        hash_val += comp_type.__name__[0:3]
+    return "archetype_" + hash_val
 
 
 def convert_component_to_pyarrow_schema(component_type: Type[Component]) -> pa.Schema:
@@ -86,11 +84,12 @@ class ArchetypeStore(iStore):
         run: Optional[str] = None,
         namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
+        debug: bool = False,
     ):
-        
+        self.debug = debug
         self.simulation = simulation or f"sim_{get_datetime_str()}"
         self.run = run or f"run_{str(ulid.ULID())}"
-        self.namespace = namespace or "archetype"
+        self.namespace = namespace or "archetypes"
 
         # Initialize the catalog
         self.catalog = catalog or Catalog.from_iceberg(
@@ -170,23 +169,21 @@ class ArchetypeStore(iStore):
         We need values to be lists.
         """
         # Create the base archetype from archetype arrow schema
-        df = daft.from_arrow(schema.empty_table())
-        df = df.with_columns({
-            "simulation": lit(self.simulation),
-            "run": lit(self.run),
-            "entity_id": lit(entity_id),
-            "step": lit(step),
-            "is_active": lit(True)
-        })
+        #df = daft.from_arrow(schema.empty_table())
+        row_dict = {
+            "simulation": self.simulation,
+            "run": self.run,
+            "entity_id": entity_id,
+            "step": step,
+            "is_active": True
+        }
 
         for c in components:
             prefix = get_component_prefix(type(c))
-            df = df.with_columns({prefix + key: lit(value) for key, value in c.model_dump().items()})
+            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
 
-        # Store entity mapping
-        self._entity2sig[entity_id] = sig_from_components(components)
-        
-        return df
+
+        return row_dict
 
     #--------------------------------------------------------------------------
     # ComponentStoreInterface methods
@@ -201,16 +198,22 @@ class ArchetypeStore(iStore):
         
         entity_id = next(self._entity_counter)
         sig = sig_from_components(components)
+        
         pyarrow_schema = self._get_archetype_schema(sig)
 
-        df_row = self._new_archetype_row(entity_id, step, components, pyarrow_schema)
+        row_dict = self._new_archetype_row(entity_id, step, components, pyarrow_schema)
+
         table = self._ensure_table(sig)
         try:
+            df_row = daft.from_pylist([row_dict])
             table.append(df_row)
             logger.debug(f"Appended entity {entity_id} to table {table.name}")
         except Exception as e:
             logger.error(f"Error appending entity {entity_id} to table {table.name}: {e}")
             raise
+
+        # Store entity mapping
+        self._entity2sig[entity_id] = sig
 
         return entity_id
     
@@ -265,7 +268,7 @@ class ArchetypeStore(iStore):
                 # Fallback or error if model_fields is not present
                 logger.warning(f"Component type {ct.__name__} does not have 'model_fields'. Cannot determine required columns for table check.")
 
-
+     
         table_columns = set(table.to_dataframe().column_names)
         return required_columns.issubset(table_columns)
 
@@ -281,18 +284,23 @@ class ArchetypeStore(iStore):
         Returns:
             archetypes: Dict[str, DataFrame]    A dictionary of archetype hashes to their latest data as Daft DataFrames.
         """
-        if not component_types:
+        if len(component_types) == 0:
             raise ValueError("Must request at least one component type")
 
         # Find all tables that contain columns from target_component_types
         archetypes_dfs: Dict[str, DataFrame] = {}
-        for table in self.sess.list_tables():
-            if self._does_table_contain_components(*component_types, table):
+        for tablename in self.catalog.list_tables(self.namespace):
+            table = self.catalog.get_table(tablename)
+            if self._does_table_contain_components(*component_types, table=table):
                 try:
                     archetypes_dfs[table.name] = table.to_dataframe() \
                         .where(col("simulation") == self.simulation) \
                         .where(col("run") == self.run) \
                         .repartition(None, *PARTITION_KEYS)
+                    
+                    if self.debug: 
+                        logger.info(f"Showing table {table.name}")
+                        archetypes_dfs[table.name].show()
                 except Exception as e:
                     logger.error(f"Error reading or processing Daft table {table.name}: {e}")
                     continue # Skip this table on error
@@ -305,7 +313,12 @@ class ArchetypeStore(iStore):
         """
         table = self.sess.get_table(table_name)
         try: 
+            start_time = time.time()
+            df.collect()
+            df.show()
             table.append(df)
+            end_time = time.time()
+            logger.info(f"Appended dataframe to table {table_name} in {end_time - start_time} seconds")
         except Exception as e:
             logger.error(f"Error appending dataframe to table {table_name}: {e}")
             raise

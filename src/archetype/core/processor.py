@@ -17,7 +17,7 @@ class Processor(BaseProcessor):
     
     def postprocess(self, df: DataFrame, step: int) -> DataFrame:
         "Processor method are allowed to query more than one step at a time, but must return a single step."
-        df = df.group_by("step").with_column("step", lit(step))
+        df = df.with_column("step", lit(step))
         return df
 
 

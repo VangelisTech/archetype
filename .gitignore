@@ -33,3 +33,12 @@
 *.wal
 *.tmp/
 *.env
+archetype.egg-info/
+*.avro
+*.parquet
+*.arrow
+*.ipc
+*.arrow
+*.db
+
+__pycache__/

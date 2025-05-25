@@ -5,8 +5,8 @@ description = "Lazy Distributed Dataframe-Based ECS Simulation Engine using Daft
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "getdaft>=0.4.13",
-    "daft[lance]",
+    "getdaft>=0.4.15",
+    "daft[lance,iceberg,sql]",
     "pyarrow>=16.0.0",
     "lancedb>=0.22.0",
     "python-ulid>=3.0.0",
@@ -14,4 +14,12 @@ dependencies = [
     "datasets>=3.6.0",
     "pytest-asyncio>=0.26.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
+    "ipykernel",
 ]
+
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "src"
+]
+asyncio_default_fixture_loop_scope = "function"
