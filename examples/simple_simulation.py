@@ -65,3 +65,5 @@ if __name__ == "__main__":
     uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
 
     world = main(uri, debug=True)
+
+    

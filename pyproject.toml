@@ -15,6 +15,7 @@ dependencies = [
     "pytest-asyncio>=0.26.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
     "ipykernel",
+    "networkx>=3.4.2",
 ]
 
 

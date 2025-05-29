@@ -22,6 +22,9 @@ class SimpleWorld(iWorld):
         
 
     def step(self, dt: float):
+        # Materialize any pending spawns before the first step
+        self.materialize_spawns()
+            
         start = time.time()
         # 1) run all processors in sequence
         updated_archetypes = self.execute(self.querier, self.current_step, dt)
@@ -51,31 +54,32 @@ class SimpleWorld(iWorld):
     def get_session(self) -> Session:
         """Get the Daft Session for this world."""
         return self.store.sess
+    
+    def materialize_spawns(self) -> None:
+        """Materialize any pending spawns before the first step."""
+        self.store.materialize_spawns()
 
     # ---------------------------------------------------------------------
     # QueryManager Facade
     # ---------------------------------------------------------------------
 
-    def query(self,
-              *components: Type[Component],
-              step: Optional[int] = None,
-             ) -> DataFrame:
+    def query(self, *components: Type[Component], step: Optional[int] = None) -> DataFrame:
         """Fetch the latest live state of these components at the given step."""
         return self.querier(
             list(components),
             step = step or self.current_step
         )
     
-    def get_history(self,
-              *components: Type[Component],
-              step: List[int] = None,
-             ) -> DataFrame:
+    def get_history(self, *components: Type[Component], step: List[int] = None) -> DataFrame:
         """Fetch the latest live state of these components at the given step."""
         return self.querier.query(
             *components,
             step = step
         )
     
+    def archetype_for_entity(self, entity_id: int, *components: Type[Component], step: int = None) -> DataFrame:
+        """Get a component for an entity."""
+        return self.querier.archetype_for_entity(entity_id, components, step)
     # ---------------------------------------------------------------------
     # UpdateManager Facade
     # ---------------------------------------------------------------------

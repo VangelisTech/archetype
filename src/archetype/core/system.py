@@ -1,11 +1,15 @@
-from daft import DataFrame
+
 from typing import List, Dict, Type
+from itertools import count
+
+from daft import DataFrame
+
 from .base import BaseSystem
 from .processor import Processor
 from .interfaces import iQuerier
 
 class SimpleSystem(BaseSystem):
-    def __init__(self, ):
+    def __init__(self):
         self.processors: List[Processor] = []
 
     def add_processor(self, proc: Processor):
@@ -53,4 +57,3 @@ class SimpleSystem(BaseSystem):
                     
 
         return modified_archetypes
-
