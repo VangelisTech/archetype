@@ -91,6 +91,8 @@ class ArchetypeStore(iStore):
         self.namespace = namespace or "archetypes"
         self.debug = debug
 
+
+
         # Initialize the catalog
         self.catalog = catalog or Catalog.from_iceberg(
             SqlCatalog(
@@ -304,7 +306,7 @@ class ArchetypeStore(iStore):
         """
         sig = self._entity2sig[entity_id]
         table_name = sig2hash(sig)
-        table = self.catalog.get_table(self.namespace + "." + table_name)
+        table = self.catalog.get_table(table_name)
         
         df = table.to_dataframe() \
             .where(col("entity_id") == entity_id) \
@@ -313,7 +315,32 @@ class ArchetypeStore(iStore):
         
         return df
 
-    def get_matching_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
+    def get_active_archetypes_with_signatures(self) -> Dict[str, Tuple[DataFrame, Tuple[Type[Component], ...]]]:
+        """
+        Get all active archetypes using the entity2sig mapping for efficiency.
+        Returns dict mapping archetype_hash -> (DataFrame, component_signature)
+        This avoids expensive schema comparisons by using tracked signatures.
+        """
+        active_signatures = set(self._entity2sig.values())
+        archetypes_with_sigs: Dict[str, Tuple[DataFrame, Tuple[Type[Component], ...]]] = {}
+        
+        for sig in active_signatures:
+            table_name = sig2hash(sig)
+            try:
+                table = self.catalog.get_table(self.namespace + "." + table_name)
+                df = table.to_dataframe() \
+                    .where(col("simulation") == self.simulation) \
+                    .where(col("run") == self.run) \
+                    .where(col("is_active") == True)
+                
+                archetypes_with_sigs[table_name] = (df, sig)
+            except Exception as e:
+                logger.error(f"Error reading archetype table {table_name}: {e}")
+                continue
+        
+        return archetypes_with_sigs
+
+    def get_matching_archetypes(self, component_types: Tuple[Type[Component], ...]) -> Dict[str, DataFrame]:  
         """
         Given a list of component types, returns a dictionary of dataframes queried from tables whose column signatures include ALL of the specified component types.
         Data is read from Daft-managed tables.
@@ -327,20 +354,16 @@ class ArchetypeStore(iStore):
         if len(component_types) == 0:
             raise ValueError("Must request at least one component type")
 
-        # Find all tables that contain columns from target_component_types
-        archetypes_dfs: Dict[str, DataFrame] = {}
-        for tablename in self.catalog.list_tables(self.namespace):
-            table = self.catalog.get_table(tablename)
-            if self._does_table_contain_components(*component_types, table=table):
-                try:
-                    archetypes_dfs[table.name] = table.to_dataframe() \
-                        .where(col("simulation") == self.simulation) \
-                        .where(col("run") == self.run)
-                except Exception as e:
-                    logger.error(f"Error reading or processing Daft table {table.name}: {e}")
-                    continue # Skip this table on error
+        # Use active signatures instead of expensive schema discovery
+        active_archetypes = self.get_active_archetypes_with_signatures()
+        matching_archetypes: Dict[str, DataFrame] = {}
         
-        return archetypes_dfs
+        component_set = set(component_types)
+        for archetype_hash, (df, sig) in active_archetypes.items():
+            if component_set.issubset(set(sig)):
+                matching_archetypes[archetype_hash] = df
+        
+        return matching_archetypes
     
     def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
         """
@@ -371,149 +394,3 @@ class ArchetypeStore(iStore):
 
 
 
-
-
-class AsyncArchetypeStore(ArchetypeStore):
-    """
-    AsyncArchetypeStore is a subclass of ArchetypeStore that supports asynchronous operations.
-    
-    This implementation follows the Dual Method Pattern, providing explicit async versions
-    of all store methods. The async methods wrap synchronous operations in an executor 
-    for true async behavior and use a semaphore to control concurrency.
-    
-    Usage:
-        # Synchronous
-        store = AsyncArchetypeStore(uri)
-        entity_id = store.add_entity(components)
-        
-        # Asynchronous
-        store = AsyncArchetypeStore(uri)
-        entity_id = await store.async_add_entity(components)
-    """
-
-    _executor = None  # Thread pool executor for async operations
-    
-    def __init__(self, max_concurrent_requests: int = 10, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.semaphore = asyncio.Semaphore(max_concurrent_requests)
-
-    async def _run_in_executor(self, func, *args, **kwargs):
-        """
-        Helper to run a synchronous function in an executor.
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self._executor, func, *args, **kwargs)
-
-    async def async_add_entity(self, components: List[Component], step: int = 0) -> int:
-        """
-        Add an entity to the store asynchronously.
-        """
-        async with self.semaphore:
-            return await self._run_in_executor(super().add_entity, components, step)
-
-    async def async_remove_entity(self, entity_id: int, step: int) -> None: 
-        """
-        Remove an entity from the store asynchronously.
-        """
-        async with self.semaphore:
-            return await self._run_in_executor(super().remove_entity, entity_id, step)
-
-    async def async_get_df(self, tablename: str, *component_types: Type[Component]) -> Optional[DataFrame]:
-        """
-        Get the DataFrame for a table if it contains all specified component types.
-        
-        Returns:
-            DataFrame if the table contains all component types, None otherwise.
-        """
-        async with self.semaphore:
-            def _get_df_sync():
-                try: 
-                    table = self.catalog.get_table(tablename)
-                    
-                    if not self._does_table_contain_components(*component_types, table=table):
-                        return None
-                    
-                    return table.to_dataframe() \
-                        .where(col("simulation") == self.simulation) \
-                        .where(col("run") == self.run) \
-                        .repartition(None, *PARTITION_KEYS)
-                except Exception as e:
-                    logger.error(f"Error getting DataFrame from table {tablename}: {e}")
-                    return None
-            
-            return await self._run_in_executor(_get_df_sync)
-
-    async def async_get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]: 
-        """
-        Given a list of component types, returns a dictionary of dataframes queried from tables 
-        whose column signatures include ALL of the specified component types.
-        
-        Args:
-            *component_types: Type[Component] - The component types to get the archetypes for.
-
-        Returns:
-            Dict[str, DataFrame] - A dictionary of archetype table names to their DataFrames.
-        """
-        if len(component_types) == 0:
-            raise ValueError("Must request at least one component type")
-
-        # Get table names synchronously first (it's a simple list operation)
-        table_names = self.catalog.list_tables(self.namespace)
-        
-        # Create tasks for concurrent DataFrame fetching
-        tasks = [self.async_get_df(tablename, *component_types) for tablename in table_names]
-        
-        # Use gather with return_exceptions to handle partial failures gracefully
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Build the result dictionary, filtering out None values and exceptions
-        archetypes_dfs: Dict[str, DataFrame] = {}
-        for table_name, result in zip(table_names, results):
-            if isinstance(result, Exception):
-                logger.error(f"Error processing table {table_name}: {result}")
-            elif result is not None:  # async_get_df returns None if table doesn't match
-                archetypes_dfs[table_name] = result
-        
-        return archetypes_dfs
-
-    async def async_append(self, table_name: str, df: DataFrame) -> None:
-        """
-        Append a DataFrame to a table asynchronously.
-        """
-        async with self.semaphore:
-            return await self._run_in_executor(super().append, table_name, df)
-
-    async def async_materialize_spawns(self) -> None:
-        """
-        Materialize spawn cache asynchronously.
-        """
-        async with self.semaphore:
-            return await self._run_in_executor(super().materialize_spawns)
-
-    async def async_get_archetypes_stream(self, *component_types: Type[Component]):
-        """
-        Yields individual archetype DataFrames as they complete, enabling true streaming processing.
-        
-        This fundamentally changes the query model from batch (Dict) to stream (AsyncGenerator).
-        Each archetype table query runs independently with its own semaphore slot.
-        
-        Yields:
-            Tuple[str, DataFrame]: (archetype_name, dataframe) pairs as they complete
-        """
-        if len(component_types) == 0:
-            raise ValueError("Must request at least one component type")
-
-        table_names = self.catalog.list_tables(self.namespace)
-        
-        async def fetch_with_name(tablename: str) -> Tuple[str, Optional[DataFrame]]:
-            df = await self.async_get_df(tablename, *component_types)
-            return (tablename, df)
-        
-        # Create all tasks but don't await them all at once
-        tasks = [fetch_with_name(tablename) for tablename in table_names]
-        
-        # Process results as they complete, not in order
-        for coro in asyncio.as_completed(tasks):
-            table_name, df = await coro
-            if df is not None:  # Only yield successful matches
-                yield (table_name, df)

@@ -42,3 +42,6 @@ archetype.egg-info/
 *.db
 
 __pycache__/
+data/archetypes.db/
+data/catalog.db 
+

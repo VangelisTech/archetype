@@ -4,7 +4,7 @@ from .updater import UpdateManager
 from .system import SimpleSystem
 from .world import SimpleWorld 
 from .base import Component
-from .processor import Processor, processor
+from .processor import Processor, processor, InputProcessor
 from daft.catalog import Catalog
 
 
@@ -34,5 +34,6 @@ __all__ = [
     "Processor",
     "processor",
     "Component",
-    "make_simple_world"
+    "make_simple_world",
+    "InputProcessor"
 ]

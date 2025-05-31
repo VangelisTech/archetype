@@ -1,4 +1,0 @@
-$e9690234-e2f2-402c-9e3f-c8f2477bb17a²Û*
-simulation ÿÿÿÿÿÿÿÿÿ*string8Zdefault%run ÿÿÿÿÿÿÿÿÿ*string8Zdefault*	entity_id ÿÿÿÿÿÿÿÿÿ*int648Zdefault%step ÿÿÿÿÿÿÿÿÿ*int648Zdefault)	is_active ÿÿÿÿÿÿÿÿÿ*bool8Zdefault-position__x ÿÿÿÿÿÿÿÿÿ*double8Zdefault-position__y ÿÿÿÿÿÿÿÿÿ*double8Zdefault.velocity__vx ÿÿÿÿÿÿÿÿÿ*double8Zdefault.velocity__vy ÿÿÿÿÿÿÿÿÿ*double8Zdefault"!
-lance.auto_cleanup.interval20"'
-lance.auto_cleanup.older_than14days

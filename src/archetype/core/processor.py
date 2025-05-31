@@ -20,7 +20,16 @@ def processor(*component_types: Type[Component], priority: int = 0):
 class Processor(BaseProcessor):
     priority: int = 0
     components: Tuple[Type[Component], ...] = None
+    
+    def can_process_archetype(self, archetype_signature: Tuple[Type[Component], ...]) -> bool:
+        """Check if this processor can work on an archetype with the given component signature."""
+        if not self.components:
+            return False
+        # Processor can work on archetype if all its required components are present
+        return set(self.components).issubset(set(archetype_signature))
+    
     def preprocess(self, querier: iQuerier, step: int) -> Dict[str, DataFrame]:
+        """Legacy method for backward compatibility. Use get_relevant_archetypes instead."""
         if not self.components:
             raise ValueError("Processor must have at least one component set at self.components. Use @processor(Component1, Component2) decorator")
         return querier.get_matching_archetypes(self.components, step=[step])
@@ -45,6 +54,4 @@ class InputProcessor(BaseProcessor):
         return df
     
     def postprocess(self, df: DataFrame, step: int) -> DataFrame:
-        return df
-
-
+        return df # Let the vanilla processors handle step literal override
