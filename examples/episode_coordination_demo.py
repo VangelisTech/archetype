@@ -156,7 +156,7 @@ async def demonstrate_episode_coordination():
     
     # Run multiple episodes
     episode_stats = await episode_world.run_with_sync_points(
-        num_episodes=3,
+        num_episodes=31,
         dt=0.1,
         sync_every=2  # Sync every 2 episodes
     )

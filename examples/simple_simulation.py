@@ -1,7 +1,3 @@
-
-
-
-
 import sys
 import os
 
@@ -12,15 +8,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
     
-from archetype.core import processor, Processor, Component
-from archetype import make_simple_world
+from archetype.core import processor, Processor, Component # noqa: F401
+from archetype import make_simple_world # noqa: F401
 
-from daft import DataFrame, col 
+from daft import DataFrame, col # noqa: F401
 
-
-
-
-# Define Components (or import them if they are part of your public API)
+# Define Components
 class Position(Component):
     x: float
     y: float
@@ -55,8 +48,8 @@ def main(uri, debug=False):
     world.spawn(Position(x=0, y=0), Velocity(vx=10, vy=10))
     
 
-    for i in range(10):
-        world.step(dt=0.1)
+    for i in range(1000):
+        world.step(dt=0.01)
 
     return world
 

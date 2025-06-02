@@ -14,14 +14,6 @@ class BaseProcessor(ABC):
     components: Tuple[Type[Component], ...]
 
     @abstractmethod
-    def preprocess(self, querier: iQuerier, step: int) -> Dict[str, daft.DataFrame]:
-        """
-        Fetches and prepares the initial data DataFrames for the process method, keyed by archetype hash.
-        Should return an empty dictionary if no data is relevant.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
     def process(self, state_df: daft.DataFrame) -> Optional[daft.DataFrame]:
         """
         The core transformation logic of the processor, operating on a DataFrame.

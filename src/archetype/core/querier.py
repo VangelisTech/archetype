@@ -1,30 +1,38 @@
 # Python
 from daft import col, DataFrame
-from typing import List, Type, Dict, Tuple, Sequence
+from typing import List, Type, Tuple, Sequence
 
 from .base import Component
 from .interfaces import iQuerier, iStore
+from .store import ArchetypeSignature
 
 class QueryManager(iQuerier):
     def __init__(self, store: iStore):
         self._store = store
 
-    def get_matching_archetypes(self, component_types: Tuple[Type[Component], ...], step: int) -> Dict[str, DataFrame]:
+    def _filter_on_step_and_active(self,
+        archetypes: List[Tuple[ArchetypeSignature, DataFrame]],
+          step: int
+        ) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+
+        return [
+            (
+                sig,
+                df.where(col("step").is_in([step])).where(df["is_active"])
+            )
+            for sig, df in archetypes
+        ]
+
+    def get_archetypes(self, step: int) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        archetypes =  self._store.get_matching_archetypes(component_types)
-        archetypes = {
-            name: df.where(col("step").is_in([step])) \
-                    .where(df["is_active"]) \
-                    
-            for name, df in archetypes.items()
-        }
-
-        return archetypes
-    
-    # An Async version of the above would use a semphore over a list of events mapping each archetype to the processor and back through the updater. 
-
+        active_archetypes =  self._store.get_archetypes()
+        if step == -1:
+            return active_archetypes
+        
+        return self._filter_on_step_and_active(active_archetypes, step-1)
+        
     def archetype_for_entity(self,
         entity_id: int,
         component_types: Sequence[Type[Component]],
@@ -32,7 +40,6 @@ class QueryManager(iQuerier):
         ) -> DataFrame:
         """Get a component for an entity."""
         df = self._store.get_archetype_for_entity(entity_id, *component_types)
-
-        df = df.where(col("step").is_in([step]))
-
-        return df
+        if step == -1:
+            return df
+        return self._filter_on_step_and_active(df, step)

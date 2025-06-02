@@ -5,6 +5,8 @@ from lancedb.pydantic import LanceModel
 class Component(LanceModel):
     pass
 
+ArchetypeSignature = Tuple[Type[Component], ...]
+
 class iProcessor(Protocol):
     priority: int
     components: Tuple[Type[Component], ...]
@@ -18,7 +20,7 @@ class iStore(Protocol):
     def append(self, table_name: str, df: DataFrame) -> None: ...
 
 class iQuerier(Protocol):
-    def get_matching_archetypes(self, *component_types: Type[Component], step: int, entities: Optional[Union[int, List[int]]] = None) -> DataFrame: ...
+    def get_archetypes(self, step: int) -> List[Tuple[ArchetypeSignature, DataFrame]]: ...
     def archetype_for_entity(self,entity_id: int, component_types: Sequence[Type[Component]], step: List[int]) -> DataFrame: ...
 
 class iUpdater(Protocol):

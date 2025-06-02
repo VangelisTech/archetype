@@ -4,7 +4,7 @@ from .updater import UpdateManager
 from .system import SimpleSystem
 from .world import SimpleWorld 
 from .base import Component
-from .processor import Processor, processor, InputProcessor
+from .processor import Processor, processor
 from daft.catalog import Catalog
 
 

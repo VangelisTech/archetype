@@ -1,5 +1,4 @@
-
-from typing import List, Dict, Type
+from typing import List, Dict, Type, Tuple
 from itertools import count
 
 from daft import DataFrame
@@ -7,6 +6,7 @@ from daft import DataFrame
 from .base import BaseSystem
 from .processor import Processor
 from .interfaces import iQuerier
+from .store import ArchetypeSignature
 
 class SimpleSystem(BaseSystem):
     def __init__(self):
@@ -26,41 +26,27 @@ class SimpleSystem(BaseSystem):
         else:
             pass
     
-    def execute(self, querier: iQuerier, step: int, dt: float) -> Dict[str, DataFrame]:
+    def execute(self, querier: iQuerier, step: int, *args, **kwargs) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
-        Executes all registered processors using archetype-first iteration.
-        Each archetype is processed through all relevant processors in priority order.
-        This eliminates redundant queries and enables better performance optimization.
-        
-        Returns a dictionary mapping archetype signature hashes to their final
-        DataFrame state after all processors have run for this step. Only includes
-        archetypes that were actually modified by at least one processor.
+        Execute all processors on all active archetypes in priority order.
+        Returns a list of tuples of (archetype_signature, modified_df)
 
-        Processors SHALL NOT return an empty dataframe. 
+        Embrace the immutability bro. 
         """
         if not self.processors:
-            return {}
+            return []
 
-        modified_archetypes: Dict[str, DataFrame] = {}
+        modified_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = []
         
         # Get all active archetypes with their component signatures (single query)
-        active_archetypes = querier._store.get_active_archetypes_with_signatures()
+        active_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = querier.get_archetypes(step)
         
-        # Process each archetype through all relevant processors
-        for archetype_hash, (df, archetype_signature) in active_archetypes.items():
-            current_df = df
-            archetype_modified = False
-            
-            # Apply all relevant processors in priority order
+        # Process each archetype through all relevant processors in priority order
+        for archetype_signature, df in active_archetypes:
             for proc_instance in sorted(self.processors, key=lambda x: x.priority):
-                if proc_instance.can_process_archetype(archetype_signature):
-                    processed_df = proc_instance.process(current_df, dt)
-                    processed_df = proc_instance.postprocess(processed_df, step)
-                    current_df = processed_df
-                    archetype_modified = True
-            
-            # Only include archetypes that were actually processed by at least one processor
-            if archetype_modified:
-                modified_archetypes[archetype_hash] = current_df
+                # Build the modified archetype list if the processor has the components to matching the archetype signature 
+                if set(proc_instance.components).issubset(set(archetype_signature)):
+                    processed_df = proc_instance.process(df, *args, **kwargs)
+                    modified_archetypes.append((archetype_signature, processed_df))
 
         return modified_archetypes

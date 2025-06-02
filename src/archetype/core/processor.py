@@ -20,38 +20,11 @@ def processor(*component_types: Type[Component], priority: int = 0):
 class Processor(BaseProcessor):
     priority: int = 0
     components: Tuple[Type[Component], ...] = None
-    
-    def can_process_archetype(self, archetype_signature: Tuple[Type[Component], ...]) -> bool:
-        """Check if this processor can work on an archetype with the given component signature."""
-        if not self.components:
-            return False
-        # Processor can work on archetype if all its required components are present
-        return set(self.components).issubset(set(archetype_signature))
-    
-    def preprocess(self, querier: iQuerier, step: int) -> Dict[str, DataFrame]:
-        """Legacy method for backward compatibility. Use get_relevant_archetypes instead."""
-        if not self.components:
-            raise ValueError("Processor must have at least one component set at self.components. Use @processor(Component1, Component2) decorator")
-        return querier.get_matching_archetypes(self.components, step=[step])
 
-    def process(self, df: DataFrame, dt: float) -> DataFrame:
-        "Processor method are allowed to query more than one step at a time, but must return a single step."
+    def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
+        """
+        Processor method are provided the state of the archetype at the current step.
+        Processors are not responsible for updating the step value. 
+        """
         return df
-    
-    def postprocess(self, df: DataFrame, step: int) -> DataFrame:
-        "Processor method are allowed to query more than one step at a time, but must return a single step."
-        return df.with_column("step", lit(step))
 
-class InputProcessor(BaseProcessor):
-    def __init__(self, entity_ids: List[int]):
-        self.entity_ids = entity_ids
-
-    def preprocess(self, querier: iQuerier, step: int) -> DataFrame:
-        df = querier.archetype_for_entity(self.entity_ids, self.components, step=[step])
-        return df
-    
-    def process(self, df: DataFrame, dt: float = None) -> DataFrame:
-        return df
-    
-    def postprocess(self, df: DataFrame, step: int) -> DataFrame:
-        return df # Let the vanilla processors handle step literal override

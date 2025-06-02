@@ -1,6 +1,6 @@
 # Standard Python Libraries
 from itertools import count
-from typing import Dict, Tuple, List, Type, Optional, Any
+from typing import Dict, Tuple, List, Type, Optional, Any, Set
 from logging import getLogger
 from hashlib import blake2b
 import ulid 
@@ -17,12 +17,11 @@ from pyiceberg.catalog.sql import SqlCatalog
 import pyarrow as pa    
 from lancedb.pydantic import LanceModel
 import time
+
 # Internals
-from .interfaces import Component, iStore
+from .interfaces import Component, iStore, ArchetypeSignature
 
 logger = getLogger(__name__)
-
-
 
 BaseArchetypeTableSchema = pa.schema([
     pa.field("simulation", pa.string(), nullable=False),
@@ -32,23 +31,25 @@ BaseArchetypeTableSchema = pa.schema([
     pa.field("is_active", pa.bool_(), nullable=False),
 ])
 PARTITION_KEYS = ["simulation", "run", "step"]
-    
+
+
 # Utility functions
 def get_datetime_str() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') # ISO 8601
-
-def sig_from_components(components: List[Component]) -> Tuple[Type[Component], ...]:
-    # Get the signature of the components by sorting their types by name
-    component_types = [type(c) for c in components]
-    sig = tuple(sorted(component_types, key=lambda t: t.__name__))
-    return sig
 
 def get_component_prefix(component_type: Type[Component]) -> str:
     """Generate a standardized prefix for a component type's fields."""
     return component_type.__name__.lower() + "__"
 
+
+def sig_from_components(components: List[Component]) -> ArchetypeSignature:
+    # Get the signature of the components by sorting their types by name
+    component_types = [type(c) for c in components]
+    sig = tuple(sorted(component_types, key=lambda t: t.__name__))
+    return sig
+
 @lru_cache(maxsize=None, typed=True)
-def sig2hash(sig: Tuple[Type[Component], ...]) -> str:
+def sig2hash(sig: ArchetypeSignature) -> str:
     hash_val = ""
     for comp_type in sig:
         hash_val += comp_type.__name__[0:3]
@@ -112,14 +113,21 @@ class ArchetypeStore(iStore):
         self.sess.set_namespace(self.namespace)
 
         # Initialize internal properties
-        self._entity2sig: Dict[int, Tuple[Type[Component], ...]] = {} # Necessary mapping for entity_id -> archetype signature
+        self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature
         self._entity_counter = count(start=1)
 
-        self._spawn_cache: Dict[Tuple[Type[Component], ...], List[Dict[str, Any]]] = {}
+        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
 
     #--------------------------------------------------------------------------
     # Helper methods
     #--------------------------------------------------------------------------
+    
+    @lru_cache(maxsize=None, typed=True)
+    def get_active_signatures(self) -> Set[ArchetypeSignature]:
+        """
+        Get all active signatures.
+        """
+        return set(self._entity2sig.values())
     
     @lru_cache(maxsize=None, typed=True)
     def _get_component_schema(self, component_type: Type[Component]) -> pa.Schema:
@@ -135,7 +143,7 @@ class ArchetypeStore(iStore):
         return component_schema
 
     @lru_cache(maxsize=None, typed=True)
-    def _get_archetype_schema(self, sig: Tuple[Type[Component], ...]) -> pa.Schema:
+    def _get_archetype_schema(self, sig: ArchetypeSignature) -> pa.Schema:
         """
         Get the schema for an archetype from a list of components.
         """
@@ -147,7 +155,7 @@ class ArchetypeStore(iStore):
         
         return archetype_schema
     
-    def _ensure_table(self, sig: Tuple[Type[Component], ...]) -> Table:
+    def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
         Returns the table name (hash_val).
@@ -189,11 +197,8 @@ class ArchetypeStore(iStore):
 
         return row_dict
 
-
-
-
     #--------------------------------------------------------------------------
-    # ComponentStoreInterface methods
+    # iStore methods
     #--------------------------------------------------------------------------
     def add_entity(self, components: List[Component], step: int = 0) -> int:
         """
@@ -278,28 +283,8 @@ class ArchetypeStore(iStore):
 
 
     # ---------------------------------------------------------------------
-    # Query helpers used by Processor._fetch_state and QueryManager
+    # iQuerier methods 
     # ---------------------------------------------------------------------
-    def _does_table_contain_components(self, *component_types: Type[Component], table: Table) -> bool:
-        """
-        Given a table, returns a list of tables that contain columns from the specified component types.
-        """
-        required_columns = set()
-        for ct in component_types:
-            prefix = get_component_prefix(ct)
-            # Assuming components have fields, otherwise this needs adjustment
-            # This also assumes component_type.model_fields is a valid way to get field names
-            if hasattr(ct, 'model_fields'):
-                for field_name in ct.model_fields.keys():
-                    required_columns.add(prefix + field_name)
-            else:
-                # Fallback or error if model_fields is not present
-                logger.warning(f"Component type {ct.__name__} does not have 'model_fields'. Cannot determine required columns for table check.")
-
-     
-        table_columns = set(table.to_dataframe().column_names)
-        return required_columns.issubset(table_columns)
-
     def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
         """
         Get all archetypes.
@@ -314,67 +299,40 @@ class ArchetypeStore(iStore):
             .where(col("run") == self.run)
         
         return df
-
-    def get_active_archetypes_with_signatures(self) -> Dict[str, Tuple[DataFrame, Tuple[Type[Component], ...]]]:
+    
+    def get_archetypes(self) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Get all active archetypes using the entity2sig mapping for efficiency.
         Returns dict mapping archetype_hash -> (DataFrame, component_signature)
         This avoids expensive schema comparisons by using tracked signatures.
         """
-        active_signatures = set(self._entity2sig.values())
-        archetypes_with_sigs: Dict[str, Tuple[DataFrame, Tuple[Type[Component], ...]]] = {}
-        
+        active_signatures = self.get_active_signatures() 
+        archetypes_with_sigs: List[Tuple[ArchetypeSignature, DataFrame]] = []
+
         for sig in active_signatures:
             table_name = sig2hash(sig)
             try:
                 table = self.catalog.get_table(self.namespace + "." + table_name)
                 df = table.to_dataframe() \
                     .where(col("simulation") == self.simulation) \
-                    .where(col("run") == self.run) \
-                    .where(col("is_active") == True)
+                    .where(col("run") == self.run)
                 
-                archetypes_with_sigs[table_name] = (df, sig)
+                archetypes_with_sigs.append((sig, df))
             except Exception as e:
                 logger.error(f"Error reading archetype table {table_name}: {e}")
                 continue
         
         return archetypes_with_sigs
-
-    def get_matching_archetypes(self, component_types: Tuple[Type[Component], ...]) -> Dict[str, DataFrame]:  
-        """
-        Given a list of component types, returns a dictionary of dataframes queried from tables whose column signatures include ALL of the specified component types.
-        Data is read from Daft-managed tables.
-
-        Args:
-            *component_types: Type[Component]   The component types to get the archetypes for.
-
-        Returns:
-            archetypes: Dict[str, DataFrame]    A dictionary of archetype hashes to their latest data as Daft DataFrames.
-        """
-        if len(component_types) == 0:
-            raise ValueError("Must request at least one component type")
-
-        # Use active signatures instead of expensive schema discovery
-        active_archetypes = self.get_active_archetypes_with_signatures()
-        matching_archetypes: Dict[str, DataFrame] = {}
-        
-        component_set = set(component_types)
-        for archetype_hash, (df, sig) in active_archetypes.items():
-            if component_set.issubset(set(sig)):
-                matching_archetypes[archetype_hash] = df
-        
-        return matching_archetypes
     
-    def get_archetypes(self, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
-        """
-        Get all archetypes as Dict[str, DataFrame]
-        """
-        return self.get_matching_archetypes(*component_types)
+    #--------------------------------------------------------------------------
+    # iUpdater methods
+    #--------------------------------------------------------------------------
 
-    def append(self, table_name: str, df: DataFrame) -> None:
+    def append(self, sig: ArchetypeSignature, df: DataFrame, step: int) -> None:
         """
         Append a table with a new dataframe.
         """
+        table_name = sig2hash(sig)
         table = self.sess.get_table(table_name)
         try: 
             start_time = time.time()
@@ -382,11 +340,12 @@ class ArchetypeStore(iStore):
                 logger.info(f"Appending dataframe to table {table_name}")
                 df.collect()
                 df.show()
+                print(f"Appending {df.count_rows()} rows to table {table_name} for step {step}")
             table.append(df)
             end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} in {end_time - start_time} seconds")
+            logger.info(f"Appended dataframe to table {table_name} for step {step} in {end_time - start_time} seconds")
         except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name}: {e}")
+            logger.error(f"Error appending dataframe to table {table_name} for step {step}: {e}")
             raise
 
 
