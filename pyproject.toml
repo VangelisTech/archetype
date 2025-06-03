@@ -5,8 +5,8 @@ description = "Lazy Distributed Dataframe-Based ECS Simulation Engine using Daft
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "getdaft>=0.4.15",
-    "daft[lance,iceberg,sql]",
+    "getdaft>=0.5.0",
+    "daft[lance,iceberg,sql]>=0.5.0",
     "pyarrow>=16.0.0",
     "lancedb>=0.22.0",
     "python-ulid>=3.0.0",
@@ -18,9 +18,28 @@ dependencies = [
     "networkx>=3.4.2",
 ]
 
+[project.optional-dependencies]
+all = ["archetype[vllm,ray, huggingface]"]
+ray = [
+    "ray>=2.46.0",
+    "daft[ray]>=0.5.0",
+]
+vllm = [
+    "vllm>=0.7.2",
+    "ray[serve,llm]>=2.46.0",
+    "xgrammar==0.1.11",
+    "pynvml==12.0.0",
+]
+huggingface = [
+    "huggingface-hub>=0.26.0",
+    "transformers>=4.49.0",
+    "accelerate>=0.29.0",
+    "datasets>=3.6.0",
+]
 
 [tool.pytest.ini_options]
 pythonpath = [
     "src"
 ]
 asyncio_default_fixture_loop_scope = "function"
+

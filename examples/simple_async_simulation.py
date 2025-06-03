@@ -11,12 +11,10 @@ project_root = os.path.abspath(os.path.join(notebook_dir, "..", "src"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from archetype.core import processor, Processor, Component
-from archetype import make_simple_world
-from archetype.core.aio.async_system import AsyncProcessor, async_processor
-from archetype.core.aio.async_world import AsyncWorld
-
 from daft import DataFrame, col 
+
+from archetype.core import processor, Component
+from archetype.core.aio import make_async_world, AsyncProcessor, async_processor
 
 
 # Define Components
@@ -30,19 +28,17 @@ class Velocity(Component):
 
 
 # Async processor with simulated I/O
-@async_processor(Position, Velocity, priority=1)
+@processor(Position, Velocity, priority=1)
 class AsyncMovementProcessor(AsyncProcessor):
-    async def process(self, df: DataFrame, dt: float) -> DataFrame:
-        # Simulate meaningful async I/O delay
-        await asyncio.sleep(0.05)  # 50ms per archetype
-        
+    async def process(self, df: DataFrame, semaphore: asyncio.Semaphore, dt: float) -> DataFrame:
+        await asyncio.sleep(0.01)
         return df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
 
 
-async def demonstrate_async_benefit():
+async def main():
     """
     Simple demo showing async performance benefit.
     
@@ -55,31 +51,23 @@ async def demonstrate_async_benefit():
     print("=" * 40)
     
     uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
-    
+
     # Create async world
-    sync_world = make_simple_world(uri, debug=False)
-    async_world = AsyncWorld(sync_world, max_concurrent_archetypes=5)
+    async_world = make_async_world(uri, debug=True, max_concurrent_archetypes=10)
     async_world.add_processor(AsyncMovementProcessor())
     
     # Spawn multiple entities (this creates multiple archetype tables)
-    print("📦 Spawning 5 entities (each will create its own archetype table)...")
+    print("> Spawning 5 entities (each will create its own archetype table)...")
     async_world.spawn(Position(x=1, y=1), Velocity(vx=1, vy=1))
     async_world.spawn(Position(x=2, y=2), Velocity(vx=2, vy=2))
     async_world.spawn(Position(x=3, y=3), Velocity(vx=3, vy=3))
     async_world.spawn(Position(x=4, y=4), Velocity(vx=4, vy=4))
     async_world.spawn(Position(x=5, y=5), Velocity(vx=5, vy=5))
     
-    async_world.materialize_spawns()
-    
-    print("✅ Entities spawned - each creates its own archetype table")
-    print("   This means 5 separate archetype tables to process concurrently")
-    
-    # Run async simulation
-    print("\n⚡ Running async simulation step...")
-    print("   Expected: ~50ms total (5 archetypes × 50ms each, processed concurrently)")
-    
+        
     start = time.time()
-    await async_world.async_step(dt=0.1)
+    for i in range(10):
+        await async_world.step(dt=0.1)
     elapsed = time.time() - start
     
     print(f"✅ Async step completed in {elapsed:.3f}s")
@@ -100,4 +88,4 @@ async def demonstrate_async_benefit():
 
 
 if __name__ == "__main__":
-    asyncio.run(demonstrate_async_benefit())
+    asyncio.run(main())

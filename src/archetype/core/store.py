@@ -2,11 +2,10 @@
 from itertools import count
 from typing import Dict, Tuple, List, Type, Optional, Any, Set
 from logging import getLogger
-from hashlib import blake2b
 import ulid 
 from datetime import datetime, timezone
 from functools import lru_cache
-import asyncio
+
 # Technologies
 import daft
 from daft import col, DataFrame, Schema
@@ -24,13 +23,13 @@ from .interfaces import Component, iStore, ArchetypeSignature
 logger = getLogger(__name__)
 
 BaseArchetypeTableSchema = pa.schema([
-    pa.field("simulation", pa.string(), nullable=False),
-    pa.field("run", pa.string(), nullable=False),
+    pa.field("world_id", pa.string(), nullable=False),
+    pa.field("run_id", pa.string(), nullable=False),
     pa.field("entity_id", pa.uint64(), nullable=False),
     pa.field("step", pa.uint64(), nullable=False),
     pa.field("is_active", pa.bool_(), nullable=False),
 ])
-PARTITION_KEYS = ["simulation", "run", "step"]
+PARTITION_KEYS = ["world_id", "run_id", "step"]
 
 
 # Utility functions
@@ -232,7 +231,11 @@ class ArchetypeStore(iStore):
         for sig, rows in self._spawn_cache.items():
             # Coerce List of PyDicts to PyArrow table 
             pyarrow_schema = self._get_archetype_schema(sig)
+            
+            # Create empty arrow table from schema
             empty_table = pyarrow_schema.empty_table()
+
+            # populate table with rows from pylist (list of dicts)
             arrow_table = empty_table.from_pylist(rows)
             df = daft.from_arrow(arrow_table)
 

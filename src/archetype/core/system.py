@@ -8,7 +8,7 @@ from .processor import Processor
 from .interfaces import iQuerier
 from .store import ArchetypeSignature
 
-class SimpleSystem(BaseSystem):
+class SyncSystem(BaseSystem):
     def __init__(self):
         self.processors: List[Processor] = []
 
@@ -50,3 +50,4 @@ class SimpleSystem(BaseSystem):
                     modified_archetypes.append((archetype_signature, processed_df))
 
         return modified_archetypes
+

@@ -5,11 +5,19 @@ from daft.session import Session
 from .processor import Processor
 from .base import Component
 import ulid
-
+from itertools import count
 from .interfaces import iSystem, iStore, iQuerier, iUpdater, iWorld, ArchetypeSignature
 
 class SimpleWorld(iWorld):
-    def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem):
+    def __init__(self,
+        store: iStore, 
+        querier: iQuerier, 
+        updater: iUpdater, 
+        system: iSystem,
+        world_id: str | None = None,
+        run_id: str | None = None,
+        debug: bool = False,
+    ):
         # Inject dependencies
         self.store      = store
         self.querier    = querier
@@ -17,8 +25,10 @@ class SimpleWorld(iWorld):
         self.system     = system
 
         # Initialize the world state
-        self.id: str = str(ulid.ULID())
-        self.current_step = 0
+        self.world_id: str = world_id or str(ulid.ULID())
+        self.run_id: str = run_id or str(ulid.ULID())
+        self.debug: bool = debug
+        self.current_step = count(start=0)
         
 
     def step(self, *args, **kwargs):
@@ -26,15 +36,19 @@ class SimpleWorld(iWorld):
         self.materialize_spawns()
             
         start = time.time()
+
         # 1) run all processors in sequence
         updated_archetypes = self.execute(self.querier, self.current_step, *args, **kwargs)
 
         # 2) Materialize changes into the ArchetypeStore
         self.update(updated_archetypes, self.current_step)
 
-        self.current_step += 1
+        
         end = time.time()
         print(f"Step {self.current_step} done in {end-start:.3f}s")
+
+        # Increment the step counter
+        self.current_step = next(self.current_step)
 
     # ---------------------------------------------------------------------
     # Entity Management (Store Facade Methods)
@@ -55,9 +69,7 @@ class SimpleWorld(iWorld):
         """Get the Daft Session for this world."""
         return self.store.sess
     
-    def materialize_spawns(self) -> None:
-        """Materialize any pending spawns before the first step."""
-        self.store.materialize_spawns()
+    
 
     # ---------------------------------------------------------------------
     # QueryManager Facade
