@@ -23,11 +23,11 @@ class QueryManager(iQuerier):
             for sig, df in archetypes
         ]
 
-    def get_archetypes(self, step: int) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+    def get_archetypes(self, step: int, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        active_archetypes =  self._store.get_archetypes()
+        active_archetypes =  self._store.get_archetypes(world_id, run_id)
         if step == -1:
             return active_archetypes
         

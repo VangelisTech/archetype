@@ -66,11 +66,24 @@ class AsyncStore(iAsyncStore):
         self.catalog = catalog
         self.io_config = io_config
         self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
+        self.lancedb = None  # Initialize lancedb connection
+        
+        # Initialize internal properties
+        from itertools import count
+        self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature
+        self._entity_counter = count(start=1)
 
         
     #--------------------------------------------------------------------------
     # Helper methods
     #--------------------------------------------------------------------------
+    
+    @lru_cache(maxsize=None, typed=True)
+    def get_active_signatures(self) -> Set[ArchetypeSignature]:
+        """
+        Get all active signatures.
+        """
+        return set(self._entity2sig.values())
     
     
     
@@ -103,7 +116,7 @@ class AsyncStore(iAsyncStore):
 
     
     async def _ensure_lancedb(self) -> None:
-        if not isinstance(self.lancedb, lancedb.AsyncConnection):
+        if self.lancedb is None:
             self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
 
     async def _ensure_table(self, sig: ArchetypeSignature) -> lancedb.AsyncTable:
@@ -115,11 +128,11 @@ class AsyncStore(iAsyncStore):
         pyarrow_schema = self._get_archetype_schema(sig)
         await self._ensure_lancedb()
 
-        if table_name in self.lancedb.table_names(storage_options=self.storage_options):
+        if table_name in await self.lancedb.table_names():
             try: 
-                async_table = await self.lancedb.open_table(table_name, storage_options=self.storage_options)
+                async_table = await self.lancedb.open_table(table_name)
             except Exception as e:
-                raise f"Error opening LanceDB table {table_name}: {e}"
+                raise Exception(f"Error opening LanceDB table {table_name}: {e}")
             
             return async_table
         
@@ -131,19 +144,34 @@ class AsyncStore(iAsyncStore):
                     storage_options= io_config_to_storage_options(self.io_config) if self.io_config else None,
                     exist_ok=True
                 )
-                async_table.create_index(column="entity_id", config= BTree(), replace=True)
-                async_table.create_index(column="simulation", config= Bitmap(), replace=True)
-                async_table.create_index(column="run", config= Bitmap(), replace=True)
-                async_table.create_index(column="step", config= BTree(), replace=True)
+                await async_table.create_index(column="entity_id", config= BTree(), replace=True)
+                await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
+                await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
+                await async_table.create_index(column="step", config= BTree(), replace=True)
                 logger.error(f"Error creating LanceDB table {table_name}: {e}")
             except Exception as e:
-                raise f"Error creating LanceDB table {table_name}: {e}"
+                raise Exception(f"Error creating LanceDB table {table_name}: {e}")
             
         return async_table
 
     #--------------------------------------------------------------------------
     # iStore methods
     #--------------------------------------------------------------------------
+    
+    def add_entity(self, components: List[Component], step: int, world_id: str, run_id: str) -> int:
+        """
+        Add an entity to the store.
+        """
+        assert len(components) != 0, "Cannot create an entity with no components"
+        
+        # Get the entity id and signature
+        entity_id = next(self._entity_counter)
+        sig = sig_from_components(components)
+        
+        # Store entity mapping
+        self._entity2sig[entity_id] = sig
+        
+        return entity_id
 
     async def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
         if entity_id not in self._entity2sig:
@@ -175,9 +203,9 @@ class AsyncStore(iAsyncStore):
                 AND world_id = '{world_id}' 
                 AND run_id = '{run_id}'
             """)
-            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {table.name} for step {step}.")
+            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {async_table.name} for step {step}.")
         except Exception as e:
-            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {table.name} for step {step}: {e}")
+            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {async_table.name} for step {step}: {e}")
             raise
 
     async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
@@ -203,21 +231,32 @@ class AsyncStore(iAsyncStore):
     # ---------------------------------------------------------------------
     # iQuerier methods 
     # ---------------------------------------------------------------------
-    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str) -> Dict[str, DataFrame]:  
+    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str, step: int) -> DataFrame:  
         """
         Get all archetypes.
         """
         sig = self._entity2sig[entity_id]
         table_name = sig2hash(sig)
-        async_table = await self.lancedb.open_table(table_name, storage_options=io_config_to_storage_options(self.io_config) if self.io_config else None)
+        async_table = await self.lancedb.open_table(table_name)
         
-        arrow_table = await async_table.query(
-                    where=f"simulation == '{self.simulation}' AND run == '{self.run}' AND step == {step} AND is_active == True AND entity_id == {entity_id}"
-                ).to_arrow()
+        # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
+        lance_uri = os.path.join(self.uri, self.namespace + "lance", sig2hash(sig) + ".lance")
+        if os.path.exists(lance_uri):
+            # Query with LanceDB directly
+            filtered_arrow = await async_table.query().where(
+                f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true AND entity_id = {entity_id}"
+            ).to_arrow()
+            
+            # Convert to Daft DataFrame
+            df = daft.from_arrow(filtered_arrow)
+        else:
+            # Return empty dataframe with correct schema if table doesn't exist yet
+            schema = self._get_archetype_schema(sig)
+            df = daft.from_arrow(schema.empty_table())
         
-        return daft.from_arrow(arrow_table)
+        return df
     
-    async def get_archetype(self, sig: ArchetypeSignature, step: int) -> Tuple[ArchetypeSignature, DataFrame]:
+    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
         """
         Get  archetypes using the entity2sig mapping for efficiency.
         Returns dict mapping archetype_hash -> (DataFrame, component_signature)
@@ -226,14 +265,23 @@ class AsyncStore(iAsyncStore):
         try:
             async_table = await self._ensure_table(sig)
 
-            arrow_table = await async_table.query(
-                where=f"simulation == '{self.simulation}' AND run == '{self.run}' AND step == {step} AND is_active == True"
-            ).to_arrow()
-
-            df = daft.from_arrow(arrow_table)
+            # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
+            lance_uri = os.path.join(self.uri, self.namespace + "lance", sig2hash(sig) + ".lance")
+            if os.path.exists(lance_uri):
+                # Query with LanceDB directly
+                filtered_arrow = await async_table.query().where(
+                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true"
+                ).to_arrow()
+                
+                # Convert to Daft DataFrame
+                df = daft.from_arrow(filtered_arrow)
+            else:
+                # Return empty dataframe with correct schema if table doesn't exist yet
+                schema = self._get_archetype_schema(sig)
+                df = daft.from_arrow(schema.empty_table())
             
         except Exception as e:
-            logger.error(f"Error reading archetype table {async_table.name}: {e}")
+            logger.error(f"Error reading archetype table {sig2hash(sig)}: {e}")
             raise e
         
         return (sig, df)
@@ -242,7 +290,7 @@ class AsyncStore(iAsyncStore):
     # iUpdater methods
     #--------------------------------------------------------------------------
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame, step: int) -> None:
+    async def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
         """
         Append a table with a new dataframe.
         """
@@ -252,8 +300,11 @@ class AsyncStore(iAsyncStore):
         try: 
             start_time = time.time()
 
+            # Update the step column to the new step value
+            df_with_step = df.with_column("step", lit(step))
+            
             # Convert to arrow and add to the table
-            async_table.add(df.to_arrow(), mode="append")
+            await async_table.add(df_with_step.to_arrow(), mode="append")
             end_time = time.time()
             logger.info(f"Appended dataframe to table {table_name} for step {step} in {end_time - start_time} seconds")
         except Exception as e:
@@ -262,16 +313,16 @@ class AsyncStore(iAsyncStore):
 
         if self.debug:
             logger.info(f"Appending dataframe to table {table_name}")
-            df.show()
-            print(f"Appending {df.count_rows()} rows to table {table_name} for step {step}")
+            df_with_step.show()
+            print(f"Appending {df_with_step.count_rows()} rows to table {table_name} for step {step}")
 
     async def optimize_tables(self) -> None: 
         """
         Optimize all tables in the LanceDB catalog.
         """
-        for table_name in self.lancedb.table_names(storage_options=self.storage_options):
+        for table_name in await self.lancedb.table_names():
             try: 
-                async_table = await self.lancedb.open_table(table_name, storage_options=self.storage_options)
+                async_table = await self.lancedb.open_table(table_name)
                 async_table.optimize(retrain=False)
             except Exception as e:
-                raise f"Error optimizing table {table_name}: {e}"
+                raise Exception(f"Error optimizing table {table_name}: {e}")

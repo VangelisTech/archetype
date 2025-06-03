@@ -58,7 +58,7 @@ class AsyncSystem(BaseSystem):
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try: 
                     if isinstance(proc_instance, AsyncProcessor):
-                        df = await proc_instance.process(df, self._semaphore, *args, **kwargs)
+                        df = await proc_instance.process(df, asyncio.Semaphore(10), *args, **kwargs)
                     elif isinstance(proc_instance, SyncProcessor):
                         df = proc_instance.process(df, *args, **kwargs)
                 except Exception as e:

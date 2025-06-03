@@ -26,7 +26,7 @@ class SyncSystem(BaseSystem):
         else:
             pass
     
-    def execute(self, querier: iQuerier, step: int, *args, **kwargs) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+    def execute(self, querier: iQuerier, step: int, dt: float, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Execute all processors on all active archetypes in priority order.
         Returns a list of tuples of (archetype_signature, modified_df)
@@ -39,14 +39,14 @@ class SyncSystem(BaseSystem):
         modified_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = []
         
         # Get all active archetypes with their component signatures (single query)
-        active_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = querier.get_archetypes(step)
+        active_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = querier.get_archetypes(step, world_id, run_id)
         
         # Process each archetype through all relevant processors in priority order
         for archetype_signature, df in active_archetypes:
             for proc_instance in sorted(self.processors, key=lambda x: x.priority):
                 # Build the modified archetype list if the processor has the components to matching the archetype signature 
                 if set(proc_instance.components).issubset(set(archetype_signature)):
-                    processed_df = proc_instance.process(df, *args, **kwargs)
+                    processed_df = proc_instance.process(df, dt)
                     modified_archetypes.append((archetype_signature, processed_df))
 
         return modified_archetypes

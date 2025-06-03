@@ -16,11 +16,11 @@ class AsyncQueryManager(iAsyncQuerier):
         """
         return await self._store.get_active_signatures()
     
-    async def get_archetype(self, sig: ArchetypeSignature, current_step: int) -> Tuple[ArchetypeSignature, DataFrame]:
+    async def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        return await self._store.get_archetype(sig, current_step-1)
+        return await self._store.get_archetype(sig, current_step, world_id, run_id)
         
     async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
         """Get a component for an entity."""

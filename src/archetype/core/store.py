@@ -79,15 +79,11 @@ class ArchetypeStore(iStore):
     """
     def __init__(self, 
         uri: str,
-        simulation: Optional[str] = None, 
-        run: Optional[str] = None,
         namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
         debug: bool = False,
     ):
         
-        self.simulation = simulation or f"sim_{get_datetime_str()}"
-        self.run = run or f"run_{str(ulid.ULID())}"
         self.namespace = namespace or "archetypes"
         self.debug = debug
 
@@ -171,7 +167,7 @@ class ArchetypeStore(iStore):
         
         return table
 
-    def _new_archetype_row(self, entity_id: int, step: int, components: List[Component]) -> DataFrame:
+    def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], world_id: str, run_id: str) -> DataFrame:
         """
         Convert the single entity dictionary to a columnar dict for PyArrow
         Ensure the order of keys matches the schema for from_pydict if schema wasn't passed
@@ -182,8 +178,8 @@ class ArchetypeStore(iStore):
         # Create the base archetype from archetype arrow schema
         #df = daft.from_arrow(schema.empty_table())
         row_dict = {
-            "simulation": self.simulation,
-            "run": self.run,
+            "world_id": world_id,
+            "run_id": run_id,
             "entity_id": entity_id,
             "step": step,
             "is_active": True
@@ -199,7 +195,7 @@ class ArchetypeStore(iStore):
     #--------------------------------------------------------------------------
     # iStore methods
     #--------------------------------------------------------------------------
-    def add_entity(self, components: List[Component], step: int = 0) -> int:
+    def add_entity(self, components: List[Component], step: int, world_id: str, run_id: str) -> int:
         """
         Add an entity to the store.
         """
@@ -211,7 +207,7 @@ class ArchetypeStore(iStore):
         sig = sig_from_components(components)
 
         # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step, components)
+        row_dict = self._new_archetype_row(entity_id, step, components, world_id, run_id)
 
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
@@ -252,7 +248,7 @@ class ArchetypeStore(iStore):
         self._spawn_cache.clear()
         
 
-    def remove_entity(self, entity_id: int, step: int) -> None:
+    def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
         if entity_id not in self._entity2sig:
             logger.warn(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
             return
@@ -263,8 +259,8 @@ class ArchetypeStore(iStore):
         entity_df = table.to_dataframe().where(
             (col("entity_id") == lit(entity_id)) & 
             (col("step") == lit(step)) & 
-            (col("simulation") == lit(self.simulation)) & 
-            (col("run") == lit(self.run))
+            (col("world_id") == lit(world_id)) & 
+            (col("run_id") == lit(run_id))
         ) 
         entity_df = entity_df.with_column(
             "is_active", 
@@ -276,8 +272,8 @@ class ArchetypeStore(iStore):
                 SET is_active = FALSE 
                 WHERE entity_id = {entity_id} 
                 AND step = {step} 
-                AND simulation = '{self.simulation}' 
-                AND run = '{self.run}'
+                AND world_id = '{world_id}' 
+                AND run_id = '{run_id}'
             """)
             logger.debug(f"Marked entity {entity_id} as inactive in archetype table {table.name} for step {step}.")
         except Exception as e:
@@ -288,7 +284,7 @@ class ArchetypeStore(iStore):
     # ---------------------------------------------------------------------
     # iQuerier methods 
     # ---------------------------------------------------------------------
-    def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> Dict[str, DataFrame]:  
+    def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str) -> Dict[str, DataFrame]:  
         """
         Get all archetypes.
         """
@@ -298,12 +294,12 @@ class ArchetypeStore(iStore):
         
         df = table.to_dataframe() \
             .where(col("entity_id") == entity_id) \
-            .where(col("simulation") == self.simulation) \
-            .where(col("run") == self.run)
+            .where(col("world_id") == world_id) \
+            .where(col("run_id") == run_id)
         
         return df
     
-    def get_archetypes(self) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+    def get_archetypes(self, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Get all active archetypes using the entity2sig mapping for efficiency.
         Returns dict mapping archetype_hash -> (DataFrame, component_signature)
@@ -317,8 +313,8 @@ class ArchetypeStore(iStore):
             try:
                 table = self.catalog.get_table(self.namespace + "." + table_name)
                 df = table.to_dataframe() \
-                    .where(col("simulation") == self.simulation) \
-                    .where(col("run") == self.run)
+                    .where(col("world_id") == world_id) \
+                    .where(col("run_id") == run_id)
                 
                 archetypes_with_sigs.append((sig, df))
             except Exception as e:
@@ -331,7 +327,7 @@ class ArchetypeStore(iStore):
     # iUpdater methods
     #--------------------------------------------------------------------------
 
-    def append(self, sig: ArchetypeSignature, df: DataFrame, step: int) -> None:
+    def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
         """
         Append a table with a new dataframe.
         """

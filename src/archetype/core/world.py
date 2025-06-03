@@ -28,7 +28,7 @@ class SimpleWorld(iWorld):
         self.world_id: str = world_id or str(ulid.ULID())
         self.run_id: str = run_id or str(ulid.ULID())
         self.debug: bool = debug
-        self.current_step = count(start=0)
+        self.current_step = 0
         
 
     def step(self, *args, **kwargs):
@@ -48,7 +48,7 @@ class SimpleWorld(iWorld):
         print(f"Step {self.current_step} done in {end-start:.3f}s")
 
         # Increment the step counter
-        self.current_step = next(self.current_step)
+        self.current_step += 1
 
     # ---------------------------------------------------------------------
     # Entity Management (Store Facade Methods)
@@ -59,11 +59,16 @@ class SimpleWorld(iWorld):
               step: Optional[int] = None
              ) -> int:
         """Create a new entity with these components."""
-        return self.store.add_entity(list(components), step or self.current_step)
+        return self.store.add_entity(list(components), step or 0, self.world_id, self.run_id)
 
     def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
-        self.store.remove_entity(entity_id, step or self.current_step)
+        current_step_val = self.current_step if step is None else step
+        self.store.remove_entity(entity_id, current_step_val, self.world_id, self.run_id)
+
+    def materialize_spawns(self) -> None:
+        """Materialize any pending spawns."""
+        self.store.materialize_spawns()
 
     def get_session(self) -> Session:
         """Get the Daft Session for this world."""
@@ -77,7 +82,7 @@ class SimpleWorld(iWorld):
 
     def get_archetypes(self, step: Optional[int] = -1) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """Fetch the latest live state of these components at the given step."""
-        return self.querier.get_archetypes(step)
+        return self.querier.get_archetypes(step, self.world_id, self.run_id)
     
     def archetype_for_entity(self, entity_id: int, step: int = -1) -> DataFrame:
         """Get a archetype for an entity."""
@@ -88,7 +93,7 @@ class SimpleWorld(iWorld):
     # ---------------------------------------------------------------------
 
     def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]], step: int):
-        self.updater.update(archetypes, step)
+        self.updater.update(archetypes, step, self.world_id, self.run_id)
 
     # ---------------------------------------------------------------------
     # System Facade
@@ -102,6 +107,6 @@ class SimpleWorld(iWorld):
         """Remove a Processor from the sequential system."""
         self.system.remove_processor(proc)
 
-    def execute(self, querier: iQuerier, step: int, dt: float) -> Dict[str, DataFrame]:
+    def execute(self, querier: iQuerier, step: int, dt: float) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """Execute the system for a single step."""
-        return self.system.execute(querier, step, dt)
+        return self.system.execute(querier, step, dt, self.world_id, self.run_id)

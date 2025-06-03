@@ -47,9 +47,6 @@ class AsyncWorld(iAsyncWorld):
 
 
         # Initialize internal properties
-        self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature
-        self._entity_counter = count(start=1)
-
         self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
 
 
@@ -58,7 +55,7 @@ class AsyncWorld(iAsyncWorld):
         Async version of step() with concurrent archetype processing.
         """
         # Materialize any pending spawns before the first step
-        self.materialize_spawns()
+        await self.materialize_spawns()
             
         start = time.time()
 
@@ -67,9 +64,9 @@ class AsyncWorld(iAsyncWorld):
         
         async def process_with_semaphore(sig: ArchetypeSignature, *args, **kwargs) -> None:
             async with self.semaphore:
-                df = await self.get_archetype(sig, self.current_step)
-                df = await self.execute(df, sig, *args, **kwargs)
-                await self.update(df, sig)
+                sig_with_df = await self.get_archetype(sig, self.current_step)
+                processed_sig, processed_df = await self.async_system.execute(sig_with_df[1], sig_with_df[0], *args, **kwargs)
+                await self.updater.update([(processed_sig, processed_df)], self.current_step + 1, self.world_id, self.run_id)
             
         tasks = [
             process_with_semaphore(sig, *args, **kwargs)
@@ -83,14 +80,13 @@ class AsyncWorld(iAsyncWorld):
 
         self.current_step += 1
 
-    @lru_cache(maxsize=None, typed=True)
     def get_active_signatures(self) -> Set[ArchetypeSignature]:
         """
         Get all active signatures.
         """
-        return set(self._entity2sig.values())
+        return self.store.get_active_signatures()
     
-    async def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], world_id: str, run_id: str) -> DataFrame:
+    async def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], world_id: str, run_id: str) -> Dict[str, Any]:
         """
         Convert the single entity dictionary to a columnar dict for PyArrow
         Ensure the order of keys matches the schema for from_pydict if schema wasn't passed
@@ -118,20 +114,30 @@ class AsyncWorld(iAsyncWorld):
     def spawn(self, *components: Component, step: Optional[int] = None) -> int:
         """Create a new entity with these components."""
         assert len(components) != 0, "Cannot create an entity with no components"
-        assert step != 0, "ArchetypeStore does not currently support adding entities in-situ"
         
-        # Get the entity id and signature
-        entity_id = next(self._entity_counter)
+        # Use store to add entity and get ID
+        entity_id = self.store.add_entity(list(components), step or self.current_step, self.world_id, self.run_id)
         sig = sig_from_components(components)
-        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
+        
+        # Create row dict for spawn cache (this needs to be sync for now)
+        row_dict = {
+            "world_id": self.world_id,
+            "run_id": self.run_id,
+            "entity_id": entity_id,
+            "step": step or self.current_step,
+            "is_active": True
+        }
+
+        for c in components:
+            prefix = get_component_prefix(type(c))
+            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
         
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
             self._spawn_cache[sig] = []
         self._spawn_cache[sig].append(row_dict)
-
-        # Store entity mapping
-        self._entity2sig[entity_id] = sig
+        
+        return entity_id
         
     async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
@@ -161,7 +167,7 @@ class AsyncWorld(iAsyncWorld):
 
     async def get_archetype(self, sig: ArchetypeSignature, step: Optional[int] = None) -> Tuple[ArchetypeSignature, DataFrame]:
         """Get an archetype by signature and step."""
-        return await self.querier.get_archetype(sig, step or self.current_step)
+        return await self.querier.get_archetype(sig, step or self.current_step, self.world_id, self.run_id)
     
     async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
         """Get an archetype for an entity by id and component types."""
@@ -179,7 +185,7 @@ class AsyncWorld(iAsyncWorld):
         """
         Write the entity spawn cache to the tables for simulation initialization. 
         """
-
-
+        await self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
+        
         # Clear the cache for this signature
         self._spawn_cache.clear()

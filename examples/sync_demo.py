@@ -2,7 +2,6 @@
 
 import sys
 import os
-import asyncio
 import time
 
 # Ensure the parent directory is in sys.path so 'archetype' can be imported
@@ -13,8 +12,7 @@ if project_root not in sys.path:
 
 from daft import DataFrame, col 
 
-from archetype.core import processor, Component
-from archetype.core.aio import make_async_world, AsyncProcessor, async_processor
+from archetype.core import processor, Component, make_simple_world
 
 
 # Define Components
@@ -27,46 +25,43 @@ class Velocity(Component):
     vy: float
 
 
-# Async processor with simulated I/O
+# Simple synchronous processor
 @processor(Position, Velocity, priority=1)
-class AsyncMovementProcessor(AsyncProcessor):
-    async def process(self, df: DataFrame, semaphore: asyncio.Semaphore, dt: float) -> DataFrame:
-        await asyncio.sleep(0.01)
+class MovementProcessor:
+    def process(self, df: DataFrame, dt: float) -> DataFrame:
         return df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
 
 
-async def main():
+def main():
     """
-    Async ECS simulation demo for AI Tinkerers presentation.
+    Synchronous ECS simulation demo for comparison.
     
-    Demonstrates real-time physics simulation with:
-    - Entity Component System architecture
-    - Daft DataFrames for processing 
-    - LanceDB for persistent storage
-    - Async processing with temporal coordination
+    Shows the same physics simulation running synchronously
+    for performance comparison with the async version.
     """
     
-    print("🚀 Async Archetype ECS Engine Demo")
-    print("=" * 45)
-    print("📊 Daft DataFrames + LanceDB + AsyncIO")
+    print("⚡ Sync Archetype ECS Engine Demo")
+    print("=" * 40)
+    print("📊 Daft DataFrames + Iceberg")
     print()
     
     uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
 
-    # Create async world
-    async_world = make_async_world(uri, debug=True, max_concurrent_archetypes=10)
-    async_world.add_processor(AsyncMovementProcessor())
+    # Create sync world
+    world = make_simple_world(uri)
+    world.add_processor(MovementProcessor())
     
     # Spawn entities for physics simulation
     print("🎯 Spawning 5 entities with Position + Velocity components...")
-    async_world.spawn(Position(x=1, y=1), Velocity(vx=1, vy=1))
-    async_world.spawn(Position(x=2, y=2), Velocity(vx=2, vy=2))
-    async_world.spawn(Position(x=3, y=3), Velocity(vx=3, vy=3))
-    async_world.spawn(Position(x=4, y=4), Velocity(vx=4, vy=4))
-    async_world.spawn(Position(x=5, y=5), Velocity(vx=5, vy=5))
+    world.spawn(Position(x=1, y=1), Velocity(vx=1, vy=1))
+    world.spawn(Position(x=2, y=2), Velocity(vx=2, vy=2))
+    world.spawn(Position(x=3, y=3), Velocity(vx=3, vy=3))
+    world.spawn(Position(x=4, y=4), Velocity(vx=4, vy=4))
+    world.spawn(Position(x=5, y=5), Velocity(vx=5, vy=5))
+    world.materialize_spawns()
     
     print("⚡ Running 10-step physics simulation (dt=0.1)...")
     print("   Each step: Query → Process → Update → Persist")
@@ -74,18 +69,18 @@ async def main():
         
     start = time.time()
     for i in range(10):
-        await async_world.step(dt=0.1)
+        world.step(dt=0.1)
     elapsed = time.time() - start
     
     print(f"\n✅ Simulation completed in {elapsed:.3f}s")
     print(f"📈 Performance: {10/elapsed:.1f} simulation steps/second")
-    print(f"💾 Data persisted: {10 * 5} entity-timesteps to LanceDB")
+    print(f"💾 Data persisted: {10 * 5} entity-timesteps to Iceberg")
     
     print(f"\n🔬 Architecture Highlights:")
     print(f"   • Archetype-based ECS: Entities grouped by component signature")
     print(f"   • Daft DataFrames: Columnar processing with lazy evaluation") 
-    print(f"   • LanceDB: Vector database with temporal partitioning")
-    print(f"   • AsyncIO: Concurrent archetype processing")
+    print(f"   • Iceberg: Data lakehouse format with ACID transactions")
+    print(f"   • Synchronous: Sequential archetype processing")
     print(f"   • Temporal Coordination: Step-by-step state evolution")
     
     print(f"\n🎲 Entity Progression (Position Y values):")
@@ -96,4 +91,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

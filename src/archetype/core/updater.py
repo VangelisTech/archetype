@@ -23,11 +23,11 @@ class UpdateManager(iUpdater):
             for sig, df in archetypes
         ]
 
-    def update(self, updates: List[Tuple[ArchetypeSignature, DataFrame]], step: int):
+    def update(self, updates: List[Tuple[ArchetypeSignature, DataFrame]], step: int, world_id: str, run_id: str):
         updates = self._set_step(updates, step)
         for sig, df in updates:
             try: 
-                self._store.append(sig, df, step)
+                self._store.append(sig, df, step, world_id, run_id)
             except Exception as e:
                 logger.error(f"Error updating table {sig2hash(sig)}: {e}")
 
