@@ -19,6 +19,8 @@
 .codex/
 .cursor/
 .cursorignore
+*.lance
+
 
 .venv/
 .pytest_cache/
@@ -42,3 +44,6 @@ archetype.egg-info/
 *.db
 
 __pycache__/
+data/archetypes.db/
+data/catalog.db 
+

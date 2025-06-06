@@ -7,19 +7,10 @@ from .interfaces import Component, iQuerier
 class BaseProcessor(ABC):
     """
     Base class for systems that process entities and components.
-    Follows a preprocess -> process pattern.
     """
     # Add attribute to hold the list of components
     priority: int
     components: Tuple[Type[Component], ...]
-
-    @abstractmethod
-    def preprocess(self, querier: iQuerier, step: int) -> Dict[str, daft.DataFrame]:
-        """
-        Fetches and prepares the initial data DataFrames for the process method, keyed by archetype hash.
-        Should return an empty dictionary if no data is relevant.
-        """
-        raise NotImplementedError
 
     @abstractmethod
     def process(self, state_df: daft.DataFrame) -> Optional[daft.DataFrame]:
@@ -65,3 +56,5 @@ class BaseSystem(ABC):
                                        update DataFrames.
         """
         raise NotImplementedError
+    
+
