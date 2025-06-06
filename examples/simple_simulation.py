@@ -1,3 +1,17 @@
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import sys
 import os
 
@@ -7,7 +21,7 @@ project_root = os.path.abspath(os.path.join(notebook_dir, "..", "src"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-    
+
 from archetype.core import processor, Processor, Component # noqa: F401
 from archetype import make_simple_world # noqa: F401
 
@@ -32,7 +46,7 @@ class MovementProcessor(Processor):
         return df
 
 def main(uri, debug=False):
-    
+
     world = make_simple_world(uri, debug=debug)
     world.add_processor(MovementProcessor())
 
@@ -46,7 +60,7 @@ def main(uri, debug=False):
     world.spawn(Position(x=0, y=0), Velocity(vx=8, vy=8))
     world.spawn(Position(x=0, y=0), Velocity(vx=9, vy=9))
     world.spawn(Position(x=0, y=0), Velocity(vx=10, vy=10))
-    
+
 
     for i in range(1000):
         world.step(dt=0.01)
@@ -58,5 +72,3 @@ if __name__ == "__main__":
     uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
 
     world = main(uri, debug=True)
-
-    

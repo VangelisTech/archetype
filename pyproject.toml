@@ -18,8 +18,6 @@ dependencies = [
     "networkx>=3.4.2",
     "vllm>=0.7.2",
     "ray[serve,llm]>=2.46.0",
-    "xgrammar==0.1.11",
-    "pynvml==12.0.0",
     "huggingface-hub>=0.26.0",
     "transformers>=4.49.0",
     "accelerate>=0.29.0",
@@ -32,4 +30,3 @@ pythonpath = [
     "src"
 ]
 asyncio_default_fixture_loop_scope = "function"
-

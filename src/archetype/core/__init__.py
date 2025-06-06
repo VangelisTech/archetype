@@ -1,16 +1,30 @@
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from .store import ArchetypeStore
 from .querier import QueryManager
 from .updater import UpdateManager
 from .system import SyncSystem
-from .world import SimpleWorld 
+from .world import SimpleWorld
 from .base import Component
 from .processor import Processor, processor
 from daft.catalog import Catalog
 
 
-def make_simple_world(uri: str, world_id: str | None = None, run_id: str | None = None, namespace: str | None = None, catalog: Catalog | None = None, debug: bool = False) -> SimpleWorld:    
+def make_simple_world(uri: str, world_id: str | None = None, run_id: str | None = None, namespace: str | None = None, catalog: Catalog | None = None, debug: bool = False) -> SimpleWorld:
     store   = ArchetypeStore(
-        uri = uri, 
+        uri = uri,
         namespace = namespace,
         catalog = catalog,
         debug = debug
@@ -18,7 +32,7 @@ def make_simple_world(uri: str, world_id: str | None = None, run_id: str | None 
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system  = SyncSystem()
-    
+
     world = SimpleWorld(
         store=store,
         querier=querier,

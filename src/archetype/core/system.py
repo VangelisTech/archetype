@@ -1,3 +1,17 @@
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import List, Dict, Type, Tuple
 from itertools import count
 
@@ -25,29 +39,28 @@ class SyncSystem(BaseSystem):
             self.processors.remove(processor_to_remove)
         else:
             pass
-    
+
     def execute(self, querier: iQuerier, step: int, dt: float, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Execute all processors on all active archetypes in priority order.
         Returns a list of tuples of (archetype_signature, modified_df)
 
-        Embrace the immutability bro. 
+        Embrace the immutability bro.
         """
         if not self.processors:
             return []
 
         modified_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = []
-        
+
         # Get all active archetypes with their component signatures (single query)
         active_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = querier.get_archetypes(step, world_id, run_id)
-        
+
         # Process each archetype through all relevant processors in priority order
         for archetype_signature, df in active_archetypes:
             for proc_instance in sorted(self.processors, key=lambda x: x.priority):
-                # Build the modified archetype list if the processor has the components to matching the archetype signature 
+                # Build the modified archetype list if the processor has the components to matching the archetype signature
                 if set(proc_instance.components).issubset(set(archetype_signature)):
                     processed_df = proc_instance.process(df, dt)
                     modified_archetypes.append((archetype_signature, processed_df))
 
         return modified_archetypes
-

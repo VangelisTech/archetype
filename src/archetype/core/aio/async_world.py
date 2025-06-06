@@ -1,3 +1,17 @@
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import asyncio
 import time
 from typing import List, Type, Optional, Dict, Any, Tuple, Set
@@ -56,25 +70,25 @@ class AsyncWorld(iAsyncWorld):
         """
         # Materialize any pending spawns before the first step
         await self.materialize_spawns()
-            
+
         start = time.time()
 
         # Get all active archetypes with their component signatures (single query)
         active_signatures = self.get_active_signatures()
-        
+
         async def process_with_semaphore(sig: ArchetypeSignature, *args, **kwargs) -> None:
             async with self.semaphore:
                 sig_with_df = await self.get_archetype(sig, self.current_step)
                 processed_sig, processed_df = await self.async_system.execute(sig_with_df[1], sig_with_df[0], *args, **kwargs)
                 await self.updater.update([(processed_sig, processed_df)], self.current_step + 1, self.world_id, self.run_id)
-            
+
         tasks = [
             process_with_semaphore(sig, *args, **kwargs)
             for sig in active_signatures
         ]
 
         await asyncio.gather(*tasks)
-        
+
         end = time.time()
         print(f"Async Step {self.current_step} done in {end-start:.3f}s")
 
@@ -85,7 +99,7 @@ class AsyncWorld(iAsyncWorld):
         Get all active signatures.
         """
         return self.store.get_active_signatures()
-    
+
     async def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], world_id: str, run_id: str) -> Dict[str, Any]:
         """
         Convert the single entity dictionary to a columnar dict for PyArrow
@@ -114,11 +128,11 @@ class AsyncWorld(iAsyncWorld):
     def spawn(self, *components: Component, step: Optional[int] = None) -> int:
         """Create a new entity with these components."""
         assert len(components) != 0, "Cannot create an entity with no components"
-        
+
         # Use store to add entity and get ID
         entity_id = self.store.add_entity(list(components), step or self.current_step, self.world_id, self.run_id)
         sig = sig_from_components(components)
-        
+
         # Create row dict for spawn cache (this needs to be sync for now)
         row_dict = {
             "world_id": self.world_id,
@@ -131,18 +145,18 @@ class AsyncWorld(iAsyncWorld):
         for c in components:
             prefix = get_component_prefix(type(c))
             row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
-        
+
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
             self._spawn_cache[sig] = []
         self._spawn_cache[sig].append(row_dict)
-        
+
         return entity_id
-        
+
     async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
         await self.store.remove_entity(entity_id, step or self.current_step, self.world_id, self.run_id)
-        
+
     # ---------------------------------------------------------------------
     # iAsyncSystem Facade methods
     # ---------------------------------------------------------------------
@@ -150,7 +164,7 @@ class AsyncWorld(iAsyncWorld):
     def add_processor(self, proc: iAsyncProcessor) -> None:
         """Add an async processor to the system."""
         self.async_system.add_processor(proc)
-        
+
     def remove_processor(self, proc: iAsyncProcessor) -> None:
         """Remove an async processor from the system."""
         self.async_system.remove_processor(proc)
@@ -168,11 +182,11 @@ class AsyncWorld(iAsyncWorld):
     async def get_archetype(self, sig: ArchetypeSignature, step: Optional[int] = None) -> Tuple[ArchetypeSignature, DataFrame]:
         """Get an archetype by signature and step."""
         return await self.querier.get_archetype(sig, step or self.current_step, self.world_id, self.run_id)
-    
+
     async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
         """Get an archetype for an entity by id and component types."""
         return await self.querier.get_archetype_for_entity(entity_id, *component_types)
-    
+
     # ---------------------------------------------------------------------
     # iAsyncUpdater Facade methods
     # ---------------------------------------------------------------------
@@ -183,9 +197,9 @@ class AsyncWorld(iAsyncWorld):
 
     async def materialize_spawns(self) -> None:
         """
-        Write the entity spawn cache to the tables for simulation initialization. 
+        Write the entity spawn cache to the tables for simulation initialization.
         """
         await self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
-        
+
         # Clear the cache for this signature
         self._spawn_cache.clear()
