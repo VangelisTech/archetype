@@ -112,8 +112,6 @@ class AsyncStore(iAsyncStore):
             archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
         
         return archetype_schema
-
-
     
     async def _ensure_lancedb(self) -> None:
         if self.lancedb is None:
@@ -148,8 +146,8 @@ class AsyncStore(iAsyncStore):
                 await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
                 await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
                 await async_table.create_index(column="step", config= BTree(), replace=True)
-                logger.error(f"Error creating LanceDB table {table_name}: {e}")
             except Exception as e:
+                logger.error(f"Error creating LanceDB table {table_name}: {e}")
                 raise Exception(f"Error creating LanceDB table {table_name}: {e}")
             
         return async_table

@@ -1,11 +1,10 @@
 import time
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Tuple
 from daft import DataFrame
 from daft.session import Session
 from .processor import Processor
 from .base import Component
 import ulid
-from itertools import count
 from .interfaces import iSystem, iStore, iQuerier, iUpdater, iWorld, ArchetypeSignature
 
 class SimpleWorld(iWorld):

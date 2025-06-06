@@ -2,11 +2,10 @@ import asyncio
 from typing import List, Dict, Type, Tuple
 from daft import DataFrame
 
-from ..base import BaseSystem
-from ..processor import Processor as SyncProcessor
-from .async_interfaces import iAsyncProcessor
-from .async_processor import AsyncProcessor
-from ..store import ArchetypeSignature
+from archetype.core.base import BaseSystem
+from archetype.core.processor import Processor as SyncProcessor
+from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.store import ArchetypeSignature
 import logging
 
 logger = logging.getLogger(__name__)

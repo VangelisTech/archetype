@@ -7,7 +7,6 @@ from .interfaces import Component, iQuerier
 class BaseProcessor(ABC):
     """
     Base class for systems that process entities and components.
-    Follows a preprocess -> process pattern.
     """
     # Add attribute to hold the list of components
     priority: int

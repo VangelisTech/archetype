@@ -106,6 +106,7 @@ class ArchetypeStore(iStore):
         self.sess.attach(object=self.catalog) 
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
+        self.sess.attach_table()
 
         # Initialize internal properties
         self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature

@@ -19,6 +19,8 @@
 .codex/
 .cursor/
 .cursorignore
+*.lance
+
 
 .venv/
 .pytest_cache/

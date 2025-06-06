@@ -1,13 +1,15 @@
-# Archetype 🏗️
+# Archetype
 
-**A high-performance Entity Component System (ECS) for AI-Native simulation**
+**A high-performance Entity Component System (ECS) for large scale simulation**
+
+![Archetype Diagram](./assets/archetype_diagram.png)
 
 Archetype is an ECS simulation engine designed for scalability from local development to distributed Ray clusters. It leverages incredible performance of daft dataframes and lancedb to provide big data scalability for Multi-modal AI processors. 
 
 The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
 
 
-## 🏃 Quick Start
+## Quick Start
 
 ### Installation
 
@@ -26,9 +28,7 @@ pip install -e .
 ### Basic Usage
 
 ```python
-from archetype import make_simple_world
-from archetype.core import Component
-from archetype.core.processor import processor, Processor
+from archetype.core import Component, processor, Processor, make_simple_world
 from daft import DataFrame, col
 
 # Define components

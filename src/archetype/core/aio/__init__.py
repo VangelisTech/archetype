@@ -2,7 +2,7 @@ from .async_world import AsyncWorld
 from .async_store import AsyncStore
 from .async_querier import AsyncQueryManager
 from .async_system import AsyncSystem
-from .async_processor import AsyncProcessor, async_processor
+from .async_processor import AsyncProcessor
 from .async_updater import AsyncUpdateManager
 
 
