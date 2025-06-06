@@ -6,7 +6,12 @@
 
 Archetype is an ECS simulation engine designed for scalability from local development to distributed Ray clusters. It leverages incredible performance of daft dataframes and lancedb to provide big data scalability for Multi-modal AI processors.
 
-The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
+
+## References and Prior Art
+- [Esper](https://github.com/benmoran56/esper) - was the ECS system I initially cloned and evolved from.
+- The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), as described by AJ Mertens helped me understand how the archetype pattern leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
+- [This Daft Article on Scaling LLM inference](https://blog.getdaft.io/p/we-cloned-over-15000-repos-to-find?subscribe_prompt=free) and accompanying repository [Sashimi4Talent](https://github.com/everettVT/Sashimi4Talent/tree/main) introduced me to semaphore usage patterns for the async module.
+
 
 
 ## Quick Start
