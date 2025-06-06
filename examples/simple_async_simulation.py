@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import sys
 import os
@@ -21,8 +35,8 @@ from archetype.utils.llm import OpenAIClientFactory, LLMProvider
 
 # Define Components
 class CompletionConfig(Component):
-    provider: str 
-    model: str 
+    provider: str
+    model: str
 
     extra_body: dict
     response: str
@@ -53,42 +67,42 @@ def oai_client_udf_wrapper(model, messages, extra_body):
     cls = oai_client_udf
     return udf(model, messages, extra_body)(cls).with_init_args(
         provider="OpenAI"
-    ) 
+    )
 
 @processor(CompletionConfig, Content, priority=1)
 class OpenAIClientChatProcessor(AsyncProcessor):
     async def process(self, df: DataFrame, semaphore: asyncio.Semaphore, **kwargs) -> DataFrame:
-        
+
         async with semaphore:
             return df.with_column("response", oai_client_udf(model="gpt-4.1-nano-2025-04-14"
-                
 
-    
+
+
 
 
 
 async def main():
     """
     Async ECS simulation demo.
-    
+
     Demonstrates real-time physics simulation with:
     - Entity Component System architecture
-    - Daft DataFrames for processing 
+    - Daft DataFrames for processing
     - LanceDB for persistent storage
     - Async processing with temporal coordination
     """
-    
+
     print("🚀 Async Archetype ECS Engine Demo")
     print("=" * 45)
     print("📊 Daft DataFrames + LanceDB + AsyncIO")
     print()
-    
+
     uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
 
     # Create async world
     async_world = make_async_world(uri, debug=True, max_concurrent_archetypes=10)
     async_world.add_processor(AsyncMovementProcessor())
-    
+
     # Spawn entities for physics simulation
     print("🎯 Spawning 5 entities with Position + Velocity components...")
     async_world.spawn()
@@ -96,16 +110,16 @@ async def main():
     async_world.spawn(Position(x=3, y=3), Velocity(vx=3, vy=3))
     async_world.spawn(Position(x=4, y=4), Velocity(vx=4, vy=4))
     async_world.spawn(Position(x=5, y=5), Velocity(vx=5, vy=5))
-    
+
     print("⚡ Running 10-step physics simulation (dt=0.1)...")
     print("   Each step: Query → Process → Update → Persist")
     print()
-        
+
     start = time.time()
     for i in range(10):
         await async_world.step(dt=0.1)
     elapsed = time.time() - start
-    
+
     print(f"Simulation completed in {elapsed:.3f}s")
 
 

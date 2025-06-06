@@ -4,7 +4,7 @@
 
 ![Archetype Diagram](./assets/archetype_diagram.png)
 
-Archetype is an ECS simulation engine designed for scalability from local development to distributed Ray clusters. It leverages incredible performance of daft dataframes and lancedb to provide big data scalability for Multi-modal AI processors. 
+Archetype is an ECS simulation engine designed for scalability from local development to distributed Ray clusters. It leverages incredible performance of daft dataframes and lancedb to provide big data scalability for Multi-modal AI processors.
 
 The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
 
@@ -61,4 +61,3 @@ world.spawn(Position(x=10, y=10), Velocity(vx=-1, vy=-1))
 for step in range(100):
     world.step(dt=0.1)
 ```
-

@@ -1,8 +1,22 @@
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Standard Python Libraries
 from itertools import count
 from typing import Dict, Tuple, List, Type, Optional, Any, Set
 from logging import getLogger
-import ulid 
+import ulid
 from datetime import datetime, timezone
 from functools import lru_cache
 
@@ -13,7 +27,7 @@ from daft.expressions import lit
 from daft.session import Session
 from daft.catalog import Catalog, Table
 from pyiceberg.catalog.sql import SqlCatalog
-import pyarrow as pa    
+import pyarrow as pa
 from lancedb.pydantic import LanceModel
 import time
 
@@ -60,30 +74,30 @@ def convert_component_to_pyarrow_schema(component_type: Type[Component]) -> pa.S
         return component_type.to_arrow_schema()
     else:
         # TODO: Implement conversion of non-LanceModel components to PyArrow schema
-        # Currently this is unreachable. 
+        # Currently this is unreachable.
         raise ValueError(f"Component {component_type} is not a subclass of LanceModel")
-    
+
 # Store classes
 class ArchetypeStore(iStore):
     """
-    The ArchetypeStore is a component that manages the storage and retrieval of archetype tables. 
+    The ArchetypeStore is a component that manages the storage and retrieval of archetype tables.
 
-    Since our Schema supports multiple simulations and runs, our namespace is simply "archetypes". 
-    This allows us to have multiple simulations and runs in the same catalog since archetypes, by definition, 
-    the exact set of components attached to an entity. So we don't really which simulation or run we're using, 
+    Since our Schema supports multiple simulations and runs, our namespace is simply "archetypes".
+    This allows us to have multiple simulations and runs in the same catalog since archetypes, by definition,
+    the exact set of components attached to an entity. So we don't really which simulation or run we're using,
     so long as we differentiate between the simulation and run.
-    
-    Using Daft Sessions/Catalogs enables us to reference arbitrary 
-    numbers of archetype tables without having to hold them in memory, provided we 
-    
+
+    Using Daft Sessions/Catalogs enables us to reference arbitrary
+    numbers of archetype tables without having to hold them in memory, provided we
+
     """
-    def __init__(self, 
+    def __init__(self,
         uri: str,
         namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
         debug: bool = False,
     ):
-        
+
         self.namespace = namespace or "archetypes"
         self.debug = debug
 
@@ -103,7 +117,7 @@ class ArchetypeStore(iStore):
 
         # Initialize the session
         self.sess = Session()
-        self.sess.attach(object=self.catalog) 
+        self.sess.attach(object=self.catalog)
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
         self.sess.attach_table()
@@ -117,14 +131,14 @@ class ArchetypeStore(iStore):
     #--------------------------------------------------------------------------
     # Helper methods
     #--------------------------------------------------------------------------
-    
+
     @lru_cache(maxsize=None, typed=True)
     def get_active_signatures(self) -> Set[ArchetypeSignature]:
         """
         Get all active signatures.
         """
         return set(self._entity2sig.values())
-    
+
     @lru_cache(maxsize=None, typed=True)
     def _get_component_schema(self, component_type: Type[Component]) -> pa.Schema:
         component_schema = convert_component_to_pyarrow_schema(component_type)
@@ -143,14 +157,14 @@ class ArchetypeStore(iStore):
         """
         Get the schema for an archetype from a list of components.
         """
-    
+
         archetype_schema = BaseArchetypeTableSchema
         for component_type in sig:
             component_schema = self._get_component_schema(component_type)
             archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
-        
+
         return archetype_schema
-    
+
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
@@ -165,7 +179,7 @@ class ArchetypeStore(iStore):
         except Exception as e:
             logger.error(f"Error creating Daft table {hash_val}: {e}")
             raise
-        
+
         return table
 
     def _new_archetype_row(self, entity_id: int, step: int, components: List[Component], world_id: str, run_id: str) -> DataFrame:
@@ -202,7 +216,7 @@ class ArchetypeStore(iStore):
         """
         assert len(components) != 0, "Cannot create an entity with no components"
         assert step == 0, "ArchetypeStore does not currently support adding entities in-situ"
-        
+
         # Get the entity id and signature
         entity_id = next(self._entity_counter)
         sig = sig_from_components(components)
@@ -219,16 +233,16 @@ class ArchetypeStore(iStore):
         self._entity2sig[entity_id] = sig
 
         return entity_id
-    
+
 
     def materialize_spawns(self) -> None:
         """
-        Write the entity spawn cache to the tables for simulation initialization. 
+        Write the entity spawn cache to the tables for simulation initialization.
         """
         for sig, rows in self._spawn_cache.items():
-            # Coerce List of PyDicts to PyArrow table 
+            # Coerce List of PyDicts to PyArrow table
             pyarrow_schema = self._get_archetype_schema(sig)
-            
+
             # Create empty arrow table from schema
             empty_table = pyarrow_schema.empty_table()
 
@@ -247,33 +261,33 @@ class ArchetypeStore(iStore):
 
         # Clear the cache for this signature
         self._spawn_cache.clear()
-        
+
 
     def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
         if entity_id not in self._entity2sig:
             logger.warn(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
             return
-        
+
         sig = self._entity2sig[entity_id]
         table = self._ensure_table(sig) # Ensure table exists
 
         entity_df = table.to_dataframe().where(
-            (col("entity_id") == lit(entity_id)) & 
-            (col("step") == lit(step)) & 
-            (col("world_id") == lit(world_id)) & 
+            (col("entity_id") == lit(entity_id)) &
+            (col("step") == lit(step)) &
+            (col("world_id") == lit(world_id)) &
             (col("run_id") == lit(run_id))
-        ) 
+        )
         entity_df = entity_df.with_column(
-            "is_active", 
+            "is_active",
             lit(False)
         )
-        try: 
+        try:
             self.sess.sql(f"""
-                UPDATE {table.name} 
-                SET is_active = FALSE 
-                WHERE entity_id = {entity_id} 
-                AND step = {step} 
-                AND world_id = '{world_id}' 
+                UPDATE {table.name}
+                SET is_active = FALSE
+                WHERE entity_id = {entity_id}
+                AND step = {step}
+                AND world_id = '{world_id}'
                 AND run_id = '{run_id}'
             """)
             logger.debug(f"Marked entity {entity_id} as inactive in archetype table {table.name} for step {step}.")
@@ -283,30 +297,30 @@ class ArchetypeStore(iStore):
 
 
     # ---------------------------------------------------------------------
-    # iQuerier methods 
+    # iQuerier methods
     # ---------------------------------------------------------------------
-    def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str) -> Dict[str, DataFrame]:  
+    def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str) -> Dict[str, DataFrame]:
         """
         Get all archetypes.
         """
         sig = self._entity2sig[entity_id]
         table_name = sig2hash(sig)
         table = self.catalog.get_table(table_name)
-        
+
         df = table.to_dataframe() \
             .where(col("entity_id") == entity_id) \
             .where(col("world_id") == world_id) \
             .where(col("run_id") == run_id)
-        
+
         return df
-    
+
     def get_archetypes(self, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
         """
         Get all active archetypes using the entity2sig mapping for efficiency.
         Returns dict mapping archetype_hash -> (DataFrame, component_signature)
         This avoids expensive schema comparisons by using tracked signatures.
         """
-        active_signatures = self.get_active_signatures() 
+        active_signatures = self.get_active_signatures()
         archetypes_with_sigs: List[Tuple[ArchetypeSignature, DataFrame]] = []
 
         for sig in active_signatures:
@@ -316,14 +330,14 @@ class ArchetypeStore(iStore):
                 df = table.to_dataframe() \
                     .where(col("world_id") == world_id) \
                     .where(col("run_id") == run_id)
-                
+
                 archetypes_with_sigs.append((sig, df))
             except Exception as e:
                 logger.error(f"Error reading archetype table {table_name}: {e}")
                 continue
-        
+
         return archetypes_with_sigs
-    
+
     #--------------------------------------------------------------------------
     # iUpdater methods
     #--------------------------------------------------------------------------
@@ -334,7 +348,7 @@ class ArchetypeStore(iStore):
         """
         table_name = sig2hash(sig)
         table = self.sess.get_table(table_name)
-        try: 
+        try:
             start_time = time.time()
             if self.debug:
                 logger.info(f"Appending dataframe to table {table_name}")
@@ -347,9 +361,3 @@ class ArchetypeStore(iStore):
         except Exception as e:
             logger.error(f"Error appending dataframe to table {table_name} for step {step}: {e}")
             raise
-
-
-
-
-
-
