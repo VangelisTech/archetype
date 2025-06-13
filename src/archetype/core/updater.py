@@ -15,8 +15,8 @@
 from daft import DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
-from .interfaces import iUpdater, iStore, ArchetypeSignature
-from .store import sig2hash
+from archetype.core.interfaces import iUpdater, iStore, ArchetypeSignature, Archetype
+
 logger = getLogger(__name__)
 
 class UpdateManager(iUpdater):
@@ -34,10 +34,13 @@ class UpdateManager(iUpdater):
         try:
             self.store.append(sig, df, step, world_id, run_id)
         except Exception as e:
-            logger.error(f"Error updating table {sig2hash(sig)}: {e}")
+            logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         self.store.materialize_spawns(spawn_cache, world_id, run_id)
+
+    def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
+        self.store.remove_entity(entity_id, step, world_id, run_id)
 
     # in an async version, we would need to use a semaphore to limit the number of concurrent updates heavily.
     # In fact if we wanted to scale writes, we would need to use Ray workers to parallelize.

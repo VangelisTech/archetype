@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from typing import Optional, List, Dict, Tuple, Any
-import ulid
 
 import time
 import os
@@ -27,14 +26,8 @@ from daft.io.object_store_options import io_config_to_storage_options
 import lancedb
 from lancedb.index import Bitmap, BTree
 
-from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.aio.async_interfaces import iAsyncStore
-from archetype.core.store import (
-    sig2hash,
-    get_datetime_str,
-    get_archetype_schema
-)
-
+from archetype.core.interfaces import Archetype, ArchetypeSignature
 
 from logging import getLogger
 
@@ -57,16 +50,12 @@ class AsyncStore(iAsyncStore):
     """
     def __init__(self,
         uri: str,
-        simulation: Optional[str] = None,
-        run: Optional[str] = None,
         namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
         io_config: Optional[IOConfig] = None,
         debug: bool = False,
     ):
 
-        self.simulation = simulation or f"sim_{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}" # ISO 8601
-        self.run = run or f"run_{str(ulid.ULID())}"
         self.namespace = namespace or "archetypes"
         self.debug = debug
         self.uri = uri
@@ -86,8 +75,8 @@ class AsyncStore(iAsyncStore):
         Ensure that the table for the given archetype signature exists in the Daft session.
         Returns the table name (hash_val).
         """
-        table_name = sig2hash(sig)
-        pyarrow_schema = get_archetype_schema(sig)
+        table_name = Archetype.get_name(sig)
+        pyarrow_schema = Archetype.get_archetype_schema(sig)
 
         if self.lancedb is None:
             self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
@@ -118,9 +107,92 @@ class AsyncStore(iAsyncStore):
 
         return async_table
 
+
+
+    # ---------------------------------------------------------------------
+    # iQuerier methods
+    # ---------------------------------------------------------------------
+    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
+        """
+        Get all archetypes.
+        """
+        table_name = Archetype.get_name(sig)
+        async_table = await self._ensure_table(sig)
+
+        # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
+        lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
+        if os.path.exists(lance_uri):
+            # Query with LanceDB directly
+            filtered_arrow = await async_table.query().where(
+                f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true AND entity_id = {entity_id}"
+            ).to_arrow()
+
+            # Convert to Daft DataFrame
+            df = daft.from_arrow(filtered_arrow)
+        else:
+            # Return empty dataframe with correct schema if table doesn't exist yet
+            schema = Archetype.get_archetype_schema(sig)
+            df = daft.from_arrow(schema.empty_table())
+
+        return df
+
+    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
+        """
+        Get  archetypes using the entity2sig mapping for efficiency.
+        Returns dict mapping archetype_hash -> (DataFrame, component_signature)
+        This avoids expensive schema comparisons by using tracked signatures.
+        """
+        table_name = Archetype.get_name(sig)
+        async_table = await self._ensure_table(sig)
+
+        try:
+            # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
+            lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
+            if os.path.exists(lance_uri):
+                # Query with LanceDB directly
+                filtered_arrow = await async_table.query().where(
+                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true"
+                ).to_arrow()
+
+                # Convert to Daft DataFrame
+                df = daft.from_arrow(filtered_arrow)
+            else:
+                # Return empty dataframe with correct schema if table doesn't exist yet
+                schema = Archetype.get_archetype_schema(sig)
+                df = daft.from_arrow(schema.empty_table())
+
+        except Exception as e:
+            logger.error(f"Error reading archetype table {table_name}: {e}")
+            raise e
+
+        return (sig, df)
+
     #--------------------------------------------------------------------------
-    # iStore methods
+    # Updater methods
     #--------------------------------------------------------------------------
+
+
+
+    async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
+        """
+        Materialize the spawn cache into the tables.
+        """
+        for sig, rows in spawn_cache.items():
+            # Coerce List of PyDicts to PyArrow table
+            pyarrow_schema = Archetype.get_archetype_schema(sig)
+            empty_table = pyarrow_schema.empty_table()
+            arrow_table = empty_table.from_pylist(rows)
+            df = daft.from_arrow(arrow_table)
+
+            # Write to the table
+            async_table = await self._ensure_table(sig)
+            try:
+                materialized_arrow_table = df.to_arrow()
+                await async_table.add(materialized_arrow_table, mode="append")
+                logger.debug(f"Appended {len(rows)} rows to table {async_table.name}")
+            except Exception as e:
+                logger.error(f"Error appending {len(rows)} rows to table {async_table.name}: {e}")
+                raise
 
     async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
         async_table = await self._ensure_table(sig) # Ensure table exists
@@ -151,88 +223,6 @@ class AsyncStore(iAsyncStore):
         except Exception as e:
             logger.error(f"Error marking entity {entity_id} as inactive in archetype table {async_table.name} for step {step}: {e}")
             raise
-
-    async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
-        """
-        Materialize the spawn cache into the tables.
-        """
-        for sig, rows in spawn_cache.items():
-            # Coerce List of PyDicts to PyArrow table
-            pyarrow_schema = get_archetype_schema(sig)
-            empty_table = pyarrow_schema.empty_table()
-            arrow_table = empty_table.from_pylist(rows)
-            df = daft.from_arrow(arrow_table)
-
-            # Write to the table
-            async_table = await self._ensure_table(sig)
-            try:
-                materialized_arrow_table = df.to_arrow()
-                await async_table.add(materialized_arrow_table, mode="append")
-                logger.debug(f"Appended {len(rows)} rows to table {async_table.name}")
-            except Exception as e:
-                logger.error(f"Error appending {len(rows)} rows to table {async_table.name}: {e}")
-                raise
-
-    # ---------------------------------------------------------------------
-    # iQuerier methods
-    # ---------------------------------------------------------------------
-    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
-        """
-        Get all archetypes.
-        """
-        table_name = sig2hash(sig)
-        async_table = await self.lancedb.open_table(table_name)
-
-        # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
-        lance_uri = os.path.join(self.uri, self.namespace + "lance", sig2hash(sig) + ".lance")
-        if os.path.exists(lance_uri):
-            # Query with LanceDB directly
-            filtered_arrow = await async_table.query().where(
-                f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true AND entity_id = {entity_id}"
-            ).to_arrow()
-
-            # Convert to Daft DataFrame
-            df = daft.from_arrow(filtered_arrow)
-        else:
-            # Return empty dataframe with correct schema if table doesn't exist yet
-            schema = get_archetype_schema(sig)
-            df = daft.from_arrow(schema.empty_table())
-
-        return df
-
-    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
-        """
-        Get  archetypes using the entity2sig mapping for efficiency.
-        Returns dict mapping archetype_hash -> (DataFrame, component_signature)
-        This avoids expensive schema comparisons by using tracked signatures.
-        """
-        try:
-            async_table = await self._ensure_table(sig)
-
-            # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
-            lance_uri = os.path.join(self.uri, self.namespace + "lance", sig2hash(sig) + ".lance")
-            if os.path.exists(lance_uri):
-                # Query with LanceDB directly
-                filtered_arrow = await async_table.query().where(
-                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true"
-                ).to_arrow()
-
-                # Convert to Daft DataFrame
-                df = daft.from_arrow(filtered_arrow)
-            else:
-                # Return empty dataframe with correct schema if table doesn't exist yet
-                schema = get_archetype_schema(sig)
-                df = daft.from_arrow(schema.empty_table())
-
-        except Exception as e:
-            logger.error(f"Error reading archetype table {sig2hash(sig)}: {e}")
-            raise e
-
-        return (sig, df)
-
-    #--------------------------------------------------------------------------
-    # iUpdater methods
-    #--------------------------------------------------------------------------
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
         """

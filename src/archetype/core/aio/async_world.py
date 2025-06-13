@@ -21,35 +21,40 @@ import asyncio
 
 from daft import DataFrame
 
-from archetype.core import Component, Archetype, ArchetypeSignature
+from archetype.core.interfaces import Component, Archetype, ArchetypeSignature
 from archetype.core.base import BaseWorld
-from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncWorld, iAsyncQuerier, iAsyncUpdater, iAsyncSystem, iAsyncProcessor
+from archetype.core.aio.async_interfaces import iAsyncQuerier, iAsyncUpdater, iAsyncSystem, iAsyncProcessor
 
 from logging import getLogger
 
 logger = getLogger(__name__)
 
-class AsyncWorld(BaseWorld, iAsyncWorld):
+class AsyncWorld(BaseWorld):
     def __init__(self,
-        store: iAsyncStore,
         querier: iAsyncQuerier,
         updater: iAsyncUpdater,
-        system: iAsyncSystem,
+        async_system: iAsyncSystem,
         world_id: str = None,
         run_id: str = None,
-        semaphore: asyncio.Semaphore = None,
         debug: bool = False,
+        semaphore: Optional[asyncio.Semaphore] = None,
     ):
         """
         Initialize async world using shared base functionality.
         """
-        # Initialize base world functionality
-        super().__init__(world_id, run_id, debug)
-
-        # Inject async dependencies
         self.querier = querier
         self.updater = updater
-        self.async_system = system
+        self.async_system = async_system
+
+        # Set World Properties
+        self.world_id = world_id or f"world_{str(ulid.ULID())}"
+        self.run_id = run_id or f"run_{str(ulid.ULID())}"
+        self.current_step = 0
+
+        # Initialize internal caches
+        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}  # ArchetypeSignature -> List[row_dict]
+        self._entity2sig: Dict[int, ArchetypeSignature] = {}  # entity_id -> ArchetypeSignature
+        self._entity_counter = count(start=1)
 
         # Set semaphore for concurrent archetype processing
         self.semaphore = semaphore or asyncio.Semaphore(10)
@@ -80,29 +85,98 @@ class AsyncWorld(BaseWorld, iAsyncWorld):
         await asyncio.gather(*tasks)
 
         end = time.time()
-        print(f"Async Step {self.current_step} done in {end-start:.3f}s")
-
+        logger.info(f"Async Step {self.current_step} done in {end-start:.3f}s")
         self.current_step += 1
+
+    def get_active_signatures(self) -> Set[Any]:
+        """Get all active archetype signatures. Must be implemented by subclasses."""
+        raise set(self._entity2sig.values())
+
+    def _new_archetype_row(self,
+        entity_id: int,
+        step: int,
+        components: List[Component],
+        world_id: str,
+        run_id: str) -> Dict[str, Any]:
+        """
+        Convert entity components to a row dictionary for archetype storage.
+
+        Args:
+            entity_id: The unique entity identifier
+            step: The simulation step
+            components: List of component instances
+            world_id: The world identifier
+            run_id: The run identifier
+
+        Returns:
+            Dict containing the row data for this entity
+        """
+        row_dict = {
+            "world_id": world_id,
+            "run_id": run_id,
+            "entity_id": entity_id,
+            "step": step,
+            "is_active": True
+        }
+
+        for c in components:
+            prefix = c.get_prefix()
+            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
+
+        return row_dict
 
     def spawn(self, *components: Component, step: Optional[int] = None) -> int:
         """Create a new entity with these components."""
         assert len(components) != 0, "Cannot create an entity with no components"
 
-        # Use store to add entity and get ID
-        entity_id = self.store.add_entity(list(components), step or self.current_step, self.world_id, self.run_id)
-        sig = Archetype.sig_from_components(components)
+        # Get the entity id and signature
+        entity_id = next(self._entity_counter)
+        sig = Archetype.sig_from_components(components) # Just using the Archetype as a convenience class here
+        self._entity2sig[entity_id] = sig
 
-        # Create row dict using base class helper
-        row_dict = self._create_spawn_row_dict(entity_id, list(components), step or self.current_step)
+        # Create the row dict
+        row_dict = self._new_archetype_row(entity_id, step, components, self.world_id, self.run_id)
 
-        # Add to spawn cache using base class helper
-        self._add_to_spawn_cache(sig, row_dict)
+        # Add row to the spawn cache
+        if sig not in self._spawn_cache:
+            self._spawn_cache[sig] = []
+        self._spawn_cache[sig].append(row_dict)
 
         return entity_id
 
+    # ---------------------------------------------------------------------
+    # iAsyncUpdater Facade methods
+    # ---------------------------------------------------------------------
+
+    async def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]]) -> None:
+        """Update the store with the given archetypes."""
+        await self.updater.update(archetypes, self.current_step, self.world_id, self.run_id)
+
+    async def materialize_spawns(self) -> None:
+        """
+        Write the entity spawn cache to the tables for simulation initialization.
+        """
+        if self._spawn_cache:
+            await self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
+            self._spawn_cache.clear()
+
     async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
-        await self.store.remove_entity(entity_id, step or self.current_step, self.world_id, self.run_id)
+        sig = self._entity2sig[entity_id]
+        await self.updater.remove_entity(entity_id, sig, step or self.current_step, self.world_id, self.run_id)
+
+    # ---------------------------------------------------------------------
+    # iAsyncQuerier Facade methods
+    # ---------------------------------------------------------------------
+
+    async def get_archetype(self, sig: ArchetypeSignature, step: int) -> DataFrame:
+        """Get an archetype by signature and step."""
+        df = await self.querier.get_archetype(sig, step, self.world_id, self.run_id)
+        return df
+
+    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
+        """Get an archetype for an entity by id and component types."""
+        return await self.querier.get_archetype_for_entity(entity_id, *component_types)
 
     # ---------------------------------------------------------------------
     # iAsyncSystem Facade methods
@@ -121,33 +195,3 @@ class AsyncWorld(BaseWorld, iAsyncWorld):
         Execute the system.
         """
         await self.async_system.execute(querier, step, *args, **kwargs)
-
-    # ---------------------------------------------------------------------
-    # iAsyncQuerier Facade methods
-    # ---------------------------------------------------------------------
-
-    async def get_archetype(self, sig: ArchetypeSignature, step: int) -> DataFrame:
-        """Get an archetype by signature and step."""
-        df = await self.querier.get_archetype(sig, step, self.world_id, self.run_id)
-        return df
-
-    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
-        """Get an archetype for an entity by id and component types."""
-        return await self.querier.get_archetype_for_entity(entity_id, *component_types)
-
-    # ---------------------------------------------------------------------
-    # iAsyncUpdater Facade methods
-    # ---------------------------------------------------------------------
-
-    async def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]]) -> None:
-        """Update the store with the given archetypes."""
-        await self.updater.update(archetypes, self.current_step, self.world_id, self.run_id)
-
-    async def materialize_spawns(self) -> None:
-        """
-        Write the entity spawn cache to the tables for simulation initialization.
-        """
-        await self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
-
-        # Clear the cache for this signature
-        self._spawn_cache.clear()

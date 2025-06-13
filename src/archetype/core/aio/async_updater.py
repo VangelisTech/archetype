@@ -16,10 +16,10 @@
 
 
 from daft import DataFrame, lit
-from typing import List, Tuple, Dict, Any
+from typing import List, Dict, Any
 from logging import getLogger
 from archetype.core.aio.async_interfaces import iAsyncUpdater, iAsyncStore
-from archetype.core.store import ArchetypeSignature, sig2hash
+from archetype.core.interfaces import ArchetypeSignature, Archetype
 
 logger = getLogger(__name__)
 
@@ -33,7 +33,10 @@ class AsyncUpdateManager(iAsyncUpdater):
         try:
             await self.store.append(sig, df, step, world_id, run_id)
         except Exception as e:
-            logger.error(f"Error updating table {sig2hash(sig)}: {e}")
+            logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 
     async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         await self.store.materialize_spawns(spawn_cache, world_id, run_id)
+
+    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+        await self.store.remove_entity(entity_id, sig, step, world_id, run_id)

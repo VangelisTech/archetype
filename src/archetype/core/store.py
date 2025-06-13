@@ -13,12 +13,8 @@
 # limitations under the License.
 
 # Standard Python Libraries
-from itertools import count
-from typing import Dict, Tuple, List, Type, Optional, Any, Set
+from typing import Dict, Tuple, List, Optional, Any
 from logging import getLogger
-import ulid
-from datetime import datetime, timezone
-from functools import lru_cache
 
 # Technologies
 import daft
@@ -26,13 +22,12 @@ from daft import col, DataFrame, Schema
 from daft.expressions import lit
 from daft.session import Session
 from daft.catalog import Catalog, Table
+from daft.io import IOConfig
 from pyiceberg.catalog.sql import SqlCatalog
-import pyarrow as pa
 import time
 
 # Internals
-from .interfaces import iStore, ArchetypeSignature
-from archetype.core import Component, sig2hash, get_archetype_schema, sig_from_components
+from archetype.core.interfaces import Archetype, ArchetypeSignature, iStore
 
 logger = getLogger(__name__)
 
@@ -54,6 +49,7 @@ class SyncStore(iStore):
         uri: str,
         namespace: Optional[str] = None,
         catalog: Optional[Catalog] = None,
+        io_config: Optional[IOConfig] = None,
         debug: bool = False,
     ):
 
@@ -73,19 +69,12 @@ class SyncStore(iStore):
             )
         )
 
-
         # Initialize the session
         self.sess = Session()
         self.sess.attach(object=self.catalog)
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
         self.sess.attach_table()
-
-        # Initialize internal properties
-        self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature
-        self._entity_counter = count(start=1)
-
-        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
 
     #--------------------------------------------------------------------------
     # Helper methods
@@ -96,8 +85,8 @@ class SyncStore(iStore):
         Ensure that the table for the given archetype signature exists in the Daft session.
         Returns the table name (hash_val).
         """
-        hash_val = sig2hash(sig)
-        pyarrow_schema = get_archetype_schema(sig)
+        hash_val = Archetype.get_name(sig)
+        pyarrow_schema = Archetype.get_archetype_schema(sig)
         daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
         try:
             table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
@@ -117,7 +106,7 @@ class SyncStore(iStore):
         Get all archetypes.
         """
 
-        table_name = sig2hash(sig)
+        table_name = Archetype.get_name(sig)
         table = self.catalog.get_table(table_name)
 
         df = table.to_dataframe() \
@@ -137,7 +126,7 @@ class SyncStore(iStore):
         archetypes_with_sigs: List[Tuple[ArchetypeSignature, DataFrame]] = []
 
         for sig in active_signatures:
-            table_name = sig2hash(sig)
+            table_name = Archetype.get_name(sig)
             try:
                 table = self.catalog.get_table(self.namespace + "." + table_name)
                 df = table.to_dataframe() \
@@ -155,18 +144,14 @@ class SyncStore(iStore):
     # Updating
     #--------------------------------------------------------------------------
 
-    def materialize_spawns(self) -> None:
+    def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         """
-        Write the entity spawn cache to the tables for simulation initialization.
+        Materialize the spawn cache into the tables.
         """
-        for sig, rows in self._spawn_cache.items():
+        for sig, rows in spawn_cache.items():
             # Coerce List of PyDicts to PyArrow table
-            pyarrow_schema = get_archetype_schema(sig)
-
-            # Create empty arrow table from schema
+            pyarrow_schema = Archetype.get_archetype_schema(sig)
             empty_table = pyarrow_schema.empty_table()
-
-            # populate table with rows from pylist (list of dicts)
             arrow_table = empty_table.from_pylist(rows)
             df = daft.from_arrow(arrow_table)
 
@@ -179,16 +164,8 @@ class SyncStore(iStore):
                 logger.error(f"Error appending {len(rows)} rows to table {table.name}: {e}")
                 raise
 
-        # Clear the cache for this signature
-        self._spawn_cache.clear()
 
-
-    def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
-        if entity_id not in self._entity2sig:
-            logger.warn(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
-            return
-
-        sig = self._entity2sig[entity_id]
+    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
         table = self._ensure_table(sig) # Ensure table exists
 
         entity_df = table.to_dataframe().where(
@@ -219,7 +196,7 @@ class SyncStore(iStore):
         """
         Append a table with a new dataframe.
         """
-        table_name = sig2hash(sig)
+        table_name = Archetype.get_name(sig)
         table = self.sess.get_table(table_name)
         try:
             start_time = time.time()

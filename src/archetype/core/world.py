@@ -13,13 +13,15 @@
 # limitations under the License.
 
 import time
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict, Any
+from itertools import count
+import ulid
 
 from daft import DataFrame
 
-from archetype.core import Processor, Component, Archetype, ArchetypeSignature
+from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQuerier, iUpdater
+from archetype.core.processor import Processor
 from archetype.core.base import BaseWorld
-from archetype.core.interfaces import iSystem, iQuerier, iUpdater, iWorld
 
 
 
@@ -112,7 +114,6 @@ class SyncWorld(BaseWorld):
     def spawn(self, *components: Component, step: Optional[int] = None) -> int:
         """Create a new entity with these components."""
         assert len(components) != 0, "Cannot create an entity with no components"
-        assert step == 0, "ArchetypeStore does not currently support adding entities in-situ"
 
         # Get the entity id and signature
         entity_id = next(self._entity_counter)
@@ -144,9 +145,7 @@ class SyncWorld(BaseWorld):
 
     def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
-        current_step_val = step or self.current_step
-        self.store.remove_entity(entity_id, current_step_val, self.world_id, self.run_id)
-
+        self.updater.remove_entity(entity_id, step or self.current_step, self.world_id, self.run_id)
 
 
     # ---------------------------------------------------------------------

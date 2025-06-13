@@ -16,9 +16,9 @@ from typing import List
 import logging
 from daft import DataFrame
 
-from .base import BaseSystem
-from .base import Processor
-from .store import ArchetypeSignature
+from archetype.core.base import BaseSystem
+from archetype.core.processor import Processor
+from archetype.core.interfaces import ArchetypeSignature
 
 logger = logging.getLogger(__name__)
 

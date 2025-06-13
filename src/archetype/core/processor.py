@@ -14,8 +14,8 @@
 
 from typing import Tuple, Type
 from daft import DataFrame
-from archetype.core import Component
-from .base import BaseProcessor
+from archetype.core.interfaces import Component
+from archetype.core.base import BaseProcessor
 
 
 class Processor(BaseProcessor):

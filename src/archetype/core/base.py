@@ -21,7 +21,7 @@ import ulid
 
 
 
-from archetype.core import Component, Archetype, ArchetypeSignature
+from archetype.core.interfaces import Component, ArchetypeSignature
 
 
 class BaseProcessor(ABC):
