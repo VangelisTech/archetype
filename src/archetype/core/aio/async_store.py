@@ -12,42 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List, Dict, Set, Tuple, Type, Any
-import asyncio
-from functools import lru_cache
+from typing import Optional, List, Dict, Tuple, Any
 import ulid
-from datetime import datetime, timezone
 
 import time
 import os
 
 import daft
-from daft import Schema, DataFrame, col, lit
-from daft.catalog import Catalog, Table
-from daft.session import Session
+from daft import DataFrame, col, lit
+from daft.catalog import Catalog
 from daft.io import IOConfig
 from daft.io.object_store_options import io_config_to_storage_options
 
-import pyarrow as pa
 import lancedb
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.aio.async_interfaces import iAsyncStore
-from archetype.core.base import Component
 from archetype.core.store import (
-    get_component_prefix,
-    sig_from_components,
     sig2hash,
-    BaseArchetypeTableSchema,
     get_datetime_str,
-    convert_component_to_pyarrow_schema
+    get_archetype_schema
 )
 
 
 from logging import getLogger
 
 logger = getLogger(__name__)
+
+
 
 class AsyncStore(iAsyncStore):
     """
@@ -72,7 +65,7 @@ class AsyncStore(iAsyncStore):
         debug: bool = False,
     ):
 
-        self.simulation = simulation or f"sim_{get_datetime_str()}"
+        self.simulation = simulation or f"sim_{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}" # ISO 8601
         self.run = run or f"run_{str(ulid.ULID())}"
         self.namespace = namespace or "archetypes"
         self.debug = debug
@@ -82,63 +75,22 @@ class AsyncStore(iAsyncStore):
         self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
         self.lancedb = None  # Initialize lancedb connection
 
-        # Initialize internal properties
-        from itertools import count
-        self._entity2sig: Dict[int, ArchetypeSignature] = {} # Necessary mapping for entity_id -> archetype signature
-        self._entity_counter = count(start=1)
+
 
 
     #--------------------------------------------------------------------------
     # Helper methods
     #--------------------------------------------------------------------------
-
-    @lru_cache(maxsize=None, typed=True)
-    def get_active_signatures(self) -> Set[ArchetypeSignature]:
-        """
-        Get all active signatures.
-        """
-        return set(self._entity2sig.values())
-
-
-
-    @lru_cache(maxsize=None, typed=True)
-    def _get_component_schema(self, component_type: Type[Component]) -> pa.Schema:
-        component_schema = convert_component_to_pyarrow_schema(component_type)
-        prefix = get_component_prefix(component_type)
-
-        # Rename the fields of the component schema with the prefix
-        for i, field_name in enumerate(component_schema.names):
-            field = component_schema.field(field_name)
-            renamed_field = field.with_name(prefix + field_name)
-            component_schema = component_schema.set(i, renamed_field)
-
-        return component_schema
-
-    @lru_cache(maxsize=None, typed=True)
-    def _get_archetype_schema(self, sig: ArchetypeSignature) -> pa.Schema:
-        """
-        Get the schema for an archetype from a list of components.
-        """
-
-        archetype_schema = BaseArchetypeTableSchema
-        for component_type in sig:
-            component_schema = self._get_component_schema(component_type)
-            archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
-
-        return archetype_schema
-
-    async def _ensure_lancedb(self) -> None:
-        if self.lancedb is None:
-            self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
-
     async def _ensure_table(self, sig: ArchetypeSignature) -> lancedb.AsyncTable:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
         Returns the table name (hash_val).
         """
         table_name = sig2hash(sig)
-        pyarrow_schema = self._get_archetype_schema(sig)
-        await self._ensure_lancedb()
+        pyarrow_schema = get_archetype_schema(sig)
+
+        if self.lancedb is None:
+            self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
 
         if table_name in await self.lancedb.table_names():
             try:
@@ -170,27 +122,7 @@ class AsyncStore(iAsyncStore):
     # iStore methods
     #--------------------------------------------------------------------------
 
-    def add_entity(self, components: List[Component], step: int, world_id: str, run_id: str) -> int:
-        """
-        Add an entity to the store.
-        """
-        assert len(components) != 0, "Cannot create an entity with no components"
-
-        # Get the entity id and signature
-        entity_id = next(self._entity_counter)
-        sig = sig_from_components(components)
-
-        # Store entity mapping
-        self._entity2sig[entity_id] = sig
-
-        return entity_id
-
-    async def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
-        if entity_id not in self._entity2sig:
-            logger.warn(f"Entity {entity_id} not found in _entity2sig. Cannot remove.")
-            return
-
-        sig = self._entity2sig[entity_id]
+    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
         async_table = await self._ensure_table(sig) # Ensure table exists
 
         arrow_table = await async_table.to_arrow()
@@ -226,7 +158,7 @@ class AsyncStore(iAsyncStore):
         """
         for sig, rows in spawn_cache.items():
             # Coerce List of PyDicts to PyArrow table
-            pyarrow_schema = self._get_archetype_schema(sig)
+            pyarrow_schema = get_archetype_schema(sig)
             empty_table = pyarrow_schema.empty_table()
             arrow_table = empty_table.from_pylist(rows)
             df = daft.from_arrow(arrow_table)
@@ -240,14 +172,14 @@ class AsyncStore(iAsyncStore):
             except Exception as e:
                 logger.error(f"Error appending {len(rows)} rows to table {async_table.name}: {e}")
                 raise
+
     # ---------------------------------------------------------------------
     # iQuerier methods
     # ---------------------------------------------------------------------
-    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component], world_id: str, run_id: str, step: int) -> DataFrame:
+    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes.
         """
-        sig = self._entity2sig[entity_id]
         table_name = sig2hash(sig)
         async_table = await self.lancedb.open_table(table_name)
 
@@ -263,7 +195,7 @@ class AsyncStore(iAsyncStore):
             df = daft.from_arrow(filtered_arrow)
         else:
             # Return empty dataframe with correct schema if table doesn't exist yet
-            schema = self._get_archetype_schema(sig)
+            schema = get_archetype_schema(sig)
             df = daft.from_arrow(schema.empty_table())
 
         return df
@@ -289,7 +221,7 @@ class AsyncStore(iAsyncStore):
                 df = daft.from_arrow(filtered_arrow)
             else:
                 # Return empty dataframe with correct schema if table doesn't exist yet
-                schema = self._get_archetype_schema(sig)
+                schema = get_archetype_schema(sig)
                 df = daft.from_arrow(schema.empty_table())
 
         except Exception as e:

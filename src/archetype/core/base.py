@@ -12,34 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Type, Optional, Dict, Tuple
+from typing import Any, Type, Optional, Dict, Tuple, List, Set
 from abc import ABC, abstractmethod
-import daft
-from .interfaces import Component, iQuerier
+from itertools import count
 
-# --- Processor Base Class ---
+import daft
+import ulid
+
+
+
+from archetype.core import Component, Archetype, ArchetypeSignature
+
+
 class BaseProcessor(ABC):
     """
-    Base class for systems that process entities and components.
+    Abstract base class for Processor implementations.
     """
-    # Add attribute to hold the list of components
-    priority: int
-    components: Tuple[Type[Component], ...]
-
     @abstractmethod
-    def process(self, state_df: daft.DataFrame) -> Optional[daft.DataFrame]:
-        """
-        The core transformation logic of the processor, operating on a DataFrame.
-        If preprocess returns a Dict, the System is responsible for how this method gets its DataFrame.
+    def process(self, df: daft.DataFrame, *args, **kwargs) -> daft.DataFrame:
+        """Process the DataFrame."""
+        return df
 
-        Args:
-            state_df: The input DataFrame prepared by the preprocess method or provided by the system.
-
-        Returns:
-            Optional[daft.DataFrame]: DataFrame with updated data + keys (entity_id, etc.)
-                                      or None if no updates should be committed.
-        """
-        raise NotImplementedError
 
 class BaseSystem(ABC):
     """
@@ -69,4 +62,45 @@ class BaseSystem(ABC):
             Dict[str, daft.DataFrame]: A dictionary mapping archetype hashes to their resulting
                                        update DataFrames.
         """
+        raise NotImplementedError
+
+class BaseWorld(ABC):
+    """
+    Abstract base class for World implementations with shared functionality.
+    Contains common logic for entity management, spawn caching, and world state.
+    """
+    @abstractmethod
+    def step(self, *args, **kwargs) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_active_signatures(self) -> Set[Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def spawn(self, *components: Component, step: Optional[int] = None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def materialize_spawns(self) -> None:
+        raise NotImplementedError
+
+class BaseUpdater(ABC):
+    """
+    Abstract base class for Updater implementations.
+    """
+    @abstractmethod
+    def update(self, df: daft.DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
         raise NotImplementedError

@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Dict, Type, Tuple
-from itertools import count
-
+from typing import List
+import logging
 from daft import DataFrame
 
 from .base import BaseSystem
-from .processor import Processor
-from .interfaces import iQuerier
+from .base import Processor
 from .store import ArchetypeSignature
+
+logger = logging.getLogger(__name__)
 
 class SyncSystem(BaseSystem):
     def __init__(self):
@@ -29,38 +29,30 @@ class SyncSystem(BaseSystem):
     def add_processor(self, proc: Processor):
         self.processors.append(proc)
 
-    def remove_processor(self, proc: Type[Processor]):
-        processor_to_remove = None
-        for p_instance in self.processors:
-            if isinstance(p_instance, proc):
-                processor_to_remove = p_instance
-                break
-        if processor_to_remove:
-            self.processors.remove(processor_to_remove)
-        else:
-            pass
+    def remove_processor(self, proc: Processor):
+        self.processors.remove(proc)
 
-    def execute(self, querier: iQuerier, step: int, dt: float, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+    def execute(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        *args,
+        **kwargs
+    ) -> DataFrame:
         """
-        Execute all processors on all active archetypes in priority order.
-        Returns a list of tuples of (archetype_signature, modified_df)
-
-        Embrace the immutability bro.
+        Execute all processors on the given archetype in priority order.
+        Returns a tuple of (archetype_signature, modified_df)
         """
-        if not self.processors:
-            return []
 
-        modified_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = []
+        # Process archetype through all processors in priority order
+        for proc_instance in sorted(self.processors, key=lambda x: x.priority):
+            # Build the modified archetype list if the processor has the components to matching the archetype signature
+            if set(proc_instance.components).issubset(set(sig)):
+                try:
+                    df = proc_instance.process(df, *args, **kwargs)
+                except Exception as e:
+                    logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
+                    df = None
+                    break
 
-        # Get all active archetypes with their component signatures (single query)
-        active_archetypes: List[Tuple[ArchetypeSignature, DataFrame]] = querier.get_archetypes(step, world_id, run_id)
-
-        # Process each archetype through all relevant processors in priority order
-        for archetype_signature, df in active_archetypes:
-            for proc_instance in sorted(self.processors, key=lambda x: x.priority):
-                # Build the modified archetype list if the processor has the components to matching the archetype signature
-                if set(proc_instance.components).issubset(set(archetype_signature)):
-                    processed_df = proc_instance.process(df, dt)
-                    modified_archetypes.append((archetype_signature, processed_df))
-
-        return modified_archetypes
+        return df

@@ -13,37 +13,31 @@
 # limitations under the License.
 
 from daft import DataFrame, lit
-from typing import List, Tuple
+from typing import List, Dict, Any
 from logging import getLogger
-from .interfaces import iUpdater, iStore
-from .store import ArchetypeSignature
+from .interfaces import iUpdater, iStore, ArchetypeSignature
 from .store import sig2hash
 logger = getLogger(__name__)
 
 class UpdateManager(iUpdater):
     def __init__(self, store: iStore):
-        self._store = store
+        self.store = store
 
-    def _set_step(self,
-        archetypes: List[Tuple[ArchetypeSignature, DataFrame]],
-        step: int
-        ) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+    def update(self, df: DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+        """
+        Update the store with the given DataFrame.
+        """
 
-        return [
-            (
-                sig,
-                df.with_column("step", lit(step))
-            )
-            for sig, df in archetypes
-        ]
+        # Ensure step, world_id, and run_id are set for this update
+        df = df.with_columns({"step": lit(step), "world_id": lit(world_id), "run_id": lit(run_id)})
 
-    def update(self, updates: List[Tuple[ArchetypeSignature, DataFrame]], step: int, world_id: str, run_id: str):
-        updates = self._set_step(updates, step)
-        for sig, df in updates:
-            try:
-                self._store.append(sig, df, step, world_id, run_id)
-            except Exception as e:
-                logger.error(f"Error updating table {sig2hash(sig)}: {e}")
+        try:
+            self.store.append(sig, df, step, world_id, run_id)
+        except Exception as e:
+            logger.error(f"Error updating table {sig2hash(sig)}: {e}")
+
+    def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
+        self.store.materialize_spawns(spawn_cache, world_id, run_id)
 
     # in an async version, we would need to use a semaphore to limit the number of concurrent updates heavily.
     # In fact if we wanted to scale writes, we would need to use Ray workers to parallelize.

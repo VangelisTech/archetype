@@ -12,21 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Tuple, Type
 from daft import DataFrame
-from typing import Type, Tuple
-from .base import Component, BaseProcessor
-
-def processor(*component_types: Type[Component], priority: int = 0):
-    """
-    Class decorator to assign the list of components a Processor reads/writes.
-    It also injects the `__init__`, `_fetch_state`, and `process` methods into the class.
-
-    """
-    def wrap(cls: Type[BaseProcessor]):
-        cls.components = component_types
-        cls.priority = priority
-        return cls
-    return wrap
+from archetype.core import Component
+from .base import BaseProcessor
 
 
 class Processor(BaseProcessor):
@@ -39,3 +28,15 @@ class Processor(BaseProcessor):
         Processors are not responsible for updating the step value.
         """
         return df
+
+def processor(*component_types: Type[Component], priority: int = 0):
+    """
+    Class decorator to assign the list of components a Processor reads/writes.
+    It also injects the `__init__`, `_fetch_state`, and `process` methods into the class.
+
+    """
+    def wrap(cls: Type[Processor]):
+        cls.components = component_types
+        cls.priority = priority
+        return cls
+    return wrap
