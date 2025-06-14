@@ -12,6 +12,27 @@ Archetype is an ECS simulation engine designed for scalability from local develo
 - The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), as described by AJ Mertens helped me understand how the archetype pattern leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
 - [This Daft Article on Scaling LLM inference](https://blog.getdaft.io/p/we-cloned-over-15000-repos-to-find?subscribe_prompt=free) and accompanying repository [Sashimi4Talent](https://github.com/everettVT/Sashimi4Talent/tree/main) introduced me to semaphore usage patterns for the async module.
 
+---
+## Contents
+- **Simulation Script Usage Patterns**
+  - [Sync Usage](#basic-usage)
+  - [Async Usage](#async-usage)
+  - [LLM Processors (coming v0.2)](#llm-processors)
+    - AsyncOpenAI with API Keys
+    - AsyncOpenAI with vLLM & Ray
+    - Structured Generation w/ guidance
+    - MCP compatible Tools, Resources
+  - [Graph Module (coming v0.3)](#graph-module)
+    - Graph System 
+      - Graph Processor nodes and edges
+      - Extending priority system with igraph topological sort  
+      - integrating w/ Ray Compiled Graphs
+    - Graph Stores 
+      - Knowledge Graphs
+  - Cognition Module 
+  - Orchestration, Coordination, Communication  
+  - RL 
+
 
 
 ## Quick Start
@@ -106,6 +127,24 @@ for step in range(100):
     await world.step(dt=0.1) # Accepts any *Args, **Kwargs that Processors might need. 
 ```
 
+
+
+### LLM Module
+v0.2
+#### AsyncOpenAI Processor w/ API Key
+(coming soon)
+
+#### AsyncOpenAI on vLLM
+(next)
+
+#### AsyncOpenAI on vLLM on Ray Serve LLM 
+(next)
+
+#### Structured Generation 
+(next)
+
+### Graph Module
+v0.3
 
 
 
