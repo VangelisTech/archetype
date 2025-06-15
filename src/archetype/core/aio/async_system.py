@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import asyncio
-from typing import List, Dict, Type, Tuple
+from typing import List, Tuple
 from daft import DataFrame
 
 from archetype.core.base import BaseSystem
@@ -52,17 +52,17 @@ class AsyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
+        semaphore: asyncio.Semaphore,
         *args,
         **kwargs
-    ) -> Tuple[ArchetypeSignature, DataFrame]:
+    ) -> DataFrame:
         """
         Process a single archetype through all relevant processors.
 
         This is where the concurrency happens - each archetype gets its own task
         but within each archetype, processors run in priority order (same as sync).
         """
-        if not self.processors:
-            return (sig, df)
+
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             if set(proc_instance.components).issubset(set(sig)):
@@ -71,14 +71,14 @@ class AsyncSystem(BaseSystem):
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     if isinstance(proc_instance, AsyncProcessor):
-                        df = await proc_instance.process(df, asyncio.Semaphore(10), *args, **kwargs)
+                        df = await proc_instance.process(df, semaphore, *args, **kwargs)
                     elif isinstance(proc_instance, SyncProcessor):
                         df = proc_instance.process(df, *args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
                     df = None
                     break
-        return (sig, df)
+        return df
 
     # TODO: Eventually we will need to add an if statement on the type of processor
     # IE Ray Remote actor.

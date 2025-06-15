@@ -20,7 +20,9 @@
 .cursor/
 .cursorignore
 *.lance
-
+Claude.md
+.claude/
+data/
 
 .venv/
 .pytest_cache/
@@ -45,5 +47,4 @@ archetype.egg-info/
 
 __pycache__/
 data/archetypes.db/
-data/catalog.db 
-
+data/catalog.db

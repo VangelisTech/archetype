@@ -30,7 +30,6 @@ def make_async_world(uri: str, world_id: str | None = None, run_id: str | None =
     updater = AsyncUpdateManager(store=store)
     system  = AsyncSystem()
     world = AsyncWorld(
-        store=store,
         querier=querier,
         updater=updater,
         system=system,
