@@ -74,7 +74,6 @@ class SyncStore(iStore):
         self.sess.attach(object=self.catalog)
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
-        self.sess.attach_table()
 
     #--------------------------------------------------------------------------
     # Helper methods
@@ -101,44 +100,15 @@ class SyncStore(iStore):
     # Querying
     # ---------------------------------------------------------------------
 
-    def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, world_id: str, run_id: str) -> Dict[str, DataFrame]:
+    def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
         """
         Get all archetypes.
         """
-
-        table_name = Archetype.get_name(sig)
-        table = self.catalog.get_table(table_name)
-
-        df = table.to_dataframe() \
-            .where(col("entity_id") == entity_id) \
-            .where(col("world_id") == world_id) \
-            .where(col("run_id") == run_id)
-
+        table: Table = self._ensure_table(sig)
+        df: DataFrame = table.read()
+        if self.debug:
+            df.show()
         return df
-
-    def get_archetypes(self, world_id: str, run_id: str) -> List[Tuple[ArchetypeSignature, DataFrame]]:
-        """
-        Get all active archetypes using the entity2sig mapping for efficiency.
-        Returns dict mapping archetype_hash -> (DataFrame, component_signature)
-        This avoids expensive schema comparisons by using tracked signatures.
-        """
-        active_signatures = self.get_active_signatures()
-        archetypes_with_sigs: List[Tuple[ArchetypeSignature, DataFrame]] = []
-
-        for sig in active_signatures:
-            table_name = Archetype.get_name(sig)
-            try:
-                table = self.catalog.get_table(self.namespace + "." + table_name)
-                df = table.to_dataframe() \
-                    .where(col("world_id") == world_id) \
-                    .where(col("run_id") == run_id)
-
-                archetypes_with_sigs.append((sig, df))
-            except Exception as e:
-                logger.error(f"Error reading archetype table {table_name}: {e}")
-                continue
-
-        return archetypes_with_sigs
 
     #--------------------------------------------------------------------------
     # Updating
@@ -154,6 +124,10 @@ class SyncStore(iStore):
             empty_table = pyarrow_schema.empty_table()
             arrow_table = empty_table.from_pylist(rows)
             df = daft.from_arrow(arrow_table)
+
+            if self.debug:
+                print(f"SyncStore: Getting archetype for {sig}")
+                df.show()
 
             # Write to the table
             table = self._ensure_table(sig)
@@ -201,10 +175,11 @@ class SyncStore(iStore):
         try:
             start_time = time.time()
             if self.debug:
-                logger.info(f"Appending dataframe to table {table_name}")
+                logger.info(f"SyncStore: Appending dataframe to table {table_name}")
                 df.collect()
                 df.show()
                 print(f"Appending {df.count_rows()} rows to table {table_name} for step {step}")
+            df.show()
             table.append(df)
             end_time = time.time()
             logger.info(f"Appended dataframe to table {table_name} for step {step} in {end_time - start_time} seconds")

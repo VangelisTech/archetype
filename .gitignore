@@ -20,7 +20,9 @@
 .cursor/
 .cursorignore
 *.lance
-
+Claude.md
+.claude/
+data/
 
 .venv/
 .pytest_cache/

@@ -38,7 +38,7 @@ def make_simple_world(
         catalog = catalog,
         debug = debug
     )
-    querier = QueryManager(store=store)
+    querier = QueryManager(store=store, debug=debug)
     updater = UpdateManager(store=store)
     system  = SyncSystem()
 

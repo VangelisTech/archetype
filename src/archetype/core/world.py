@@ -65,18 +65,19 @@ class SyncWorld(BaseWorld):
         active_signatures = self.get_active_signatures()
 
         for sig in active_signatures:
-            df = self.get_archetype(sig, self.current_step, self.world_id, self.run_id)
-            processed_df = self.execute(df, sig, self.current_step, *args, **kwargs)
+            df = self.get_archetype(sig, self.current_step)
+            processed_df = self.execute(df, sig, *args, **kwargs)
             self.updater.update(processed_df, sig, self.current_step + 1, self.world_id, self.run_id)
 
         end = time.time()
         logger.info(f"Sync Step {self.current_step} done in {end-start:.3f}s")
+
         self.current_step += 1
 
 
     def get_active_signatures(self) -> Set[Any]:
         """Get all active archetype signatures. Must be implemented by subclasses."""
-        raise set(self._entity2sig.values())
+        return set(self._entity2sig.values())
 
     def _new_archetype_row(self,
         entity_id: int,
@@ -121,7 +122,7 @@ class SyncWorld(BaseWorld):
         self._entity2sig[entity_id] = sig
 
         # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step, components, self.world_id, self.run_id)
+        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
 
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
@@ -158,7 +159,7 @@ class SyncWorld(BaseWorld):
 
     def archetype_for_entity(self, entity_id: int, step: int = -1) -> DataFrame:
         """Get a archetype for an entity."""
-        return self.querier.archetype_for_entity(entity_id, step)
+        return self.querier.get_archetype_for_entity(entity_id, step, self.world_id, self.run_id)
 
 
 
@@ -174,6 +175,6 @@ class SyncWorld(BaseWorld):
         """Remove a Processor from the sequential system."""
         self.system.remove_processor(proc)
 
-    def execute(self, df: DataFrame, sig: ArchetypeSignature, step: int, *args, **kwargs) -> DataFrame:
+    def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
         """Execute the system for a single step."""
-        return self.system.execute(df, sig, step, *args, **kwargs)
+        return self.system.execute(df, sig, *args, **kwargs)

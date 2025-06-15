@@ -136,7 +136,7 @@ class AsyncStore(iAsyncStore):
 
         return df
 
-    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
+    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get  archetypes using the entity2sig mapping for efficiency.
         Returns dict mapping archetype_hash -> (DataFrame, component_signature)
@@ -165,7 +165,7 @@ class AsyncStore(iAsyncStore):
             logger.error(f"Error reading archetype table {table_name}: {e}")
             raise e
 
-        return (sig, df)
+        return df
 
     #--------------------------------------------------------------------------
     # Updater methods

@@ -27,6 +27,7 @@ from archetype import make_simple_world # noqa: F401
 
 from daft import DataFrame, col # noqa: F401
 
+
 # Define Components
 class Position(Component):
     x: float
@@ -35,6 +36,7 @@ class Position(Component):
 class Velocity(Component):
     vx: float
     vy: float
+
 
 @processor(Position, Velocity, priority=1)
 class MovementProcessor(Processor):
