@@ -89,9 +89,7 @@ class SyncStore(iStore):
         daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
         try:
             table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
-            logger.info(f"Created Daft table {hash_val} with schema: {daft_schema}")
         except Exception as e:
-            logger.error(f"Error creating Daft table {hash_val}: {e}")
             raise
 
         return table
@@ -105,9 +103,9 @@ class SyncStore(iStore):
         Get all archetypes.
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = table.read()
+        df: DataFrame = table.read() # Cheap
         if self.debug:
-            df.show()
+            df.show() # Not Cheap
         return df
 
     #--------------------------------------------------------------------------
@@ -133,10 +131,8 @@ class SyncStore(iStore):
             table = self._ensure_table(sig)
             try:
                 table.append(df)
-                logger.debug(f"Appended {len(rows)} rows to table {table.name}")
             except Exception as e:
-                logger.error(f"Error appending {len(rows)} rows to table {table.name}: {e}")
-                raise
+                raise e
 
 
     def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
@@ -161,10 +157,8 @@ class SyncStore(iStore):
                 AND world_id = '{world_id}'
                 AND run_id = '{run_id}'
             """)
-            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {table.name} for step {step}.")
         except Exception as e:
-            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {table.name} for step {step}: {e}")
-            raise
+            raise e
 
     def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
         """
@@ -173,16 +167,10 @@ class SyncStore(iStore):
         table_name = Archetype.get_name(sig)
         table = self.sess.get_table(table_name)
         try:
-            start_time = time.time()
             if self.debug:
-                logger.info(f"SyncStore: Appending dataframe to table {table_name}")
                 df.collect()
                 df.show()
                 print(f"Appending {df.count_rows()} rows to table {table_name} for step {step}")
-            df.show()
             table.append(df)
-            end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} for step {step} in {end_time - start_time} seconds")
         except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name} for step {step}: {e}")
             raise

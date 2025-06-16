@@ -67,15 +67,17 @@ class AsyncWorld(BaseWorld):
         start = time.time()
 
         await self.materialize_spawns()
+        self.current_step += 1
 
         # Get all active archetypes with their component signatures (single query)
         active_signatures = self.get_active_signatures()
 
+
         async def process_with_semaphore(sig: ArchetypeSignature, *args, **kwargs) -> None:
             async with self.semaphore:
                 df = await self.get_archetype(sig, self.current_step)
-                processed_df = await self.async_system.execute(df, sig, self.semaphore, *args, **kwargs)
-                await self.update((sig, processed_df), self.current_step + 1, self.world_id, self.run_id)
+                processed_df = await self.execute(df, sig, *args, **kwargs)
+                await self.update(processed_df, sig, self.current_step)
 
         tasks = [
             process_with_semaphore(sig, *args, **kwargs)
@@ -86,11 +88,11 @@ class AsyncWorld(BaseWorld):
 
         end = time.time()
         logger.info(f"Async Step {self.current_step} done in {end-start:.3f}s")
-        self.current_step += 1
+
 
     def get_active_signatures(self) -> Set[Any]:
         """Get all active archetype signatures. Must be implemented by subclasses."""
-        raise set(self._entity2sig.values())
+        return set(self._entity2sig.values())
 
     def _new_archetype_row(self,
         entity_id: int,
@@ -135,7 +137,7 @@ class AsyncWorld(BaseWorld):
         self._entity2sig[entity_id] = sig
 
         # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step, components, self.world_id, self.run_id)
+        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
 
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
@@ -148,9 +150,9 @@ class AsyncWorld(BaseWorld):
     # iAsyncUpdater Facade methods
     # ---------------------------------------------------------------------
 
-    async def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]]) -> None:
+    async def update(self, df: DataFrame, sig: ArchetypeSignature, step: int) -> None:
         """Update the store with the given archetypes."""
-        await self.updater.update(archetypes, self.current_step, self.world_id, self.run_id)
+        await self.updater.update(df, sig, step, self.world_id, self.run_id)
 
     async def materialize_spawns(self) -> None:
         """
@@ -171,12 +173,12 @@ class AsyncWorld(BaseWorld):
 
     async def get_archetype(self, sig: ArchetypeSignature, step: int) -> DataFrame:
         """Get an archetype by signature and step."""
-        df = await self.querier.get_archetype(sig, step, self.world_id, self.run_id)
-        return df
+        return await self.querier.get_archetype(sig, step, self.world_id, self.run_id)
 
-    async def get_archetype_for_entity(self, entity_id: int, *component_types: Type[Component]) -> DataFrame:
+    async def get_archetype_for_entity(self, entity_id: int, step: int) -> DataFrame:
         """Get an archetype for an entity by id and component types."""
-        return await self.querier.get_archetype_for_entity(entity_id, *component_types)
+        sig = self._entity2sig[entity_id]
+        return await self.querier.get_archetype_for_entity(entity_id, sig, step or self.current_step, self.world_id, self.run_id)
 
     # ---------------------------------------------------------------------
     # iAsyncSystem Facade methods
@@ -190,8 +192,8 @@ class AsyncWorld(BaseWorld):
         """Remove an async processor from the system."""
         self.async_system.remove_processor(proc)
 
-    async def execute(self, querier: iAsyncQuerier, step: int, *args, **kwargs) -> None:
+    async def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
         """
         Execute the system.
         """
-        await self.async_system.execute(querier, step, *args, **kwargs)
+        return await self.async_system.execute(df, sig, self.semaphore, *args, **kwargs)

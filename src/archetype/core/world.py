@@ -67,7 +67,7 @@ class SyncWorld(BaseWorld):
         for sig in active_signatures:
             df = self.get_archetype(sig, self.current_step)
             processed_df = self.execute(df, sig, *args, **kwargs)
-            self.updater.update(processed_df, sig, self.current_step + 1, self.world_id, self.run_id)
+            self.updater.update(processed_df, sig, self.current_step, self.world_id, self.run_id)
 
         end = time.time()
         logger.info(f"Sync Step {self.current_step} done in {end-start:.3f}s")
@@ -157,9 +157,10 @@ class SyncWorld(BaseWorld):
         """Fetch the latest live state of these components at the given step."""
         return self.querier.get_archetype(sig, step, self.world_id, self.run_id)
 
-    def archetype_for_entity(self, entity_id: int, step: int = -1) -> DataFrame:
+    def archetype_for_entity(self, entity_id: int, step: int) -> DataFrame:
         """Get a archetype for an entity."""
-        return self.querier.get_archetype_for_entity(entity_id, step, self.world_id, self.run_id)
+        sig = self._entity2sig[entity_id]
+        return self.querier.get_archetype_for_entity(entity_id, sig, step, self.world_id, self.run_id)
 
 
 

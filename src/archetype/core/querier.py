@@ -29,7 +29,7 @@ class QueryManager(iQuerier):
         # Filter by step, world_id, and run_id
         df = df.where(df["world_id"] == world_id) \
                .where(df["run_id"] == run_id) \
-               .where(df["step"] == current_step) \
+               .where(df["step"] == current_step-1) \
                .where(df["is_active"])
 
         if self._debug:

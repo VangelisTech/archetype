@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .core import make_simple_world, Component, Processor, processor
-from .core.aio import make_async_world
+from archetype.core import make_simple_world, Component, Processor, processor
+from archetype.core.aio import make_async_world, AsyncProcessor
 __all__ = ["make_simple_world", "Component", "Processor", "processor", "make_async_world", "AsyncProcessor"]

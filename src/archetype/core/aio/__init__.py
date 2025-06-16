@@ -18,6 +18,7 @@ from .async_querier import AsyncQueryManager
 from .async_system import AsyncSystem
 from .async_processor import AsyncProcessor
 from .async_updater import AsyncUpdateManager
+import asyncio
 
 
 def make_async_world(uri: str, world_id: str | None = None, run_id: str | None = None, namespace: str | None = None, debug: bool = False, max_concurrent_archetypes: int = 10) -> AsyncWorld:
@@ -32,10 +33,10 @@ def make_async_world(uri: str, world_id: str | None = None, run_id: str | None =
     world = AsyncWorld(
         querier=querier,
         updater=updater,
-        system=system,
+        async_system=system,
         world_id=world_id,
         run_id=run_id,
-        max_concurrent_archetypes=max_concurrent_archetypes,
+        semaphore=asyncio.Semaphore(max_concurrent_archetypes),
         debug=debug,
     )
     return world
