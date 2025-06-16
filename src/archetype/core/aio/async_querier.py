@@ -19,15 +19,23 @@ from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncQuerier
 
 class AsyncQueryManager(iAsyncQuerier):
-    def __init__(self, store: iAsyncStore):
+    def __init__(self, store: iAsyncStore, debug: bool = False):
         self._store = store
+        self._debug = debug
 
-    async def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]:
+    async def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        return await self._store.get_archetype(sig, current_step, world_id, run_id)
+        df = await self._store.get_archetype_df(sig, current_step-1, world_id, run_id)
 
+        if self._debug:
+            print(f"QueryManager: Getting archetype for {sig} at step {current_step} for world {world_id} and run {run_id}")
+            df.show()
+
+        return df
     async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
         """Get a component for an entity."""
-        return await self._store.get_archetype_for_entity(entity_id, sig, step, world_id, run_id)
+        df = await self.get_archetype(sig, current_step=step, world_id=world_id, run_id=run_id)
+
+        return df.where(df["entity_id"] == entity_id)

@@ -110,38 +110,10 @@ class AsyncStore(iAsyncStore):
 
 
     # ---------------------------------------------------------------------
-    # iQuerier methods
+    # Querying
     # ---------------------------------------------------------------------
-    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
-        """
-        Get all archetypes.
-        """
-        table_name = Archetype.get_name(sig)
-        async_table = await self._ensure_table(sig)
+    async def get_archetype_df(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
 
-        # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
-        lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
-        if os.path.exists(lance_uri):
-            # Query with LanceDB directly
-            filtered_arrow = await async_table.query().where(
-                f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true AND entity_id = {entity_id}"
-            ).to_arrow()
-
-            # Convert to Daft DataFrame
-            df = daft.from_arrow(filtered_arrow)
-        else:
-            # Return empty dataframe with correct schema if table doesn't exist yet
-            schema = Archetype.get_archetype_schema(sig)
-            df = daft.from_arrow(schema.empty_table())
-
-        return df
-
-    async def get_archetype(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
-        """
-        Get  archetypes using the entity2sig mapping for efficiency.
-        Returns dict mapping archetype_hash -> (DataFrame, component_signature)
-        This avoids expensive schema comparisons by using tracked signatures.
-        """
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
 
@@ -168,10 +140,8 @@ class AsyncStore(iAsyncStore):
         return df
 
     #--------------------------------------------------------------------------
-    # Updater methods
+    # Updating
     #--------------------------------------------------------------------------
-
-
 
     async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         """

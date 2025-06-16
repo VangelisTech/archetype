@@ -27,10 +27,7 @@ class UpdateManager(iUpdater):
         """
         Update the store with the given DataFrame.
         """
-
-        # Ensure step, world_id, and run_id are set for this update
         df = df.with_columns({"step": lit(step), "world_id": lit(world_id), "run_id": lit(run_id)})
-
         try:
             self.store.append(sig, df, step, world_id, run_id)
         except Exception as e:

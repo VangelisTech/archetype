@@ -17,19 +17,19 @@ import logging
 from daft import DataFrame
 
 from archetype.core.base import BaseSystem
-from archetype.core.processor import Processor
+from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
 
 logger = logging.getLogger(__name__)
 
 class SyncSystem(BaseSystem):
     def __init__(self):
-        self.processors: List[Processor] = []
+        self.processors: List[SyncProcessor] = []
 
-    def add_processor(self, proc: Processor):
+    def add_processor(self, proc: SyncProcessor):
         self.processors.append(proc)
 
-    def remove_processor(self, proc: Processor):
+    def remove_processor(self, proc: SyncProcessor):
         self.processors.remove(proc)
 
     def execute(
@@ -49,6 +49,7 @@ class SyncSystem(BaseSystem):
             # Build the modified archetype list if the processor has the components to matching the archetype signature
             if set(proc_instance.components).issubset(set(sig)):
                 try:
+                    assert isinstance(proc_instance, SyncProcessor)
                     df = proc_instance.process(df, *args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")

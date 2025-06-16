@@ -5,23 +5,33 @@ description = "Lazy Distributed Dataframe-Based ECS Simulation Engine using Daft
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "daft>=0.5.2",
     "daft[lance,iceberg,sql]>=0.5.2",
     "pyarrow>=16.0.0",
     "lancedb>=0.22.0",
     "python-ulid>=3.0.0",
     "pytest>=8.3.5",
-    "datasets>=3.6.0",
     "pytest-asyncio>=0.26.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
     "ipykernel",
-    "networkx>=3.4.2",
+]
+
+
+[project.optional-dependencies]
+benchmark = [
+    "esper",
+]
+ray = [
+    "ray>=2.47.0",
+]
+llm = [
     "vllm>=0.7.2",
-    "ray[serve,llm]>=2.46.0",
+    "ray[serve,llm]>=2.47.0",
     "huggingface-hub>=0.26.0",
     "transformers>=4.49.0",
     "accelerate>=0.29.0",
     "datasets>=3.6.0",
+    "mcp[cli]",
+
 ]
 
 
