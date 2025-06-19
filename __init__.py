@@ -51,9 +51,10 @@ from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_store import AsyncStore, AsyncEpisodeStore
 from archetype.core.aio.async_interfaces import iAsyncQuerier, iAsyncUpdater, iAsyncSystem
 
-# Store implementations  
-from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_updater import AsyncUpdateManager
+# Store implementations
+from archetype.core.store import ArchetypeStore
+from archetype.core.querier import ArchetypeQuerier
+from archetype.core.updater import ArchetypeUpdater
 
 # Version info
 __version__ = "0.1.0"
@@ -108,7 +109,7 @@ class _BaseUniverse:
         Args:
             store: Episode-aware store for data persistence
             querier: Query interface for reading data
-            updater: Update interface for writing data  
+            updater: Update interface for writing data
             system: System for processing archetypes
         """
         self.store = store
@@ -122,7 +123,7 @@ class _BaseUniverse:
         # Universe statistics
         self.total_worlds_created = 0
         self.total_steps_executed = 0
-        
+    
     async def create_world(
         self,
         processors: List[BaseProcessor],
@@ -174,7 +175,7 @@ class _BaseUniverse:
         """Execute one step for a specific world."""
         if world_id not in self.worlds:
             raise ValueError(f"World {world_id} not found")
-    
+        
         world = self.worlds[world_id]
         await world.step(*args, **kwargs)
         
@@ -281,10 +282,10 @@ class _BaseUniverse:
         }
     
     # Convenience methods
-
+    
     async def create_simple_world(
-        self, 
-        processors: List[BaseProcessor], 
+        self,
+        processors: List[BaseProcessor],
         world_id: Optional[str] = None,
         **kwargs
     ) -> str:
@@ -292,11 +293,11 @@ class _BaseUniverse:
         return await self.create_world(processors, world_id, **kwargs)
     
     async def run_simulation(
-        self, 
-        world_id: str, 
-        steps: int, 
+        self,
+        world_id: str,
+        steps: int,
         flush_every: int = 10,
-        *args, 
+        *args,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -483,16 +484,16 @@ async def create_universe(
     
     if universe_type == "episode":
         episode_store = create_episode_store(store)
-        querier = AsyncQueryManager(episode_store)
-        updater = AsyncUpdateManager(episode_store)
+        querier = ArchetypeQuerier(episode_store)
+        updater = ArchetypeUpdater(episode_store)
         system = AsyncSystem()
         
         # Use the base universe implementation
         impl = _BaseUniverse(episode_store, querier, updater, system)
         
     elif universe_type == "async":
-        querier = AsyncQueryManager(store)
-        updater = AsyncUpdateManager(store)
+        querier = ArchetypeQuerier(store)
+        updater = ArchetypeUpdater(store)
         system = AsyncSystem()
         
         impl = _BaseUniverse(store, querier, updater, system)
@@ -526,8 +527,8 @@ async def create_ray_universe(
         # Create store components
         store = await create_store(store_uri)
         episode_store = create_episode_store(store)
-        querier = AsyncQueryManager(episode_store)
-        updater = AsyncUpdateManager(episode_store)
+        querier = ArchetypeQuerier(episode_store)
+        updater = ArchetypeUpdater(episode_store)
         
         # Create Ray universe
         impl = RayUniverse(episode_store, querier, updater, system_pool_size)

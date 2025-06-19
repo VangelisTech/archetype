@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple, Any, Set
 
 import time
 import os
+import asyncio
 
 import daft
 from daft import DataFrame, col, lit
@@ -32,7 +33,6 @@ from archetype.core.interfaces import Archetype, ArchetypeSignature
 from logging import getLogger
 
 logger = getLogger(__name__)
-
 
 
 class AsyncStore(iAsyncStore):
@@ -230,3 +230,200 @@ class AsyncStore(iAsyncStore):
                 async_table.optimize(retrain=False)
             except Exception as e:
                 raise Exception(f"Error optimizing table {table_name}: {e}")
+
+
+
+
+class AsyncEpisodeStore:
+    """
+    Episode-aware store that caches writes and periodically flushes to the underlying store.
+    
+    This implementation centralizes episode logic at the storage layer, making it transparent
+    to worlds and systems. All archetype operations are cached in memory until flush.
+    """
+    
+    def __init__(self, base_store: iAsyncStore, max_cache_size_mb: int = 500):
+        self.base_store = base_store
+        self.max_cache_size_mb = max_cache_size_mb
+        
+        # Episode cache: ArchetypeSignature -> accumulated DataFrame
+        self.episode_cache: Dict[ArchetypeSignature, DataFrame] = {}
+        
+        # Track which signatures have been modified for efficient flushing
+        self.dirty_signatures: Set[ArchetypeSignature] = set()
+        
+        # Episode statistics
+        self.episode_count = 0
+        self.total_cached_operations = 0
+        
+    async def get_archetype_df(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
+        """
+        Get archetype data, combining base store data with cached episode data.
+        """
+        # Check if we have cached updates for this signature
+        cached_df = self.episode_cache.get(sig)
+        
+        if cached_df is not None:
+            # Filter cached data to only include relevant world_id/run_id/step
+            df = cached_df.where(
+                (cached_df["world_id"] == world_id) & 
+                (cached_df["run_id"] == run_id) &
+                (cached_df["step"] == step)
+            )
+        else: 
+            # No cached data found, query from persistent store
+            df = await self.base_store.get_archetype_df(sig, step, world_id, run_id)
+
+
+        return df
+    
+    async def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
+        """
+        Append data to the episode cache instead of directly to the store.
+        """
+        # Add metadata columns if they don't exist
+        if "step" not in df.column_names:
+            df = df.with_column("step", lit(step))
+        if "world_id" not in df.column_names:
+            df = df.with_column("world_id", lit(world_id))
+        if "run_id" not in df.column_names:
+            df = df.with_column("run_id", lit(run_id))
+        
+        # Accumulate in cache
+        if sig in self.episode_cache:
+            # Concat and collect to materialize the DataFrame and avoid lazy evaluation chains
+            df_cached = self.episode_cache[sig]
+            self.episode_cache[sig] = df_cached.concat(df).collect()
+        else:
+            # Collect the initial DataFrame to ensure it's materialized
+            self.episode_cache[sig] = df.collect()
+            
+        # Track dirty signatures for efficient flushing
+        self.dirty_signatures.add(sig)
+        self.total_cached_operations += 1
+        
+        # Check if we should auto-flush based on cache size
+        await self._check_auto_flush()
+    
+    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+        """
+        Mark an entity as inactive in the episode cache.
+        """
+        # Create a "tombstone" record to mark entity as inactive
+        tombstone_df = daft.from_pydict({
+            "entity_id": [entity_id],
+            "step": [step],
+            "world_id": [world_id],
+            "run_id": [run_id],
+            "is_active": [False]
+        })
+        
+        await self.append(sig, tombstone_df, step, world_id, run_id)
+    
+    async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
+        """
+        Convert spawn cache to DataFrames and add to episode cache.
+        """
+        for sig, entity_dicts in spawn_cache.items():
+            if entity_dicts:
+                spawn_df = daft.from_pylist(entity_dicts)
+                await self.append(sig, spawn_df, entity_dicts[0]["step"], world_id, run_id)
+    
+    async def flush_episodes(self, signatures: Optional[Set[ArchetypeSignature]] = None) -> Dict[str, Any]:
+        """
+        Flush episode cache to the underlying store.
+        
+        Args:
+            signatures: Optional set of signatures to flush. If None, flushes all dirty signatures.
+            
+        Returns:
+            Dictionary with flush statistics
+        """
+        flush_signatures = signatures or self.dirty_signatures.copy()
+        
+        if not flush_signatures:
+            return {"flushed_signatures": 0, "total_records": 0}
+        
+        # Create flush tasks for parallel execution
+        flush_tasks = []
+        total_records = 0
+        
+        for sig in flush_signatures:
+            if sig in self.episode_cache:
+                cached_df = self.episode_cache[sig]
+                total_records += len(cached_df)
+                
+                # Create a flush task for this signature
+                flush_tasks.append(self._flush_signature(sig, cached_df))
+        
+        # Execute all flushes in parallel
+        if flush_tasks:
+            await asyncio.gather(*flush_tasks)
+        
+        # Clear flushed data from cache
+        for sig in flush_signatures:
+            self.episode_cache.pop(sig, None)
+            self.dirty_signatures.discard(sig)
+        
+        self.episode_count += 1
+        
+        return {
+            "flushed_signatures": len(flush_signatures),
+            "total_records": total_records,
+            "episode_count": self.episode_count
+        }
+    
+    async def _flush_signature(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+        """
+        Flush a single signature's data to the base store.
+        This can be overridden in subclasses to implement custom flush strategies.
+        """
+        # Group by world_id, run_id, step for efficient batch writes
+        grouped = df.groupby(["world_id", "run_id", "step"]).agg([])
+        
+        # Process each group as a separate write operation
+        for group in grouped.to_pylist():
+            world_id = group["world_id"]
+            run_id = group["run_id"] 
+            step = group["step"]
+            
+            # Filter the dataframe to this specific group
+            group_df = df.where(
+                (df["world_id"] == world_id) & 
+                (df["run_id"] == run_id) & 
+                (df["step"] == step)
+            )
+            
+            # Delegate to base store
+            await self.base_store.append(sig, group_df, step, world_id, run_id)
+    
+    async def _check_auto_flush(self) -> None:
+        """
+        Check if we should automatically flush based on cache size or other criteria.
+        """
+        # Simple heuristic: flush if we have more than 1000 cached operations
+        # In production, this could be based on actual memory usage
+        if self.total_cached_operations > 1000:
+            await self.flush_episodes()
+            self.total_cached_operations = 0
+    
+    async def optimize_tables(self) -> None:
+        """
+        Optimize the underlying store tables.
+        """
+        await self.base_store.optimize_tables()
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the current episode cache.
+        """
+        cache_signatures = len(self.episode_cache)
+        total_cached_records = sum(len(df) for df in self.episode_cache.values())
+        
+        return {
+            "cached_signatures": cache_signatures,
+            "cached_records": total_cached_records,
+            "dirty_signatures": len(self.dirty_signatures),
+            "episode_count": self.episode_count,
+            "total_operations": self.total_cached_operations
+        }

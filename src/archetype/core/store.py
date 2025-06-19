@@ -98,15 +98,28 @@ class SyncStore(iStore):
     # Querying
     # ---------------------------------------------------------------------
 
-    def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
+    def get_archetype_df(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
         """
-        Get all archetypes.
+        Get materialized archetype data for a specific signature, step, world, and run.
+        
+        This materializes the query at the store level for consistency with async interface
+        and simulation semantics (complete state snapshots per step).
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = table.read() # Cheap
+        df: DataFrame = table.read()  # Still lazy at this point
+        
+        # Apply filters and materialize immediately
+        filtered_df = df.where(df["world_id"] == world_id) \
+                       .where(df["run_id"] == run_id) \
+                       .where(df["step"] == step) \
+                       .where(df["is_active"]) \
+                       .collect()  # Materialize here
+        
         if self.debug:
-            df.show() # Not Cheap
-        return df
+            print(f"SyncStore: Materialized {len(filtered_df)} rows for {sig} at step {step}")
+            filtered_df.show()
+            
+        return filtered_df
 
     #--------------------------------------------------------------------------
     # Updating

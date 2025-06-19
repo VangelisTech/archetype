@@ -16,7 +16,7 @@ import asyncio
 from typing import List, Tuple
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem
+from archetype.core.base import BaseSystem, BaseProcessor
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.store import ArchetypeSignature
@@ -38,13 +38,13 @@ class AsyncSystem(BaseSystem):
     """
 
     def __init__(self):
-        self.processors: List[AsyncProcessor] = []
+        self.processors: List[BaseProcessor] = []
 
-    def add_processor(self, proc: AsyncProcessor):
+    async def add_processor(self, proc: BaseProcessor):
         """Add an async processor to the system."""
         self.processors.append(proc)
 
-    def remove_processor(self, proc: AsyncProcessor):
+    def remove_processor(self, proc: BaseProcessor):
         """Remove all processors of the given type."""
         self.processors = [p for p in self.processors if not isinstance(p, type(proc))]
 

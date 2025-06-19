@@ -23,17 +23,14 @@ class QueryManager(iQuerier):
     def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get archetype data for a specific signature and step.
+        
+        Now delegates filtering to the store level for consistent materialized queries.
         """
-        df = self._store.get_archetype_df(sig)
-
-        # Filter by step, world_id, and run_id
-        df = df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id) \
-               .where(df["step"] == current_step-1) \
-               .where(df["is_active"])
+        # Store now handles all filtering and materialization
+        df = self._store.get_archetype_df(sig, current_step-1, world_id, run_id)
 
         if self._debug:
-            print(f"QueryManager: Getting archetype for {sig} at step {current_step} for world {world_id} and run {run_id}")
+            print(f"QueryManager: Got {len(df)} rows for {sig} at step {current_step} for world {world_id} and run {run_id}")
             df.show()
 
         return df

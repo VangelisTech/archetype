@@ -28,6 +28,9 @@ class BaseProcessor(ABC):
     """
     Abstract base class for Processor implementations.
     """
+    priority: int = 0
+    components: List[Type[Component]] = []
+
     @abstractmethod
     def process(self, df: daft.DataFrame, *args, **kwargs) -> daft.DataFrame:
         """Process the DataFrame."""

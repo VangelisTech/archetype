@@ -34,8 +34,8 @@ class AsyncWorld(BaseWorld):
         querier: iAsyncQuerier,
         updater: iAsyncUpdater,
         async_system: iAsyncSystem,
-        world_id: str = None,
-        run_id: str = None,
+        world_id: Optional[str] = None,
+        run_id: Optional[str] = None,
         debug: bool = False,
         semaphore: Optional[asyncio.Semaphore] = None,
     ):
@@ -131,13 +131,14 @@ class AsyncWorld(BaseWorld):
         """Create a new entity with these components."""
         assert len(components) != 0, "Cannot create an entity with no components"
 
+        components_list = list(components)
         # Get the entity id and signature
         entity_id = next(self._entity_counter)
-        sig = Archetype.sig_from_components(components) # Just using the Archetype as a convenience class here
+        sig = Archetype.sig_from_components(components_list) # Just using the Archetype as a convenience class here
         self._entity2sig[entity_id] = sig
 
         # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
+        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components_list, self.world_id, self.run_id)
 
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
@@ -178,19 +179,19 @@ class AsyncWorld(BaseWorld):
     async def get_archetype_for_entity(self, entity_id: int, step: int) -> DataFrame:
         """Get an archetype for an entity by id and component types."""
         sig = self._entity2sig[entity_id]
-        return await self.querier.get_archetype_for_entity(entity_id, sig, step or self.current_step, self.world_id, self.run_id)
+        return await self.querier.get_archetype_for_entity(entity_id, sig, step, self.world_id, self.run_id)
 
     # ---------------------------------------------------------------------
     # iAsyncSystem Facade methods
     # ---------------------------------------------------------------------
 
-    def add_processor(self, proc: iAsyncProcessor) -> None:
+    async def add_processor(self, proc: iAsyncProcessor) -> None:
         """Add an async processor to the system."""
-        self.async_system.add_processor(proc)
+        await self.async_system.add_processor(proc)
 
-    def remove_processor(self, proc: iAsyncProcessor) -> None:
+    async def remove_processor(self, proc: iAsyncProcessor) -> None:
         """Remove an async processor from the system."""
-        self.async_system.remove_processor(proc)
+        await self.async_system.remove_processor(proc)
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
         """
