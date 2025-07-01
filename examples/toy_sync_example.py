@@ -61,6 +61,8 @@ def main(uri, debug=False):
 
 
 if __name__ == "__main__":
-    uri = "../data"
+    uri = ".archetype_examples/toy_sync_data"
+    if not os.path.exists(uri):
+        os.makedirs(uri)
 
-    world = main(uri, debug=True)
+    world = main(uri)

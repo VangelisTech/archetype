@@ -100,7 +100,7 @@ class AsyncStore(iAsyncStore):
                 await async_table.create_index(column="entity_id", config= BTree(), replace=True)
                 await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
                 await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
-                await async_table.create_index(column="step", config= BTree(), replace=True)
+                await async_table.create_index(column="tick", config= BTree(), replace=True)
             except Exception as e:
                 logger.error(f"Error creating LanceDB table {table_name}: {e}")
                 raise Exception(f"Error creating LanceDB table {table_name}: {e}")
@@ -112,7 +112,7 @@ class AsyncStore(iAsyncStore):
     # ---------------------------------------------------------------------
     # Querying
     # ---------------------------------------------------------------------
-    async def get_archetype_df(self, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
 
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
@@ -123,7 +123,7 @@ class AsyncStore(iAsyncStore):
             if os.path.exists(lance_uri):
                 # Query with LanceDB directly
                 filtered_arrow = await async_table.query().where(
-                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND step = {step} AND is_active = true"
+                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND tick = {tick} AND is_active = true"
                 ).to_arrow()
 
                 # Convert to Daft DataFrame
@@ -164,37 +164,39 @@ class AsyncStore(iAsyncStore):
                 logger.error(f"Error appending {len(rows)} rows to table {async_table.name}: {e}")
                 raise
 
-    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
-        async_table = await self._ensure_table(sig) # Ensure table exists
+    async def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
+        """
+        Transition an entity from one archetype to another.
+        """
+        # 1. Remove from old archetype
+        await self.remove_entity(entity_id, old_sig, tick, world_id, run_id)
 
-        arrow_table = await async_table.to_arrow()
+        # 2. Add to new archetype
+        pyarrow_schema = Archetype.get_archetype_schema(new_sig)
+        arrow_table = pyarrow_schema.empty_table().from_pylist([new_data])
         df = daft.from_arrow(arrow_table)
+        await self.append(new_sig, df, tick, world_id, run_id)
 
-        entity_df = df.where(
-            (col("entity_id") == lit(entity_id)) &
-            (col("step") == lit(step)) &
-            (col("simulation") == lit(world_id)) &
-            (col("run") == lit(run_id))
-        )
-        entity_df = entity_df.with_column(
-            "is_active",
-            lit(False)
-        )
+    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
+        async_table = await self._ensure_table(sig) # Ensure table exists
         try:
-            await async_table.search(f"""
-                UPDATE {async_table.name}
-                SET is_active = FALSE
-                WHERE entity_id = {entity_id}
-                AND step = {step}
-                AND world_id = '{world_id}'
-                AND run_id = '{run_id}'
-            """)
-            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {async_table.name} for step {step}.")
+            await async_table.update(
+                updates={"is_active": False},
+                where=f"entity_id = {entity_id} AND tick = {tick} AND world_id = '{world_id}' AND run_id = '{run_id}'",
+            )
+            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {async_table.name} for tick {tick}.")
         except Exception as e:
-            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {async_table.name} for step {step}: {e}")
+            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {async_table.name} for tick {tick}: {e}")
             raise
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
+    async def update(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+        """
+        Update a table with a new dataframe.
+        """
+        async_table = await self._ensure_table(sig)
+        await async_table.add(df.to_arrow(), mode="overwrite")
+
+    async def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
         """
         Append a table with a new dataframe.
         """
@@ -204,21 +206,21 @@ class AsyncStore(iAsyncStore):
         try:
             start_time = time.time()
 
-            # Update the step column to the new step value
-            df_with_step = df.with_column("step", lit(step))
+            # Update the tick column to the new tick value
+            df_with_tick = df.with_column("tick", lit(tick))
 
             # Convert to arrow and add to the table
-            await async_table.add(df_with_step.to_arrow(), mode="append")
+            await async_table.add(df_with_tick.to_arrow(), mode="append")
             end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} for step {step} in {end_time - start_time} seconds")
+            logger.info(f"Appended dataframe to table {table_name} for tick {tick} in {end_time - start_time} seconds")
         except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name} for step {step}: {e}")
+            logger.error(f"Error appending dataframe to table {table_name} for tick {tick}: {e}")
             raise
 
         if self.debug:
             logger.info(f"Appending dataframe to table {table_name}")
-            df_with_step.show()
-            print(f"Appending {df_with_step.count_rows()} rows to table {table_name} for step {step}")
+            df_with_tick.show()
+            print(f"Appending {df_with_tick.count_rows()} rows to table {table_name} for tick {tick}")
 
     async def optimize_tables(self) -> None:
         """

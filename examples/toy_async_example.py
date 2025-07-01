@@ -63,6 +63,8 @@ async def main(uri, debug=False):
 
 
 if __name__ == "__main__":
-    uri = "../data"
+    uri = ".archetype_examples/toy_async_data"
+    if not os.path.exists(uri):
+        os.makedirs(uri)
 
-    world = asyncio.run(main(uri, debug=True))
+    world = asyncio.run(main(uri))

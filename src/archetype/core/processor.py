@@ -16,16 +16,17 @@ from typing import Tuple, Type
 from daft import DataFrame
 from archetype.core.interfaces import Component
 from archetype.core.base import BaseProcessor
+from archetype.core.command import EcsContext
 
 
 class Processor(BaseProcessor):
     priority: int = 0
     components: Tuple[Type[Component], ...] = None
 
-    def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
+    def process(self, df: DataFrame, context: "EcsContext", *args, **kwargs) -> DataFrame:
         """
-        Processor method are provided the state of the archetype at the current step.
-        Processors are not responsible for updating the step value.
+        Processor method are provided the state of the archetype at the current tick.
+        Processors are not responsible for updating the tick value.
         """
         return df
 

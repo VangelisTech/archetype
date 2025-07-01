@@ -19,11 +19,16 @@ from typing import List, Type, Optional, Dict, Any, Tuple, Set
 import ulid
 import asyncio
 
-from daft import DataFrame
+import daft
+from daft import DataFrame, lit
+
+import pyarrow as pa
 
 from archetype.core.interfaces import Component, Archetype, ArchetypeSignature
 from archetype.core.base import BaseWorld
-from archetype.core.aio.async_interfaces import iAsyncQuerier, iAsyncUpdater, iAsyncSystem, iAsyncProcessor
+from archetype.core.aio.async_interfaces import iAsyncQuerier, iAsyncUpdater, iAsyncSystem, iAsyncProcessor, iBroker
+from archetype.core.aio.command import Command 
+from archetype.core.aio.broker import InMemoryBroker
 
 from logging import getLogger
 
@@ -38,6 +43,7 @@ class AsyncWorld(BaseWorld):
         run_id: str = None,
         debug: bool = False,
         semaphore: Optional[asyncio.Semaphore] = None,
+        broker: iBroker = None, 
     ):
         """
         Initialize async world using shared base functionality.
@@ -49,13 +55,17 @@ class AsyncWorld(BaseWorld):
         # Set World Properties
         self.world_id = world_id or f"world_{str(ulid.ULID())}"
         self.run_id = run_id or f"run_{str(ulid.ULID())}"
-        self.current_step = 0
+        self.tick = 0
 
         # Initialize internal caches
-        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}  # ArchetypeSignature -> List[row_dict]
         self._entity2sig: Dict[int, ArchetypeSignature] = {}  # entity_id -> ArchetypeSignature
         self._entity_counter = count(start=1)
-
+        
+        # Spawn Cache
+        self._broker = broker or InMemoryBroker()
+        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {} 
+        self._despawn_cache: Dict[ArchetypeSignature, List[int]] = {}  # sig -> list of entity ids to despawn
+        
         # Set semaphore for concurrent archetype processing
         self.semaphore = semaphore or asyncio.Semaphore(10)
 
@@ -63,137 +73,228 @@ class AsyncWorld(BaseWorld):
         """
         Async version of step() with concurrent archetype processing.
         """
-        # Materialize any pending spawns before the first step
+        # Materialize any pending spawns before the first tick
         start = time.time()
+        await self.materialize_cmds()
+        cmd_end = time.time()
+        await self.process_archetypes(*args, **kwargs)
+        end = time.time()
+        logger.info(f"Async tick {self.tick} | cmds:  {cmd_end-start:.3f}s | processors:  {end-cmd_end:.3f}s | total: {end-start:.3f}s")
 
-        await self.materialize_spawns()
-        self.current_step += 1
-
-        # Get all active archetypes with their component signatures (single query)
-        active_signatures = self.get_active_signatures()
-
-
+    
+    async def process_archetypes(self, *args, **kwargs):
         async def process_with_semaphore(sig: ArchetypeSignature, *args, **kwargs) -> None:
             async with self.semaphore:
-                df = await self.get_archetype(sig, self.current_step)
-                processed_df = await self.execute(df, sig, *args, **kwargs)
-                await self.update(processed_df, sig, self.current_step)
+                cmd_updates_df: DataFrame = await self.materialize_cmds(sig)
+                last_tick_df: DataFrame = await self.get_archetype(sig, self.tick-1)
+                combined_df: DataFrame = cmd_updates_df.concat(last_tick_df)
+                
+                despawned_df: DataFrame = await self.materialize_despawns(combined_df, sig)
+
+                df = 
+                # Execute the system for this archetype
+                processed_df = await self.execute(last_tick_df, sig, *args, **kwargs)
+                await self.update(processed_df, sig, self.tick)
 
         tasks = [
             process_with_semaphore(sig, *args, **kwargs)
-            for sig in active_signatures
+            for sig in set(self._entity2sig.values())
         ]
 
         await asyncio.gather(*tasks)
 
-        end = time.time()
-        logger.info(f"Async Step {self.current_step} done in {end-start:.3f}s")
 
-
-    def get_active_signatures(self) -> Set[Any]:
-        """Get all active archetype signatures. Must be implemented by subclasses."""
-        return set(self._entity2sig.values())
-
-    def _new_archetype_row(self,
-        entity_id: int,
-        step: int,
-        components: List[Component],
-        world_id: str,
-        run_id: str) -> Dict[str, Any]:
+    
+    async def materialize_cmds(self) -> None:
         """
-        Convert entity components to a row dictionary for archetype storage.
-
-        Args:
-            entity_id: The unique entity identifier
-            step: The simulation step
-            components: List of component instances
-            world_id: The world identifier
-            run_id: The run identifier
-
-        Returns:
-            Dict containing the row data for this entity
+        Materialize any pending commands like spawns, despawns, etc.
         """
-        row_dict = {
-            "world_id": world_id,
-            "run_id": run_id,
-            "entity_id": entity_id,
-            "step": step,
-            "is_active": True
-        }
+        # Materialize Command Queues
+        cmds = await self._cmd_queue.drain()
+        async def materialize_cmd(cmd: Dict[str, Any]) -> None:
+            # Handle each command type
+            if cmd["op"] == "spawn_entities":
+                return await self._spawn(*cmd["components"])
+                
+            elif cmd["op"] == "despawn_entities":
+                return await self._despawn(cmd["entity_id"])
 
-        for c in components:
-            prefix = c.get_prefix()
-            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
+            elif cmd["op"] == "add_components":
+                eid = cmd["entity_id"]
+                components = cmd["component"]
+                sig = self._entity2sig[eid]
+                await self._add_components(eid, components, sig)
 
-        return row_dict
+            elif cmd["op"] == "remove_component":
+                eid = cmd["entity_id"]
+                component_type = cmd["component_type"]
+                sig = self._entity2sig[eid]
+                await self._remove_component(eid, component_type, sig, self.tick, self.world_id, self.run_id)
 
-    def spawn(self, *components: Component, step: Optional[int] = None) -> int:
-        """Create a new entity with these components."""
-        assert len(components) != 0, "Cannot create an entity with no components"
+            elif cmd["op"] == "add_processors":
+                proc = cmd["processor"]
+                self.add_processors(proc)
 
-        # Get the entity id and signature
-        entity_id = next(self._entity_counter)
-        sig = Archetype.sig_from_components(components) # Just using the Archetype as a convenience class here
-        self._entity2sig[entity_id] = sig
+            elif cmd["op"] == "remove_processor":
+                proc = cmd["processor"]
+                self.remove_processors(proc)
+                    
 
-        # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
+        tasks = [
+            materialize_cmd(self, cmd)
+            for cmd in await self.context.drain()
+        ]
 
-        # Add row to the spawn cache
-        if sig not in self._spawn_cache:
-            self._spawn_cache[sig] = []
-        self._spawn_cache[sig].append(row_dict)
-
-        return entity_id
-
-    # ---------------------------------------------------------------------
-    # iAsyncUpdater Facade methods
-    # ---------------------------------------------------------------------
-
-    async def update(self, df: DataFrame, sig: ArchetypeSignature, step: int) -> None:
-        """Update the store with the given archetypes."""
-        await self.updater.update(df, sig, step, self.world_id, self.run_id)
+        await asyncio.gather(*tasks)
 
     async def materialize_spawns(self) -> None:
         """
         Write the entity spawn cache to the tables for simulation initialization.
         """
-        if self._spawn_cache:
-            await self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
-            self._spawn_cache.clear()
+        # Handle spawn cache
+        
+        for sig, rows in self._spawn_cache.items():
+            # Coerce List of PyDicts to PyArrow table
+            pyarrow_schema: pa.Schema = Archetype.get_archetype_schema(sig)
+            empty_table = pyarrow_schema.empty_table()
+            arrow_table = empty_table.from_pylist(rows)
+            df = daft.from_arrow(arrow_table)
 
-    async def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
+            self._spawn_cache.clear()
+        
+    async def materialize_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> None:    
+        
+        entities = self._despawn_cache.get(sig, [])
+        if len(entities) > 0: 
+            df = df.with_column("is_active", df["entity_id"].is_in(entities).if_else(lit(False), lit(True)))
+        
+        self._despawn_cache.clear()
+
+    # ---------------------------------------------------------------------
+    # iAsyncEcsCommand Facade methods
+    # ---------------------------------------------------------------------
+
+    async def create_entity(self, *components: Component) -> int:
+        assert len(components) != 0, "Cannot create an entity with no components"
+        await self._broker.enqueue(Command(
+            op="spawn_entity",
+            payload={"components": [c.to_dict() for c in components]}
+        ))
+    
+    async def delete_entity(self, entity_id: int) -> None:
+        if isinstance(entity_ids, int):
+            entity_ids = [entity_ids]
+        
+        await self._broker.enqueue(Command(
+            op="delete_entity",
+            payload={"entity_id": [entity_ids] if isinstance(entity_ids, int) else entity_ids}
+        ))
+
+    async def add_component(self, entity_ids: List[int], *components: Component) -> None:
+        """Queue a component to be added to an entity at the end of the tick."""
+        await self.cmd_queue.add_component(entity_ids, *components)
+
+    async def remove_component(self, entity_id: int, component) -> None:
+        """Queue a component to be removed from an entity at the end of the tick."""
+        await self.cmd_queue.remove_component([entity_id], component)
+
+    async def _create_entity(self, *components: Component, entity_id= Optional[int] = None) -> int:
+        """Create a new entity with these components."""
+        assert len(components) != 0, "Cannot create an entity with no components"
+
+        eid = entity_id or next(self._entity_counter)
+        archetype = Archetype(components)  # Just using the Archetype as a convenience class here
+        self._entity2sig[eid] = archetype.sig
+
+        # Create the row dict
+        row_dict = archetype.to_row_dict(
+            entity_id=eid,
+            tick=self.tick,
+            components=components,
+            world_id=self.world_id,
+            run_id=self.run_id
+        )
+
+        # Add row to the spawn cache
+        if archetype.sig not in self._spawn_cache:
+            self._spawn_cache[archetype.sig] = []
+        self._spawn_cache[archetype.sig].append(row_dict)
+
+        return eid
+    
+    async def _delete_entity(self, entity_id: int, tick: Optional[int] = None) -> None:
         """Mark an entity dead (is_active=False)."""
         sig = self._entity2sig[entity_id]
-        await self.updater.remove_entity(entity_id, sig, step or self.current_step, self.world_id, self.run_id)
+        self._entity2sig.pop(entity_id, None)
+        self._despawn_cache[sig].append(entity_id)
 
+    async def add_components(self, entity_id: int, components: List[Component], sig: ArchetypeSignature) -> None:
+        """Queue a component to be added to an entity at the end of the tick."""
+        # For adding components to an entity we need to transition 
+        # the entity of one archetype signature to another
+        self._create_entity(components,
+        self.despawn(entity_id) 
+
+        
+    # ---------------------------------------------------------------------
+    # iAsyncUpdater Facade methods
+    # ---------------------------------------------------------------------
+
+    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int) -> None:
+        """Update the store with the given archetypes."""
+        await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
+
+
+
+    
     # ---------------------------------------------------------------------
     # iAsyncQuerier Facade methods
     # ---------------------------------------------------------------------
 
-    async def get_archetype(self, sig: ArchetypeSignature, step: int) -> DataFrame:
-        """Get an archetype by signature and step."""
-        return await self.querier.get_archetype(sig, step, self.world_id, self.run_id)
+    async def get_archetype(self, sig: ArchetypeSignature, tick: int) -> DataFrame:
+        """Get an archetype by signature and tick."""
+        return await self.querier.get_archetype(
+            sig, 
+            tick or self.tick, 
+            self.world_id, 
+            self.run_id
+        )
 
-    async def get_archetype_for_entity(self, entity_id: int, step: int) -> DataFrame:
+    async def get_archetype_for_entity(self, entity_id: int, tick: int) -> DataFrame:
         """Get an archetype for an entity by id and component types."""
-        sig = self._entity2sig[entity_id]
-        return await self.querier.get_archetype_for_entity(entity_id, sig, step or self.current_step, self.world_id, self.run_id)
+        return await self.querier.get_archetype_for_entity(
+            entity_id, 
+            self._entity2sig[entity_id], 
+            tick or self.tick, 
+            self.world_id, 
+            self.run_id
+        )
+
+    async def get_component(self, component_type: Type[Component], tick: int) -> DataFrame:
+        """Get a component by type."""
+        matching_sigs = 
+        return await self.querier.get_component(component_type, sig, tick or self.tick, self.world_id, self.run_id)
+
+    async def get_component_for_entity(self, component_type: Type[Component], tick: int) -> DataFrame:
+        """
+        Get all entites for a component type.
+        """
+        return await self.querier.get_component_for_entity(component_type, sig, tick or self.tick, self.world_id, self.run_id)
 
     # ---------------------------------------------------------------------
     # iAsyncSystem Facade methods
     # ---------------------------------------------------------------------
 
-    def add_processor(self, proc: iAsyncProcessor) -> None:
+    def _add_processors(self, *processors: iAsyncProcessor) -> None:
         """Add an async processor to the system."""
-        self.async_system.add_processor(proc)
+        self.async_system.add_processor(processors)
 
-    def remove_processor(self, proc: iAsyncProcessor) -> None:
+    def _remove_processors(self, *processors: iAsyncProcessor) -> None:
         """Remove an async processor from the system."""
-        self.async_system.remove_processor(proc)
+        self.async_system.remove_processor(processors)
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
         """
         Execute the system.
         """
-        return await self.async_system.execute(df, sig, self.semaphore, *args, **kwargs)
+        return await self.async_system.execute(df, sig, self.semaphore, self.cmd_queue *args, **kwargs)

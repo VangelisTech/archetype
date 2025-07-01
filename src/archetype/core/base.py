@@ -19,9 +19,8 @@ from itertools import count
 import daft
 import ulid
 
-
-
 from archetype.core.interfaces import Component, ArchetypeSignature
+
 
 
 class BaseProcessor(ABC):
@@ -29,7 +28,7 @@ class BaseProcessor(ABC):
     Abstract base class for Processor implementations.
     """
     @abstractmethod
-    def process(self, df: daft.DataFrame, *args, **kwargs) -> daft.DataFrame:
+    def process(self, df: daft.DataFrame, context: EcsContext, *args, **kwargs) -> daft.DataFrame:
         """Process the DataFrame."""
         return df
 
@@ -51,7 +50,7 @@ class BaseSystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def execute(self, *args: Any, **kwargs: Any) -> Dict[str, daft.DataFrame]:
+    def execute(self, df: daft.DataFrame, sig: ArchetypeSignature, context: EcsContext, *args: Any, **kwargs: Any) -> daft.DataFrame:
         """
         Executes the managed processors.
 
@@ -59,8 +58,7 @@ class BaseSystem(ABC):
             *args, **kwargs: Additional arguments passed from the world's process cycle (e.g., dt).
 
         Returns:
-            Dict[str, daft.DataFrame]: A dictionary mapping archetype hashes to their resulting
-                                       update DataFrames.
+            A processed daft.DataFrame
         """
         raise NotImplementedError
 

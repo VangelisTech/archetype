@@ -48,3 +48,7 @@ archetype.egg-info/
 __pycache__/
 data/archetypes.db/
 data/catalog.db
+.archetype_examples/
+.archetype_benchmarks/
+.pytest_cache/
+archetype.egg-info/

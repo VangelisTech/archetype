@@ -19,6 +19,7 @@ from daft import DataFrame
 from archetype.core.base import BaseSystem
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.base import EcsContext
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class SyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
+        context: "EcsContext",
         *args,
         **kwargs
     ) -> DataFrame:
@@ -50,7 +52,7 @@ class SyncSystem(BaseSystem):
             if set(proc_instance.components).issubset(set(sig)):
                 try:
                     assert isinstance(proc_instance, SyncProcessor)
-                    df = proc_instance.process(df, *args, **kwargs)
+                    df = proc_instance.process(df, context, *args, **kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
                     df = None

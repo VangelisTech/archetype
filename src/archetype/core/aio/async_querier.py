@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 from daft import DataFrame
 from archetype.core.interfaces import ArchetypeSignature
@@ -23,19 +23,31 @@ class AsyncQueryManager(iAsyncQuerier):
         self._store = store
         self._debug = debug
 
-    async def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        df = await self._store.get_archetype_df(sig, current_step-1, world_id, run_id)
+        df = await self._store.get_archetype_df(sig, max(0, tick), world_id, run_id)
 
-        if self._debug:
-            print(f"QueryManager: Getting archetype for {sig} at step {current_step} for world {world_id} and run {run_id}")
-            df.show()
+        df = df.where(df["world_id"] == world_id) \
+               .where(df["run_id"] == run_id) \
+               .where(df["tick"] == tick) \
+               .where(df["is_active"])
 
         return df
-    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame:
+    
+    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         """Get a component for an entity."""
-        df = await self.get_archetype(sig, current_step=step, world_id=world_id, run_id=run_id)
+        df = await self.get_archetype(sig, tick, world_id=world_id, run_id=run_id)
 
         return df.where(df["entity_id"] == entity_id)
+    
+    async def get_component(self, component_type: type, sig: ArchetypeSignature,  tick: int, world_id: str, run_id: str) -> DataFrame:
+        """
+        Get a component by type.
+        """
+        df = await self.get_archetype(sig, tick, world_id, run_id)
+
+        df = df.select()
+
+        return df

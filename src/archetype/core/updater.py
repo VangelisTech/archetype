@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from daft import DataFrame, lit
+import daft
+from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
 from archetype.core.interfaces import iUpdater, iStore, ArchetypeSignature, Archetype
@@ -23,23 +24,27 @@ class UpdateManager(iUpdater):
     def __init__(self, store: iStore):
         self.store = store
 
-    def update(self, df: DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+    def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
         """
         Update the store with the given DataFrame.
         """
-        df = df.with_columns({"step": lit(step), "world_id": lit(world_id), "run_id": lit(run_id)})
+        df = df.with_columns({
+            "tick": lit(tick).cast(daft.DataType.uint32()),
+            "world_id": lit(world_id),
+            "run_id": lit(run_id),
+            "entity_id": col("entity_id").cast(daft.DataType.uint32()),
+        })
         try:
-            self.store.append(sig, df, step, world_id, run_id)
+            self.store.update(sig, df)
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         self.store.materialize_spawns(spawn_cache, world_id, run_id)
 
-    def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None:
-        self.store.remove_entity(entity_id, step, world_id, run_id)
+    def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
+        self.store.transition_entity(entity_id, old_sig, new_sig, new_data, tick, world_id, run_id)
 
-    # in an async version, we would need to use a semaphore to limit the number of concurrent updates heavily.
-    # In fact if we wanted to scale writes, we would need to use Ray workers to parallelize.
-    # Thankfully, since we are writing to distinct tables, we can just use a semaphore and couple it toa worker.
-    # We just wont be able to take advantage of the multithreading that Daft already uses to max out IOPS if we are running locally.
+    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
+        self.store.remove_entity(entity_id, sig, tick, world_id, run_id)
+

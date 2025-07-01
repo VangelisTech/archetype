@@ -15,13 +15,13 @@
 import time
 from typing import List, Optional, Tuple, Set, Dict, Any
 from itertools import count
-import ulid
 
 from daft import DataFrame
 
 from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQuerier, iUpdater
 from archetype.core.processor import Processor
 from archetype.core.base import BaseWorld
+from archetype.core.command import EcsContext
 
 
 
@@ -43,78 +43,61 @@ class SyncWorld(BaseWorld):
         self.system = system
 
         # Set World Properties
-        self.world_id = world_id or f"world_{str(ulid.ULID())}"
-        self.run_id = run_id or f"run_{str(ulid.ULID())}"
-        self.current_step = 0
-
-        # Initialize internal caches
-        self._spawn_cache: Dict[str, List[Dict[str, Any]]] = {}  # ArchetypeSignature -> List[row_dict]
-        self._entity2sig: Dict[int, ArchetypeSignature] = {}  # entity_id -> ArchetypeSignature
-        self._entity_counter = count(start=1)
+        self.cmd_queue = EcsCommandQueue(world_id=world_id, run_id=run_id)
 
     def step(self, *args, **kwargs):
         """
-        Execute one simulation step with individual archetype processing.
+        Execute one simulation tick with individual archetype processing.
         """
-        # Materialize any pending spawns before the first step
+        # Materialize any pending spawns before the first tick
         start = time.time()
+        
 
-        self.materialize_spawns()
 
-        # Get all active signatures and process each archetype individually
-        active_signatures = self.get_active_signatures()
+        # Process all entities for each archetype signature
+        for sig in set(self._entity2sig.values()):
+            cmd_df = self.materialize_cmds()
+            last_tick_df = self.get_archetype(sig, [self.tick - 1]) # Wont execute on tick 0 (No Active Sigs)
+            
+            processed_df = self.execute(df, sig, self.context, *args, **kwargs)
 
-        for sig in active_signatures:
-            df = self.get_archetype(sig, self.current_step)
-            processed_df = self.execute(df, sig, *args, **kwargs)
-            self.updater.update(processed_df, sig, self.current_step, self.world_id, self.run_id)
+            # Apply ECS Context Queued Changes 
+            applicable_spawns = [c in self.context._spawn_queue for c in sig if ]
+
+            self.updater.update(processed_df, sig, self.tick, self.world_id, self.run_id)
 
         end = time.time()
-        logger.info(f"Sync Step {self.current_step} done in {end-start:.3f}s")
+        logger.info(f"Sync tick {self.tick} done in {end-start:.3f}s")
 
-        self.current_step += 1
+        self.tick += 1
 
-
-    def get_active_signatures(self) -> Set[Any]:
-        """Get all active archetype signatures. Must be implemented by subclasses."""
-        return set(self._entity2sig.values())
-
-    def _new_archetype_row(self,
-        entity_id: int,
-        step: int,
-        components: List[Component],
-        world_id: str,
-        run_id: str) -> Dict[str, Any]:
-        """
-        Convert entity components to a row dictionary for archetype storage.
-
-        Args:
-            entity_id: The unique entity identifier
-            step: The simulation step
-            components: List of component instances
-            world_id: The world identifier
-            run_id: The run identifier
-
-        Returns:
-            Dict containing the row data for this entity
-        """
-        row_dict = {
-            "world_id": world_id,
-            "run_id": run_id,
-            "entity_id": entity_id,
-            "step": step,
-            "is_active": True
-        }
-
-        for c in components:
-            prefix = c.get_prefix()
-            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
-
-        return row_dict
-
-    def spawn(self, *components: Component, step: Optional[int] = None) -> int:
+    def materialize_spawns(self, spawn_queue: List[Tuple[Component,...]]) -> int:
         """Create a new entity with these components."""
-        assert len(components) != 0, "Cannot create an entity with no components"
+        
+        spawns_pylist = [ 
+            Archetype(components).to_pydict_row(
+                entity_id=next(self._entity_counter),
+                  tick=self.tick, 
+                  world_id=self.world_id, 
+                  run_id=self.run_id
+                )
+            for components in spawn_queue if Archetype(components) in sig
+        ]
+        spawns_df = DataFrame.from_pylist([row for row in spawns_pylist if row.keys() in])
+
+        for components in spawn_queue:
+            entity_id = next(self._entity_counter)
+            archetype =  # Just using the Archetype as a convenience class here
+            archetype 
+            
+
+        spawned_df = DataFrame.from_pylist(new_rows)
+        self._entity2sig[entity_id] = sig
+
+        return entity_id
+    
+    def _spawn(self, *components: Component) -> int:
+        """Create a new entity with these components."""
 
         # Get the entity id and signature
         entity_id = next(self._entity_counter)
@@ -122,46 +105,43 @@ class SyncWorld(BaseWorld):
         self._entity2sig[entity_id] = sig
 
         # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, step or self.current_step, components, self.world_id, self.run_id)
+        row_dict = self._new_archetype_row(entity_id, tick or self.tick, components, self.world_id, self.run_id)
 
         # Add row to the spawn cache
         if sig not in self._spawn_cache:
             self._spawn_cache[sig] = []
         self._spawn_cache[sig].append(row_dict)
+        
 
-        return entity_id
+    def _despawn(self, entity_id: int) -> None:
+        """Mark an entity dead (is_active=False)."""
+        sig = self._entity2sig[entity_id]
 
+  
     # ---------------------------------------------------------------------
     # UpdateManager Facade
     # ---------------------------------------------------------------------
 
-    def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]], step: int):
-        self.updater.update(archetypes, step, self.world_id, self.run_id)
+    def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]], tick: int):
+        self.updater.update(archetypes, tick, self.world_id, self.run_id)
 
-    def materialize_spawns(self) -> None:
-        """Materialize any pending spawns."""
-        if self._spawn_cache:
-            self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
-            self._spawn_cache.clear()
-
-    def despawn(self, entity_id: int, step: Optional[int] = None) -> None:
-        """Mark an entity dead (is_active=False)."""
-        self.updater.remove_entity(entity_id, step or self.current_step, self.world_id, self.run_id)
-
+    
 
     # ---------------------------------------------------------------------
     # QueryManager Facade
     # ---------------------------------------------------------------------
 
-    def get_archetype(self, sig, step: Optional[int] = -1) -> List[Tuple[ArchetypeSignature, DataFrame]]:
-        """Fetch the latest live state of these components at the given step."""
-        return self.querier.get_archetype(sig, step, self.world_id, self.run_id)
+    def get_archetype(self, sig, tick: List[int]) -> List[Tuple[ArchetypeSignature, DataFrame]]:
+        """Fetch the latest live state of these components at the given tick."""
+        return self.querier.get_archetype(sig, tick, self.world_id, self.run_id)
 
-    def archetype_for_entity(self, entity_id: int, step: int) -> DataFrame:
+    def archetype_for_entity(self, entity_id: int, tick: int) -> DataFrame:
         """Get a archetype for an entity."""
         sig = self._entity2sig[entity_id]
-        return self.querier.get_archetype_for_entity(entity_id, sig, step, self.world_id, self.run_id)
+        return self.querier.get_archetype_for_entity(entity_id, sig, tick, self.world_id, self.run_id)
 
+    def get_component(self, component_type: Type[Component]):
+        
 
 
     # ---------------------------------------------------------------------
@@ -177,5 +157,5 @@ class SyncWorld(BaseWorld):
         self.system.remove_processor(proc)
 
     def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
-        """Execute the system for a single step."""
+        """Execute the system for a single tick."""
         return self.system.execute(df, sig, *args, **kwargs)

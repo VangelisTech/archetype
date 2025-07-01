@@ -20,6 +20,7 @@ from archetype.core.base import BaseSystem
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.store import ArchetypeSignature
+from archetype.core.aio.command import AsyncEcsCommandQueue
 import logging
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class AsyncSystem(BaseSystem):
         df: DataFrame,
         sig: ArchetypeSignature,
         semaphore: asyncio.Semaphore,
+        cmd_queue: "AsyncEcsCommandQueue",
         *args,
         **kwargs
     ) -> DataFrame:

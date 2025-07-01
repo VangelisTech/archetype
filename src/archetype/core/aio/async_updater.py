@@ -15,7 +15,8 @@
 
 
 
-from daft import DataFrame, lit
+import daft
+from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
 from archetype.core.aio.async_interfaces import iAsyncUpdater, iAsyncStore
@@ -28,15 +29,23 @@ class AsyncUpdateManager(iAsyncUpdater):
     def __init__(self, store: iAsyncStore):
         self.store = store
 
-    async def update(self, df: DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
-        df = df.with_columns({"step": lit(step), "world_id": lit(world_id), "run_id": lit(run_id)})
+    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
+        df = df.with_columns({
+            "tick": lit(tick).cast(daft.DataType.uint32()),
+            "world_id": lit(world_id),
+            "run_id": lit(run_id),
+            "entity_id": col("entity_id").cast(daft.DataType.uint32()),
+        })
         try:
-            await self.store.append(sig, df, step, world_id, run_id)
+            await self.store.update(sig, df)
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 
     async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
         await self.store.materialize_spawns(spawn_cache, world_id, run_id)
 
-    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
-        await self.store.remove_entity(entity_id, sig, step, world_id, run_id)
+    async def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
+        await self.store.transition_entity(entity_id, old_sig, new_sig, new_data, tick, world_id, run_id)
+
+    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
+        await self.store.remove_entity(entity_id, sig, tick, world_id, run_id)

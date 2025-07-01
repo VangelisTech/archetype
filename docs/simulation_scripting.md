@@ -100,7 +100,7 @@ stats = asyncio.run(ep_world.run_episode(dt=0.1))
 You can query state at any time for analysis, using the world's query interface:
 
 ```python
-df = world.get_archetypes(step=10)
+df = world.get_archetypes(tick=10)
 # or async:
 df = await async_world.get_archetype_for_entity(entity_id, Position)
 ```
@@ -109,9 +109,9 @@ df = await async_world.get_archetype_for_entity(entity_id, Position)
 
 ## 6. **Persistence & Reproducibility**
 
-All entity/component updates, steps, and outputs are stored in Daft/LanceDB tables, enabling:
+All entity/component updates, ticks, and outputs are stored in Daft/LanceDB tables, enabling:
 
-- Time travel (querying any step)
+- Time travel (querying any tick)
 - Reproducible runs
 - Parallel/streaming execution
 

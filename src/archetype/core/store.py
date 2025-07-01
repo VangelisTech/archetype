@@ -117,7 +117,7 @@ class SyncStore(iStore):
         Materialize the spawn cache into the tables.
         """
         for sig, rows in spawn_cache.items():
-            # Coerce List of PyDicts to PyArrow table
+            # Coerce List of Dicts to PyArrow table
             pyarrow_schema = Archetype.get_archetype_schema(sig)
             empty_table = pyarrow_schema.empty_table()
             arrow_table = empty_table.from_pylist(rows)
@@ -135,32 +135,49 @@ class SyncStore(iStore):
                 raise e
 
 
-    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
+    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
         table = self._ensure_table(sig) # Ensure table exists
 
-        entity_df = table.to_dataframe().where(
+        df = table.read()
+        entity_df = df.where(
             (col("entity_id") == lit(entity_id)) &
-            (col("step") == lit(step)) &
+            (col("tick") == lit(tick)) &
             (col("world_id") == lit(world_id)) &
             (col("run_id") == lit(run_id))
         )
-        entity_df = entity_df.with_column(
-            "is_active",
-            lit(False)
-        )
-        try:
-            self.sess.sql(f"""
-                UPDATE {table.name}
-                SET is_active = FALSE
-                WHERE entity_id = {entity_id}
-                AND step = {step}
-                AND world_id = '{world_id}'
-                AND run_id = '{run_id}'
-            """)
-        except Exception as e:
-            raise e
+        
+        if entity_df.count_rows() > 0:
+            entity_df = entity_df.with_column("is_active", lit(False))
+            df = df.where(
+                (col("entity_id") != lit(entity_id)) |
+                (col("tick") != lit(tick)) |
+                (col("world_id") != lit(world_id)) |
+                (col("run_id") != lit(run_id))
+            )
+            df = df.concat(entity_df)
+            table.write(df, mode="overwrite")
 
-    def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None:
+    def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
+        """
+        Transition an entity from one archetype to another.
+        """
+        # 1. Remove from old archetype
+        self.remove_entity(entity_id, old_sig, tick, world_id, run_id)
+
+        # 2. Add to new archetype
+        pyarrow_schema = Archetype.get_archetype_schema(new_sig)
+        arrow_table = pyarrow_schema.empty_table().from_pylist([new_data])
+        df = daft.from_arrow(arrow_table)
+        self.append(new_sig, df, tick, world_id, run_id)
+
+    def update(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+        """
+        Update a table with a new dataframe.
+        """
+        table = self._ensure_table(sig)
+        table.write(df, mode="overwrite")
+
+    def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
         """
         Append a table with a new dataframe.
         """
@@ -170,7 +187,7 @@ class SyncStore(iStore):
             if self.debug:
                 df.collect()
                 df.show()
-                print(f"Appending {df.count_rows()} rows to table {table_name} for step {step}")
+                print(f"Appending {df.count_rows()} rows to table {table_name} for tick {tick}")
             table.append(df)
         except Exception as e:
             raise

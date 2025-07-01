@@ -16,6 +16,10 @@ from typing import Protocol, List, Type, Tuple, Dict, Optional, Any
 from daft import DataFrame
 import pyarrow as pa
 from lancedb.pydantic import LanceModel
+import hashlib
+from uuid import UUID
+from .command import Command
+
 
 class Component(LanceModel):
     """
@@ -63,11 +67,11 @@ class Archetype:
     BASE_SCHEMA = pa.schema([
         pa.field("world_id", pa.string(), nullable=False),
         pa.field("run_id", pa.string(), nullable=False),
-        pa.field("entity_id", pa.uint64(), nullable=False),
-        pa.field("step", pa.uint64(), nullable=False),
+        pa.field("entity_id", pa.uint32(), nullable=False),
+        pa.field("tick", pa.uint32(), nullable=False),
         pa.field("is_active", pa.bool_(), nullable=False),
     ])
-    PARTITION_KEYS = ["world_id", "run_id", "step"]
+    PARTITION_KEYS = ["world_id", "run_id", "tick"]
 
     def __init__(self, components: List[Component]):
         self.components = components
@@ -87,11 +91,23 @@ class Archetype:
 
     @staticmethod
     def get_name(sig: ArchetypeSignature) -> str:
-        """Generate a unique hash string for an archetype signature."""
-        hash_val = ""
-        for comp_type in sig:
-            hash_val += comp_type.__name__[0:3]
-        return "arch_" + hash_val
+        """
+        Generate a human-readable name for an archetype, including a schema hash.
+        The name combines sorted component names and an 8-character SHA256 hash
+        of the archetype's combined PyArrow schema, ensuring uniqueness and
+        indicating schema changes.
+        """
+        # Human-readable part: sorted component names
+        component_names = sorted([comp_type.__name__ for comp_type in sig])
+        readable_name = "_".join(component_names)
+
+        # Schema hash part: hash of the combined PyArrow schema
+        combined_schema = Archetype.get_archetype_schema(sig)
+        # Convert PyArrow schema to a JSON string for consistent hashing
+        schema_json = str(combined_schema)
+        schema_hash = hashlib.sha256(schema_json.encode()).hexdigest()[:8] # Take first 8 chars for brevity
+
+        return f"{readable_name}_s{schema_hash}"
 
     @staticmethod
     def get_archetype_schema(sig: ArchetypeSignature) -> pa.Schema:
@@ -105,6 +121,41 @@ class Archetype:
             archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
 
         return archetype_schema
+    
+    @staticmethod
+    def to_pydict_row(self,
+        entity_id: int,
+        tick: int,
+        components: List[Component],
+        world_id: str,
+        run_id: str
+    ) -> Dict[str, Any]:
+        """
+        Convert entity components to a row dictionary for archetype storage.
+
+        Args:
+            entity_id: The unique entity identifier
+            tick: The simulation tick
+            components: List of component instances
+            world_id: The world identifier
+            run_id: The run identifier
+
+        Returns:
+            Dict containing the row data for this entity
+        """
+        row_dict = {
+            "world_id": world_id,
+            "run_id": run_id,
+            "entity_id": entity_id,
+            "tick": tick,
+            "is_active": True
+        }
+
+        for c in components:
+            prefix = c.get_prefix()
+            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
+
+        return row_dict
 
 
 
@@ -114,20 +165,21 @@ class iProcessor(Protocol):
     def process(self, df: DataFrame, *args, **kwargs) -> DataFrame: ...
 
 class iStore(Protocol):
-    def add_entity(self, components: List[Component], step: int, world_id: str, run_id: str ) -> int: ...
-    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None: ...
+    def add_entity(self, components: List[Component], tick: int, world_id: str, run_id: str ) -> int: ...
+    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None: ...
     def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame: ...
-    def append(self, sig: ArchetypeSignature, df: DataFrame, step: int, world_id: str, run_id: str) -> None: ...
+    def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None: ...
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None: ...
+    def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None: ...
 
 class iQuerier(Protocol):
-    def get_archetype(self, sig: ArchetypeSignature, current_step: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]: ...
-    def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> DataFrame: ...
+    def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]: ...
+    def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame: ...
 
 class iUpdater(Protocol):
-    def update(self, df: DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None: ...
+    def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None: ...
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None: ...
-    def remove_entity(self, entity_id: int, step: int, world_id: str, run_id: str) -> None: ...
+    def remove_entity(self, entity_id: int, tick: int, world_id: str, run_id: str) -> None: ...
 class iSystem(Protocol):
     def add_processor(self, processor: iProcessor) -> None: ...
     def remove_processor(self, processor: iProcessor) -> None: ...
@@ -136,6 +188,7 @@ class iSystem(Protocol):
 class iWorld(Protocol):
     def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem): ...
     def step(self, dt: float): ...
-    def spawn(self, components: List[Component], step: Optional[int] = None) -> int: ...
-    def despawn(self, entity_id: int, step: Optional[int] = None) -> None: ...
+    def spawn(self, components: List[Component], tick: Optional[int] = None) -> int: ...
+    def despawn(self, entity_id: int, tick: Optional[int] = None) -> None: ...
     def remove(self, entity_id: int, comp_type: Type[Component]) -> None: ...
+
