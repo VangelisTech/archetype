@@ -12,20 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
-
-
 import daft
 from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
-from archetype.core.aio.async_interfaces import iAsyncUpdater, iAsyncStore
+from archetype.core.aio.async_interfaces import iAsyncUpdateManager, iAsyncStore
 from archetype.core.interfaces import ArchetypeSignature, Archetype
 
 logger = getLogger(__name__)
 
 
-class AsyncUpdateManager(iAsyncUpdater):
+class AsyncUpdateManager(iAsyncUpdateManager):
     def __init__(self, store: iAsyncStore):
         self.store = store
 
@@ -37,7 +34,7 @@ class AsyncUpdateManager(iAsyncUpdater):
             "entity_id": col("entity_id").cast(daft.DataType.uint32()),
         })
         try:
-            await self.store.update(sig, df)
+            await self.store.append(sig, df)
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 

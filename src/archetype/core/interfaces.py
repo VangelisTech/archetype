@@ -27,6 +27,24 @@ class Component(LanceModel):
     """
 
     @classmethod
+    def get_type_by_name(cls, name: str) -> Type["Component"]:
+        """Finds a Component subclass by its name."""
+        # This could be optimized with a cache if needed
+        for subclass in cls.__subclasses__():
+            if subclass.__name__ == name:
+                return subclass
+        raise ValueError(f"Component type '{name}' not found.")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Component":
+        """Create a component instance from a dictionary."""
+        component_type_name = data.pop("type", None)
+        if component_type_name:
+            ComponentType = cls.get_type_by_name(component_type_name)
+            return ComponentType(**data)
+        return cls(**data)
+
+    @classmethod
     def get_prefix(cls) -> str:
         """Generate a standardized prefix for this component type's fields."""
         return cls.__name__.lower() + "__"
@@ -90,6 +108,26 @@ class Archetype:
         return sig
 
     @staticmethod
+    def add_components(sig: ArchetypeSignature, components: List[Component]) -> ArchetypeSignature:
+        """
+        Generate a new archetype signature by adding components to an existing signature.
+        """
+        component_types = set(sig)
+        for c in components:
+            component_types.add(type(c))
+        return tuple(sorted(list(component_types), key=lambda t: t.__name__))
+
+    @staticmethod
+    def remove_components(sig: ArchetypeSignature, component_types: List[Type[Component]]) -> ArchetypeSignature:
+        """
+        Generate a new archetype signature by removing components from an existing signature.
+        """
+        existing_component_types = set(sig)
+        component_types_to_remove = set(component_types)
+        new_component_types = existing_component_types - component_types_to_remove
+        return tuple(sorted(list(new_component_types), key=lambda t: t.__name__))
+
+    @staticmethod
     def get_name(sig: ArchetypeSignature) -> str:
         """
         Generate a human-readable name for an archetype, including a schema hash.
@@ -123,7 +161,7 @@ class Archetype:
         return archetype_schema
     
     @staticmethod
-    def to_pydict_row(self,
+    def to_row_dict(
         entity_id: int,
         tick: int,
         components: List[Component],
@@ -158,7 +196,6 @@ class Archetype:
         return row_dict
 
 
-
 class iProcessor(Protocol):
     components: Tuple[Type[Component], ...] = None
     priority: int = 0
@@ -172,11 +209,11 @@ class iStore(Protocol):
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None: ...
     def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None: ...
 
-class iQuerier(Protocol):
+class iQueryManager(Protocol):
     def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> Tuple[ArchetypeSignature, DataFrame]: ...
     def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame: ...
 
-class iUpdater(Protocol):
+class iUpdateManager(Protocol):
     def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None: ...
     def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None: ...
     def remove_entity(self, entity_id: int, tick: int, world_id: str, run_id: str) -> None: ...
@@ -185,10 +222,24 @@ class iSystem(Protocol):
     def remove_processor(self, processor: iProcessor) -> None: ...
     def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame: ...
 
+
+
 class iWorld(Protocol):
-    def __init__(self, store: iStore, querier: iQuerier, updater: iUpdater, system: iSystem): ...
+    def __init__(self, store: iStore, querier: iQueryManager, updater: iUpdateManager, system: iSystem): ...
     def step(self, dt: float): ...
     def spawn(self, components: List[Component], tick: Optional[int] = None) -> int: ...
     def despawn(self, entity_id: int, tick: Optional[int] = None) -> None: ...
     def remove(self, entity_id: int, comp_type: Type[Component]) -> None: ...
+
+
+class iCommandBroker(Protocol):
+    def enqueue(self, cmd: "Command") -> None: ...
+    def enqueue_bulk(self, cmds: List["Command"]) -> None: ...
+    def dequeue_due(self, *, tick: int, limit: int = 1_000) -> List[Command]: ...
+    def ack(self, cmd_ids: List[UUID]) -> None: ...
+
+
+
+
+
 

@@ -16,10 +16,10 @@ from ..base import BaseProcessor
 from daft import DataFrame
 import asyncio
 
-from archetype.core.command import EcsContext
+from archetype.core.aio.async_interfaces import iBroker
 
 class AsyncProcessor(BaseProcessor):
-    async def process(self, df: DataFrame, context: "EcsContext", semaphore: asyncio.Semaphore, *args, **kwargs) -> DataFrame:
+    async def process(self, df: DataFrame, broker: "iBroker", semaphore: asyncio.Semaphore, *args, **kwargs) -> DataFrame:
         """
         Async version of process method. Override this in subclasses.
         """

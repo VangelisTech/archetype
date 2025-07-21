@@ -16,11 +16,11 @@ import daft
 from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
-from archetype.core.interfaces import iUpdater, iStore, ArchetypeSignature, Archetype
+from archetype.core.interfaces import iUpdateManager, iStore, ArchetypeSignature, Archetype
 
 logger = getLogger(__name__)
 
-class UpdateManager(iUpdater):
+class UpdateManager(iUpdateManager):
     def __init__(self, store: iStore):
         self.store = store
 

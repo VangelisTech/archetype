@@ -9,29 +9,19 @@ dependencies = [
     "pyarrow>=16.0.0",
     "lancedb>=0.22.0",
     "python-ulid>=3.0.0",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
-    "ipykernel",
+    "uuid-utils>=0.11.0"
 ]
-
 
 [project.optional-dependencies]
-benchmark = [
-    "esper",
-]
-ray = [
-    "ray>=2.47.0",
-]
-llm = [
-    "vllm>=0.7.2",
-    "ray[serve,llm]>=2.47.0",
-    "huggingface-hub>=0.26.0",
-    "transformers>=4.49.0",
-    "accelerate>=0.29.0",
-    "datasets>=3.6.0",
-    "mcp[cli]",
-
+ray        = ["ray[default]>=2.47"]
+inference  = ["ray[serve,llm]>=2.47", "vllm>=0.7.2", "huggingface-hub>=0.26", "transformers>=4.49", "accelerate>=0.29", "datasets>=3.6"]
+api        = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+benchmark  = ["esper>=2.45"]
+kafka      = ["aiokafka>=0.10"]
+dev        = [
+    "pytest>=8.3", "pytest-asyncio>=0.26", "ipykernel",
+    "black>=24.4", "ruff>=0.4"
 ]
 
 

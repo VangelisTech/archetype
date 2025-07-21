@@ -16,9 +16,9 @@ from typing import Tuple, Optional
 
 from daft import DataFrame
 from archetype.core.interfaces import ArchetypeSignature
-from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncQuerier
+from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncQueryManager
 
-class AsyncQueryManager(iAsyncQuerier):
+class AsyncQueryManager(iAsyncQueryManager):
     def __init__(self, store: iAsyncStore, debug: bool = False):
         self._store = store
         self._debug = debug

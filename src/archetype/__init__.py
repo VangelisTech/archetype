@@ -2,8 +2,7 @@
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
+# You may
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
@@ -12,8 +11,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from archetype.core import make_simple_world, Component, Processor, processor
-from archetype.core.aio import make_async_world, AsyncProcessor
-__all__ = ["make_simple_world", "Component", "Processor", "processor", "make_async_world", "AsyncProcessor"]
+from .core.interfaces import Component
+from .core.processor import Processor
+from .core.aio.async_processor import AsyncProcessor
+from .core.orchestrator import WorldOrchestrator
 
+
+def init_orchestrator(
+    uri: str,
+    namespace: str = "archetypes",
+    catalog: Optional[Any] = None,
+    io_config: Optional[Any] = None,
+    debug: bool = False,
+) -> WorldOrchestrator:
+    """
+    Initialize the Archetype Orchestrator with the given parameters.
+    
+    :param uri: The URI for the catalog.
+    :param namespace: The namespace for the archetypes.
+    :param catalog: Optional catalog instance.
+    :param io_config: Optional IO configuration.
+    :param debug: Enable debug mode.
+    :return: An instance of WorldOrchestrator.
+    """
+    from .core.orchestrator import WorldOrchestrator
+    return WorldOrchestrator(uri, namespace, catalog, io_config, debug)
 

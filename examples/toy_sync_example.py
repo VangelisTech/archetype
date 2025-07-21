@@ -22,8 +22,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 
-from archetype.core import processor, Processor, Component # noqa: F401
-from archetype import make_simple_world # noqa: F401
+from archetype import Processor, Component # noqa: F401
+import archetype
 
 from daft import DataFrame, col # noqa: F401
 
@@ -38,31 +38,39 @@ class Velocity(Component):
     vy: float
 
 
-@processor(Position, Velocity, priority=1)
 class MovementProcessor(Processor):
+    components = (Position, Velocity)
+    priority = 1
+
     def process(self, df: DataFrame, dt: float) -> DataFrame: # Assuming df is passed by the system
-        df = df.with_columns({
+        df = df.with_columns({ 
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
         return df
 
-def main(uri, debug=False):
-    world = make_simple_world(uri, debug=debug)
-    world.add_processor(MovementProcessor())
+def main(uri, debug):
+    sim = archetype.init(uri, debug=debug)
+    world_id = sim.spawn_world(uri, debug=debug,is_async=False)
+    
+    # Add Movement Processor to the World
+    sim.add_processor_to_world(world_id, MovementProcessor())
+
+    # Spawn 10 Entities in the world
+    for i in range(10):
+        sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=i, vy=i))
 
     for i in range(10):
-        world.spawn(Position(x=0, y=0), Velocity(vx=i, vy=i))
+        sim.step_world(world_id, dt=0.01)
 
-    for i in range(10):
-        world.step(dt=0.01)
-
-    return world
+    
 
 
 if __name__ == "__main__":
     uri = ".archetype_examples/toy_sync_data"
-    if not os.path.exists(uri):
+    
+    if not os.path.exists(uri): 
         os.makedirs(uri)
+
 
     world = main(uri)

@@ -47,15 +47,17 @@ class SyncStore(iStore):
     """
     def __init__(self,
         uri: str,
-        namespace: Optional[str] = None,
-        catalog: Optional[Catalog] = None,
-        io_config: Optional[IOConfig] = None,
+        namespace: str = "archetypes",
+        catalog: Catalog,
+        io_config: IOConfig,
         debug: bool = False,
     ):
-
+        self.uri = uri
         self.namespace = namespace or "archetypes"
         self.debug = debug
 
+        if 
+        self.io_config = io_config or IOConfig()
 
 
         # Initialize the catalog
@@ -75,10 +77,6 @@ class SyncStore(iStore):
         self.sess.create_namespace_if_not_exists(self.namespace)
         self.sess.set_namespace(self.namespace)
 
-    #--------------------------------------------------------------------------
-    # Helper methods
-    #--------------------------------------------------------------------------
-
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
@@ -90,13 +88,9 @@ class SyncStore(iStore):
         try:
             table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
         except Exception as e:
-            raise
+            raise Exception(f"Error creating table {hash_val}: {e}")
 
         return table
-
-    # ---------------------------------------------------------------------
-    # Querying
-    # ---------------------------------------------------------------------
 
     def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
         """
@@ -104,78 +98,8 @@ class SyncStore(iStore):
         """
         table: Table = self._ensure_table(sig)
         df: DataFrame = table.read() # Cheap
-        if self.debug:
-            df.show() # Not Cheap
         return df
 
-    #--------------------------------------------------------------------------
-    # Updating
-    #--------------------------------------------------------------------------
-
-    def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
-        """
-        Materialize the spawn cache into the tables.
-        """
-        for sig, rows in spawn_cache.items():
-            # Coerce List of Dicts to PyArrow table
-            pyarrow_schema = Archetype.get_archetype_schema(sig)
-            empty_table = pyarrow_schema.empty_table()
-            arrow_table = empty_table.from_pylist(rows)
-            df = daft.from_arrow(arrow_table)
-
-            if self.debug:
-                print(f"SyncStore: Getting archetype for {sig}")
-                df.show()
-
-            # Write to the table
-            table = self._ensure_table(sig)
-            try:
-                table.append(df)
-            except Exception as e:
-                raise e
-
-
-    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
-        table = self._ensure_table(sig) # Ensure table exists
-
-        df = table.read()
-        entity_df = df.where(
-            (col("entity_id") == lit(entity_id)) &
-            (col("tick") == lit(tick)) &
-            (col("world_id") == lit(world_id)) &
-            (col("run_id") == lit(run_id))
-        )
-        
-        if entity_df.count_rows() > 0:
-            entity_df = entity_df.with_column("is_active", lit(False))
-            df = df.where(
-                (col("entity_id") != lit(entity_id)) |
-                (col("tick") != lit(tick)) |
-                (col("world_id") != lit(world_id)) |
-                (col("run_id") != lit(run_id))
-            )
-            df = df.concat(entity_df)
-            table.write(df, mode="overwrite")
-
-    def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
-        """
-        Transition an entity from one archetype to another.
-        """
-        # 1. Remove from old archetype
-        self.remove_entity(entity_id, old_sig, tick, world_id, run_id)
-
-        # 2. Add to new archetype
-        pyarrow_schema = Archetype.get_archetype_schema(new_sig)
-        arrow_table = pyarrow_schema.empty_table().from_pylist([new_data])
-        df = daft.from_arrow(arrow_table)
-        self.append(new_sig, df, tick, world_id, run_id)
-
-    def update(self, sig: ArchetypeSignature, df: DataFrame) -> None:
-        """
-        Update a table with a new dataframe.
-        """
-        table = self._ensure_table(sig)
-        table.write(df, mode="overwrite")
 
     def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
         """
@@ -191,3 +115,4 @@ class SyncStore(iStore):
             table.append(df)
         except Exception as e:
             raise
+

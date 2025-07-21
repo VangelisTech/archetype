@@ -19,7 +19,6 @@ from daft import DataFrame
 from archetype.core.base import BaseSystem
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
-from archetype.core.base import EcsContext
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,6 @@ class SyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        context: "EcsContext",
         *args,
         **kwargs
     ) -> DataFrame:

@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from daft import DataFrame
-from .interfaces import iQuerier, iStore, ArchetypeSignature
+from .interfaces import iQueryManager, iStore, ArchetypeSignature
 
-class QueryManager(iQuerier):
+class QueryManager(iQueryManager):
     def __init__(self, store: iStore, debug: bool = False):
         self._store = store
         self._debug = debug

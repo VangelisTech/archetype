@@ -19,7 +19,7 @@ import os
 
 import daft
 from daft import DataFrame, col, lit
-from daft.catalog import Catalog
+from daft.session import Session
 from daft.io import IOConfig
 from daft.io.object_store_options import io_config_to_storage_options
 
@@ -50,22 +50,20 @@ class AsyncStore(iAsyncStore):
     """
     def __init__(self,
         uri: str,
-        namespace: Optional[str] = None,
-        catalog: Optional[Catalog] = None,
+        namespace: str,
+        session: Session,
         io_config: Optional[IOConfig] = None,
         debug: bool = False,
     ):
-
-        self.namespace = namespace or "archetypes"
-        self.debug = debug
         self.uri = uri
-        self.catalog = catalog
+        self.namespace = namespace 
+        self.debug = debug
+
+        self.session.
+
         self.io_config = io_config
         self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
         self.lancedb = None  # Initialize lancedb connection
-
-
-
 
     #--------------------------------------------------------------------------
     # Helper methods
@@ -118,7 +116,7 @@ class AsyncStore(iAsyncStore):
         async_table = await self._ensure_table(sig)
 
         try:
-            # Use LanceDB query instead of daft.read_lance to avoid duplicate column errors
+    
             lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
             if os.path.exists(lance_uri):
                 # Query with LanceDB directly
@@ -139,78 +137,19 @@ class AsyncStore(iAsyncStore):
 
         return df
 
-    #--------------------------------------------------------------------------
-    # Updating
-    #--------------------------------------------------------------------------
-
-    async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
-        """
-        Materialize the spawn cache into the tables.
-        """
-        for sig, rows in spawn_cache.items():
-            # Coerce List of PyDicts to PyArrow table
-            pyarrow_schema = Archetype.get_archetype_schema(sig)
-            empty_table = pyarrow_schema.empty_table()
-            arrow_table = empty_table.from_pylist(rows)
-            df = daft.from_arrow(arrow_table)
-
-            # Write to the table
-            async_table = await self._ensure_table(sig)
-            try:
-                materialized_arrow_table = df.to_arrow()
-                await async_table.add(materialized_arrow_table, mode="append")
-                logger.debug(f"Appended {len(rows)} rows to table {async_table.name}")
-            except Exception as e:
-                logger.error(f"Error appending {len(rows)} rows to table {async_table.name}: {e}")
-                raise
-
-    async def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
-        """
-        Transition an entity from one archetype to another.
-        """
-        # 1. Remove from old archetype
-        await self.remove_entity(entity_id, old_sig, tick, world_id, run_id)
-
-        # 2. Add to new archetype
-        pyarrow_schema = Archetype.get_archetype_schema(new_sig)
-        arrow_table = pyarrow_schema.empty_table().from_pylist([new_data])
-        df = daft.from_arrow(arrow_table)
-        await self.append(new_sig, df, tick, world_id, run_id)
-
-    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
-        async_table = await self._ensure_table(sig) # Ensure table exists
-        try:
-            await async_table.update(
-                updates={"is_active": False},
-                where=f"entity_id = {entity_id} AND tick = {tick} AND world_id = '{world_id}' AND run_id = '{run_id}'",
-            )
-            logger.debug(f"Marked entity {entity_id} as inactive in archetype table {async_table.name} for tick {tick}.")
-        except Exception as e:
-            logger.error(f"Error marking entity {entity_id} as inactive in archetype table {async_table.name} for tick {tick}: {e}")
-            raise
-
-    async def update(self, sig: ArchetypeSignature, df: DataFrame) -> None:
-        """
-        Update a table with a new dataframe.
-        """
-        async_table = await self._ensure_table(sig)
-        await async_table.add(df.to_arrow(), mode="overwrite")
-
-    async def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
         Append a table with a new dataframe.
         """
 
-        async_table = await self._ensure_table(sig)
+        async_table = await self.ensure_table(sig)
         table_name = async_table.name
         try:
             start_time = time.time()
-
-            # Update the tick column to the new tick value
-            df_with_tick = df.with_column("tick", lit(tick))
+            arrow_table = df.to_arrow()
 
             # Convert to arrow and add to the table
-            await async_table.add(df_with_tick.to_arrow(), mode="append")
+            await async_table.add(, mode="append")
             end_time = time.time()
             logger.info(f"Appended dataframe to table {table_name} for tick {tick} in {end_time - start_time} seconds")
         except Exception as e:

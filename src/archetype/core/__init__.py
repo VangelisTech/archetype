@@ -19,48 +19,20 @@ from .system import SyncSystem
 from .world import SyncWorld
 from .processor import Processor, processor
 from .interfaces import Component, ArchetypeSignature, Archetype
+from .aio.async_broker import AsyncCommandQueue
+from .command import Command 
 
-
-from daft.catalog import Catalog
-
-def make_simple_world(
-        uri: str,
-        world_id: str | None = None,
-        run_id: str | None = None,
-        namespace: str | None = None,
-        catalog: Catalog | None = None,
-        debug: bool = False
-    ) -> SyncWorld:
-
-    store = SyncStore(
-        uri = uri,
-        namespace = namespace,
-        catalog = catalog,
-        debug = debug
-    )
-    querier = QueryManager(store=store, debug=debug)
-    updater = UpdateManager(store=store)
-    system  = SyncSystem()
-
-    world = SyncWorld(
-        querier=querier,
-        updater=updater,
-        system=system,
-        world_id=world_id,
-        run_id=run_id,
-        debug=debug,
-    )
-    return world
 
 __all__ = [
     "Component",
     "ArchetypeSignature",
     "Archetype",
-    "make_simple_world",
     "SyncWorld",
     "SyncStore",
     "SyncSystem",
     "Processor",
     "processor",
     "Component",
+    "QueryManager",
+    "UpdateManager",
 ]

@@ -16,28 +16,15 @@ from typing import Tuple, Type
 from daft import DataFrame
 from archetype.core.interfaces import Component
 from archetype.core.base import BaseProcessor
-from archetype.core.command import EcsContext
 
 
 class Processor(BaseProcessor):
     priority: int = 0
     components: Tuple[Type[Component], ...] = None
 
-    def process(self, df: DataFrame, context: "EcsContext", *args, **kwargs) -> DataFrame:
+    def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
         """
         Processor method are provided the state of the archetype at the current tick.
         Processors are not responsible for updating the tick value.
         """
         return df
-
-def processor(*component_types: Type[Component], priority: int = 0):
-    """
-    Class decorator to assign the list of components a Processor reads/writes.
-    It also injects the `__init__`, `_fetch_state`, and `process` methods into the class.
-
-    """
-    def wrap(cls: Type[Processor]):
-        cls.components = component_types
-        cls.priority = priority
-        return cls
-    return wrap

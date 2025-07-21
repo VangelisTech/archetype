@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, status
-from uuid import UUID
+import uuid_utils as uuid 
 from archetype.core.aio.async_command import Command
 from .deps import get_broker, get_actor_ctx
 
@@ -9,3 +9,4 @@ router = APIRouter(tags=["commands"])
 async def enqueue_cmd(cmd: Command, broker=Depends(get_broker), ctx=Depends(get_actor_ctx)):
     await broker.enqueue(cmd, ctx)
     return {"id": str(cmd.id), "queued": True}
+

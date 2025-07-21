@@ -14,20 +14,17 @@
 
 import sys
 import os
+import asyncio
 
 # Ensure the parent directory is in sys.path so 'archetype' can be imported
 notebook_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-project_root = os.path.abspath(os.path.join(notebook_dir, "..", "src"))
+project_root = os.path.abspath(os.path.join(notebook_dir, "..","src"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-from archetype.core import processor, Component # noqa: F401
-from archetype.core.aio import make_async_world, AsyncProcessor # noqa: F401
-
-from daft import DataFrame, col # noqa: F401
-import asyncio # noqa: F401
-
+import archetype
+from archetype import Component, processor, AsyncProcessor
+from daft import DataFrame, col
 
 # Define Components
 class Position(Component):
@@ -38,10 +35,9 @@ class Velocity(Component):
     vx: float
     vy: float
 
-
 @processor(Position, Velocity, priority=1)
 class MovementProcessor(AsyncProcessor):
-    async def process(self, df: DataFrame, semaphore: asyncio.Semaphore, dt: float) -> DataFrame: # Assuming df is passed by the system
+    async def process(self, df: DataFrame, dt: float) -> DataFrame:
         df = df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
@@ -49,18 +45,34 @@ class MovementProcessor(AsyncProcessor):
         return df
 
 async def main(uri, debug=False):
-    world = make_async_world(uri, debug=debug)
-    world.add_processor(MovementProcessor())
+    world = await archetype.create_world(uri, debug=debug)
+    await world.add_processor(MovementProcessor())
 
     for i in range(10):
-        world.spawn(Position(x=0, y=0), Velocity(vx=i, vy=i))
-
+        await world.create_entity(Position(x=0, y=0), Velocity(vx=i, vy=i))
 
     for i in range(10):
         await world.step(dt=0.01)
 
-    return world
+        # Demo Runtime Interatvitiy
+        if i == 3: 
+            # Dynamically add a new component and processor
+            class NewComponent(Component):
+                value: int
 
+            @processor(Position, Velocity, NewComponent, priority=2)
+            class NewProcessor(AsyncProcessor):
+                async def process(self, df: DataFrame, dt: float):
+                    df = df.with_columns({"new_component__value": col("position__x") + col("velocity__vx")})
+                    return df
+            
+            # Command World 
+            await world.create_entity(Position(x=0, y=0), Velocity(vx=1, vy=1), NewComponent(value=42))
+            await world.add_component(1, NewComponent(value=100))
+            await world.add_processor(NewProcessor())
+
+
+    return world
 
 if __name__ == "__main__":
     uri = ".archetype_examples/toy_async_data"

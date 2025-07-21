@@ -13,17 +13,31 @@
 # limitations under the License.
 
 import time
-from typing import List, Optional, Tuple, Set, Dict, Any
+from typing import List, Optional, Tuple, Set, Dict, Any, Type
 from itertools import count
 
 from daft import DataFrame
 
-from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQuerier, iUpdater
+from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQueryManager, iUpdateManager
 from archetype.core.processor import Processor
 from archetype.core.base import BaseWorld
-from archetype.core.command import EcsContext
 
+from logging import getLogger
 
+logger = getLogger(__name__)
+
+import time
+from typing import List, Optional, Tuple, Set, Dict, Any, Type
+from itertools import count
+import ulid
+
+from daft import DataFrame
+
+from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQueryManager, iUpdateManager
+from archetype.core.processor import Processor
+from archetype.core.base import BaseWorld
+from archetype.core.broker import SyncCommandQueue
+from archetype.core.command import Command
 
 from logging import getLogger
 
@@ -31,8 +45,8 @@ logger = getLogger(__name__)
 
 class SyncWorld(BaseWorld):
     def __init__(self,
-        querier: iQuerier,
-        updater: iUpdater,
+        querier: iQueryManager,
+        updater: iUpdateManager,
         system: iSystem,
         world_id: str | None = None,
         run_id: str | None = None,
@@ -43,119 +57,154 @@ class SyncWorld(BaseWorld):
         self.system = system
 
         # Set World Properties
-        self.cmd_queue = EcsCommandQueue(world_id=world_id, run_id=run_id)
+        self.world_id = world_id or f"world_{str(ulid.ULID())}"
+        self.run_id = run_id or f"run_{str(ulid.ULID())}"
+        self.tick = 0
+        self.debug = debug
+
+        # Initialize internal caches
+        self._entity2sig: Dict[int, ArchetypeSignature] = {}
+        self._entity_counter = count(start=1)
+        self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
+        self._despawn_cache: Dict[ArchetypeSignature, List[int]] = {}
+        self._transmute_cache: Dict[Tuple[ArchetypeSignature, ArchetypeSignature], List[int]] = {}
 
     def step(self, *args, **kwargs):
         """
-        Execute one simulation tick with individual archetype processing.
+        Execute one simulation tick by processing commands and then running systems.
         """
-        # Materialize any pending spawns before the first tick
         start = time.time()
-        
 
+        # 1. Dequeue and process commands
+        due_commands = self.cmd_queue.dequeue_due(tick=self.tick)
+        self._process_commands(due_commands)
 
-        # Process all entities for each archetype signature
-        for sig in set(self._entity2sig.values()):
-            cmd_df = self.materialize_cmds()
-            last_tick_df = self.get_archetype(sig, [self.tick - 1]) # Wont execute on tick 0 (No Active Sigs)
-            
-            processed_df = self.execute(df, sig, self.context, *args, **kwargs)
+        # 2. Materialize state changes from commands
+        self._materialize_changes()
 
-            # Apply ECS Context Queued Changes 
-            applicable_spawns = [c in self.context._spawn_queue for c in sig if ]
-
-            self.updater.update(processed_df, sig, self.tick, self.world_id, self.run_id)
+        # 3. Execute systems on active archetypes
+        for sig in self.get_active_signatures():
+            df = self.get_archetype(sig, self.tick -1)
+            if df is not None and df.count_rows() > 0:
+                processed_df = self.execute(df, sig, *args, **kwargs)
+                self.update(processed_df, sig, self.tick)
 
         end = time.time()
         logger.info(f"Sync tick {self.tick} done in {end-start:.3f}s")
 
         self.tick += 1
 
-    def materialize_spawns(self, spawn_queue: List[Tuple[Component,...]]) -> int:
-        """Create a new entity with these components."""
+    def get_active_signatures(self) -> Set[ArchetypeSignature]:
+        """Return the set of active archetype signatures."""
+        return set(self._entity2sig.values())
+
+    def _process_commands(self, commands: List[Command]):
+        """Route commands to their respective handlers."""
+        for cmd in commands:
+            handler = getattr(self, f"_{cmd.op}", None)
+            if handler:
+                handler(cmd.payload)
+            else:
+                logger.warning(f"No handler for command op: {cmd.op}")
+
+    def _materialize_changes(self):
+        """Flush the internal caches to the updater."""
+        if self._spawn_cache:
+            self.updater.materialize_spawns(self._spawn_cache, self.world_id, self.run_id)
+            self._spawn_cache.clear()
+
+        if self._despawn_cache:
+            for sig, entity_ids in self._despawn_cache.items():
+                for entity_id in entity_ids:
+                    self.updater.remove_entity(entity_id, sig, self.tick, self.world_id, self.run_id)
+            self._despawn_cache.clear()
+
+        if self._transmute_cache:
+            for (old_sig, new_sig), entity_ids in self._transmute_cache.items():
+                # This is a simplification. A real implementation would need to
+                # fetch the entity's data, create the new component data, and
+                # then call a transition function on the updater.
+                # For now, we'll just log it.
+                logger.info(f"Transmuting entities {entity_ids} from {old_sig} to {new_sig}")
+            self._transmute_cache.clear()
+
+    # ---------------------------------------------------------------------
+    # Internal Command Handlers
+    # ---------------------------------------------------------------------
+
+    def _create_entity(self, payload: Dict):
+        components = [Component.from_dict(c) for c in payload["components"]]
         
-        spawns_pylist = [ 
-            Archetype(components).to_pydict_row(
-                entity_id=next(self._entity_counter),
-                  tick=self.tick, 
-                  world_id=self.world_id, 
-                  run_id=self.run_id
-                )
-            for components in spawn_queue if Archetype(components) in sig
-        ]
-        spawns_df = DataFrame.from_pylist([row for row in spawns_pylist if row.keys() in])
-
-        for components in spawn_queue:
-            entity_id = next(self._entity_counter)
-            archetype =  # Just using the Archetype as a convenience class here
-            archetype 
-            
-
-        spawned_df = DataFrame.from_pylist(new_rows)
-        self._entity2sig[entity_id] = sig
-
-        return entity_id
-    
-    def _spawn(self, *components: Component) -> int:
-        """Create a new entity with these components."""
-
-        # Get the entity id and signature
         entity_id = next(self._entity_counter)
-        sig = Archetype.sig_from_components(components) # Just using the Archetype as a convenience class here
-        self._entity2sig[entity_id] = sig
+        archetype = Archetype(components)
+        self._entity2sig[entity_id] = archetype.sig
 
-        # Create the row dict
-        row_dict = self._new_archetype_row(entity_id, tick or self.tick, components, self.world_id, self.run_id)
+        row_dict = Archetype.to_row_dict(
+            entity_id=entity_id,
+            tick=self.tick,
+            components=components,
+            world_id=self.world_id,
+            run_id=self.run_id
+        )
 
-        # Add row to the spawn cache
-        if sig not in self._spawn_cache:
-            self._spawn_cache[sig] = []
-        self._spawn_cache[sig].append(row_dict)
-        
+        if archetype.sig not in self._spawn_cache:
+            self._spawn_cache[archetype.sig] = []
+        self._spawn_cache[archetype.sig].append(row_dict)
 
-    def _despawn(self, entity_id: int) -> None:
-        """Mark an entity dead (is_active=False)."""
-        sig = self._entity2sig[entity_id]
+    def _delete_entity(self, payload: Dict):
+        entity_id = payload["entity_id"]
+        sig = self._entity2sig.pop(entity_id, None)
+        if sig:
+            if sig not in self._despawn_cache:
+                self._despawn_cache[sig] = []
+            self._despawn_cache[sig].append(entity_id)
 
-  
+    def _add_component(self, payload: Dict):
+        entity_id = payload["entity_id"]
+        components = [Component.from_dict(c) for c in payload["components"]]
+        sig = self._entity2sig.get(entity_id)
+        if sig:
+            new_sig = Archetype.add_components(sig, components)
+            if new_sig != sig:
+                self._entity2sig[entity_id] = new_sig
+                if (sig, new_sig) not in self._transmute_cache:
+                    self._transmute_cache[(sig, new_sig)] = []
+                self._transmute_cache[(sig, new_sig)].append(entity_id)
+
+    def _remove_component(self, payload: Dict):
+        entity_id = payload["entity_id"]
+        # This requires a way to get the type from the name.
+        # This is a simplification for now.
+        component_types = [Component.get_type_by_name(name) for name in payload["component_types"]]
+        sig = self._entity2sig.get(entity_id)
+        if sig:
+            new_sig = Archetype.remove_components(sig, component_types)
+            if new_sig != sig:
+                self._entity2sig[entity_id] = new_sig
+                if (sig, new_sig) not in self._transmute_cache:
+                    self._transmute_cache[(sig, new_sig)] = []
+                self._transmute_cache[(sig, new_sig)].append(entity_id)
+
+    def _add_processor(self, payload: Dict):
+        self.system.add_processor(payload["processor"])
+
+    def _remove_processor(self, payload: Dict):
+        self.system.remove_processor(payload["processor"])
+
     # ---------------------------------------------------------------------
-    # UpdateManager Facade
+    # Facade Methods for Querier, Updater, System
     # ---------------------------------------------------------------------
 
-    def update(self, archetypes: List[Tuple[ArchetypeSignature, DataFrame]], tick: int):
-        self.updater.update(archetypes, tick, self.world_id, self.run_id)
+    def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int):
+        self.updater.update(df, sig, tick, self.world_id, self.run_id)
 
-    
-
-    # ---------------------------------------------------------------------
-    # QueryManager Facade
-    # ---------------------------------------------------------------------
-
-    def get_archetype(self, sig, tick: List[int]) -> List[Tuple[ArchetypeSignature, DataFrame]]:
-        """Fetch the latest live state of these components at the given tick."""
+    def get_archetype(self, sig, tick: int) -> DataFrame:
         return self.querier.get_archetype(sig, tick, self.world_id, self.run_id)
 
     def archetype_for_entity(self, entity_id: int, tick: int) -> DataFrame:
-        """Get a archetype for an entity."""
         sig = self._entity2sig[entity_id]
         return self.querier.get_archetype_for_entity(entity_id, sig, tick, self.world_id, self.run_id)
 
-    def get_component(self, component_type: Type[Component]):
-        
-
-
-    # ---------------------------------------------------------------------
-    # System Facade
-    # ---------------------------------------------------------------------
-
-    def add_processor(self, proc: Processor) -> None:
-        """Install a Processor into the sequential system."""
-        self.system.add_processor(proc)
-
-    def remove_processor(self, proc: Processor) -> None:
-        """Remove a Processor from the sequential system."""
-        self.system.remove_processor(proc)
-
     def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
-        """Execute the system for a single tick."""
         return self.system.execute(df, sig, *args, **kwargs)
+

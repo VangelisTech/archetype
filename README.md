@@ -1,6 +1,6 @@
 # Archetype
 
-**A high-performance Entity Component System (ECS) for large scale simulation**
+**An AI-Native Entity Component System (ECS) for large scale simulation and data engineering**
 
 ![Archetype Diagram](./assets/archetype_diagram.png)
 
@@ -12,26 +12,30 @@ Archetype is an ECS simulation engine designed for scalability from local develo
 - The [archetype pattern](https://ajmmertens.medium.com/building-an-ecs-2-archetypes-and-vectorization-fe21690805f9), as described by AJ Mertens helped me understand how the archetype pattern leverages entity creation definitions based on exact combinations of components for powerful data processing isolation and decoupling.
 - [This Daft Article on Scaling LLM inference](https://blog.getdaft.io/p/we-cloned-over-15000-repos-to-find?subscribe_prompt=free) and accompanying repository [Sashimi4Talent](https://github.com/everettVT/Sashimi4Talent/tree/main) introduced me to semaphore usage patterns for the async module.
 
----
+
+## Roadmap
+- [v0.1 - Full Async Multi-World Simulations Engine] 
+- [v0.2 - MCP Support, Integration with Agent Terminals]
+- [v0.3 - Native LLM Processor and Component Composition](#llm-processors)
+  - AsyncOpenAI with API Keys
+  - AsyncOpenAI with vLLM & Ray
+  - Structured Generation w/ guidance
+  - MCP compatible Tools, Resources
+- [v0.4 - Graph Module ](#graph-module)
+  - Graph System 
+    - Graph Processor nodes and edges for arbitrary processor DAGs
+    - Extending priority system with igraph topological sort  
+    - integrating w/ Ray Compiled Graphs
+  - Graph Stores 
+    - Knowledge Graphs (storing edge lists in lancedb)
+- Orchestration, Coordination, Communication Patterns
+- RL
+
+
 ## Contents
 - **Simulation Script Usage Patterns**
   - [Sync Usage](#basic-usage)
-  - [Async Usage](#async-usage)
-  - [LLM Processors (coming v0.2)](#llm-processors)
-    - AsyncOpenAI with API Keys
-    - AsyncOpenAI with vLLM & Ray
-    - Structured Generation w/ guidance
-    - MCP compatible Tools, Resources
-  - [Graph Module (coming v0.3)](#graph-module)
-    - Graph System 
-      - Graph Processor nodes and edges
-      - Extending priority system with igraph topological sort  
-      - integrating w/ Ray Compiled Graphs
-    - Graph Stores 
-      - Knowledge Graphs
-  - Cognition Module 
-  - Orchestration, Coordination, Communication  
-  - RL 
+
 
 
 
@@ -149,6 +153,13 @@ v0.3
 
 
 
+## Star History
 
+<a href="https://www.star-history.com/#vangelistech/archetype&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=vangelistech/archetype&type=Date&theme=dark" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=vangelistech/archetype&type=Date" />
+ </picture>
+</a>
 
 

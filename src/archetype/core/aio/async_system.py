@@ -16,11 +16,11 @@ import asyncio
 from typing import List, Tuple
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem
+from archetype.core.base import BaseSystem, BaseCommandQueue
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.store import ArchetypeSignature
-from archetype.core.aio.command import AsyncEcsCommandQueue
+from archetype.core.aio.async_broker import iBroker
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ class AsyncSystem(BaseSystem):
         df: DataFrame,
         sig: ArchetypeSignature,
         semaphore: asyncio.Semaphore,
-        cmd_queue: "AsyncEcsCommandQueue",
+        cmd_queue: Union[BaseCommandQueue, iBroker],
         *args,
         **kwargs
     ) -> DataFrame:
@@ -67,13 +67,19 @@ class AsyncSystem(BaseSystem):
 
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
+            
+            # Attach semaphore, command queue, and other singletons to the processor instance.
+            proc_instance.semaphore = semaphore
+            proc_instance.cmd_queue = cmd_queue
+
+
             if set(proc_instance.components).issubset(set(sig)):
 
                 # Gracefully handle errors in processors.
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     if isinstance(proc_instance, AsyncProcessor):
-                        df = await proc_instance.process(df, semaphore, *args, **kwargs)
+                        df = await proc_instance.process(df, broker, semaphore, *args, **kwargs)
                     elif isinstance(proc_instance, SyncProcessor):
                         df = proc_instance.process(df, *args, **kwargs)
                 except Exception as e:
