@@ -16,12 +16,6 @@ import sys
 import os
 import asyncio
 
-# Ensure the parent directory is in sys.path so 'archetype' can be imported
-notebook_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-project_root = os.path.abspath(os.path.join(notebook_dir, "..","src"))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 import archetype
 from archetype import Component, processor, AsyncProcessor
 from daft import DataFrame, col

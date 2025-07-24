@@ -19,7 +19,7 @@ import asyncio
 from archetype.core.aio.async_interfaces import iBroker
 
 class AsyncProcessor(BaseProcessor):
-    async def process(self, df: DataFrame, broker: "iBroker", semaphore: asyncio.Semaphore, *args, **kwargs) -> DataFrame:
+    async def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
         """
         Async version of process method. Override this in subclasses.
         """

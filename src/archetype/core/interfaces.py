@@ -108,24 +108,19 @@ class Archetype:
         return sig
 
     @staticmethod
-    def add_components(sig: ArchetypeSignature, components: List[Component]) -> ArchetypeSignature:
+    def add_components(sig: ArchetypeSignature, component_types: List[Component]) -> ArchetypeSignature:
         """
         Generate a new archetype signature by adding components to an existing signature.
         """
-        component_types = set(sig)
-        for c in components:
-            component_types.add(type(c))
-        return tuple(sorted(list(component_types), key=lambda t: t.__name__))
+        return tuple(sorted(list(set(sig) + set(component_types)), key=lambda t: t.__name__))
 
     @staticmethod
     def remove_components(sig: ArchetypeSignature, component_types: List[Type[Component]]) -> ArchetypeSignature:
         """
         Generate a new archetype signature by removing components from an existing signature.
         """
-        existing_component_types = set(sig)
-        component_types_to_remove = set(component_types)
-        new_component_types = existing_component_types - component_types_to_remove
-        return tuple(sorted(list(new_component_types), key=lambda t: t.__name__))
+
+        return tuple(sorted(list(set(sig) - set(component_types)), key=lambda t: t.__name__))
 
     @staticmethod
     def get_name(sig: ArchetypeSignature) -> str:

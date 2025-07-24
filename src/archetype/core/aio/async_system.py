@@ -16,11 +16,12 @@ import asyncio
 from typing import List, Tuple
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem, BaseCommandQueue
+from archetype.core.base import BaseSystem
 from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.aio.async_interfaces import iAsyncCommandBroker
 from archetype.core.store import ArchetypeSignature
-from archetype.core.aio.async_broker import iBroker
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,10 @@ class AsyncSystem(BaseSystem):
     per-archetype parallelism.
     """
 
-    def __init__(self):
+    def __init__(self, semaphore: asyncio.Semaphore, broker: iAsyncCommandBroker):
         self.processors: List[AsyncProcessor] = []
+        self.broker: iAsyncCommandBroker = broker 
+        self.semaphore: asyncio.Semaphore = semaphore
 
     def add_processor(self, proc: AsyncProcessor):
         """Add an async processor to the system."""
@@ -53,8 +56,6 @@ class AsyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        semaphore: asyncio.Semaphore,
-        cmd_queue: Union[BaseCommandQueue, iBroker],
         *args,
         **kwargs
     ) -> DataFrame:
@@ -69,8 +70,8 @@ class AsyncSystem(BaseSystem):
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             
             # Attach semaphore, command queue, and other singletons to the processor instance.
-            proc_instance.semaphore = semaphore
-            proc_instance.cmd_queue = cmd_queue
+            proc_instance.semaphore = self.semaphore
+            proc_instance.broker = self.broker
 
 
             if set(proc_instance.components).issubset(set(sig)):

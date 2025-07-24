@@ -21,9 +21,7 @@ import daft
 from daft import col, DataFrame, Schema
 from daft.expressions import lit
 from daft.session import Session
-from daft.catalog import Catalog, Table
-from daft.io import IOConfig
-from pyiceberg.catalog.sql import SqlCatalog
+from daft.catalog import Table
 import time
 
 # Internals
@@ -47,35 +45,12 @@ class SyncStore(iStore):
     """
     def __init__(self,
         uri: str,
-        namespace: str = "archetypes",
-        catalog: Catalog,
-        io_config: IOConfig,
+        session: Session,
         debug: bool = False,
     ):
         self.uri = uri
-        self.namespace = namespace or "archetypes"
         self.debug = debug
-
-        if 
-        self.io_config = io_config or IOConfig()
-
-
-        # Initialize the catalog
-        self.catalog = catalog or Catalog.from_iceberg(
-            SqlCatalog(
-                "default",
-                **{
-                    "uri": f"sqlite:///{uri}/catalog.db",
-                    "warehouse": f"file://{uri}",
-                },
-            )
-        )
-
-        # Initialize the session
-        self.sess = Session()
-        self.sess.attach(object=self.catalog)
-        self.sess.create_namespace_if_not_exists(self.namespace)
-        self.sess.set_namespace(self.namespace)
+        self.sess = session
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """

@@ -36,7 +36,6 @@ class SyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        *args,
         **kwargs
     ) -> DataFrame:
         """
@@ -50,7 +49,7 @@ class SyncSystem(BaseSystem):
             if set(proc_instance.components).issubset(set(sig)):
                 try:
                     assert isinstance(proc_instance, SyncProcessor)
-                    df = proc_instance.process(df, context, *args, **kwargs)
+                    df = proc_instance.process(df, **kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
                     df = None

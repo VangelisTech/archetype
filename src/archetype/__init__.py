@@ -15,15 +15,31 @@ from .core.interfaces import Component
 from .core.processor import Processor
 from .core.aio.async_processor import AsyncProcessor
 from .core.orchestrator import WorldOrchestrator
+from .core.aio.async_broker import AsyncCommandBroker
 
 
-def init_orchestrator(
-    uri: str,
-    namespace: str = "archetypes",
-    catalog: Optional[Any] = None,
-    io_config: Optional[Any] = None,
-    debug: bool = False,
+def __init__(
+    uri: str = None,
+    namespace: str = None,
+    catalog: Catalog = None, 
+    io_config: IOConfig = None, 
+    debug: bool = False, 
 ) -> WorldOrchestrator:
+        # 
+    uri = uri or ".archetype_data"
+    namespace = namespace or "archetypes"
+    catalog = catalog or Catalog.from_iceberg(
+        SqlCatalog(
+            "default",
+            **{
+                "uri": f"sqlite:///{uri}/catalog.db",
+                "warehouse": f"file://{uri}",
+            },
+        )
+    )
+    io_config = io_config or IOConfig()
+    debug = debug
+
     """
     Initialize the Archetype Orchestrator with the given parameters.
     

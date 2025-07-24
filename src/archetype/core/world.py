@@ -67,9 +67,8 @@ class SyncWorld(BaseWorld):
         self._entity_counter = count(start=1)
         self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
         self._despawn_cache: Dict[ArchetypeSignature, List[int]] = {}
-        self._transmute_cache: Dict[Tuple[ArchetypeSignature, ArchetypeSignature], List[int]] = {}
 
-    def step(self, *args, **kwargs):
+    def step(self, **kwargs):
         """
         Execute one simulation tick by processing commands and then running systems.
         """
@@ -86,7 +85,7 @@ class SyncWorld(BaseWorld):
         for sig in self.get_active_signatures():
             df = self.get_archetype(sig, self.tick -1)
             if df is not None and df.count_rows() > 0:
-                processed_df = self.execute(df, sig, *args, **kwargs)
+                processed_df = self.execute(df, sig, **kwargs)
                 self.update(processed_df, sig, self.tick)
 
         end = time.time()
@@ -119,22 +118,11 @@ class SyncWorld(BaseWorld):
                     self.updater.remove_entity(entity_id, sig, self.tick, self.world_id, self.run_id)
             self._despawn_cache.clear()
 
-        if self._transmute_cache:
-            for (old_sig, new_sig), entity_ids in self._transmute_cache.items():
-                # This is a simplification. A real implementation would need to
-                # fetch the entity's data, create the new component data, and
-                # then call a transition function on the updater.
-                # For now, we'll just log it.
-                logger.info(f"Transmuting entities {entity_ids} from {old_sig} to {new_sig}")
-            self._transmute_cache.clear()
-
     # ---------------------------------------------------------------------
-    # Internal Command Handlers
+    # World Mutation Commands
     # ---------------------------------------------------------------------
 
-    def _create_entity(self, payload: Dict):
-        components = [Component.from_dict(c) for c in payload["components"]]
-        
+    def create_entity(self, components: List[Component]):
         entity_id = next(self._entity_counter)
         archetype = Archetype(components)
         self._entity2sig[entity_id] = archetype.sig
@@ -151,7 +139,7 @@ class SyncWorld(BaseWorld):
             self._spawn_cache[archetype.sig] = []
         self._spawn_cache[archetype.sig].append(row_dict)
 
-    def _delete_entity(self, payload: Dict):
+    def delete_entity(self, payload: Dict):
         entity_id = payload["entity_id"]
         sig = self._entity2sig.pop(entity_id, None)
         if sig:
@@ -159,7 +147,7 @@ class SyncWorld(BaseWorld):
                 self._despawn_cache[sig] = []
             self._despawn_cache[sig].append(entity_id)
 
-    def _add_component(self, payload: Dict):
+    def add_component(self, payload: Dict):
         entity_id = payload["entity_id"]
         components = [Component.from_dict(c) for c in payload["components"]]
         sig = self._entity2sig.get(entity_id)
@@ -171,7 +159,7 @@ class SyncWorld(BaseWorld):
                     self._transmute_cache[(sig, new_sig)] = []
                 self._transmute_cache[(sig, new_sig)].append(entity_id)
 
-    def _remove_component(self, payload: Dict):
+    def remove_component(self, payload: Dict):
         entity_id = payload["entity_id"]
         # This requires a way to get the type from the name.
         # This is a simplification for now.
@@ -185,10 +173,10 @@ class SyncWorld(BaseWorld):
                     self._transmute_cache[(sig, new_sig)] = []
                 self._transmute_cache[(sig, new_sig)].append(entity_id)
 
-    def _add_processor(self, payload: Dict):
+    def add_processor(self, payload: Dict):
         self.system.add_processor(payload["processor"])
 
-    def _remove_processor(self, payload: Dict):
+    def remove_processor(self, payload: Dict):
         self.system.remove_processor(payload["processor"])
 
     # ---------------------------------------------------------------------

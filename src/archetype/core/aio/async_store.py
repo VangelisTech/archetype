@@ -12,29 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List, Dict, Tuple, Any
-
-import time
-import os
-
-import daft
-from daft import DataFrame, col, lit
-from daft.session import Session
-from daft.io import IOConfig
-from daft.io.object_store_options import io_config_to_storage_options
-
-import lancedb
-from lancedb.index import Bitmap, BTree
-
-from archetype.core.aio.async_interfaces import iAsyncStore
-from archetype.core.interfaces import Archetype, ArchetypeSignature
-
+# Standard Python Libraries
+from typing import Dict, Tuple, List, Optional, Any
 from logging import getLogger
+
+# Technologies
+import daft
+from daft import col, DataFrame, Schema
+from daft.expressions import lit
+from daft.session import Session
+from daft.catalog import Table
+import time
+
+# Internals
+from archetype.core.interfaces import Archetype, ArchetypeSignature, 
+from archetype.core.aio.interfaces import iAsyncStore
 
 logger = getLogger(__name__)
 
-
-
+# Store classes
 class AsyncStore(iAsyncStore):
     """
     The ArchetypeStore is a component that manages the storage and retrieval of archetype tables.
@@ -50,124 +46,56 @@ class AsyncStore(iAsyncStore):
     """
     def __init__(self,
         uri: str,
-        namespace: str,
         session: Session,
-        io_config: Optional[IOConfig] = None,
-        debug: bool = False,
+        debug: bool = False
     ):
         self.uri = uri
-        self.namespace = namespace 
         self.debug = debug
+        self.sess = session
 
-        self.session.
-
-        self.io_config = io_config
-        self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
-        self.lancedb = None  # Initialize lancedb connection
-
-    #--------------------------------------------------------------------------
-    # Helper methods
-    #--------------------------------------------------------------------------
-    async def _ensure_table(self, sig: ArchetypeSignature) -> lancedb.AsyncTable:
+    def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
         Returns the table name (hash_val).
         """
-        table_name = Archetype.get_name(sig)
+        hash_val = Archetype.get_name(sig)
         pyarrow_schema = Archetype.get_archetype_schema(sig)
-
-        if self.lancedb is None:
-            self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
-
-        if table_name in await self.lancedb.table_names():
-            try:
-                async_table = await self.lancedb.open_table(table_name)
-            except Exception as e:
-                raise Exception(f"Error opening LanceDB table {table_name}: {e}")
-
-            return async_table
-
-        else:
-            try:
-                async_table = await self.lancedb.create_table(
-                    name=table_name,
-                    schema=pyarrow_schema,
-                    storage_options= io_config_to_storage_options(self.io_config) if self.io_config else None,
-                    exist_ok=True
-                )
-                await async_table.create_index(column="entity_id", config= BTree(), replace=True)
-                await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
-                await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
-                await async_table.create_index(column="tick", config= BTree(), replace=True)
-            except Exception as e:
-                logger.error(f"Error creating LanceDB table {table_name}: {e}")
-                raise Exception(f"Error creating LanceDB table {table_name}: {e}")
-
-        return async_table
-
-
-
-    # ---------------------------------------------------------------------
-    # Querying
-    # ---------------------------------------------------------------------
-    async def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
-
-        table_name = Archetype.get_name(sig)
-        async_table = await self._ensure_table(sig)
-
+        daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
         try:
-    
-            lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
-            if os.path.exists(lance_uri):
-                # Query with LanceDB directly
-                filtered_arrow = await async_table.query().where(
-                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND tick = {tick} AND is_active = true"
-                ).to_arrow()
-
-                # Convert to Daft DataFrame
-                df = daft.from_arrow(filtered_arrow)
-            else:
-                # Return empty dataframe with correct schema if table doesn't exist yet
-                schema = Archetype.get_archetype_schema(sig)
-                df = daft.from_arrow(schema.empty_table())
-
+            table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema, )
         except Exception as e:
-            logger.error(f"Error reading archetype table {table_name}: {e}")
-            raise e
+            raise Exception(f"Error creating table {hash_val}: {e}")
+
+        return table
+
+    async def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
+        """
+        Get all archetypes.
+        """
+        table: Table = self._ensure_table(sig)
+        df: DataFrame = await table.read() # Cheap, Lazy
+        
+        if self.debug:
+            debug_df = df.limit(10)
+            debug_df.collect()
+            debug_df.show(10)
 
         return df
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+
+    async def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
         """
         Append a table with a new dataframe.
         """
-
-        async_table = await self.ensure_table(sig)
-        table_name = async_table.name
+        table_name = Archetype.get_name(sig)
+        table = self.sess.get_table(table_name)
         try:
-            start_time = time.time()
-            arrow_table = df.to_arrow()
-
-            # Convert to arrow and add to the table
-            await async_table.add(, mode="append")
-            end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} for tick {tick} in {end_time - start_time} seconds")
+            if self.debug:
+                df.collect()
+                df.show()
+                print(f"Appending {df.count_rows()} rows to table {table_name} for tick {tick}")
+            
+            await table.append(df)
         except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name} for tick {tick}: {e}")
-            raise
+            raise 
 
-        if self.debug:
-            logger.info(f"Appending dataframe to table {table_name}")
-            df_with_tick.show()
-            print(f"Appending {df_with_tick.count_rows()} rows to table {table_name} for tick {tick}")
-
-    async def optimize_tables(self) -> None:
-        """
-        Optimize all tables in the LanceDB catalog.
-        """
-        for table_name in await self.lancedb.table_names():
-            try:
-                async_table = await self.lancedb.open_table(table_name)
-                async_table.optimize(retrain=False)
-            except Exception as e:
-                raise Exception(f"Error optimizing table {table_name}: {e}")

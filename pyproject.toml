@@ -1,7 +1,7 @@
 [project]
 name = "archetype"
 version = "0.1.0"
-description = "Lazy Distributed Dataframe-Based ECS Simulation Engine using Daft for processing and LanceDB for storage"
+description = "AI Native Simulation Engine leveraging Daft, LanceDB, and Ray for distributed scalability."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -10,15 +10,15 @@ dependencies = [
     "lancedb>=0.22.0",
     "python-ulid>=3.0.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
-    "uuid-utils>=0.11.0"
+    "uuid-utils>=0.11.0",
+    "igraph"
 ]
 
 [project.optional-dependencies]
-ray        = ["ray[default]>=2.47"]
+ray        = ["ray[default]>=2.47", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
+llm        = ["openai"]
 inference  = ["ray[serve,llm]>=2.47", "vllm>=0.7.2", "huggingface-hub>=0.26", "transformers>=4.49", "accelerate>=0.29", "datasets>=3.6"]
-api        = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 benchmark  = ["esper>=2.45"]
-kafka      = ["aiokafka>=0.10"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "ipykernel",
     "black>=24.4", "ruff>=0.4"

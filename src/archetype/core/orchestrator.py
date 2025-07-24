@@ -1,6 +1,6 @@
-from typing import Dict, List
-from uuid import uu
-from ulid import ULID
+from typing import Dict, List, Union, Optional 
+import uuid_utils as uuid
+from uuid_utils import UUID, uuid7
 
 import daft
 from daft import col, DataFrame, Schema
@@ -11,11 +11,11 @@ from daft.io import IOConfig
 from pyiceberg.catalog.sql import SqlCatalog
 
 from archetype.core import SyncStore, SyncSystem, SyncWorld, QueryManager, UpdateManager
-from archetype.core.interfaces import Component, ArchetypeSignature, Archetype
+from archetype.core.interfaces import Component, ArchetypeSignature, Archetype, iSystem, iQueryManager, iUpdateManager, iWorld, iStore
 from archetype.core.base import BaseWorld, BaseProcessor
 from archetype.core.aio.async_interfaces import iAsyncWorld, iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager, iAsyncSystem, iAsyncCommandBroker
 from archetype.core.aio import AsyncStore, AsyncQueryManager, AsyncUpdateManager, AsyncSystem, AsyncWorld
-
+from archetype.core.command import Command
 
 
 
@@ -33,58 +33,43 @@ class WorldOrchestrator:
     """
 
     def __init__(self,
-        uri: str = None,
-        namespace: str = None,
-        catalog: Catalog = None, 
-        io_config: IOConfig = None, 
-        debug: bool = False
-    ):
-        self.uri = uri or ".archetype_data"
-        self.namespace = namespace or "archetypes"
-        self.catalog = catalog or Catalog.from_iceberg(
-            SqlCatalog(
-                "default",
-                **{
-                    "uri": f"sqlite:///{self.uri}/catalog.db",
-                    "warehouse": f"file://{self.uri}",
-                },
-            )
-        )
-        self.io_config = io_config or IOConfig()
-        self.debug = debug
-        
+        uri: str,
+        namespace: str,
+        is_async: bool,
+        debug: bool, 
+        dry_run: bool,
+        catalog: Catalog, 
+        io_config: IOConfig, 
+        querier: Union[iQueryManager, iAsyncQueryManager],
+        updater: Union[iUpdateManager, iAsyncUpdateManager],
+    ):        
         # Initialize Singletons
-        self.async_store:   iAsyncStore = AsyncStore(uri=uri, namespace=namespace, catalog=catalog, io_config=io_config,debug=debug)
-        self.async_querier: iAsyncQueryManager = AsyncQueryManager(self.store)
-        self.async_updater: iAsyncUpdateManager = AsyncUpdateManager(self.store)
+        self.querier = querier
+        self.updater = updater
 
         # Init world dict
         self._worlds: Dict[str, iAsyncWorld] = {}
 
-    def spawn_world(self, world_id: str = None, run_id: str = None, is_async: bool = True) -> BaseWorld:
-        """Returns SyncWorld instances or adds AsyncWorld instances to internal map"""
+    def spawn_world(self, world_id: UUID, run_id: UUID = None, is_async: bool = True) -> BaseWorld:
+        """Returns a new World instance. AsyncWorlds are added to internal world dictionary, while SyncWorlds are returned unmanaged."""
         if is_async: 
             world = AsyncWorld(
-                world_id =  world_id or f"world_{str(ULID())}",
-                run_id = run_id or f"run_{str(ULID())}",
-                querier = self.async_querier,
-                updater = self.async_updater,
-                system = system or AsyncSystem() 
-
+                world_id =  world_id or uuid7(),
+                run_id = ,
+                querier = self.querier,
+                updater = self.updater,
+                system = AsyncSystem()
             )
 
             # Add async world to worlds dict
             self._worlds[world_id] = world
         else: 
-            sync_store = SyncStore(
-                uri = self.uri,
-
             world = SyncWorld(
                 world_id = world_id or f"world_{str(ulid.ULID())}",
                 run_id = run_id or f"run_{str(ulid.ULID())}",
-                querier = QueryManager(sync_store),
-                updater = UpdateManager(sync_store),
-                system = AsyncSystem()
+                querier = self.querier,
+                updater = self.updater,
+                system = SyncSystem()
             )
             # Dont add sync world to worlds dict, as it is super slow and is more meant for debugging and learning purposes
 
@@ -98,8 +83,69 @@ class WorldOrchestrator:
     def list_worlds(self) -> List[str]:
         return self._worlds.keys()
 
-    async def step_world(self, world_id: str):
-        return await self._worlds[world_id].step()
+    async def run_worlds(self,  steps: int, world_ids: Optional[List[str]] = None):
+        if not world_ids:
+            world_ids = self._worlds.keys()
+        
+        for self._worlds[world_ids]:
+
+        for step in steps:
+            await self._worlds[world_ids].step()
+
+    # ---------------------------------------------------------------------
+    # Command Handling
+    # ---------------------------------------------------------------------
+
+    async def apply_commands(self, world_id: str, cmds: List[Command]) -> List[UUID]:
+        """
+        Dequeues commands and populates the in-memory caches to create the plan for the tick.
+        This includes pre-fetching data for transmutations.
+        """       
+        # Seperate State and Behavior mutations
+        processed_cmd_ids = [c.id for c in cmds]
+        data_cmds = [c for c in cmds if not c.op.endswith("_processor")]
+        proc_cmds = [c for c in cmds if c.op.endswith("_processor")]
+
+        # Apply data commands to populate spawn, despawn, and transmute caches
+        for cmd in data_cmds:
+            handler = getattr(self, f"_handle_{cmd.op}", None)
+            if handler:
+                await handler(world_id, cmd.payload)
+
+
+        # Apply processor commands directly (hot-swapping for next tick)
+        for cmd in proc_cmds:
+            handler = getattr(self, f"_handle_{cmd.op}", None)
+            if handler:
+                await handler(world_id, cmd.payload)
+
+        return processed_cmd_ids
+    
+    async def _handle_create_entity(self, world_id: str, payload: Dict) -> int:
+        "Handle Entity Creation Delegation to designated world"
+        components = [Component.from_dict(c) for c in payload["components"]]
+        return await self._worlds[world_id].create_entity(components)
+
+    async def _handle_remove_entity(self, world_id: str, payload: Dict):
+        return await self._worlds[world_id].remove_entity(payload["entity_id"])
+
+    async def _handle_add_component(self, world_id: str, payload: Dict):
+        entity_id = payload["entity_id"]
+        components = [Component.from_dict(c) for c in payload["components"]]
+
+        return await self._worlds[world_id].add_component(entity_id,components)
+
+    async def _handle_remove_component(self, world_id: str, payload: Dict):
+        entity_id = payload["entity_id"]
+        component_types_to_remove = [Component.get_type_by_name(name) for name in payload["component_types"]]
+
+        return await self._worlds[world_id].remove_component(entity_id, component_types_to_remove)
+
+    async def _handle_add_processor(self, world_id: str, payload: Dict):
+        await self._worlds[world_id].add_processor(payload["processor"])
+
+    async def _handle_remove_processor(self, world_id: str, payload: Dict):
+        await self._worlds[world_id].remove_processor(payload["processor"])
 
 
 
