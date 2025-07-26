@@ -14,7 +14,7 @@
 
 from .async_world import AsyncWorld
 from .async_system import AsyncSystem
-from .async_store import AsyncStore
+from ..lance.async_lancedb_store import AsyncStore
 from .async_querier import AsyncQueryManager 
 from .async_updater import AsyncUpdateManager 
 from .async_broker import AsyncCommandBroker

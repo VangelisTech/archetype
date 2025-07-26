@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from .routers import command, world, admin
-from archetype.core.aio.async_command import AsyncCommandQueue
+from archetype.src.archetype.core.aio.async_broker import AsyncCommandBroker
 import ray
 
-broker = AsyncCommandQueue()  # swap for RayBroker in prod
+broker = AsyncCommandBroker()  # swap for RayBroker in prod
 app = FastAPI(title="Archetype Broker API")
 
 @app.on_event("startup")

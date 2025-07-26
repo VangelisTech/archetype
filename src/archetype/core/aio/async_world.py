@@ -103,9 +103,25 @@ class AsyncWorld(BaseWorld):
         """Get the union of all archetypes that need processing this tick."""
         active_sigs = set(self._entity2sig.values())
         spawned_sigs = set(self._spawn_cache.keys())
-        transmute_sigs = {old_sig for old_sig, _ in self._transmute_cache} | \
-                         {new_sig for _, new_sig in self._transmute_cache}
-        return active_sigs | spawned_sigs | transmute_sigs
+        return active_sigs | spawned_sigs 
+    
+    def materialize_cached_mutations(self, df: DataFrame, sig: ArchetypeSignature):
+        if self._despawn_cache[sig]:
+            entities_to_despawn = self._despawn_cache[sig]
+            df = df.with_column('is_active', 
+                col('entity_id').is_in(entities_to_despawn).if_else(lit(False),col('is_active'))
+            )
+
+        # Handle Spawns
+        if self._spawn_cache[sig]:
+            rows = self._spawn_cache[sig]
+            pyarrow_schema = Archetype.get_archetype_schema(sig)
+            empty_table = pyarrow_schema.empty_table()
+            arrow_table = empty_table.from_pylist(rows)
+            spawns_df = daft.from_arrow(arrow_table)
+            df.concat(spawns_df)
+
+        return df
 
     async def _run_archetype(self, sig: ArchetypeSignature, *args, **kwargs) -> Tuple[DataFrame, ArchetypeSignature]:
         """
@@ -116,7 +132,8 @@ class AsyncWorld(BaseWorld):
             # 1. Fetch previous state
             df = await self.get_archetype(sig, self.tick - 1)
 
-            # 
+            # 2. Materialize Mutations
+            df = await self.materialize_cached_mutations(df, sig)
 
             # 4. Execute Processors for this archetype via system 
             df = await self.execute(df, sig, *args, **kwargs)
@@ -126,11 +143,10 @@ class AsyncWorld(BaseWorld):
 
             return df, sig
         
+        
     def _clear_caches(self):
         self._spawn_cache.clear()
         self._despawn_cache.clear()
-        self._add_component_cache.clear()
-        self._remove_component_cache.clear()
 
     # ---------------------------------------------------------------------
     # World Mutation Commands
@@ -161,8 +177,6 @@ class AsyncWorld(BaseWorld):
     # ---------------------------------------------------------------------
     # Updater, Querier, System Facade methods
     # ---------------------------------------------------------------------
-
-   
     async def get_archetype(self, sig: ArchetypeSignature, tick: int) -> DataFrame:
         """Get an archetype by signature and tick."""
         return await self.querier.get_archetype(
