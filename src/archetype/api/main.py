@@ -1,6 +1,6 @@
 from fastapi import FastAPI
-from .routers import command, world, admin
-from archetype.src.archetype.core.aio.async_broker import AsyncCommandBroker
+from .routes import command, world, admin
+from archetype.app.broker import AsyncCommandBroker
 import ray
 
 broker = AsyncCommandBroker()  # swap for RayBroker in prod

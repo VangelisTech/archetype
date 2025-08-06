@@ -27,7 +27,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from archetype.core import Component, processor
-from archetype.core.aio import (AsyncProcessor, AsyncWorld, AsyncSystem,
+from archetype.core.async import (AsyncProcessor, AsyncWorld, AsyncSystem,
                                 AsyncStore, AsyncQuerier, AsyncUpdater,
                                 AsyncCommandQueue)
 

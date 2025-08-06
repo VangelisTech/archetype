@@ -16,8 +16,7 @@ import sys
 import os
 import asyncio
 
-import archetype
-from archetype import Component, processor, AsyncProcessor
+from archetype.core import Component, AsyncProcessor
 from daft import DataFrame, col
 
 # Define Components
@@ -29,8 +28,11 @@ class Velocity(Component):
     vx: float
     vy: float
 
-@processor(Position, Velocity, priority=1)
+
 class MovementProcessor(AsyncProcessor):
+    components = [Position, Velocity]
+    priority = 1
+    
     async def process(self, df: DataFrame, dt: float) -> DataFrame:
         df = df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
@@ -49,7 +51,7 @@ async def main(uri, debug=False):
         await world.step(dt=0.01)
 
         # Demo Runtime Interatvitiy
-        if i == 3: 
+        if i // 3 == 0: 
             # Dynamically add a new component and processor
             class NewComponent(Component):
                 value: int

@@ -1,32 +1,20 @@
-# Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from typing import Dict, Any, Literal
-from uuid import UUID
-import uuid_utils as uuid
-from itertools import count
+from typing import Dict, Any
+from uuid_utils import UUID
+from pydantic import BaseModel, Field, field_serializer, FieldSerializationInfo
+import uuid
 import json
-
-from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 import pyarrow as pa
+from typing import Literal
 
-_SEQ = count()          # global tie-break counter
+# Global sequence counter for command ordering
+_SEQ = count()
+
 
 
 class Command(BaseModel):
     id: UUID                       = Field(default_factory=uuid.uuid7())
     tick: int                      = 0
-    actor_id: UUID                 = Field(default_factory=uuid.uuid7())
+    actor_id: UUID
     op: Literal[
         "create_entity",
         "delete_entity",

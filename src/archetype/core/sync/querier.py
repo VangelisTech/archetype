@@ -13,34 +13,27 @@
 # limitations under the License.
 
 from daft import DataFrame
-from .interfaces import iQueryManager, iStore, ArchetypeSignature
+from ..interfaces import iQueryManager, iStore, ArchetypeSignature
 
 class QueryManager(iQueryManager):
     def __init__(self, store: iStore, debug: bool = False):
         self._store = store
         self._debug = debug
-
+    
     def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         """
-        Get archetype data for a specific signature and tick.
+        Get all archetypes that contain all of the specified component types.
         """
-        df = self._store.get_archetype_df(sig)
-        tick = max(0, tick - 1)
-
-        # Filter by tick, world_id, and run_id
-        df = df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id) \
-               .where(df["tick"] == tick) \
-               .where(df["is_active"])
-
-        if self._debug:
-            print(f"QueryManager: Getting archetype for {sig} at tick {tick} for world {world_id} and run {run_id}")
-            df.show()
-
-        return df
+        # TODO: add role/ctx checks for data access control
+        return self._store.get_archetype_df(sig, tick, world_id, run_id)
 
     def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
-        """Get archetype data for a specific entity."""
-        df = self.get_archetype(sig, tick, world_id, run_id)
-
+        """Get a component for an entity."""
+        df = self.get_archetype(sig, tick, world_id=world_id, run_id=run_id)
         return df.where(df["entity_id"] == entity_id)
+    
+    def get_component_for_entity(self, component_type: type, sig: ArchetypeSignature,  tick: int, world_id: str, run_id: str) -> DataFrame:
+        """
+        Get a component by type, merging state from across all archetypes
+        """
+        raise NotImplementedError

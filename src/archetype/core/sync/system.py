@@ -17,7 +17,7 @@ import logging
 from daft import DataFrame
 
 from archetype.core.base import BaseSystem
-from archetype.core.processor import Processor as SyncProcessor
+from archetype.src.archetype.core.sync.processor import Processor as SyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
 
 logger = logging.getLogger(__name__)

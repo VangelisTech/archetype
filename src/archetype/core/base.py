@@ -12,22 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Type, Optional, Dict, Tuple, List, Set
+from typing import Any, Type, Optional, List, Set, Tuple
 from abc import ABC, abstractmethod
-from itertools import count
 
 import daft
-import ulid
+from uuid_utils import UUID
 
-from archetype.core.interfaces import Component, ArchetypeSignature
-from archetype.core.command import Command
-from archetype.core.auth import ActorCtx
-
+from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.archetype import Component
 
 class BaseProcessor(ABC):
     """
     Abstract base class for Processor implementations.
     """
+    priority: int = 10
+    components: Tuple[Type[Component], ...] = ()
+
     @abstractmethod
     def process(self, df: daft.DataFrame, *args, **kwargs) -> daft.DataFrame:
         """Process the DataFrame."""
@@ -63,54 +63,7 @@ class BaseSystem(ABC):
         """
         raise NotImplementedError
 
-class BaseWorld(ABC):
-    """
-    Abstract base class for World implementations with shared functionality.
-    Contains common logic for entity management, spawn caching, and world state.
-    """
-    @abstractmethod
-    def step(self, *args, **kwargs) -> None:
-        raise NotImplementedError
 
-    @property
-    @abstractmethod
-    def active_signatures(self) -> Set[Any]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_entity(self, *components: Component, step: Optional[int] = None) -> int:
-        raise NotImplementedError
-
-    @abstractmethod
-    def delete_entity(self, entity_id: int, step: Optional[int] = None) -> None:
-        raise NotImplementedError
-    
-    @abstractmethod
-    def add_component(self, entity_id: int, component: Component, step: Optional[int] = None) -> None:
-        """
-        Adds a component to an entity.
-        """
-        raise NotImplementedError
-    
-    @abstractmethod
-    def remove_component(self, entity_id: int, component_type: Type[Component], step: Optional[int] = None) -> None:
-        """        Removes a component from an entity.
-        """
-        raise NotImplementedError
-    
-    @abstractmethod
-    def add_processor(self, processor: BaseProcessor) -> None:
-        """
-        Adds a processor to the world.
-        """
-        raise NotImplementedError
-    
-    @abstractmethod
-    def remove_processor(self, processor_type: Type[BaseProcessor]) -> None:
-        """
-        Removes all processors of a specific type from the world.
-        """
-        raise NotImplementedError
     
 class BaseStore(ABC):
     """
@@ -162,7 +115,62 @@ class BaseUpdater(ABC):
     def update(self, df: daft.DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
         raise NotImplementedError
 
+class BaseWorld(ABC):
+    """
+    Abstract base class for World implementations with shared functionality.
+    Contains common logic for entity management, spawn caching, and world state.
+    """
+    def __init__(self, name: str, world_id: UUID, querier: BaseQuerier, updater: BaseUpdater, system: BaseSystem):
+        self.name = name
+        self.world_id = world_id
+        self.querier = querier
+        self.updater = updater
+        self.system = system
 
+    @abstractmethod
+    def step(self, *args, **kwargs) -> None:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def active_signatures(self) -> Set[Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_entity(self, *components: Component, step: Optional[int] = None) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_entity(self, entity_id: int, step: Optional[int] = None) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def add_component(self, entity_id: int, component: Component, step: Optional[int] = None) -> None:
+        """
+        Adds a component to an entity.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def remove_component(self, entity_id: int, component_type: Type[Component], step: Optional[int] = None) -> None:
+        """        Removes a component from an entity.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def add_processor(self, processor: BaseProcessor) -> None:
+        """
+        Adds a processor to the world.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def remove_processor(self, processor_type: Type[BaseProcessor]) -> None:
+        """
+        Removes all processors of a specific type from the world.
+        """
+        raise NotImplementedError
+    
 class BaseCommandBroker(ABC): 
     """
     Abstract base class for Broker implementations.
@@ -187,3 +195,5 @@ class BaseCommandBroker(ABC):
     def ack(self, world_id: str, cmd_id: str) -> None:
         """Acknowledge that a command has been processed."""
         raise NotImplementedError
+    
+

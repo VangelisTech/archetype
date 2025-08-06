@@ -27,7 +27,8 @@ import lancedb
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.aio.async_interfaces import iAsyncStore
-from archetype.core.interfaces import Archetype, ArchetypeSignature
+from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.archetype import Archetype
 
 from logging import getLogger
 
@@ -58,6 +59,7 @@ class AsyncLancedbStore(iAsyncStore):
         self.uri = uri
         self.namespace = namespace 
         self.debug = debug
+        self.session = session
 
         self.io_config = io_config
         self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
@@ -140,25 +142,30 @@ class AsyncLancedbStore(iAsyncStore):
         Append a table with a new dataframe.
         """
 
-        async_table = await self.ensure_table(sig)
+        async_table = await self._ensure_table(sig)
         table_name = async_table.name
         try:
             start_time = time.time()
             arrow_table = df.to_arrow()
 
             # Convert to arrow and add to the table
-            await async_table.add(, mode="append")
+            await async_table.add(arrow_table, mode="append")
             end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} for tick {tick} in {end_time - start_time} seconds")
+            logger.info(f"Appended dataframe to table {table_name} in {end_time - start_time} seconds")
         except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name} for tick {tick}: {e}")
+            logger.error(f"Error appending dataframe to table {table_name}: {e}")
             raise
 
         if self.debug:
             logger.info(f"Appending dataframe to table {table_name}")
-            df_with_tick.show()
-            print(f"Appending {df_with_tick.count_rows()} rows to table {table_name} for tick {tick}")
+            df.show()
 
+    async def shutdown(self) -> None:
+        """
+        Shutdown the store.
+        """
+        self.lancedb.close()
+    
     async def optimize_tables(self) -> None:
         """
         Optimize all tables in the LanceDB catalog.

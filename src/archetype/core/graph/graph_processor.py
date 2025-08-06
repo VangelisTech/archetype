@@ -18,6 +18,7 @@ class GraphProcessor(BaseProcessor):
     writes: List[Type] = []
     stage: UpdateStage = UpdateStage.Update
     run_condition: Callable[[Dict[str, Any]], bool] = lambda state: True
+    is_eager: bool = False
 
     async def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
         """The core logic of the processor."""

@@ -12,16 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import uuid_utils as uuid  # Use uuid-utils for UUID handling
-from uuid import UUID
+from uuid_utils import UUID
 from typing import Set, Dict
 from pydantic import BaseModel, Field
 from datetime import date
 from archetype.core.command import Command
+from archetype.app.auth.models import ActorCtx
 
 # 2. Static role-permission table
 ROLE_PERMS: dict[str, set[str]] = {
-    "viewer":     {"get_state"},
+    "viewer":     {"get_state", "get_world", "get_run", },
     "coder":      {"add_component", "remove_component", "patch_components"},
     "maintainer": {"spawn_entity", "delete_entity",
                    "add_component", "remove_component",

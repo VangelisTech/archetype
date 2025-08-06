@@ -12,42 +12,50 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, Optional
+from typing import Optional, List, Type
 
-from daft import DataFrame
-from archetype.core.interfaces import ArchetypeSignature
+from daft import DataFrame, col
+from archetype.core import ArchetypeSignature, Archetype, Component
 from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncQueryManager
 
 class AsyncQueryManager(iAsyncQueryManager):
     def __init__(self, store: iAsyncStore, debug: bool = False):
         self._store = store
         self._debug = debug
-
-    async def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    
+    async def get_archetype(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """
-        Get all archetypes that contain all of the specified component types.
+        Get all archetypes that contain all of the specified component types for provided world_id and run_id. 
         """
-        df = await self._store.get_archetype_df(sig, max(0, tick), world_id, run_id)
+        return await self._store.get_archetype_df(sig, world_id, run_id)
+    
+    async def query_archetype(
+            self, 
+            sig: ArchetypeSignature, 
+            world_id: str, 
+            run_id: str, 
+            ticks: Optional[List[int]] = None, 
+            entity_ids: Optional[List[int]] = None,
+            components: Optional[List['Component']] = None
+        ) -> DataFrame:
+        """
+        Queries all active entities for the provided archetype signature, world_id, run_id. 
+        Filters for ticks, entities, and components are provided. 
+        """
+        df =  await self.get_archetype(sig, world_id, run_id)
+        df = df.where(df["is_active"])
 
-        df = df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id) \
-               .where(df["tick"] == tick) \
-               .where(df["is_active"])
+        # Filter to active entities with ticks
+        if ticks:
+            df = df.where(df["tick"].is_in(ticks))
+        
+        if entity_ids: 
+            df = df.where(df["entity_id"].is_in(entity_ids))
+
+        if components:
+            a = Archetype(components)
+            df = df.select(*a.schema.names())
 
         return df
-    
-    async def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
-        """Get a component for an entity."""
-        df = await self.get_archetype(sig, tick, world_id=world_id, run_id=run_id)
 
-        return df.where(df["entity_id"] == entity_id)
-    
-    async def get_component(self, component_type: type, sig: ArchetypeSignature,  tick: int, world_id: str, run_id: str) -> DataFrame:
-        """
-        Get a component by type.
-        """
-        df = await self.get_archetype(sig, tick, world_id, run_id)
 
-        df = df.select()
-
-        return df

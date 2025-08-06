@@ -1,152 +1,134 @@
-from typing import Dict, List, Union, Optional 
-import uuid_utils as uuid
+import asyncio
+from typing import Dict, List, Optional, Union
 from uuid_utils import UUID, uuid7
 
-import daft
-from daft import col, DataFrame, Schema
-from daft.expressions import lit
-from daft.session import Session
-from daft.catalog import Catalog, Table
-from daft.io import IOConfig
-from pyiceberg.catalog.sql import SqlCatalog
-
-from archetype.core import SyncStore, SyncSystem, SyncWorld, QueryManager, UpdateManager
-from archetype.core.interfaces import Component, ArchetypeSignature, Archetype, iSystem, iQueryManager, iUpdateManager, iWorld, iStore
-from archetype.core.base import BaseWorld, BaseProcessor
-from archetype.core.aio.async_interfaces import iAsyncWorld, iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager, iAsyncSystem, iAsyncCommandBroker
-from archetype.core.aio import AsyncStore, AsyncQueryManager, AsyncUpdateManager, AsyncSystem, AsyncWorld
-from archetype.core.command import Command
-
-
-
+from archetype.core.resources import StorageResourceManager
+from .factory import WorldFactory
+from .interfaces import iWorld, iSystem
+from .aio import iAsyncSystem, AsyncWorld
+from archetype.app.config import WorldConfig, StorageConfig, CacheConfig, RunConfig
 
 
 class WorldOrchestrator:
     """
-    Orchestrator for the Archetype application, managing the lifecycle of components and services.
-    This class is responsible for initializing, starting, and stopping the application components.
-    
-    Created AsyncWorlds are managed here, while synchronous worlds are generated and managed by the user for dubugging and learning purposes. 
-    It also handles the registration of services and components, ensuring that they are properly initialized and can interact with each other.
-    The orchestrator acts as a central hub for the application, coordinating the various parts of the application and ensuring that they work together seamlessly.
-    
+    Manages the lifecycle and coordinated execution of multiple worlds.
     """
 
-    def __init__(self,
-        uri: str,
-        namespace: str,
-        is_async: bool,
-        debug: bool, 
-        dry_run: bool,
-        catalog: Catalog, 
-        io_config: IOConfig, 
-        querier: Union[iQueryManager, iAsyncQueryManager],
-        updater: Union[iUpdateManager, iAsyncUpdateManager],
-    ):        
-        # Initialize Singletons
-        self.querier = querier
-        self.updater = updater
+    def __init__(self):
+        """Initializes the orchestrator and its owned resources."""
+        self.storage_manager = StorageResourceManager()
+        self.factory = WorldFactory(self.storage_manager)
+        self._worlds: Dict[UUID, iWorld] = {}
+        self._world_names: Dict[str, UUID] = {}
 
-        # Init world dict
-        self._worlds: Dict[str, iAsyncWorld] = {}
+    async def shutdown(self):
+        """Gracefully shuts down all managed resources and worlds."""
+        await self.storage_manager.shutdown()
+        self._worlds.clear()
+        self._world_names.clear()
 
-    def spawn_world(self, world_id: UUID, run_id: UUID = None, is_async: bool = True) -> BaseWorld:
-        """Returns a new World instance. AsyncWorlds are added to internal world dictionary, while SyncWorlds are returned unmanaged."""
-        if is_async: 
-            world = AsyncWorld(
-                world_id =  world_id or uuid7(),
-                run_id = ,
-                querier = self.querier,
-                updater = self.updater,
-                system = AsyncSystem()
-            )
+    # --- World Lifecycle Management ---
 
-            # Add async world to worlds dict
-            self._worlds[world_id] = world
-        else: 
-            world = SyncWorld(
-                world_id = world_id or f"world_{str(ulid.ULID())}",
-                run_id = run_id or f"run_{str(ulid.ULID())}",
-                querier = self.querier,
-                updater = self.updater,
-                system = SyncSystem()
-            )
-            # Dont add sync world to worlds dict, as it is super slow and is more meant for debugging and learning purposes
+    async def create_world(
+        self,
+        config: WorldConfig,
+        system: Union[iAsyncSystem, iSystem],
+        storage_config: StorageConfig,
+        cache_config: CacheConfig = None,
+    ) -> iWorld:
+        """
+        Creates or retrieves a world based on the provided configuration.
+        This method is idempotent. If a world_id is provided and already exists,
+        it will return the existing world instance.
+        """
+        world_id = config.world_id or uuid7()
+
+        if world_id in self._worlds:
+            return self._worlds[world_id]
+
+        world = await self.factory.create_world(
+            world_id=world_id,
+            system=system,
+            storage_config=storage_config,
+            cache_config=cache_config,
+        )
+        self._worlds[world.world_id] = world
+        
+        if config.name:
+            if config.name in self._world_names:
+                # Note: We could raise an error here if names must be unique
+                raise ValueError(f"World with name '{config.name}' already exists.")
+            self._world_names[config.name] = world.world_id
 
         return world
 
-    def remove_world(self, world_id: str) -> None:
-        w: AsyncWorld = self._worlds.pop(world_id)
-        w._clear_caches()
-        del w
+    def get_world(self, world_id: UUID) -> iWorld:
+        """Retrieves a managed world instance by its ID."""
+        if world_id not in self._worlds:
+            raise KeyError(f"World with ID '{world_id}' not found.")
+        return self._worlds[world_id]
 
-    def list_worlds(self) -> List[str]:
-        return self._worlds.keys()
+    def get_world_by_name(self, name: str) -> iWorld:
+        """Retrieves a managed world instance by its human-readable name."""
+        if name not in self._world_names:
+            raise KeyError(f"World with name '{name}' not found.")
+        world_id = self._world_names[name]
+        return self.get_world(world_id)
 
-    async def run_worlds(self,  steps: int, world_ids: Optional[List[str]] = None):
-        if not world_ids:
-            world_ids = self._worlds.keys()
-        
-        for self._worlds[world_ids]:
+    def remove_world(self, world_id: UUID):
+        """Removes a world from management by its ID."""
+        if world_id in self._worlds:
+            for name, uid in list(self._world_names.items()):
+                if uid == world_id:
+                    del self._world_names[name]
+            del self._worlds[world_id]
+            
+    def remove_world_by_name(self, name: str):
+        """Removes a world from management by its name."""
+        world_id = self.get_world_by_name(name).world_id
+        self.remove_world(world_id)
 
-        for step in steps:
-            await self._worlds[world_ids].step()
+    def list_worlds(self) -> List[UUID]:
+        """Returns the IDs of all managed worlds."""
+        return list(self._worlds.keys())
 
-    # ---------------------------------------------------------------------
-    # Command Handling
-    # ---------------------------------------------------------------------
+    # --- World Execution Coordination ---
 
-    async def apply_commands(self, world_id: str, cmds: List[Command]) -> List[UUID]:
-        """
-        Dequeues commands and populates the in-memory caches to create the plan for the tick.
-        This includes pre-fetching data for transmutations.
-        """       
-        # Seperate State and Behavior mutations
-        processed_cmd_ids = [c.id for c in cmds]
-        data_cmds = [c for c in cmds if not c.op.endswith("_processor")]
-        proc_cmds = [c for c in cmds if c.op.endswith("_processor")]
+    async def run_world(self, world_id: UUID, run_config: RunConfig, **kwargs):
+        """Tells a specific world to run based on the provided run configuration."""
+        world = self.get_world(world_id)
+        if isinstance(world, AsyncWorld):
+            await world.run(
+                run_id=run_config.run_id,
+                num_steps=run_config.num_steps,
+                debug=run_config.debug,
+                validate=run_config.validate,
+                **kwargs
+            )
 
-        # Apply data commands to populate spawn, despawn, and transmute caches
-        for cmd in data_cmds:
-            handler = getattr(self, f"_handle_{cmd.op}", None)
-            if handler:
-                await handler(world_id, cmd.payload)
+    async def run_world_by_name(self, name: str, run_config: RunConfig, **kwargs):
+        """Tells a specific world to run, looked up by its name."""
+        world = self.get_world_by_name(name)
+        if isinstance(world, AsyncWorld):
+            await world.run(
+                run_id=run_config.run_id,
+                num_steps=run_config.num_steps,
+                debug=run_config.debug,
+                validate=run_config.validate,
+                **kwargs
+            )
 
-
-        # Apply processor commands directly (hot-swapping for next tick)
-        for cmd in proc_cmds:
-            handler = getattr(self, f"_handle_{cmd.op}", None)
-            if handler:
-                await handler(world_id, cmd.payload)
-
-        return processed_cmd_ids
-    
-    async def _handle_create_entity(self, world_id: str, payload: Dict) -> int:
-        "Handle Entity Creation Delegation to designated world"
-        components = [Component.from_dict(c) for c in payload["components"]]
-        return await self._worlds[world_id].create_entity(components)
-
-    async def _handle_remove_entity(self, world_id: str, payload: Dict):
-        return await self._worlds[world_id].remove_entity(payload["entity_id"])
-
-    async def _handle_add_component(self, world_id: str, payload: Dict):
-        entity_id = payload["entity_id"]
-        components = [Component.from_dict(c) for c in payload["components"]]
-
-        return await self._worlds[world_id].add_component(entity_id,components)
-
-    async def _handle_remove_component(self, world_id: str, payload: Dict):
-        entity_id = payload["entity_id"]
-        component_types_to_remove = [Component.get_type_by_name(name) for name in payload["component_types"]]
-
-        return await self._worlds[world_id].remove_component(entity_id, component_types_to_remove)
-
-    async def _handle_add_processor(self, world_id: str, payload: Dict):
-        await self._worlds[world_id].add_processor(payload["processor"])
-
-    async def _handle_remove_processor(self, world_id: str, payload: Dict):
-        await self._worlds[world_id].remove_processor(payload["processor"])
-
-
-
-    
+    async def run_all_worlds(self, run_config: RunConfig, **kwargs):
+        """Tells all managed async worlds to run concurrently."""
+        tasks = [
+            world.run(
+                run_id=run_config.run_id,
+                num_steps=run_config.num_steps,
+                debug=run_config.debug,
+                validate=run_config.validate,
+                **kwargs
+            )
+            for world in self._worlds.values() if isinstance(world, AsyncWorld)
+        ]
+        if tasks:
+            await asyncio.gather(*tasks)

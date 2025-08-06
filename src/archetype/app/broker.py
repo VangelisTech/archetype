@@ -23,12 +23,11 @@ import os
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from archetype.core.base import BaseCommandBroker
-from archetype.core.command import Command
-from archetype.core.auth import ActorCtx, guardrail_allow
+from archetype.app.auth.models import Command, ActorCtx
+from archetype.app.auth.guard import guardrail_allow
 
 
-class AsyncCommandBroker(BaseCommandBroker):
+class CommandBroker:
     """
     A production-hardened, in-memory command broker.
     Features:
@@ -51,16 +50,6 @@ class AsyncCommandBroker(BaseCommandBroker):
 
         # Periodic flush task
         self._flush_task = asyncio.create_task(self._periodic_flush())
-
-    async def _gatekeep_cmds(self, cmds: List[Command], ctx: ActorCtx, world_id: str) -> bool:
-        arrow_cmds = []
-        for c in cmds:
-            
-            
-            arrow_cmds.append(c.to_arrow())
-
-        allowed_results = (guardrail_results)
-
 
     async def enqueue(self, world_id: str, cmd: Command, ctx: ActorCtx):
         

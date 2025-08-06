@@ -22,10 +22,12 @@ from daft import col, DataFrame, Schema
 from daft.expressions import lit
 from daft.session import Session
 from daft.catalog import Table
+import pyarrow as pa
 import time
 
 # Internals
-from archetype.core.interfaces import Archetype, ArchetypeSignature, iStore
+from archetype.core.interfaces import ArchetypeSignature, iStore
+from archetype.core.archetype import Archetype
 
 logger = getLogger(__name__)
 
@@ -52,6 +54,9 @@ class SyncStore(iStore):
         self.debug = debug
         self.sess = session
 
+        self._cache: Dict[ArchetypeSignature, pa.Table] # Omnicient, Multi-World
+        self.flush_interval =  None
+
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
@@ -67,13 +72,21 @@ class SyncStore(iStore):
 
         return table
 
-    def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
+    def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes.
         """
         table: Table = self._ensure_table(sig)
         df: DataFrame = table.read() # Cheap
-        return df
+
+        if self.debug: 
+            print(f'Reading {table.name}')
+            df_debug = df.limit(5).show()
+
+        return df.where(df["world_id"] == world_id) \
+               .where(df["run_id"] == run_id) \
+               .where(df["tick"] == max(0, tick)) \
+               .where(df["is_active"])
 
 
     def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
@@ -82,12 +95,16 @@ class SyncStore(iStore):
         """
         table_name = Archetype.get_name(sig)
         table = self.sess.get_table(table_name)
-        try:
-            if self.debug:
-                df.collect()
-                df.show()
-                print(f"Appending {df.count_rows()} rows to table {table_name} for tick {tick}")
-            table.append(df)
-        except Exception as e:
-            raise
 
+        if self.debug:
+            df.collect()
+            print(f"Appending {df.count_rows()} rows to table {table_name} for tick {tick}")
+            df.show()
+            
+        table.append(df)
+
+    def shutdown(self) -> None:
+        """
+        Shutdown the store.
+        """
+        pass # Daft handles this automatically

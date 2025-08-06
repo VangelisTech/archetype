@@ -17,14 +17,15 @@ from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
 from archetype.core.aio.async_interfaces import iAsyncUpdateManager, iAsyncStore
-from archetype.core.interfaces import ArchetypeSignature, Archetype
+from archetype.core import ArchetypeSignature, Archetype
 
 logger = getLogger(__name__)
 
 
 class AsyncUpdateManager(iAsyncUpdateManager):
-    def __init__(self, store: iAsyncStore):
+    def __init__(self, store: iAsyncStore, validate_flag: bool = False):
         self.store = store
+        self.validate_flag = validate_flag
 
     async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
         df = df.with_columns({
@@ -33,7 +34,21 @@ class AsyncUpdateManager(iAsyncUpdateManager):
             "run_id": lit(run_id),
             "entity_id": col("entity_id").cast(daft.DataType.uint32()),
         })
+
+        # if self.validate_flag:
+        #    self._validate(sig, df)
+
+        # TODO: Add role/ctx checks for write priveledges
         try:
+            df.collect() # Moment of Materialization 
             await self.store.append(sig, df)
+
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
+
+
+
+    async def _validate(self, sig: ArchetypeSignature, df: DataFrame):
+        # Coerce Schema already happens at store, this is for applying pydantic validation on data for components.
+        # and anything else we'd want to check prior to write. 
+        raise NotImplementedError

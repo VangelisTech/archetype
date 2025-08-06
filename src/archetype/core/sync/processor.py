@@ -19,10 +19,10 @@ from archetype.core.base import BaseProcessor
 
 
 class Processor(BaseProcessor):
-    priority: int = 0
-    components: Tuple[Type[Component], ...] = None
+    components: Tuple[Type[Component], ...] = ()
+    priority: int = 10
 
-    def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
+    def process(self, df: DataFrame, **kwargs) -> DataFrame:
         """
         Processor method are provided the state of the archetype at the current tick.
         Processors are not responsible for updating the tick value.

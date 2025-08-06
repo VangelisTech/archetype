@@ -45,6 +45,8 @@ archetype.egg-info/
 *.arrow
 *.db
 
+opencode.json
+
 __pycache__/
 data/archetypes.db/
 data/catalog.db

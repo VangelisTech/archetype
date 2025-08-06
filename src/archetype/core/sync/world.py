@@ -19,7 +19,7 @@ from itertools import count
 from daft import DataFrame
 
 from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQueryManager, iUpdateManager
-from archetype.core.processor import Processor
+from archetype.src.archetype.core.sync.processor import Processor
 from archetype.core.base import BaseWorld
 
 from logging import getLogger
@@ -34,9 +34,9 @@ import ulid
 from daft import DataFrame
 
 from archetype.core.interfaces import Component, Archetype, ArchetypeSignature, iSystem, iQueryManager, iUpdateManager
-from archetype.core.processor import Processor
+from archetype.src.archetype.core.sync.processor import Processor
 from archetype.core.base import BaseWorld
-from archetype.core.broker import SyncCommandQueue
+from archetype.src.archetype.core.sync.broker import SyncCommandQueue
 from archetype.core.command import Command
 
 from logging import getLogger
@@ -48,9 +48,6 @@ class SyncWorld(BaseWorld):
         querier: iQueryManager,
         updater: iUpdateManager,
         system: iSystem,
-        world_id: str | None = None,
-        run_id: str | None = None,
-        debug: bool = False,
     ):
         self.querier = querier
         self.updater = updater
@@ -58,7 +55,6 @@ class SyncWorld(BaseWorld):
 
         # Set World Properties
         self.world_id = world_id or f"world_{str(ulid.ULID())}"
-        self.run_id = run_id or f"run_{str(ulid.ULID())}"
         self.tick = 0
         self.debug = debug
 

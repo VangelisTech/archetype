@@ -11,7 +11,8 @@ dependencies = [
     "python-ulid>=3.0.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
     "uuid-utils>=0.11.0",
-    "igraph"
+    "igraph",
+    "psutil"
 ]
 
 [project.optional-dependencies]

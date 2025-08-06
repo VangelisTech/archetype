@@ -39,12 +39,3 @@ class UpdateManager(iUpdateManager):
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 
-    def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
-        self.store.materialize_spawns(spawn_cache, world_id, run_id)
-
-    def transition_entity(self, entity_id: int, old_sig: ArchetypeSignature, new_sig: ArchetypeSignature, new_data: Dict[str, Any], tick: int, world_id: str, run_id: str) -> None:
-        self.store.transition_entity(entity_id, old_sig, new_sig, new_data, tick, world_id, run_id)
-
-    def remove_entity(self, entity_id: int, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
-        self.store.remove_entity(entity_id, sig, tick, world_id, run_id)
-
