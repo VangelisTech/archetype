@@ -20,6 +20,7 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
 
 import logging
+import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -36,24 +37,22 @@ class AsyncSystem(BaseSystem):
     per-archetype parallelism.
     """
 
-    def __init__(self, validate: bool = False, debug: bool = False):
-        self.processors: List["AsyncProcessor"] = []
-        self.validate = validate
-        self.debug = debug             
+    def __init__(self):
+        self.processors: List["AsyncProcessor"] = []           
 
-    def add_processor(self, proc: "AsyncProcessor"):
+    async def add_processor(self, proc: "AsyncProcessor"):
         """Add an async processor to the system."""
         self.processors.append(proc)
 
-    def remove_processor(self, proc: "AsyncProcessor"):
+    async def remove_processor(self, proc_type: type["AsyncProcessor"]):
         """Remove all processors of the given type."""
-        self.processors = [p for p in self.processors if not isinstance(p, type(proc))]
+        self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
     async def execute(
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        **kwargs
+        **input_kwargs
     ) -> DataFrame:
         """
         Process a single archetype through all relevant processors.
@@ -61,8 +60,6 @@ class AsyncSystem(BaseSystem):
         This is where the concurrency happens - each archetype gets its own task
         but within each archetype, processors run in priority order (same as sync).
         """
-        # if self.validate_flag:
-        #    self._validate(sig, df)
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             if set(proc_instance.components).issubset(set(sig)):
@@ -70,13 +67,13 @@ class AsyncSystem(BaseSystem):
                 # Gracefully handle errors in processors.
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
-                    df = await proc_instance.process(df, **kwargs)
+                    assert isinstance(proc_instance, AsyncProcessor)
+                    # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs
+                    sig_params = inspect.signature(proc_instance.process).parameters
+                    filtered_input_kwargs = {k: v for k, v in input_kwargs.items() if k in sig_params}
+                    df = await proc_instance.process(df, **filtered_input_kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
-                    
-        return df
 
+        return df
     
-    async def _validate(self, sig: ArchetypeSignature,  df: DataFrame):
-        # This is for validating processors with extra error handling and validation logic prior to full send.
-        raise NotImplementedError

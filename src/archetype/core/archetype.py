@@ -38,7 +38,7 @@ class Archetype:
         """
         Generate a new archetype signature by adding components to an existing signature.
         """
-        return tuple(sorted(list(set(sig) + set(component_types)), key=lambda t: t.__name__))
+        return tuple(sorted(set(sig).union(component_types), key=lambda t: t.__name__))
 
     @staticmethod
     def remove_components(sig: ArchetypeSignature, component_types: List[Type[Component]]) -> ArchetypeSignature:
@@ -103,8 +103,8 @@ class Archetype:
             Dict containing the row data for this entity
         """
         row_dict = {
-            "world_id": world_id,
-            "run_id": run_id,
+            "world_id": str(world_id),
+            "run_id": str(run_id),
             "entity_id": entity_id,
             "tick": tick,
             "is_active": True

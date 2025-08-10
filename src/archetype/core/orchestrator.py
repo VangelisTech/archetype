@@ -1,12 +1,12 @@
 import asyncio
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Union
 from uuid_utils import UUID, uuid7
 
 from archetype.core.resources import StorageResourceManager
 from .factory import WorldFactory
 from .interfaces import iWorld, iSystem
 from .aio import iAsyncSystem, AsyncWorld
-from archetype.app.config import WorldConfig, StorageConfig, CacheConfig, RunConfig
+from archetype.core.config import WorldConfig, StorageConfig, CacheConfig, RunConfig
 
 
 class WorldOrchestrator:
@@ -35,6 +35,8 @@ class WorldOrchestrator:
         system: Union[iAsyncSystem, iSystem],
         storage_config: StorageConfig,
         cache_config: CacheConfig = None,
+        *,
+        instrumented: bool | None = None,
     ) -> iWorld:
         """
         Creates or retrieves a world based on the provided configuration.
@@ -47,10 +49,11 @@ class WorldOrchestrator:
             return self._worlds[world_id]
 
         world = await self.factory.create_world(
-            world_id=world_id,
-            system=system,
+            world_config=config,
             storage_config=storage_config,
             cache_config=cache_config,
+            system=system,
+            instrumented=instrumented,
         )
         self._worlds[world.world_id] = world
         
@@ -94,40 +97,22 @@ class WorldOrchestrator:
 
     # --- World Execution Coordination ---
 
-    async def run_world(self, world_id: UUID, run_config: RunConfig, **kwargs):
+    async def run_world(self, world_id: UUID, run_config: RunConfig, **input_kwargs):
         """Tells a specific world to run based on the provided run configuration."""
         world = self.get_world(world_id)
         if isinstance(world, AsyncWorld):
-            await world.run(
-                run_id=run_config.run_id,
-                num_steps=run_config.num_steps,
-                debug=run_config.debug,
-                validate=run_config.validate,
-                **kwargs
-            )
+            await world.run(run_config, **input_kwargs)
 
-    async def run_world_by_name(self, name: str, run_config: RunConfig, **kwargs):
+    async def run_world_by_name(self, name: str, run_config: RunConfig, **input_kwargs):
         """Tells a specific world to run, looked up by its name."""
         world = self.get_world_by_name(name)
         if isinstance(world, AsyncWorld):
-            await world.run(
-                run_id=run_config.run_id,
-                num_steps=run_config.num_steps,
-                debug=run_config.debug,
-                validate=run_config.validate,
-                **kwargs
-            )
+            await world.run(run_config, **input_kwargs)
 
-    async def run_all_worlds(self, run_config: RunConfig, **kwargs):
+    async def run_all_worlds(self, run_config: RunConfig, **input_kwargs):
         """Tells all managed async worlds to run concurrently."""
         tasks = [
-            world.run(
-                run_id=run_config.run_id,
-                num_steps=run_config.num_steps,
-                debug=run_config.debug,
-                validate=run_config.validate,
-                **kwargs
-            )
+            world.run(run_config, **input_kwargs)
             for world in self._worlds.values() if isinstance(world, AsyncWorld)
         ]
         if tasks:

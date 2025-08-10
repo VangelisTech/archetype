@@ -4,7 +4,7 @@ from uuid_utils import UUID, uuid7
 
 from archetype.core.orchestrator import WorldOrchestrator
 from archetype.app.world_service import WorldService
-from archetype.app.config import (
+from archetype.core.config import (
     WorldConfig, 
     StorageConfig, 
     CacheConfig, 
@@ -79,7 +79,8 @@ class SimulationService:
     async def run_parameter_sweep(self,
                                   base_system_factory,
                                   parameters: Dict[str, List[Any]],
-                                  run_config: RunConfig) -> Dict[str, Any]:
+                                  run_config: RunConfig
+    ) -> Dict[str, Any]:
         """
         Run a parameter sweep experiment across multiple worlds.
         

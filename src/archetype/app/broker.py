@@ -23,7 +23,8 @@ import os
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from archetype.app.auth.models import Command, ActorCtx
+from archetype.app.models import Command
+from archetype.app.auth.models import ActorCtx
 from archetype.app.auth.guard import guardrail_allow
 
 
@@ -37,16 +38,15 @@ class CommandBroker:
     - Write-behind durable logging to Parquet with periodic flushing.
     """
 
-    def __init__(self, max_dequeue: int = 50_000, semaphore: asyncio.Semaphore = None):
+    def __init__(self, max_dequeue: int = 50_000, flush_size_bytes: int =  512 * 1024 * 1024, flush_ms: int = 1000):
         self._queue: Dict[str, asyncio.PriorityQueue] = {}
-        
         self._pending: Dict[UUID, Command] = {}
         self._parquet_buffer: List[pa.RecordBatch] = []
-        self._semaphore = semaphore 
 
-        # Configuration
+        # Params
         self._max_dequeue = max_dequeue
-        self._flush_size_bytes = 512 * 1024 * 1024  # 512 MB
+        self._flush_size_bytes = flush_size_bytes
+        self._flush_ms = flush_ms
 
         # Periodic flush task
         self._flush_task = asyncio.create_task(self._periodic_flush())

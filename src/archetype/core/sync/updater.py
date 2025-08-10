@@ -16,7 +16,9 @@ import daft
 from daft import col, DataFrame, lit
 from typing import List, Dict, Any
 from logging import getLogger
-from archetype.core.interfaces import iUpdateManager, iStore, ArchetypeSignature, Archetype
+from archetype.core.interfaces import iUpdateManager, iStore, ArchetypeSignature
+from archetype.core.archetype import Archetype
+from archetype.core.config import RunConfig
 
 logger = getLogger(__name__)
 
@@ -35,7 +37,7 @@ class UpdateManager(iUpdateManager):
             "entity_id": col("entity_id").cast(daft.DataType.uint32()),
         })
         try:
-            self.store.update(sig, df)
+            self.store.append(sig, df)
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
 

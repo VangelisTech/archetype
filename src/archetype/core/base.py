@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Type, Optional, List, Set, Tuple
+from typing import Any, Type, List, Set, Tuple
 from abc import ABC, abstractmethod
 
 import daft
@@ -20,6 +20,7 @@ from uuid_utils import UUID
 
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.archetype import Component
+from archetype.core.config import RunConfig
 
 class BaseProcessor(ABC):
     """
@@ -29,7 +30,7 @@ class BaseProcessor(ABC):
     components: Tuple[Type[Component], ...] = ()
 
     @abstractmethod
-    def process(self, df: daft.DataFrame, *args, **kwargs) -> daft.DataFrame:
+    def process(self, df: daft.DataFrame, **input_kwargs) -> daft.DataFrame:
         """Process the DataFrame."""
         return df
 
@@ -51,12 +52,12 @@ class BaseSystem(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def execute(self, df: daft.DataFrame, sig: ArchetypeSignature, *args: Any, **kwargs: Any) -> daft.DataFrame:
+    def execute(self, df: daft.DataFrame, sig: ArchetypeSignature, **input_kwargs: Any) -> daft.DataFrame:
         """
         Executes the managed processors.
 
         Args:
-            *args, **kwargs: Additional arguments passed from the world's process cycle (e.g., dt).
+            *args, **input_kwargs: Additional arguments passed from the world's process cycle (e.g., dt).
 
         Returns:
             A processed daft.DataFrame
@@ -95,13 +96,13 @@ class BaseQuerier(ABC):
     Provides methods to query entities and their components.
     """
     @abstractmethod
-    def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> daft.DataFrame:
+    def get_archetype(self, sig: ArchetypeSignature, tick: int, world_id: str, run_config: RunConfig) -> daft.DataFrame:
         """
         Returns a DataFrame of entities matching the given signature.
         """
         raise NotImplementedError
     
-    def get_archetype_for_entity(self, entity_id: int, sig: ArchetypeSignature) -> daft.DataFrame:
+    def query_archetype(self, entity_id: int, sig: ArchetypeSignature) -> daft.DataFrame:
         """
         Returns a DataFrame of components for a specific entity.
         """
@@ -120,15 +121,8 @@ class BaseWorld(ABC):
     Abstract base class for World implementations with shared functionality.
     Contains common logic for entity management, spawn caching, and world state.
     """
-    def __init__(self, name: str, world_id: UUID, querier: BaseQuerier, updater: BaseUpdater, system: BaseSystem):
-        self.name = name
-        self.world_id = world_id
-        self.querier = querier
-        self.updater = updater
-        self.system = system
-
     @abstractmethod
-    def step(self, *args, **kwargs) -> None:
+    async def step(self, run_config: RunConfig, **input_kwargs) -> Any:
         raise NotImplementedError
 
     @property
@@ -137,24 +131,19 @@ class BaseWorld(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_entity(self, *components: Component, step: Optional[int] = None) -> int:
+    async def create_entity(self, components: List[Component]) -> int:
         raise NotImplementedError
 
     @abstractmethod
-    def delete_entity(self, entity_id: int, step: Optional[int] = None) -> None:
+    async def remove_entity(self, entity_id: int) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    def add_component(self, entity_id: int, component: Component, step: Optional[int] = None) -> None:
-        """
-        Adds a component to an entity.
-        """
+    async def add_components(self, entity_id: int, components: List[Component]) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    def remove_component(self, entity_id: int, component_type: Type[Component], step: Optional[int] = None) -> None:
-        """        Removes a component from an entity.
-        """
+    async def remove_components(self, entity_id: int, component_types: List[Type[Component]]) -> None:
         raise NotImplementedError
     
     @abstractmethod
@@ -177,17 +166,17 @@ class BaseCommandBroker(ABC):
     Brokers manage the communication between different components or systems.
     """
     @abstractmethod
-    def enqueue(self, world_id: str, cmd: "Command", ctx: "ActorCtx") -> None:
+    def enqueue(self, world_id: str, cmd: Any, ctx: Any) -> None:
         """Enqueue a message to be processed."""
         raise NotImplementedError
     
     @abstractmethod
-    def enqueue_bulk(self, world_id: str, cmds: List["Command"]) -> None:
+    def enqueue_bulk(self, world_id: str, cmds: List[Any]) -> None:
         """Enqueue multiple messages for processing."""
         raise NotImplementedError
     
     @abstractmethod
-    def dequeue_due(self, *, world_id: str, tick: int, limit: int = 1_000) -> List["Command"]:
+    def dequeue_due(self, *, world_id: str, tick: int, limit: int = 1_000) -> List[Any]:
         """Dequeue a message for processing."""
         raise NotImplementedError
     

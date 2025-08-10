@@ -10,8 +10,8 @@ setup(
     install_requires=[
         "daft",
         "pyarrow",
-        "pylance",
-        "lancedb"
+        "lancedb",
+        
     ],
     python_requires=">=3.10",
 )

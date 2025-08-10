@@ -9,14 +9,14 @@ from typing import Optional
 import asyncio
 from uuid_utils import uuid7
 
-from .container import ServiceContainer
-from .config import StorageConfig, CacheConfig, RunConfig, WorldConfig
-from .auth.models import ActorCtx
-
+from archetype.app.container import ServiceContainer
+from archetype.app.auth.models import ActorCtx
+from archetype.core import Archetype, StorageConfig, CacheConfig, RunConfig, WorldConfig
+from archetype.core.interfaces import iWorld
 
 class ArchetypeApp:
     """
-    Main application entry point for the Archetype framework.
+    Main application entry point for Archetype.
     
     Example usage:
         # Simple single world
@@ -41,9 +41,10 @@ class ArchetypeApp:
     
     @classmethod
     async def create(cls,
-                    storage_uri: str = ".archetype_data",
-                    cache_config: Optional[CacheConfig] = None,
-                    actor_ctx: Optional[ActorCtx] = None) -> "Archetype":
+        storage_uri: str = ".archetype_data",
+        cache_config: Optional[CacheConfig] = None,
+        actor_ctx: Optional[ActorCtx] = None
+    ) -> "ArchetypeApp":
         """
         Create and initialize an Archetype application.
         
@@ -56,7 +57,7 @@ class ArchetypeApp:
             Initialized Archetype application
         """
         storage_config = StorageConfig(uri=storage_uri)
-        cache_config = cache_config or CacheConfig()
+        cache_config = cache_config 
         actor_ctx = actor_ctx or ActorCtx(id=uuid7())
         
         container = ServiceContainer(
@@ -69,7 +70,7 @@ class ArchetypeApp:
     
     async def create_world(self, 
                           name: str,
-                          system=None) -> 'World':
+                          system=None) -> iWorld:
         """
         Create a single world with the given name.
         

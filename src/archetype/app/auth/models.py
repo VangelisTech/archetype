@@ -36,7 +36,7 @@ class ActorCtx(BaseModel):
     roles: Set[str] = Field(default_factory=set)
     org: Optional[str] = None
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
 # --- Authentication Models ---
 
@@ -54,7 +54,7 @@ class User(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     is_active: bool = True
 
-    model_config = {"frozen": True}
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     @field_serializer("id")
     def serialize_uuid(self, v: UUID, info: FieldSerializationInfo):
@@ -227,6 +227,8 @@ class SecurityEvent(BaseModel):
     details: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     severity: Literal["low", "medium", "high", "critical"] = "medium"
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     @field_serializer("id", "actor_id")
     def serialize_uuids(self, v: Optional[UUID], info: FieldSerializationInfo):

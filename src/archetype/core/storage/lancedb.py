@@ -12,23 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, List, Dict, Tuple, Any
-
+from typing import List, Optional
 import time
 import os
 
 import daft
-from daft import DataFrame, col, lit
-from daft.session import Session
-from daft.io import IOConfig
+from daft import DataFrame
 from daft.io.object_store_options import io_config_to_storage_options
 
 import lancedb
 from lancedb.index import Bitmap, BTree
 
-from archetype.core.aio.async_interfaces import iAsyncStore
+from archetype.core.aio.async_interfaces import iAsyncQueryManager, iAsyncStore
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.archetype import Archetype
+from archetype.core.config import StorageConfig, RunConfig
+
 
 from logging import getLogger
 
@@ -49,20 +48,15 @@ class AsyncLancedbStore(iAsyncStore):
     numbers of archetype tables without having to hold them in memory, provided we
 
     """
-    def __init__(self,
-        uri: str,
-        namespace: str,
-        session: Session,
-        io_config: Optional[IOConfig] = None,
-        debug: bool = False,
-    ):
-        self.uri = uri
-        self.namespace = namespace 
-        self.debug = debug
-        self.session = session
+    def __init__(self, storage_config: StorageConfig):
+        self.uri = storage_config.uri
+        self.namespace = storage_config.namespace
+        self.session = storage_config.get_session()
 
-        self.io_config = io_config
-        self.storage_options = io_config_to_storage_options(self.io_config) if self.io_config else None
+        self.io_config = storage_config.io_config
+        self.storage_options = (
+            io_config_to_storage_options(self.io_config) if self.io_config else None
+        )
         self.lancedb = None  # Initialize lancedb connection
 
     #--------------------------------------------------------------------------
@@ -77,7 +71,10 @@ class AsyncLancedbStore(iAsyncStore):
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
         if self.lancedb is None:
-            self.lancedb = await lancedb.connect_async(os.path.join(self.uri, self.namespace + "lance"))
+            # Ensure LanceDB connects to <uri>/<namespace>/lance (with proper separators)
+            self.lancedb = await lancedb.connect_async(
+                os.path.join(self.uri, self.namespace, "lance")
+            )
 
         if table_name in await self.lancedb.table_names():
             try:
@@ -110,26 +107,24 @@ class AsyncLancedbStore(iAsyncStore):
     # ---------------------------------------------------------------------
     # Querying
     # ---------------------------------------------------------------------
-    async def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
 
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
 
         try:
-    
-            lance_uri = os.path.join(self.uri, self.namespace + "lance", table_name + ".lance")
-            if os.path.exists(lance_uri):
-                # Query with LanceDB directly
-                filtered_arrow = await async_table.query().where(
-                    f"world_id = '{world_id}' AND run_id = '{run_id}' AND tick = {tick} AND is_active = true"
-                ).to_arrow()
+            # Query LanceDB directly; new/empty tables will simply yield empty results
+            filtered_arrow = await (
+                async_table
+                .query()
+                .where(
+                    f"world_id = '{str(world_id)}' AND run_id = '{str(run_id)}' AND is_active = true"
+                )
+                .to_arrow()
+            )
 
-                # Convert to Daft DataFrame
-                df = daft.from_arrow(filtered_arrow)
-            else:
-                # Return empty dataframe with correct schema if table doesn't exist yet
-                schema = Archetype.get_archetype_schema(sig)
-                df = daft.from_arrow(schema.empty_table())
+            # Convert to Daft DataFrame
+            df = daft.from_arrow(filtered_arrow)
 
         except Exception as e:
             logger.error(f"Error reading archetype table {table_name}: {e}")
@@ -156,10 +151,6 @@ class AsyncLancedbStore(iAsyncStore):
             logger.error(f"Error appending dataframe to table {table_name}: {e}")
             raise
 
-        if self.debug:
-            logger.info(f"Appending dataframe to table {table_name}")
-            df.show()
-
     async def shutdown(self) -> None:
         """
         Shutdown the store.
@@ -173,6 +164,29 @@ class AsyncLancedbStore(iAsyncStore):
         for table_name in await self.lancedb.table_names():
             try:
                 async_table = await self.lancedb.open_table(table_name)
-                async_table.optimize(retrain=False)
+                await async_table.optimize(retrain=False)
             except Exception as e:
                 raise Exception(f"Error optimizing table {table_name}: {e}")
+
+
+class AsyncLancedbQueryManager(iAsyncQueryManager):
+    def __init__(self, store: "AsyncLancedbStore"):
+        self._store = store
+
+    # See AsyncQueryManager for implementation details.
+
+    
+    async def fts_search(self, query: str, fts_columns: List[str], sig: ArchetypeSignature, tick: int, world_id: str, run_config: RunConfig) -> DataFrame:
+        """
+        Search for entities in the LanceDB store.
+        """
+        raise NotImplementedError("FTS search is not implemented yet")
+        #table: AsyncTable = await self._store._ensure_table(sig)
+
+        #df = daft.from_arrow(table.search(query, query_type="fts", fts_columns=fts_columns).to_arrow())
+
+        #return df
+    
+
+    
+

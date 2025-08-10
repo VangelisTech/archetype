@@ -3,14 +3,10 @@ from typing import Optional
 from archetype.app.simulation_service import SimulationService
 from archetype.app.world_service import WorldService
 from archetype.app.command_service import CommandService
-from archetype.app.broker import AsyncCommandBroker
+from archetype.app.broker import CommandBroker
 from archetype.app.auth.models import ActorCtx
-from archetype.app.config import StorageConfig, CacheConfig
+from archetype.core.config import StorageConfig, CacheConfig
 from archetype.core.orchestrator import WorldOrchestrator
-
-from daft.catalog import Catalog
-from daft.session import Session
-from pyiceberg.catalog.sql import SqlCatalog
 
 
 class ServiceContainer:
@@ -29,21 +25,9 @@ class ServiceContainer:
         self.storage_config = storage_config
         self.cache_config = cache_config or CacheConfig()
         
-        # Initialize the daft catalog
-        if not storage_config.catalog:
-            storage_config.catalog = Catalog.from_iceberg(
-                SqlCatalog(
-                    "default",
-                    **{
-                        "uri": f"sqlite:///{storage_config.uri}/catalog.db",
-                        "warehouse": f"file://{storage_config.uri}",
-                    },
-                )
-            )
-        
         # Initialize core dependencies (singletons)
         self._orchestrator = WorldOrchestrator()
-        self._broker = AsyncCommandBroker()
+        self._broker = CommandBroker()
         
         # Services will be lazily initialized
         self._world_service: Optional[WorldService] = None
@@ -56,7 +40,7 @@ class ServiceContainer:
         return self._orchestrator
     
     @property
-    def broker(self) -> AsyncCommandBroker:
+    def broker(self) -> CommandBroker:
         """Direct access to the command broker."""
         return self._broker
     

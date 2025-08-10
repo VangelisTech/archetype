@@ -17,8 +17,9 @@ import logging
 from daft import DataFrame
 
 from archetype.core.base import BaseSystem
-from archetype.src.archetype.core.sync.processor import Processor as SyncProcessor
+from archetype.core.sync.processor import SyncProcessor
 from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.config import RunConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,8 @@ class SyncSystem(BaseSystem):
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        **kwargs
+        run_config: RunConfig | None = None,
+        **input_kwargs
     ) -> DataFrame:
         """
         Execute all processors on the given archetype in priority order.
@@ -49,10 +51,10 @@ class SyncSystem(BaseSystem):
             if set(proc_instance.components).issubset(set(sig)):
                 try:
                     assert isinstance(proc_instance, SyncProcessor)
-                    df = proc_instance.process(df, **kwargs)
+                    df = proc_instance.process(df, **input_kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
-                    df = None
-                    break
+                    # Keep world alive; skip failing processor
+                    continue
 
         return df

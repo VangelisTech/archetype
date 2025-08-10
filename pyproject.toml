@@ -8,7 +8,6 @@ dependencies = [
     "daft[lance,iceberg,sql]>=0.5.2",
     "pyarrow>=16.0.0",
     "lancedb>=0.22.0",
-    "python-ulid>=3.0.0",
     "pyiceberg[daft,sql-sqlite]>=0.9.1",
     "uuid-utils>=0.11.0",
     "igraph",

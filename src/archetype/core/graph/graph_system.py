@@ -19,7 +19,7 @@ class GraphSystem:
         self,
         df: daft.DataFrame,
         world_state: Dict[str, Any] = None,
-        **kwargs
+        **input_kwargs
     ) -> daft.DataFrame:
         """
         Executes a full tick by running processors in stages according to a
@@ -48,7 +48,7 @@ class GraphSystem:
                 raise RuntimeError(f"Circular dependency detected in stage {stage.name}!")
 
             # 3. Execute the graph in parallel stages
-            df = await self._execute_graph(g, df, **kwargs)
+            df = await self._execute_graph(g, df, **input_kwargs)
 
         return df
 
@@ -76,7 +76,7 @@ class GraphSystem:
 
         return g
 
-    async def _execute_graph(self, g: ig.Graph, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
+    async def _execute_graph(self, g: ig.Graph, df: daft.DataFrame, **input_kwargs) -> daft.DataFrame:
         """Executes a DAG of processors using Kahn's algorithm."""
         in_degrees = g.degree(mode='in')
         ready_vids = [v.index for v, d in enumerate(in_degrees) if d == 0]
@@ -85,7 +85,7 @@ class GraphSystem:
             ready_procs = [g.vs[vid]["processor"] for vid in ready_vids]
             
             # Execute all ready processors in parallel
-            tasks = [proc.process(df, **kwargs) for proc in ready_procs]
+            tasks = [proc.process(df, **input_kwargs) for proc in ready_procs]
             
             # Gather results from this parallel stage
             stage_results = await asyncio.gather(*tasks)

@@ -1,2 +1,5 @@
-from .async_lancedb_store import AsyncLancedbStore
-from .async_lancedb_query_manager import AsyncLancedbQueryManager
+from .lancedb import AsyncLancedbStore
+
+__all__ = [
+    "AsyncLancedbStore",
+]

@@ -16,7 +16,7 @@ from uuid_utils import UUID
 from typing import Set, Dict
 from pydantic import BaseModel, Field
 from datetime import date
-from archetype.core.command import Command
+from archetype.app.models import Command
 from archetype.app.auth.models import ActorCtx
 
 # 2. Static role-permission table

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Standard Python Libraries
-from typing import Dict, Tuple, List, Optional, Any
+from typing import Dict, List, Optional
 from logging import getLogger
 import time
 import psutil
@@ -21,16 +21,14 @@ from dataclasses import dataclass, field
 
 # Technologies
 import daft
-from daft import col, DataFrame, Schema
-from daft.expressions import lit
-from daft.session import Session
-from daft.catalog import Table
+from daft import DataFrame
 import pyarrow as pa
 import asyncio
 
 
 # Internals
-from archetype.core import ArchetypeSignature, Archetype
+from archetype.core import ArchetypeSignature
+from archetype.core.config import CacheConfig
 from .async_interfaces import iAsyncStore
 
 logger = getLogger(__name__)
@@ -46,7 +44,14 @@ class MemTable:
     def append(self, batch: pa.RecordBatch):
         self.batches.append(batch)
         self.rows  += batch.num_rows
-        self.bytes += sum(buf.size for buf in batch.buffers())
+        # Compute batch size in bytes; RecordBatch has no buffers() API.
+        # Convert to a table and use nbytes which accounts for all columns.
+        try:
+            tbl = pa.Table.from_batches([batch])
+            self.bytes += tbl.nbytes
+        except Exception:
+            # Fallback: sum column nbytes
+            self.bytes += sum(col.nbytes for col in batch.columns)
         self.last_mut = time.time()
 
     def to_table(self) -> pa.Table:
@@ -64,27 +69,31 @@ class AsyncCachedStore(iAsyncStore):
     """
     def __init__(self,
         async_store: iAsyncStore,
-        flush_rows=1_000_000, 
-        flush_mb=512,
-        global_mb=None, 
-        idle_sec=30, 
+        cache_config: CacheConfig,
     ):
         self._inner: iAsyncStore = async_store
         self._mem: Dict[ArchetypeSignature, MemTable] = {}
         
         # thresholds
-        self.flush_rows   = flush_rows
-        self.flush_bytes  = flush_mb << 20
-        self.idle_sec     = idle_sec
-        self.global_bytes = (global_mb << 20) if global_mb else psutil.virtual_memory().available * 0.7
+        self.flush_rows   = cache_config.flush_rows
+        self.flush_bytes  = cache_config.flush_mb << 20
+        self.idle_sec     = cache_config.idle_sec
+
+        # Distinguish between the global memory budget and the current cached usage
+        self.global_budget_bytes: float = (
+            cache_config.global_mb << 20
+            if cache_config.global_mb is not None
+            else psutil.virtual_memory().available * 0.7
+        )
+        self.total_cached_bytes: int = 0
         
         # background loop turned on/off flag
         self._flush_lock = asyncio.Lock() 
         self._bg_on = True
-        asyncio.create_task(self._background_flush(self.idle_sec))  # fire-and-forget
+        self._bg_task: asyncio.Task | None = asyncio.create_task(self._background_flush(self.idle_sec))
 
     def _update_total(self, delta: int):
-        self.global_bytes += delta
+        self.total_cached_bytes += delta
         
 
     # ---------------------------------------------------
@@ -112,7 +121,7 @@ class AsyncCachedStore(iAsyncStore):
         self._update_total(-flushed_bytes)
 
     async def _background_flush(self, idle_sec=30):
-        while True:
+        while self._bg_on:
             await asyncio.sleep(idle_sec)
             now = time.time()
             
@@ -126,7 +135,7 @@ class AsyncCachedStore(iAsyncStore):
     # Public API
     # ---------------------------------------------------
 
-    async def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
         """
@@ -137,11 +146,11 @@ class AsyncCachedStore(iAsyncStore):
         if mt and mt.rows:
             df  = daft.from_arrow(mt.to_table())
 
-            return df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id)
+            return df.where(df["world_id"] == str(world_id)) \
+               .where(df["run_id"] == str(run_id))
         
         # If no data in cache, grab from storage
-        return await self._inner.get_archetype_df(sig, tick, world_id, run_id)
+        return await self._inner.get_archetype_df(sig, world_id, run_id)
 
     
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
@@ -152,7 +161,10 @@ class AsyncCachedStore(iAsyncStore):
         added = 0
         for batch in df.to_arrow_iter():
             self._mem.setdefault(sig, MemTable()).append(batch)
-            added += sum(buf.size for buf in batch.buffers())
+            try:
+                added += pa.Table.from_batches([batch]).nbytes
+            except Exception:
+                added += sum(col.nbytes for col in batch.columns)
 
         self._update_total(added)
 
@@ -160,8 +172,29 @@ class AsyncCachedStore(iAsyncStore):
         needs_flush = (
             self._mem[sig].rows  >= self.flush_rows or
             self._mem[sig].bytes >= self.flush_bytes or
-            sum(m.bytes for m in self._mem.values()) >= self.global_bytes
+            sum(m.bytes for m in self._mem.values()) >= self.global_budget_bytes
         )
 
         if needs_flush:
             await self._background_flush_sig(sig)
+
+    async def shutdown(self) -> None:
+        """
+        Stop background flushing and ensure all pending data is flushed to the inner store.
+        """
+        # Stop the background task quickly
+        self._bg_on = False
+        if self._bg_task is not None:
+            self._bg_task.cancel()
+            try:
+                await self._bg_task
+            except asyncio.CancelledError:
+                pass
+
+        # Flush any remaining signatures
+        for sig, mt in list(self._mem.items()):
+            if mt.rows:
+                await self._background_flush_sig(sig)
+
+        # Delegate shutdown to inner store
+        await self._inner.shutdown()

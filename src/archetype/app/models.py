@@ -1,10 +1,11 @@
 from typing import Dict, Any
 from uuid_utils import UUID
+import uuid_utils as uuid
 from pydantic import BaseModel, Field, field_serializer, FieldSerializationInfo
-import uuid
 import json
 import pyarrow as pa
 from typing import Literal
+from itertools import count
 
 # Global sequence counter for command ordering
 _SEQ = count()
@@ -29,7 +30,7 @@ class Command(BaseModel):
     version: int                   = 1
     seq: int                       = Field(default_factory=lambda: next(_SEQ))
 
-    model_config = dict(frozen=True)       # hashable & heap-friendly
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)       # hashable & heap-friendly
 
     # ------------------------------------------------------------------ #
     # Provide Arrow-friendly serialisers

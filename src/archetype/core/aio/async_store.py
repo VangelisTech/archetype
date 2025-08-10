@@ -18,14 +18,13 @@ from logging import getLogger
 
 # Technologies
 from daft import  DataFrame, Schema
-from daft.session import Session
 from daft.catalog import Table
-import pyarrow as pa
 
 
 # Internals
 from archetype.core import ArchetypeSignature, Archetype
 from archetype.core.aio.async_interfaces import iAsyncStore
+from archetype.core.config import StorageConfig
 
 # Logger
 logger = getLogger(__name__)
@@ -46,13 +45,13 @@ class AsyncStore(iAsyncStore):
 
     """
     def __init__(self,
-        uri: str,
-        session: Session,
-        debug: bool = False
+        storage_config: StorageConfig,
     ):
-        self.uri = uri
-        self.debug = debug
-        self.sess = session
+        self.uri = storage_config.uri
+        self.namespace = storage_config.namespace
+        self.io_config = storage_config.io_config
+        self.catalog = storage_config.catalog
+        self.session = storage_config.get_session()
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -63,25 +62,22 @@ class AsyncStore(iAsyncStore):
         pyarrow_schema = Archetype.get_archetype_schema(sig)
         daft_schema = Schema.from_pyarrow_schema(pyarrow_schema)
         try:
-            table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
+            table = self.session.create_table_if_not_exists(hash_val, source=daft_schema)
         except Exception as e:
             raise Exception(f"Error creating table {hash_val}: {e}")
 
         return table
 
-    async def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = await table.read() # Cheap, Lazy
+        df: DataFrame = table.read()  # Cheap, Lazy
 
-        if self.debug: 
-            print(f'Reading {table.name}')
-            df_debug = df.limit(5).show()
-
-        return df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id) 
+        # stored as strings; ensure filter values are strings
+        return df.where(df["world_id"] == str(world_id)) \
+               .where(df["run_id"] == str(run_id)) 
 
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
@@ -89,14 +85,10 @@ class AsyncStore(iAsyncStore):
         Append a table with a new dataframe.
         """
         table_name = Archetype.get_name(sig)
-        table = self.sess.get_table(table_name)
-
-        if self.debug:
-            df.collect()
-            print(f"Appending {df.count_rows()} rows to table {table_name}")
-            df.show()
+        table = self.session.get_table(table_name)
             
-        await table.append(df)
+        # Daft's Table.append is synchronous; do not await
+        table.append(df)
 
     async def shutdown(self) -> None:
         """

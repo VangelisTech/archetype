@@ -1,9 +1,9 @@
-from typing import List, Dict, Type
+from typing import List, Dict
 from uuid_utils import UUID
 
 from archetype.core.orchestrator import WorldOrchestrator
 from archetype.core import Component
-from archetype.core.aio import AsyncProcessor
+from archetype.app.models import Command
 
 
 class WorldService:
@@ -19,7 +19,7 @@ class WorldService:
     def __init__(self, orchestrator: WorldOrchestrator):
         self.orchestrator = orchestrator
 
-    async def apply_commands(self, world_id: UUID, cmds: List['Command']) -> List[UUID]:
+    async def apply_commands(self, world_id: UUID, cmds: List[Command]) -> List[UUID]:
         """
         Processes a batch of commands for a specific world.
         
@@ -32,60 +32,60 @@ class WorldService:
         processed_cmd_ids = [c.id for c in cmds]
         
         # Separate state and behavior mutations
-        data_cmds = [c for c in cmds if not c.op.endswith("_processor")]
-        proc_cmds = [c for c in cmds if c.op.endswith("_processor")]
+        data_cmds = [c for c in cmds if c.op not in {"add_processor", "remove_processor"}]
+        proc_cmds = [c for c in cmds if c.op in {"add_processor", "remove_processor"}]
 
         # Apply data commands to populate spawn, despawn, and transmute caches
         for cmd in data_cmds:
             handler = getattr(self, f"_handle_{cmd.op}", None)
             if handler:
-                await handler(world, cmd.payload)
+                await handler(world, cmd)
 
         # Apply processor commands directly (hot-swapping for next tick)
         for cmd in proc_cmds:
             handler = getattr(self, f"_handle_{cmd.op}", None)
             if handler:
-                await handler(world, cmd.payload)
+                await handler(world, cmd)
 
         return processed_cmd_ids
     
-    async def _handle_create_entity(self, world, payload: Dict) -> int:
+    async def _handle_create_entity(self, world, cmd: Command) -> int:
         """Handle entity creation with validation."""
-        components = [Component.from_dict(c) for c in payload["components"]]
+        components = [Component.from_dict(c) for c in cmd.payload["components"]]
         
         # Add any business validation here
         # e.g., check component limits, validate component data, etc.
         
         return await world.create_entity(components)
 
-    async def _handle_remove_entity(self, world, payload: Dict):
+    async def _handle_delete_entity(self, world, cmd: Command):
         """Handle entity removal."""
-        return await world.remove_entity(payload["entity_id"])
+        return await world.remove_entity(cmd.payload["entity_id"])
 
-    async def _handle_add_component(self, world, payload: Dict):
+    async def _handle_add_component(self, world, cmd: Command):
         """Handle adding components to an existing entity."""
-        entity_id = payload["entity_id"]
-        components = [Component.from_dict(c) for c in payload["components"]]
+        entity_id = cmd.payload["entity_id"]
+        components = [Component.from_dict(c) for c in cmd.payload["components"]]
         
         return await world.add_components(entity_id, components)
 
-    async def _handle_remove_component(self, world, payload: Dict):
+    async def _handle_remove_component(self, world, cmd: Command):
         """Handle removing components from an entity."""
-        entity_id = payload["entity_id"]
-        component_types = [Component.get_type_by_name(name) for name in payload["component_types"]]
+        entity_id = cmd.payload["entity_id"]
+        component_types = [Component.get_type_by_name(name) for name in cmd.payload["component_types"]]
         
         return await world.remove_components(entity_id, component_types)
 
-    async def _handle_add_processor(self, world, payload: Dict):
+    async def _handle_add_processor(self, world, cmd: Command):
         """Handle adding a processor to the world's system."""
         # Note: This assumes the processor is already instantiated
         # In practice, you might need to deserialize or look it up
-        processor = payload["processor"]
+        processor = cmd.payload["processor"]
         await world.add_processor(processor)
 
-    async def _handle_remove_processor(self, world, payload: Dict):
+    async def _handle_remove_processor(self, world, cmd: Command):
         """Handle removing a processor from the world's system."""
-        processor_type = payload["processor"]
+        processor_type = cmd.payload["processor"]
         await world.remove_processor(processor_type)
     
     # --- Additional business operations ---

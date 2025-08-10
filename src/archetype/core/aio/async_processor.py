@@ -24,7 +24,7 @@ class AsyncProcessor(BaseProcessor):
     components: Tuple[Type['Component'], ...] = ()
     priority: int = 10
     
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+    async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
         """
         Async version of process method. Override this in subclasses.
         """

@@ -2,11 +2,10 @@ from typing import List, Dict, Optional, Type
 from uuid_utils import UUID
 
 from archetype.core.orchestrator import WorldOrchestrator
-from archetype.app.broker import AsyncCommandBroker
-from archetype.app.auth.models import Command, ActorCtx
+from archetype.app.auth.models import  ActorCtx
+from archetype.app.models import Command
 from archetype.core import Component
-from archetype.core.aio import AsyncProcessor
-
+from archetype.app.broker import CommandBroker
 
 class CommandService:
     """
@@ -20,7 +19,7 @@ class CommandService:
     Note: Actual command execution is handled by WorldService.
     """
     
-    def __init__(self, broker: AsyncCommandBroker, orchestrator: WorldOrchestrator):
+    def __init__(self, broker: CommandBroker, orchestrator: WorldOrchestrator):
         self.broker = broker
         self.orchestrator = orchestrator
     

@@ -18,11 +18,11 @@ from archetype.core.interfaces import Component
 from archetype.core.base import BaseProcessor
 
 
-class Processor(BaseProcessor):
+class SyncProcessor(BaseProcessor):
     components: Tuple[Type[Component], ...] = ()
     priority: int = 10
 
-    def process(self, df: DataFrame, **kwargs) -> DataFrame:
+    def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
         """
         Processor method are provided the state of the archetype at the current tick.
         Processors are not responsible for updating the tick value.

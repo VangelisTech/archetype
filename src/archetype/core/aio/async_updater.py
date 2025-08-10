@@ -14,12 +14,13 @@
 
 import daft
 from daft import col, DataFrame, lit
-from typing import List, Dict, Any
-from logging import getLogger
+
 from archetype.core.aio.async_interfaces import iAsyncUpdateManager, iAsyncStore
 from archetype.core import ArchetypeSignature, Archetype
+import time
+import logging
 
-logger = getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class AsyncUpdateManager(iAsyncUpdateManager):
@@ -27,28 +28,37 @@ class AsyncUpdateManager(iAsyncUpdateManager):
         self.store = store
         self.validate_flag = validate_flag
 
-    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> None:
+    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         df = df.with_columns({
             "tick": lit(tick).cast(daft.DataType.uint32()),
-            "world_id": lit(world_id),
-            "run_id": lit(run_id),
+            "world_id": lit(str(world_id)),
+            "run_id": lit(str(run_id)),
             "entity_id": col("entity_id").cast(daft.DataType.uint32()),
         })
 
-        # if self.validate_flag:
-        #    self._validate(sig, df)
-
         # TODO: Add role/ctx checks for write priveledges
         try:
-            df.collect() # Moment of Materialization 
+            df.collect()  # Moment of Materialization
+            row_count = df.count_rows()
+
+            if row_count == 0:
+                logger.info(
+                    f"Append skipped: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} rows={row_count}"
+                )
+                return df
+
+            t0 = time.perf_counter()
             await self.store.append(sig, df)
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} rows={row_count} duration_ms={duration_ms:.3f}"
+            )
 
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
-
+        return df
 
 
     async def _validate(self, sig: ArchetypeSignature, df: DataFrame):
-        # Coerce Schema already happens at store, this is for applying pydantic validation on data for components.
-        # and anything else we'd want to check prior to write. 
-        raise NotImplementedError
+        # Baseline updater leaves validation to instrumentation layer
+        return None
