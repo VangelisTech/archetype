@@ -23,10 +23,12 @@ from daft.io.object_store_options import io_config_to_storage_options
 import lancedb
 from lancedb.index import Bitmap, BTree
 
-from archetype.core.aio.async_interfaces import iAsyncQueryManager, iAsyncStore
+from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore
+from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.archetype import Archetype
-from archetype.core.config import StorageConfig, RunConfig
+from archetype.core.config import RunConfig
+from archetype.core.runtime.storage import StorageContext
 
 
 from logging import getLogger
@@ -48,12 +50,20 @@ class AsyncLancedbStore(iAsyncStore):
     numbers of archetype tables without having to hold them in memory, provided we
 
     """
-    def __init__(self, storage_config: StorageConfig):
-        self.uri = storage_config.uri
-        self.namespace = storage_config.namespace
-        self.session = storage_config.get_session()
-
-        self.io_config = storage_config.io_config
+    def __init__(self, context_or_config):
+        """Initialize with a StorageContext (preferred) or a legacy config with get_session()."""
+        if hasattr(context_or_config, "get_session"):
+            cfg = context_or_config
+            self.uri = cfg.uri
+            self.namespace = cfg.namespace
+            self.session = cfg.get_session()
+            self.io_config = getattr(cfg, "io_config", None)
+        else:
+            context: StorageContext = context_or_config
+            self.uri = context.uri
+            self.namespace = context.namespace
+            self.session = context.session
+            self.io_config = context.io_config
         self.storage_options = (
             io_config_to_storage_options(self.io_config) if self.io_config else None
         )
@@ -136,6 +146,17 @@ class AsyncLancedbStore(iAsyncStore):
         """
         Append a table with a new dataframe.
         """
+        # Defensive no-op for empty frames to avoid Lance casting errors
+        try:
+            df.collect()
+            if df.count_rows() == 0 or not df.column_names:
+                logger.info(
+                    f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
+                )
+                return
+        except Exception as e:
+            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
+            return
 
         async_table = await self._ensure_table(sig)
         table_name = async_table.name
@@ -155,7 +176,8 @@ class AsyncLancedbStore(iAsyncStore):
         """
         Shutdown the store.
         """
-        self.lancedb.close()
+        if self.lancedb is not None:
+            self.lancedb.close()
     
     async def optimize_tables(self) -> None:
         """
@@ -169,11 +191,13 @@ class AsyncLancedbStore(iAsyncStore):
                 raise Exception(f"Error optimizing table {table_name}: {e}")
 
 
-class AsyncLancedbQueryManager(iAsyncQueryManager):
+class AsyncLancedbQueryManager(AsyncQueryManager):
     def __init__(self, store: "AsyncLancedbStore"):
-        self._store = store
+        super().__init__(store)
 
-    # See AsyncQueryManager for implementation details.
+    # Methods from AsyncQueryManager include: 
+    # get_archetype_df
+    # query_archetype 
 
     
     async def fts_search(self, query: str, fts_columns: List[str], sig: ArchetypeSignature, tick: int, world_id: str, run_config: RunConfig) -> DataFrame:

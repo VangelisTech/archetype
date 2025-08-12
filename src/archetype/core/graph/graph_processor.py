@@ -2,7 +2,7 @@ from typing import List, Type, Callable, Dict, Any
 from enum import Enum, auto
 import daft
 
-from archetype.core.base import BaseProcessor
+from archetype.core.interfaces import iAsyncProcessor
 
 
 class UpdateStage(Enum):
@@ -12,7 +12,7 @@ class UpdateStage(Enum):
     PostUpdate = auto()
 
 
-class GraphProcessor(BaseProcessor):
+class GraphProcessor(iAsyncProcessor):
     """The new base class for processors, holding scheduling metadata."""
     reads: List[Type] = []
     writes: List[Type] = []
@@ -21,5 +21,4 @@ class GraphProcessor(BaseProcessor):
     is_eager: bool = False
 
     async def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
-        """The core logic of the processor."""
         raise NotImplementedError

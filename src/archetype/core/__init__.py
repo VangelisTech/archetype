@@ -18,6 +18,7 @@ from .component import Component
 from .archetype import Archetype
 from .config import StorageConfig, CacheConfig, RunConfig, WorldConfig
 from .orchestrator import WorldOrchestrator
+from .factory import WorldFactory
 from .resources import StorageResourceManager
 
 # Sync Module
@@ -47,19 +48,27 @@ from .storage import (
 
 
 __all__ = [
+    # Core types
     "Component",
     "ArchetypeSignature",
     "Archetype",
+    # Config
+    "RunConfig",
+    "StorageConfig",
+    "CacheConfig",
+    "WorldConfig",
+    # Orchestration
+    "WorldOrchestrator",
+    "WorldFactory",
+    "StorageResourceManager",
+    # Sync API
     "SyncWorld",
     "SyncStore",
     "SyncSystem",
     "SyncProcessor",
-    "Component",
     "QueryManager",
     "UpdateManager",
-    "RunConfig",
-    "StorageConfig",
-    "CacheConfig",
+    # Async API
     "AsyncWorld",
     "AsyncSystem",
     "AsyncStore",
@@ -67,11 +76,6 @@ __all__ = [
     "AsyncUpdateManager",
     "AsyncCachedStore",
     "AsyncProcessor",
+    # Storage backends
     "AsyncLancedbStore",
-    "StorageConfig",
-    "CacheConfig",
-    "RunConfig",
-    "WorldConfig",
-    "WorldOrchestrator",
-    "StorageResourceManager",
 ]

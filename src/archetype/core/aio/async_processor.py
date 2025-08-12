@@ -14,13 +14,11 @@
 
 from typing import Tuple, Type
 from daft import DataFrame
-import asyncio
 
-from archetype.core.base import BaseProcessor
 from archetype.core import Component
+from archetype.core.interfaces import iAsyncProcessor
 
-
-class AsyncProcessor(BaseProcessor):
+class AsyncProcessor(iAsyncProcessor):
     components: Tuple[Type['Component'], ...] = ()
     priority: int = 10
     

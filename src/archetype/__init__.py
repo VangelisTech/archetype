@@ -19,6 +19,7 @@ from archetype.core import (
     AsyncWorld,
     AsyncSystem,
     WorldOrchestrator,
+    StorageResourceManager,
     StorageConfig,
     CacheConfig,
     RunConfig,

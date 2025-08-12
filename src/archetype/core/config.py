@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional
 from daft.io import IOConfig
 from daft.catalog import Catalog
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from uuid_utils import UUID
 import uuid_utils as uuid
 from pyiceberg.catalog.sql import SqlCatalog
@@ -19,43 +19,26 @@ class StorageConfig(BaseModel):
     """
     uri: str = Field(default=".archetype_data/", description="The URI location for the storage backend")
     namespace: str = Field(default="archetypes")
+    obs_namespace: str = Field(default="obs", description="Namespace for observability tables (logs/metrics/events)")
     is_async: bool = Field(default=True, description="Whether or not the storage backend is asynchronous") 
     use_lancedb: bool = Field(default=True, description="Whether or not to use lancedb as the storage backend")
     io_config: Optional[IOConfig] = Field(default=None, description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.") 
     catalog: Optional[Catalog] = Field(default=None, description="The catalog for the storage backend, feel free to pass in your own, defaults to instatiating a new pyiceberg sql lite catalog if none is provided")
     has_cache: bool = Field(default=False, description="Whether or not the storage backend is supported by a cache")
     session: Optional[Session] = Field(default=None, description="The session for the storage backend, defaults to a new session if none is provided")
+    # Unity Catalog (optional control plane)
+    use_unity_catalog: bool = Field(default=False, description="Use Unity Catalog as the catalog/control plane")
+    uc_endpoint: Optional[str] = Field(default=None, description="Unity Catalog endpoint, e.g. https://<workspace>.cloud.databricks.com")
+    uc_token: Optional[str] = Field(default=None, description="Unity Catalog access token (service principal or PAT)")
+    uc_catalog: Optional[str] = Field(default=None, description="Unity Catalog catalog name to use for data namespace")
+    uc_schema: Optional[str] = Field(default=None, description="Unity Catalog schema name to use for data namespace")
+    uc_obs_schema: Optional[str] = Field(default=None, description="Unity Catalog schema for observability (defaults to obs_namespace if unset)")
     
     model_config = dict(arbitrary_types_allowed=True)
 
-    @model_validator(mode="after")
-    def setup_catalog(self) -> "StorageConfig":
-        if self.catalog is None:
-            # Ensure uri exists
-            if not os.path.exists(self.uri):
-                os.makedirs(self.uri)
-
-            self.catalog = Catalog.from_iceberg(
-                SqlCatalog(
-                    "archetype_iceberg_sql_catalog",
-                    **{
-                        "uri": f"sqlite:///{self.uri}/catalog.db",
-                        "warehouse": f"file://{self.uri}",
-                    },
-                )
-            )
-        return self
-    
+    # Side-effect free: no implicit catalog/session creation here. Use StorageSessionFactory to build runtime context.
     def set_session(self, session: Session) -> None:
         self.session = session
-
-    def get_session(self) -> Session:
-        if self.session is None:
-            self.session = Session()
-            self.session.attach_catalog(self.catalog)
-            self.session.create_namespace_if_not_exists(self.namespace)
-            self.session.set_namespace(self.namespace)
-        return self.session
 
 class RunConfig(BaseModel):
     """
@@ -66,6 +49,9 @@ class RunConfig(BaseModel):
       - num_steps: int - The number of steps to execute in the run sequence
       - debug: bool - Whether or not to enable debug mode
       - validate: bool - Whether or not to enable validation mode
+
+    TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True, prefer_live_reads=True)
+          and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity.
     """
     run_id: UUID     = Field(default_factory=uuid.uuid7, description="The unique identifier for the run sequence, a uuid7")
     num_steps: int   = Field(default=1, description="The number of steps to execute in the run sequence")
@@ -73,8 +59,76 @@ class RunConfig(BaseModel):
     enable_validation: bool   = Field(default=False, description="Whether or not to enable validation mode")
     show_rows: int      = Field(default=3, description="Max rows to display for DataFrame snapshots in debug panels (0 disables)")
     explain: bool     = Field(default=False, description="Whether to render DataFrame logical plans in debug panels")
+    prefer_live_reads: bool = Field(default=False, description="When True, step uses in-memory live snapshot for previous-state reads instead of querying the store")
+    suite: Optional[str] = Field(default=None, description="Optional suite/experiment label for grouping runs (e.g., benchmarks, ensembles)")
+    trial: Optional[int] = Field(default=None, description="Optional trial index for ensemble/grid runs")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Arbitrary metadata for experiment tracking")
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
+
+    # Named constructors to reduce call-site verbosity for common scenarios
+    @classmethod
+    def dev(
+        cls,
+        *,
+        steps: int = 1,
+        prefer_live_reads: bool = True,
+        debug: bool = True,
+        explain: bool = False,
+        show_rows: int = 5,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "RunConfig":
+        return cls(
+            num_steps=steps,
+            prefer_live_reads=prefer_live_reads,
+            debug=debug,
+            explain=explain,
+            show_rows=show_rows,
+            metadata=metadata,
+        )
+
+    @classmethod
+    def benchmark(
+        cls,
+        *,
+        steps: int,
+        explain: bool = False,
+        debug: bool = False,
+        prefer_live_reads: bool = False,
+        show_rows: int = 0,
+        suite: str | None = "benchmark",
+        trial: int | None = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "RunConfig":
+        return cls(
+            num_steps=steps,
+            explain=explain,
+            debug=debug,
+            prefer_live_reads=prefer_live_reads,
+            show_rows=show_rows,
+            suite=suite,
+            trial=trial,
+            metadata=metadata,
+        )
+
+    @classmethod
+    def validate(
+        cls,
+        *,
+        steps: int = 1,
+        enable_validation: bool = True,
+        debug: bool = True,
+        prefer_live_reads: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "RunConfig":
+        return cls(
+            num_steps=steps,
+            enable_validation=enable_validation,
+            debug=debug,
+            prefer_live_reads=prefer_live_reads,
+            metadata=metadata,
+            suite="validate",
+        )
 
 class CacheConfig(BaseModel):
     """

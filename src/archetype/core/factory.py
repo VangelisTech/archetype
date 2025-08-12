@@ -2,8 +2,9 @@ from typing import Union, Optional
 
 from archetype.core.config import StorageConfig, CacheConfig, WorldConfig
 from archetype.core.resources import StorageResourceManager
-from archetype.core.interfaces import iWorld, iSystem
-from archetype.core.aio import AsyncWorld, iAsyncSystem, AsyncSystem
+from archetype.core.interfaces import iWorld
+from archetype.core.aio import AsyncWorld, AsyncSystem
+from archetype.core.interfaces import iAsyncSystem
 from archetype.core.sync import SyncWorld, SyncSystem
 from archetype.core.instrumentation.profiling_shim import TRACY_ENABLED
 try:
@@ -31,7 +32,7 @@ class WorldFactory:
         world_config: WorldConfig,
         storage_config: StorageConfig,
         cache_config: Optional[CacheConfig] = None,
-        system: Optional[Union[iAsyncSystem, iSystem]] = None,
+        system: Optional[Union[iAsyncSystem, object]] = None,
         *,
         instrumented: Optional[bool] = None,
     ) -> iWorld:
@@ -48,20 +49,20 @@ class WorldFactory:
             use_instrumented = instrumented if instrumented is not None else TRACY_ENABLED
             if use_instrumented and InstrumentedAsyncWorld and InstrumentedAsyncSystem:
                 world_class = InstrumentedAsyncWorld
-                system_class = InstrumentedAsyncSystem
+                default_system = InstrumentedAsyncSystem()
             else:
                 world_class = AsyncWorld
-                system_class = AsyncSystem
+                default_system = AsyncSystem()
         else:
             world_class = SyncWorld
-            system_class = SyncSystem
+            default_system = SyncSystem()
         
         # 3. Create the world instance
         world = world_class(
             world_config=world_config,
             querier=querier,
             updater=updater,
-            system=system_class(),
+            system=system or default_system,
         )
 
         return world

@@ -23,8 +23,8 @@ from daft.catalog import Table
 
 # Internals
 from archetype.core import ArchetypeSignature, Archetype
-from archetype.core.aio.async_interfaces import iAsyncStore
-from archetype.core.config import StorageConfig
+from archetype.core.interfaces import iAsyncStore
+from archetype.core.runtime.storage import StorageContext
 
 # Logger
 logger = getLogger(__name__)
@@ -44,14 +44,12 @@ class AsyncStore(iAsyncStore):
     Using Daft Sessions/Catalogs enables us to reference archetype tables without having to hold them in memory. 
 
     """
-    def __init__(self,
-        storage_config: StorageConfig,
-    ):
-        self.uri = storage_config.uri
-        self.namespace = storage_config.namespace
-        self.io_config = storage_config.io_config
-        self.catalog = storage_config.catalog
-        self.session = storage_config.get_session()
+    def __init__(self, context: StorageContext):
+        self.uri = context.uri
+        self.namespace = context.namespace
+        self.io_config = context.io_config
+        self.catalog = context.catalog
+        self.session = context.session
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -84,9 +82,20 @@ class AsyncStore(iAsyncStore):
         """
         Append a table with a new dataframe.
         """
-        table_name = Archetype.get_name(sig)
-        table = self.session.get_table(table_name)
-            
+        # Defensive: skip zero-row or empty-schema appends to protect backends
+        try:
+            df.collect()
+            if df.count_rows() == 0 or not df.column_names:
+                logger.info(
+                    f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
+                )
+                return
+        except Exception as e:
+            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
+            return
+
+        table = self._ensure_table(sig)
+
         # Daft's Table.append is synchronous; do not await
         table.append(df)
 

@@ -1,15 +1,13 @@
 from __future__ import annotations
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple
 import asyncio
-from daft.session import Session
 
 from archetype.core.config import StorageConfig, CacheConfig
 from archetype.core.storage import  AsyncLancedbStore
 from archetype.core.sync import SyncStore
+from archetype.core.interfaces import iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager
 from archetype.core.aio import (
-    iAsyncStore,
-    iAsyncQueryManager,
-    iAsyncUpdateManager,
+
     AsyncQueryManager,
     AsyncUpdateManager,
     AsyncStore,
@@ -17,7 +15,7 @@ from archetype.core.aio import (
 )
 from archetype.core.instrumentation.instrumented_async_store import InstrumentedAsyncStore
 from archetype.core.instrumentation.instrumented_async_querier import InstrumentedAsyncQueryManager
-
+from archetype.core.runtime.storage import StorageSessionFactory
 
 
 class StorageResourceManager:
@@ -28,10 +26,9 @@ class StorageResourceManager:
     URI, only one instance of the (Store, Querier, Updater) triplet is created
     and shared among all worlds that use that backend.
     """
-    def __init__(self, session: Optional[Session] = None):
+    def __init__(self):
         self._instances: Dict[str, Tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]] = {}
         self._locks: Dict[str, asyncio.Lock] = {}
-        self._session = session or Session()
 
 
     async def get_backend(
@@ -40,38 +37,40 @@ class StorageResourceManager:
         """
         Retrieves or creates a shared backend triplet for the given storage config.
         """
-        uri = storage_config.uri
-        if uri not in self._instances:
+        key = f"{storage_config.uri}::{storage_config.namespace}"
+        if key not in self._instances:
             # Create a lock for this specific URI if it doesn't exist
-            if uri not in self._locks:
-                self._locks[uri] = asyncio.Lock()
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
 
-            async with self._locks[uri]:
+            async with self._locks[key]:
                 # Double-check if another coroutine created the instance while we waited for the lock
-                if uri not in self._instances:
-                    store = self._create_store(storage_config)
+                if key not in self._instances:
+                    # Initialize runtime context explicitly (side-effect boundary)
+                    context = StorageSessionFactory.build(storage_config)
+                    store = self._create_store(storage_config, context)
                     if cache_config:
                         # Wrap with cached store using CacheConfig directly
                         store = AsyncCachedStore(async_store=store, cache_config=cache_config)
                     
                     # Optionally instrument store and querier
                     if instrumented:
-                        store = InstrumentedAsyncStore(storage_config)  # type: ignore[assignment]
+                        store = InstrumentedAsyncStore(context)  # type: ignore[assignment]
                         querier = InstrumentedAsyncQueryManager(store=store)
                     else:
                         querier = AsyncQueryManager(store=store)
                     updater = AsyncUpdateManager(store=store)
-                    self._instances[uri] = (store, querier, updater)
+                    self._instances[key] = (store, querier, updater)
         
-        return self._instances[uri]
+        return self._instances[key]
 
-    def _create_store(self, storage_config: StorageConfig) -> iAsyncStore:
+    def _create_store(self, storage_config: StorageConfig, context) -> iAsyncStore:
         """Factory method to create the appropriate store based on config."""
         if not storage_config.is_async:
             return SyncStore(storage_config)
         if storage_config.use_lancedb:
-            return AsyncLancedbStore(storage_config)
-        return AsyncStore(storage_config)
+            return AsyncLancedbStore(context)
+        return AsyncStore(context)
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
@@ -83,6 +82,7 @@ class StorageResourceManager:
                 store.shutdown()
         self._instances.clear()
         self._locks.clear()
+
 
 
 class RuntimeResourceManager:

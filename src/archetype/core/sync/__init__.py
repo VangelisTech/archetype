@@ -11,5 +11,5 @@ __all__ = [
     "UpdateManager",
     "SyncSystem",
     "SyncWorld",
-    "Processor",
+    "SyncProcessor",
 ]

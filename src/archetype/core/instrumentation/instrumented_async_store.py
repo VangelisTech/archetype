@@ -6,6 +6,7 @@ from daft import DataFrame
 
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core import ArchetypeSignature, Archetype
+from archetype.core.runtime.storage import StorageContext
 from .profiling_shim import zone
 from .logging_shim import log_event
 
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 class InstrumentedAsyncStore(AsyncStore):
+    def __init__(self, context: StorageContext):
+        super().__init__(context)
+    
     async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:  # type: ignore[override]
         with zone(f"store.get_archetype_df[{Archetype.get_name(sig)}]"):
             t0 = time.perf_counter()

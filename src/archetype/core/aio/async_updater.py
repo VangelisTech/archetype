@@ -15,7 +15,7 @@
 import daft
 from daft import col, DataFrame, lit
 
-from archetype.core.aio.async_interfaces import iAsyncUpdateManager, iAsyncStore
+from archetype.core.interfaces import iAsyncUpdateManager, iAsyncStore
 from archetype.core import ArchetypeSignature, Archetype
 import time
 import logging
@@ -29,23 +29,22 @@ class AsyncUpdateManager(iAsyncUpdateManager):
         self.validate_flag = validate_flag
 
     async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
-        df = df.with_columns({
-            "tick": lit(tick).cast(daft.DataType.uint32()),
-            "world_id": lit(str(world_id)),
-            "run_id": lit(str(run_id)),
-            "entity_id": col("entity_id").cast(daft.DataType.uint32()),
-        })
-
-        # TODO: Add role/ctx checks for write priveledges
         try:
             df.collect()  # Moment of Materialization
             row_count = df.count_rows()
 
-            if row_count == 0:
+            if row_count == 0 or not df.column_names:
                 logger.info(
                     f"Append skipped: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} rows={row_count}"
                 )
                 return df
+            
+            df = df.with_columns({
+                "tick": lit(tick).cast(daft.DataType.uint32()),
+                "world_id": lit(str(world_id)),
+                "run_id": lit(str(run_id)),
+                "entity_id": col("entity_id").cast(daft.DataType.uint32()),
+            })
 
             t0 = time.perf_counter()
             await self.store.append(sig, df)
@@ -58,7 +57,3 @@ class AsyncUpdateManager(iAsyncUpdateManager):
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
         return df
 
-
-    async def _validate(self, sig: ArchetypeSignature, df: DataFrame):
-        # Baseline updater leaves validation to instrumentation layer
-        return None

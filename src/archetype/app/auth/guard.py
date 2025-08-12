@@ -22,11 +22,12 @@ from archetype.app.auth.models import ActorCtx
 # 2. Static role-permission table
 ROLE_PERMS: dict[str, set[str]] = {
     "viewer":     {"get_state", "get_world", "get_run", },
-    "coder":      {"add_component", "remove_component", "patch_components"},
-    "maintainer": {"spawn_entity", "delete_entity",
+    "coder":      {"add_component", "remove_component", "patch_components", "update"},
+    "maintainer": {"spawn_entity", "delete_entity", "spawn", "despawn",
                    "add_component", "remove_component",
-                   "add_processor", "remove_processor"},
+                   "add_processor", "remove_processor", "update"},
     "admin":      {"*"},   # wildcard – full power
+    "player":     {"spawn", "despawn", "update", "custom"},  # For game players
 }
 
 # Quotas
@@ -41,9 +42,22 @@ _TODAY = date.today()
 # 4. Guardrail function
 def estimate_token_cost(cmd: Command) -> int:
     """Cheap heuristic; tune per op."""
-    if cmd.op.endswith("_processor"):
-        return 200          # assume larger payload
-    return 50               # most ECS ops are tiny
+    import json
+    
+    # Get operation type (from op or type field)
+    op = cmd.op or (cmd.type.value if hasattr(cmd, 'type') else None)
+    
+    if op:
+        if op.endswith("_processor"):
+            return 200          # assume larger payload
+        elif op in ["spawn", "create_entity"]:
+            return 100
+        elif op == "update":
+            return 75
+    
+    # Base cost with payload size consideration
+    payload_size = len(json.dumps(cmd.payload))
+    return 50 + (payload_size // 100)  # most ECS ops are tiny
 
 async def guardrail_allow(cmd: Command, ctx: ActorCtx) -> bool:
     global _TODAY
@@ -54,12 +68,14 @@ async def guardrail_allow(cmd: Command, ctx: ActorCtx) -> bool:
         _TODAY = date.today()
 
     # 1. Permission check
-    allowed = any(
-        cmd.op in ROLE_PERMS.get(role, set()) or "*" in ROLE_PERMS.get(role, set())
-        for role in ctx.roles
-    )
-    if not allowed:
-        return False
+    op = cmd.op or (cmd.type.value if hasattr(cmd, 'type') else None)
+    if op:
+        allowed = any(
+            op in ROLE_PERMS.get(role, set()) or "*" in ROLE_PERMS.get(role, set())
+            for role in ctx.roles
+        )
+        if not allowed:
+            return False
 
     # 2. Per-tick command quota
     cnt = _CMD_COUNT_TICK.get(ctx.id, 0) + 1

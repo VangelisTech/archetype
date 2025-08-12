@@ -15,9 +15,9 @@
 from typing import List
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.interfaces import ArchetypeSignature, iAsyncSystem
+
 
 import logging
 import inspect
@@ -25,7 +25,7 @@ import inspect
 logger = logging.getLogger(__name__)
 
 
-class AsyncSystem(BaseSystem):
+class AsyncSystem(iAsyncSystem):
     """
     Async version of SyncSystem that processes archetypes concurrently.
 

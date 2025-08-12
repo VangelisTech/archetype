@@ -12,16 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time
-from typing import List, Dict
-from uuid import UUID
 import asyncio
+from typing import List, Dict, Optional
+from uuid import UUID
 import heapq
-from datetime import date
-import os
-
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from archetype.app.models import Command
 from archetype.app.auth.models import ActorCtx
@@ -30,104 +24,95 @@ from archetype.app.auth.guard import guardrail_allow
 
 class CommandBroker:
     """
-    A production-hardened, in-memory command broker.
+    A simplified command broker for development.
+    
     Features:
-    - O(log n) heap for efficient, prioritized command ordering.
-    - Async-safe operations with locks.
-    - RBAC and quota guardrails on enqueue.
-    - Write-behind durable logging to Parquet with periodic flushing.
+    - Priority queue per world
+    - Basic RBAC checks
+    - Async-safe operations
     """
 
-    def __init__(self, max_dequeue: int = 50_000, flush_size_bytes: int =  512 * 1024 * 1024, flush_ms: int = 1000):
-        self._queue: Dict[str, asyncio.PriorityQueue] = {}
+    def __init__(self, max_dequeue: int = 50_000):
+        self._queues: Dict[str, List[Command]] = {}  # world_id -> priority queue
         self._pending: Dict[UUID, Command] = {}
-        self._parquet_buffer: List[pa.RecordBatch] = []
-
-        # Params
+        self._lock = asyncio.Lock()
         self._max_dequeue = max_dequeue
-        self._flush_size_bytes = flush_size_bytes
-        self._flush_ms = flush_ms
-
-        # Periodic flush task
-        self._flush_task = asyncio.create_task(self._periodic_flush())
 
     async def enqueue(self, world_id: str, cmd: Command, ctx: ActorCtx):
-        
+        """Enqueue a single command for a specific world."""
         if not await guardrail_allow(cmd, ctx):
-                raise PermissionError(f"RBAC deny for command {c.id} in bulk enqueue.")
+            raise PermissionError(f"RBAC deny for command {cmd.id}")
 
-        should_flush = False
         async with self._lock:
-            self._parquet_buffer.append(cmd.to_arrow())
-            if len(self._parquet_buffer) >= self._flush_rows:
-                should_flush = True
-            heapq.heappush(self._heap, cmd)
+            if world_id not in self._queues:
+                self._queues[world_id] = []
+            
+            heapq.heappush(self._queues[world_id], cmd)
             self._pending[cmd.id] = cmd
 
-        if should_flush:
-            await self._flush_parquet()
-
     async def enqueue_bulk(self, world_id: str, cmds: List[Command], ctx: ActorCtx):
-        arrow_cmds = []
-        for c in cmds:
-            if not await guardrail_allow(c, ctx):
-                raise PermissionError(f"RBAC deny for command {c.id} in bulk enqueue.")
-            arrow_cmds.append(c.to_arrow())
+        """Enqueue multiple commands for a specific world."""
+        # Check permissions for all commands first
+        for cmd in cmds:
+            if not await guardrail_allow(cmd, ctx):
+                raise PermissionError(f"RBAC deny for command {cmd.id}")
 
-        should_flush = False
         async with self._lock:
-            self._parquet_buffer.extend(arrow_cmds)
-            if len(self._parquet_buffer) >= self._flush_rows:
-                should_flush = True
+            if world_id not in self._queues:
+                self._queues[world_id] = []
+            
+            for cmd in cmds:
+                heapq.heappush(self._queues[world_id], cmd)
+                self._pending[cmd.id] = cmd
 
-            for c in cmds:
-                heapq.heappush(self._heap, c)
-                self._pending[c.id] = c
-
-        if should_flush:
-            await self._flush_parquet()
-
-    async def dequeue_due(self, world_id: str, *, tick: int, limit: int | None = None) -> List[Command]:
-        limit = limit or self._max_dequeue
-        out = []
+    async def dequeue(self, world_id: str, max_items: Optional[int] = None) -> List[Command]:
+        """Dequeue commands for a specific world."""
+        max_items = min(max_items or self._max_dequeue, self._max_dequeue)
+        
         async with self._lock:
-            while self._heap and len(out) < limit and self._heap[0].tick <= tick:
-                out.append(heapq.heappop(self._heap))
-        return out
+            if world_id not in self._queues or not self._queues[world_id]:
+                return []
+            
+            commands = []
+            queue = self._queues[world_id]
+            
+            for _ in range(min(max_items, len(queue))):
+                if queue:
+                    cmd = heapq.heappop(queue)
+                    commands.append(cmd)
+                    # Remove from pending
+                    self._pending.pop(cmd.id, None)
+            
+            return commands
 
-    async def ack(self, world_id: str, cmd_ids: List[UUID]) -> None:
+    async def peek(self, world_id: str, max_items: Optional[int] = None) -> List[Command]:
+        """Peek at commands without removing them."""
+        max_items = min(max_items or self._max_dequeue, self._max_dequeue)
+        
         async with self._lock:
-            for cid in cmd_ids:
-                self._pending.pop(cid, None)
+            if world_id not in self._queues:
+                return []
+            
+            # Return sorted copy without modifying queue
+            queue = self._queues[world_id]
+            return sorted(queue)[:max_items]
 
-    async def _flush_parquet(self):
-        if not self._parquet_buffer:
-            return
-
-        buffer_to_flush = None
+    async def get_pending_count(self, world_id: Optional[str] = None) -> int:
+        """Get count of pending commands."""
         async with self._lock:
-            if self._parquet_buffer:
-                buffer_to_flush = self._parquet_buffer
-                self._parquet_buffer = []
+            if world_id:
+                return len(self._queues.get(world_id, []))
+            return len(self._pending)
 
-        if not buffer_to_flush:
-            return
-
-        log_dir = "command_log"
-        os.makedirs(log_dir, exist_ok=True)
-
-        tbl = pa.Table.from_batches(buffer_to_flush)
-        pq.write_table(
-            tbl,
-            os.path.join(log_dir, f"{date.today():%Y-%m-%d}.parquet"),
-            schema=Command.arrow_schema(),
-            compression="zstd",
-        )
-
-    async def _periodic_flush(self):
-        while True:
-            await asyncio.sleep(self._flush_ms / 1000)
-            if self._parquet_buffer:
-                await self._flush_parquet()
-
-
+    async def clear(self, world_id: Optional[str] = None):
+        """Clear pending commands."""
+        async with self._lock:
+            if world_id:
+                self._queues.pop(world_id, None)
+                # Also remove from pending
+                if world_id in self._queues:
+                    for cmd in self._queues[world_id]:
+                        self._pending.pop(cmd.id, None)
+            else:
+                self._queues.clear()
+                self._pending.clear()

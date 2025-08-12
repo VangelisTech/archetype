@@ -16,14 +16,13 @@ from typing import List
 import logging
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem
 from archetype.core.sync.processor import SyncProcessor
-from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.interfaces import ArchetypeSignature, iSystem
 from archetype.core.config import RunConfig
 
 logger = logging.getLogger(__name__)
 
-class SyncSystem(BaseSystem):
+class SyncSystem(iSystem):
     def __init__(self):
         self.processors: List[SyncProcessor] = []
 

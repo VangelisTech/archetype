@@ -14,11 +14,11 @@
 
 from typing import Tuple, Type
 from daft import DataFrame
-from archetype.core.interfaces import Component
-from archetype.core.base import BaseProcessor
+from archetype.core import Component
+from archetype.core.interfaces import iProcessor
 
 
-class SyncProcessor(BaseProcessor):
+class SyncProcessor(iProcessor):
     components: Tuple[Type[Component], ...] = ()
     priority: int = 10
 

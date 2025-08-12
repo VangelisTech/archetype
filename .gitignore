@@ -2,6 +2,7 @@
 ./.venv
 ./.cursor
 ./.vscode
+./dist/
 *.pyc
 *.pyo
 *.pyd
@@ -21,6 +22,7 @@
 .cursorignore
 *.lance
 Claude.md
+Agents.md
 .claude/
 data/
 

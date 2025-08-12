@@ -6,7 +6,7 @@ from typing import Optional, List
 from daft import DataFrame
 
 from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_interfaces import iAsyncStore
+from archetype.core.interfaces import iAsyncStore
 from archetype.core import ArchetypeSignature, Archetype, Component
 from archetype.core.config import RunConfig
 from .profiling_shim import zone

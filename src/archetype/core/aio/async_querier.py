@@ -16,7 +16,7 @@ from typing import Optional, List
 
 from daft import DataFrame
 from archetype.core import ArchetypeSignature, Archetype, Component
-from archetype.core.aio.async_interfaces import iAsyncStore, iAsyncQueryManager
+from archetype.core.interfaces import iAsyncStore, iAsyncQueryManager
 
 class AsyncQueryManager(iAsyncQueryManager):
     def __init__(self, store: iAsyncStore):
@@ -54,7 +54,8 @@ class AsyncQueryManager(iAsyncQueryManager):
 
         if components:
             a = Archetype(components)
-            df = df.select(*a.schema.names())
+            # PyArrow Schema.names is a list property, not a callable
+            df = df.select(*a.schema.names)
 
         return df
     

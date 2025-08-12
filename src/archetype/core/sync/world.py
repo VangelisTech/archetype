@@ -23,8 +23,7 @@ from uuid_utils import UUID
 import uuid_utils as uuid
 
 from archetype.core import ArchetypeSignature, Component, Archetype
-from archetype.core.base import BaseWorld
-from archetype.core.interfaces import iSystem, iQueryManager, iUpdateManager
+from archetype.core.interfaces import iSystem, iQueryManager, iUpdateManager, iWorld
 from archetype.core.config import RunConfig
 from archetype.core.sync.processor import SyncProcessor
 
@@ -32,7 +31,7 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
-class SyncWorld(BaseWorld):
+class SyncWorld(iWorld):
     def __init__(self,
         name: str,
         world_id: UUID,
@@ -68,15 +67,6 @@ class SyncWorld(BaseWorld):
         Runs the world for the given run configuration.
         """
         self.run_id = run_config.run_id
-        self.debug = run_config.debug
-        self.validate = run_config.enable_validation
-
-        # Update Loggerplate
-        self.loggerplate = f"world={self.world_id} run={self.run_id}"
-
-        # Set Run Config for System
-        self.system.validate = self.validate
-        self.system.debug = self.debug
 
         for _ in range(run_config.num_steps):
             self.step(run_config, **input_kwargs)
@@ -85,19 +75,19 @@ class SyncWorld(BaseWorld):
         """
         Executes one full simulation tick.
         """
+        self.run_id = run_config.run_id
+
         start_time = time.time()
 
         all_sigs_this_tick = self.active_signatures
         
-        results = []
         for sig in sorted(all_sigs_this_tick):
             result = self._run_archetype(sig, run_config, **input_kwargs)
-            results.append(result)
+
         
         # Finalize tick
         self._clear_caches()
         self.tick += 1
-        logger.info(f"{self.loggerplate} tick {self.tick-1} completed in {time.time() - start_time:.4f}s")
 
         return results
 

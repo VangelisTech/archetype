@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uuid_utils import UUID
 import uuid_utils as uuid
 from pydantic import BaseModel, Field, field_serializer, FieldSerializationInfo
@@ -6,17 +6,31 @@ import json
 import pyarrow as pa
 from typing import Literal
 from itertools import count
+from enum import Enum
 
 # Global sequence counter for command ordering
 _SEQ = count()
+
+
+class CommandType(str, Enum):
+    """Command types for the command broker."""
+    SPAWN = "spawn"
+    DESPAWN = "despawn"
+    UPDATE = "update"
+    ADD_COMPONENT = "add_component"
+    REMOVE_COMPONENT = "remove_component"
+    ADD_PROCESSOR = "add_processor"
+    REMOVE_PROCESSOR = "remove_processor"
+    CUSTOM = "custom"
 
 
 
 class Command(BaseModel):
     id: UUID                       = Field(default_factory=uuid.uuid7())
     tick: int                      = 0
-    actor_id: UUID
-    op: Literal[
+    actor_id: Optional[UUID]       = None  # Make optional for simpler examples
+    type: CommandType              = CommandType.CUSTOM
+    op: Optional[Literal[
         "create_entity",
         "delete_entity",
         "add_component",
@@ -24,7 +38,7 @@ class Command(BaseModel):
         "add_processor",
         "remove_processor",
         "custom",
-    ]
+    ]]                             = None  # Keep for backward compatibility
     payload: Dict[str, Any]        = Field(default_factory=dict)
     priority: int                  = 0
     version: int                   = 1
@@ -36,7 +50,9 @@ class Command(BaseModel):
     # Provide Arrow-friendly serialisers
     # ------------------------------------------------------------------ #
     @field_serializer("id", "actor_id")
-    def serialize_uuids(self, v: UUID, info: FieldSerializationInfo):
+    def serialize_uuids(self, v: Optional[UUID], info: FieldSerializationInfo):
+        if v is None:
+            return None
         if info.mode == 'json':
             return str(v)
         return v.bytes
@@ -62,8 +78,8 @@ class Command(BaseModel):
             [
                 [self.id.bytes],
                 [self.tick],
-                [self.actor_id.bytes],
-                [self.op],
+                [self.actor_id.bytes if self.actor_id else None],
+                [self.op or self.type.value],  # Use type if op is None
                 [json.dumps(self.payload)],
                 [self.priority],
                 [self.version],

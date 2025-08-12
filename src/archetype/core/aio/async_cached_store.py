@@ -29,7 +29,7 @@ import asyncio
 # Internals
 from archetype.core import ArchetypeSignature
 from archetype.core.config import CacheConfig
-from .async_interfaces import iAsyncStore
+from archetype.core.interfaces import iAsyncStore
 
 logger = getLogger(__name__)
 
@@ -92,7 +92,7 @@ class AsyncCachedStore(iAsyncStore):
         self._bg_on = True
         self._bg_task: asyncio.Task | None = asyncio.create_task(self._background_flush(self.idle_sec))
 
-    def _update_total(self, delta: int):
+    def _update_total_bytes(self, delta: int):
         self.total_cached_bytes += delta
         
 
@@ -118,7 +118,7 @@ class AsyncCachedStore(iAsyncStore):
 
         # 3. Clear the memtable
         self._mem[sig].clear()
-        self._update_total(-flushed_bytes)
+        self._update_total_bytes(-flushed_bytes)
 
     async def _background_flush(self, idle_sec=30):
         while self._bg_on:
@@ -158,15 +158,12 @@ class AsyncCachedStore(iAsyncStore):
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.
         """
         # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
-        added = 0
+        added_bytes = 0
         for batch in df.to_arrow_iter():
             self._mem.setdefault(sig, MemTable()).append(batch)
-            try:
-                added += pa.Table.from_batches([batch]).nbytes
-            except Exception:
-                added += sum(col.nbytes for col in batch.columns)
+            added_bytes += batch.nbytes
 
-        self._update_total(added)
+        self._update_total_bytes(added_bytes)
 
         # cheap in‑mem stats
         needs_flush = (

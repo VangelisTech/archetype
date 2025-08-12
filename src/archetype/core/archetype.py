@@ -51,22 +51,19 @@ class Archetype:
     @staticmethod
     def get_name(sig: ArchetypeSignature) -> str:
         """
-        Generate a human-readable name for an archetype, including a schema hash.
-        The name combines sorted component names and an 8-character SHA256 hash
-        of the archetype's combined PyArrow schema, ensuring uniqueness and
-        indicating schema changes.
+        Generate a compact, filesystem-safe name for an archetype.
+        We avoid extremely long identifiers by using only a short descriptor and
+        a schema hash. This ensures stable uniqueness without exceeding path limits.
         """
-        # Human-readable part: sorted component names
-        component_names = sorted([comp_type.__name__ for comp_type in sig])
-        readable_name = "_".join(component_names)
-
         # Schema hash part: hash of the combined PyArrow schema
         combined_schema = Archetype.get_archetype_schema(sig)
         # Convert PyArrow schema to a JSON string for consistent hashing
         schema_json = str(combined_schema)
-        schema_hash = hashlib.sha256(schema_json.encode()).hexdigest()[:8] # Take first 8 chars for brevity
+        schema_hash = hashlib.sha256(schema_json.encode()).hexdigest()[:16]  # 16-char suffix
 
-        return f"{readable_name}_s{schema_hash}"
+        # Compact descriptor: number of components
+        num_components = len(sig)
+        return f"a_{num_components}c_s{schema_hash}"
 
     @staticmethod
     def get_archetype_schema(sig: ArchetypeSignature) -> pa.Schema:

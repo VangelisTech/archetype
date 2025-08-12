@@ -4,6 +4,7 @@ import asyncio
 
 from archetype import StorageConfig
 from archetype.core.aio import AsyncStore, AsyncCachedStore
+from archetype.core.runtime.storage import StorageSessionFactory
 from archetype.core import Component, Archetype
 from daft import DataFrame
 import daft
@@ -25,7 +26,8 @@ class Stats(Component):
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
     storage = StorageConfig(uri=str(tmp_path), namespace="test", use_lancedb=False)
-    store = AsyncStore(storage)
+    context = StorageSessionFactory.build(storage)
+    store = AsyncStore(context)
     try:
         yield store
     finally:
