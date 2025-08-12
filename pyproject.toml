@@ -19,9 +19,12 @@ ray        = ["ray[default]>=2.47", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
 llm        = ["openai"]
 inference  = ["ray[serve,llm]>=2.47", "vllm>=0.7.2", "huggingface-hub>=0.26", "transformers>=4.49", "accelerate>=0.29", "datasets>=3.6"]
 benchmark  = ["esper>=2.45"]
-dev        = [
-    "pytest>=8.3", "pytest-asyncio>=0.26", "ipykernel",
-    "black>=24.4", "ruff>=0.4"
+ dev        = [
+     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
+     "ipykernel", "black>=24.4", "ruff>=0.4", "matplotlib>=3.9"
+ ]
+unity      = [
+    "daft[unity]>=0.5.2"
 ]
 
 

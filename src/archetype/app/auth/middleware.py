@@ -68,15 +68,21 @@ class AuthMiddleware:
         
         try:
             # Decode JWT token (replace with your auth provider)
+            raw_token = credentials.credentials
+            # Decode token without verification in non-strict mode; in strict mode, verification should be configured
             payload = jwt.decode(
-                credentials.credentials,
-                options={"verify_signature": False}  # Configure properly
+                raw_token,
+                options={"verify_signature": not self.config.strict_mode} if self.config.strict_mode else {"verify_signature": False}
             )
             
+            principal = payload.get("email") or payload.get("preferred_username") or payload.get("sub")
+            role_names = payload.get("roles", [])
             return ActorCtx(
-                id=payload["sub"],
-                roles={Role(role) for role in payload.get("roles", [])},
+                id=payload.get("sub", "00000000-0000-0000-0000-000000000000"),
+                roles=set(role_names) if isinstance(role_names, list) else set(),
                 org=payload.get("org"),
+                principal=principal,
+                uc_token=raw_token,
                 session_start=datetime.now(timezone.utc)
             )
             

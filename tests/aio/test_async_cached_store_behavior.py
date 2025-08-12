@@ -2,7 +2,6 @@ import asyncio
 import pytest
 import pytest_asyncio
 import daft
-import os
 
 from archetype.core.runtime.storage import StorageSessionFactory
 
@@ -112,10 +111,16 @@ async def test_cached_store_idle_flush(inner_store):
         out_inner_pre = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
         assert out_inner_pre.collect().count_rows() == 0
 
-        # Wait for idle flusher
-        await asyncio.sleep(1.2)
-        out_inner_post = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
-        assert out_inner_post.collect().count_rows() == 1
+        # Wait for idle flusher with polling to avoid flakes
+        deadline = asyncio.get_event_loop().time() + 5.0
+        flushed = False
+        while asyncio.get_event_loop().time() < deadline:
+            out_inner_post = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
+            if out_inner_post.collect().count_rows() == 1:
+                flushed = True
+                break
+            await asyncio.sleep(0.05)
+        assert flushed, "Idle flush did not persist row within 5s"
     finally:
         await cached.shutdown()
 

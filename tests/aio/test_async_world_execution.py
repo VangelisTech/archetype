@@ -1,8 +1,6 @@
 import asyncio
-import time
 import pytest
 import pytest_asyncio
-import daft
 from daft import col, lit
 
 from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
@@ -66,11 +64,6 @@ async def store_backend(request, tmp_path):
         yield store
     finally:
         await store.shutdown()
-        if isinstance(store, AsyncCachedStore):
-            try:
-                await store._inner.shutdown()  # type: ignore[attr-defined]
-            except Exception:
-                pass
 
 
 @pytest_asyncio.fixture()
@@ -110,11 +103,21 @@ class SleepProc(AsyncProcessor):
     components = (Position,)
     priority = 1
 
-    def __init__(self, delay_ms: int):
+    def __init__(self, delay_ms: int, shared: dict | None = None):
         self.delay_ms = delay_ms
+        self._shared = shared
 
     async def process(self, df, **kwargs):
+        if self._shared is not None:
+            lock = self._shared.setdefault("lock", asyncio.Lock())
+            async with lock:
+                self._shared["current"] = self._shared.get("current", 0) + 1
+                self._shared["peak"] = max(self._shared.get("peak", 0), self._shared["current"])
         await asyncio.sleep(self.delay_ms / 1000.0)
+        if self._shared is not None:
+            lock = self._shared["lock"]
+            async with lock:
+                self._shared["current"] -= 1
         return df
 
 
@@ -130,19 +133,16 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     system = AsyncSystem()
     wcfg = WorldConfig(name="w2")
     w = AsyncWorld(wcfg, querier, updater, system)
-    await w.add_processor(SleepProc(200))  # 200ms per archetype
+    shared = {"current": 0, "peak": 0, "lock": asyncio.Lock()}
+    await w.add_processor(SleepProc(200, shared))  # 200ms per archetype
 
     # Two archetypes: A and B
     _ = await w.create_entity([Position(x=0, y=0)])
     _ = await w.create_entity([Position(x=1, y=1), Marker(value=1)])
 
     rc2 = RunConfig()
-    start = time.perf_counter()
     await w.step(rc2)
-    elapsed_ms = (time.perf_counter() - start) * 1000.0
-
-    # Sequential would be ~400ms. Allow generous threshold to avoid flakes.
-    # Allow higher bound due to environment variability
-    assert elapsed_ms < 1200.0
+    # With two archetypes, processors should overlap at least once
+    assert shared["peak"] >= 2
 
 

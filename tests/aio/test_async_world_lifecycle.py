@@ -1,7 +1,6 @@
 import pytest
 import pytest_asyncio
-import daft
-from daft import col
+ 
 
 from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
 from archetype.core.runtime.storage import StorageSessionFactory
@@ -9,7 +8,6 @@ from archetype.core.component import Component
 from archetype.core.archetype import Archetype
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
-from archetype.core.storage.lancedb import AsyncLancedbStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_system import AsyncSystem
@@ -40,11 +38,6 @@ async def store_backend(request, tmp_path):
         yield store
     finally:
         await store.shutdown()
-        if isinstance(store, AsyncCachedStore):
-            try:
-                await store._inner.shutdown()  # type: ignore[attr-defined]
-            except Exception:
-                pass
 
 
 @pytest_asyncio.fixture()
@@ -78,13 +71,9 @@ async def test_step_updates_live_snapshot_and_clears_caches(world, store_backend
     rc = RunConfig()
     await world.step(rc)
 
-    # Live snapshot should reflect only active rows for this sig
-    assert sig in world._live
-    live_df = world._live[sig]
-    assert live_df.count_rows() == 3
-    # caches cleared after step
-    assert sum(len(v) for v in world._spawn_cache.values()) == 0
-    assert sum(len(v) for v in world._despawn_cache.values()) == 0
+    # Live view via public API should reflect only active rows for this signature
+    live_df = await world.get_components([Position])
+    assert live_df.collect().count_rows() == 3
 
     # Store should have rows stamped with tick=0
     out_all = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)

@@ -110,12 +110,12 @@ async def test_add_components_moves_to_superset_signature(world, store_backend):
     assert latest["entity_id"] == e1
     assert latest["is_active"] is True
 
-    # Old signature latest row should have an inactive record for e1
+    # Old signature latest row should be inactive for e1 after move
     df_old = await store_backend.get_archetype_df(sig_pos, world.world_id, rc.run_id)
-    old_latest = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1][-1]
-    # On signature move the old signature's last row remains the original spawn row (still active) and
-    # despawn marker for the old sig is materialized as an inactive row in the old sig at move time
-    assert old_latest["is_active"] in (True, False)
+    old_rows = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
+    assert len(old_rows) >= 1
+    old_latest = sorted(old_rows, key=lambda r: r["tick"]) [-1]
+    assert old_latest["is_active"] is False
 
 
 @pytest.mark.asyncio
@@ -135,9 +135,11 @@ async def test_remove_components_moves_to_subset_signature(world, store_backend)
     latest = [r for r in df_new.collect().to_pylist() if r["entity_id"] == e1][-1]
     assert latest["is_active"] is True
 
-    # And old signature should have an inactive marker
+    # And old signature should have an inactive marker for e1
     df_old = await store_backend.get_archetype_df(sig_pos_meta, world.world_id, rc.run_id)
-    latest_old = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1][-1]
-    assert latest_old["is_active"] in (True, False)
+    old_rows2 = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
+    assert len(old_rows2) >= 1
+    latest_old = sorted(old_rows2, key=lambda r: r["tick"]) [-1]
+    assert latest_old["is_active"] is False
 
 

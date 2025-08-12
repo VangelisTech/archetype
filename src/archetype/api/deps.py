@@ -2,6 +2,7 @@
 Dependency injection for FastAPI routes.
 """
 from typing import Optional
+from fastapi import Request
 from archetype.app.broker import CommandBroker
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
@@ -57,10 +58,13 @@ def get_orchestrator() -> WorldOrchestrator:
     return DependencyContainer.get_instance().orchestrator
 
 
-def get_actor_ctx() -> ActorCtx:
-    """Get the current actor context."""
-    # In production, this would extract from request headers/JWT
-    return DependencyContainer.get_instance().actor_ctx
+def get_actor_ctx(request: Request) -> ActorCtx:
+    """Get the current actor context from request state (set by auth middleware)."""
+    ctx = getattr(request.state, "actor_ctx", None)
+    if ctx is None:
+        # Fallback to container default in non-strict mode
+        return DependencyContainer.get_instance().actor_ctx
+    return ctx
 
 
 def get_container() -> ServiceContainer:

@@ -48,11 +48,11 @@ async def test_prefer_live_reads_equivalence(make_world):
     await world_store.step(rc_store)
     await world_store.step(rc_store)
 
-    # Compare live snapshots by signature counts
-    sig = Archetype.sig_from_components([Position(x=0, y=0)])
-    assert sig in world_live._live and sig in world_store._live
-    cnt_live = world_live._live[sig].collect().count_rows()
-    cnt_store = world_store._live[sig].collect().count_rows()
+    # Compare via public API: component view should match under both modes
+    live_df = await world_live.get_components([Position])
+    store_df = await world_store.get_components([Position])
+    cnt_live = live_df.collect().count_rows()
+    cnt_store = store_df.collect().count_rows()
     assert cnt_live == cnt_store
 
 

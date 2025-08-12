@@ -6,6 +6,10 @@ from archetype.app.auth.models import  ActorCtx
 from archetype.app.models import Command
 from archetype.core import Component
 from archetype.app.broker import CommandBroker
+from archetype.app.security.uc_wrappers import ActorCtxProvider
+from archetype.integrations.unity.uc_client import UnityCatalogREST
+from archetype.integrations.unity.uc_permissions import UCPermissions, OP_TO_PRIVILEGES
+from archetype.core.config import StorageConfig
 
 class CommandService:
     """
@@ -22,6 +26,12 @@ class CommandService:
     def __init__(self, broker: CommandBroker, orchestrator: WorldOrchestrator):
         self.broker = broker
         self.orchestrator = orchestrator
+        self._storage_config: StorageConfig | None = None
+        self._actor_provider: ActorCtxProvider | None = None
+
+    def bind_context(self, storage_config: StorageConfig, actor_provider: ActorCtxProvider):
+        self._storage_config = storage_config
+        self._actor_provider = actor_provider
     
     # --- Command Queue Management ---
     
@@ -48,6 +58,27 @@ class CommandService:
             priority=priority
         )
         
+        # UC permission check at enqueue time for write operations
+        if self._storage_config and getattr(self._storage_config, "use_unity_catalog", False):
+            required = OP_TO_PRIVILEGES.get(op)
+            if required:
+                actor = self._actor_provider() if self._actor_provider else actor_ctx
+                principal = getattr(actor, "principal", None)
+                token = getattr(actor, "uc_token", None) or (self._storage_config.uc_token or "")
+                uc = UnityCatalogREST(endpoint=self._storage_config.uc_endpoint, token=token)
+                perms = UCPermissions(uc)
+                # Heuristic: infer table from op payload if components present
+                if "components" in payload and payload["components"]:
+                    from archetype.core import Archetype, Component
+                    try:
+                        comps = [Component.from_dict(c) for c in payload["components"]]
+                        sig = tuple(sorted((type(c) for c in comps), key=lambda t: t.__name__))
+                        table_name = Archetype.get_name(sig)
+                        full_name = f"{self._storage_config.uc_catalog}.{self._storage_config.uc_schema}.{table_name}"
+                        perms.ensure_allowed("table", full_name, required, principal=principal)
+                    except Exception:
+                        pass
+
         await self.broker.enqueue(world_id, cmd, actor_ctx)
         return cmd.id
     

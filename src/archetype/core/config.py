@@ -4,8 +4,6 @@ from daft.catalog import Catalog
 from pydantic import BaseModel, Field
 from uuid_utils import UUID
 import uuid_utils as uuid
-from pyiceberg.catalog.sql import SqlCatalog
-import os
 from daft.session import Session
 
 class StorageConfig(BaseModel):
@@ -22,17 +20,20 @@ class StorageConfig(BaseModel):
     obs_namespace: str = Field(default="obs", description="Namespace for observability tables (logs/metrics/events)")
     is_async: bool = Field(default=True, description="Whether or not the storage backend is asynchronous") 
     use_lancedb: bool = Field(default=True, description="Whether or not to use lancedb as the storage backend")
+    backend: str = Field(default="iceberg", description="Storage backend engine: 'iceberg' or 'lancedb'")
     io_config: Optional[IOConfig] = Field(default=None, description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.") 
     catalog: Optional[Catalog] = Field(default=None, description="The catalog for the storage backend, feel free to pass in your own, defaults to instatiating a new pyiceberg sql lite catalog if none is provided")
     has_cache: bool = Field(default=False, description="Whether or not the storage backend is supported by a cache")
     session: Optional[Session] = Field(default=None, description="The session for the storage backend, defaults to a new session if none is provided")
-    # Unity Catalog (optional control plane)
-    use_unity_catalog: bool = Field(default=False, description="Use Unity Catalog as the catalog/control plane")
-    uc_endpoint: Optional[str] = Field(default=None, description="Unity Catalog endpoint, e.g. https://<workspace>.cloud.databricks.com")
-    uc_token: Optional[str] = Field(default=None, description="Unity Catalog access token (service principal or PAT)")
-    uc_catalog: Optional[str] = Field(default=None, description="Unity Catalog catalog name to use for data namespace")
-    uc_schema: Optional[str] = Field(default=None, description="Unity Catalog schema name to use for data namespace")
-    uc_obs_schema: Optional[str] = Field(default=None, description="Unity Catalog schema for observability (defaults to obs_namespace if unset)")
+    # Unity Catalog configuration (simplified)
+    uc_mode: str = Field(default="off", description="'off' | 'governance' | 'attach'")
+    uc_endpoint: Optional[str] = Field(default=None, description="Unity Catalog endpoint, e.g. http://localhost:8080/api/2.1/unity-catalog")
+    uc_catalog: Optional[str] = Field(default=None, description="Unity Catalog catalog name")
+    uc_schema: Optional[str] = Field(default=None, description="Unity Catalog schema name")
+    token_source: str = Field(default="request", description="'request' | 'static' – where to source the UC token")
+    uc_token: Optional[str] = Field(default=None, description="Fallback/static UC access token when token_source='static' or no request token present")
+    # Optional: S3 region for temp creds; ignored for GCS/Azure
+    uc_default_region: Optional[str] = Field(default=None, description="Default cloud region for temporary S3 credentials")
     
     model_config = dict(arbitrary_types_allowed=True)
 
@@ -184,7 +185,7 @@ class ArchetypeConfig(BaseModel):
 
     @classmethod
     def from_toml(cls, path: str) -> "ArchetypeConfig":
-        import toml
+        import tomllib as toml  # Python 3.11+
         with open(path, "r") as f:
             data = toml.load(f)
         return cls(**data)

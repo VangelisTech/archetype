@@ -55,13 +55,17 @@ uv sync
 pip install -e .
 ```
 
-### Basic Usage
+### Async Usage (new API)
 
 ```python
-from archetype.core import Component, processor, Processor, make_simple_world
-from daft import DataFrame, col
+import asyncio
+from daft import col, DataFrame
+from archetype.core import Component
+from archetype.core.config import StorageConfig, WorldConfig, RunConfig
+from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.aio import AsyncWorld, AsyncSystem, AsyncProcessor, AsyncQueryManager, AsyncUpdateManager, AsyncStore
 
-# Define components
+# 1) Define components
 class Position(Component):
     x: float
     y: float
@@ -70,65 +74,78 @@ class Velocity(Component):
     vx: float
     vy: float
 
-# Define processors
-@processor(Position, Velocity, priority=1)
-class MovementProcessor(Processor):
-    def process(self, df: DataFrame, dt: float) -> DataFrame:
+# 2) Define processors
+class Movement(AsyncProcessor):
+    components = (Position, Velocity)
+    priority = 1
+    async def process(self, df: DataFrame, dt: float = 0.1):
         return df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
 
-# Create and run simulation
-world = make_simple_world("./data")
-world.system.add_processor(MovementProcessor())
+async def main():
+    # 3) Build storage runtime context (side-effect boundary)
+    storage = StorageConfig(uri=".archetype_data", namespace="demo", obs_namespace="obs")
+    context = StorageSessionFactory.build(storage)
 
-# Spawn entities
-world.spawn(Position(x=0, y=0), Velocity(vx=1, vy=1))
-world.spawn(Position(x=10, y=10), Velocity(vx=-1, vy=-1))
+    # 4) Assemble world explicitly (DI): store → managers → system → world
+    store = AsyncStore(context)
+    querier = AsyncQueryManager(store)
+    updater = AsyncUpdateManager(store)
+    system = AsyncSystem()
+    world = AsyncWorld(WorldConfig(name="w1"), querier, updater, system)
+    await world.add_processor(Movement())
 
-# Run simulation
-for step in range(100):
-    world.step(dt=0.1)
+    # 5) Create entities
+    await world.create_entity([Position(x=0, y=0), Velocity(vx=1, vy=1)])
+    await world.create_entity([Position(x=10, y=10), Velocity(vx=-1, vy=-1)])
+
+    # 6) Run via DI-only RunConfig
+    rc = RunConfig.dev(steps=10, prefer_live_reads=True)
+    for _ in range(rc.num_steps):
+        await world.step(rc, dt=0.1)
+
+asyncio.run(main())
 ```
 
-### Async Usage
+### Orchestrator (multi-world)
 
 ```python
-from archetype.core import Component, processor
-from archetype.core.aio import AsyncProcessor, make_async_world
-from daft import DataFrame, col
+import asyncio
+from archetype.core.config import StorageConfig, WorldConfig, RunConfig
+from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncSystem
 
-# Define components
-class Position(Component):
-    x: float
-    y: float
+async def run_multi():
+    orch = WorldOrchestrator()
+    try:
+        storage = StorageConfig(uri=".archetype_data", namespace="ns")
+        w1 = await orch.create_world(WorldConfig(name="a"), system=AsyncSystem(), storage_config=storage)
+        w2 = await orch.create_world(WorldConfig(name="b"), system=AsyncSystem(), storage_config=storage)
+        await orch.run_all_worlds(RunConfig.dev(steps=5))
+    finally:
+        await orch.shutdown()
 
-class Velocity(Component):
-    vx: float
-    vy: float
+asyncio.run(run_multi())
+```
 
-# Define processors
-@processor(Position, Velocity, priority=1)
-class MovementProcessor(AsyncProcessor):
-    async def process(self, df: DataFrame, dt: float) -> DataFrame:
-        return df.with_columns({
-            "position__x": col("position__x") + col("velocity__vx") * dt,
-            "position__y": col("position__y") + col("velocity__vy") * dt,
-        })
+### RunConfig helpers
 
-# Create and run simulation
-uri = "path/to/my/catalog/or/data"
-async_world = await make_async_world(uri)
-async_world.add_processor(MovementProcessor())
+- `RunConfig.dev(...)`: quick local runs with live reads and debug-friendly defaults
+- `RunConfig.benchmark(steps=..., suite="benchmark", trial=..., metadata=...)`: consistent labeling for perf suites
+- `RunConfig.validate(...)`: validation-focused runs
 
-# Spawn entities
-world.spawn(Position(x=0, y=0), Velocity(vx=1, vy=1))
-world.spawn(Position(x=10, y=10), Velocity(vx=-1, vy=-1))
 
-# Run simulation
-for step in range(100):
-    await world.step(dt=0.1) # Accepts any *Args, **Kwargs that Processors might need. 
+
+### Parameter sweeps (quick pattern)
+
+```python
+from archetype.core.config import RunConfig
+
+for i, (lr, seed) in enumerate([(1e-3, 0), (1e-3, 1), (3e-4, 0)]):
+    rc = RunConfig.ensemble(steps=50, trial=i, metadata={"lr": lr, "seed": seed})
+    await world.step(rc)
 ```
 
 

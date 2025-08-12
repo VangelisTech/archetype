@@ -12,6 +12,8 @@ from archetype.core.config import (
     SimulationConfig
 )
 from archetype.core.aio import AsyncSystem
+from archetype.app.security.uc_wrappers import UcEnforcedQueryManager, UcEnforcedUpdateManager
+from archetype.app.auth.request_context import current_actor_ctx
 
 
 class SimulationService:
@@ -69,6 +71,29 @@ class SimulationService:
                 storage_config=self.storage_config,
                 cache_config=self.cache_config
             )
+            # Preflight UC namespace permissions
+            if getattr(self.storage_config, "use_unity_catalog", False) and self.storage_config.uc_enforce_permissions:
+                from archetype.integrations.unity.uc_client import UnityCatalogREST
+                from archetype.integrations.unity.uc_permissions import UCPermissions, OP_TO_PRIVILEGES
+                actor = current_actor_ctx.get()
+                principal = getattr(actor, "principal", None) if actor else None
+                token = getattr(actor, "uc_token", None) if actor else (self.storage_config.uc_token or "")
+                uc = UnityCatalogREST(endpoint=self.storage_config.uc_endpoint, token=token)
+                perms = UCPermissions(uc)
+                # USE CATALOG
+                if self.storage_config.uc_catalog:
+                    perms.ensure_allowed("catalog", self.storage_config.uc_catalog, OP_TO_PRIVILEGES["list_schemas"], principal=principal)
+                # USE SCHEMA
+                if self.storage_config.uc_catalog and self.storage_config.uc_schema:
+                    perms.ensure_allowed("schema", f"{self.storage_config.uc_catalog}.{self.storage_config.uc_schema}", OP_TO_PRIVILEGES["list_tables"], principal=principal)
+            # Wrap with UC enforcement if enabled
+            if getattr(self.storage_config, "use_unity_catalog", False) and self.storage_config.uc_enforce_permissions:
+                actor_provider = lambda: current_actor_ctx.get()
+                try:
+                    world.querier = UcEnforcedQueryManager(world.querier, self.storage_config, actor_provider)  # type: ignore[attr-defined]
+                    world.updater = UcEnforcedUpdateManager(world.updater, self.storage_config, actor_provider)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             world_ids.append(world.world_id)
         
         # Run all worlds concurrently

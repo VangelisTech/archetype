@@ -35,6 +35,9 @@ class ActorCtx(BaseModel):
     id: UUID = Field(default_factory=uuid.uuid7)
     roles: Set[str] = Field(default_factory=set)
     org: Optional[str] = None
+    # UC-related, populated by middleware when bearer is a UC user token
+    principal: Optional[str] = None  # user email or subject
+    uc_token: Optional[str] = None   # raw UC bearer token for downstream clients
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
@@ -107,6 +110,29 @@ class Role(BaseModel):
     is_system_role: bool = False  # True for built-in roles that can't be deleted
 
     model_config = {"frozen": True}
+
+
+class AuthConfig(BaseModel):
+    """Authentication configuration used by API middleware and CLI provider.
+
+    Fields:
+    - enabled: turn auth on/off globally (dev convenience)
+    - strict_mode: if True, invalid tokens raise 401; otherwise, fallback to admin context
+    - provider: name of the provider (e.g., 'uc-google', 'okta', etc.)
+    - uc_auth_url/token_url/client_id/client_secret: for UC OAuth device or web flows (optional)
+    """
+
+    enabled: bool = False
+    strict_mode: bool = False
+    provider: Optional[str] = None
+
+    # Optional UC OAuth fields for future use
+    uc_auth_url: Optional[str] = None
+    uc_token_url: Optional[str] = None
+    uc_client_id: Optional[str] = None
+    uc_client_secret: Optional[str] = None
+
+    model_config = {"frozen": False}
 
 # --- Guardrail and Budget Models ---
 

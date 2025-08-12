@@ -61,6 +61,14 @@ class ServiceContainer:
                 broker=self._broker,
                 orchestrator=self._orchestrator
             )
+            # Bind UC context for command-time permission checks
+            try:
+                from archetype.app.security.uc_wrappers import ActorCtxProvider
+                from archetype.app.auth.request_context import current_actor_ctx
+                provider = lambda: current_actor_ctx.get()
+                self._command_service.bind_context(self.storage_config, provider)  # type: ignore[arg-type]
+            except Exception:
+                pass
         return self._command_service
     
     @property

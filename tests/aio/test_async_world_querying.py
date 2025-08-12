@@ -42,11 +42,6 @@ async def store_backend(request, tmp_path):
         yield store
     finally:
         await store.shutdown()
-        if isinstance(store, AsyncCachedStore):
-            try:
-                await store._inner.shutdown()  # type: ignore[attr-defined]
-            except Exception:
-                pass
 
 
 @pytest_asyncio.fixture()

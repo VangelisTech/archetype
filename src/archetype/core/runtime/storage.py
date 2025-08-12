@@ -37,17 +37,16 @@ class StorageSessionFactory:
             os.makedirs(config.uri, exist_ok=True)
 
         # Prepare catalog
-        if getattr(config, "use_unity_catalog", False):
-            assert config.uc_endpoint and config.uc_token, "Unity Catalog requires uc_endpoint and uc_token"
+        if getattr(config, "uc_mode", "off") == "attach":
+            assert config.uc_endpoint, "Unity Catalog requires uc_endpoint"
             try:
-                # Lazy import to avoid hard dependency when UC is not used
                 from daft.unity_catalog import UnityCatalog  # type: ignore
             except Exception as e:
                 raise RuntimeError(
-                    "Unity Catalog support requires 'unitycatalog' and Daft UC extras. "
-                    "Install with: pip install unitycatalog daft[unity-catalog]"
+                    "Daft UC attach requested but 'unitycatalog' + daft[unity-catalog] not installed. "
+                    "Set uc_mode='governance' to operate with UC governance only."
                 ) from e
-            uc = UnityCatalog(endpoint=config.uc_endpoint, token=config.uc_token)
+            uc = UnityCatalog(endpoint=config.uc_endpoint, token=(config.uc_token or ""))
             catalog = Catalog.from_unity(uc)
         else:
             catalog = getattr(config, "catalog", None) or Catalog.from_iceberg(
@@ -63,12 +62,12 @@ class StorageSessionFactory:
         # Session: attach and set namespace (and ensure observability namespace exists)
         session = Session()
         session.attach_catalog(catalog)
-        # If UC is used and uc_catalog/uc_schema are provided, prefer those; else use local namespace
-        if getattr(config, "use_unity_catalog", False) and config.uc_catalog and config.uc_schema:
+        # If UC governance or attach and uc_catalog/uc_schema are provided, prefer those; else use local namespace
+        if getattr(config, "uc_mode", "off") in ("governance", "attach") and config.uc_catalog and config.uc_schema:
             session.create_namespace_if_not_exists(f"{config.uc_catalog}.{config.uc_schema}")
             session.set_namespace(f"{config.uc_catalog}.{config.uc_schema}")
             # Observability schema under same catalog
-            obs_schema = config.uc_obs_schema or config.obs_namespace
+            obs_schema = getattr(config, "uc_obs_schema", None) or config.obs_namespace
             if obs_schema:
                 session.create_namespace_if_not_exists(f"{config.uc_catalog}.{obs_schema}")
         else:
