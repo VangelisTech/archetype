@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict
+try:
+    # Optional dependency: structured emission to JSONL (or future sinks)
+    from .structured_logging import emit_event as _emit_structured
+except Exception:  # pragma: no cover - optional import safety
+    _emit_structured = None  # type: ignore[assignment]
 
 from archetype.core import Archetype, ArchetypeSignature
 from archetype.core.config import RunConfig
@@ -126,6 +131,13 @@ def log_event(level: int, event: str, base: Dict[str, Any] | None = None, **fiel
     else:
         logger = _ensure_logger()
         logger.log(level, _kv(event=event, **payload))
+
+    # Always attempt structured emission last; never raise on failure
+    try:
+        if _emit_structured is not None:
+            _emit_structured(level, event, payload)
+    except Exception:
+        pass
 
 
 def is_rich_tty() -> bool:

@@ -2,7 +2,7 @@ import pytest
 import pytest_asyncio
 import daft
 
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.config import StorageConfig, WorldConfig, RunConfig
 from archetype.core.component import Component
 from archetype.core.archetype import Archetype
@@ -18,7 +18,7 @@ class Position(Component):
 async def make_world(tmp_path):
     async def _mk():
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="test")
-        context = StorageSessionFactory.build(storage)
+        context = StorageContextFactory.build(storage)
         store = AsyncStore(context)
         querier = AsyncQueryManager(store)
         updater = AsyncUpdateManager(store)

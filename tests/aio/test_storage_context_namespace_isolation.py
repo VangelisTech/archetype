@@ -3,7 +3,7 @@ import pytest_asyncio
 import daft
 
 from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -19,8 +19,8 @@ async def test_contexts_are_isolated_by_namespace(tmp_path):
     uri = str(tmp_path)
 
     # Same URI, different namespaces
-    ctx_a = StorageSessionFactory.build(StorageConfig(uri=uri, namespace="nsA"))
-    ctx_b = StorageSessionFactory.build(StorageConfig(uri=uri, namespace="nsB"))
+    ctx_a = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsA"))
+    ctx_b = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsB"))
 
     store_a = AsyncStore(ctx_a)
     store_b = AsyncStore(ctx_b)

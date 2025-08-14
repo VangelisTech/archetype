@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-import os
-
+import pathlib
+from urllib.parse import urlparse
 from daft.catalog import Catalog
 from daft.session import Session
+from daft.io import IOConfig
 from pyiceberg.catalog.sql import SqlCatalog
 
 from archetype.core.config import StorageConfig
+from archetype.core.runtime.runner import initialize_runner
 
+IOConfig()
 
 @dataclass(frozen=True)
 class StorageContext:
@@ -21,10 +23,10 @@ class StorageContext:
     namespace: str
     session: Session
     catalog: Catalog
-    io_config: Optional[object]
+    io_config: IOConfig
 
 
-class StorageSessionFactory:
+class StorageContextFactory:
     """Centralizes side-effectful initialization of storage runtime resources.
 
     This replaces implicit setup inside StorageConfig validators/getters.
@@ -32,53 +34,65 @@ class StorageSessionFactory:
 
     @staticmethod
     def build(config: StorageConfig) -> StorageContext:
-        # Ensure base directory exists
-        if not os.path.exists(config.uri):
-            os.makedirs(config.uri, exist_ok=True)
+        """
+        Builds a storage context from a storage config.
+        """
+        # Determine if the URI points to a remote object store
+        scheme = urlparse(config.uri).scheme.lower()
+        is_remote = scheme not in ("", "file")
 
-        # Prepare catalog
-        if getattr(config, "uc_mode", "off") == "attach":
-            assert config.uc_endpoint, "Unity Catalog requires uc_endpoint"
+        # Resolve local paths and ensure directories exist only for local URIs
+        if not is_remote:
+            base_path = pathlib.Path(config.uri)
+            if not base_path.is_absolute():
+                raise ValueError(f"uri must be an absolute path, got: {base_path}")
+            base_path.mkdir(parents=True, exist_ok=True)
+            sqlite_db_path = base_path / "catalog.db"
+            warehouse_uri = f"file://{base_path}"
+        else:
+            # For remote warehouses (e.g., gs://, s3://), avoid local filesystem ops on the URI.
+            # Keep a local SQLite catalog file and point the warehouse to the remote URI directly.
+            local_meta_dir = pathlib.Path(".archetype_meta")
+            local_meta_dir.mkdir(parents=True, exist_ok=True)
+            sqlite_db_path = local_meta_dir / "catalog.db"
+            warehouse_uri = config.uri
+
+        # Initialize runner and default IOConfig once
+        initialize_runner(config.io_config)
+
+        # Prepare catalog based on IOConfig
+        use_uc = bool(config.io_config and getattr(config.io_config, "unity", None))
+        if use_uc:
             try:
                 from daft.unity_catalog import UnityCatalog  # type: ignore
             except Exception as e:
                 raise RuntimeError(
-                    "Daft UC attach requested but 'unitycatalog' + daft[unity-catalog] not installed. "
-                    "Set uc_mode='governance' to operate with UC governance only."
+                    "Unity Catalog requested via IOConfig.unity but required extras are not installed. "
+                    "Install with: pip install unitycatalog daft[unity-catalog]"
                 ) from e
-            uc = UnityCatalog(endpoint=config.uc_endpoint, token=(config.uc_token or ""))
+            unity = config.io_config.unity  # type: ignore[attr-defined]
+            uc = UnityCatalog(endpoint=unity.endpoint, token=(unity.token or ""))
             catalog = Catalog.from_unity(uc)
         else:
             catalog = getattr(config, "catalog", None) or Catalog.from_iceberg(
                 SqlCatalog(
                     "archetype_iceberg_sql_catalog",
                     **{
-                        "uri": f"sqlite:///{config.uri}/catalog.db",
-                        "warehouse": f"file://{config.uri}",
+                        "uri": f"sqlite:///{sqlite_db_path}",
+                        "warehouse": warehouse_uri,
                     },
                 )
             )
 
-        # Session: attach and set namespace (and ensure observability namespace exists)
+        # Session: attach and set namespace
         session = Session()
         session.attach_catalog(catalog)
-        # If UC governance or attach and uc_catalog/uc_schema are provided, prefer those; else use local namespace
-        if getattr(config, "uc_mode", "off") in ("governance", "attach") and config.uc_catalog and config.uc_schema:
-            session.create_namespace_if_not_exists(f"{config.uc_catalog}.{config.uc_schema}")
-            session.set_namespace(f"{config.uc_catalog}.{config.uc_schema}")
-            # Observability schema under same catalog
-            obs_schema = getattr(config, "uc_obs_schema", None) or config.obs_namespace
-            if obs_schema:
-                session.create_namespace_if_not_exists(f"{config.uc_catalog}.{obs_schema}")
+        if use_uc:
+            # UC: don't auto-create namespaces; assume they exist and let UC enforce
+            session.set_namespace(config.namespace)
         else:
             session.create_namespace_if_not_exists(config.namespace)
             session.set_namespace(config.namespace)
-            # Observability: ensure separate namespace exists for logs/metrics
-            if getattr(config, "obs_namespace", None):
-                session.create_namespace_if_not_exists(config.obs_namespace)
-        # Observability: ensure separate namespace exists for logs/metrics
-        if getattr(config, "obs_namespace", None):
-            session.create_namespace_if_not_exists(config.obs_namespace)
 
         return StorageContext(
             uri=config.uri,

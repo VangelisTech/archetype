@@ -1,10 +1,20 @@
 from typing import List, Dict, Any, Optional
 from daft.io import IOConfig
-from daft.catalog import Catalog
+from daft.catalog import Catalog  # noqa: F401
 from pydantic import BaseModel, Field
 from uuid_utils import UUID
 import uuid_utils as uuid
-from daft.session import Session
+from daft.session import Session  # noqa: F401
+from enum import Enum
+
+class StorageBackend(Enum):
+    """
+    Storage backend engine: 'iceberg' or 'lancedb'
+    """
+    ICEBERG = "iceberg" # Iceberg backed by Parquet using SQLite PyIceberg SQL Catalog
+    LANCEDB = "lancedb"
+    #DUCKDB = "duckdb" # TODO: add duckdb support 
+
 
 class StorageConfig(BaseModel):
     """
@@ -15,31 +25,36 @@ class StorageConfig(BaseModel):
         - namespace: str - The desired namespace for the catalog 
         - io_config: IOConfig - The access credentials or the daft session/catalog
     """
-    uri: str = Field(default=".archetype_data/", description="The URI location for the storage backend")
+    uri: str       = Field(default=".archetype/", description="The URI location for the storage backend")
     namespace: str = Field(default="archetypes")
-    obs_namespace: str = Field(default="obs", description="Namespace for observability tables (logs/metrics/events)")
-    is_async: bool = Field(default=True, description="Whether or not the storage backend is asynchronous") 
-    use_lancedb: bool = Field(default=True, description="Whether or not to use lancedb as the storage backend")
-    backend: str = Field(default="iceberg", description="Storage backend engine: 'iceberg' or 'lancedb'")
+    backend: StorageBackend = Field(default=StorageBackend.ICEBERG, description="Storage backend engine: 'iceberg' or 'lancedb'")
     io_config: Optional[IOConfig] = Field(default=None, description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.") 
-    catalog: Optional[Catalog] = Field(default=None, description="The catalog for the storage backend, feel free to pass in your own, defaults to instatiating a new pyiceberg sql lite catalog if none is provided")
-    has_cache: bool = Field(default=False, description="Whether or not the storage backend is supported by a cache")
-    session: Optional[Session] = Field(default=None, description="The session for the storage backend, defaults to a new session if none is provided")
-    # Unity Catalog configuration (simplified)
-    uc_mode: str = Field(default="off", description="'off' | 'governance' | 'attach'")
-    uc_endpoint: Optional[str] = Field(default=None, description="Unity Catalog endpoint, e.g. http://localhost:8080/api/2.1/unity-catalog")
-    uc_catalog: Optional[str] = Field(default=None, description="Unity Catalog catalog name")
-    uc_schema: Optional[str] = Field(default=None, description="Unity Catalog schema name")
-    token_source: str = Field(default="request", description="'request' | 'static' – where to source the UC token")
-    uc_token: Optional[str] = Field(default=None, description="Fallback/static UC access token when token_source='static' or no request token present")
-    # Optional: S3 region for temp creds; ignored for GCS/Azure
-    uc_default_region: Optional[str] = Field(default=None, description="Default cloud region for temporary S3 credentials")
     
     model_config = dict(arbitrary_types_allowed=True)
 
-    # Side-effect free: no implicit catalog/session creation here. Use StorageSessionFactory to build runtime context.
-    def set_session(self, session: Session) -> None:
-        self.session = session
+    # Back-compat helpers for legacy callers expecting these flags
+    @property
+    def is_async(self) -> bool:
+        return True
+
+    @property
+    def use_lancedb(self) -> bool:
+        return self.backend == StorageBackend.LANCEDB
+
+class CacheConfig(BaseModel):
+    """
+    A cache configuration is a container for the cache configuration, including:
+      - flush_rows: int - The number of rows to flush to the storage backend
+      - flush_mb: int - The number of megabytes to flush to the storage backend
+      - global_mb: int - The number of megabytes to use for the cache
+      - idle_sec: int - The number of seconds to wait before flushing the cache
+    """
+    flush_rows: int = Field(default=1_000_000, description="The number of rows to flush to the storage backend")
+    flush_mb: int   = Field(default=512, description="The number of megabytes to flush to the storage backend")
+    global_mb: int  = Field(default=1024*1024*1024, description="The number of megabytes to use for the cache") 
+    idle_sec: int   = Field(default=30, description="The number of seconds to wait before flushing the cache")
+
+    model_config = dict(arbitrary_types_allowed=True)
 
 class RunConfig(BaseModel):
     """
@@ -131,20 +146,6 @@ class RunConfig(BaseModel):
             suite="validate",
         )
 
-class CacheConfig(BaseModel):
-    """
-    A cache configuration is a container for the cache configuration, including:
-      - flush_rows: int - The number of rows to flush to the storage backend
-      - flush_mb: int - The number of megabytes to flush to the storage backend
-      - global_mb: int - The number of megabytes to use for the cache
-      - idle_sec: int - The number of seconds to wait before flushing the cache
-    """
-    flush_rows: int = Field(default=1_000_000, description="The number of rows to flush to the storage backend")
-    flush_mb: int = Field(default=512, description="The number of megabytes to flush to the storage backend")
-    global_mb: int = Field(default=None, description="The number of megabytes to use for the cache")
-    idle_sec: int = Field(default=30, description="The number of seconds to wait before flushing the cache")
-
-    model_config = dict(arbitrary_types_allowed=True)
 
 
 class WorldConfig(BaseModel):
@@ -185,7 +186,7 @@ class ArchetypeConfig(BaseModel):
 
     @classmethod
     def from_toml(cls, path: str) -> "ArchetypeConfig":
-        import tomllib as toml  # Python 3.11+
+        import tomllib as toml  # type: ignore[import-not-found]  # Python 3.11+
         with open(path, "r") as f:
             data = toml.load(f)
         return cls(**data)

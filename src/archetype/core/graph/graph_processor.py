@@ -17,7 +17,8 @@ class GraphProcessor(iAsyncProcessor):
     reads: List[Type] = []
     writes: List[Type] = []
     stage: UpdateStage = UpdateStage.Update
-    run_condition: Callable[[Dict[str, Any]], bool] = lambda state: True
+    # Make default run_condition a staticmethod to avoid implicit self binding
+    run_condition: Callable[[Dict[str, Any]], bool] = staticmethod(lambda state: True)  # type: ignore[assignment]
     is_eager: bool = False
 
     async def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:

@@ -18,7 +18,9 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 
-# Enable Tracy profiling before importing archetype modules
+# Enable VizTracer-based instrumentation before importing archetype modules
+# (shim treats ARCT_TRACY=1 or ARCT_VIZTRACER=1 as "enabled")
+os.environ.setdefault("ARCT_VIZTRACER", "1")
 os.environ.setdefault("ARCT_TRACY", "1")
 
 from archetype import Component, AsyncProcessor, WorldOrchestrator, AsyncSystem, StorageConfig, RunConfig, WorldConfig
@@ -64,7 +66,12 @@ async def single_world_simulation(
     await world.add_processor(MovementProcessor())
 
     # Spawn initial entities (list of components as required by the API)
-    for i in range(1000000):
+    # Allow override via env var; use a smaller default when viztracer is enabled to keep traces manageable
+    default_n = 1000000
+    if os.getenv("ARCT_VIZTRACER", "0") == "1":
+        default_n = 50000
+    num_entities = int(os.getenv("ARCT_ENTITIES", str(default_n)))
+    for i in range(num_entities):
         await world.create_entity([Position(x=0, y=0), Velocity(vx=i, vy=i)])
 
     # Run simulation steps
@@ -77,9 +84,19 @@ if __name__ == "__main__":
     storage_config = StorageConfig(
         uri=".archetype_data/",
         namespace="examples",
+        has_cache=True,
+        use_lancedb=True,
+        backend="lancedb",
     )
     world_config = WorldConfig(name="toy_async_world")
     run_config = RunConfig(num_steps=10, debug=True, show_rows=0, explain=False)
 
-    # Run the async example using the provided main function
-    asyncio.run(single_world_simulation(storage_config, world_config, run_config))
+    # If VizTracer is available, emit an HTML timeline for inspection
+    try:
+        from viztracer import VizTracer  # type: ignore
+        tracer_entries = int(os.getenv("ARCT_VIZ_ENTRIES", "3000000"))
+        with VizTracer(output_file="toy_trace.html", tracer_entries=tracer_entries):
+            asyncio.run(single_world_simulation(storage_config, world_config, run_config))
+        print("wrote toy_trace.html")
+    except Exception:
+        asyncio.run(single_world_simulation(storage_config, world_config, run_config))

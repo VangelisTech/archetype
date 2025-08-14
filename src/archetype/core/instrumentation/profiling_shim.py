@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
-
 
 # Enable profiling via environment variable
-TRACY_ENABLED: bool = os.getenv("ARCT_TRACY", "0") == "1"
+# Set ARCT_VIZTRACER=1 to enable instrumentation
+PROFILING_ENABLED: bool = os.getenv("ARCT_VIZTRACER", "0") == "1"
 
-_tracy = None
-if TRACY_ENABLED:
+
+_viz = None
+if PROFILING_ENABLED:
     try:
-        # Replace with actual tracy python binding import when available
-        # e.g., import tracy; here we attempt dynamic import to avoid hard dep
-        _tracy = __import__("tracy")
+        from viztracer import get_tracer  # type: ignore
+
+        _viz = get_tracer()
     except Exception:
-        _tracy = None
+        _viz = None
 
 
 class _NullCtx:
@@ -25,48 +25,60 @@ class _NullCtx:
         return False
 
 
-def zone(name: str):
-    """Return a context manager for a Tracy zone, or a no-op if disabled."""
-    if _tracy is not None:
+class _VizZone:
+    def __init__(self, name: str):
+        self.name = name
+
+    def __enter__(self):
         try:
-            return _tracy.Zone(name)
+            if _viz is not None:
+                _viz.add_instant(self.name + ":begin", scope="t")
         except Exception:
-            return _NullCtx()
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if _viz is not None:
+                _viz.add_instant(self.name + ":end", scope="t")
+        except Exception:
+            pass
+        return False
+
+
+def zone(name: str):
+    """Return a context manager for a VizTracer pseudo-zone, or a no-op if disabled."""
+    if _viz is not None:
+        return _VizZone(name)
     return _NullCtx()
 
 
 def frame_mark(name: str | None = None) -> None:
-    if _tracy is not None:
-        try:
-            if name:
-                _tracy.FrameMarkNamed(name)
-            else:
-                _tracy.FrameMark()
-        except Exception:
-            return
+    try:
+        if _viz is not None:
+            _viz.add_instant((name or "frame"), scope="t")
+    except Exception:
+        return
 
 
 def message(text: str) -> None:
-    if _tracy is not None:
-        try:
-            _tracy.Message(text)
-        except Exception:
-            return
+    try:
+        if _viz is not None:
+            _viz.add_instant(text, scope="p")
+    except Exception:
+        return
 
 
 def plot(name: str, value: float) -> None:
-    if _tracy is not None:
-        try:
-            _tracy.Plot(name, float(value))
-        except Exception:
-            return
+    # Best-effort: represent as an instant with value; VizTracer has limited counter support
+    try:
+        if _viz is not None:
+            _viz.add_instant(f"plot:{name}={float(value)}", scope="p")
+    except Exception:
+        return
 
 
 def set_thread_name(name: str) -> None:
-    if _tracy is not None:
-        try:
-            _tracy.SetThreadName(name)
-        except Exception:
-            return
-
+    # VizTracer does not expose a stable public API for thread names; no-op
+    return None
 

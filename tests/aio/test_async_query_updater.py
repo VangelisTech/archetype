@@ -5,7 +5,7 @@ import daft
 from daft import DataFrame, col
 
 from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.component import Component
 from archetype.core.archetype import Archetype
 from archetype.core.aio.async_store import AsyncStore
@@ -24,7 +24,7 @@ class Position(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=(request.param == "lancedb"))
-    context = StorageSessionFactory.build(storage)
+    context = StorageContextFactory.build(storage)
 
     if request.param == "async":
         store = AsyncStore(context)

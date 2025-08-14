@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 import daft
 
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
@@ -26,7 +26,7 @@ class TestStorageConfig:
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
     storage = TestStorageConfig(uri=str(tmp_path), namespace="test")
-    context = StorageSessionFactory.build(storage)
+    context = StorageContextFactory.build(storage)
     store = AsyncStore(context)
     try:
         yield store

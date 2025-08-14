@@ -6,7 +6,7 @@ from archetype.core.interfaces import iWorld
 from archetype.core.aio import AsyncWorld, AsyncSystem
 from archetype.core.interfaces import iAsyncSystem
 from archetype.core.sync import SyncWorld, SyncSystem
-from archetype.core.instrumentation.profiling_shim import TRACY_ENABLED
+from archetype.core.instrumentation.profiling_shim import PROFILING_ENABLED
 try:
     from archetype.core.instrumentation.instrumented_async_world import InstrumentedAsyncWorld
     from archetype.core.instrumentation.instrumented_async_system import InstrumentedAsyncSystem
@@ -46,7 +46,7 @@ class WorldFactory:
 
         # 2. Determine the world class based on the storage config
         if storage_config.is_async:
-            use_instrumented = instrumented if instrumented is not None else TRACY_ENABLED
+            use_instrumented = instrumented if instrumented is not None else PROFILING_ENABLED
             if use_instrumented and InstrumentedAsyncWorld and InstrumentedAsyncSystem:
                 world_class = InstrumentedAsyncWorld
                 default_system = InstrumentedAsyncSystem()

@@ -79,7 +79,8 @@ class GraphSystem:
     async def _execute_graph(self, g: ig.Graph, df: daft.DataFrame, **input_kwargs) -> daft.DataFrame:
         """Executes a DAG of processors using Kahn's algorithm."""
         in_degrees = g.degree(mode='in')
-        ready_vids = [v.index for v, d in enumerate(in_degrees) if d == 0]
+        # enumerate returns (index, degree); pick indices with zero in-degree
+        ready_vids = [i for i, d in enumerate(in_degrees) if d == 0]
 
         while ready_vids:
             ready_procs = [g.vs[vid]["processor"] for vid in ready_vids]

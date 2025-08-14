@@ -6,7 +6,7 @@ from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunCo
 from archetype.core.component import Component
 from archetype.core.archetype import Archetype
 from archetype.core.aio.async_store import AsyncStore
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_updater import AsyncUpdateManager
@@ -27,7 +27,7 @@ class Velocity(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=False)
-    context = StorageSessionFactory.build(storage)
+    context = StorageContextFactory.build(storage)
 
     if request.param == "async":
         store = AsyncStore(context)

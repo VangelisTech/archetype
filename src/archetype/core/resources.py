@@ -15,7 +15,8 @@ from archetype.core.aio import (
 )
 from archetype.core.instrumentation.instrumented_async_store import InstrumentedAsyncStore
 from archetype.core.instrumentation.instrumented_async_querier import InstrumentedAsyncQueryManager
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.instrumentation.instrumented_async_updater import InstrumentedAsyncUpdateManager
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class StorageResourceManager:
@@ -47,7 +48,7 @@ class StorageResourceManager:
                 # Double-check if another coroutine created the instance while we waited for the lock
                 if key not in self._instances:
                     # Initialize runtime context explicitly (side-effect boundary)
-                    context = StorageSessionFactory.build(storage_config)
+                    context = StorageContextFactory.build(storage_config)
                     store = self._create_store(storage_config, context)
                     if cache_config:
                         # Wrap with cached store using CacheConfig directly
@@ -57,9 +58,10 @@ class StorageResourceManager:
                     if instrumented:
                         store = InstrumentedAsyncStore(context)  # type: ignore[assignment]
                         querier = InstrumentedAsyncQueryManager(store=store)
+                        updater = InstrumentedAsyncUpdateManager(store=store)
                     else:
                         querier = AsyncQueryManager(store=store)
-                    updater = AsyncUpdateManager(store=store)
+                        updater = AsyncUpdateManager(store=store)
                     self._instances[key] = (store, querier, updater)
         
         return self._instances[key]

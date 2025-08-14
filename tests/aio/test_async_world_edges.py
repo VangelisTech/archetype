@@ -4,7 +4,7 @@ import pytest_asyncio
 import daft
 
 from archetype.core.config import StorageConfig, WorldConfig, RunConfig, CacheConfig
-from archetype.core.runtime.storage import StorageSessionFactory
+from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.component import Component
 from archetype.core.archetype import Archetype
 from archetype.core.aio import (
@@ -25,7 +25,7 @@ class Position(Component):
 @pytest_asyncio.fixture
 async def world(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    ctx = StorageSessionFactory.build(storage)
+    ctx = StorageContextFactory.build(storage)
     store = AsyncStore(ctx)
     querier = AsyncQueryManager(store)
     updater = AsyncUpdateManager(store)
@@ -118,7 +118,7 @@ async def test_get_components_with_entity_filter(world):
 @pytest.mark.asyncio
 async def test_async_store_empty_append_and_double_shutdown(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="edge")
-    ctx = StorageSessionFactory.build(storage)
+    ctx = StorageContextFactory.build(storage)
     store = AsyncStore(ctx)
     try:
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
@@ -136,7 +136,7 @@ async def test_async_store_empty_append_and_double_shutdown(tmp_path):
 @pytest.mark.asyncio
 async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="edge-cache")
-    ctx = StorageSessionFactory.build(storage)
+    ctx = StorageContextFactory.build(storage)
     inner = AsyncStore(ctx)
     cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
     cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
