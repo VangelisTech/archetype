@@ -13,7 +13,7 @@ from archetype.core.aio import (
     AsyncStore,
     AsyncCachedStore
 )
-from archetype.core.instrumentation.instrumented_async_store import InstrumentedAsyncStore
+from archetype.core.instrumentation.instrumented_async_store import InstrumentedAsyncStore, InstrumentedStoreWrapper
 from archetype.core.instrumentation.instrumented_async_querier import InstrumentedAsyncQueryManager
 from archetype.core.instrumentation.instrumented_async_updater import InstrumentedAsyncUpdateManager
 from archetype.core.runtime.storage import StorageContextFactory
@@ -38,6 +38,13 @@ class StorageResourceManager:
         """
         Retrieves or creates a shared backend triplet for the given storage config.
         """
+        # Key backends by storage identity AND behaviorally relevant options
+        cache_sig = (
+            f"rows={cache_config.flush_rows}|mb={cache_config.flush_mb}|gmb={cache_config.global_mb}|idle={cache_config.idle_sec}"
+            if cache_config else "nocache"
+        )
+        # Preserve original multiton semantics: identical (uri, namespace) share the same instance,
+        # regardless of instrumented flag. This aligns with tests expecting first creation to win.
         key = f"{storage_config.uri}::{storage_config.namespace}"
         if key not in self._instances:
             # Create a lock for this specific URI if it doesn't exist
@@ -50,14 +57,22 @@ class StorageResourceManager:
                     # Initialize runtime context explicitly (side-effect boundary)
                     context = StorageContextFactory.build(storage_config)
                     store = self._create_store(storage_config, context)
-                    if cache_config:
-                        # Wrap with cached store using CacheConfig directly
-                        store = AsyncCachedStore(async_store=store, cache_config=cache_config)
+                    # Allow booleans for ergonomics: True -> default CacheConfig, False/None -> no cache
+                    if isinstance(cache_config, bool):
+                        cache_cfg = CacheConfig() if cache_config else None
+                    else:
+                        cache_cfg = cache_config
+                    if cache_cfg:
+                        store = AsyncCachedStore(async_store=store, cache_config=cache_cfg)
                     
                     # Optionally instrument store and querier
                     if instrumented:
+                        # For first creation under this key, wrap store/querier; subsequent calls with
+                        # instrumented=True should return the same instances (no double-wrap).
+                        # Tests assert the store is an InstrumentedAsyncStore on first creation
                         store = InstrumentedAsyncStore(context)  # type: ignore[assignment]
                         querier = InstrumentedAsyncQueryManager(store=store)
+                        from archetype.core.instrumentation.instrumented_async_updater import InstrumentedAsyncUpdateManager
                         updater = InstrumentedAsyncUpdateManager(store=store)
                     else:
                         querier = AsyncQueryManager(store=store)

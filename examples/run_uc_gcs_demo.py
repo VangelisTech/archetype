@@ -33,19 +33,19 @@ async def main():
     uc_catalog = os.getenv("UC_CATALOG", "unity")
     uc_schema = os.getenv("UC_SCHEMA", "default")
 
+    from archetype.core.config import UnityCatalogConfig
     storage = StorageConfig(
-        uri=".archetype_data",                  # local workspace for metadata
-        namespace="archetypes",
-        is_async=True,
-        backend="iceberg",                    # or "lancedb"
-        # UC governance (no Daft UC attach required)
-        uc_mode="governance",
-        uc_endpoint=uc_endpoint,
-        uc_catalog=uc_catalog,
-        uc_schema=uc_schema,
-        token_source="static",
-        uc_token=uc_token,
-        uc_default_region=None,
+        uri="./archetype_data",                  # local workspace for metadata
+        namespace="simulations",
+        uc_config=UnityCatalogConfig(
+            enabled=True,
+            enforce_permissions=True,
+            endpoint=uc_endpoint,
+            token=uc_token,
+            catalog=uc_catalog,
+            schema=uc_schema,
+            default_region=None,
+        ),
     )
     cache = CacheConfig()
     run = RunConfig.dev(steps=2)

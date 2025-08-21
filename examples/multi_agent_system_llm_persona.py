@@ -15,23 +15,20 @@
 import os
 import asyncio
 import sys
-# Dev convenience: enable only when explicitly set by the user
-if os.environ.get("ARCT_DEV_EXAMPLE", "0") == "1":
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
-    os.environ.setdefault("ARCT_VIZTRACER", "1")
-    os.environ.setdefault("ARCT_TRACY", "1")
 
-from archetype import Component, AsyncProcessor, WorldOrchestrator, AsyncSystem, StorageConfig, RunConfig, WorldConfig, CacheConfig
+
+from archetype import Component, AsyncProcessor, WorldOrchestrator, AsyncSystem, StorageConfig, RunConfig, WorldConfig
 from daft import DataFrame, col
 
 # Define Components
-class Position(Component):
+class Persona(Component):
     x: float
     y: float
 
 class Velocity(Component):
     vx: float
     vy: float
+
 class MovementProcessor(AsyncProcessor):
     components = [Position, Velocity]
     priority = 1
@@ -83,7 +80,7 @@ if __name__ == "__main__":
     world_config = WorldConfig(name="toy_async_world")
 
     run_config = RunConfig(num_steps=50, debug=False, show_rows=0, explain=False)
-    cache_config = CacheConfig()  # Explicit cache configuration
+    cache_config = True
     num_entities = 100000
 
     asyncio.run(single_world_simulation(storage_config, world_config, run_config, cache_config=cache_config, num_entities=num_entities))

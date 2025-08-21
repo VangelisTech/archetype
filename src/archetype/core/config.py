@@ -1,11 +1,12 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from daft.io import IOConfig
 from daft.catalog import Catalog  # noqa: F401
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from uuid_utils import UUID
 import uuid_utils as uuid
 from daft.session import Session  # noqa: F401
 from enum import Enum
+from pathlib import Path
 
 class StorageBackend(Enum):
     """
@@ -14,6 +15,19 @@ class StorageBackend(Enum):
     ICEBERG = "iceberg" # Iceberg backed by Parquet using SQLite PyIceberg SQL Catalog
     LANCEDB = "lancedb"
     #DUCKDB = "duckdb" # TODO: add duckdb support 
+
+
+class UnityCatalogConfig(BaseModel):
+    """
+    Unity Catalog configuration. Optional; when provided enables UC-aware behavior.
+    """
+    enabled: bool = Field(default=False, description="Enable Unity Catalog awareness")
+    enforce_permissions: bool = Field(default=False, description="Wrap query/update with UC permission enforcement")
+    endpoint: Optional[str] = Field(default=None, description="UC REST endpoint base URL")
+    token: Optional[str] = Field(default=None, description="Bearer token to access UC if not using user tokens")
+    uc_catalog: Optional[str] = Field(default=None, description="Default UC catalog to operate in")
+    uc_schema: Optional[str] = Field(default=None, description="Default UC schema to operate in")
+    default_region: Optional[str] = Field(default=None, description="Default region for temporary credentials")
 
 
 class StorageConfig(BaseModel):
@@ -25,12 +39,20 @@ class StorageConfig(BaseModel):
         - namespace: str - The desired namespace for the catalog 
         - io_config: IOConfig - The access credentials or the daft session/catalog
     """
-    uri: str       = Field(default=".archetype/", description="The URI location for the storage backend")
+    uri: Union[str, Path] = Field(default="./archetype_data", description="The URI location for the storage backend (str or Path)")
     namespace: str = Field(default="archetypes")
-    backend: StorageBackend = Field(default=StorageBackend.ICEBERG, description="Storage backend engine: 'iceberg' or 'lancedb'")
+    backend: StorageBackend = Field(default=StorageBackend.ICEBERG, description="Storage backend engine: 'iceberg (default)' or 'lancedb'")
     io_config: Optional[IOConfig] = Field(default=None, description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.") 
-    
+    uc_config: Optional[UnityCatalogConfig] = Field(default=None, description="Optional Unity Catalog configuration. When provided, enables UC integration.")
+
     model_config = dict(arbitrary_types_allowed=True)
+
+    # Coerce Path to str for downstream components
+    @field_validator("uri", mode="before")
+    def _coerce_uri(cls, v):
+        if isinstance(v, Path):
+            return str(v)
+        return v
 
     # Back-compat helpers for legacy callers expecting these flags
     @property

@@ -10,8 +10,8 @@ class Archetype:
     BASE_SCHEMA = pa.schema([
         pa.field("world_id", pa.string(), nullable=False),
         pa.field("run_id", pa.string(), nullable=False),
-        pa.field("entity_id", pa.uint32(), nullable=False),
-        pa.field("tick", pa.uint32(), nullable=False),
+        pa.field("entity_id", pa.int32(), nullable=False),
+        pa.field("tick", pa.int32(), nullable=False),
         pa.field("is_active", pa.bool_(), nullable=False),
     ])
     PARTITION_KEYS = ["world_id", "run_id", "tick"]
@@ -22,7 +22,6 @@ class Archetype:
         self.name = self.get_name(self.sig)
         self.schema = self.get_archetype_schema(self.sig)
 
-    
     @staticmethod
     def sig_from_components(components: List['Component']) -> ArchetypeSignature:
         """

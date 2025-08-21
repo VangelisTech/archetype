@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 from daft import col, lit
 
@@ -8,6 +8,8 @@ from archetype.core.component import Component
 from archetype.core.aio.async_processor import AsyncProcessor
 
 from .common import BenchResult, RunConfig, make_world, Timer
+from archetype.core.config import StorageConfig, CacheConfig
+from archetype.core.orchestrator import WorldOrchestrator
 
 
 class A(Component):
@@ -70,8 +72,22 @@ class DoubleE(AsyncProcessor):
         return df.with_column("e__value", col("e__value") * lit(2))
 
 
-async def run(entities: int = 1000, steps: int = 1) -> Tuple[BenchResult, Tuple]:
-    world, orch = await make_world("packed-iteration")
+async def run(
+    entities: int = 1000,
+    steps: int = 1,
+    *,
+    orchestrator: Optional[WorldOrchestrator] = None,
+    storage: Optional[StorageConfig] = None,
+    cache_config: Optional[CacheConfig] = None,
+    instrumented: Optional[bool] = None,
+) -> Tuple[BenchResult, Tuple]:
+    world, orch = await make_world(
+        "packed-iteration",
+        storage=storage,
+        cache_config=cache_config,
+        instrumented=instrumented,
+        orchestrator=orchestrator,
+    )
     try:
         # Create dataset: 1,000 entities, each with (A,B,C,D,E)
         for i in range(entities):

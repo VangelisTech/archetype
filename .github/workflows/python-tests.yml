@@ -23,11 +23,9 @@ jobs:
         run: python -m pip install -U pip uv
 
       - name: Install dev dependencies
-        working-directory: archetype
         run: uv pip install -e '.[dev]'
 
       - name: Run aio tests with coverage
-        working-directory: archetype
         run: |
           uv run pytest \
             tests/aio \
@@ -40,7 +38,7 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          files: archetype/coverage.xml
+          files: coverage.xml
           flags: aio
           name: aio-coverage
           fail_ci_if_error: false
@@ -52,13 +50,13 @@ jobs:
         if: always()
         with:
           name: coverage-html
-          path: archetype/htmlcov
+          path: htmlcov
 
       - name: Upload coverage xml artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: coverage-xml
-          path: archetype/coverage.xml
+          path: coverage.xml
 
 

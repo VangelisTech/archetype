@@ -86,14 +86,17 @@ class SimulationService:
                 # USE SCHEMA
                 if self.storage_config.uc_catalog and self.storage_config.uc_schema:
                     perms.ensure_allowed("schema", f"{self.storage_config.uc_catalog}.{self.storage_config.uc_schema}", OP_TO_PRIVILEGES["list_tables"], principal=principal)
-            # Wrap with UC enforcement if enabled
-            if getattr(self.storage_config, "use_unity_catalog", False) and self.storage_config.uc_enforce_permissions:
-                actor_provider = lambda: current_actor_ctx.get()
-                try:
-                    world.querier = UcEnforcedQueryManager(world.querier, self.storage_config, actor_provider)  # type: ignore[attr-defined]
-                    world.updater = UcEnforcedUpdateManager(world.updater, self.storage_config, actor_provider)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            # Wrap with UC enforcement if enabled (idempotent)
+            uc = getattr(self.storage_config, "uc_config", None)
+            if uc and getattr(uc, "enabled", False) and getattr(uc, "enforce_permissions", False):
+                if not getattr(world, "_uc_wrapped", False):
+                    actor_provider = lambda: current_actor_ctx.get()
+                    try:
+                        world.querier = UcEnforcedQueryManager(world.querier, self.storage_config, actor_provider)  # type: ignore[attr-defined]
+                        world.updater = UcEnforcedUpdateManager(world.updater, self.storage_config, actor_provider)  # type: ignore[attr-defined]
+                        setattr(world, "_uc_wrapped", True)
+                    except Exception:
+                        pass
             world_ids.append(world.world_id)
         
         # Run all worlds concurrently

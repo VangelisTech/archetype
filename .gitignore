@@ -1,3 +1,9 @@
+dist/
+build/
+*.egg-info/
+__pycache__/
+.venv/
+.bench_out/
 ./ref
 ./.venv
 ./.cursor

@@ -59,25 +59,24 @@ class CommandService:
         )
         
         # UC permission check at enqueue time for write operations
-        if self._storage_config and getattr(self._storage_config, "use_unity_catalog", False):
+        uc = getattr(self._storage_config, "uc_config", None)
+        if self._storage_config and uc and getattr(uc, "enabled", False):
             required = OP_TO_PRIVILEGES.get(op)
             if required:
                 actor = self._actor_provider() if self._actor_provider else actor_ctx
                 principal = getattr(actor, "principal", None)
-                token = getattr(actor, "uc_token", None) or (self._storage_config.uc_token or "")
-                uc = UnityCatalogREST(endpoint=self._storage_config.uc_endpoint, token=token)
-                perms = UCPermissions(uc)
+                token = getattr(actor, "uc_token", None) or ((getattr(uc, "token", "") or ""))
+                uc_client = UnityCatalogREST(endpoint=uc.endpoint, token=token)
+                perms = UCPermissions(uc_client)
                 # Heuristic: infer table from op payload if components present
                 if "components" in payload and payload["components"]:
                     from archetype.core import Archetype, Component
-                    try:
-                        comps = [Component.from_dict(c) for c in payload["components"]]
-                        sig = tuple(sorted((type(c) for c in comps), key=lambda t: t.__name__))
-                        table_name = Archetype.get_name(sig)
-                        full_name = f"{self._storage_config.uc_catalog}.{self._storage_config.uc_schema}.{table_name}"
-                        perms.ensure_allowed("table", full_name, required, principal=principal)
-                    except Exception:
-                        pass
+                    comps = [Component.from_dict(c) for c in payload["components"]]
+                    sig = tuple(sorted((type(c) for c in comps), key=lambda t: t.__name__))
+                    table_name = Archetype.get_name(sig)
+                    full_name = f"{uc.catalog}.{uc.schema}.{table_name}"
+                    # Strict behavior by default: if UC check raises, bubble up to caller
+                    perms.ensure_allowed("table", full_name, required, principal=principal)
 
         await self.broker.enqueue(world_id, cmd, actor_ctx)
         return cmd.id
@@ -106,7 +105,7 @@ class CommandService:
                                     actor_ctx: ActorCtx) -> UUID:
         """Create a command to spawn an entity."""
         payload = {
-            "components": [c.model_dump() for c in components]
+            "components": [{"type": c.__class__.__name__, **c.model_dump()} for c in components]
         }
         return await self.enqueue_command(
             world_id, "create_entity", payload, actor_ctx
@@ -119,7 +118,7 @@ class CommandService:
         """Create a command to remove an entity."""
         payload = {"entity_id": entity_id}
         return await self.enqueue_command(
-            world_id, "remove_entity", payload, actor_ctx
+            world_id, "delete_entity", payload, actor_ctx
         )
     
     async def add_components_command(self,
@@ -130,7 +129,7 @@ class CommandService:
         """Create a command to add components to an entity."""
         payload = {
             "entity_id": entity_id,
-            "components": [c.model_dump() for c in components]
+            "components": [{"type": c.__class__.__name__, **c.model_dump()} for c in components]
         }
         return await self.enqueue_command(
             world_id, "add_component", payload, actor_ctx

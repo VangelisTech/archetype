@@ -19,7 +19,7 @@ class DependencyContainer:
     
     def __init__(self, 
                  storage_uri: str = ".archetype_data",
-                 namespace: str = "archetype"):
+                 namespace: str = "simulations"):
         self.storage_config = StorageConfig(uri=storage_uri, namespace=namespace)
         self.cache_config = CacheConfig()
         self.actor_ctx = self._get_default_actor_ctx()

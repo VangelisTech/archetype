@@ -3,8 +3,8 @@
 import ray
 
 
-from archetype.core.aio.async_broker import AsyncCommandQueue
-from archetype.core.aio.async_interfaces import iBroker
+from archetype.src.archetype.app.broker import AsyncCommandQueue
+from archetype.core.async.async_interfaces import iBroker
 from archetype.core.aio.command import Command
 
 @ray.remote(max_restarts=-1)

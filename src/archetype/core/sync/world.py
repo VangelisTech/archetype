@@ -24,7 +24,7 @@ import uuid_utils as uuid
 
 from archetype.core import ArchetypeSignature, Component, Archetype
 from archetype.core.interfaces import iSystem, iQueryManager, iUpdateManager, iWorld
-from archetype.core.config import RunConfig
+from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.sync.processor import SyncProcessor
 
 from logging import getLogger
@@ -33,8 +33,7 @@ logger = getLogger(__name__)
 
 class SyncWorld(iWorld):
     def __init__(self,
-        name: str,
-        world_id: UUID,
+        world_config: WorldConfig,
         querier: iQueryManager,
         updater: iUpdateManager,
         system: iSystem,
@@ -43,12 +42,8 @@ class SyncWorld(iWorld):
         Initialize the synchronous world.
         """
         # World Properties
-        self.name = name
-        self.world_id = world_id
-        self.run_id = None
-        self.debug = False
-        self.validate = False
-        self.loggerplate = f"world={self.world_id}"  # Initialize loggerplate
+        self.name = world_config.name
+        self.world_id = world_config.world_id
 
         # Dependencies
         self.querier = querier
@@ -62,12 +57,13 @@ class SyncWorld(iWorld):
         self._spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]] = {}
         self._despawn_cache: Dict[ArchetypeSignature, List[int]] = {}
 
+        # Live snapshot of the most recent processed DataFrame per signature (current tick)
+        self._live: Dict[ArchetypeSignature, DataFrame] = {}
+
     def run(self, run_config: RunConfig, **input_kwargs):
         """
         Runs the world for the given run configuration.
         """
-        self.run_id = run_config.run_id
-
         for _ in range(run_config.num_steps):
             self.step(run_config, **input_kwargs)
 
@@ -75,28 +71,30 @@ class SyncWorld(iWorld):
         """
         Executes one full simulation tick.
         """
-        self.run_id = run_config.run_id
 
-        start_time = time.time()
+        for sig in sorted(self.active_signatures, key=Archetype.get_name):
+            self._run_archetype(sig, run_config, **input_kwargs)
 
-        all_sigs_this_tick = self.active_signatures
-        
-        for sig in sorted(all_sigs_this_tick):
-            result = self._run_archetype(sig, run_config, **input_kwargs)
-
-        
         # Finalize tick
         self._clear_caches()
         self.tick += 1
-
-        return results
 
     def _run_archetype(self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs) -> Tuple[DataFrame, ArchetypeSignature]:
         """
         Process a single archetype through the full pipeline.
         """
         # 1. Fetch previous state for all entities and their components
-        df = self.query_archetype(sig, ticks=[self.tick - 1], run_config=run_config)
+        if run_config.prefer_live_reads and sig in self._live and self.tick > 0:
+            df = self._live[sig]
+        else:
+            df = self.query_archetype(
+                sig=sig,
+                world_id=self.world_id,
+                run_id=run_config.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=None,
+                components=None,
+            )
 
         # 2. Materialize Mutations (Spawns/Despawns)
         df = self._materialize_mutations(df, sig, run_config)
@@ -105,9 +103,11 @@ class SyncWorld(iWorld):
         df = self.execute(df, sig, run_config, **input_kwargs)
 
         # 4. Update
-        self.update(df, sig, run_config, self.tick)
+        df_mat = self.update(df, sig, run_config, self.tick)
 
-        return df, sig
+        # Save live snapshot of active entities
+        self._live[sig] = df_mat.where(col("is_active"))
+
 
     # ---------------------------------------------------------------------
     #  Step Planning
@@ -151,9 +151,6 @@ class SyncWorld(iWorld):
             arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
             spawns_df = daft.from_arrow(arrow_table)
             df = df.concat(spawns_df)
-
-        if run_config.debug:
-            df.explain() # Introspection opportunity to understand how mutations impact performance.
 
         return df
 
@@ -266,16 +263,21 @@ class SyncWorld(iWorld):
     # Updater, Querier, System Facade methods
     # ---------------------------------------------------------------------
     
-    def query_archetype(self, sig: ArchetypeSignature, ticks: List[int]=None, entity_ids: List[int]=None, components: List[Component] = None, run_config: RunConfig | None = None) -> DataFrame:
+    def query_archetype(self,
+            sig: ArchetypeSignature,
+            run_id: str,
+            ticks: Optional[List[int]] = None,
+            entity_ids: Optional[List[int]] = None,
+            components: Optional[List[Component]] = None,
+        ) -> DataFrame:
         """Get an archetype by signature and tick. Esper equivalent of get_component for Archetype"""
         return self.querier.query_archetype(
-            sig,
-            self.world_id,
-            run_config.run_id if run_config else self.run_id,
-            ticks or [self.tick],
-            entity_ids,
-            components,
-            run_config or RunConfig()
+            sig=sig,
+            world_id=self.world_id,
+            run_id=run_id,
+            ticks=ticks or [self.tick],
+            entity_ids=entity_ids,
+            components=components,
         )
     
     def execute(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig | None = None, **input_kwargs) -> DataFrame:

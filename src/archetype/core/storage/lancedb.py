@@ -81,9 +81,10 @@ class AsyncLancedbStore(iAsyncStore):
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
         if self.lancedb is None:
-            # Ensure LanceDB connects to <uri>/<namespace>/lance (with proper separators)
+            # Allow override via ARCT_LANCEDB_SUBDIR; default to "lance"
+            subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
             self.lancedb = await lancedb.connect_async(
-                os.path.join(self.uri, self.namespace, "lance")
+                os.path.join(self.uri, self.namespace, subdir)
             )
 
         if table_name in await self.lancedb.table_names():
@@ -102,10 +103,15 @@ class AsyncLancedbStore(iAsyncStore):
                     storage_options= io_config_to_storage_options(self.io_config) if self.io_config else None,
                     exist_ok=True
                 )
-                await async_table.create_index(column="entity_id", config= BTree(), replace=True)
-                await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
-                await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
-                await async_table.create_index(column="tick", config= BTree(), replace=True)
+                # Optional eager index creation controlled by env flags (default on)
+                if os.environ.get("ARCT_LANCEDB_INDEX_ENTITY", "1") == "1":
+                    await async_table.create_index(column="entity_id", config= BTree(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_WORLD", "1") == "1":
+                    await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_RUN", "1") == "1":
+                    await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_TICK", "1") == "1":
+                    await async_table.create_index(column="tick", config= BTree(), replace=True)
             except Exception as e:
                 logger.error(f"Error creating LanceDB table {table_name}: {e}")
                 raise Exception(f"Error creating LanceDB table {table_name}: {e}")
@@ -177,7 +183,14 @@ class AsyncLancedbStore(iAsyncStore):
         Shutdown the store.
         """
         if self.lancedb is not None:
-            self.lancedb.close()
+            try:
+                close = getattr(self.lancedb, "close", None)
+                if close:
+                    result = close()
+                    if hasattr(result, "__await__"):
+                        await result  # ensure async close is awaited if applicable
+            finally:
+                self.lancedb = None
     
     async def optimize_tables(self) -> None:
         """

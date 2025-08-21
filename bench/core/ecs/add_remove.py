@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Tuple, Optional
 
 from archetype.core.component import Component
 from archetype.core.aio.async_processor import AsyncProcessor
 
 from .common import BenchResult, RunConfig, make_world, Timer
+from archetype.core.config import StorageConfig, CacheConfig
+from archetype.core.orchestrator import WorldOrchestrator
 
 
 class A(Component):
@@ -48,8 +50,22 @@ class RemoveB(AsyncProcessor):
         return df
 
 
-async def run(entities: int = 1000, steps: int = 1) -> Tuple[BenchResult, Tuple]:
-    world, orch = await make_world("add-remove")
+async def run(
+    entities: int = 1000,
+    steps: int = 1,
+    *,
+    orchestrator: Optional[WorldOrchestrator] = None,
+    storage: Optional[StorageConfig] = None,
+    cache_config: Optional[CacheConfig] = None,
+    instrumented: Optional[bool] = None,
+) -> Tuple[BenchResult, Tuple]:
+    world, orch = await make_world(
+        "add-remove",
+        storage=storage,
+        cache_config=cache_config,
+        instrumented=instrumented,
+        orchestrator=orchestrator,
+    )
     try:
         for i in range(entities):
             await world.create_entity([A(value=i)])

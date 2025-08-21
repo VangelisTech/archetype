@@ -26,7 +26,7 @@ class CommandType(str, Enum):
 
 
 class Command(BaseModel):
-    id: UUID                       = Field(default_factory=uuid.uuid7())
+    id: UUID                       = Field(default_factory=uuid.uuid7)
     tick: int                      = 0
     actor_id: Optional[UUID]       = None  # Make optional for simpler examples
     type: CommandType              = CommandType.CUSTOM

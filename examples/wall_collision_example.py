@@ -12,11 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from archetype import Component, Processor, processor, make_simple_world
-from daft import col, DataFrame, lit
-import pyglet
+
+import os
+import asyncio
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 import time
-from typing import Dict, Any
+from typing import Dict, Any, List
+
+import pyglet
+from daft import col, DataFrame, lit
+
+from archetype import (
+    Component,
+    AsyncProcessor,
+    WorldOrchestrator,
+    AsyncSystem,
+    StorageConfig,
+    WorldConfig,
+    RunConfig,
+    CacheConfig,
+    Archetype,
+)
+
 
 # Components - Pure data, no rendering objects
 class Position(Component):
@@ -41,23 +60,26 @@ class PlayerControlled(Component):
     """Marker component for player-controlled entities"""
     pass
 
-# Processors
-@processor(Position, Velocity, priority=10)
-class MovementProcessor(Processor):
-    def process(self, df: DataFrame, dt: float) -> DataFrame:
+# Processors (async style)
+class MovementProcessor(AsyncProcessor):
+    components = [Position, Velocity]
+    priority = 10
+
+    async def process(self, df: DataFrame, dt: float) -> DataFrame:
         df = df.with_columns({
             "position__x": col("position__x") + col("velocity__vx") * dt,
             "position__y": col("position__y") + col("velocity__vy") * dt,
         })
         return df
 
-@processor(Position, Velocity, Ball, priority=5)
-class WallCollisionProcessor(Processor):
+class WallCollisionProcessor(AsyncProcessor):
+    components = [Position, Velocity, Ball]
+    priority = 20
     def __init__(self, wall: Wall = None):
         super().__init__()
         self.wall = wall or Wall()
 
-    def process(self, df: DataFrame, dt: float) -> DataFrame:
+    async def process(self, df: DataFrame, dt: float) -> DataFrame:
         # Check wall collisions and reverse velocity if needed
         df = df.with_columns({
             # Check if we're past the walls (accounting for ball radius)
@@ -69,17 +91,17 @@ class WallCollisionProcessor(Processor):
 
         # Reverse velocity and clamp position if past walls
         df = df.with_columns({
-            "velocity__vx": df["past_left"].if_else(
+            "velocity__vx": col("past_left").if_else(
                 col("velocity__vx").abs(),  # Make positive (move right)
-                df["past_right"].if_else(
-                    -col("velocity__vx").abs(),  # Make negative (move left)
+                col("past_right").if_else(
+                    col("velocity__vx").abs() * lit(-1),  # Make negative (move left)
                     col("velocity__vx")
                 )
             ),
-            "velocity__vy": df["past_bottom"].if_else(
+            "velocity__vy": col("past_bottom").if_else(
                 col("velocity__vy").abs(),  # Make positive (move up)
-                df["past_top"].if_else(
-                    -col("velocity__vy").abs(),  # Make negative (move down)
+                col("past_top").if_else(
+                    col("velocity__vy").abs() * lit(-1),  # Make negative (move down)
                     col("velocity__vy")
                 )
             ),
@@ -102,14 +124,15 @@ class WallCollisionProcessor(Processor):
 
         return df
 
-@processor(Velocity, PlayerControlled, priority=15)
-class PlayerInputProcessor(Processor):
+class PlayerInputProcessor(AsyncProcessor):
+    components = [Velocity, PlayerControlled]
+    priority = 5
     def __init__(self, input_state):
         super().__init__()
         self.input_state = input_state
         self.speed = 150.0  # pixels per second
 
-    def process(self, df: DataFrame, dt: float) -> DataFrame:
+    async def process(self, df: DataFrame, dt: float) -> DataFrame:
         # Update velocity based on current input state
         vx = 0.0
         vy = 0.0
@@ -137,13 +160,14 @@ class RenderingSystem:
         self.batch = batch
         self.sprites = {}  # entity_id -> sprite
 
-        # Set up resource path
-        pyglet.resource.path = ['assets']
+        # Set up resource path relative to this file
+        assets_dir = os.path.join(os.path.dirname(__file__), 'assets')
+        pyglet.resource.path = [assets_dir]
         pyglet.resource.reindex()
 
         # Load images
-        self.red_ball_image = pyglet.resource.image("red_ball.png")
-        self.blue_ball_image = pyglet.resource.image("blue_ball.png")
+        self.red_ball_image = pyglet.resource.image("redsquare.png")
+        self.blue_ball_image = pyglet.resource.image("bluesquare.png")
 
         # Center the anchor points
         self.red_ball_image.anchor_x = self.red_ball_image.width // 2
@@ -158,33 +182,21 @@ class RenderingSystem:
         self.sprites[entity_id] = sprite
         return sprite
 
-    def update_positions(self, world):
-        """Update sprite positions from ECS data"""
-        # Get all entities with Position and Ball components
-        archetypes = world.store.get_archetypes(Position, Ball)
+    def apply_rows(self, rows: List[Dict[str, Any]]):
+        """Apply position updates computed off-thread."""
+        for row in rows:
+            entity_id = row['entity_id']
+            x = row['position__x']
+            y = row['position__y']
+            color = row['ball__color']
 
-        for table_name, df in archetypes.items():
-            # Get the latest step data
-            latest_df = df.where(col("is_active") == True).collect()
+            if entity_id not in self.sprites:
+                self.create_sprite(entity_id, color, x, y)
+            else:
+                self.sprites[entity_id].x = x
+                self.sprites[entity_id].y = y
 
-            for row in latest_df.to_pylist():
-                entity_id = row['entity_id']
-                x = row['position__x']
-                y = row['position__y']
-                color = row['ball__color']
-
-                # Create sprite if it doesn't exist
-                if entity_id not in self.sprites:
-                    self.create_sprite(entity_id, color, x, y)
-                else:
-                    # Update existing sprite position
-                    self.sprites[entity_id].x = x
-                    self.sprites[entity_id].y = y
-
-def main(uri, debug=False):
-    # Create the ECS world
-    world = make_simple_world(uri, debug=debug)
-
+async def main(storage_config: StorageConfig, world_config: WorldConfig, run_configs: List[RunConfig], cache_config: CacheConfig | None = None):
     # Create window
     window = pyglet.window.Window(
         width=800,
@@ -198,10 +210,6 @@ def main(uri, debug=False):
     # Set up walls to match window size
     wall = Wall(min_x=0, max_x=window.width, min_y=0, max_y=window.height)
 
-    # Add processors
-    world.add_processor(MovementProcessor())
-    world.add_processor(WallCollisionProcessor(wall))
-
     # Input state tracking
     input_state = {
         'left': False,
@@ -210,25 +218,34 @@ def main(uri, debug=False):
         'down': False
     }
 
-    # Add player input processor
-    world.add_processor(PlayerInputProcessor(input_state))
+    # Create world directly (single event loop)
+    orchestrator = WorldOrchestrator()
+    world = await orchestrator.create_world(
+        config=world_config,
+        system=AsyncSystem(),
+        storage_config=storage_config,
+        cache_config=cache_config,
+        instrumented=True,
+    )
+    await world.add_processor(PlayerInputProcessor(input_state))
+    await world.add_processor(MovementProcessor())
+    # Start simple: disable collisions until sprites render reliably
+    # await world.add_processor(WallCollisionProcessor(wall))
 
-    # Spawn entities
-    red_enemy = world.spawn(
+    # Spawn minimal entities: one player (red, controlled) + one enemy (blue, drifting)
+    await world.create_entity([
         Ball(radius=15, color="red"),
         Position(x=100, y=100),
-        Velocity(vx=120, vy=80)
-    )
-
-    blue_player = world.spawn(
-        Ball(radius=20, color="blue"),
-        Position(x=400, y=300),
         Velocity(vx=0, vy=0),
-        PlayerControlled()
-    )
+        PlayerControlled(),
+    ])
+    await world.create_entity([
+        Ball(radius=20, color="blue"),
+        Position(x=400, y=250),
+        Velocity(vx=60, vy=-30),
+    ])
 
-    # Materialize the initial spawn data
-    world.store.materialize_spawns()
+    run_config = run_configs[0] if run_configs else RunConfig(num_steps=1_000_000)
 
     # Create rendering system
     renderer = RenderingSystem(window, batch)
@@ -256,25 +273,52 @@ def main(uri, debug=False):
         elif symbol == pyglet.window.key.DOWN:
             input_state['down'] = False
 
-    @window.event
-    def on_draw():
+    # Main loop: single asyncio loop drives simulation and rendering
+    target_fps = 60.0
+    frame_time = 1.0 / target_fps
+    last_time = time.time()
+
+
+    while not window.has_exit:
+        # Compute dt
+        now = time.time()
+        dt = now - last_time
+        last_time = now
+
+        # Dispatch window events
+        window.dispatch_events()
+        world.run_id = run_config.run_id
+
+        # Step one tick
+        await world.step(dt=dt)
+
+        # Query current positions for Position+Ball from live state (no tick lag)
+        df = await world.query_components_live([Position(), Ball()])
+        if df.count_rows() > 0:
+            rows = df.collect().to_pylist()
+            renderer.apply_rows(rows)
+
+        # Draw
         window.clear()
         batch.draw()
+        window.flip()
 
-    # Update function called by pyglet's scheduler
-    def update(dt):
-        # Step the ECS world
-        world.step(dt=dt)
+        # Frame pacing
+        elapsed = time.time() - now
+        sleep_s = max(0.0, frame_time - elapsed)
+        await asyncio.sleep(sleep_s)
 
-        # Update sprite positions from ECS data
-        renderer.update_positions(world)
-
-    # Schedule the update function to run at 60 FPS
-    pyglet.clock.schedule_interval(update, 1/60.0)
-
-    # Start pyglet's event loop
-    pyglet.app.run()
 
 if __name__ == "__main__":
-    uri = "/Users/everett-founder/git/vangelis/internal/work/libs/archetype/data"
-    main(uri, debug=True)
+    # Define configs (mirrors toy example style)
+    storage_config = StorageConfig(
+        uri="./archetype_data",
+        namespace="examples",
+    )
+    world_config = WorldConfig(name="wall_collision_world")
+    cache_config = CacheConfig(flush_rows=100_000, flush_mb=128, idle_sec=30)
+    run_configs = [
+        RunConfig(num_steps=1_000_000, debug=False, show_rows=0, explain=False),
+    ]
+
+    asyncio.run(main(storage_config, world_config, run_configs, cache_config=cache_config))

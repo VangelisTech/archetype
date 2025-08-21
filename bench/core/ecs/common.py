@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional, Tuple
+
+from archetype.core.config import StorageConfig, WorldConfig, RunConfig, CacheConfig, StorageBackend
+from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncSystem
+
+
+def _default_storage() -> StorageConfig:
+    uri = Path(os.environ.get("ARCHETYPE_DATA_URI", "./archetype_data")).resolve()
+    return StorageConfig(
+        uri=uri,
+        namespace=os.environ.get("ARCHETYPE_BENCH_NS", "benchmarks"),
+        backend=StorageBackend.ICEBERG,
+    )
+
+
+@dataclass
+class BenchResult:
+    name: str
+    entities: int
+    steps: int
+    elapsed_s: float
+    extras: Dict[str, Any]
+
+    @property
+    def steps_per_sec(self) -> float:
+        return self.steps / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+    @property
+    def entities_per_sec(self) -> float:
+        total = self.entities * self.steps
+        return total / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+
+async def make_world(
+    name: str,
+    system: Optional[AsyncSystem] = None,
+    storage: Optional[StorageConfig] = None,
+    cache_config: Optional[CacheConfig] = None,
+    instrumented: Optional[bool] = None,
+    orchestrator: Optional[WorldOrchestrator] = None,
+) -> Tuple[object, WorldOrchestrator]:
+    """
+    Create a world for a given (storage, cache) configuration.
+
+    - Accepts an optional existing orchestrator so suites can reuse a single orchestrator across many runs
+      (this shares the StorageResourceManager and reduces setup overhead).
+    - Defaults to a sane local StorageConfig if none is provided.
+    """
+    orch = orchestrator or WorldOrchestrator()
+    world = await orch.create_world(
+        config=WorldConfig(name=name),
+        system=system or AsyncSystem(),
+        cache_config=cache_config,
+        storage_config=storage or _default_storage(),
+        instrumented=instrumented,
+    )
+    return world, orch
+
+
+class Timer:
+    def __enter__(self):
+        self.t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.t1 = time.perf_counter()
+        self.elapsed = self.t1 - self.t0
+
+

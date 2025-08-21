@@ -80,10 +80,11 @@ class AsyncCachedStore(iAsyncStore):
         self.idle_sec     = cache_config.idle_sec
 
         # Distinguish between the global memory budget and the current cached usage
+        # Default to a conservative 25% of available RAM when unspecified
         self.global_budget_bytes: float = (
             cache_config.global_mb << 20
             if cache_config.global_mb is not None
-            else psutil.virtual_memory().available * 0.7
+            else psutil.virtual_memory().available * 0.25
         )
         self.total_cached_bytes: int = 0
         

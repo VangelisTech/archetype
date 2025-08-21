@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import string
-from typing import Tuple, List, Type
+from typing import Tuple, List, Type, Optional
 from daft import col, lit
 
 from archetype.core.component import Component
 from archetype.core.aio.async_processor import AsyncProcessor
 
 from .common import BenchResult, RunConfig, make_world, Timer
+from archetype.core.config import StorageConfig, CacheConfig
+from archetype.core.orchestrator import WorldOrchestrator
 
 
 class Data(Component):
@@ -39,8 +41,22 @@ def make_double_letter_proc(letter_cls: Type[Component]):
     return _P
 
 
-async def run(entities_per_component: int = 100, steps: int = 1) -> Tuple[BenchResult, Tuple]:
-    world, orch = await make_world("fragmented-iteration")
+async def run(
+    entities_per_component: int = 100,
+    steps: int = 1,
+    *,
+    orchestrator: Optional[WorldOrchestrator] = None,
+    storage: Optional[StorageConfig] = None,
+    cache_config: Optional[CacheConfig] = None,
+    instrumented: Optional[bool] = None,
+) -> Tuple[BenchResult, Tuple]:
+    world, orch = await make_world(
+        "fragmented-iteration",
+        storage=storage,
+        cache_config=cache_config,
+        instrumented=instrumented,
+        orchestrator=orchestrator,
+    )
     try:
         letters: List[Type[Component]] = [make_letter_component(ch) for ch in string.ascii_uppercase]
 

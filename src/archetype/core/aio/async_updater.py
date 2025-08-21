@@ -30,27 +30,20 @@ class AsyncUpdateManager(iAsyncUpdateManager):
 
     async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         try:
-            df.collect()  # Moment of Materialization
-            row_count = df.count_rows()
-
-            if row_count == 0 or not df.column_names:
-                logger.info(
-                    f"Append skipped: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} rows={row_count}"
-                )
-                return df
             
             df = df.with_columns({
-                "tick": lit(tick).cast(daft.DataType.uint32()),
+                # Use signed 32-bit to match expected schema in union paths
+                "tick": lit(tick).cast(daft.DataType.int32()),
                 "world_id": lit(str(world_id)),
                 "run_id": lit(str(run_id)),
-                "entity_id": col("entity_id").cast(daft.DataType.uint32()),
+                "entity_id": col("entity_id").cast(daft.DataType.int32()),
             })
 
             t0 = time.perf_counter()
             await self.store.append(sig, df)
             duration_ms = (time.perf_counter() - t0) * 1000
             logger.info(
-                f"Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} rows={row_count} duration_ms={duration_ms:.3f}"
+                f"Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} duration_ms={duration_ms:.3f}"
             )
 
         except Exception as e:

@@ -70,7 +70,7 @@ class AsyncStore(iAsyncStore):
         """
         Get all archetypes that contain all of the specified component types.
         """
-        table: Table = self._ensure_table(sig)
+        table: Table = self._ensure_table(sig) 
         df: DataFrame = table.read()  # Cheap, Lazy
 
         # stored as strings; ensure filter values are strings
@@ -89,7 +89,7 @@ class AsyncStore(iAsyncStore):
                 logger.info(
                     f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
                 )
-                return
+                return 
         except Exception as e:
             logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
             return

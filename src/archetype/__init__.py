@@ -30,7 +30,7 @@ from archetype.app import (
     ArchetypeApp,
 )
 
-_version__ = "0.1.0"
+__version__ = "0.1.0"
 
 __all__ = [
     "Component",

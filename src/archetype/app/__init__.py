@@ -56,7 +56,7 @@ class ArchetypeApp:
         Returns:
             Initialized Archetype application
         """
-        storage_config = StorageConfig(uri=storage_uri)
+        storage_config = StorageConfig(uri=storage_uri, namespace="simulations")
         cache_config = cache_config 
         actor_ctx = actor_ctx or ActorCtx(id=uuid7())
         
