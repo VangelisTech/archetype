@@ -67,9 +67,14 @@ async def test_add_remove_components_and_hot_swap_processor(tmp_path):
     # Run a tick; position should change from velocity
     await container.orchestrator.run_world(world.world_id, RunConfig(num_steps=1))
 
-    # Validate add-components transmuted the signature mapping
-    sig = tuple(sorted((FlowPos, FlowVel), key=lambda t: t.__name__))
-    assert world._entity2sig.get(1) == sig  # type: ignore[attr-defined]
+    # Validate via public API: after add-components, latest row under superset signature is active
+    from daft import col
+    superset_sig = tuple(sorted((FlowPos, FlowVel), key=lambda t: t.__name__))
+    df_superset = await container.querier.query_archetype(superset_sig, world_id=world.world_id, ticks=None, entity_ids=[1], components=None, run_id=None)
+    rows_superset = df_superset.collect().to_pylist()
+    assert rows_superset, "expected at least one row under superset signature"
+    latest_superset = sorted(rows_superset, key=lambda r: r["tick"]) [-1]
+    assert latest_superset["is_active"] is True
 
     # Remove a component and ensure signature change is handled
     await container.command_service.remove_components_command(
@@ -80,7 +85,19 @@ async def test_add_remove_components_and_hot_swap_processor(tmp_path):
 
     # Run another tick, and verify velocity no longer applies; signature reverts
     await container.orchestrator.run_world(world.world_id, RunConfig(num_steps=1))
-    assert world._entity2sig.get(1) == tuple(sorted((FlowPos,), key=lambda t: t.__name__))  # type: ignore[attr-defined]
+    base_sig = tuple(sorted((FlowPos,), key=lambda t: t.__name__))
+    # Under base signature, entity should have an active latest row
+    df_base = await container.querier.query_archetype(base_sig, world_id=world.world_id, ticks=None, entity_ids=[1], components=None, run_id=None)
+    base_rows = df_base.collect().to_pylist()
+    assert base_rows, "expected at least one row under base signature"
+    latest_base = sorted(base_rows, key=lambda r: r["tick"]) [-1]
+    assert latest_base["is_active"] is True
+    # Under superset signature, the latest row for the entity should be inactive
+    df_superset2 = await container.querier.query_archetype(superset_sig, world_id=world.world_id, ticks=None, entity_ids=[1], components=None, run_id=None)
+    superset_rows2 = [r for r in df_superset2.collect().to_pylist() if r["entity_id"] == 1]
+    if superset_rows2:
+        latest_superset2 = sorted(superset_rows2, key=lambda r: r["tick"]) [-1]
+        assert latest_superset2["is_active"] is False
 
     await container.shutdown()
 

@@ -103,9 +103,11 @@ class SleepProc(AsyncProcessor):
     components = (Position,)
     priority = 1
 
-    def __init__(self, delay_ms: int, shared: dict | None = None):
+    def __init__(self, delay_ms: int, shared: dict | None = None, start_evt: asyncio.Event | None = None, proceed_evt: asyncio.Event | None = None):
         self.delay_ms = delay_ms
         self._shared = shared
+        self._start_evt = start_evt
+        self._proceed_evt = proceed_evt
 
     async def process(self, df, **kwargs):
         if self._shared is not None:
@@ -113,7 +115,14 @@ class SleepProc(AsyncProcessor):
             async with lock:
                 self._shared["current"] = self._shared.get("current", 0) + 1
                 self._shared["peak"] = max(self._shared.get("peak", 0), self._shared["current"])
-        await asyncio.sleep(self.delay_ms / 1000.0)
+        # Signal that this processor has started, and wait until allowed to proceed. This
+        # removes time-based nondeterminism and enforces overlap deterministically in tests.
+        if self._start_evt is not None:
+            self._start_evt.set()
+        if self._proceed_evt is not None:
+            await self._proceed_evt.wait()
+        else:
+            await asyncio.sleep(self.delay_ms / 1000.0)
         if self._shared is not None:
             lock = self._shared["lock"]
             async with lock:
@@ -134,14 +143,22 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     wcfg = WorldConfig(name="w2")
     w = AsyncWorld(wcfg, querier, updater, system)
     shared = {"current": 0, "peak": 0, "lock": asyncio.Lock()}
-    await w.add_processor(SleepProc(200, shared))  # 200ms per archetype
+    # Use events to deterministically coordinate overlap across archetypes
+    start_evt = asyncio.Event()
+    proceed_evt = asyncio.Event()
+    await w.add_processor(SleepProc(0, shared, start_evt=start_evt, proceed_evt=proceed_evt))
 
     # Two archetypes: A and B
     _ = await w.create_entity([Position(x=0, y=0)])
     _ = await w.create_entity([Position(x=1, y=1), Marker(value=1)])
 
     rc2 = RunConfig()
-    await w.step(rc2)
+    # Start the step concurrently so we can wait until at least one processor starts
+    step_task = asyncio.create_task(w.step(rc2))
+    # Wait for at least one processor to start, then allow all to proceed simultaneously
+    await start_evt.wait()
+    proceed_evt.set()
+    await step_task
     # With two archetypes, processors should overlap at least once
     assert shared["peak"] >= 2
 

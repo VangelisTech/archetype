@@ -23,7 +23,7 @@ async def test_async_store_ensure_table_create_failure(monkeypatch, tmp_path):
 
     monkeypatch.setattr(store.session, "create_table_if_not_exists", fail_create_table)
     sig = Archetype.sig_from_components([Demo(v=1)])
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="create table failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
 
 

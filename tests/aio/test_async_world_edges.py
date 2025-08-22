@@ -143,11 +143,12 @@ async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
 
     try:
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
-        # Install an empty memtable to exercise early return in _background_flush_sig
-        cached._mem[sig] = MemTable()  # zero rows
-        # Call private flush on empty table; should be a no-op
-        await cached._background_flush_sig(sig)
+        # Trigger shutdown to exercise flush path without relying on private methods
+        # With zero rows, shutdown should be a quick no-op
+        await cached.shutdown()
+        await inner.shutdown()
     finally:
+        # Double-shutdown remains idempotent
         await cached.shutdown()
         await inner.shutdown()
 

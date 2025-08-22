@@ -49,7 +49,7 @@ async def test_lancedb_create_index_failure_propagates(monkeypatch, tmp_path):
 
     sig = Archetype.sig_from_components([Demo(v=1)])
     # First operation that ensures the table should attempt index creation and fail
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="index failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
 
 

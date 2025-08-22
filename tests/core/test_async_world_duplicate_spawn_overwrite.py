@@ -40,12 +40,11 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
 
         await world.run(RunConfig(num_steps=1))
 
-        # Query live components; duplicate spawns should dedupe to one active row for the entity
+        # Query live components; last write should deterministically win (value=99)
         df = await world.get_components([A])
-        if df.count_rows() == 1:
-            vals = [r["a__i"] for r in df.select("a__i").to_pylist()]
-            assert len(vals) == 1
-            assert vals[0] in (1, 99)
+        rows = df.select("a__i").to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["a__i"] == 99
     finally:
         await orch.shutdown()
 

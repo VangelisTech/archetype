@@ -74,7 +74,7 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
     # Monkeypatch Archetype.get_name to return 't'
     monkeypatch.setattr("archetype.core.storage.lancedb.Archetype.get_name", lambda s: "t")
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="open failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
 
 
@@ -95,7 +95,7 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
         {"world_id": "w", "run_id": "r", "entity_id": 1, "tick": 0, "is_active": True, "demo__v": 1}
     ], schema=schema)
 
-    with pytest.raises(Exception):
+    with pytest.raises(RuntimeError, match="add failed"):
         await store.append(sig, daft.from_arrow(arrow))
 
 
