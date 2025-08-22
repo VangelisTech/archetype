@@ -13,41 +13,20 @@
 # limitations under the License.
 
 from .async_world import AsyncWorld
-from .async_store import AsyncStore
-from .async_querier import AsyncQueryManager
 from .async_system import AsyncSystem
+from .async_store import AsyncStore
+from .async_querier import AsyncQueryManager 
+from .async_updater import AsyncUpdateManager 
+from .async_cached_store import AsyncCachedStore
 from .async_processor import AsyncProcessor
-from .async_updater import AsyncUpdateManager
-import asyncio
 
-
-def make_async_world(uri: str, world_id: str | None = None, run_id: str | None = None, namespace: str | None = None, debug: bool = False, max_concurrent_archetypes: int = 10) -> AsyncWorld:
-    store   = AsyncStore(
-        uri = uri,
-        namespace = namespace,
-        debug = debug
-    )
-    querier = AsyncQueryManager(store=store)
-    updater = AsyncUpdateManager(store=store)
-    system  = AsyncSystem()
-    world = AsyncWorld(
-        querier=querier,
-        updater=updater,
-        async_system=system,
-        world_id=world_id,
-        run_id=run_id,
-        semaphore=asyncio.Semaphore(max_concurrent_archetypes),
-        debug=debug,
-    )
-    return world
 
 __all__ = [
     "AsyncWorld",
+    "AsyncSystem",
     "AsyncStore",
     "AsyncQueryManager",
     "AsyncUpdateManager",
-    "AsyncSystem",
+    "AsyncCachedStore",
     "AsyncProcessor",
-    "async_processor",
-    "make_async_world",
 ]

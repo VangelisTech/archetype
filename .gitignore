@@ -1,7 +1,14 @@
+dist/
+build/
+*.egg-info/
+__pycache__/
+.venv/
+.bench_out/
 ./ref
 ./.venv
 ./.cursor
 ./.vscode
+./dist/
 *.pyc
 *.pyo
 *.pyd
@@ -21,6 +28,7 @@
 .cursorignore
 *.lance
 Claude.md
+Agents.md
 .claude/
 data/
 
@@ -45,6 +53,12 @@ archetype.egg-info/
 *.arrow
 *.db
 
+opencode.json
+
 __pycache__/
 data/archetypes.db/
 data/catalog.db
+.archetype_examples/
+.archetype_benchmarks/
+.pytest_cache/
+archetype.egg-info/

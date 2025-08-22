@@ -12,20 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import asyncio
-from typing import List, Tuple
+from typing import List
 from daft import DataFrame
 
-from archetype.core.base import BaseSystem
-from archetype.core.processor import Processor as SyncProcessor
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.store import ArchetypeSignature
+from archetype.core.interfaces import ArchetypeSignature, iAsyncSystem
+
+
 import logging
+import inspect
 
 logger = logging.getLogger(__name__)
 
 
-class AsyncSystem(BaseSystem):
+class AsyncSystem(iAsyncSystem):
     """
     Async version of SyncSystem that processes archetypes concurrently.
 
@@ -38,23 +38,21 @@ class AsyncSystem(BaseSystem):
     """
 
     def __init__(self):
-        self.processors: List[AsyncProcessor] = []
+        self.processors: List["AsyncProcessor"] = []           
 
-    def add_processor(self, proc: AsyncProcessor):
+    async def add_processor(self, proc: "AsyncProcessor"):
         """Add an async processor to the system."""
         self.processors.append(proc)
 
-    def remove_processor(self, proc: AsyncProcessor):
+    async def remove_processor(self, proc_type: type["AsyncProcessor"]):
         """Remove all processors of the given type."""
-        self.processors = [p for p in self.processors if not isinstance(p, type(proc))]
+        self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
     async def execute(
         self,
         df: DataFrame,
         sig: ArchetypeSignature,
-        semaphore: asyncio.Semaphore,
-        *args,
-        **kwargs
+        **input_kwargs
     ) -> DataFrame:
         """
         Process a single archetype through all relevant processors.
@@ -63,22 +61,19 @@ class AsyncSystem(BaseSystem):
         but within each archetype, processors run in priority order (same as sync).
         """
 
-
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             if set(proc_instance.components).issubset(set(sig)):
 
                 # Gracefully handle errors in processors.
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
-                    if isinstance(proc_instance, AsyncProcessor):
-                        df = await proc_instance.process(df, semaphore, *args, **kwargs)
-                    elif isinstance(proc_instance, SyncProcessor):
-                        df = proc_instance.process(df, *args, **kwargs)
+                    assert isinstance(proc_instance, AsyncProcessor)
+                    # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs
+                    sig_params = inspect.signature(proc_instance.process).parameters
+                    filtered_input_kwargs = {k: v for k, v in input_kwargs.items() if k in sig_params}
+                    df = await proc_instance.process(df, **filtered_input_kwargs)
                 except Exception as e:
                     logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
-                    df = None
-                    break
-        return df
 
-    # TODO: Eventually we will need to add an if statement on the type of processor
-    # IE Ray Remote actor.
+        return df
+    

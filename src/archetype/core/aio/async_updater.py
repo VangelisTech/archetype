@@ -12,31 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import daft
+from daft import col, DataFrame, lit
+
+from archetype.core.interfaces import iAsyncUpdateManager, iAsyncStore
+from archetype.core import ArchetypeSignature, Archetype
+import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-
-from daft import DataFrame, lit
-from typing import List, Dict, Any
-from logging import getLogger
-from archetype.core.aio.async_interfaces import iAsyncUpdater, iAsyncStore
-from archetype.core.interfaces import ArchetypeSignature, Archetype
-
-logger = getLogger(__name__)
-
-
-class AsyncUpdateManager(iAsyncUpdater):
-    def __init__(self, store: iAsyncStore):
+class AsyncUpdateManager(iAsyncUpdateManager):
+    def __init__(self, store: iAsyncStore, validate_flag: bool = False):
         self.store = store
+        self.validate_flag = validate_flag
 
-    async def update(self, df: DataFrame, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
-        df = df.with_columns({"step": lit(step), "world_id": lit(world_id), "run_id": lit(run_id)})
+    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
         try:
-            await self.store.append(sig, df, step, world_id, run_id)
+            
+            df = df.with_columns({
+                # Use signed 32-bit to match expected schema in union paths
+                "tick": lit(tick).cast(daft.DataType.int32()),
+                "world_id": lit(str(world_id)),
+                "run_id": lit(str(run_id)),
+                "entity_id": col("entity_id").cast(daft.DataType.int32()),
+            })
+
+            t0 = time.perf_counter()
+            await self.store.append(sig, df)
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                f"Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} duration_ms={duration_ms:.3f}"
+            )
+
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
+        return df
 
-    async def materialize_spawns(self, spawn_cache: Dict[ArchetypeSignature, List[Dict[str, Any]]], world_id: str, run_id: str) -> None:
-        await self.store.materialize_spawns(spawn_cache, world_id, run_id)
-
-    async def remove_entity(self, entity_id: int, sig: ArchetypeSignature, step: int, world_id: str, run_id: str) -> None:
-        await self.store.remove_entity(entity_id, sig, step, world_id, run_id)

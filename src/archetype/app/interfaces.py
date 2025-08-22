@@ -1,0 +1,13 @@
+from typing import Protocol, List
+
+from uuid_utils import UUID
+from .models import Command
+
+
+
+class iCommandBroker(Protocol):
+    async def enqueue(self, cmd: 'Command') -> None: ...
+    async def enqueue_bulk(self, cmds: List['Command']) -> None: ...
+    async def dequeue_due(self, *, tick: int, limit: int = 1_000) -> List['Command']: ...
+    async def ack(self, cmd_ids: List[UUID]) -> None: ...
+

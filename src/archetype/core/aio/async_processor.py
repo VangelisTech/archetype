@@ -12,14 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ..base import BaseProcessor
+from typing import Tuple, Type
 from daft import DataFrame
-import asyncio
 
+from archetype.core import Component
+from archetype.core.interfaces import iAsyncProcessor
 
-
-class AsyncProcessor(BaseProcessor):
-    async def process(self, df: DataFrame, semaphore: asyncio.Semaphore, *args, **kwargs) -> DataFrame:
+class AsyncProcessor(iAsyncProcessor):
+    components: Tuple[Type['Component'], ...] = ()
+    priority: int = 10
+    
+    async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
         """
         Async version of process method. Override this in subclasses.
         """
