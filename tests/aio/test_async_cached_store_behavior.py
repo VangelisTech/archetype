@@ -92,7 +92,7 @@ async def test_cached_store_idle_flush(inner_store):
     from archetype.core.config import CacheConfig
 
     inner = inner_store
-    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=1)
+    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=0.1)
     cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
     try:
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
@@ -112,15 +112,15 @@ async def test_cached_store_idle_flush(inner_store):
         assert out_inner_pre.collect().count_rows() == 0
 
         # Wait for idle flusher with polling to avoid flakes
-        deadline = asyncio.get_event_loop().time() + 5.0
+        deadline = asyncio.get_event_loop().time() + 2.0
         flushed = False
         while asyncio.get_event_loop().time() < deadline:
             out_inner_post = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
             if out_inner_post.collect().count_rows() == 1:
                 flushed = True
                 break
-            await asyncio.sleep(0.05)
-        assert flushed, "Idle flush did not persist row within 5s"
+            await asyncio.sleep(0.02)
+        assert flushed, "Idle flush did not persist row within 2s"
     finally:
         await cached.shutdown()
 
