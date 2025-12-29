@@ -1,11 +1,9 @@
 import pytest
-import pytest_asyncio
 
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
-from archetype.core.aio import AsyncSystem, AsyncProcessor
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
-from archetype.core.archetype import Archetype
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class A(Component):
@@ -28,13 +26,16 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await orch.create_world(WorldConfig(name="w"), system=system, storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=system, storage_config=storage
+        )
 
         # Create one entity, then enqueue another spawn for the same entity id by patching next id backwards
         eid = await world.create_entity([A(i=1)])
 
         # Force the next created entity id to be the same as previous by monkeypatching the counter
         from itertools import repeat
+
         world._entity_counter = repeat(eid)  # type: ignore[attr-defined]
         await world.create_entity([A(i=99)])
 
@@ -47,5 +48,3 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
         assert rows[0]["a__i"] == 99
     finally:
         await orch.shutdown()
-
-

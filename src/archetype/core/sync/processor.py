@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, Type
+
 from daft import DataFrame
-from archetype.core import Component
+
+from archetype.core.component import Component
 from archetype.core.interfaces import iProcessor
 
 
 class SyncProcessor(iProcessor):
-    components: Tuple[Type[Component], ...] = ()
+    components: tuple[type[Component], ...] = ()
     priority: int = 10
 
     def process(self, df: DataFrame, **input_kwargs) -> DataFrame:

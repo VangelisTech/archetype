@@ -12,13 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import daft
-from daft import col, DataFrame, lit
-
-from archetype.core.interfaces import iAsyncUpdateManager, iAsyncStore
-from archetype.core import ArchetypeSignature, Archetype
-import time
 import logging
+import time
+
+import daft
+from daft import DataFrame, col, lit
+
+from archetype.core.archetype import Archetype
+from archetype.core.interfaces import ArchetypeSignature, iAsyncStore, iAsyncUpdateManager
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,19 @@ class AsyncUpdateManager(iAsyncUpdateManager):
         self.store = store
         self.validate_flag = validate_flag
 
-    async def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    async def update(
+        self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
+    ) -> DataFrame:
         try:
-            
-            df = df.with_columns({
-                # Use signed 32-bit to match expected schema in union paths
-                "tick": lit(tick).cast(daft.DataType.int32()),
-                "world_id": lit(str(world_id)),
-                "run_id": lit(str(run_id)),
-                "entity_id": col("entity_id").cast(daft.DataType.int32()),
-            })
+            df = df.with_columns(
+                {
+                    # Use signed 32-bit to match expected schema in union paths
+                    "tick": lit(tick).cast(daft.DataType.int32()),
+                    "world_id": lit(str(world_id)),
+                    "run_id": lit(str(run_id)),
+                    "entity_id": col("entity_id").cast(daft.DataType.int32()),
+                }
+            )
 
             t0 = time.perf_counter()
             await self.store.append(sig, df)
@@ -49,4 +53,3 @@ class AsyncUpdateManager(iAsyncUpdateManager):
         except Exception as e:
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
         return df
-

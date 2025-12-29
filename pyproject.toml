@@ -1,32 +1,56 @@
 [project]
 name = "archetype"
 version = "0.1.0"
-description = "AI Native Simulation Engine leveraging Daft, LanceDB, and Ray for distributed scalability."
+description = "AI-native simulation engine: ECS as data (Daft) with time-travel storage (LanceDB)."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12, <3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Vangelis Technologies Inc.", email = "everett@vangelis.tech" },
+]
+keywords = ["simulation", "ecs", "reinforcement-learning", "llm", "daft", "lancedb"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
 dependencies = [
-    "daft[lance,iceberg,sql,unity]>=0.5.18",
-    "pyarrow>=16.0.0",
+    "daft[openai,google,lance,iceberg,sql,unity]==0.7.1",
     "lancedb>=0.22.0",
-    "pyiceberg[daft,sql-sqlite]>=0.9.1",
+    "pyiceberg[daft,sql-sqlite]>=0.7.0,<0.9.1",
     "unitycatalog-client>=0.3.0",
     "uuid-utils>=0.11.0",
     "igraph",
     "psutil",
-    "viztracer>=1.0.4",
-    "ruff>=0.4",
-    "ipykernel",
+    "torch>=2.6.0",
+    "safetensors>=0.5.3",
+    "mcp>=1.25.0",
 ]
 
 [project.optional-dependencies]
 ray        = ["ray[default]>=2.47", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
-llm        = ["openai"]
 inference  = ["ray[serve,llm]>=2.47", "vllm>=0.7.2", "huggingface-hub>=0.26", "transformers>=4.49", "accelerate>=0.29", "datasets>=3.6"]
-benchmark  = ["esper>=2.45", ]
+benchmark  = ["esper>=2.45"]
+otel       = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-grpc>=1.20"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
-    "ruff>=0.4", "matplotlib>=3.9", "viztracer>=1.0.4"
+    "ruff>=0.9",
+    "matplotlib>=3.9",
+    "viztracer>=1.0.4",
+    "ipykernel",
 ]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 
 [tool.pytest.ini_options]
@@ -34,3 +58,29 @@ pythonpath = [
     "src"
 ]
 asyncio_default_fixture_loop_scope = "function"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26",
+    "pytest-cov>=5.0",
+    "ruff>=0.9",
+    "pre-commit>=4.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "archetype_data",
+    ".archetype_meta",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

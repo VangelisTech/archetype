@@ -1,18 +1,16 @@
-import asyncio
+import daft
 import pytest
 import pytest_asyncio
-import daft
-from daft import DataFrame, col
 
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
-from archetype.core.storage.lancedb import AsyncLancedbStore
 from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Position(Component):
@@ -30,7 +28,9 @@ async def store_backend(request, tmp_path):
         store = AsyncStore(context)
     elif request.param == "async_cached":
         base = AsyncStore(context)
-        cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+        cache_cfg = CacheConfig(
+            flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
+        )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     elif request.param == "lancedb":
         store = AsyncLancedbStore(context)
@@ -75,18 +75,27 @@ async def test_update_stamps_and_query_filters(store_backend):
     assert df_out.collect().count_rows() == 2
 
     # Query: default filters (is_active + world_id/run_id) and tick filter
-    df_all = await querier.query_archetype(sig, world_id=world_id, ticks=[5], entity_ids=None, components=None, run_id=run_id)
+    df_all = await querier.query_archetype(
+        sig, world_id=world_id, ticks=[5], entity_ids=None, components=None, run_id=run_id
+    )
     assert df_all.collect().count_rows() == 2
 
     # Query single entity
-    df_e2 = await querier.query_archetype(sig, world_id=world_id, ticks=[5], entity_ids=[2], components=None, run_id=run_id)
+    df_e2 = await querier.query_archetype(
+        sig, world_id=world_id, ticks=[5], entity_ids=[2], components=None, run_id=run_id
+    )
     out = df_e2.collect()
     assert out.count_rows() == 1
     assert out.to_pylist()[0]["entity_id"] == 2
 
     # Projection to component schema
     df_proj = await querier.query_archetype(
-        sig, world_id=world_id, ticks=[5], entity_ids=None, components=[Position(x=0, y=0)], run_id=run_id
+        sig,
+        world_id=world_id,
+        ticks=[5],
+        entity_ids=None,
+        components=[Position(x=0, y=0)],
+        run_id=run_id,
     )
     cols = set(df_proj.collect().column_names)
     base_cols = set(Archetype.BASE_SCHEMA.names)
@@ -110,10 +119,10 @@ async def test_update_zero_rows_no_persist(store_backend):
 
     # Empty df
     empty_df = daft.from_pylist([]).collect()
-    df_out = await updater.update(empty_df, sig, tick=1, world_id=world_id, run_id=run_id)
+    await updater.update(empty_df, sig, tick=1, world_id=world_id, run_id=run_id)
     # df_out may be empty-schema; rely on store read to validate no persistence
 
-    out = await querier.query_archetype(sig, world_id=world_id, ticks=[1], entity_ids=None, components=None, run_id=run_id)
+    out = await querier.query_archetype(
+        sig, world_id=world_id, ticks=[1], entity_ids=None, components=None, run_id=run_id
+    )
     assert out.collect().count_rows() == 0
-
-

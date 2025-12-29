@@ -1,19 +1,20 @@
 import asyncio
+
 import pytest
 import pytest_asyncio
 from daft import col, lit
 
-from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
-from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_updater import AsyncUpdateManager
-from archetype.core.aio.async_system import AsyncSystem
-from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.aio.async_store import AsyncStore
+from archetype.core.aio.async_system import AsyncSystem
+from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.aio.async_world import AsyncWorld
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -55,7 +56,9 @@ async def store_backend(request, tmp_path):
         store = AsyncStore(context)
     elif request.param == "async_cached":
         base = AsyncStore(context)
-        cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+        cache_cfg = CacheConfig(
+            flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
+        )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     else:
         raise AssertionError("unknown backend")
@@ -103,7 +106,13 @@ class SleepProc(AsyncProcessor):
     components = (Position,)
     priority = 1
 
-    def __init__(self, delay_ms: int, shared: dict | None = None, start_evt: asyncio.Event | None = None, proceed_evt: asyncio.Event | None = None):
+    def __init__(
+        self,
+        delay_ms: int,
+        shared: dict | None = None,
+        start_evt: asyncio.Event | None = None,
+        proceed_evt: asyncio.Event | None = None,
+    ):
         self.delay_ms = delay_ms
         self._shared = shared
         self._start_evt = start_evt
@@ -161,5 +170,3 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     await step_task
     # With two archetypes, processors should overlap at least once
     assert shared["peak"] >= 2
-
-

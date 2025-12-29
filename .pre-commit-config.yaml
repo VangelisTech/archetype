@@ -1,6 +1,19 @@
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.2
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
   - repo: local
     hooks:
+      - id: uv-lock-check
+        name: Ensure uv.lock is in sync
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+
       - id: check-license-headers
         name: Check Apache 2.0 license headers
         entry: python3 scripts/check_license_headers.py

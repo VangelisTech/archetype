@@ -1,14 +1,12 @@
-import pytest
-import pytest_asyncio
-
 import daft
 import pyarrow as pa
+import pytest
 
-from archetype.core.storage.lancedb import AsyncLancedbStore
-from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Demo(Component):
@@ -81,9 +79,19 @@ async def test_lancedb_open_path_no_create_called(monkeypatch, tmp_path):
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
 
     # Append should open existing table and not attempt create
-    arrow = pa.Table.from_pylist([
-        {"world_id": "w", "run_id": "r", "entity_id": 1, "tick": 0, "is_active": True, "demo__v": 5}
-    ], schema=schema)
+    arrow = pa.Table.from_pylist(
+        [
+            {
+                "world_id": "w",
+                "run_id": "r",
+                "entity_id": 1,
+                "tick": 0,
+                "is_active": True,
+                "demo__v": 5,
+            }
+        ],
+        schema=schema,
+    )
     await store.append(sig, daft.from_arrow(arrow))
     df = await store.get_archetype_df(sig, world_id="w", run_id="r")
     assert df.count_rows() == 1
@@ -128,9 +136,8 @@ async def test_lancedb_optimize_multiple_tables(monkeypatch, tmp_path):
     # Create a dummy signature that will exercise _ensure_table create path with our client
     class T(Component):
         a: int
+
     await store.get_archetype_df((T,), world_id="w", run_id="r")
     await store.optimize_tables()
     assert getattr(client._tables["t1"], "optimized", False) is True
     assert getattr(client._tables["t2"], "optimized", False) is True
-
-

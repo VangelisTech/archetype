@@ -4,11 +4,11 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any
 
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig, CacheConfig, StorageBackend
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio import AsyncSystem
+from archetype.core.config import CacheConfig, StorageBackend, StorageConfig, WorldConfig
 
 
 def _default_storage() -> StorageConfig:
@@ -26,7 +26,7 @@ class BenchResult:
     entities: int
     steps: int
     elapsed_s: float
-    extras: Dict[str, Any]
+    extras: dict[str, Any]
 
     @property
     def steps_per_sec(self) -> float:
@@ -40,12 +40,12 @@ class BenchResult:
 
 async def make_world(
     name: str,
-    system: Optional[AsyncSystem] = None,
-    storage: Optional[StorageConfig] = None,
-    cache_config: Optional[CacheConfig] = None,
-    instrumented: Optional[bool] = None,
-    orchestrator: Optional[WorldOrchestrator] = None,
-) -> Tuple[object, WorldOrchestrator]:
+    system: AsyncSystem | None = None,
+    storage: StorageConfig | None = None,
+    cache_config: CacheConfig | None = None,
+    instrumented: bool | None = None,
+    orchestrator: WorldOrchestrator | None = None,
+) -> tuple[object, WorldOrchestrator]:
     """
     Create a world for a given (storage, cache) configuration.
 
@@ -72,5 +72,3 @@ class Timer:
     def __exit__(self, exc_type, exc, tb):
         self.t1 = time.perf_counter()
         self.elapsed = self.t1 - self.t0
-
-

@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List
+import inspect
+import logging
+
 from daft import DataFrame
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.interfaces import ArchetypeSignature, iAsyncSystem
-
-
-import logging
-import inspect
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +36,7 @@ class AsyncSystem(iAsyncSystem):
     """
 
     def __init__(self):
-        self.processors: List["AsyncProcessor"] = []           
+        self.processors: list[AsyncProcessor] = []
 
     async def add_processor(self, proc: "AsyncProcessor"):
         """Add an async processor to the system."""
@@ -48,12 +46,7 @@ class AsyncSystem(iAsyncSystem):
         """Remove all processors of the given type."""
         self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
-    async def execute(
-        self,
-        df: DataFrame,
-        sig: ArchetypeSignature,
-        **input_kwargs
-    ) -> DataFrame:
+    async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
         """
         Process a single archetype through all relevant processors.
 
@@ -63,17 +56,19 @@ class AsyncSystem(iAsyncSystem):
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             if set(proc_instance.components).issubset(set(sig)):
-
                 # Gracefully handle errors in processors.
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     assert isinstance(proc_instance, AsyncProcessor)
                     # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs
                     sig_params = inspect.signature(proc_instance.process).parameters
-                    filtered_input_kwargs = {k: v for k, v in input_kwargs.items() if k in sig_params}
+                    filtered_input_kwargs = {
+                        k: v for k, v in input_kwargs.items() if k in sig_params
+                    }
                     df = await proc_instance.process(df, **filtered_input_kwargs)
                 except Exception as e:
-                    logger.error(f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}")
+                    logger.error(
+                        f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}"
+                    )
 
         return df
-    

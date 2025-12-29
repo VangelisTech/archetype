@@ -1,22 +1,22 @@
 from __future__ import annotations
 
 import string
-from typing import Tuple, List, Type, Optional
+
 from daft import col, lit
 
-from archetype.core.component import Component
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
 
-from .common import BenchResult, RunConfig, make_world, Timer
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.orchestrator import WorldOrchestrator
+from .common import BenchResult, RunConfig, Timer, make_world
 
 
 class Data(Component):
     value: int
 
 
-def make_letter_component(name: str) -> Type[Component]:
+def make_letter_component(name: str) -> type[Component]:
     # Dynamically create Pydantic/Lance Component subclasses
     return type(name, (Component,), {"__annotations__": {"value": int}})
 
@@ -29,13 +29,16 @@ class DoubleData(AsyncProcessor):
         return df.with_column("data__value", col("data__value") * lit(2))
 
 
-def make_double_letter_proc(letter_cls: Type[Component]):
+def make_double_letter_proc(letter_cls: type[Component]):
     class _P(AsyncProcessor):
         components = (letter_cls,)
         priority = 1
 
         async def process(self, df, **kwargs):
-            return df.with_column(f"{letter_cls.__name__.lower()}__value", col(f"{letter_cls.__name__.lower()}__value") * lit(2))
+            return df.with_column(
+                f"{letter_cls.__name__.lower()}__value",
+                col(f"{letter_cls.__name__.lower()}__value") * lit(2),
+            )
 
     _P.__name__ = f"Double{letter_cls.__name__}"
     return _P
@@ -45,11 +48,11 @@ async def run(
     entities_per_component: int = 100,
     steps: int = 1,
     *,
-    orchestrator: Optional[WorldOrchestrator] = None,
-    storage: Optional[StorageConfig] = None,
-    cache_config: Optional[CacheConfig] = None,
-    instrumented: Optional[bool] = None,
-) -> Tuple[BenchResult, Tuple]:
+    orchestrator: WorldOrchestrator | None = None,
+    storage: StorageConfig | None = None,
+    cache_config: CacheConfig | None = None,
+    instrumented: bool | None = None,
+) -> tuple[BenchResult, tuple]:
     world, orch = await make_world(
         "fragmented-iteration",
         storage=storage,
@@ -58,7 +61,9 @@ async def run(
         orchestrator=orchestrator,
     )
     try:
-        letters: List[Type[Component]] = [make_letter_component(ch) for ch in string.ascii_uppercase]
+        letters: list[type[Component]] = [
+            make_letter_component(ch) for ch in string.ascii_uppercase
+        ]
 
         # Create 26 component types (A..Z), each with N entities plus Data component
         for letter_cls in letters:
@@ -85,5 +90,3 @@ async def run(
         return result, (world.world_id, rc.run_id)
     finally:
         await orch.shutdown()
-
-

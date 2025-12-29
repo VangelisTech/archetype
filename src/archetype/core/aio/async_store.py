@@ -15,21 +15,17 @@
 # Standard Python Libraries
 from logging import getLogger
 
-
 # Technologies
-from daft import  DataFrame, Schema
+from daft import DataFrame, Schema
 from daft.catalog import Table
 
-
 # Internals
-from archetype.core import ArchetypeSignature, Archetype
-from archetype.core.interfaces import iAsyncStore
+from archetype.core.archetype import Archetype
+from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
 from archetype.core.runtime.storage import StorageContext
 
 # Logger
 logger = getLogger(__name__)
-
-
 
 
 class AsyncStore(iAsyncStore):
@@ -41,9 +37,10 @@ class AsyncStore(iAsyncStore):
     the exact set of components attached to an entity. So we don't really which simulation or run we're using,
     so long as we differentiate between the simulation and run.
 
-    Using Daft Sessions/Catalogs enables us to reference archetype tables without having to hold them in memory. 
+    Using Daft Sessions/Catalogs enables us to reference archetype tables without having to hold them in memory.
 
     """
+
     def __init__(self, context: StorageContext):
         self.uri = context.uri
         self.namespace = context.namespace
@@ -62,21 +59,21 @@ class AsyncStore(iAsyncStore):
         try:
             table = self.session.create_table_if_not_exists(hash_val, source=daft_schema)
         except Exception as e:
-            raise Exception(f"Error creating table {hash_val}: {e}")
+            raise RuntimeError(f"Error creating table {hash_val}: {e}") from e
 
         return table
 
-    async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
+    async def get_archetype_df(
+        self, sig: ArchetypeSignature, world_id: str, run_id: str
+    ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
         """
-        table: Table = self._ensure_table(sig) 
+        table: Table = self._ensure_table(sig)
         df: DataFrame = table.read()  # Cheap, Lazy
 
         # stored as strings; ensure filter values are strings
-        return df.where(df["world_id"] == str(world_id)) \
-               .where(df["run_id"] == str(run_id)) 
-
+        return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
@@ -89,7 +86,7 @@ class AsyncStore(iAsyncStore):
                 logger.info(
                     f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
                 )
-                return 
+                return
         except Exception as e:
             logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
             return
@@ -103,7 +100,4 @@ class AsyncStore(iAsyncStore):
         """
         Shutdown the store.
         """
-        pass # Daft handles this automatically
-
-
-
+        pass  # Daft handles this automatically

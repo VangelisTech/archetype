@@ -12,40 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+Archetype Core
 
-from .interfaces import ArchetypeSignature
-from .component import Component
-from .archetype import Archetype
-from .config import StorageConfig, CacheConfig, RunConfig, WorldConfig
-from .orchestrator import WorldOrchestrator
-from .factory import WorldFactory
-from .resources import StorageResourceManager
+Pure ECS primitives: Component, Archetype, World, System, Processor.
+Storage interfaces and implementations.
 
-# Sync Module
-from .sync import (
-    SyncStore,
-    QueryManager,
-    UpdateManager,
-    SyncSystem,
-    SyncWorld,
-    SyncProcessor,
-)
+Application-level orchestration (WorldOrchestrator, WorldFactory, StorageResourceManager)
+lives in archetype.app.
+"""
 
 # Async Module
 from .aio import (
-    AsyncWorld,
-    AsyncSystem,
-    AsyncStore,
-    AsyncQueryManager,
-    AsyncUpdateManager,
     AsyncCachedStore,
     AsyncProcessor,
+    AsyncQueryManager,
+    AsyncStore,
+    AsyncSystem,
+    AsyncUpdateManager,
+    AsyncWorld,
 )
+from .archetype import Archetype
+from .component import Component
+from .config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from .interfaces import ArchetypeSignature
+from .storage import AsyncLancedbStore
 
-from .storage import (
-    AsyncLancedbStore
+# Sync Module
+from .sync import (
+    QueryManager,
+    SyncProcessor,
+    SyncStore,
+    SyncSystem,
+    SyncWorld,
+    UpdateManager,
 )
-
 
 __all__ = [
     # Core types
@@ -57,10 +58,6 @@ __all__ = [
     "StorageConfig",
     "CacheConfig",
     "WorldConfig",
-    # Orchestration
-    "WorldOrchestrator",
-    "WorldFactory",
-    "StorageResourceManager",
     # Sync API
     "SyncWorld",
     "SyncStore",

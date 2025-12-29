@@ -1,29 +1,34 @@
-from typing import List, Type, Dict, Any
-import pyarrow as pa
 import hashlib
+from typing import Any
 
+import pyarrow as pa
+
+from archetype.core.component import Component
 from archetype.core.interfaces import ArchetypeSignature
-from archetype.core import Component
+
 
 class Archetype:
     """Convenience handler for archetype operations"""
-    BASE_SCHEMA = pa.schema([
-        pa.field("world_id", pa.string(), nullable=False),
-        pa.field("run_id", pa.string(), nullable=False),
-        pa.field("entity_id", pa.int32(), nullable=False),
-        pa.field("tick", pa.int32(), nullable=False),
-        pa.field("is_active", pa.bool_(), nullable=False),
-    ])
+
+    BASE_SCHEMA = pa.schema(
+        [
+            pa.field("world_id", pa.string(), nullable=False),
+            pa.field("run_id", pa.string(), nullable=False),
+            pa.field("entity_id", pa.int32(), nullable=False),
+            pa.field("tick", pa.int32(), nullable=False),
+            pa.field("is_active", pa.bool_(), nullable=False),
+        ]
+    )
     PARTITION_KEYS = ["world_id", "run_id", "tick"]
 
-    def __init__(self, components: List['Component']):
+    def __init__(self, components: list["Component"]):
         self.components = components
         self.sig: ArchetypeSignature = self.sig_from_components(components)
         self.name = self.get_name(self.sig)
         self.schema = self.get_archetype_schema(self.sig)
 
     @staticmethod
-    def sig_from_components(components: List['Component']) -> ArchetypeSignature:
+    def sig_from_components(components: list["Component"]) -> ArchetypeSignature:
         """
         Generate an archetype signature from a list of component instances.
         Returns a tuple of component types sorted by name for consistent signatures.
@@ -33,14 +38,18 @@ class Archetype:
         return sig
 
     @staticmethod
-    def add_components(sig: ArchetypeSignature, component_types: List[Type[Component]]) -> ArchetypeSignature:
+    def add_components(
+        sig: ArchetypeSignature, component_types: list[type[Component]]
+    ) -> ArchetypeSignature:
         """
         Generate a new archetype signature by adding components to an existing signature.
         """
         return tuple(sorted(set(sig).union(component_types), key=lambda t: t.__name__))
 
     @staticmethod
-    def remove_components(sig: ArchetypeSignature, component_types: List[Type[Component]]) -> ArchetypeSignature:
+    def remove_components(
+        sig: ArchetypeSignature, component_types: list[type[Component]]
+    ) -> ArchetypeSignature:
         """
         Generate a new archetype signature by removing components from an existing signature.
         """
@@ -76,15 +85,11 @@ class Archetype:
             archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
 
         return archetype_schema
-    
+
     @staticmethod
     def to_row_dict(
-        entity_id: int,
-        tick: int,
-        components: List[Component],
-        world_id: str,
-        run_id: str
-    ) -> Dict[str, Any]:
+        entity_id: int, tick: int, components: list[Component], world_id: str, run_id: str
+    ) -> dict[str, Any]:
         """
         Convert entity components to a row dictionary for archetype storage.
 
@@ -103,7 +108,7 @@ class Archetype:
             "run_id": str(run_id),
             "entity_id": entity_id,
             "tick": tick,
-            "is_active": True
+            "is_active": True,
         }
 
         for c in components:

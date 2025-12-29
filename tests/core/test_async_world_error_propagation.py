@@ -1,12 +1,9 @@
 import pytest
-import pytest_asyncio
 
-import daft
-
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
-from archetype.core.aio import AsyncSystem, AsyncProcessor
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class Foo(Component):
@@ -38,7 +35,9 @@ async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog
         system = AsyncSystem()
         await system.add_processor(OKProc())
         await system.add_processor(BadProc())
-        world = await orch.create_world(WorldConfig(name="w"), system=system, storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=system, storage_config=storage
+        )
         await world.create_entity([Foo(x=1)])
 
         with caplog.at_level("ERROR"):
@@ -46,5 +45,3 @@ async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog
         assert any("Error processing archetype" in rec.message for rec in caplog.records)
     finally:
         await orch.shutdown()
-
-

@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'src')))
-import time
-import json
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
 import argparse
 import asyncio
-from typing import Optional, Dict, Any
+import json
+import time
+from typing import Any
 
 import daft
-from daft import col, DataType
+from daft import DataType, col
 
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -42,16 +43,18 @@ def build_rows(start_id: int, count: int, tick: int, world_id: str, run_id: str)
     df = daft.from_pylist(rows).collect()
     # Normalize types for cache memtable stability
     try:
-        df = df.with_columns({
-            "entity_id": col("entity_id").cast(DataType.uint32()),
-            "tick": col("tick").cast(DataType.uint32()),
-        })
+        df = df.with_columns(
+            {
+                "entity_id": col("entity_id").cast(DataType.uint32()),
+                "tick": col("tick").cast(DataType.uint32()),
+            }
+        )
     except Exception:
         pass
     return df
 
 
-async def make_store(uri: str, namespace: str, use_cache: bool, cache_cfg: Optional[CacheConfig]):
+async def make_store(uri: str, namespace: str, use_cache: bool, cache_cfg: CacheConfig | None):
     storage = StorageConfig(uri=uri, namespace=namespace)
     context = StorageContextFactory.build(storage)
     base = AsyncStore(context)
@@ -61,7 +64,9 @@ async def make_store(uri: str, namespace: str, use_cache: bool, cache_cfg: Optio
     return cached, AsyncQueryManager(cached), AsyncUpdateManager(cached)
 
 
-async def bench_append_only(store, num_entities: int, batch_size: int, steps: int, world_id: str, run_id: str) -> Dict[str, Any]:
+async def bench_append_only(
+    store, num_entities: int, batch_size: int, steps: int, world_id: str, run_id: str
+) -> dict[str, Any]:
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     _ = await store.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
@@ -86,7 +91,15 @@ async def bench_append_only(store, num_entities: int, batch_size: int, steps: in
     }
 
 
-async def bench_updater(updater: AsyncUpdateManager, store, num_entities: int, batch_size: int, steps: int, world_id: str, run_id: str) -> Dict[str, Any]:
+async def bench_updater(
+    updater: AsyncUpdateManager,
+    store,
+    num_entities: int,
+    batch_size: int,
+    steps: int,
+    world_id: str,
+    run_id: str,
+) -> dict[str, Any]:
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     _ = await store.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
@@ -120,12 +133,21 @@ async def bench_updater(updater: AsyncUpdateManager, store, num_entities: int, b
     }
 
 
-async def bench_query(querier: AsyncQueryManager, num_entities: int, world_id: str, run_id: str, ticks, iters: int) -> Dict[str, Any]:
+async def bench_query(
+    querier: AsyncQueryManager, num_entities: int, world_id: str, run_id: str, ticks, iters: int
+) -> dict[str, Any]:
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     t0 = time.perf_counter()
     scanned = 0
     for _ in range(iters):
-        df = await querier.query_archetype(sig, world_id=world_id, ticks=ticks, entity_ids=None, components=[Position(x=0, y=0)], run_id=run_id)
+        df = await querier.query_archetype(
+            sig,
+            world_id=world_id,
+            ticks=ticks,
+            entity_ids=None,
+            components=[Position(x=0, y=0)],
+            run_id=run_id,
+        )
         scanned += df.collect().count_rows()
     dur = time.perf_counter() - t0
     return {
@@ -136,15 +158,19 @@ async def bench_query(querier: AsyncQueryManager, num_entities: int, world_id: s
     }
 
 
-async def run_one(use_cache: bool, args) -> Dict[str, Any]:
+async def run_one(use_cache: bool, args) -> dict[str, Any]:
     uri = os.path.abspath(args.tmp_dir)
     os.makedirs(uri, exist_ok=True)
-    cache_cfg = CacheConfig(
-        flush_rows=args.flush_rows,
-        flush_mb=args.flush_mb,
-        global_mb=args.global_mb,
-        idle_sec=args.idle_sec,
-    ) if use_cache else None
+    cache_cfg = (
+        CacheConfig(
+            flush_rows=args.flush_rows,
+            flush_mb=args.flush_mb,
+            global_mb=args.global_mb,
+            idle_sec=args.idle_sec,
+        )
+        if use_cache
+        else None
+    )
 
     world_id = "w"
     run_id = "r"
@@ -152,22 +178,41 @@ async def run_one(use_cache: bool, args) -> Dict[str, Any]:
     results = {"variant": "async_cached" if use_cache else "async"}
     try:
         # Fresh store per phase to avoid cache memtable schema mixing
-        store, querier, updater = await make_store(uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg)
-        a = await bench_append_only(store, args.num_entities, args.batch_size, args.steps, world_id, run_id)
+        store, querier, updater = await make_store(
+            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        )
+        a = await bench_append_only(
+            store, args.num_entities, args.batch_size, args.steps, world_id, run_id
+        )
         await store.shutdown()
 
-        store, querier, updater = await make_store(uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg)
-        u = await bench_updater(updater, store, args.num_entities, args.batch_size, args.steps, world_id, run_id)
+        store, querier, updater = await make_store(
+            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        )
+        u = await bench_updater(
+            updater, store, args.num_entities, args.batch_size, args.steps, world_id, run_id
+        )
         await store.shutdown()
 
-        store, querier, updater = await make_store(uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg)
-        q = await bench_query(querier, args.num_entities, world_id, run_id, ticks=list(range(args.steps)), iters=args.q_iters)
+        store, querier, updater = await make_store(
+            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        )
+        q = await bench_query(
+            querier,
+            args.num_entities,
+            world_id,
+            run_id,
+            ticks=list(range(args.steps)),
+            iters=args.q_iters,
+        )
         await store.shutdown()
-        results.update({
-            "append_only": a,
-            "updater": u,
-            "query": q,
-        })
+        results.update(
+            {
+                "append_only": a,
+                "updater": u,
+                "query": q,
+            }
+        )
     finally:
         pass
     return results
@@ -211,5 +256,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

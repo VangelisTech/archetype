@@ -1,28 +1,28 @@
 import pytest
 import pytest_asyncio
-import daft
 from daft import col
 
-from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
-from archetype.core.storage.lancedb import AsyncLancedbStore
 from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_system import AsyncSystem
+from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
     x: int
     y: int
 
+
 class Velocity(Component):
     dx: int
     dy: int
+
 
 class Meta(Component):
     name: str
@@ -38,7 +38,9 @@ async def store_backend(request, tmp_path):
         store = AsyncStore(context)
     elif request.param == "async_cached":
         base = AsyncStore(context)
-        cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+        cache_cfg = CacheConfig(
+            flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
+        )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     else:
         raise AssertionError("unknown backend")
@@ -87,7 +89,7 @@ async def test_create_and_remove_entity_spawns_and_despawns(world, store_backend
     assert len(py) == 4
     # Validate latest row for e1 is inactive (explicitly pick max tick)
     e1_rows = [r for r in py if r["entity_id"] == e1]
-    last_e1 = sorted(e1_rows, key=lambda r: r["tick"]) [-1]
+    last_e1 = sorted(e1_rows, key=lambda r: r["tick"])[-1]
     assert last_e1["is_active"] is False
 
 
@@ -114,7 +116,7 @@ async def test_add_components_moves_to_superset_signature(world, store_backend):
     df_old = await store_backend.get_archetype_df(sig_pos, world.world_id, rc.run_id)
     old_rows = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
     assert len(old_rows) >= 1
-    old_latest = sorted(old_rows, key=lambda r: r["tick"]) [-1]
+    old_latest = sorted(old_rows, key=lambda r: r["tick"])[-1]
     assert old_latest["is_active"] is False
 
 
@@ -139,7 +141,5 @@ async def test_remove_components_moves_to_subset_signature(world, store_backend)
     df_old = await store_backend.get_archetype_df(sig_pos_meta, world.world_id, rc.run_id)
     old_rows2 = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
     assert len(old_rows2) >= 1
-    latest_old = sorted(old_rows2, key=lambda r: r["tick"]) [-1]
+    latest_old = sorted(old_rows2, key=lambda r: r["tick"])[-1]
     assert latest_old["is_active"] is False
-
-

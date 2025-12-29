@@ -1,6 +1,7 @@
-from typing import Type, Dict, Any 
-from lancedb.pydantic import LanceModel
+from typing import Any
+
 import pyarrow as pa
+from lancedb.pydantic import LanceModel
 
 
 class Component(LanceModel):
@@ -9,7 +10,7 @@ class Component(LanceModel):
     """
 
     @classmethod
-    def get_type_by_name(cls, name: str) -> Type["Component"]:
+    def get_type_by_name(cls, name: str) -> type["Component"]:
         """Finds a Component subclass by its name."""
         # This could be optimized with a cache if needed
         for subclass in cls.__subclasses__():
@@ -18,7 +19,7 @@ class Component(LanceModel):
         raise ValueError(f"Component type '{name}' not found.")
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Component":
+    def from_dict(cls, data: dict[str, Any]) -> "Component":
         """Create a component instance from a dictionary."""
         component_type_name = data.pop("type", None)
         if component_type_name:
@@ -58,9 +59,8 @@ class Component(LanceModel):
             component_schema = component_schema.set(i, renamed_field)
 
         return component_schema
-    
+
     def to_row_dict(self):
         prefix = self.get_prefix()
         row_dict = {prefix + key: value for key, value in self.model_dump().items()}
         return row_dict
-

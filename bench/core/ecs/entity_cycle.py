@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from typing import Tuple, Optional
-
-from archetype.core.component import Component
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
 
-from .common import BenchResult, RunConfig, make_world, Timer
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.orchestrator import WorldOrchestrator
+from .common import BenchResult, RunConfig, Timer, make_world
 
 
 class A(Component):
@@ -55,11 +53,11 @@ async def run(
     entities: int = 1000,
     steps: int = 1,
     *,
-    orchestrator: Optional[WorldOrchestrator] = None,
-    storage: Optional[StorageConfig] = None,
-    cache_config: Optional[CacheConfig] = None,
-    instrumented: Optional[bool] = None,
-) -> Tuple[BenchResult, Tuple]:
+    orchestrator: WorldOrchestrator | None = None,
+    storage: StorageConfig | None = None,
+    cache_config: CacheConfig | None = None,
+    instrumented: bool | None = None,
+) -> tuple[BenchResult, tuple]:
     world, orch = await make_world(
         "entity-cycle",
         storage=storage,
@@ -88,5 +86,3 @@ async def run(
         return result, (world.world_id, rc.run_id)
     finally:
         await orch.shutdown()
-
-

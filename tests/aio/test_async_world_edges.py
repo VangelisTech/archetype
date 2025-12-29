@@ -1,20 +1,19 @@
+import daft
 import pytest
 import pytest_asyncio
 
-import daft
-
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig, CacheConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
 from archetype.core.aio import (
-    AsyncStore,
     AsyncQueryManager,
-    AsyncUpdateManager,
+    AsyncStore,
     AsyncSystem,
+    AsyncUpdateManager,
     AsyncWorld,
 )
-from archetype.core.aio.async_cached_store import AsyncCachedStore, MemTable
+from archetype.core.aio.async_cached_store import AsyncCachedStore
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -107,7 +106,7 @@ async def test_add_and_remove_processor(world):
 
 @pytest.mark.asyncio
 async def test_get_components_with_entity_filter(world):
-    e1 = await world.create_entity([Position(x=1, y=1)])
+    _e1 = await world.create_entity([Position(x=1, y=1)])
     e2 = await world.create_entity([Position(x=2, y=2)])
     await world.step(RunConfig())
     df = await world.get_components([Position], entity_ids=[e2])
@@ -142,7 +141,6 @@ async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
     cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
 
     try:
-        sig = Archetype.sig_from_components([Position(x=0, y=0)])
         # Trigger shutdown to exercise flush path without relying on private methods
         # With zero rows, shutdown should be a quick no-op
         await cached.shutdown()
@@ -151,5 +149,3 @@ async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
         # Double-shutdown remains idempotent
         await cached.shutdown()
         await inner.shutdown()
-
-

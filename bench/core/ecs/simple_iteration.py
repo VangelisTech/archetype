@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from typing import Tuple, Optional
 from daft import col
 
-from archetype.core.component import Component
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
 
-from .common import BenchResult, RunConfig, make_world, Timer
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.orchestrator import WorldOrchestrator
+from .common import BenchResult, RunConfig, Timer, make_world
 
 
 class A(Component):
@@ -37,10 +36,12 @@ class SwapAB(AsyncProcessor):
 
     async def process(self, df, **kwargs):
         # swap a.value and b.value
-        return df.with_columns({
-            "a__value": col("b__value"),
-            "b__value": col("a__value"),
-        })
+        return df.with_columns(
+            {
+                "a__value": col("b__value"),
+                "b__value": col("a__value"),
+            }
+        )
 
 
 class SwapCD(AsyncProcessor):
@@ -48,10 +49,12 @@ class SwapCD(AsyncProcessor):
     priority = 1
 
     async def process(self, df, **kwargs):
-        return df.with_columns({
-            "c__value": col("d__value"),
-            "d__value": col("c__value"),
-        })
+        return df.with_columns(
+            {
+                "c__value": col("d__value"),
+                "d__value": col("c__value"),
+            }
+        )
 
 
 class SwapCE(AsyncProcessor):
@@ -59,21 +62,23 @@ class SwapCE(AsyncProcessor):
     priority = 1
 
     async def process(self, df, **kwargs):
-        return df.with_columns({
-            "c__value": col("e__value"),
-            "e__value": col("c__value"),
-        })
+        return df.with_columns(
+            {
+                "c__value": col("e__value"),
+                "e__value": col("c__value"),
+            }
+        )
 
 
 async def run(
     entities_per_group: int = 1000,
     steps: int = 1,
     *,
-    orchestrator: Optional[WorldOrchestrator] = None,
-    storage: Optional[StorageConfig] = None,
-    cache_config: Optional[CacheConfig] = None,
-    instrumented: Optional[bool] = None,
-) -> Tuple[BenchResult, Tuple]:
+    orchestrator: WorldOrchestrator | None = None,
+    storage: StorageConfig | None = None,
+    cache_config: CacheConfig | None = None,
+    instrumented: bool | None = None,
+) -> tuple[BenchResult, tuple]:
     world, orch = await make_world(
         "simple-iteration",
         storage=storage,
@@ -111,5 +116,3 @@ async def run(
         return result, (world.world_id, rc.run_id)
     finally:
         await orch.shutdown()
-
-

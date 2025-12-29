@@ -1,17 +1,16 @@
 import pytest
 import pytest_asyncio
- 
 
-from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_system import AsyncSystem
+from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -29,7 +28,9 @@ async def store_backend(request, tmp_path):
         store = AsyncStore(context)
     elif request.param == "async_cached":
         base = AsyncStore(context)
-        cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+        cache_cfg = CacheConfig(
+            flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
+        )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     else:
         raise AssertionError("unknown backend")
@@ -96,5 +97,3 @@ async def test_query_default_tick_progression(world, store_backend):
     df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
     ticks = sorted({row["tick"] for row in df.collect().to_pylist()})
     assert ticks == [0, 1, 2]
-
-

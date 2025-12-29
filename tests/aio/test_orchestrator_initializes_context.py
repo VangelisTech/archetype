@@ -1,8 +1,8 @@
 import pytest
-import pytest_asyncio
-from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
-from archetype.core.orchestrator import WorldOrchestrator
+
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio import AsyncSystem
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 @pytest.mark.asyncio
@@ -12,8 +12,10 @@ async def test_orchestrator_builds_context_once(tmp_path):
         cfg = WorldConfig(name="w1")
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
-        w1 = await orch.create_world(cfg, system=AsyncSystem(), storage_config=storage)
-        w2 = await orch.create_world(WorldConfig(name="w2"), system=AsyncSystem(), storage_config=storage)
+        _w1 = await orch.create_world(cfg, system=AsyncSystem(), storage_config=storage)
+        _w2 = await orch.create_world(
+            WorldConfig(name="w2"), system=AsyncSystem(), storage_config=storage
+        )
 
         # Running both should work and share the same backing context transparently
         rc = RunConfig(num_steps=1)
@@ -22,5 +24,3 @@ async def test_orchestrator_builds_context_once(tmp_path):
         assert len(orch.list_worlds()) == 2
     finally:
         await orch.shutdown()
-
-

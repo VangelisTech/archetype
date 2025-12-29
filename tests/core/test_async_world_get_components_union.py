@@ -1,12 +1,9 @@
 import pytest
-import pytest_asyncio
 
-from daft import col
-
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio import AsyncSystem
 from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class A(Component):
@@ -23,7 +20,9 @@ async def test_get_components_unions_across_signatures_and_projects_schema(tmp_p
     orch = WorldOrchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await orch.create_world(WorldConfig(name="w"), system=AsyncSystem(), storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=AsyncSystem(), storage_config=storage
+        )
 
         # Spawn across multiple signatures: (A), (A,B), (B), (A)
         await world.create_entity([A(x=1)])
@@ -52,5 +51,3 @@ async def test_get_components_unions_across_signatures_and_projects_schema(tmp_p
         assert row["a__x"] == 2 and row["b__y"] == 20
     finally:
         await orch.shutdown()
-
-

@@ -1,7 +1,6 @@
 import pytest
-import pytest_asyncio
 
-from archetype.core.resources import StorageResourceManager
+from archetype.app.resources import StorageResourceManager
 from archetype.core.config import StorageConfig
 
 
@@ -34,5 +33,3 @@ async def test_storage_manager_shutdown_calls_sync_shutdown(monkeypatch, tmp_pat
         # ensure cleanup for subsequent tests
         mgr._instances.clear()
         mgr._locks.clear()
-
-

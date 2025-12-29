@@ -2,163 +2,140 @@
 
 # Archetype
 
-AI‑Native Simulation Engine for data‑centric, secure, and scalable agent worlds.
+Data-centric simulation engine for scalable agent worlds.
 
-<i>Powered by Daft (compute/dataframes), LanceDB/Iceberg (storage), optional Ray (distributed), and optional Unity Catalog (security).</i>
+<i>Powered by Daft (dataframes/compute) + LanceDB (storage) + PyTorch (training).</i>
 
 </div>
 
-![Archetype Diagram](./assets/archetype_diagram.png)
+![Archetype Diagram](./assets/archetype_diagram2.png)
 
+Archetype is an **AI-native simulation engine**: an ECS runtime where *world state is a columnar table* (Daft DataFrames / Arrow) and each tick is an append-only write to storage (LanceDB). This gives you:
 
+- **Simulation as data**: processors are pure DataFrame transforms (lazy until execution)
+- **Time-travel state**: query any `tick`/`run_id`/`world_id`
+- **Parallel worlds and episodes**: async execution primitives for rollouts
+- **RL-friendly artifact contracts**: rollouts emit token IDs + per-token logprobs (no retokenization)
+- **“Weights as data”**: training steps write new checkpoints and pass paths forward
 
-## Why Archetype
+If you want the shortest path to “does this work?”, run the end-to-end GRPO example: `examples/grpo_text_end_to_end.py`.
 
-Archetype is a simulation runtime and toolkit that treats your simulation as data:
+## Install
 
-- Entity‑Component data model with columnar storage and vectorized processing
-- Async worlds and systems for high throughput and parallelism
-- Pluggable storage (Iceberg by default; LanceDB supported) with partitioned, append‑only history
-- Optional Unity Catalog integration for enterprise‑grade authorization and temporary credentials
-- Built‑in instrumentation, profiling, and benchmarks
+Archetype targets **Python 3.12**.
 
-Archetype helps you move fast on agent behavior while keeping observability, reproducibility, and security first‑class.
-
-## Core concepts
-
-- `Component`: Typed, LanceModel‑backed records. Each component defines a prefixed Arrow schema.
-- `Archetype` (signature): A tuple of component types; maps to a physical table.
-- `AsyncWorld`: Owns entity → signature mapping, live snapshots, and tick execution.
-- `AsyncSystem` + `AsyncProcessor`: Orchestrates ordered processors per signature.
-- `AsyncStore`/`AsyncQueryManager`/`AsyncUpdateManager`: Storage facades.
-- `WorldOrchestrator`: Creates worlds, coordinates parallel runs.
-- `RunConfig`/`WorldConfig`/`StorageConfig`: Configuration models. `StorageConfig.uri` accepts `str | pathlib.Path`. Unity Catalog lives under `StorageConfig.uc_config`.
-
-## Quick start
-
-Install in editable mode with all dev tooling:
+From this repo:
 
 ```bash
-make dev-install
+cd archetype
+
+# Option A: uv (recommended; matches repo tooling)
+uv sync
+
+# Option B: pip (editable)
+python -m pip install -e .
 ```
 
-Run the minimal pyglet demo (PYTHONPATH pre‑set and data dir created automatically):
+Optional extras:
 
-```bash
-# Optional: customize data directory used by examples/benchmarks
-ARCHETYPE_DATA_DIR=/tmp/archetype_data make run-example EX=examples/pyglet_example.py
-```
+- `pip install -e ".[inference]"` for vLLM rollouts
+- `pip install -e ".[dev]"` for tests/lint tooling
 
-Programmatic minimal example:
+## Quick start (sync world)
+
+The sync API is the quickest way to prototype processors:
 
 ```python
-from pathlib import Path
-from archetype.core import WorldConfig, RunConfig, StorageConfig
-from archetype.core.aio import AsyncSystem
-from archetype.core.orchestrator import WorldOrchestrator
+import archetype
+from archetype import Component, Processor
+from daft import DataFrame, col
 
-storage = StorageConfig(uri=Path("./archetype_data"), namespace="quickstart")
-orch = WorldOrchestrator()
-world = await orch.create_world(WorldConfig(name="demo"), AsyncSystem(), storage)
-await orch.run_world(world.world_id, RunConfig(num_steps=1))
+
+class Position(Component):
+    x: float
+    y: float
+
+
+class Velocity(Component):
+    vx: float
+    vy: float
+
+
+class Movement(Processor):
+    components = (Position, Velocity)
+    priority = 1
+
+    def process(self, df: DataFrame, dt: float = 0.1) -> DataFrame:
+        return df.with_columns(
+            {
+                "position__x": col("position__x") + col("velocity__vx") * dt,
+                "position__y": col("position__y") + col("velocity__vy") * dt,
+            }
+        )
+
+
+sim = archetype.init("./archetype_data")
+world_id = sim.spawn_world("physics")
+sim.add_processor_to_world(world_id, Movement())
+sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=1, vy=1))
+sim.step_world(world_id, dt=0.1)
 ```
 
-## Unity Catalog (optional, enterprise)
+## Quick start (async, multi-world)
 
-Archetype can enforce authorization and attach short‑lived credentials around reads/writes via UC wrappers.
-
-- Configure UC via nested `StorageConfig.uc_config`:
+For parallel rollouts, use the application layer:
 
 ```python
-from archetype.core.config import StorageConfig, UnityCatalogConfig
+import asyncio
+from archetype.app import ArchetypeApp
 
-storage = StorageConfig(
-  uri="./archetype_data",
-  namespace="archetypes",
-  uc_config=UnityCatalogConfig(
-    enabled=True,
-    enforce_permissions=True,
-    endpoint="http://localhost:8080/api/2.1/unity-catalog",
-    token="<admin-or-user-token>",
-    catalog="unity",
-    schema="default",
-  ),
-)
+
+async def main() -> None:
+    app = await ArchetypeApp.create(storage_uri="./archetype_data")
+    world = await app.create_world("rollouts")
+    await app.run_world(world.world_id, steps=10)
+    await app.shutdown()
+
+
+asyncio.run(main())
 ```
 
-- Bootstrap a local UC (catalog/schema and basic grants) if you don’t have one:
+## RL: GRPO building blocks (rollouts + training)
+
+Archetype includes a small, explicit GRPO toolkit under `archetype.rl.grpo`:
+
+- **Rollouts**: `rollout_transformers.py` (CPU-friendly dev) and `rollout_vllm.py` (fast inference)
+- **Pipeline glue**: `pipeline.py` builds a Daft DataFrame with GRPO artifacts
+- **Training**: `train_udf.py` is a “weights as data” trainer UDF; `pytorch_grpo.py` contains loss helpers
+
+Run the end-to-end demo:
 
 ```bash
-make uc-bootstrap UC_ENDPOINT=http://localhost:8080/api/2.1/unity-catalog \
-                 UC_ADMIN_TOKEN=$(make uc-admin-token) \
-                 UC_CATALOG=unity UC_SCHEMA=default USER_EMAIL=you@example.com
+cd archetype
+PYTHONPATH=src uv run python examples/grpo_text_end_to_end.py
 ```
 
-## Instrumentation & Profiling
+## Datasets: image understanding curation
 
-- Structured logging and an instrumented world/system/querier/updater live under `src/archetype/core/instrumentation/`.
-- Quick profiling run with VizTracer:
+There’s an Archetype-native dataset job that curates less-biased VLM multiple-choice samples via ablations + structured judges:
 
 ```bash
-make profile CMD="pytest -q tests/app/test_simulation_service.py"
+cd archetype
+PYTHONPATH=src uv run python examples/build_image_understanding_dataset.py --limit 50
 ```
 
-## Benchmarks
+## MCP server (agent-native simulation control plane)
 
-- Command broker throughput:
+Archetype exposes world management via MCP:
 
 ```bash
-make bench-broker
+cd archetype
+python -m archetype.mcp
 ```
 
-This prints enqueue/dequeue TPS for SPSC and MPMC patterns. You can adjust loads inside `bench/app/bench_command_broker.py`.
+## Docs
 
-- Storage/processing sweeps live under `tests/benchmarks/` and can be invoked directly (plots optional).
-
-## Make targets
-
-- `make dev-install` – install package in editable mode
-- `make test` – run tests
-- `make run-example EX=…` – run any example with PYTHONPATH pre‑set
-- `make bench-broker` – run broker benchmark
-- `make uc-bootstrap` – create catalog/schema and grant basic permissions
-- `make profile CMD="…"` – run a command under VizTracer
-- `make build` – build wheel/sdist
-- `make publish` – upload to PyPI (requires `PYPI_TOKEN`)
-
-## Project layout
-
-```
-src/archetype/
-  core/            # ECS core, async world/system, storage facades
-  app/             # Application layer (services, broker, auth, UC wrappers)
-  api/             # REST API scaffolding (WIP)
-  integrations/    # External services (e.g., Unity Catalog client glue)
-  benchmarks/      # Core iteration micro-benchmarks (to be moved to /bench)
-tests/
-  app/             # Service/world tests
-  aio/ core/ ...   # Core async/store tests
-  benchmarks/      # Broker & storage sweep benches
-examples/          # Pyglet/pygame + service examples
-scripts/           # Utilities (e.g., uc_bootstrap)
-```
-
-## Contributing
-
-PRs welcome! Please:
-
-- Match the code style (typed, readable, guard clauses, avoid deep nesting)
-- Add tests for new behavior
-- Keep performance/allocations in mind in hot paths
-
-## License
-
-Apache 2.0 © Vangelis Technologies Inc.
-
-## Roadmap (high‑level)
-
-- API module (FastAPI) routes with end‑to‑end tests
-- Batch world mutations and per‑tick UC set‑based checks
-- Top‑level `bench/` consolidation with JSON/plot outputs
-- Temp‑credential lifecycle (refresh) and richer logging panels
-
+- Start here: `docs/README.md`
+- Architecture overview: `docs/guide/architecture.md`
+- Glossary: `docs/guide/glossary.md`
+- Design notes (historical): `docs/design/`

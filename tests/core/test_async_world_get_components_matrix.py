@@ -1,10 +1,9 @@
 import pytest
-import pytest_asyncio
 
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
+from archetype.app.orchestrator import WorldOrchestrator
 from archetype.core.aio import AsyncSystem
 from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class C1(Component):
@@ -52,7 +51,9 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
     orch = WorldOrchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await orch.create_world(WorldConfig(name="w"), system=AsyncSystem(), storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=AsyncSystem(), storage_config=storage
+        )
 
         a1_ids = []
         a2_ids = []
@@ -72,29 +73,35 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
 
         # A3: (C1, C2)
         for i in range(5):
-            eid = await world.create_entity([
-                C1(a=100 + i, s=f"c1b-{i}"),
-                C2(f=float(100 + i) + 0.25, b=(i % 2 == 1)),
-            ])
+            eid = await world.create_entity(
+                [
+                    C1(a=100 + i, s=f"c1b-{i}"),
+                    C2(f=float(100 + i) + 0.25, b=(i % 2 == 1)),
+                ]
+            )
             a3_ids.append(eid)
 
         # A4: (C3, C4)
         for i in range(5):
-            eid = await world.create_entity([
-                C3(by=bytes([i]), lst=[i, i + 1]),
-                C4(nested=Sub(z=i), tag=f"tag-{i}"),
-            ])
+            eid = await world.create_entity(
+                [
+                    C3(by=bytes([i]), lst=[i, i + 1]),
+                    C4(nested=Sub(z=i), tag=f"tag-{i}"),
+                ]
+            )
             a4_ids.append(eid)
 
         # A5: (C1, C2, C3, C4, C5)
         for i in range(5):
-            eid = await world.create_entity([
-                C1(a=1000 + i, s=f"c1c-{i}"),
-                C2(f=float(2000 + i) + 0.75, b=(i % 2 == 0)),
-                C3(by=b"x" + bytes([i]), lst=[10 + i]),
-                C4(nested=Sub(z=10 + i), tag=f"A5-{i}"),
-                C5(note=f"n-{i}", ok=True),
-            ])
+            eid = await world.create_entity(
+                [
+                    C1(a=1000 + i, s=f"c1c-{i}"),
+                    C2(f=float(2000 + i) + 0.75, b=(i % 2 == 0)),
+                    C3(by=b"x" + bytes([i]), lst=[10 + i]),
+                    C4(nested=Sub(z=10 + i), tag=f"A5-{i}"),
+                    C5(note=f"n-{i}", ok=True),
+                ]
+            )
             a5_ids.append(eid)
 
         # Materialize spawns
@@ -135,5 +142,3 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
 
     finally:
         await orch.shutdown()
-
-

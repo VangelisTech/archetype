@@ -1,12 +1,11 @@
-import pytest
-import pytest_asyncio
 import daft
+import pytest
 
-from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -37,7 +36,9 @@ async def test_contexts_are_isolated_by_namespace(tmp_path):
         _ = await store_b.get_archetype_df(sig, world_id=world_id, run_id=run_id_b)
 
         # Append one row only to namespace A
-        row = Archetype.to_row_dict(entity_id=1, tick=0, components=[Position(x=1, y=2)], world_id=world_id, run_id=run_id_a)
+        row = Archetype.to_row_dict(
+            entity_id=1, tick=0, components=[Position(x=1, y=2)], world_id=world_id, run_id=run_id_a
+        )
         df = daft.from_pylist([row]).collect()
         await store_a.append(sig, df)
 
@@ -52,5 +53,3 @@ async def test_contexts_are_isolated_by_namespace(tmp_path):
     finally:
         await store_a.shutdown()
         await store_b.shutdown()
-
-

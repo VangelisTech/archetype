@@ -12,20 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import sys
-import inspect
-
-# Add the core directory to the Python path
-
-import re
 import ast
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Type, Any
 import logging
 
+# Add the core directory to the Python path
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger("docstrings_precommit")
 
 # Constants
@@ -45,10 +44,10 @@ class DocstringUpdater:
 
     def __init__(self, root_dir: Path = PROJECT_ROOT):
         self.root_dir = root_dir
-        self.class_info: Dict[str, Dict[str, Any]] = {}
-        self.modified_files: Set[Path] = set()
+        self.class_info: dict[str, dict[str, Any]] = {}
+        self.modified_files: set[Path] = set()
 
-    def scan_python_files(self, directory: Path) -> List[Path]:
+    def scan_python_files(self, directory: Path) -> list[Path]:
         """
         Recursively scans a directory for Python files.
 
@@ -60,7 +59,7 @@ class DocstringUpdater:
         """
         return list(directory.glob("**/*.py"))
 
-    def parse_file(self, file_path: Path) -> Optional[ast.Module]:
+    def parse_file(self, file_path: Path) -> ast.Module | None:
         """
         Parses a Python file into an AST.
 
@@ -71,7 +70,7 @@ class DocstringUpdater:
             AST Module or None if parsing fails
         """
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
+            with open(file_path, encoding="utf-8") as f:
                 content = f.read()
             return ast.parse(content, filename=str(file_path))
         except Exception as e:
@@ -100,13 +99,15 @@ class DocstringUpdater:
                     if isinstance(child, ast.FunctionDef):
                         method_name = child.name
                         method_docstring = ast.get_docstring(child)
-                        method_args = [arg.arg for arg in child.args.args if arg.arg != 'self']
+                        method_args = [arg.arg for arg in child.args.args if arg.arg != "self"]
 
-                        methods.append({
-                            "name": method_name,
-                            "docstring": method_docstring,
-                            "args": method_args
-                        })
+                        methods.append(
+                            {
+                                "name": method_name,
+                                "docstring": method_docstring,
+                                "args": method_args,
+                            }
+                        )
 
                 # Extract base classes
                 base_classes = []
@@ -121,10 +122,10 @@ class DocstringUpdater:
                     "file_path": str(file_path),
                     "docstring": docstring,
                     "methods": methods,
-                    "base_classes": base_classes
+                    "base_classes": base_classes,
                 }
 
-    def generate_docstring(self, class_info: Dict[str, Any]) -> str:
+    def generate_docstring(self, class_info: dict[str, Any]) -> str:
         """
         Generates a docstring for a class based on its structure.
 
@@ -149,7 +150,9 @@ class DocstringUpdater:
             docstring += "\n\nMethods:\n"
             for method in class_info["methods"]:
                 args_str = ", ".join(method["args"])
-                method_desc = method["docstring"].split("\n")[0] if method["docstring"] else "No description"
+                method_desc = (
+                    method["docstring"].split("\n")[0] if method["docstring"] else "No description"
+                )
                 docstring += f"    {method['name']}({args_str}): {method_desc}\n"
 
         return docstring
@@ -164,14 +167,15 @@ class DocstringUpdater:
         Returns:
             True if file was modified, False otherwise
         """
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             content = f.read()
 
         original_content = content
 
         # Find classes in this file
-        file_classes = {k: v for k, v in self.class_info.items()
-                        if Path(v["file_path"]) == file_path}
+        file_classes = {
+            k: v for k, v in self.class_info.items() if Path(v["file_path"]) == file_path
+        }
 
         for class_key, class_info in file_classes.items():
             class_name = class_info["name"]
@@ -241,10 +245,12 @@ class DocstringUpdater:
         DOCS_DIR.mkdir(exist_ok=True)
 
         # Group classes by module
-        modules: Dict[str, List[Dict[str, Any]]] = {}
+        modules: dict[str, list[dict[str, Any]]] = {}
         for class_key, class_info in self.class_info.items():
             file_path = Path(class_info["file_path"])
-            module_path = str(file_path.relative_to(self.root_dir)).replace("/", ".").replace(".py", "")
+            module_path = (
+                str(file_path.relative_to(self.root_dir)).replace("/", ".").replace(".py", "")
+            )
 
             if module_path not in modules:
                 modules[module_path] = []

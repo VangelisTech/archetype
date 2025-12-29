@@ -10,5 +10,3 @@ Provides microbenchmarks to evaluate core ECS operations:
 Benchmarks default to using a single `StorageConfig` with uri `.data` and
 namespace `benchmarks`.
 """
-
-

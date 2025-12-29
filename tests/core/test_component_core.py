@@ -39,6 +39,7 @@ def test_get_type_by_name_and_from_dict():
 def test_get_type_by_name_raises_for_missing():
     """Looking up an unknown Component subclass by name should raise a clear ValueError."""
     import pytest
+
     with pytest.raises(ValueError):
         Component.get_type_by_name("DoesNotExist")
 
@@ -63,7 +64,14 @@ def test_to_arrow_schema_supports_nested_and_bytes_types():
 
     diverse_schema = Diverse.to_arrow_schema()
     assert isinstance(diverse_schema, pa.Schema)
-    assert set(diverse_schema.names) == {"an_int", "a_float", "a_str", "a_bool", "a_list", "a_bytes"}
+    assert set(diverse_schema.names) == {
+        "an_int",
+        "a_float",
+        "a_str",
+        "a_bool",
+        "a_list",
+        "a_bytes",
+    }
 
     nested_schema = Nested.to_arrow_schema()
     # Nested.diverse should be a struct field
@@ -73,5 +81,3 @@ def test_to_arrow_schema_supports_nested_and_bytes_types():
     # Prefixed nested schema should rename top-level fields appropriately
     pref = Nested.get_prefixed_schema()
     assert "nested__diverse" in pref.names
-
-

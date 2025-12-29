@@ -1,15 +1,10 @@
 import pytest
-import pytest_asyncio
 
-import daft
-from daft import col
-import pyarrow as pa
-
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
-from archetype.core.aio import AsyncSystem, AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class Pos(Component):
@@ -32,7 +27,9 @@ async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await orch.create_world(WorldConfig(name="w"), system=system, storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=system, storage_config=storage
+        )
 
         # Spawn two entities
         e1 = await world.create_entity([Pos(x=1)])
@@ -54,5 +51,3 @@ async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
         assert set(df.column_names) >= {"entity_id", "pos__x", "is_active"}
     finally:
         await orch.shutdown()
-
-

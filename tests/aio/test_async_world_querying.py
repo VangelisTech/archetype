@@ -1,22 +1,22 @@
 import pytest
 import pytest_asyncio
-import daft
 
-from archetype.core.config import StorageConfig, CacheConfig, WorldConfig, RunConfig
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_system import AsyncSystem
+from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
     x: int
     y: int
+
 
 class Velocity(Component):
     dx: int
@@ -33,7 +33,9 @@ async def store_backend(request, tmp_path):
         store = AsyncStore(context)
     elif request.param == "async_cached":
         base = AsyncStore(context)
-        cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+        cache_cfg = CacheConfig(
+            flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
+        )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     else:
         raise AssertionError("unknown backend")
@@ -58,7 +60,7 @@ async def test_query_archetype_with_filters_and_projection(world):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
 
     e1 = await world.create_entity([Position(x=1, y=2)])
-    e2 = await world.create_entity([Position(x=3, y=4)])
+    _e2 = await world.create_entity([Position(x=3, y=4)])
     rc = RunConfig()
     await world.step(rc)  # tick 0
 
@@ -72,9 +74,12 @@ async def test_query_archetype_with_filters_and_projection(world):
     assert len(out) == 1 and out[0]["entity_id"] == e1
 
     # Projection
-    df_proj = await world.query_archetype(sig, rc, ticks=[0], entity_ids=None, components=[Position(x=0, y=0)])
+    df_proj = await world.query_archetype(
+        sig, rc, ticks=[0], entity_ids=None, components=[Position(x=0, y=0)]
+    )
     cols = set(df_proj.collect().column_names)
     from archetype.core.archetype import Archetype as A
+
     base_cols = set(A.BASE_SCHEMA.names)
     comp_cols = set(Position.get_prefixed_schema().names)
     assert base_cols.issubset(cols) and comp_cols.issubset(cols)
@@ -96,5 +101,3 @@ async def test_get_components_unions_across_sigs_and_filters(world):
     df2 = await world.get_components([Position], entity_ids=[e2])
     rows2 = df2.collect().to_pylist()
     assert len(rows2) == 1 and rows2[0]["entity_id"] == e2
-
-

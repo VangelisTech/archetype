@@ -1,14 +1,12 @@
-import pytest
-import pytest_asyncio
-
 import daft
 import pyarrow as pa
+import pytest
 
-from archetype.core.storage.lancedb import AsyncLancedbStore
-from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Demo(Component):
@@ -75,7 +73,9 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
 
-    ctx = StorageContextFactory.build(StorageConfig(uri=str(tmp_path / "warehouse"), namespace="ns"))
+    ctx = StorageContextFactory.build(
+        StorageConfig(uri=str(tmp_path / "warehouse"), namespace="ns")
+    )
     store = AsyncLancedbStore(ctx)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
@@ -86,9 +86,19 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
 
     # 2) append a row and then query
     schema = Archetype.get_archetype_schema(sig)
-    arrow = pa.Table.from_pylist([
-        {"world_id": "w", "run_id": "r", "entity_id": 1, "tick": 0, "is_active": True, "demo__v": 7}
-    ], schema=schema)
+    arrow = pa.Table.from_pylist(
+        [
+            {
+                "world_id": "w",
+                "run_id": "r",
+                "entity_id": 1,
+                "tick": 0,
+                "is_active": True,
+                "demo__v": 7,
+            }
+        ],
+        schema=schema,
+    )
     await store.append(sig, daft.from_arrow(arrow))
 
     df2 = await store.get_archetype_df(sig, world_id="w", run_id="r")
@@ -97,5 +107,3 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
     # 3) optimizeTables traverses
     await fake.open_table(Archetype.get_name(sig))  # ensure exists
     await store.optimize_tables()
-
-

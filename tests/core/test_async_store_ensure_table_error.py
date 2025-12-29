@@ -1,11 +1,10 @@
 import pytest
-import pytest_asyncio
 
 from archetype.core.aio.async_store import AsyncStore
-from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Demo(Component):
@@ -25,5 +24,3 @@ async def test_async_store_ensure_table_create_failure(monkeypatch, tmp_path):
     sig = Archetype.sig_from_components([Demo(v=1)])
     with pytest.raises(RuntimeError, match="create table failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
-
-

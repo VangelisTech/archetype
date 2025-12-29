@@ -1,59 +1,84 @@
-from typing import Dict, Any, Optional
-from uuid_utils import UUID
-import uuid_utils as uuid
-from pydantic import BaseModel, Field, field_serializer, FieldSerializationInfo
 import json
-import pyarrow as pa
-from typing import Literal
-from itertools import count
 from enum import Enum
+from itertools import count
+from typing import Any, Literal
+
+import pyarrow as pa
+import uuid_utils as uuid
+from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
+from uuid_utils import UUID
 
 # Global sequence counter for command ordering
 _SEQ = count()
 
 
 class CommandType(str, Enum):
-    """Command types for the command broker."""
+    """
+    Command types for the command broker.
+
+    The broker is the universal simulation interface supporting:
+    - Entity-level mutations (spawn, despawn, components)
+    - Processor mutations (hot-swap behavior)
+    - Simulation-level operations (recursive simulation, rollouts)
+    """
+
+    # Entity-level commands
     SPAWN = "spawn"
     DESPAWN = "despawn"
     UPDATE = "update"
     ADD_COMPONENT = "add_component"
     REMOVE_COMPONENT = "remove_component"
+
+    # Processor-level commands
     ADD_PROCESSOR = "add_processor"
     REMOVE_PROCESSOR = "remove_processor"
+
+    # Simulation-level commands (for recursive/hierarchical simulation)
+    CREATE_WORLD = "create_world"  # Spawn a child simulation
+    DESTROY_WORLD = "destroy_world"  # Cleanup child simulation
+    FORK_WORLD = "fork_world"  # Clone current state to explore alternatives
+
+    # Rollout/Episode commands (for mental simulation / MCTS)
+    RUN_ROLLOUT = "run_rollout"  # Run N steps in a world
+    RUN_EPISODE = "run_episode"  # Full episode with sampled ICs
+    QUERY_WORLD = "query_world"  # Get state/results from a world
+
+    # Extensible
     CUSTOM = "custom"
 
 
-
 class Command(BaseModel):
-    id: UUID                       = Field(default_factory=uuid.uuid7)
-    tick: int                      = 0
-    actor_id: Optional[UUID]       = None  # Make optional for simpler examples
-    type: CommandType              = CommandType.CUSTOM
-    op: Optional[Literal[
-        "create_entity",
-        "delete_entity",
-        "add_component",
-        "remove_component",
-        "add_processor",
-        "remove_processor",
-        "custom",
-    ]]                             = None  # Keep for backward compatibility
-    payload: Dict[str, Any]        = Field(default_factory=dict)
-    priority: int                  = 0
-    version: int                   = 1
-    seq: int                       = Field(default_factory=lambda: next(_SEQ))
+    id: UUID = Field(default_factory=uuid.uuid7)
+    tick: int = 0
+    actor_id: UUID | None = None  # Make optional for simpler examples
+    type: CommandType = CommandType.CUSTOM
+    op: (
+        Literal[
+            "create_entity",
+            "delete_entity",
+            "add_component",
+            "remove_component",
+            "add_processor",
+            "remove_processor",
+            "custom",
+        ]
+        | None
+    ) = None  # Keep for backward compatibility
+    payload: dict[str, Any] = Field(default_factory=dict)
+    priority: int = 0
+    version: int = 1
+    seq: int = Field(default_factory=lambda: next(_SEQ))
 
-    model_config = dict(frozen=True, arbitrary_types_allowed=True)       # hashable & heap-friendly
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)  # hashable & heap-friendly
 
     # ------------------------------------------------------------------ #
     # Provide Arrow-friendly serialisers
     # ------------------------------------------------------------------ #
     @field_serializer("id", "actor_id")
-    def serialize_uuids(self, v: Optional[UUID], info: FieldSerializationInfo):
+    def serialize_uuids(self, v: UUID | None, info: FieldSerializationInfo):
         if v is None:
             return None
-        if info.mode == 'json':
+        if info.mode == "json":
             return str(v)
         return v.bytes
 
@@ -62,14 +87,14 @@ class Command(BaseModel):
         """Return a canonical Arrow schema suitable for Parquet."""
         return pa.schema(
             [
-                ("id",        pa.binary(16)),
-                ("tick",      pa.int32()),
-                ("actor_id",  pa.binary(16)),
-                ("op",        pa.string()),
-                ("payload",   pa.string()),     # JSON-encoded; keep simple
-                ("priority",  pa.int16()),
-                ("version",   pa.int8()),
-                ("seq",       pa.int64()),
+                ("id", pa.binary(16)),
+                ("tick", pa.int32()),
+                ("actor_id", pa.binary(16)),
+                ("op", pa.string()),
+                ("payload", pa.string()),  # JSON-encoded; keep simple
+                ("priority", pa.int16()),
+                ("version", pa.int8()),
+                ("seq", pa.int64()),
             ]
         )
 
@@ -91,10 +116,9 @@ class Command(BaseModel):
     # ------------------------------------------------------------------ #
     # Keep the heap ordering contract
     # ------------------------------------------------------------------ #
-    def __lt__(self, other: "Command") -> bool:       # noqa: Dunder
+    def __lt__(self, other: "Command") -> bool:
         return (self.tick, self.priority, self.seq) < (
             other.tick,
             other.priority,
             other.seq,
         )
-

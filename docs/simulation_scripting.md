@@ -1,136 +1,70 @@
-The typical **usage pattern for Archetype simulation scripts** (using the `archetype` library) is modeled after the ECS (Entity-Component-System) paradigm, but designed for high-performance, reproducible, and composable simulation workflows. The pattern is both familiar to simulation authors and designed for easy migration between synchronous and asynchronous execution, including the new episode/streaming architecture.
+This doc describes **current** scripting patterns for the `archetype` package.
 
-Below is a summary of the standard workflow, with code snippets and explanations:
+If you want a shorter version, see `docs/guide/quickstart.md`.
 
----
+## Pattern A: quick sync scripting (`archetype.init`)
 
-## 1. **World Creation**
-
-You first create a simulation world, which manages all entities, components, systems, and storage.
-You choose between synchronous (classic) or asynchronous (for episode/streaming parallelism).
+Use this for small sims, simple debugging, and local iteration.
 
 ```python
-from archetype import make_simple_world, make_async_world
+import archetype
+from archetype import Component, Processor
+from daft import DataFrame, col
 
-# Synchronous (classic, step-based)
-world = make_simple_world(uri="data/", world_id="sim1")
-
-# Asynchronous (for episode/streaming/parallelism)
-async_world = make_async_world(uri="data/", world_id="sim1")
-```
-
----
-
-## 2. **Component and Processor Definition**
-
-You define simulation state as **Components** (Pydantic/LanceModel data models), and logic as **Processors**.
-Processors can be synchronous or asynchronous, and are registered with the world.
-
-```python
-from archetype.core.base import Component
-from archetype.core.processor import processor, Processor
 
 class Position(Component):
     x: float
     y: float
 
+
 class Velocity(Component):
-    dx: float
-    dy: float
+    vx: float
+    vy: float
 
-@processor(Position, Velocity, priority=1)
-class MovementProcessor(Processor):
-    def process(self, df, dt):
-        # Update positions by velocity
-        return df.with_column("position__x", df["position__x"] + df["velocity__dx"] * dt)\
-                 .with_column("position__y", df["position__y"] + df["velocity__dy"] * dt)
 
-world.add_processor(MovementProcessor())
+class Movement(Processor):
+    components = (Position, Velocity)
+    priority = 1
+
+    def process(self, df: DataFrame, dt: float = 0.1) -> DataFrame:
+        return df.with_columns(
+            {
+                "position__x": col("position__x") + col("velocity__vx") * dt,
+                "position__y": col("position__y") + col("velocity__vy") * dt,
+            }
+        )
+
+
+sim = archetype.init("./archetype_data")
+world_id = sim.spawn_world("physics")
+sim.add_processor_to_world(world_id, Movement())
+sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=1, vy=1))
+sim.step_world(world_id, dt=0.1)
 ```
 
-For async/episode systems, you use `AsyncProcessor` and may write `async def process(...)`.
+## Pattern B: async orchestration (`ArchetypeApp`)
 
----
+Use this for parallel rollouts, multi-world execution, and anything you might later run on a cluster.
 
-## 3. **Entity/Component Spawning**
-
-Entities are created with one or more components.
-Spawns are typically batched at the start, but can occur during simulation.
-
-```python
-id1 = world.spawn(Position(x=0, y=0), Velocity(dx=1, dy=0))
-id2 = world.spawn(Position(x=10, y=5), Velocity(dx=0, dy=-1))
-```
-
----
-
-## 4. **Simulation Loop**
-
-You step the simulation forward, usually by calling `world.step(dt=...)` in a loop.
-
-**Synchronous:**
-```python
-for t in range(100):
-    world.step(dt=0.1)
-```
-
-**Asynchronous/Episode:**
 ```python
 import asyncio
+from archetype.app import ArchetypeApp
 
-async def run_sim():
-    for t in range(100):
-        await async_world.step(dt=0.1)
 
-asyncio.run(run_sim())
+async def main() -> None:
+    app = await ArchetypeApp.create(storage_uri="./archetype_data")
+    world = await app.create_world("rollouts")
+    await app.run_world(world.world_id, steps=100)
+    await app.shutdown()
+
+
+asyncio.run(main())
 ```
 
-Or, for episode-based execution:
-```python
-from archetype.core.aio.episode_world import EpisodeWorld
+## Notes on querying
 
-ep_world = EpisodeWorld(world, episode_size=10)
-stats = asyncio.run(ep_world.run_episode(dt=0.1))
-```
+Archetype persists per-tick state keyed by `(world_id, run_id, tick, entity_id)`.
 
----
+- For **async** worlds, `AsyncWorld.get_components(...)` is a convenient way to union component projections across matching archetypes (see `src/archetype/core/aio/async_world.py`).
+- For **sync** worlds, the lower-level API is `SyncWorld.query_archetype(...)` which takes an archetype signature and a `RunConfig`.
 
-## 5. **Querying and Analysis**
-
-You can query state at any time for analysis, using the world's query interface:
-
-```python
-df = world.get_archetypes(tick=10)
-# or async:
-df = await async_world.get_archetype_for_entity(entity_id, Position)
-```
-
----
-
-## 6. **Persistence & Reproducibility**
-
-All entity/component updates, ticks, and outputs are stored in Daft/LanceDB tables, enabling:
-
-- Time travel (querying any tick)
-- Reproducible runs
-- Parallel/streaming execution
-
----
-
-## **Summary**
-
-**Archetype simulation scripts** follow this pattern:
-
-1. **Create a world** (sync or async)
-2. **Define components/processors**
-3. **Spawn entities**
-4. **Step the simulation** (sync: `world.step()`, async: `await world.step()`, or episode-based)
-5. **Query/analyze state**
-6. (Optionally) **Leverage episodes, streaming, or synchronization points** for advanced parallelism
-
----
-
-**Note:**
-- For large/long simulations, prefer the async/episode/streaming pattern for scalability and throughput.
-- The API is intentionally similar between sync and async worlds to support easy migration and testing.
-- Advanced patterns (episodes, streaming queries, selective synchronization) are available for large-scale scenarios.

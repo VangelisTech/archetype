@@ -1,14 +1,14 @@
 import asyncio
+
+import daft
 import pytest
 import pytest_asyncio
-import daft
 
-from archetype.core.runtime.storage import StorageContextFactory
-
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
-from archetype.core.component import Component
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -16,7 +16,7 @@ class Position(Component):
     y: int
 
 
-class TestStorageConfig:
+class MockStorageConfig:
     def __init__(self, uri: str, namespace: str):
         self.uri = str(uri)
         self.namespace = namespace
@@ -25,7 +25,7 @@ class TestStorageConfig:
 
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
-    storage = TestStorageConfig(uri=str(tmp_path), namespace="test")
+    storage = MockStorageConfig(uri=str(tmp_path), namespace="test")
     context = StorageContextFactory.build(storage)
     store = AsyncStore(context)
     try:
@@ -37,6 +37,7 @@ async def inner_store(tmp_path):
 @pytest.mark.asyncio
 async def test_cached_store_type_casting_and_cache_hit(inner_store):
     from uuid_utils import uuid7
+
     from archetype.core.config import CacheConfig
 
     inner = inner_store
@@ -45,12 +46,21 @@ async def test_cached_store_type_casting_and_cache_hit(inner_store):
     try:
         sig = Archetype.sig_from_components([Position(x=1, y=2)])
         world_id = uuid7()  # non-string
-        run_id = uuid7()    # non-string
+        run_id = uuid7()  # non-string
 
         # Ensure inner table exists before any flush attempts
         _ = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
-        rows = [Archetype.to_row_dict(entity_id=i, tick=0, components=[Position(x=i, y=i)], world_id=str(world_id), run_id=str(run_id)) for i in range(3)]
+        rows = [
+            Archetype.to_row_dict(
+                entity_id=i,
+                tick=0,
+                components=[Position(x=i, y=i)],
+                world_id=str(world_id),
+                run_id=str(run_id),
+            )
+            for i in range(3)
+        ]
         df = daft.from_pylist(rows).collect()
         await cached.append(sig, df)
 
@@ -77,7 +87,16 @@ async def test_cached_store_global_budget_triggers_flush(inner_store):
         # Ensure inner table exists (append path uses get_table)
         _ = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
-        rows = [Archetype.to_row_dict(entity_id=i, tick=0, components=[Position(x=i, y=i)], world_id=world_id, run_id=run_id) for i in range(2)]
+        rows = [
+            Archetype.to_row_dict(
+                entity_id=i,
+                tick=0,
+                components=[Position(x=i, y=i)],
+                world_id=world_id,
+                run_id=run_id,
+            )
+            for i in range(2)
+        ]
         df = daft.from_pylist(rows).collect()
         await cached.append(sig, df)
 
@@ -102,7 +121,15 @@ async def test_cached_store_idle_flush(inner_store):
         # Ensure inner table exists
         _ = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
-        rows = [Archetype.to_row_dict(entity_id=1, tick=0, components=[Position(x=1, y=1)], world_id=world_id, run_id=run_id)]
+        rows = [
+            Archetype.to_row_dict(
+                entity_id=1,
+                tick=0,
+                components=[Position(x=1, y=1)],
+                world_id=world_id,
+                run_id=run_id,
+            )
+        ]
         df = daft.from_pylist(rows).collect()
         await cached.append(sig, df)
 
@@ -141,7 +168,16 @@ async def test_cached_store_concurrent_appends_are_safe(inner_store):
         _ = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
         async def push(n):
-            rows = [Archetype.to_row_dict(entity_id=i + 1000 * n, tick=0, components=[Position(x=i, y=i)], world_id=world_id, run_id=run_id) for i in range(5)]
+            rows = [
+                Archetype.to_row_dict(
+                    entity_id=i + 1000 * n,
+                    tick=0,
+                    components=[Position(x=i, y=i)],
+                    world_id=world_id,
+                    run_id=run_id,
+                )
+                for i in range(5)
+            ]
             df = daft.from_pylist(rows).collect()
             await cached.append(sig, df)
 
@@ -154,5 +190,3 @@ async def test_cached_store_concurrent_appends_are_safe(inner_store):
     finally:
         # idempotent
         await cached.shutdown()
-
-

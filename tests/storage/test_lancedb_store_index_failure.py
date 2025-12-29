@@ -1,14 +1,10 @@
 import pytest
-import pytest_asyncio
 
-import pyarrow as pa
-import daft
-
-from archetype.core.storage.lancedb import AsyncLancedbStore
-from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Demo(Component):
@@ -51,5 +47,3 @@ async def test_lancedb_create_index_failure_propagates(monkeypatch, tmp_path):
     # First operation that ensures the table should attempt index creation and fail
     with pytest.raises(RuntimeError, match="index failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
-
-

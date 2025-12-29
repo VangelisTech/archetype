@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 import os
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'src')))
 
-import time
-import json
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "src")))
+
 import argparse
 import asyncio
+import json
+import time
 from statistics import median
 
 import daft
-from daft import col, DataType
+from daft import DataType, col
 
-from archetype.core.config import StorageConfig, CacheConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
+from archetype.core.archetype import Archetype
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, StorageConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -42,10 +43,12 @@ def build_rows(start_id: int, count: int, tick: int, world_id: str, run_id: str)
     ]
     df = daft.from_pylist(rows).collect()
     try:
-        df = df.with_columns({
-            "entity_id": col("entity_id").cast(DataType.uint32()),
-            "tick": col("tick").cast(DataType.uint32()),
-        })
+        df = df.with_columns(
+            {
+                "entity_id": col("entity_id").cast(DataType.uint32()),
+                "tick": col("tick").cast(DataType.uint32()),
+            }
+        )
     except Exception:
         pass
     return df
@@ -61,7 +64,15 @@ async def make_store(uri: str, namespace: str, use_cache: bool, cache_cfg: Cache
     return cached, AsyncQueryManager(cached), AsyncUpdateManager(cached)
 
 
-async def bench_append_only(store, num_entities: int, batch_size: int, steps: int, world_id: str, run_id: str, include_flush: bool):
+async def bench_append_only(
+    store,
+    num_entities: int,
+    batch_size: int,
+    steps: int,
+    world_id: str,
+    run_id: str,
+    include_flush: bool,
+):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     _ = await store.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
@@ -100,7 +111,16 @@ async def bench_append_only(store, num_entities: int, batch_size: int, steps: in
     }
 
 
-async def bench_updater(updater: AsyncUpdateManager, store, num_entities: int, batch_size: int, steps: int, world_id: str, run_id: str, include_flush: bool):
+async def bench_updater(
+    updater: AsyncUpdateManager,
+    store,
+    num_entities: int,
+    batch_size: int,
+    steps: int,
+    world_id: str,
+    run_id: str,
+    include_flush: bool,
+):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     _ = await store.get_archetype_df(sig, world_id=world_id, run_id=run_id)
 
@@ -153,7 +173,14 @@ async def bench_query(querier: AsyncQueryManager, world_id: str, run_id: str, ti
     scanned = 0
     for _ in range(iters):
         s = time.perf_counter()
-        df = await querier.query_archetype(sig, world_id=world_id, ticks=ticks, entity_ids=None, components=[Position(x=0, y=0)], run_id=run_id)
+        df = await querier.query_archetype(
+            sig,
+            world_id=world_id,
+            ticks=ticks,
+            entity_ids=None,
+            components=[Position(x=0, y=0)],
+            run_id=run_id,
+        )
         scanned += df.collect().count_rows()
         latencies.append(time.perf_counter() - s)
     latencies.sort()
@@ -170,16 +197,36 @@ async def bench_query(querier: AsyncQueryManager, world_id: str, run_id: str, ti
     }
 
 
-async def run_case(use_cache: bool, num_entities: int, batch_size: int, steps: int, q_iters: int, uri: str, namespace: str, cache_cfg: CacheConfig | None, include_flush: bool):
+async def run_case(
+    use_cache: bool,
+    num_entities: int,
+    batch_size: int,
+    steps: int,
+    q_iters: int,
+    uri: str,
+    namespace: str,
+    cache_cfg: CacheConfig | None,
+    include_flush: bool,
+):
     world_id = "w"
     run_id = "r"
-    store, querier, updater = await make_store(uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg)
-    a = await bench_append_only(store, num_entities, batch_size, steps, world_id, run_id, include_flush)
+    store, querier, updater = await make_store(
+        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+    )
+    a = await bench_append_only(
+        store, num_entities, batch_size, steps, world_id, run_id, include_flush
+    )
 
-    store, querier, updater = await make_store(uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg)
-    u = await bench_updater(updater, store, num_entities, batch_size, steps, world_id, run_id, include_flush)
+    store, querier, updater = await make_store(
+        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+    )
+    u = await bench_updater(
+        updater, store, num_entities, batch_size, steps, world_id, run_id, include_flush
+    )
 
-    store, querier, updater = await make_store(uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg)
+    store, querier, updater = await make_store(
+        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+    )
     try:
         q = await bench_query(querier, world_id, run_id, ticks=list(range(steps)), iters=q_iters)
     finally:
@@ -190,8 +237,9 @@ async def run_case(use_cache: bool, num_entities: int, batch_size: int, steps: i
         "cache": bool(use_cache),
         "variant": "cached" if use_cache else "plain",
         "variant_label": (
-            f"iceberg-cached(fr={getattr(cache_cfg,'flush_rows',None)},fm={getattr(cache_cfg,'flush_mb',None)}MB,gm={getattr(cache_cfg,'global_mb',None)}MB,idle={getattr(cache_cfg,'idle_sec',None)}s)"
-            if use_cache else "iceberg-plain"
+            f"iceberg-cached(fr={getattr(cache_cfg, 'flush_rows', None)},fm={getattr(cache_cfg, 'flush_mb', None)}MB,gm={getattr(cache_cfg, 'global_mb', None)}MB,idle={getattr(cache_cfg, 'idle_sec', None)}s)"
+            if use_cache
+            else "iceberg-plain"
         ),
         "num_entities": num_entities,
         "batch_size": batch_size,
@@ -217,14 +265,38 @@ async def main_async(args):
     )
     results = []
     for ne in args.num_entities_list:
-        bs_list = [ne] if getattr(args, 'no_batch', False) else args.batch_sizes
+        bs_list = [ne] if getattr(args, "no_batch", False) else args.batch_sizes
         for bs in bs_list:
             case_uri = os.path.abspath(os.path.join(args.tmp_dir, f"ne{ne}_bs{bs}"))
             os.makedirs(case_uri, exist_ok=True)
             # plain
-            results.append(await run_case(False, ne, bs, args.steps, args.q_iters, case_uri, args.namespace, None, args.include_flush))
+            results.append(
+                await run_case(
+                    False,
+                    ne,
+                    bs,
+                    args.steps,
+                    args.q_iters,
+                    case_uri,
+                    args.namespace,
+                    None,
+                    args.include_flush,
+                )
+            )
             # cached
-            results.append(await run_case(True, ne, bs, args.steps, args.q_iters, case_uri, args.namespace, cache_cfg, args.include_flush))
+            results.append(
+                await run_case(
+                    True,
+                    ne,
+                    bs,
+                    args.steps,
+                    args.q_iters,
+                    case_uri,
+                    args.namespace,
+                    cache_cfg,
+                    args.include_flush,
+                )
+            )
 
     print(json.dumps(results, indent=2))
 
@@ -256,6 +328,7 @@ async def main_async(args):
 
         # Heatmaps: for append and updater throughput across (num_entities x batch_size)
         import numpy as np
+
         entities_sorted = sorted(set(r["num_entities"] for r in results))
         batches_sorted = sorted(set(r["batch_size"] for r in results))
         for mode in ("append_only", "updater"):
@@ -263,15 +336,21 @@ async def main_async(args):
                 grid = np.zeros((len(entities_sorted), len(batches_sorted)))
                 for i, ne in enumerate(entities_sorted):
                     for j, bs in enumerate(batches_sorted):
-                        recs = [r for r in results if r["variant"] == var and r["num_entities"] == ne and r["batch_size"] == bs]
+                        recs = [
+                            r
+                            for r in results
+                            if r["variant"] == var
+                            and r["num_entities"] == ne
+                            and r["batch_size"] == bs
+                        ]
                         grid[i, j] = recs[0][mode]["throughput_rows_s"] if recs else 0.0
                 plt.figure(figsize=(8, 6))
-                im = plt.imshow(grid, aspect='auto', origin='lower', cmap='viridis')
-                plt.colorbar(im, label='Throughput (rows/s)')
+                im = plt.imshow(grid, aspect="auto", origin="lower", cmap="viridis")
+                plt.colorbar(im, label="Throughput (rows/s)")
                 plt.xticks(range(len(batches_sorted)), batches_sorted)
                 plt.yticks(range(len(entities_sorted)), entities_sorted)
-                plt.xlabel('batch_size')
-                plt.ylabel('num_entities')
+                plt.xlabel("batch_size")
+                plt.ylabel("num_entities")
                 plt.title(f"Heatmap: {mode} throughput ({var})")
                 png_hm = os.path.join(args.tmp_dir, f"heatmap_{mode}_{var}.png")
                 plt.tight_layout()
@@ -279,40 +358,81 @@ async def main_async(args):
 
         # Table of testcases (with config flags)
         plt.figure(figsize=(14, max(4, len(results) * 0.25)))
-        plt.axis('off')
+        plt.axis("off")
         cols = [
-            "variant_label", "store", "cache", "flush_rows", "flush_mb", "global_mb", "idle_sec",
-            "num_entities", "batch_size", "steps",
-            "append_tps", "append_p95_ms", "update_tps", "update_p95_ms", "query_tps", "query_p95_ms"
+            "variant_label",
+            "store",
+            "cache",
+            "flush_rows",
+            "flush_mb",
+            "global_mb",
+            "idle_sec",
+            "num_entities",
+            "batch_size",
+            "steps",
+            "append_tps",
+            "append_p95_ms",
+            "update_tps",
+            "update_p95_ms",
+            "query_tps",
+            "query_p95_ms",
         ]
         rows = []
         for rec in results:
-            rows.append([
-                rec.get("variant_label"), rec.get("store"), rec.get("cache"), rec.get("flush_rows"), rec.get("flush_mb"), rec.get("global_mb"), rec.get("idle_sec"),
-                rec["num_entities"], rec["batch_size"], rec["steps"],
-                round(rec["append_only"]["throughput_rows_s"], 1), round(rec["append_only"]["latency_p95_ms"], 2),
-                round(rec["updater"]["throughput_rows_s"], 1), round(rec["updater"]["latency_p95_ms"], 2),
-                round(rec["query"]["throughput_rows_s"], 1), round(rec["query"]["latency_p95_ms"], 2),
-            ])
+            rows.append(
+                [
+                    rec.get("variant_label"),
+                    rec.get("store"),
+                    rec.get("cache"),
+                    rec.get("flush_rows"),
+                    rec.get("flush_mb"),
+                    rec.get("global_mb"),
+                    rec.get("idle_sec"),
+                    rec["num_entities"],
+                    rec["batch_size"],
+                    rec["steps"],
+                    round(rec["append_only"]["throughput_rows_s"], 1),
+                    round(rec["append_only"]["latency_p95_ms"], 2),
+                    round(rec["updater"]["throughput_rows_s"], 1),
+                    round(rec["updater"]["latency_p95_ms"], 2),
+                    round(rec["query"]["throughput_rows_s"], 1),
+                    round(rec["query"]["latency_p95_ms"], 2),
+                ]
+            )
         import matplotlib.pyplot as plt  # ensure in this scope
-        table = plt.table(cellText=rows, colLabels=cols, loc='center')
+
+        table = plt.table(cellText=rows, colLabels=cols, loc="center")
         table.auto_set_font_size(False)
         table.set_fontsize(8)
         table.scale(1, 1.2)
         png2 = os.path.join(args.tmp_dir, "sweep_matrix.png")
         plt.tight_layout()
         plt.savefig(png2)
-        print(json.dumps({"plots": {"throughput": png1, "matrix": png2, "heatmaps": True}}, indent=2))
+        print(
+            json.dumps({"plots": {"throughput": png1, "matrix": png2, "heatmaps": True}}, indent=2)
+        )
     except Exception as e:
         print(json.dumps({"plot_error": str(e)}))
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Parameter sweep for AsyncStore vs AsyncCachedStore (Iceberg)")
-    p.add_argument("--num-entities-list", type=int, nargs='+', default=[1000, 10000])
-    p.add_argument("--entities-powers", type=int, nargs='*', default=[], help="If provided, overrides num-entities-list with [10**p for p in powers]")
-    p.add_argument("--batch-sizes", type=int, nargs='+', default=[1000, 2000])
-    p.add_argument("--no-batch", action='store_true', help="If set, perform a single append per step (batch_size = num_entities)")
+    p = argparse.ArgumentParser(
+        description="Parameter sweep for AsyncStore vs AsyncCachedStore (Iceberg)"
+    )
+    p.add_argument("--num-entities-list", type=int, nargs="+", default=[1000, 10000])
+    p.add_argument(
+        "--entities-powers",
+        type=int,
+        nargs="*",
+        default=[],
+        help="If provided, overrides num-entities-list with [10**p for p in powers]",
+    )
+    p.add_argument("--batch-sizes", type=int, nargs="+", default=[1000, 2000])
+    p.add_argument(
+        "--no-batch",
+        action="store_true",
+        help="If set, perform a single append per step (batch_size = num_entities)",
+    )
     p.add_argument("--steps", type=int, default=3)
     p.add_argument("--q-iters", type=int, default=3)
     p.add_argument("--tmp-dir", type=str, default=".archetype_param_sweep")
@@ -322,7 +442,12 @@ def parse_args():
     p.add_argument("--flush-mb", type=int, default=256)
     p.add_argument("--global-mb", type=int, default=2048)
     p.add_argument("--idle-sec", type=int, default=30)
-    p.add_argument("--include-flush", action='store_true', default=True, help="Include store.flush/shutdown time in write durations (recommended)")
+    p.add_argument(
+        "--include-flush",
+        action="store_true",
+        default=True,
+        help="Include store.flush/shutdown time in write durations (recommended)",
+    )
     return p.parse_args()
 
 
@@ -330,11 +455,9 @@ def main():
     args = parse_args()
     # If powers provided, override list
     if args.entities_powers:
-        args.num_entities_list = [10 ** p for p in args.entities_powers]
+        args.num_entities_list = [10**p for p in args.entities_powers]
     asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
     main()
-
-

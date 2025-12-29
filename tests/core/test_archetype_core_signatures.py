@@ -1,4 +1,3 @@
-import pyarrow as pa
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 
@@ -34,7 +33,11 @@ def test_base_schema_and_partition_keys_are_stable():
     """Core base schema and partition keys should remain stable over time (API contract)."""
     # Names only (types covered elsewhere); keep invariant stable
     assert set(Archetype.BASE_SCHEMA.names) == {
-        "world_id", "run_id", "entity_id", "tick", "is_active"
+        "world_id",
+        "run_id",
+        "entity_id",
+        "tick",
+        "is_active",
     }
     assert Archetype.PARTITION_KEYS == ["world_id", "run_id", "tick"]
 
@@ -55,5 +58,3 @@ def test_get_name_is_order_invariant_and_hash_suffixed():
     n2 = Archetype.get_name(sig2)
     assert n1 == n2
     assert n1.startswith("a_2c_s")
-
-

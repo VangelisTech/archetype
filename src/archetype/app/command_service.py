@@ -1,163 +1,244 @@
-from typing import List, Dict, Optional, Type
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Command Service: API Surface for Command Broker
+================================================
+
+Service layer for managing commands through the broker.
+External APIs (FastAPI, MCP) call this service to submit commands.
+
+Auth is handled at the API layer before reaching this service.
+"""
+
 from uuid_utils import UUID
 
-from archetype.core.orchestrator import WorldOrchestrator
-from archetype.app.auth.models import  ActorCtx
-from archetype.app.models import Command
-from archetype.core import Component
 from archetype.app.broker import CommandBroker
-from archetype.app.security.uc_wrappers import ActorCtxProvider
-from archetype.integrations.unity.uc_client import UnityCatalogREST
-from archetype.integrations.unity.uc_permissions import UCPermissions, OP_TO_PRIVILEGES
-from archetype.core.config import StorageConfig
+from archetype.app.models import Command, CommandType
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core import Component
+
 
 class CommandService:
     """
     Service for managing the command queue and broker.
-    
-    This service is responsible for:
-    - Enqueueing commands from external sources (API, UI, etc.)
+
+    Responsibilities:
+    - Enqueueing commands from external sources (API, UI, agents)
     - Managing command priorities and sequencing
     - Providing command history and audit trails
-    
+    - High-level helpers for common operations
+
     Note: Actual command execution is handled by WorldService.
     """
-    
+
     def __init__(self, broker: CommandBroker, orchestrator: WorldOrchestrator):
         self.broker = broker
         self.orchestrator = orchestrator
-        self._storage_config: StorageConfig | None = None
-        self._actor_provider: ActorCtxProvider | None = None
 
-    def bind_context(self, storage_config: StorageConfig, actor_provider: ActorCtxProvider):
-        self._storage_config = storage_config
-        self._actor_provider = actor_provider
-    
     # --- Command Queue Management ---
-    
-    async def enqueue_command(self, 
-                              world_id: UUID,
-                              op: str,
-                              payload: Dict,
-                              actor_ctx: ActorCtx,
-                              priority: int = 0) -> UUID:
+
+    async def enqueue_command(
+        self,
+        world_id: UUID | str,
+        op: str,
+        payload: dict,
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
         """
         Enqueue a command for later processing.
-        
+
+        Args:
+            world_id: Target world for the command
+            op: Operation type (e.g., "create_entity", "run_rollout")
+            payload: Command payload data
+            priority: Command priority (lower = higher priority)
+            actor_id: Optional actor ID for audit
+
         Returns:
             The command ID for tracking
         """
         # Validate world exists
-        world = self.orchestrator.get_world(world_id)
-        
+        world = (
+            self.orchestrator.get_world(world_id)
+            if isinstance(world_id, UUID)
+            else self.orchestrator.get_world_by_name(world_id)
+        )
+
         cmd = Command(
-            actor_id=actor_ctx.id,
-            tick=getattr(world, 'tick', 0),
+            actor_id=actor_id,
+            tick=getattr(world, "tick", 0),
             op=op,
             payload=payload,
-            priority=priority
+            priority=priority,
         )
-        
-        # UC permission check at enqueue time for write operations
-        uc = getattr(self._storage_config, "uc_config", None)
-        if self._storage_config and uc and getattr(uc, "enabled", False):
-            required = OP_TO_PRIVILEGES.get(op)
-            if required:
-                actor = self._actor_provider() if self._actor_provider else actor_ctx
-                principal = getattr(actor, "principal", None)
-                token = getattr(actor, "uc_token", None) or ((getattr(uc, "token", "") or ""))
-                uc_client = UnityCatalogREST(endpoint=uc.endpoint, token=token)
-                perms = UCPermissions(uc_client)
-                # Heuristic: infer table from op payload if components present
-                if "components" in payload and payload["components"]:
-                    from archetype.core import Archetype, Component
-                    comps = [Component.from_dict(c) for c in payload["components"]]
-                    sig = tuple(sorted((type(c) for c in comps), key=lambda t: t.__name__))
-                    table_name = Archetype.get_name(sig)
-                    full_name = f"{uc.catalog}.{uc.schema}.{table_name}"
-                    # Strict behavior by default: if UC check raises, bubble up to caller
-                    perms.ensure_allowed("table", full_name, required, principal=principal)
 
-        await self.broker.enqueue(world_id, cmd, actor_ctx)
+        await self.broker.enqueue(world_id, cmd)
         return cmd.id
-    
-    async def dequeue_commands(self, 
-                               world_id: UUID,
-                               max_commands: Optional[int] = None) -> List[Command]:
+
+    async def dequeue_commands(
+        self,
+        world_id: UUID | str,
+        max_commands: int | None = None,
+    ) -> list[Command]:
         """
         Dequeue pending commands for a world.
-        
+
         Args:
             world_id: World to get commands for
             max_commands: Maximum number of commands to dequeue
-        
+
         Returns:
             List of commands ready for processing
         """
         return await self.broker.dequeue_batch(world_id, max_commands)
-    
-    # --- High-Level Command Creation Helpers ---
-    # These create commands but don't execute them
-    
-    async def create_entity_command(self,
-                                    world_id: UUID,
-                                    components: List[Component],
-                                    actor_ctx: ActorCtx) -> UUID:
+
+    # --- Entity Command Helpers ---
+
+    async def create_entity_command(
+        self,
+        world_id: UUID | str,
+        components: list[Component],
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
         """Create a command to spawn an entity."""
         payload = {
             "components": [{"type": c.__class__.__name__, **c.model_dump()} for c in components]
         }
-        return await self.enqueue_command(
-            world_id, "create_entity", payload, actor_ctx
-        )
-    
-    async def remove_entity_command(self,
-                                    world_id: UUID,
-                                    entity_id: int,
-                                    actor_ctx: ActorCtx) -> UUID:
+        return await self.enqueue_command(world_id, "create_entity", payload, priority, actor_id)
+
+    async def remove_entity_command(
+        self,
+        world_id: UUID | str,
+        entity_id: int,
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
         """Create a command to remove an entity."""
         payload = {"entity_id": entity_id}
-        return await self.enqueue_command(
-            world_id, "delete_entity", payload, actor_ctx
-        )
-    
-    async def add_components_command(self,
-                                     world_id: UUID,
-                                     entity_id: int,
-                                     components: List[Component],
-                                     actor_ctx: ActorCtx) -> UUID:
+        return await self.enqueue_command(world_id, "delete_entity", payload, priority, actor_id)
+
+    async def add_components_command(
+        self,
+        world_id: UUID | str,
+        entity_id: int,
+        components: list[Component],
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
         """Create a command to add components to an entity."""
         payload = {
             "entity_id": entity_id,
-            "components": [{"type": c.__class__.__name__, **c.model_dump()} for c in components]
+            "components": [{"type": c.__class__.__name__, **c.model_dump()} for c in components],
         }
-        return await self.enqueue_command(
-            world_id, "add_component", payload, actor_ctx
-        )
-    
-    async def remove_components_command(self,
-                                        world_id: UUID,
-                                        entity_id: int,
-                                        component_types: List[Type[Component]],
-                                        actor_ctx: ActorCtx) -> UUID:
+        return await self.enqueue_command(world_id, "add_component", payload, priority, actor_id)
+
+    async def remove_components_command(
+        self,
+        world_id: UUID | str,
+        entity_id: int,
+        component_types: list[type[Component]],
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
         """Create a command to remove components from an entity."""
+        payload = {"entity_id": entity_id, "component_types": [t.__name__ for t in component_types]}
+        return await self.enqueue_command(world_id, "remove_component", payload, priority, actor_id)
+
+    # --- Simulation Command Helpers (for recursive simulation) ---
+
+    async def create_world_command(
+        self,
+        parent_world_id: UUID | str,
+        child_name: str,
+        initial_state: dict | None = None,
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
+        """
+        Create a command to spawn a child simulation.
+
+        Used by agents for mental simulation / MCTS.
+        """
         payload = {
-            "entity_id": entity_id,
-            "component_types": [t.__name__ for t in component_types]
+            "name": child_name,
+            "initial_state": initial_state or {},
         }
         return await self.enqueue_command(
-            world_id, "remove_component", payload, actor_ctx
+            parent_world_id, CommandType.CREATE_WORLD.value, payload, priority, actor_id
         )
-    
+
+    async def run_rollout_command(
+        self,
+        world_id: UUID | str,
+        target_world: str,
+        num_steps: int,
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
+        """
+        Create a command to run a rollout in a (child) world.
+
+        Used by agents for mental simulation / planning.
+        """
+        payload = {
+            "target_world": target_world,
+            "num_steps": num_steps,
+        }
+        return await self.enqueue_command(
+            world_id, CommandType.RUN_ROLLOUT.value, payload, priority, actor_id
+        )
+
+    async def query_world_command(
+        self,
+        world_id: UUID | str,
+        target_world: str,
+        query: str,
+        priority: int = 0,
+        actor_id: UUID | None = None,
+    ) -> UUID:
+        """
+        Create a command to query state from a (child) world.
+        """
+        payload = {
+            "target_world": target_world,
+            "query": query,
+        }
+        return await self.enqueue_command(
+            world_id, CommandType.QUERY_WORLD.value, payload, priority, actor_id
+        )
+
     # --- Command History and Audit ---
-    
-    async def get_command_history(self, 
-                                  world_id: UUID,
-                                  limit: int = 100) -> List[Command]:
+
+    async def get_command_history(
+        self,
+        world_id: UUID | str,
+        limit: int = 100,
+    ) -> list[Command]:
         """Get historical commands for a world."""
-        # This would query the broker's persistent storage
         return await self.broker.get_history(world_id, limit)
-    
-    async def get_pending_count(self, world_id: UUID) -> int:
+
+    async def get_pending_count(self, world_id: UUID | str) -> int:
         """Get count of pending commands for a world."""
         return await self.broker.get_pending_count(world_id)
+
+    async def peek_commands(
+        self,
+        world_id: UUID | str,
+        max_commands: int | None = None,
+    ) -> list[Command]:
+        """Peek at pending commands without removing them."""
+        return await self.broker.peek(world_id, max_commands)

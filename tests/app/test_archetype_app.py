@@ -1,5 +1,6 @@
-import pytest
 import os
+
+import pytest
 
 from archetype.app import ArchetypeApp
 
@@ -11,5 +12,3 @@ async def test_archetype_app_smoke_create_run_shutdown(tmp_path):
     await app.run_world(world.world_id, steps=1)
     assert getattr(world, "tick", 0) == 1
     await app.shutdown()
-
-

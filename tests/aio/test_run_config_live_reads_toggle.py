@@ -1,12 +1,16 @@
 import pytest
 import pytest_asyncio
-import daft
 
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
+from archetype.core.aio import (
+    AsyncQueryManager,
+    AsyncStore,
+    AsyncSystem,
+    AsyncUpdateManager,
+    AsyncWorld,
+)
 from archetype.core.component import Component
-from archetype.core.archetype import Archetype
-from archetype.core.aio import AsyncStore, AsyncQueryManager, AsyncUpdateManager, AsyncSystem, AsyncWorld
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -25,6 +29,7 @@ async def make_world(tmp_path):
         system = AsyncSystem()
         wcfg = WorldConfig(name="w")
         return AsyncWorld(wcfg, querier, updater, system)
+
     return _mk
 
 
@@ -54,5 +59,3 @@ async def test_prefer_live_reads_equivalence(make_world):
     cnt_live = live_df.collect().count_rows()
     cnt_store = store_df.collect().count_rows()
     assert cnt_live == cnt_store
-
-

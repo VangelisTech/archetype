@@ -1,13 +1,10 @@
 import pytest
-import pytest_asyncio
-
-import daft
 from daft import col
 
-from archetype.core.config import WorldConfig, RunConfig, StorageConfig
-from archetype.core.aio import AsyncSystem, AsyncProcessor
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 class Pos(Component):
@@ -31,7 +28,9 @@ async def test_prefer_live_reads_uses_live_snapshot_when_true(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await orch.create_world(WorldConfig(name="w"), system=system, storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w"), system=system, storage_config=storage
+        )
 
         # spawn entity with Pos(x=0)
         await world.create_entity([Pos(x=0)])
@@ -57,7 +56,9 @@ async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store2"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await orch.create_world(WorldConfig(name="w2"), system=system, storage_config=storage)
+        world = await orch.create_world(
+            WorldConfig(name="w2"), system=system, storage_config=storage
+        )
 
         await world.create_entity([Pos(x=5)])
 
@@ -67,5 +68,3 @@ async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
         assert df.where(col("is_active")).select("pos__x").to_pylist()[-1]["pos__x"] == 7
     finally:
         await orch.shutdown()
-
-

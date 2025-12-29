@@ -12,29 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
-import time
 import os
-
-import daft
-from daft import DataFrame
-from daft.io.object_store_options import io_config_to_storage_options
-
-import lancedb
-from lancedb.index import Bitmap, BTree
-
-from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore
-from archetype.core.aio.async_querier import AsyncQueryManager
-from archetype.core.interfaces import ArchetypeSignature
-from archetype.core.archetype import Archetype
-from archetype.core.config import RunConfig
-from archetype.core.runtime.storage import StorageContext
-
-
+import time
 from logging import getLogger
 
-logger = getLogger(__name__)
+import daft
+import lancedb
+from daft import DataFrame
+from daft.io.object_store_options import io_config_to_storage_options
+from lancedb.index import Bitmap, BTree
 
+from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.archetype import Archetype
+from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
+from archetype.core.runtime.storage import StorageContext
+
+logger = getLogger(__name__)
 
 
 class AsyncLancedbStore(iAsyncStore):
@@ -50,6 +43,7 @@ class AsyncLancedbStore(iAsyncStore):
     numbers of archetype tables without having to hold them in memory, provided we
 
     """
+
     def __init__(self, context_or_config):
         """Initialize with a StorageContext (preferred) or a legacy config with get_session()."""
         if hasattr(context_or_config, "get_session"):
@@ -69,9 +63,9 @@ class AsyncLancedbStore(iAsyncStore):
         )
         self.lancedb = None  # Initialize lancedb connection
 
-    #--------------------------------------------------------------------------
+    # --------------------------------------------------------------------------
     # Helper methods
-    #--------------------------------------------------------------------------
+    # --------------------------------------------------------------------------
     async def _ensure_table(self, sig: ArchetypeSignature) -> lancedb.AsyncTable:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
@@ -91,7 +85,7 @@ class AsyncLancedbStore(iAsyncStore):
             try:
                 async_table = await self.lancedb.open_table(table_name)
             except Exception as e:
-                raise Exception(f"Error opening LanceDB table {table_name}: {e}")
+                raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
 
             return async_table
 
@@ -100,39 +94,39 @@ class AsyncLancedbStore(iAsyncStore):
                 async_table = await self.lancedb.create_table(
                     name=table_name,
                     schema=pyarrow_schema,
-                    storage_options= io_config_to_storage_options(self.io_config) if self.io_config else None,
-                    exist_ok=True
+                    storage_options=io_config_to_storage_options(self.io_config)
+                    if self.io_config
+                    else None,
+                    exist_ok=True,
                 )
                 # Optional eager index creation controlled by env flags (default on)
                 if os.environ.get("ARCT_LANCEDB_INDEX_ENTITY", "1") == "1":
-                    await async_table.create_index(column="entity_id", config= BTree(), replace=True)
+                    await async_table.create_index(column="entity_id", config=BTree(), replace=True)
                 if os.environ.get("ARCT_LANCEDB_INDEX_WORLD", "1") == "1":
-                    await async_table.create_index(column="world_id", config= Bitmap(), replace=True)
+                    await async_table.create_index(column="world_id", config=Bitmap(), replace=True)
                 if os.environ.get("ARCT_LANCEDB_INDEX_RUN", "1") == "1":
-                    await async_table.create_index(column="run_id", config= Bitmap(), replace=True)
+                    await async_table.create_index(column="run_id", config=Bitmap(), replace=True)
                 if os.environ.get("ARCT_LANCEDB_INDEX_TICK", "1") == "1":
-                    await async_table.create_index(column="tick", config= BTree(), replace=True)
+                    await async_table.create_index(column="tick", config=BTree(), replace=True)
             except Exception as e:
                 logger.error(f"Error creating LanceDB table {table_name}: {e}")
-                raise Exception(f"Error creating LanceDB table {table_name}: {e}")
+                raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
 
         return async_table
-
-
 
     # ---------------------------------------------------------------------
     # Querying
     # ---------------------------------------------------------------------
-    async def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
-
+    async def get_archetype_df(
+        self, sig: ArchetypeSignature, world_id: str, run_id: str
+    ) -> DataFrame:
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
 
         try:
             # Query LanceDB directly; new/empty tables will simply yield empty results
             filtered_arrow = await (
-                async_table
-                .query()
+                async_table.query()
                 .where(
                     f"world_id = '{str(world_id)}' AND run_id = '{str(run_id)}' AND is_active = true"
                 )
@@ -173,7 +167,9 @@ class AsyncLancedbStore(iAsyncStore):
             # Convert to arrow and add to the table
             await async_table.add(arrow_table, mode="append")
             end_time = time.time()
-            logger.info(f"Appended dataframe to table {table_name} in {end_time - start_time} seconds")
+            logger.info(
+                f"Appended dataframe to table {table_name} in {end_time - start_time} seconds"
+            )
         except Exception as e:
             logger.error(f"Error appending dataframe to table {table_name}: {e}")
             raise
@@ -191,7 +187,7 @@ class AsyncLancedbStore(iAsyncStore):
                         await result  # ensure async close is awaited if applicable
             finally:
                 self.lancedb = None
-    
+
     async def optimize_tables(self) -> None:
         """
         Optimize all tables in the LanceDB catalog.
@@ -201,29 +197,9 @@ class AsyncLancedbStore(iAsyncStore):
                 async_table = await self.lancedb.open_table(table_name)
                 await async_table.optimize(retrain=False)
             except Exception as e:
-                raise Exception(f"Error optimizing table {table_name}: {e}")
+                raise RuntimeError(f"Error optimizing table {table_name}: {e}") from e
 
 
 class AsyncLancedbQueryManager(AsyncQueryManager):
     def __init__(self, store: "AsyncLancedbStore"):
         super().__init__(store)
-
-    # Methods from AsyncQueryManager include: 
-    # get_archetype_df
-    # query_archetype 
-
-    
-    async def fts_search(self, query: str, fts_columns: List[str], sig: ArchetypeSignature, tick: int, world_id: str, run_config: RunConfig) -> DataFrame:
-        """
-        Search for entities in the LanceDB store.
-        """
-        raise NotImplementedError("FTS search is not implemented yet")
-        #table: AsyncTable = await self._store._ensure_table(sig)
-
-        #df = daft.from_arrow(table.search(query, query_type="fts", fts_columns=fts_columns).to_arrow())
-
-        #return df
-    
-
-    
-

@@ -13,23 +13,22 @@
 # limitations under the License.
 
 # Standard Python Libraries
-from typing import Dict, Tuple, List, Optional, Any
 from logging import getLogger
 
-# Technologies
-import daft
-from daft import col, DataFrame, Schema
-from daft.expressions import lit
-from daft.session import Session
-from daft.catalog import Table
 import pyarrow as pa
-import time
+
+# Technologies
+from daft import DataFrame, Schema
+from daft.catalog import Table
+from daft.session import Session
+
+from archetype.core.archetype import Archetype
 
 # Internals
 from archetype.core.interfaces import ArchetypeSignature, iStore
-from archetype.core.archetype import Archetype
 
 logger = getLogger(__name__)
+
 
 # Store classes
 class SyncStore(iStore):
@@ -45,7 +44,9 @@ class SyncStore(iStore):
     numbers of archetype tables without having to hold them in memory, provided we
 
     """
-    def __init__(self,
+
+    def __init__(
+        self,
         uri: str,
         session: Session,
         debug: bool = False,
@@ -54,8 +55,8 @@ class SyncStore(iStore):
         self.debug = debug
         self.sess = session
 
-        self._cache: Dict[ArchetypeSignature, pa.Table] # Omnicient, Multi-World
-        self.flush_interval =  None
+        self._cache: dict[ArchetypeSignature, pa.Table]  # Omnicient, Multi-World
+        self.flush_interval = None
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -68,43 +69,42 @@ class SyncStore(iStore):
         try:
             table = self.sess.create_table_if_not_exists(hash_val, source=daft_schema)
         except Exception as e:
-            raise Exception(f"Error creating table {hash_val}: {e}")
+            raise RuntimeError(f"Error creating table {hash_val}: {e}") from e
 
         return table
 
-    def get_archetype_df(self, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str) -> DataFrame:
+    def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """
-        Get all archetypes.
+        Get all archetypes for a given world_id and run_id.
+        Filtering by tick/is_active is done by the QueryManager.
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = table.read() # Cheap
+        df: DataFrame = table.read()  # Cheap, Lazy
 
-        if self.debug: 
-            print(f'Reading {table.name}')
-            df_debug = df.limit(5).show()
+        if self.debug:
+            print(f"Reading {table.name}")
+            df.limit(5).show()
 
-        return df.where(df["world_id"] == world_id) \
-               .where(df["run_id"] == run_id) \
-               .where(df["tick"] == max(0, tick)) \
-               .where(df["is_active"])
+        # stored as strings; ensure filter values are strings
+        return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
 
-
-    def append(self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str) -> None:
+    def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
         Append a table with a new dataframe.
+        Tick, world_id, run_id are stamped by the UpdateManager before calling this.
         """
         table_name = Archetype.get_name(sig)
         table = self.sess.get_table(table_name)
 
         if self.debug:
             df.collect()
-            print(f"Appending {df.count_rows()} rows to table {table_name} for tick {tick}")
+            print(f"Appending {df.count_rows()} rows to table {table_name}")
             df.show()
-            
+
         table.append(df)
 
     def shutdown(self) -> None:
         """
         Shutdown the store.
         """
-        pass # Daft handles this automatically
+        pass  # Daft handles this automatically

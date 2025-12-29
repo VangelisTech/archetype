@@ -1,15 +1,20 @@
 import math
+
 import pytest
 import pytest_asyncio
-
-import daft
 from daft import col, lit
 
-from archetype.core.config import StorageConfig, WorldConfig, RunConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.component import Component
-from archetype.core.aio import AsyncStore, AsyncQueryManager, AsyncUpdateManager, AsyncSystem, AsyncWorld
+from archetype.core.aio import (
+    AsyncQueryManager,
+    AsyncStore,
+    AsyncSystem,
+    AsyncUpdateManager,
+    AsyncWorld,
+)
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):
@@ -106,11 +111,12 @@ async def test_priority_and_removal_affect_results(world):
     await world.step(rc)
     # Query from the store to avoid transient schema mismatches in live concat
     from archetype.core.archetype import Archetype
+
     sig = Archetype.sig_from_components([Position(x=0.0, y=0.0)])
     df2 = await world.query_archetype(sig, rc, ticks=[world.tick - 1])
     rows2 = [r for r in df2.collect().to_pylist() if r["entity_id"] == eid]
     assert rows2, "Expected entity row after second step"
-    val2 = sorted(rows2, key=lambda r: r["tick"]) [-1]["position__x"]
+    val2 = sorted(rows2, key=lambda r: r["tick"])[-1]["position__x"]
     # Prior result was 5; now only multiply-by-2 applied to that row: 10
     assert math.isclose(val2, val1 * 2)
 
@@ -132,10 +138,9 @@ async def test_physics_dag_position_velocity_accel(world):
 
         async def process(self, df, **kwargs):
             dt = kwargs.get("dt", 1.0)
-            return (
-                df.with_column("velocity__dx", col("velocity__dx") + col("accel__ax") * lit(dt))
-                  .with_column("velocity__dy", col("velocity__dy") + col("accel__ay") * lit(dt))
-            )
+            return df.with_column(
+                "velocity__dx", col("velocity__dx") + col("accel__ax") * lit(dt)
+            ).with_column("velocity__dy", col("velocity__dy") + col("accel__ay") * lit(dt))
 
     class IntegrateP(AsyncProcessor):
         components = (Position, Velocity)
@@ -143,10 +148,9 @@ async def test_physics_dag_position_velocity_accel(world):
 
         async def process(self, df, **kwargs):
             dt = kwargs.get("dt", 1.0)
-            return (
-                df.with_column("position__x", col("position__x") + col("velocity__dx") * lit(dt))
-                  .with_column("position__y", col("position__y") + col("velocity__dy") * lit(dt))
-            )
+            return df.with_column(
+                "position__x", col("position__x") + col("velocity__dx") * lit(dt)
+            ).with_column("position__y", col("position__y") + col("velocity__dy") * lit(dt))
 
     class Drag(AsyncProcessor):
         components = (Velocity,)
@@ -156,9 +160,8 @@ async def test_physics_dag_position_velocity_accel(world):
             dt = kwargs.get("dt", 1.0)
             k = kwargs.get("k", 0.1)
             factor = 1.0 - (k * dt)
-            return (
-                df.with_column("velocity__dx", col("velocity__dx") * lit(factor))
-                  .with_column("velocity__dy", col("velocity__dy") * lit(factor))
+            return df.with_column("velocity__dx", col("velocity__dx") * lit(factor)).with_column(
+                "velocity__dy", col("velocity__dy") * lit(factor)
             )
 
     await world.add_processor(Gravity())
@@ -167,7 +170,9 @@ async def test_physics_dag_position_velocity_accel(world):
     await world.add_processor(Drag())
 
     # Entity 1: has full P,V,A
-    e1 = await world.create_entity([Position(x=0.0, y=10.0), Velocity(dx=0.0, dy=0.0), Accel(ax=0.0, ay=0.0)])
+    e1 = await world.create_entity(
+        [Position(x=0.0, y=10.0), Velocity(dx=0.0, dy=0.0), Accel(ax=0.0, ay=0.0)]
+    )
     # Entity 2: has only P,V
     e2 = await world.create_entity([Position(x=0.0, y=0.0), Velocity(dx=1.0, dy=0.0)])
 
@@ -196,5 +201,3 @@ async def test_physics_dag_position_velocity_accel(world):
     # pos_x = 0 + 1.0 = 1.0
     assert math.isclose(pos_x2, 1.0, rel_tol=1e-6, abs_tol=1e-6)
     assert math.isclose(vel_x2, 0.9, rel_tol=1e-6, abs_tol=1e-6)
-
-

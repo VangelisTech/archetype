@@ -17,12 +17,10 @@ Examples:
 
 from __future__ import annotations
 
-import os
-import sys
 import argparse
-from typing import Dict, Any
+import os
 
-from archetype.integrations.unity.uc_client import UnityCatalogREST, UCError
+from archetype.integrations.unity.uc_client import UCError, UnityCatalogREST
 
 
 def ensure_catalog(uc: UnityCatalogREST, catalog: str) -> None:
@@ -46,7 +44,11 @@ def ensure_schema(uc: UnityCatalogREST, catalog: str, schema: str) -> None:
         print(f"schema exists: {catalog}.{schema}")
         return
     try:
-        uc._request("POST", "/schemas", body={"name": schema, "catalog_name": catalog, "comment": "bootstrap"})
+        uc._request(
+            "POST",
+            "/schemas",
+            body={"name": schema, "catalog_name": catalog, "comment": "bootstrap"},
+        )
         print(f"schema created: {catalog}.{schema}")
     except UCError as e:
         print(f"WARN: failed to create schema {catalog}.{schema}: {e}")
@@ -76,7 +78,11 @@ def grant_basic(uc: UnityCatalogREST, catalog: str, schema: str, user_email: str
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Bootstrap UC catalog/schema and grants")
-    p.add_argument("--endpoint", default=os.getenv("UC_ENDPOINT"), help="UC endpoint, e.g. http://localhost:8080/api/2.1/unity-catalog")
+    p.add_argument(
+        "--endpoint",
+        default=os.getenv("UC_ENDPOINT"),
+        help="UC endpoint, e.g. http://localhost:8080/api/2.1/unity-catalog",
+    )
     p.add_argument("--token", default=os.getenv("UC_ADMIN_TOKEN"), help="Admin bearer token")
     p.add_argument("--catalog", default=os.getenv("UC_CATALOG", "unity"))
     p.add_argument("--schema", default=os.getenv("UC_SCHEMA", "default"))
@@ -101,5 +107,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

@@ -1,15 +1,11 @@
-import pytest
-import pytest_asyncio
-
 import daft
-from daft import lit
+import pytest
 
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
-from archetype.core.runtime.storage import StorageContext
-from archetype.core.config import StorageConfig
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
 
 
 class Demo(Component):
@@ -24,6 +20,7 @@ class FailingStore(AsyncStore):
 def build_context(tmp_path):
     # Minimal StorageContext with dummy catalog/session via factory path
     from archetype.core.runtime.storage import StorageContextFactory
+
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
     return StorageContextFactory.build(cfg)
 
@@ -66,9 +63,8 @@ async def test_async_store_append_bad_schema_raises_and_is_caught(tmp_path, capl
 
     # Build wrong schema table missing required columns
     import pyarrow as pa
-    bad = daft.from_arrow(pa.Table.from_pylist([
-        {"not_entity_id": 1}
-    ]))
+
+    bad = daft.from_arrow(pa.Table.from_pylist([{"not_entity_id": 1}]))
 
     with caplog.at_level("ERROR"):
         # Should log an error from updater when append fails in backend
@@ -84,13 +80,23 @@ async def test_async_updater_logs_error_on_store_failure(tmp_path, caplog):
     updater = AsyncUpdateManager(store)
     sig = Archetype.sig_from_components([Demo(v=1)])
     schema = Archetype.get_archetype_schema(sig)
-    df = daft.from_arrow(__import__("pyarrow").Table.from_pylist([
-        {"world_id": "w", "run_id": "r", "entity_id": 1, "tick": 0, "is_active": True, "demo__v": 1}
-    ], schema=schema))
+    df = daft.from_arrow(
+        __import__("pyarrow").Table.from_pylist(
+            [
+                {
+                    "world_id": "w",
+                    "run_id": "r",
+                    "entity_id": 1,
+                    "tick": 0,
+                    "is_active": True,
+                    "demo__v": 1,
+                }
+            ],
+            schema=schema,
+        )
+    )
     # Force a failure path by raising in store.append
     with caplog.at_level("ERROR"):
         out = await updater.update(df, sig, tick=1, world_id="w", run_id="r")
     assert out.count_rows() == df.count_rows()
     assert any("Error updating table" in rec.message for rec in caplog.records)
-
-

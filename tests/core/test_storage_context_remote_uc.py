@@ -1,6 +1,4 @@
-import os
 import pathlib
-import pytest
 
 from archetype.core.config import StorageConfig
 from archetype.core.runtime.storage import StorageContextFactory
@@ -28,6 +26,7 @@ def test_storage_context_remote_uri_uses_meta_dir(tmp_path, monkeypatch):
 def test_storage_context_unity_catalog_path(monkeypatch):
     """When IOConfig.unity is set and extras are available, building a context should succeed. If not available, it should raise. We accept either outcome here by not asserting specific exception types."""
     from daft.io import IOConfig, UnityConfig
+
     io = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
     cfg = StorageConfig(uri="s3://bucket/prefix", namespace="ns", io_config=io)
     try:
@@ -35,5 +34,3 @@ def test_storage_context_unity_catalog_path(monkeypatch):
     except Exception:
         # Accept failure in environments without UC extras
         pass
-
-

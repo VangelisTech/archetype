@@ -1,23 +1,23 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
-import argparse
+from collections.abc import Sequence
 from dataclasses import asdict
-from typing import Sequence, Optional
 
-from . import packed_iteration, simple_iteration, fragmented_iteration, entity_cycle
-from . import add_remove
-from archetype.core.config import StorageConfig, CacheConfig, StorageBackend
-from archetype.core.orchestrator import WorldOrchestrator
+from archetype.app.orchestrator import WorldOrchestrator
+from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
+
+from . import add_remove, entity_cycle, fragmented_iteration, packed_iteration, simple_iteration
 
 
 async def run_all(
     *,
     steps: int = 1,
-    storage: Optional[StorageConfig] = None,
-    cache: Optional[CacheConfig] = None,
-    instrumented: Optional[bool] = None,
+    storage: StorageConfig | None = None,
+    cache: CacheConfig | None = None,
+    instrumented: bool | None = None,
 ) -> list[dict]:
     results = []
     benches: Sequence[tuple[str, callable]] = [
@@ -66,9 +66,12 @@ def main():
         backend = StorageBackend.ICEBERG if args.backend == "iceberg" else StorageBackend.LANCEDB
         storage = StorageConfig(uri=args.uri, namespace=args.namespace, backend=backend)
     cache = CacheConfig() if args.use_cache else None
-    out = asyncio.run(run_all(steps=args.steps, storage=storage, cache=cache, instrumented=args.instrumented))
+    out = asyncio.run(
+        run_all(steps=args.steps, storage=storage, cache=cache, instrumented=args.instrumented)
+    )
     if args.out:
         import os
+
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w") as f:
             json.dump(out, f, indent=2)
@@ -79,5 +82,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

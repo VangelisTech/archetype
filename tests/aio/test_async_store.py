@@ -1,27 +1,29 @@
+import daft
 import pytest
 import pytest_asyncio
-import asyncio
+import uuid_utils as uuid
+from daft import DataFrame
 
 from archetype import StorageConfig
-from archetype.core.aio import AsyncStore, AsyncCachedStore
+from archetype.core import Archetype, Component
+from archetype.core.aio import AsyncCachedStore, AsyncStore
 from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core import Component, Archetype
-from daft import DataFrame
-import daft
-import uuid_utils as uuid
 
 
 class Position(Component):
     x: int
     y: int
 
+
 class Meta(Component):
     name: str
     tags: list[str]
 
+
 class Stats(Component):
     score: float
     active: bool
+
 
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
@@ -33,9 +35,11 @@ async def inner_store(tmp_path):
     finally:
         await store.shutdown()
 
+
 @pytest_asyncio.fixture
 async def cached_store(inner_store):
     from archetype.core.config import CacheConfig
+
     cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
     cached = AsyncCachedStore(async_store=inner_store, cache_config=cache_cfg)
     try:
@@ -51,9 +55,15 @@ async def test_async_store_append_and_query_filters_types(inner_store):
     # Build a row using the canonical helper so schema matches
     sig = Archetype.sig_from_components([Position(x=1, y=2)])
     world_id = uuid.uuid7()  # non-string on purpose
-    run_id = uuid.uuid7()    # non-string on purpose
+    run_id = uuid.uuid7()  # non-string on purpose
 
-    row = Archetype.to_row_dict(entity_id=1, tick=0, components=[Position(x=1, y=2)], world_id=str(world_id), run_id=str(run_id))
+    row = Archetype.to_row_dict(
+        entity_id=1,
+        tick=0,
+        components=[Position(x=1, y=2)],
+        world_id=str(world_id),
+        run_id=str(run_id),
+    )
     df: DataFrame = daft.from_pylist([row]).collect()
 
     # Touch table so it exists per store semantics
@@ -70,6 +80,7 @@ async def test_async_store_append_and_query_filters_types(inner_store):
 async def test_async_cached_store_reads_from_cache_then_flush_on_shutdown(inner_store):
     inner = inner_store
     from archetype.core.config import CacheConfig
+
     cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
     cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
 
@@ -77,7 +88,16 @@ async def test_async_cached_store_reads_from_cache_then_flush_on_shutdown(inner_
         sig = Archetype.sig_from_components([Position(x=1, y=2)])
         world_id = "w"
         run_id = "r"
-        rows = [Archetype.to_row_dict(entity_id=i, tick=0, components=[Position(x=i, y=i)], world_id=world_id, run_id=run_id) for i in range(5)]
+        rows = [
+            Archetype.to_row_dict(
+                entity_id=i,
+                tick=0,
+                components=[Position(x=i, y=i)],
+                world_id=world_id,
+                run_id=run_id,
+            )
+            for i in range(5)
+        ]
         df = daft.from_pylist(rows).collect()
 
         await cached.append(sig, df)
@@ -112,7 +132,9 @@ async def test_async_cached_store_flush_on_row_threshold(inner_store):
         sig = Archetype.sig_from_components([Position(x=1, y=2)])
         world_id = "w2"
         run_id = "r2"
-        row = Archetype.to_row_dict(entity_id=1, tick=0, components=[Position(x=1, y=2)], world_id=world_id, run_id=run_id)
+        row = Archetype.to_row_dict(
+            entity_id=1, tick=0, components=[Position(x=1, y=2)], world_id=world_id, run_id=run_id
+        )
         df = daft.from_pylist([row]).collect()
 
         # Ensure inner table exists per store semantics
@@ -130,11 +152,13 @@ async def test_async_cached_store_flush_on_row_threshold(inner_store):
 async def test_store_with_nested_and_diverse_types(inner_store):
     store = inner_store
 
-    sig = Archetype.sig_from_components([
-        Position(x=0, y=0),
-        Meta(name="agent", tags=["alpha", "beta"]),
-        Stats(score=3.14, active=True),
-    ])
+    sig = Archetype.sig_from_components(
+        [
+            Position(x=0, y=0),
+            Meta(name="agent", tags=["alpha", "beta"]),
+            Stats(score=3.14, active=True),
+        ]
+    )
 
     world_id = "worldX"
     run_id = "runY"
@@ -173,5 +197,3 @@ async def test_store_with_nested_and_diverse_types(inner_store):
         "stats__active",
     ]:
         assert col_name in out.column_names
-
-
