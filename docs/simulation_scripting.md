@@ -67,4 +67,3 @@ Archetype persists per-tick state keyed by `(world_id, run_id, tick, entity_id)`
 
 - For **async** worlds, `AsyncWorld.get_components(...)` is a convenient way to union component projections across matching archetypes (see `src/archetype/core/aio/async_world.py`).
 - For **sync** worlds, the lower-level API is `SyncWorld.query_archetype(...)` which takes an archetype signature and a `RunConfig`.
-

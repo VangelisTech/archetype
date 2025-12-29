@@ -1,7 +1,7 @@
 # Archetype RL Architecture Decisions
 
-**Date**: December 2024  
-**Status**: Active  
+**Date**: December 2024
+**Status**: Active
 **Authors**: Everett, Lake
 
 ---
@@ -564,7 +564,7 @@ class DaftRubric:
     def __init__(self, funcs: List[RewardFunc], weights: List[float]):
         self.funcs = funcs
         self.weights = weights
-    
+
     def __call__(self, completions: Series, answers: Series) -> list[float]:
         # Score using verifiers-style rubric
         ...
@@ -734,12 +734,12 @@ Inspired by rLLM's SQLite store, but using LanceDB for versioning.
 class TrajectoryStore:
     def __init__(self, path: str = ".archetype/trajectories"):
         self.db = lancedb.connect(path)
-    
+
     def append(self, df: daft.DataFrame, epoch: int):
         """Append trajectories — stays lazy until write."""
         df = df.with_column("epoch", daft.lit(epoch))
         df.write_lance(f"{self.db.uri}/traces", mode="append")
-    
+
     def query(
         self,
         epochs: Optional[List[int]] = None,
@@ -786,7 +786,7 @@ class Rubric:
             f.__name__: set(inspect.signature(f).parameters.keys())
             for f in funcs
         }
-    
+
     def __call__(
         self,
         completions: Series,
@@ -796,30 +796,30 @@ class Rubric:
         results = []
         for completion, answer, prompt in zip(
             completions.to_pylist(),
-            answers.to_pylist(), 
+            answers.to_pylist(),
             prompts.to_pylist(),
         ):
             metrics = {}
             total_reward = 0.0
-            
+
             # Available context for injection
             context = {
                 "completion": completion,
                 "answer": answer,
                 "prompt": prompt,
             }
-            
+
             for func, weight in zip(self.funcs, self.weights):
                 # Inject only required parameters (Verifiers pattern)
                 required = self._signatures[func.__name__]
                 kwargs = {k: v for k, v in context.items() if k in required}
-                
+
                 score = float(func(**kwargs))
                 metrics[func.__name__] = score
                 total_reward += score * weight
-            
+
             results.append({"reward": total_reward, "metrics": metrics})
-        
+
         return results
 ```
 
@@ -841,7 +841,7 @@ Key insight from rLLM.
 class RolloutProcessor:
     def __init__(self, model: str, checkpoint: Optional[str] = None):
         from vllm import LLM, SamplingParams
-        
+
         self.llm = LLM(
             model=checkpoint or model,
             trust_remote_code=True,
@@ -851,28 +851,28 @@ class RolloutProcessor:
             max_tokens=512,
             logprobs=1,
         )
-    
+
     def __call__(self, prompts: Series) -> list[dict]:
         outputs = self.llm.generate(prompts.to_pylist(), self.params)
-        
+
         results = []
         for output in outputs:
             choice = output.outputs[0]
-            
+
             # Capture token IDs directly — rLLM's key insight
             token_ids = list(choice.token_ids)
             logprobs = [
-                lp[choice.token_ids[i]].logprob 
+                lp[choice.token_ids[i]].logprob
                 for i, lp in enumerate(choice.logprobs or [])
                 if lp
             ]
-            
+
             results.append({
                 "text": choice.text,
                 "token_ids": token_ids,
                 "logprobs": logprobs,
             })
-        
+
         return results
 ```
 
@@ -892,29 +892,29 @@ def compute_grpo_advantages(
 ) -> daft.DataFrame:
     """
     Pure Daft implementation — no Python escape.
-    
+
     This replaces the spec-gamed version that did:
         rows = df.collect().to_pylist()  # BAD
     """
     from daft import col
     from daft.expressions import row_number
-    
+
     # Assign groups using window function
     df = df.with_column(
         "group_id",
         (row_number().over(session_col) // group_size).cast(DataType.int64())
     )
-    
+
     # Compute group statistics using window aggregations
     group_mean = col(reward_col).mean().over("group_id")
     group_std = col(reward_col).stddev().over("group_id")
-    
+
     # Normalize advantages
     df = df.with_column(
         "advantage",
         (col(reward_col) - group_mean) / (group_std + 1e-8)
     )
-    
+
     return df
 ```
 
@@ -942,17 +942,17 @@ class TrainStep:
     ):
         import torch
         from transformers import AutoModelForCausalLM
-        
+
         self.model = AutoModelForCausalLM.from_pretrained(
             checkpoint or model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",
         )
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=1e-5)
-        
+
         # For fast weight sync (Verifiers pattern)
         self.vllm_client = VLLMWeightSyncClient(vllm_host, vllm_port)
-    
+
     def __call__(
         self,
         token_ids: Series,
@@ -960,31 +960,31 @@ class TrainStep:
         advantages: Series,
     ) -> list[dict]:
         import torch
-        
+
         # Convert to tensors (only here, at training boundary)
         batch_ids = torch.tensor(token_ids.to_pylist())
         batch_old_lp = torch.tensor(old_logprobs.to_pylist())
         batch_adv = torch.tensor(advantages.to_pylist())
-        
+
         # Forward pass
         outputs = self.model(batch_ids)
         new_logprobs = self._compute_logprobs(outputs.logits, batch_ids)
-        
+
         # GRPO loss (real, not placeholder!)
         ratio = torch.exp(new_logprobs - batch_old_lp)
         clipped = torch.clamp(ratio, 0.8, 1.2)
         loss = -torch.min(ratio * batch_adv, clipped * batch_adv).mean()
         kl = (batch_old_lp - new_logprobs).mean()
-        
+
         # Backward + update
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
-        
+
         # Fast weight sync to vLLM (Verifiers pattern)
         for name, param in self.model.named_parameters():
             self.vllm_client.update_named_param(name, param.data)
-        
+
         return [{"loss": loss.item(), "kl": kl.item()}]
 ```
 
@@ -1003,7 +1003,7 @@ class VLLMWeightSyncClient:
     def __init__(self, host: str = "localhost", port: int = 8000):
         self.base_url = f"http://{host}:{port}"
         self._communicator = None
-    
+
     def init_communicator(self):
         """Initialize weight sync communicator with vLLM."""
         import requests
@@ -1012,7 +1012,7 @@ class VLLMWeightSyncClient:
             json={"rank": 0, "world_size": 1}
         )
         self._communicator = response.json()
-    
+
     def update_named_param(self, name: str, data: torch.Tensor):
         """Update a single parameter in vLLM's model."""
         # This uses vLLM's weight update protocol
@@ -1027,7 +1027,7 @@ class VLLMWeightSyncClient:
             },
             data=data.cpu().numpy().tobytes(),
         )
-    
+
     def reset_prefix_cache(self):
         """Clear KV cache after weight update."""
         import requests
@@ -1056,11 +1056,11 @@ def train(
     rubric = Rubric(funcs=reward_funcs, weights=reward_weights)
     rollout = RolloutProcessor(model=model)
     trainer = TrainStep(model_name=model)
-    
+
     for epoch in range(num_epochs):
         # 1. Load prompts (lazy)
         df = daft.read_parquet(prompts_path)
-        
+
         # 2. Generate completions with token capture
         df = df.with_column(
             "generation",
@@ -1071,7 +1071,7 @@ def train(
             col("generation").struct.get("token_ids").alias("token_ids"),
             col("generation").struct.get("logprobs").alias("logprobs"),
         )
-        
+
         # 3. Compute rewards (Rubric)
         df = df.with_column(
             "scores",
@@ -1081,19 +1081,19 @@ def train(
             col("scores").struct.get("reward").alias("reward"),
             col("scores").struct.get("metrics").alias("metrics"),
         )
-        
+
         # 4. Compute advantages (pure Daft)
         df = compute_grpo_advantages(df, group_size=8)
-        
+
         # 5. Store trajectories (append to LanceDB)
         store.append(df, epoch=epoch)
-        
+
         # 6. Train (PyTorch gradient step)
         df = df.with_column(
             "old_logprob",
             col("logprobs").list.sum()
         )
-        
+
         metrics_df = df.select(
             trainer(
                 col("token_ids"),
@@ -1101,11 +1101,11 @@ def train(
                 col("advantage"),
             ).alias("train_metrics")
         )
-        
+
         # 7. Collect metrics (only materialization!)
         metrics = metrics_df.collect().to_pylist()[0]["train_metrics"]
         print(f"Epoch {epoch}: loss={metrics['loss']:.4f}, kl={metrics['kl']:.4f}")
-    
+
     return store
 ```
 
@@ -1190,12 +1190,12 @@ The power of this architecture is that the reward logic and the training logic l
 ### 10.3 The "Black Box" Observability Contract
 
 LanceDB shouldn't just be a sink for training; it should be our primary observability tool.
-- **Recommendation**: Every trajectory stored in `TraceStore` should automatically include the `world_id` and `tick` from the simulation. 
+- **Recommendation**: Every trajectory stored in `TraceStore` should automatically include the `world_id` and `tick` from the simulation.
 - **Value**: This allows us to "re-run" any training sample by looking up the exact state in the simulation world at the time of generation.
 
 ### 10.4 Unified Pydantic State
 
-We must kill the `@dataclass` remnants in `training.py` and `grpo.py`. 
+We must kill the `@dataclass` remnants in `training.py` and `grpo.py`.
 - **Rationale**: Pydantic's serialization to PyArrow/Lance is first-class. If we use `dataclasses`, we end up with the manual dict-to-struct translation layers that were present in the spec-gamed code.
 
 ---
@@ -1214,8 +1214,8 @@ After auditing the canonical ECS engine in `archetype/src/archetype/core/` again
 
 #### Surgery 1: Remove `eval()` from `daft_query_training.py`
 
-**File**: `archetype/src/archetype/rl/daft_query_training.py`  
-**Lines**: 471-478  
+**File**: `archetype/src/archetype/rl/daft_query_training.py`
+**Lines**: 471-478
 **Severity**: 🔴 Critical (arbitrary code execution)
 
 **Current (corrupted)**:
@@ -1285,8 +1285,8 @@ def _execute_restricted(self, query: str, df) -> Any:
 
 #### Surgery 2: Replace `assign_groups` with Pure Daft
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 164-208  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 164-208
 **Severity**: 🔴 Critical (OOM on large rollouts, spec-gaming)
 
 **Current (corrupted)**:
@@ -1310,12 +1310,12 @@ def assign_groups(
 ) -> DataFrame:
     """
     Assign samples to groups for GRPO using pure Daft expressions.
-    
+
     NO .collect().to_pylist() — stays lazy until execution boundary.
     """
     from daft import col
     from daft.expressions import row_number
-    
+
     if group_by_col:
         # Group within each unique value of group_by_col
         df = trajectories.with_column(
@@ -1338,7 +1338,7 @@ def assign_groups(
             (col("_row_num") // group_size).cast(DataType.int64())
         )
         df = df.exclude("_row_num")
-    
+
     return df
 ```
 
@@ -1350,8 +1350,8 @@ df = df.with_column("group_id", (col("_row_num") // group_size).cast(DataType.in
 
 #### Surgery 3: Replace `GRPOBatch.from_dataframe` eager collection
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 226-251  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 226-251
 **Severity**: 🟠 High (breaks lazy pipeline)
 
 **Current (corrupted)**:
@@ -1371,7 +1371,7 @@ If `GRPOBatch` must exist for compatibility, mark it `@deprecated` and add:
 def from_dataframe(cls, df: DataFrame, ...) -> "GRPOBatch":
     """
     DEPRECATED: Prefer passing DataFrame directly to TrainStep UDF.
-    
+
     This method materializes the entire DataFrame into memory.
     Use only for debugging small batches.
     """
@@ -1392,8 +1392,8 @@ def from_dataframe(cls, df: DataFrame, ...) -> "GRPOBatch":
 
 #### Surgery 4: Implement Real GRPO Loss
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 254-293  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 254-293
 **Severity**: 🔴 Critical (training doesn't train)
 
 **Current (corrupted)**:
@@ -1413,42 +1413,42 @@ def compute_grpo_loss(
 ) -> Tuple["torch.Tensor", Dict[str, float]]:
     """
     Compute GRPO policy loss (PPO-style clipped objective).
-    
+
     loss = -mean(min(ratio * advantage, clip(ratio, 1-ε, 1+ε) * advantage))
     """
     import torch
-    
+
     # Probability ratio
     ratio = torch.exp(new_log_probs - old_log_probs)
-    
+
     # Clipped ratio
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon)
-    
+
     # PPO surrogate objectives
     surr1 = ratio * advantages
     surr2 = clipped_ratio * advantages
-    
+
     # Take the pessimistic bound
     policy_loss = -torch.min(surr1, surr2).mean()
-    
+
     # Metrics
     with torch.no_grad():
         clip_fraction = ((ratio - 1.0).abs() > clip_epsilon).float().mean().item()
         approx_kl = (old_log_probs - new_log_probs).mean().item()
-    
+
     metrics = {
         "policy_loss": policy_loss.item(),
         "clip_fraction": clip_fraction,
         "approx_kl": approx_kl,
     }
-    
+
     return policy_loss, metrics
 ```
 
 #### Surgery 5: Implement Real KL Penalty
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 296-308  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 296-308
 **Severity**: 🟠 High
 
 **Current**: `return 0.0  # Placeholder`
@@ -1461,9 +1461,9 @@ def compute_kl_penalty(
 ) -> "torch.Tensor":
     """
     Compute KL divergence from reference policy.
-    
+
     KL(π || π_ref) ≈ mean(ref_log_prob - new_log_prob)
-    
+
     This is the reverse KL, which penalizes the new policy
     for assigning low probability where ref assigns high.
     """
@@ -1499,13 +1499,13 @@ from typing import Dict, Any, List
 
 class GRPOBatch(BaseModel):
     """A batch of data for GRPO training."""
-    
+
     obs: Dict[str, List[Any]] = Field(description="Observation tensors by name")
     actions: Dict[str, List[Any]] = Field(description="Action tensors by name")
     old_log_probs: List[float] = Field(description="Log probs under behavior policy")
     advantages: List[float] = Field(description="Group-relative advantages")
     returns: List[float] = Field(default_factory=list, description="Optional returns for value loss")
-    
+
     model_config = {"arbitrary_types_allowed": True}
 ```
 
@@ -1581,7 +1581,7 @@ I have reviewed the surgical remediation plan proposed by `lake-claude-opus-4.5`
 - **Rationale**: A simulation world and a training world have overlapping but distinct life cycles. A `TrainingWorld` can explicitly manage the "Epoch" concept and the synchronization of weights back to the `RolloutProcessor` (via `vllm_client.update_named_param()`) as part of its `step()` logic. This keeps the core `AsyncWorld` focused on pure simulation state while allowing the `WorldOrchestrator` to manage both types of worlds using the same interface.
 
 **Q3: Security of Restricted Eval**
-- **Observation**: While `{"__builtins__": {}}` is better than blind `eval()`, Python's introspection (`__class__`, `__subclasses__`) still makes it vulnerable to escape. 
+- **Observation**: While `{"__builtins__": {}}` is better than blind `eval()`, Python's introspection (`__class__`, `__subclasses__`) still makes it vulnerable to escape.
 - **Recommendation**: Surgery 1 should proceed as a P0 fix to stop the bleeding, but we should add a follow-up task to move to a **pure AST walker** that interprets the Daft method chain manually. Since the queries are limited to a subset of Daft operations (the `_ALLOWED_METHODS` whitelist), writing a simple recursive visitor is safer than `eval()`.
 
 ### 12.2 Technical Nuances for Surgery 2 (assign_groups)
@@ -1632,21 +1632,21 @@ class TrainingUDF:
     def __init__(self, model: nn.Module):
         self._model = model
         self._weights_hash = None
-    
+
     def __call__(self, data, weights_file: daft.File, output_path: str) -> str:
         # Load weights via daft.File
         with weights_file.to_tempfile() as temp:
             state_dict = load_file(temp.name)
         self._model.load_state_dict(state_dict)
-        
+
         # Train
         loss = compute_loss(...)
         loss.backward()
         optimizer.step()
-        
+
         # WRITE new weights (don't return them!)
         save_file(self._model.state_dict(), output_path)
-        
+
         # Return PATH, not weights
         return output_path
 ```
@@ -1716,7 +1716,7 @@ A clean reimplementation exists at `archetype/src/archetype/rl/v2/`:
 
 ### 13.9 Test Validation
 
-The hypothesis was validated with a comprehensive test suite (`archetype/src/archetype/rl/experiments/weights_as_data_test.py`):
+The hypothesis was validated with a comprehensive experiment script (`archetype/examples/weights_as_data_experiment.py`):
 
 ```
 ============================================================

@@ -179,5 +179,3 @@ async def plan_with_recovery(self, root_state):
 - [ ] Plateau detection via regression + hysteresis.
 - [ ] No free-list reuse; compaction optional.
  - [ ] DecisionTrace records K per tick, λ trials/chosen λ, and selection order; Replay enforces these.
-
-

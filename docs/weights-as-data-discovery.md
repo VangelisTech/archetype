@@ -1,6 +1,6 @@
 # Weights as Data: The Discovery
 
-**Date:** 2025-12-27  
+**Date:** 2025-12-27
 **Authors:** Everett (Vangelis), lake-claude-opus-4.5
 
 ---
@@ -53,14 +53,14 @@ class TrainingUDF:
         # Load weights via daft.File
         with weights_file.to_tempfile() as temp:
             state_dict = load_file(temp.name)
-        
+
         # Train
         loss.backward()
         optimizer.step()
-        
+
         # WRITE new weights (not return them!)
         save_file(model.state_dict(), output_path)
-        
+
         # Return PATH
         return Series.from_pylist([output_path] * len(data))
 ```
@@ -90,18 +90,18 @@ class InferenceUDF:
     def __init__(self, model: nn.Module):
         self._model = model
         self._weights_hash = None
-    
+
     def __call__(self, input_data, weights_file: daft.File) -> float:
         # Check if weights changed
         with weights_file.open() as f:
             content_hash = hash(f.read())
-        
+
         if self._weights_hash != content_hash:
             with weights_file.to_tempfile() as temp:
                 state_dict = load_file(temp.name)
             self._model.load_state_dict(state_dict)
             self._weights_hash = content_hash
-        
+
         return self._model(input_data)
 ```
 
@@ -112,19 +112,19 @@ current_weights = "epoch_0.safetensors"
 
 for epoch in range(num_epochs):
     df = prompts_df.with_column("weights", file(lit(current_weights)))
-    
+
     # === LAZY (distributed) ===
     df = df.with_column("generation", GenerationUDF()(col("prompt"), col("weights")))
     df = df.with_column("reward", compute_reward(...))
     df = df.with_column("advantage", compute_advantage(...))
-    
+
     # === MATERIALIZED (single worker) ===
     df = df.into_partitions(1)
     df = df.with_column("new_path", TrainStepUDF().train_batch(...))
-    
+
     # Collect triggers everything
     result = df.collect()
-    
+
     # New weights for next epoch
     current_weights = f"epoch_{epoch+1}.safetensors"
 ```
@@ -187,7 +187,7 @@ RESULTS SUMMARY
 | File | Purpose |
 |------|---------|
 | `archetype/src/archetype/rl/v2/` | Clean reimplementation |
-| `archetype/src/archetype/rl/experiments/weights_as_data_test.py` | Validation tests |
+| `archetype/examples/weights_as_data_experiment.py` | Validation experiment (run manually) |
 | `archetype/docs/daft-model-weights-file-proposal.md` | Daft feature proposal |
 | `archetype/examples/rl_v2_example.py` | Usage examples |
 

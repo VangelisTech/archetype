@@ -761,7 +761,7 @@ def main():
     print("=" * 70)
     print("""
 • Schema Helped: Model genuinely uses schema information
-• Schema Hurt: Model gets confused by extra context  
+• Schema Hurt: Model gets confused by extra context
 • Both Correct: Query pattern is common/memorized
 • Both Incorrect: Fundamental limitation
 

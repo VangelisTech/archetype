@@ -1,9 +1,3 @@
-# /// script
-# description = "Validate: Can weights flow through Daft as data?"
-# requires-python = ">=3.10, <3.13"
-# dependencies = ["daft>=0.7.1", "torch", "safetensors", "numpy"]
-# ///
-
 """
 Hypothesis Validation: Weights as Data
 ======================================
@@ -17,17 +11,23 @@ Can we:
 Let's find out.
 """
 
+from __future__ import annotations
+
+import logging
 import os
 import shutil
 import tempfile
 from pathlib import Path
 
 import daft
+import numpy as np
 import torch
 import torch.nn as nn
 from daft import DataType, Series, col, lit
 from daft.functions import file
 from safetensors.torch import load_file, save_file
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Step 1: Create a simple model and save initial weights
@@ -52,8 +52,7 @@ def create_initial_weights(path: str) -> str:
     model = TinyModel()
     state_dict = {k: v for k, v in model.state_dict().items()}
     save_file(state_dict, path)
-    print(f"✓ Created initial weights at {path}")
-    print(f"  fc1.weight sum: {state_dict['fc1.weight'].sum().item():.4f}")
+    logger.info("Created initial weights at %s", path)
     return path
 
 
@@ -101,18 +100,16 @@ def inspect_weights(weights_file: daft.File) -> dict:
 
 def test_load_weights(weights_path: str) -> bool:
     """Test: Can we load safetensors via daft.File?"""
-    print("\n" + "=" * 60)
-    print("TEST 1: Load weights via daft.File")
-    print("=" * 60)
+    logger.info("TEST 1: Load weights via daft.File")
 
     df = daft.from_pydict({"weights_path": [weights_path]})
     df = df.with_column("weights_file", file(col("weights_path")))
     df = df.with_column("info", inspect_weights(col("weights_file")))
 
     result = df.collect().to_pylist()[0]
-    print("✓ Loaded weights via daft.File")
-    print(f"  num_params: {result['info']['num_params']}")
-    print(f"  fc1_weight_sum: {result['info']['fc1_weight_sum']:.4f}")
+    logger.info("Loaded weights via daft.File")
+    logger.info("num_params=%s", result["info"]["num_params"])
+    logger.info("fc1_weight_sum=%.4f", result["info"]["fc1_weight_sum"])
 
     return True
 
@@ -149,7 +146,7 @@ class InferenceUDF:
             self._model.load_state_dict(state_dict)
             self._model.eval()
             self._current_content_hash = content_hash
-            print(f"  [InferenceUDF] Loaded new weights (hash={content_hash})")
+            logger.debug("InferenceUDF loaded new weights (hash=%s)", content_hash)
 
         # Run inference
         with torch.no_grad():
@@ -161,9 +158,7 @@ class InferenceUDF:
 
 def test_inference_with_weights(weights_path: str) -> bool:
     """Test: Can we run inference with weights from daft.File?"""
-    print("\n" + "=" * 60)
-    print("TEST 2: Inference with daft.File weights")
-    print("=" * 60)
+    logger.info("TEST 2: Inference with daft.File weights")
 
     # Create test data
     df = daft.from_pydict(
@@ -178,9 +173,9 @@ def test_inference_with_weights(weights_path: str) -> bool:
     df = df.with_column("output", InferenceUDF()(col("input"), col("weights_file")))
 
     results = df.select("id", "output").collect().to_pylist()
-    print("✓ Inference completed with daft.File weights")
+    logger.info("Inference completed with daft.File weights")
     for r in results:
-        print(f"  id={r['id']}, output={r['output']:.4f}")
+        logger.info("id=%s output=%.4f", r["id"], r["output"])
 
     return True
 
@@ -208,7 +203,7 @@ class TrainingUDF:
         self._optimizer = None
         self._criterion = nn.MSELoss()
         self._loaded_weights_hash = None
-        print("  [TrainingUDF.__init__] Initialized on worker")
+        logger.debug("TrainingUDF initialized on worker")
 
     def _ensure_model_loaded(self, weights_file_obj):
         """Load weights if not already loaded or if content changed."""
@@ -225,7 +220,7 @@ class TrainingUDF:
             self._model.train()
             self._optimizer = torch.optim.SGD(self._model.parameters(), lr=0.1)
             self._loaded_weights_hash = content_hash
-            print(f"  [TrainingUDF] Loaded weights (hash={content_hash})")
+            logger.debug("TrainingUDF loaded weights (hash=%s)", content_hash)
 
     @daft.method.batch(return_dtype=DataType.string())
     def train_batch(
@@ -268,15 +263,18 @@ class TrainingUDF:
         # Record final state
         final_fc1_sum = self._model.fc1.weight.data.sum().item()
 
-        print(
-            f"  [TRAIN] batch_size={len(input_list)}, loss={total_loss / len(input_list):.4f}, "
-            f"fc1_sum: {initial_fc1_sum:.4f} → {final_fc1_sum:.4f}"
+        logger.info(
+            "TRAIN batch_size=%s loss=%.4f fc1_sum: %.4f -> %.4f",
+            len(input_list),
+            total_loss / len(input_list),
+            initial_fc1_sum,
+            final_fc1_sum,
         )
 
         # WRITE new weights to output path
         new_state_dict = {k: v for k, v in self._model.state_dict().items()}
         save_file(new_state_dict, new_weights_path)
-        print(f"  [TRAIN] Saved new weights to {new_weights_path}")
+        logger.info("Saved new weights to %s", new_weights_path)
 
         # Return path to new weights for each row
         return Series.from_pylist([new_weights_path] * len(input_list))
@@ -290,9 +288,7 @@ def train_and_save(inputs, targets, weights_file, output_path):
 
 def test_train_and_save(weights_path: str, output_path: str) -> str:
     """Test: Can we train and write new weights from a UDF?"""
-    print("\n" + "=" * 60)
-    print("TEST 3: Train and save weights via @daft.cls + @daft.method.batch")
-    print("=" * 60)
+    logger.info("TEST 3: Train and save weights via @daft.cls + @daft.method.batch")
 
     # Create training data
     df = daft.from_pydict(
@@ -320,7 +316,7 @@ def test_train_and_save(weights_path: str, output_path: str) -> str:
     )
 
     result = df.select("new_weights_path").collect().to_pylist()[0]
-    print(f"✓ Training completed, new weights at: {result['new_weights_path']}")
+    logger.info("Training completed, new weights at: %s", result["new_weights_path"])
 
     return result["new_weights_path"]
 
@@ -340,9 +336,7 @@ def test_epoch_chain(initial_weights: str, checkpoint_dir: str, num_epochs: int 
     3. Writes new weights
     4. Next epoch uses those weights
     """
-    print("\n" + "=" * 60)
-    print(f"TEST 4: Full epoch chain ({num_epochs} epochs)")
-    print("=" * 60)
+    logger.info("TEST 4: Full epoch chain (%s epochs)", num_epochs)
 
     current_weights = initial_weights
 
@@ -350,7 +344,7 @@ def test_epoch_chain(initial_weights: str, checkpoint_dir: str, num_epochs: int 
     weight_history = []
 
     for epoch in range(num_epochs):
-        print(f"\n--- Epoch {epoch} ---")
+        logger.info("--- Epoch %s ---", epoch)
 
         # Create data for this epoch
         df = daft.from_pydict(
@@ -398,25 +392,24 @@ def test_epoch_chain(initial_weights: str, checkpoint_dir: str, num_epochs: int 
             }
         )
 
-        print(f"  Weights changed: {old_sum:.4f} → {new_sum:.4f}")
+        logger.info("Weights changed: %.4f -> %.4f", old_sum, new_sum)
 
         # Update for next epoch
         current_weights = new_weights_path
 
-    print("\n" + "-" * 40)
-    print("Weight evolution:")
+    logger.info("Weight evolution:")
     for h in weight_history:
-        print(f"  Epoch {h['epoch']}: fc1_sum = {h['fc1_sum']:.4f}")
+        logger.info("Epoch %s fc1_sum=%.4f", h["epoch"], h["fc1_sum"])
 
     # Verify weights actually evolved
     first_sum = weight_history[0]["fc1_sum"]
     last_sum = weight_history[-1]["fc1_sum"]
 
     if abs(first_sum - last_sum) > 0.01:
-        print(f"\n✓ SUCCESS: Weights evolved from {first_sum:.4f} to {last_sum:.4f}")
+        logger.info("SUCCESS: Weights evolved from %.4f to %.4f", first_sum, last_sum)
         return True
     else:
-        print("\n✗ FAILURE: Weights did not change significantly")
+        logger.error("FAILURE: Weights did not change significantly")
         return False
 
 
@@ -431,15 +424,13 @@ def test_inference_with_versioned_weights(checkpoint_dir: str) -> bool:
 
     This is the ultimate validation - per-row weight versioning!
     """
-    print("\n" + "=" * 60)
-    print("TEST 5: Inference with different weight versions per row")
-    print("=" * 60)
+    logger.info("TEST 5: Inference with different weight versions per row")
 
     # Find all checkpoints
     checkpoints = sorted(Path(checkpoint_dir).glob("epoch_*.safetensors"))
 
     if len(checkpoints) < 2:
-        print("  Need at least 2 checkpoints for this test")
+        logger.warning("Need at least 2 checkpoints for this test")
         return False
 
     # Create data where each row uses different weights
@@ -456,19 +447,19 @@ def test_inference_with_versioned_weights(checkpoint_dir: str) -> bool:
 
     results = df.select("id", "weights_path", "output").collect().to_pylist()
 
-    print("  Results with different weight versions:")
+    logger.info("Results with different weight versions:")
     outputs = []
     for r in results:
         epoch = Path(r["weights_path"]).stem
-        print(f"    {epoch}: output = {r['output']:.4f}")
+        logger.info("%s output=%.4f", epoch, r["output"])
         outputs.append(r["output"])
 
     # Verify outputs differ (different weights → different outputs)
     if len(set(f"{o:.4f}" for o in outputs)) > 1:
-        print("\n✓ SUCCESS: Different weights produced different outputs!")
+        logger.info("SUCCESS: Different weights produced different outputs")
         return True
     else:
-        print("\n✗ FAILURE: All outputs were identical despite different weights")
+        logger.error("FAILURE: All outputs were identical despite different weights")
         return False
 
 
@@ -478,16 +469,15 @@ def test_inference_with_versioned_weights(checkpoint_dir: str) -> bool:
 
 
 def main():
-    print("=" * 60)
-    print("HYPOTHESIS VALIDATION: Weights as Data")
-    print("=" * 60)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    logger.info("HYPOTHESIS VALIDATION: Weights as Data")
 
     # Create temp directory for test
     test_dir = tempfile.mkdtemp(prefix="weights_test_")
     checkpoint_dir = os.path.join(test_dir, "checkpoints")
     os.makedirs(checkpoint_dir)
 
-    print(f"\nTest directory: {test_dir}")
+    logger.info("Test directory: %s", test_dir)
 
     try:
         # Create initial weights
@@ -519,21 +509,18 @@ def main():
         )
 
         # Summary
-        print("\n" + "=" * 60)
-        print("RESULTS SUMMARY")
-        print("=" * 60)
+        logger.info("RESULTS SUMMARY")
 
         all_passed = True
         for name, passed in results:
             status = "✓ PASS" if passed else "✗ FAIL"
-            print(f"  {status}: {name}")
+            logger.info("%s: %s", status, name)
             all_passed = all_passed and passed
 
-        print("\n" + "=" * 60)
         if all_passed:
-            print("🎉 HYPOTHESIS VALIDATED: Weights can flow as data!")
-            print("=" * 60)
-            print("""
+            logger.info("HYPOTHESIS VALIDATED: Weights can flow as data!")
+            logger.info(
+                """
 Key findings:
 1. daft.File can load safetensors ✓
 2. @daft.cls UDFs can use weights from file columns ✓
@@ -542,19 +529,19 @@ Key findings:
 5. Different rows can use different weight versions ✓
 
 The RL training loop IS compatible with Daft when weights are data!
-""")
+"""
+            )
         else:
-            print("❌ HYPOTHESIS NOT FULLY VALIDATED")
-            print("=" * 60)
+            logger.error("HYPOTHESIS NOT FULLY VALIDATED")
 
         return all_passed
 
     finally:
         # Cleanup
-        print(f"\nCleaning up {test_dir}")
+        logger.info("Cleaning up %s", test_dir)
         shutil.rmtree(test_dir)
 
 
 if __name__ == "__main__":
     success = main()
-    exit(0 if success else 1)
+    raise SystemExit(0 if success else 1)

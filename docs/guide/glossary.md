@@ -61,4 +61,3 @@ This avoids retokenization drift between inference and training.
 ## Weights as data
 
 “Weights as data” is the pattern where training steps **write** new checkpoints and pass the path forward (rather than trying to “return weights” from a distributed UDF).
-

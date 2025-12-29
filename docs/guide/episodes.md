@@ -18,4 +18,3 @@ Use episodes when you want:
 ## Example
 
 See `src/archetype/app/episodes/episode.py` and `examples/` for patterns.
-

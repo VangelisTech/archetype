@@ -1,6 +1,6 @@
 # OODA Agent Architecture
 
-**Date:** 2025-12-27  
+**Date:** 2025-12-27
 **Authors:** Everett, lake-claude-opus-4.5
 
 ---
@@ -55,14 +55,14 @@ Each OODA phase has a Pydantic schema that serves as both:
 ```python
 class Observation(BaseModel):
     """What the agent perceives from the environment.
-    
+
     Rubric: Completeness, Relevance, Accuracy
     """
     # Core perception
     entities: list[str] = Field(description="Entities observed in the environment")
     state: dict[str, Any] = Field(description="Current state observations")
     events: list[str] = Field(description="Events/changes detected")
-    
+
     # Self-evaluation (the rubric)
     completeness: float = Field(
         ge=0, le=1,
@@ -83,7 +83,7 @@ class Observation(BaseModel):
 ```python
 class Orientation(BaseModel):
     """Agent's situational awareness and world model.
-    
+
     Rubric: Coherence, Integration, Timeliness
     """
     # Core orientation
@@ -91,7 +91,7 @@ class Orientation(BaseModel):
     threats: list[str] = Field(description="Identified threats/risks")
     opportunities: list[str] = Field(description="Identified opportunities")
     mental_model: str = Field(description="Updated understanding of the world")
-    
+
     # Self-evaluation (the rubric)
     coherence: float = Field(
         ge=0, le=1,
@@ -112,7 +112,7 @@ class Orientation(BaseModel):
 ```python
 class Decision(BaseModel):
     """Selected action with reasoning.
-    
+
     Rubric: Alignment, Feasibility, Optimality
     """
     # Core decision
@@ -120,7 +120,7 @@ class Decision(BaseModel):
     reasoning: str = Field(description="Why this action was chosen")
     alternatives: list[str] = Field(description="Other actions considered")
     expected_outcome: str = Field(description="What we expect to happen")
-    
+
     # Self-evaluation (the rubric)
     alignment: float = Field(
         ge=0, le=1,
@@ -145,7 +145,7 @@ class Decision(BaseModel):
 ```python
 class Action(BaseModel):
     """Executed action and result.
-    
+
     Rubric: Success, Side Effects, Efficiency
     """
     # Core action
@@ -153,7 +153,7 @@ class Action(BaseModel):
     success: bool = Field(description="Whether the action succeeded")
     outcome: str = Field(description="What actually happened")
     side_effects: list[str] = Field(description="Unintended consequences")
-    
+
     # Self-evaluation (the rubric)
     execution_quality: float = Field(
         ge=0, le=1,
@@ -186,10 +186,10 @@ def run_ooda_loop(
 ) -> daft.DataFrame:
     """
     Run a full OODA loop on a DataFrame of agent states.
-    
+
     Each row represents an agent in an environment with a goal.
     """
-    
+
     # OBSERVE
     df = df.with_column(
         "observation",
@@ -200,7 +200,7 @@ def run_ooda_loop(
             output_type=Observation,
         )
     )
-    
+
     # ORIENT
     df = df.with_column(
         "orientation",
@@ -215,7 +215,7 @@ def run_ooda_loop(
             output_type=Orientation,
         )
     )
-    
+
     # DECIDE
     df = df.with_column(
         "decision",
@@ -230,7 +230,7 @@ def run_ooda_loop(
             output_type=Decision,
         )
     )
-    
+
     return df
 
 
@@ -257,7 +257,7 @@ The self-evaluation fields in each schema become multi-dimensional rewards:
 ```python
 def compute_ooda_reward(df: daft.DataFrame) -> daft.DataFrame:
     """Compute reward from OODA rubric scores."""
-    
+
     # Extract rubric scores from nested structs
     df = df.with_column(
         "observe_score",
@@ -267,7 +267,7 @@ def compute_ooda_reward(df: daft.DataFrame) -> daft.DataFrame:
             col("observation.confidence") * 0.3
         )
     )
-    
+
     df = df.with_column(
         "orient_score",
         (
@@ -276,7 +276,7 @@ def compute_ooda_reward(df: daft.DataFrame) -> daft.DataFrame:
             col("orientation.novelty_handled") * 0.3
         )
     )
-    
+
     df = df.with_column(
         "decide_score",
         (
@@ -286,7 +286,7 @@ def compute_ooda_reward(df: daft.DataFrame) -> daft.DataFrame:
             col("decision.risk_assessment") * 0.1
         )
     )
-    
+
     # Combined reward
     df = df.with_column(
         "reward",
@@ -294,7 +294,7 @@ def compute_ooda_reward(df: daft.DataFrame) -> daft.DataFrame:
         col("orient_score") * 0.3 +
         col("decide_score") * 0.5  # Decision matters most
     )
-    
+
     return df
 ```
 
@@ -313,9 +313,9 @@ async def train_ooda_agent(
     config: TrainingConfig,
 ) -> str:
     """Train an OODA agent using the v2 weights-as-data pattern."""
-    
+
     current_weights = initial_weights
-    
+
     for epoch in range(num_epochs):
         # 1. Create Daft DataFrame with environments
         df = daft.from_pylist([
@@ -323,23 +323,23 @@ async def train_ooda_agent(
             for env, goal in zip(environments, goals)
         ])
         df = df.with_column("weights_file", file(col("weights_path")))
-        
+
         # 2. Run OODA loop (with custom model using LoRA weights)
         df = run_ooda_loop(df, model=f"local:{current_weights}")
-        
+
         # 3. Compute rubric-based rewards
         df = compute_ooda_reward(df)
-        
+
         # 4. Compute GRPO advantages
         df = compute_advantages(df, group_col="goal", reward_col="reward")
-        
+
         # 5. Train via PyTorch bridge
         metrics = train_epoch_pytorch(df, model, optimizer, config)
-        
+
         # 6. Save new weights (weights as data!)
         current_weights = f"checkpoints/epoch_{epoch+1}.safetensors"
         save_file(model.state_dict(), current_weights)
-    
+
     return current_weights
 ```
 
@@ -355,15 +355,15 @@ Environments are separate from agents - they provide:
 ```python
 class Environment(BaseModel):
     """Base environment that agents interact with."""
-    
+
     name: str
     state: dict[str, Any]
     valid_actions: list[str]
-    
+
     def step(self, action: Action) -> "Environment":
         """Apply action and return new environment state."""
         raise NotImplementedError
-    
+
     def render(self) -> str:
         """Render environment state as string for LLM observation."""
         raise NotImplementedError

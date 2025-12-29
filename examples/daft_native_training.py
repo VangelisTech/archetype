@@ -82,7 +82,7 @@ df = df.with_column("norm_advantage", normalize_advantages(col("advantage")))
 class PolicyUDF:
     def __init__(self):
         self.model = load_model()  # State persists!
-    
+
     def __call__(self, obs: Series) -> List[Dict]:
         # Run inference
         actions = self.model(obs.to_pylist())

@@ -1,6 +1,6 @@
 # RL v2 Testing Plan
 
-**Date:** 2025-12-27  
+**Date:** 2025-12-27
 **Authors:** Everett, lake-claude-opus-4.5
 
 ---
@@ -21,7 +21,7 @@ This document outlines the testing strategy for the new RL v2 implementation and
 | `v2/components.py` | Pydantic data models | Schema validation |
 | `v2/processors.py` | Daft UDFs | UDF execution tests |
 | `v2/training.py` | Daft→PyTorch bridge | Integration tests |
-| `experiments/weights_as_data_test.py` | Validation tests | Already complete ✓ |
+| `examples/weights_as_data_experiment.py` | Validation experiment (run manually) | Already complete ✓ |
 
 ### ⚠️ KEEP (Still Used, Review Later)
 
@@ -58,16 +58,16 @@ This document outlines the testing strategy for the new RL v2 implementation and
 
 def test_prompt_component():
     """Prompt component serializes correctly."""
-    
+
 def test_generation_component():
     """Generation component handles token_ids and logprobs."""
-    
+
 def test_reward_component():
     """Reward component validates value and components dict."""
-    
+
 def test_advantage_component():
     """Advantage component stores group info."""
-    
+
 def test_model_weights_component():
     """ModelWeights component stores path and version."""
 
@@ -82,19 +82,19 @@ def test_components_are_pydantic():
 
 def test_generation_udf_loads_weights():
     """GenerationUDF loads weights via daft.File."""
-    
+
 def test_generation_udf_caches_weights():
     """GenerationUDF caches weights by content hash."""
-    
+
 def test_reward_processor_applies_functions():
     """RewardProcessor applies multiple reward functions."""
-    
+
 def test_reward_processor_weights():
     """RewardProcessor applies weights correctly."""
-    
+
 def test_advantage_processor_groups():
     """AdvantageProcessor assigns groups correctly."""
-    
+
 def test_advantage_processor_normalizes():
     """AdvantageProcessor normalizes within groups."""
 ```
@@ -106,25 +106,25 @@ def test_advantage_processor_normalizes():
 
 def test_daft_to_pytorch_loader():
     """daft_to_pytorch_loader creates valid DataLoader."""
-    
+
 def test_daft_to_pytorch_loader_columns():
     """daft_to_pytorch_loader selects correct columns."""
-    
+
 def test_default_collate_fn():
     """default_collate_fn handles various types."""
-    
+
 def test_compute_ppo_loss():
     """compute_ppo_loss returns correct loss structure."""
-    
+
 def test_train_step():
     """train_step executes forward/backward/step."""
-    
+
 def test_train_step_with_amp():
     """train_step works with mixed precision."""
-    
+
 def test_train_epoch_pytorch():
     """train_epoch_pytorch processes all batches."""
-    
+
 def test_training_config_defaults():
     """TrainingConfig has sensible defaults."""
 ```
@@ -139,29 +139,29 @@ def test_training_config_defaults():
 @pytest.fixture
 def tiny_model():
     """Create a tiny model for testing."""
-    
-@pytest.fixture  
+
+@pytest.fixture
 def initial_weights(tmp_path, tiny_model):
     """Create initial weights file."""
-    
+
 def test_full_epoch_cycle(tiny_model, initial_weights, tmp_path):
     """Test complete epoch: Daft prep → PyTorch train → Save weights."""
-    
+
 def test_weights_flow_between_epochs(tiny_model, initial_weights, tmp_path):
     """Test that weights actually update between epochs."""
-    
+
 def test_different_weights_different_outputs(tiny_model, tmp_path):
     """Test that different weight versions produce different outputs."""
-    
+
 def test_train_epochs_function(tiny_model, initial_weights, tmp_path):
     """Test the full train_epochs() function."""
 ```
 
 ### 2.3 Validated (Already Complete)
 
-The `experiments/weights_as_data_test.py` already validates:
+The `examples/weights_as_data_experiment.py` already validates:
 - ✅ Load weights via daft.File
-- ✅ Inference with daft.File weights  
+- ✅ Inference with daft.File weights
 - ✅ Train and save weights via UDF
 - ✅ Full epoch chain
 - ✅ Inference with versioned weights
@@ -204,7 +204,7 @@ class TinyModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.fc = nn.Linear(10, 1)
-    
+
     def forward(self, x):
         return self.fc(x)
 
@@ -302,7 +302,7 @@ pytest archetype/tests/rl/v2/ --cov=archetype.rl.v2 --cov-report=html
 pytest archetype/tests/rl/v2/test_training.py -v
 
 # Run the validation test
-python archetype/src/archetype/rl/experiments/weights_as_data_test.py
+python archetype/examples/weights_as_data_experiment.py
 ```
 
 ---
@@ -316,10 +316,10 @@ Add to CI pipeline:
 - name: Run RL v2 Tests
   run: |
     pytest archetype/tests/rl/v2/ -v --tb=short
-    
+
 - name: Run Weights-as-Data Validation
   run: |
-    python archetype/src/archetype/rl/experiments/weights_as_data_test.py
+    python archetype/examples/weights_as_data_experiment.py
 ```
 
 ---
@@ -341,7 +341,7 @@ Add to CI pipeline:
 
 **Validation test summary:**
 - ✅ Load weights via `daft.File`
-- ✅ Inference with `daft.File` weights  
+- ✅ Inference with `daft.File` weights
 - ✅ Train and save weights via UDF
 - ⚠️ Epoch chain (measurement bug - weights DO change per hash)
 - ✅ Inference with versioned weights (different weights → different outputs)

@@ -31,9 +31,9 @@ The default implementation on `AsyncUpdateManager` would simply be `pass`, but i
 
 We can also trigger a fully validated dataframe by leveraging the underlying features of pydantic. This is achieved by converting the dataframe back to a list of pydicts using `df.to_pylist()` by breaking the df columns of the archetype back into components and running a loop over `component.model_validate(x) for x in pylist` within a try except block. We COULD use a list comprehension but lost the debugging. It would be cool to see different sampling techniques used here with an optional argument for sample size.
 
-Here We would also print the df.explain() with options for the log or mermaid chart. The introspection into the query plan should be able to be compared against the processor priority system for any given archetype and juxtapose the visualization against a track strace flame graph. 
+Here We would also print the df.explain() with options for the log or mermaid chart. The introspection into the query plan should be able to be compared against the processor priority system for any given archetype and juxtapose the visualization against a track strace flame graph.
 
-See [visualization](./07_VISUALIZATION_ENTRY_POINTS.md) for more details on the `df.explain()` . 
+See [visualization](./07_VISUALIZATION_ENTRY_POINTS.md) for more details on the `df.explain()` .
 
 #### Types of Validations
 
@@ -63,7 +63,7 @@ if self.config.get("enable_validation", False):
         if not isinstance(res, Exception):
             df, sig = res
             validation_tasks.append(self.updater.validate(df, sig))
-    
+
     validation_results = await asyncio.gather(*validation_tasks, return_exceptions=True)
     for val_res in validation_results:
         if isinstance(val_res, Exception):

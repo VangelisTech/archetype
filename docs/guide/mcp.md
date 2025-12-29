@@ -27,4 +27,3 @@ See `src/archetype/mcp/server.py` for the canonical tool list and argument schem
 - `submit_command`
 - `get_pending_commands`
 - `get_command_history`
-

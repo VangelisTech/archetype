@@ -45,4 +45,3 @@ Run the end-to-end smoke test:
 cd archetype
 PYTHONPATH=src uv run python examples/grpo_text_end_to_end.py
 ```
-

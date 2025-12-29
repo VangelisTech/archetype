@@ -22,4 +22,3 @@ If you’re new, start with the guides. The `design/` folder contains historical
 - `rl-architecture-decisions.md`: decision record for RL architecture
 - `simulation_scripting.md`: (legacy) scripting patterns; see `guide/quickstart.md` for the current API
 - `design/`: broader architecture notes and acceptance criteria
-

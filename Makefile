@@ -144,4 +144,3 @@ mcp:
 example:
 	@test -n "$(EX)" || (echo "Set EX=examples/<file>.py" && exit 1)
 	@PYTHONPATH=$(PYTHONPATH) uv run python "$(EX)"
-

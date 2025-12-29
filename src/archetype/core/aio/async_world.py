@@ -24,8 +24,6 @@ from daft.functions import when
 from uuid_utils import UUID  # noqa: F401 imported for type hints
 
 from archetype.core.aio.async_processor import AsyncProcessor
-
-# duplicate UUID import removed
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
@@ -252,11 +250,13 @@ class AsyncWorld(iAsyncWorld):
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
         old_sig = self._entity2sig.get(entity_id)
         if not old_sig:
-            return  # TODO: add warning -> no existing archetype for entity blah
+            logger.warning("add_components: entity %s not found", entity_id)
+            return
 
         new_sig = Archetype.add_components(old_sig, [type(c) for c in components])
         if new_sig == old_sig:
-            return  # TODO: add warning -> provided components already in archetype sig
+            logger.debug("add_components: no-op; entity %s already has components", entity_id)
+            return
 
         row = await self._move_entity(entity_id, old_sig, new_sig, components)
 

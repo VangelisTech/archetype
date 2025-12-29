@@ -55,4 +55,3 @@ Because each tick is persisted, you can query:
 - “what was the state of archetype X at tick 73?”
 - “how did entity 42’s components evolve across ticks?”
 - “replay a run deterministically” (given deterministic processors + inputs)
-

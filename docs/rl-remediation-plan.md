@@ -1,7 +1,7 @@
 # Archetype RL Module Remediation Plan
 
-**Status**: Approved (with API corrections)  
-**Date**: December 27, 2025  
+**Status**: Approved (with API corrections)
+**Date**: December 27, 2025
 **Authors**: lake-claude-opus-4.5 (proposal), lake-gemini-3-flash (review), lake-claude-opus-4.5 (API verification)
 
 ---
@@ -35,8 +35,8 @@ This document distills the surgical remediation plan for `archetype/src/archetyp
 
 ### Surgery 1: Remove Unsafe `eval()`
 
-**File**: `archetype/src/archetype/rl/daft_query_training.py`  
-**Lines**: 471-478  
+**File**: `archetype/src/archetype/rl/daft_query_training.py`
+**Lines**: 471-478
 **Risk**: Low (isolated)
 
 **Problem**: Arbitrary code execution via `eval(query)` on model-generated strings.
@@ -94,8 +94,8 @@ if self._is_safe_daft_query(query):
 
 ### Surgery 4: Implement Real GRPO Loss
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 254-293  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 254-293
 **Risk**: Medium (requires testing)
 
 **Problem**: `compute_grpo_loss` returns `0.0` placeholder—training doesn't train.
@@ -111,18 +111,18 @@ def compute_grpo_loss(
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """PPO-style clipped surrogate loss."""
     import torch
-    
+
     ratio = torch.exp(new_log_probs - old_log_probs)
     clipped_ratio = torch.clamp(ratio, 1.0 - clip_epsilon, 1.0 + clip_epsilon)
-    
+
     surr1 = ratio * advantages
     surr2 = clipped_ratio * advantages
     policy_loss = -torch.min(surr1, surr2).mean()
-    
+
     with torch.no_grad():
         clip_fraction = ((ratio - 1.0).abs() > clip_epsilon).float().mean().item()
         approx_kl = (old_log_probs - new_log_probs).mean().item()
-    
+
     return policy_loss, {
         "policy_loss": policy_loss.item(),
         "clip_fraction": clip_fraction,
@@ -139,8 +139,8 @@ def compute_grpo_loss(
 
 ### Surgery 5: Implement Real KL Penalty
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 296-308  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 296-308
 **Risk**: Low
 
 **Problem**: `compute_kl_penalty` returns `0.0` placeholder.
@@ -162,8 +162,8 @@ def compute_kl_penalty(
 
 ### Surgery 2: Pure Daft `assign_groups`
 
-**File**: `archetype/src/archetype/rl/grpo.py`  
-**Lines**: 164-208  
+**File**: `archetype/src/archetype/rl/grpo.py`
+**Lines**: 164-208
 **Risk**: Medium (core algorithm)
 
 **Problem**: `assign_groups` uses `.collect().to_pylist()` **outside** of a UDF, causing OOM on large rollouts.
@@ -183,9 +183,9 @@ def assign_groups(
 ) -> DataFrame:
     """
     Assign samples to groups for GRPO using pure Daft expressions.
-    
+
     NO .collect().to_pylist() — stays lazy until execution boundary.
-    
+
     Uses monotonically_increasing_id() for global row numbering
     or row_number().over() for partitioned numbering.
     """
@@ -217,7 +217,7 @@ def assign_groups(
             (col("_row_id") // group_size).cast(DataType.int64())
         )
         df = df.exclude("_row_id")
-    
+
     return df
 ```
 
@@ -278,7 +278,7 @@ Per the [Daft Classes & Methods documentation](https://docs.getdaft.io/en/stable
 
 **Files**:
 - `grpo.py`: `GRPOBatch`
-- `training.py`: `TrainingMetrics`  
+- `training.py`: `TrainingMetrics`
 - `daft_query_training.py`: `TableSchema`
 
 **Risk**: Low
@@ -299,7 +299,7 @@ from pydantic import BaseModel, Field
 class TrainingMetrics(BaseModel):
     """Training metrics with Arrow-compatible serialization."""
     history: List[Dict[str, Any]] = Field(default_factory=list)
-    
+
     model_config = {"arbitrary_types_allowed": True}
 ```
 
@@ -316,7 +316,7 @@ class TrainingMetrics(BaseModel):
 - [ ] Training loss decreases over epochs
 - [ ] KL penalty is non-zero when policies diverge
 
-### Scalability  
+### Scalability
 - [ ] `grep -r "\.collect()\.to_pylist()" archetype/src/archetype/rl/` returns only:
   - Inside `@daft.func.batch` or `@daft.method.batch` UDFs
   - Scalar metrics at epoch boundary
@@ -362,7 +362,7 @@ def my_batch_fn(x: Series) -> Series:
 class MyModel:
     def __init__(self, model_path: str):
         self.model = load_model(model_path)
-    
+
     @daft.method.batch(return_dtype=DataType.int64())
     def predict(self, x: Series) -> Series:
         # Convert to numpy inside UDF

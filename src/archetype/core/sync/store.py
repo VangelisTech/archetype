@@ -82,7 +82,7 @@ class SyncStore(iStore):
         df: DataFrame = table.read()  # Cheap, Lazy
 
         if self.debug:
-            print(f"Reading {table.name}")
+            logger.debug("Reading table %s", table.name)
             df.limit(5).show()
 
         # stored as strings; ensure filter values are strings
@@ -98,7 +98,7 @@ class SyncStore(iStore):
 
         if self.debug:
             df.collect()
-            print(f"Appending {df.count_rows()} rows to table {table_name}")
+            logger.debug("Appending %s rows to table %s", df.count_rows(), table_name)
             df.show()
 
         table.append(df)

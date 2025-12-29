@@ -34,4 +34,3 @@ The `StorageContextFactory` supports:
 - remote object stores (e.g. `s3://`, `gs://`): remote warehouse with a local SQLite catalog for metadata
 
 The important contract is that **I/O configuration** (credentials, object store config) is centralized in `StorageConfig` and propagated into Daft planning via `IOConfig`.
-

@@ -1,7 +1,7 @@
 # Daft Feature Proposal: `daft.ModelWeightsFile`
 
-**Authors:** Everett (Vangelis), lake-claude-opus-4.5  
-**Date:** 2025-12-27  
+**Authors:** Everett (Vangelis), lake-claude-opus-4.5
+**Date:** 2025-12-27
 **Status:** Proposal
 
 ---
@@ -61,14 +61,14 @@ class InferenceUDF:
     def __init__(self):
         self._model = None
         self._weights_version = None
-    
+
     def __call__(self, input: list, w: daft.ModelWeightsFile) -> float:
         # First-class methods on ModelWeightsFile
         if w.version != self._weights_version:
             state_dict = w.load_state_dict()  # Native safetensors support
             self._model.load_state_dict(state_dict)
             self._weights_version = w.version
-        
+
         return self._model(input)
 ```
 
@@ -77,62 +77,62 @@ class InferenceUDF:
 ```python
 class ModelWeightsFile:
     """Specialized File type for ML model weights."""
-    
+
     # === Identity & Versioning ===
     @property
     def version(self) -> str:
         """Content hash for cache invalidation."""
         ...
-    
+
     @property
     def format(self) -> str:
         """Detected format: 'safetensors', 'pytorch', 'gguf', etc."""
         ...
-    
+
     # === Loading ===
     def load_state_dict(self, device: str = "cpu") -> Dict[str, Tensor]:
         """Load as PyTorch state dict (safetensors native)."""
         ...
-    
+
     def load_tensor(self, name: str) -> Tensor:
         """Load single tensor by name (memory efficient)."""
         ...
-    
+
     def mmap(self) -> MappedWeights:
         """Memory-map for zero-copy access (large models)."""
         ...
-    
+
     # === Metadata ===
     @property
     def num_parameters(self) -> int:
         """Total parameter count."""
         ...
-    
+
     @property
     def tensor_names(self) -> List[str]:
         """List of tensor names in file."""
         ...
-    
+
     @property
     def metadata(self) -> Dict[str, Any]:
         """Safetensors metadata dict."""
         ...
-    
+
     # === Sharding (for large models) ===
     @property
     def is_sharded(self) -> bool:
         """Whether weights are sharded across files."""
         ...
-    
+
     def shard_paths(self) -> List[str]:
         """Paths to all shards."""
         ...
-    
+
     # === Context managers (inherited from File) ===
     def open(self) -> BinaryIO:
         """Raw file access."""
         ...
-    
+
     def to_tempfile(self) -> ContextManager[NamedTemporaryFile]:
         """Temp file for path-based APIs."""
         ...
@@ -184,7 +184,7 @@ current_weights = "epoch_0.safetensors"
 
 for epoch in range(num_epochs):
     df = prompts_df.with_column("weights", weights(lit(current_weights)))
-    
+
     # All lazy until training boundary
     df = (df
         .with_column("generation", generate(col("prompt"), col("weights")))
@@ -193,7 +193,7 @@ for epoch in range(num_epochs):
         .into_partitions(1)
         .with_column("new_weights_path", train_step(col("*"), col("weights")))
     )
-    
+
     result = df.select("new_weights_path").collect()
     current_weights = result.to_pylist()[0]["new_weights_path"]
 ```
@@ -216,7 +216,7 @@ df = df.with_column("weights", weights.from_wandb(col("artifact_path")))
 ```python
 # Automatically handles model.safetensors.index.json
 df = df.with_column(
-    "weights", 
+    "weights",
     weights("path/to/sharded/model/", sharded=True)
 )
 
@@ -289,7 +289,7 @@ daft.File (base)
     │
     ├── daft.Image
     │
-    ├── daft.Audio  
+    ├── daft.Audio
     │
     └── daft.ModelWeightsFile (proposed)
             │
@@ -332,18 +332,18 @@ class InferenceUDF:
     def __init__(self, model: nn.Module):
         self._model = model
         self._weights_version = None
-    
+
     def __call__(self, input_data: list, weights_file: daft.File) -> float:
         # Manual version tracking (would be automatic with ModelWeightsFile)
         with weights_file.open() as f:
             content_hash = hash(f.read())
-        
+
         if self._weights_version != content_hash:
             with weights_file.to_tempfile() as temp:
                 state_dict = load_file(temp.name)
             self._model.load_state_dict(state_dict)
             self._weights_version = content_hash
-        
+
         return self._model(input_data).item()
 ```
 
@@ -355,12 +355,12 @@ class InferenceUDF:
     def __init__(self, model: nn.Module):
         self._model = model
         self._weights_version = None
-    
+
     def __call__(self, input_data: list, w: daft.ModelWeightsFile) -> float:
         if self._weights_version != w.version:  # ← Built-in versioning
             self._model.load_state_dict(w.load_state_dict())  # ← Native loading
             self._weights_version = w.version
-        
+
         return self._model(input_data).item()
 ```
 

@@ -24,4 +24,3 @@ Run a small local test:
 cd archetype
 PYTHONPATH=src uv run python examples/build_image_understanding_dataset.py --limit 50
 ```
-

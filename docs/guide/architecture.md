@@ -70,4 +70,3 @@ Each archetype signature corresponds to a physical table. Each tick appends a ne
 - `is_active` (soft delete)
 
 That gives you replay/debuggability: “what did the world look like at tick N?” becomes a query, not a reconstruction.
-

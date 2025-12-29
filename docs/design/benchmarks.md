@@ -4,7 +4,7 @@ Here's what would make the game dev and distributed systems communities take not
 
 **Setup:**
 - 1M entities (mix of NPCs, projectiles, environmental objects)
-- 100 different archetypes 
+- 100 different archetypes
 - 5-10 systems running per tick (physics, AI, collision, etc.)
 - 60 Hz tick rate
 
@@ -16,7 +16,7 @@ Here's what would make the game dev and distributed systems communities take not
 
 **Compare against:**
 - Bevy ECS (single machine)
-- Flecs 
+- Flecs
 - Unity DOTS
 - A naive PostgreSQL-backed approach
 
