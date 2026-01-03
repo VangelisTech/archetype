@@ -11,24 +11,21 @@ These tests validate the new features added to support agent communication:
 3. MESSAGE CommandType - Agent-to-agent communication via broker
 """
 
-import asyncio
 from dataclasses import dataclass
 
+import daft
 import pytest
 import pytest_asyncio
-
-import daft
 from daft import DataFrame, col
 
+from archetype.app.broker import CommandBroker
+from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.resources import Resources
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
-
 
 # =============================================================================
 # Test Components
@@ -57,6 +54,7 @@ class Inbox(Component):
 @dataclass
 class SimConfig:
     """Test configuration resource."""
+
     value: int = 42
     name: str = "test"
 
@@ -64,6 +62,7 @@ class SimConfig:
 @dataclass
 class OtherConfig:
     """Another config for testing multiple resources."""
+
     enabled: bool = True
 
 
@@ -79,8 +78,9 @@ class InMemoryQuerier:
         self._store: dict = {}
 
     async def query_archetype(self, **kwargs):
-        from archetype.core.archetype import Archetype
         import pyarrow as pa
+
+        from archetype.core.archetype import Archetype
 
         sig = kwargs["sig"]
         ticks = kwargs.get("ticks", [0])
@@ -349,9 +349,7 @@ class ResourceAccessProcessor(AsyncProcessor):
         config = resources.get(SimConfig)
         if config:
             # Add the config value to x coordinate
-            return df.with_column(
-                "position__x", col("position__x") + config.value
-            )
+            return df.with_column("position__x", col("position__x") + config.value)
         return df
 
 
@@ -372,7 +370,7 @@ class TestResourcesInProcessor:
 
         # Verify - x should be 0 + 100 = 100
         live_df = world._live
-        for sig, df in live_df.items():
+        for _sig, df in live_df.items():
             rows = df.collect().to_pylist()
             assert len(rows) == 1
             assert rows[0]["position__x"] == 100
@@ -390,7 +388,7 @@ class TestResourcesInProcessor:
 
         # x should be unchanged since no config
         live_df = world._live
-        for sig, df in live_df.items():
+        for _sig, df in live_df.items():
             rows = df.collect().to_pylist()
             assert len(rows) == 1
             assert rows[0]["position__x"] == 5

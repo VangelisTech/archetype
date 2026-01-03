@@ -18,10 +18,10 @@ For agent-centric programming, use archetype.dsl:
 
 Usage:
     from archetype.app import CommandBroker, WorldOrchestrator
-    
+
     broker = CommandBroker()
     orchestrator = WorldOrchestrator()
-    
+
     world = await orchestrator.create_world(config, system, storage_config)
     await orchestrator.run_world(world.world_id, run_config)
 """

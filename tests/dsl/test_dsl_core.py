@@ -12,20 +12,17 @@ Tests cover:
 - Auto message realization
 """
 
-import asyncio
-import json
 import pytest
 
 from archetype.core.component import Component
-from archetype.dsl import World, behavior, spawn_world, Inbox
+from archetype.dsl import Inbox, World, behavior, spawn_world
 from archetype.dsl.core import (
     AgentProxy,
-    ComponentProxy,
     BehaviorSpec,
-    component_prefix,
+    ComponentProxy,
     component_column,
+    component_prefix,
 )
-
 
 # =============================================================================
 # Test Components (prefixed with Sample to avoid pytest collection)
@@ -67,7 +64,7 @@ class TestComponentProxy:
         row_data = {"samplestate__value": 42, "samplestate__history_json": "[]"}
         mutations = {}
         proxy = ComponentProxy(SampleState, row_data, mutations)
-        
+
         assert proxy.value == 42
         assert proxy.history_json == []  # Auto-deserialized
 
@@ -75,32 +72,32 @@ class TestComponentProxy:
         row_data = {"samplestate__value": 0}
         mutations = {}
         proxy = ComponentProxy(SampleState, row_data, mutations)
-        
+
         proxy.value = 100
-        
+
         assert mutations["samplestate__value"] == 100
 
     def test_setattr_serializes_list(self):
         row_data = {"samplestate__history_json": "[]"}
         mutations = {}
         proxy = ComponentProxy(SampleState, row_data, mutations)
-        
+
         proxy.history_json = [{"a": 1}]
-        
+
         assert mutations["samplestate__history_json"] == '[{"a": 1}]'
 
     def test_getattr_prefers_mutations(self):
         row_data = {"samplestate__value": 0}
         mutations = {"samplestate__value": 99}
         proxy = ComponentProxy(SampleState, row_data, mutations)
-        
+
         assert proxy.value == 99
 
     def test_getattr_raises_for_unknown_field(self):
         row_data = {}
         mutations = {}
         proxy = ComponentProxy(SampleState, row_data, mutations)
-        
+
         with pytest.raises(AttributeError, match="no field 'unknown'"):
             _ = proxy.unknown
 
@@ -123,7 +120,7 @@ class TestAgentProxy:
             component_classes=[SamplePerspective],
             world=None,
         )
-        
+
         assert proxy.sample_perspective.name == "Alice"
         assert proxy.sample_perspective.type == "objective"
 
@@ -139,10 +136,10 @@ class TestAgentProxy:
             component_classes=[SamplePerspective, SampleState],
             world=None,
         )
-        
+
         proxy.sample_state.value = 42
         proxy.sample_perspective.name = "Bob"
-        
+
         mutations = proxy.get_mutations()
         assert mutations["samplestate__value"] == 42
         assert mutations["sampleperspective__name"] == "Bob"
@@ -155,10 +152,10 @@ class TestAgentProxy:
             component_classes=[SampleState],
             world=None,
         )
-        
+
         proxy.sample_state.value = 100
         assert len(proxy.get_mutations()) == 1
-        
+
         proxy.clear_mutations()
         assert len(proxy.get_mutations()) == 0
 
@@ -175,10 +172,10 @@ class TestBehaviorDecorator:
             requires = [SamplePerspective, SampleState]
             priority = 5
             runs_on = "final_tick"
-            
+
             async def act(self, agent, world, tick):
                 pass
-        
+
         assert isinstance(MyBehavior, BehaviorSpec)
         assert MyBehavior.name == "MyBehavior"
         assert MyBehavior.requires == [SamplePerspective, SampleState]
@@ -190,7 +187,7 @@ class TestBehaviorDecorator:
         class MinimalBehavior:
             async def act(self, agent, world, tick):
                 pass
-        
+
         assert MinimalBehavior.requires == []
         assert MinimalBehavior.priority == 10
         assert MinimalBehavior.runs_on is None
@@ -217,7 +214,7 @@ class TestWorld:
                 SampleState(value=42),
             )
             await world.run(ticks=1)
-            
+
             assert len(world.agents) == 1
             agent = world.agents[0]
             assert agent.sample_perspective.name == "Alice"
@@ -229,7 +226,7 @@ class TestWorld:
             await world.spawn(SamplePerspective(name="Alice", type="a"))
             await world.spawn(SamplePerspective(name="Bob", type="b"))
             await world.run(ticks=1)
-            
+
             bob = await world.find_one(lambda a: a.sample_perspective.name == "Bob")
             assert bob is not None
             assert bob.sample_perspective.type == "b"
@@ -241,7 +238,7 @@ class TestWorld:
             await world.spawn(SamplePerspective(name="B", type="x"))
             await world.spawn(SamplePerspective(name="C", type="y"))
             await world.run(ticks=1)
-            
+
             x_agents = await world.find(lambda a: a.sample_perspective.type == "x")
             assert len(x_agents) == 2
 
@@ -257,10 +254,10 @@ class TestWorld:
                 Inbox(messages_json="[]"),
             )
             await world.run(ticks=1)
-            
+
             alice = await world.find_one(lambda a: a.sample_perspective.name == "Alice")
             await world.broadcast("Hello!", sender=alice, exclude=[alice])
-            
+
             # Check broker has pending messages
             pending = await world.broker.get_pending_count(world.name)
             assert pending == 1  # One message to Bob
@@ -277,14 +274,14 @@ class TestSpawnWorld:
         async with World("parent", storage=tmp_path / "parent") as parent:
             await parent.spawn(SamplePerspective(name="ParentAgent"))
             await parent.run(ticks=1)
-            
+
             async with spawn_world("child", parent=parent) as child:
                 await child.spawn(SamplePerspective(name="ChildAgent"))
                 await child.run(ticks=1)
-                
+
                 assert len(child.agents) == 1
                 assert child.agents[0].sample_perspective.name == "ChildAgent"
-            
+
             # Parent still has its agent
             assert len(parent.agents) == 1
             assert parent.agents[0].sample_perspective.name == "ParentAgent"
@@ -300,10 +297,10 @@ class TestSpawnWorld:
         async with World("parent", storage=tmp_path / "parent") as parent:
             await parent.spawn(SamplePerspective(name="Original", type="test"))
             await parent.run(ticks=1)
-            
+
             async with spawn_world("child", parent=parent, fork_state=True) as child:
                 await child.run(ticks=1)
-                
+
                 # Child should have copy of parent's agent
                 assert len(child.agents) == 1
                 assert child.agents[0].sample_perspective.name == "Original"
@@ -320,53 +317,53 @@ class TestBehaviorExecution:
         @behavior
         class Incrementer:
             requires = [SampleState]
-            
+
             async def act(self, agent, world, tick):
                 agent.sample_state.value = agent.sample_state.value + 10
-        
+
         async with World("test", storage=tmp_path / "data") as world:
             world.add_behavior(Incrementer)
             await world.spawn(SampleState(value=0))
             await world.run(ticks=3)
-            
+
             assert world.agents[0].sample_state.value == 30
 
     @pytest.mark.asyncio
     async def test_behavior_runs_on_final_tick(self, tmp_path):
         call_count = {"n": 0}
-        
+
         @behavior
         class FinalOnly:
             requires = [SampleState]
             runs_on = "final_tick"
-            
+
             async def act(self, agent, world, tick):
                 call_count["n"] += 1
-        
+
         async with World("test", storage=tmp_path / "data") as world:
             world.add_behavior(FinalOnly)
             await world.spawn(SampleState())
             await world.run(ticks=3)
-            
+
             assert call_count["n"] == 1
 
     @pytest.mark.asyncio
     async def test_behavior_filter(self, tmp_path):
         modified = []
-        
+
         @behavior
         class SelectiveModifier:
             requires = [SamplePerspective, SampleState]
             filter = lambda a: a.sample_perspective.type == "special"
-            
+
             async def act(self, agent, world, tick):
                 modified.append(agent.sample_perspective.name)
-        
+
         async with World("test", storage=tmp_path / "data") as world:
             world.add_behavior(SelectiveModifier)
             await world.spawn(SamplePerspective(name="A", type="normal"), SampleState())
             await world.spawn(SamplePerspective(name="B", type="special"), SampleState())
             await world.spawn(SamplePerspective(name="C", type="normal"), SampleState())
             await world.run(ticks=1)
-            
+
             assert modified == ["B"]

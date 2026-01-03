@@ -20,7 +20,7 @@ Usage:
     @behavior
     class Debater:
         requires = [Perspective, DebateState]
-        
+
         async def act(self, agent, world, tick):
             response = await world.prompt(...)
             agent.debate_state.history.append(response)
@@ -30,7 +30,7 @@ Usage:
         world.add_behavior(Debater)
         await world.spawn(Perspective(...), DebateState())
         await world.run(ticks=3)
-    
+
     # Inner simulation / MCTS
     async with spawn_world("scenario", parent=world) as inner:
         await inner.spawn(...)
@@ -39,20 +39,20 @@ Usage:
 """
 
 from archetype.dsl.core import (
-    World,
     AgentProxy,
-    behavior,
     BehaviorSpec,
-    spawn_world,
-    parallel_rollouts,
     RolloutResult,
+    World,
+    behavior,
+    parallel_rollouts,
+    spawn_world,
 )
-from archetype.dsl.primitives import broadcast, Inbox
+from archetype.dsl.primitives import Inbox, broadcast
 
 __all__ = [
     # Core
     "World",
-    "AgentProxy", 
+    "AgentProxy",
     "behavior",
     "BehaviorSpec",
     # Inner simulation / MCTS

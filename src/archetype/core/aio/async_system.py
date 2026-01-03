@@ -99,8 +99,7 @@ class AsyncSystem(iAsyncSystem):
                     if debug:
                         row_count = df.count_rows() if hasattr(df, "count_rows") else "?"
                         logger.debug(
-                            f"[archetype] processor_end: {proc_name} "
-                            f"(rows_out={row_count})"
+                            f"[archetype] processor_end: {proc_name} (rows_out={row_count})"
                         )
                 except Exception as e:
                     logger.error(

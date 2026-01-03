@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import daft
-from daft import col, DataType
+from daft import col
 
 from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
@@ -35,6 +35,7 @@ class Inbox(Component):
     Built-in component for receiving messages.
     Messages stored as JSON string for Arrow compatibility.
     """
+
     messages_json: str = "[]"
 
 
@@ -47,10 +48,10 @@ class Inbox(Component):
 class Broadcaster:
     """
     Daft class UDF that broadcasts messages via the CommandBroker.
-    
+
     This keeps the broadcast operation in the DAG, allowing Daft to
     optimize and batch the operations properly.
-    
+
     Usage in processor:
         broadcaster = Broadcaster(broker, world_name, all_agent_names, tick)
         df = df.with_column(
@@ -62,7 +63,7 @@ class Broadcaster:
             )
         )
     """
-    
+
     def __init__(
         self,
         broker: CommandBroker,
@@ -75,7 +76,7 @@ class Broadcaster:
         self.all_agent_names = all_agent_names
         self.tick = tick
         self._loop = None
-    
+
     def send(
         self,
         sender_id: int,
@@ -87,14 +88,14 @@ class Broadcaster:
         Returns "ok" on success for column result.
         """
         import asyncio
-        
+
         # Get or create event loop for async broker calls
         try:
             self._loop = asyncio.get_event_loop()
         except RuntimeError:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
-        
+
         # Send to all agents except sender
         for receiver_name in self.all_agent_names:
             if receiver_name != sender_name:
@@ -109,10 +110,8 @@ class Broadcaster:
                     },
                 )
                 # Run async enqueue in sync context
-                self._loop.run_until_complete(
-                    self.broker.enqueue(self.world_name, cmd)
-                )
-        
+                self._loop.run_until_complete(self.broker.enqueue(self.world_name, cmd))
+
         return "ok"
 
 
@@ -125,9 +124,9 @@ class Broadcaster:
 class MessageRealizer:
     """
     Daft class UDF that realizes MESSAGE commands into agent inboxes.
-    
+
     This runs early in the tick to populate inboxes before other processors.
-    
+
     Usage:
         realizer = MessageRealizer(messages_by_receiver)
         df = df.with_column(
@@ -135,10 +134,10 @@ class MessageRealizer:
             realizer.realize(col("entity_id"), col("inbox__messages_json"))
         )
     """
-    
+
     def __init__(self, messages_by_receiver: dict[int, list[dict]]):
         self.messages_by_receiver = messages_by_receiver
-    
+
     def realize(self, entity_id: int, current_json: str) -> str:
         """Add new messages to inbox, return updated JSON."""
         current = json.loads(current_json) if current_json else []
@@ -153,43 +152,43 @@ class MessageRealizer:
 
 async def broadcast(
     content: Any,
-    sender: "AgentProxy" = None,
+    sender: AgentProxy = None,
     metadata: dict[str, Any] = None,
-    exclude: list["AgentProxy"] = None,
-    world: "World" = None,
+    exclude: list[AgentProxy] = None,
+    world: World = None,
 ) -> None:
     """
     Broadcast a message to all other agents (async version for use in behaviors).
-    
+
     Note: For DataFrame operations, use the Broadcaster @daft.cls instead.
     This function is for imperative code in behavior.act() methods.
     """
     if world is None:
         raise ValueError("broadcast() requires world parameter")
-    
+
     if world.broker is None:
         raise ValueError("World has no broker configured")
-    
+
     all_agents = world.agents
     exclude_ids = {a.entity_id for a in (exclude or [])}
-    
+
     # Serialize content
-    if isinstance(content, (dict, list)):
+    if isinstance(content, dict | list):
         content_str = json.dumps(content)
     else:
         content_str = str(content)
-    
+
     # Get sender info
     sender_id = sender.entity_id if sender else None
     sender_name = _get_agent_name(sender) if sender else "unknown"
-    
+
     # Enqueue MESSAGE for each recipient
     for recipient in all_agents:
         if recipient.entity_id in exclude_ids:
             continue
-        
+
         recipient_name = _get_agent_name(recipient)
-        
+
         cmd = Command(
             type=CommandType.MESSAGE,
             payload={
@@ -201,11 +200,11 @@ async def broadcast(
                 **(metadata or {}),
             },
         )
-        
+
         await world.broker.enqueue(world.name, cmd)
 
 
-def _get_agent_name(agent: "AgentProxy") -> str:
+def _get_agent_name(agent: AgentProxy) -> str:
     """Extract name from agent proxy."""
     for attr in ["perspective", "agent_state", "identity", "profile"]:
         if hasattr(agent, attr):
@@ -228,7 +227,7 @@ def create_broadcaster(
 ) -> Broadcaster:
     """
     Create a Broadcaster instance for use in DataFrame operations.
-    
+
     Usage in processor:
         broadcaster = create_broadcaster(broker, "my_world", ["Alice", "Bob"], tick)
         df = df.with_column("_sent", broadcaster.send(
@@ -248,35 +247,36 @@ def create_broadcaster(
 @dataclass
 class MessageCollection:
     """Collection of messages with rendering helpers."""
+
     messages: list[dict] = field(default_factory=list)
-    
+
     def render(self, max_per_sender: int = 2) -> str:
         """Render messages as readable text for LLM context."""
         if not self.messages:
             return ""
-        
+
         lines = ["Recent messages:"]
         by_sender: dict[str, list[dict]] = {}
-        
+
         for msg in self.messages:
             sender = msg.get("sender_name", "unknown")
             by_sender.setdefault(sender, []).append(msg)
-        
+
         for sender, msgs in by_sender.items():
             for msg in msgs[-max_per_sender:]:
                 content = msg.get("content", "")[:200]
                 lines.append(f"- {sender}: {content}")
-        
+
         return "\n".join(lines)
-    
+
     def __len__(self) -> int:
         return len(self.messages)
-    
+
     def __iter__(self):
         return iter(self.messages)
 
 
-def inbox_recent(agent: "AgentProxy", limit: int = 10) -> MessageCollection:
+def inbox_recent(agent: AgentProxy, limit: int = 10) -> MessageCollection:
     """Get recent messages from an agent's inbox."""
     try:
         inbox = agent.inbox
@@ -295,7 +295,7 @@ def inbox_recent(agent: "AgentProxy", limit: int = 10) -> MessageCollection:
 def json_column(col_name: str) -> daft.Expression:
     """
     Deserialize a JSON string column to native type.
-    
+
     Usage:
         df.with_column("history_list", json_column("history_json"))
     """
@@ -305,7 +305,7 @@ def json_column(col_name: str) -> daft.Expression:
 def to_json_column(expr: daft.Expression) -> daft.Expression:
     """
     Serialize a column to JSON string.
-    
+
     Usage:
         df.with_column("history_json", to_json_column(col("history_list")))
     """

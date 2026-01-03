@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from archetype.core.component import Component
     from archetype.core.sync.processor import SyncProcessor
+    from archetype.core.sync.world import SyncWorld
 
 __version__ = "0.1.0"
 

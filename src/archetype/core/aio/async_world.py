@@ -14,9 +14,10 @@
 
 import asyncio
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from itertools import count
 from logging import getLogger
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import daft
 import pyarrow as pa

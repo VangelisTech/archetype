@@ -100,7 +100,10 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
-ignore = ["E501"]
+ignore = [
+    "E501",   # Line too long (handled by formatter)
+    "E731",   # Lambda assignment (used in DSL filter= pattern)
+]
 
 [tool.ruff.format]
 quote-style = "double"
