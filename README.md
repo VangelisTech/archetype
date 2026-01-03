@@ -16,6 +16,32 @@
 
 > **🤖 AI Agents:** Start with [AGENTS.md](./AGENTS.md) — it's written for you.
 
+<details>
+<summary><b>📜 A Note to Humans</b></summary>
+
+<br>
+
+!!! Special Note
+
+    Welcome to the future of AI engineering.
+
+    The DSL presented in this release is a nominal implementation from Claude 4.5 Opus. It represents the first time I genuinely ran my first multi-agent simulation on top of the columnar ECS engine I designed and built by hand. It has taken several years and hundreds of attempts to finally reach this stage. I wish I could say it was me that improved—undoubtedly I have... But really it's been the model's exponentially improving capacity to engineer and develop software that has truly enabled this project to finally be realized.
+
+    The codebase is built to be rewritten. With the exception of the core modules, you could re-write the entire DSL to your liking if you wanted. The decoupling patterns have been sufficiently scoped to support arbitrary experimentation both in the simulation and in the design of the DSL.
+
+    Build what you want.  
+    Build what brings you joy.  
+    Build what inspires you.
+
+    I know I have.  
+    And it's made all the difference...
+
+    — **Everett Kleven**  
+    *Founder of Vangelis Technologies*  
+    *Creator of Archetype*
+
+</details>
+
 ---
 
 ## What is Archetype?
@@ -187,6 +213,6 @@ Apache 2.0
 
 **Vangelis Technologies Inc.**
 
-*Building the future, one simulation at a time.*
+
 
 </div>
