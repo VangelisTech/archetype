@@ -7,46 +7,41 @@ SHELL := /bin/bash
 # ==============================================================================
 
 PYTHONPATH ?= src
+VERSION := $(shell grep -m1 'version = ' pyproject.toml | cut -d'"' -f2)
 
 .PHONY: help
 help:
-	@echo "Archetype Makefile"
+	@echo "Archetype Makefile (v$(VERSION))"
 	@echo ""
 	@echo "Setup:"
 	@echo "  make sync           Install runtime deps (uv)"
-	@echo "  make sync-dev       Install runtime + dev deps (uv --group dev)"
+	@echo "  make sync-dev       Install runtime + dev deps"
 	@echo ""
 	@echo "Quality:"
-	@echo "  make format         ruff format (src + tests)"
-	@echo "  make lint           ruff check (src + tests)"
-	@echo "  make lint-fix       ruff check --fix (src + tests)"
-	@echo "  make check          format + lint (src + tests)"
-	@echo "  make format-all     ruff format (everything)"
-	@echo "  make lint-all       ruff check (everything)"
+	@echo "  make format         Format code (ruff)"
+	@echo "  make lint           Lint code (ruff)"
+	@echo "  make lint-fix       Lint and auto-fix"
+	@echo "  make check          Format + lint"
 	@echo ""
 	@echo "Tests:"
-	@echo "  make test           pytest (fast; uses PYTHONPATH=$(PYTHONPATH))"
-	@echo "  make test-cov       pytest with coverage report"
+	@echo "  make test           Run tests (fast)"
+	@echo "  make test-cov       Run tests with coverage"
+	@echo "  make test-all       Run all tests verbose"
 	@echo ""
-	@echo "Pre-commit:"
-	@echo "  make precommit-install   install git hooks"
-	@echo "  make precommit-run       run hooks on all files"
+	@echo "Build & Release:"
+	@echo "  make build          Build sdist + wheel"
+	@echo "  make release-check  Full pre-release validation"
+	@echo "  make publish-test   Publish to TestPyPI"
+	@echo "  make publish        Publish to PyPI"
+	@echo "  make version        Show current version"
 	@echo ""
-	@echo "Packaging / release:"
-	@echo "  make lock-check     verify uv.lock matches pyproject"
-	@echo "  make build          build sdist+wheel (uv build)"
-	@echo "  make release-check  sync-dev + check + test + lock-check + build"
-	@echo ""
-	@echo "Docs (Mintlify):"
-	@echo "  make docs           build docs site (mint build)"
-	@echo "  make docs-serve     serve docs locally (mint dev)"
-	@echo "  make docs-test      check docs for broken links (mint broken-links)"
+	@echo "Docs:"
+	@echo "  make docs           Build docs (Mintlify)"
+	@echo "  make docs-serve     Serve docs locally"
 	@echo ""
 	@echo "Utilities:"
-	@echo "  make clean          remove build artifacts"
-	@echo "  make mcp            run MCP server (python -m archetype.mcp)"
-	@echo "  make example EX=... run an example (e.g. examples/grpo_text_end_to_end.py)"
-
+	@echo "  make clean          Remove build artifacts"
+	@echo "  make clean-all      Remove all generated files"
 
 # ------------------------------------------------------------------------------
 # Setup
@@ -59,7 +54,6 @@ sync:
 .PHONY: sync-dev
 sync-dev:
 	@uv sync --group dev
-
 
 # ------------------------------------------------------------------------------
 # Quality
@@ -77,17 +71,8 @@ lint:
 lint-fix:
 	@uv run ruff check src tests --fix
 
-.PHONY: format-all
-format-all:
-	@uv run ruff format .
-
-.PHONY: lint-all
-lint-all:
-	@uv run ruff check .
-
 .PHONY: check
 check: format lint
-
 
 # ------------------------------------------------------------------------------
 # Tests
@@ -99,12 +84,93 @@ test:
 
 .PHONY: test-cov
 test-cov:
-	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q --cov=src --cov-report=term-missing
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest \
+		--cov=archetype \
+		--cov-report=term-missing:skip-covered \
+		--cov-report=xml \
+		--cov-fail-under=70
 
+.PHONY: test-all
+test-all:
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 # ------------------------------------------------------------------------------
-# Pre-commit
+# Build & Release
 # ------------------------------------------------------------------------------
+
+.PHONY: version
+version:
+	@echo "$(VERSION)"
+
+.PHONY: lock-check
+lock-check:
+	@uv lock --check
+
+.PHONY: build
+build: clean
+	@echo "Building archetype v$(VERSION)..."
+	@uv build
+	@echo ""
+	@echo "Built:"
+	@ls -lh dist/
+
+.PHONY: release-check
+release-check: sync-dev check test-cov lock-check build
+	@echo ""
+	@echo "✅ Release check passed for v$(VERSION)"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  1. git tag v$(VERSION)"
+	@echo "  2. git push origin v$(VERSION)"
+	@echo "  3. make publish (or let CI handle it)"
+
+.PHONY: publish-test
+publish-test: build
+	@echo "Publishing to TestPyPI..."
+	@uv publish --publish-url https://test.pypi.org/legacy/
+
+.PHONY: publish
+publish: build
+	@echo "Publishing to PyPI..."
+	@uv publish
+
+# ------------------------------------------------------------------------------
+# Docs (Mintlify)
+# ------------------------------------------------------------------------------
+
+.PHONY: docs-check-runtime
+docs-check-runtime:
+	@if command -v bun >/dev/null 2>&1; then \
+		echo "Using Bun: $$(bun --version)"; \
+	elif command -v node >/dev/null 2>&1; then \
+		echo "Using Node: $$(node --version)"; \
+	else \
+		echo "Error: Node.js or Bun required for docs"; \
+		exit 1; \
+	fi
+
+.PHONY: docs
+docs: docs-check-runtime
+	@cd docs && npx --yes mintlify build
+
+.PHONY: docs-serve
+docs-serve: docs-check-runtime
+	@cd docs && npx --yes mintlify dev
+
+# ------------------------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------------------------
+
+.PHONY: clean
+clean:
+	@rm -rf dist build
+	@rm -rf src/*.egg-info src/*/*.egg-info
+	@find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+.PHONY: clean-all
+clean-all: clean
+	@rm -rf .pytest_cache .ruff_cache .coverage coverage.xml htmlcov
+	@rm -rf .venv
 
 .PHONY: precommit-install
 precommit-install:
@@ -113,99 +179,3 @@ precommit-install:
 .PHONY: precommit-run
 precommit-run:
 	@uv run pre-commit run --all-files
-
-
-# ------------------------------------------------------------------------------
-# Packaging / release
-# ------------------------------------------------------------------------------
-
-.PHONY: lock-check
-lock-check:
-	@uv lock --check
-
-.PHONY: build
-build:
-	@uv build
-
-.PHONY: release-check
-release-check: sync-dev check test lock-check build
-	@echo "OK: release-check passed"
-
-
-# ------------------------------------------------------------------------------
-# Utilities
-# ------------------------------------------------------------------------------
-
-.PHONY: docs-check-node
-docs-check-node:
-	@command -v node >/dev/null 2>&1 || ( \
-		echo "Error: Node.js is required for docs (unless using Bun)."; \
-		echo "Install Node ^18.17.0 or ^20.3.0 or >=21.0.0."; \
-		exit 1; \
-	)
-	@node -e ' \
-		const v = (process.versions && process.versions.node) ? process.versions.node : ""; \
-		if (!v) { \
-			console.error("Error: Unable to determine Node.js version."); \
-			console.error("Required: ^18.17.0 || ^20.3.0 || >=21.0.0"); \
-			process.exit(1); \
-		} \
-		const [maj, min, pat] = v.split(".").map((x) => parseInt(x, 10)); \
-		const ok = (maj === 18 && (min > 17 || (min === 17 && pat >= 0))) \
-			|| (maj === 20 && (min > 3 || (min === 3 && pat >= 0))) \
-			|| maj >= 21; \
-		if (!ok) { \
-			console.error(`Error: Node.js ${v} is not supported by Mintlify dependencies (sharp).`); \
-			console.error("Please upgrade to Node ^18.17.0 or ^20.3.0 or >=21.0.0."); \
-			process.exit(1); \
-		} \
-	'
-
-.PHONY: docs-check-runtime
-docs-check-runtime:
-	@if command -v bun >/dev/null 2>&1; then \
-		echo "Using Bun for docs: $$(bun --version)"; \
-	else \
-		$(MAKE) docs-check-node; \
-	fi
-
-.PHONY: docs
-.PHONY: docs
-docs: docs-check-runtime
-	@if command -v bun >/dev/null 2>&1; then \
-		cd docs && bunx mint build; \
-	else \
-		cd docs && npx --yes mint build; \
-	fi
-
-.PHONY: docs-serve
-.PHONY: docs-serve
-docs-serve: docs-check-runtime
-	@if command -v bun >/dev/null 2>&1; then \
-		cd docs && bunx mint dev; \
-	else \
-		cd docs && npx --yes mint dev; \
-	fi
-
-.PHONY: docs-test
-.PHONY: docs-test
-docs-test: docs-check-runtime
-	@if command -v bun >/dev/null 2>&1; then \
-		cd docs && bunx mint broken-links; \
-	else \
-		cd docs && npx --yes mint broken-links; \
-	fi
-
-.PHONY: clean
-clean:
-	@rm -rf dist build .pytest_cache .ruff_cache
-	@rm -rf src/*.egg-info src/*/*.egg-info
-
-.PHONY: mcp
-mcp:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m archetype.mcp
-
-.PHONY: example
-example:
-	@test -n "$(EX)" || (echo "Set EX=examples/<file>.py" && exit 1)
-	@PYTHONPATH=$(PYTHONPATH) uv run python "$(EX)"
