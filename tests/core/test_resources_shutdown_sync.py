@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager
 from archetype.core.config import StorageConfig
 
 
@@ -13,7 +13,7 @@ class FakeSyncStore:
 @pytest.mark.asyncio
 async def test_storage_manager_shutdown_calls_sync_shutdown(monkeypatch, tmp_path):
     """Shutdown should call sync shutdown() on stores that are not async."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 

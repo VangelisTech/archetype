@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager
 from archetype.core.aio import AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.storage import AsyncLancedbStore
@@ -9,7 +9,7 @@ from archetype.core.storage import AsyncLancedbStore
 @pytest.mark.asyncio
 async def test_storage_resource_manager_multiton_and_caching(tmp_path):
     """Ensure identical (uri, namespace) yield the same cached triplet."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         cfg1 = StorageConfig(uri=str(tmp_path / "store1"), namespace="ns")
         cfg2 = StorageConfig(uri=str(tmp_path / "store1"), namespace="ns")  # identical key
@@ -28,7 +28,7 @@ async def test_storage_resource_manager_multiton_and_caching(tmp_path):
 @pytest.mark.asyncio
 async def test_storage_resource_manager_cache_wrapper(tmp_path):
     """When a CacheConfig is provided, the store returned should be wrapped as an AsyncCachedStore."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         cache_cfg = CacheConfig(flush_rows=1, flush_mb=1, global_mb=1, idle_sec=1)
@@ -44,7 +44,7 @@ async def test_storage_resource_manager_cache_wrapper(tmp_path):
 @pytest.mark.asyncio
 async def test_backend_selection_between_default_and_lancedb(tmp_path):
     """Verify backend selection flips between default AsyncStore and AsyncLancedbStore based on StorageConfig.backend."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         cfg_default = StorageConfig(uri=str(tmp_path / "store_default"), namespace="ns_default")
         store_default, _, _ = await mgr.get_backend(cfg_default)
@@ -62,7 +62,7 @@ async def test_backend_selection_between_default_and_lancedb(tmp_path):
 @pytest.mark.asyncio
 async def test_multiton_concurrent_calls_return_same_instances(tmp_path):
     """Concurrent get_backend calls for the same key must return identical object instances (no duplicate creation)."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store_cc"), namespace="ns_cc")
 

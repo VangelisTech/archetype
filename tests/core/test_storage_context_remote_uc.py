@@ -1,4 +1,5 @@
 import pathlib
+import shutil
 
 from archetype.core.config import StorageConfig
 from archetype.core.runtime.storage import StorageContextFactory
@@ -11,15 +12,13 @@ def test_storage_context_remote_uri_uses_meta_dir(tmp_path, monkeypatch):
     # Ensure we start clean
     meta_dir = pathlib.Path(".archetype_meta")
     if meta_dir.exists():
-        for p in meta_dir.iterdir():
-            p.unlink()
-        meta_dir.rmdir()
+        shutil.rmtree(meta_dir)
 
     cfg = StorageConfig(uri=remote_uri, namespace="ns")
     ctx = StorageContextFactory.build(cfg)
     # Local meta dir created
     assert pathlib.Path(".archetype_meta").exists()
-    # Session/catal og initialized; namespace set
+    # Session/catalog initialized; namespace set
     assert ctx.namespace == "ns"
 
 

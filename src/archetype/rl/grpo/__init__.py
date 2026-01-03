@@ -1,15 +1,33 @@
 # Copyright 2025 Vangelis Technologies Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
 
-"""GRPO building blocks (rollouts + PyTorch training)."""
+"""
+GRPO (Group Relative Policy Optimization)
+=========================================
+
+Pure PyTorch implementation of the GRPO training step.
+Rollouts are handled by daft.functions.prompt with appropriate providers.
+
+Usage:
+    from archetype.rl.grpo import compute_grpo_loss, GrpoLossConfig
+    
+    loss, metrics = compute_grpo_loss(
+        new_token_logprobs=new_logprobs,
+        old_token_logprobs=old_logprobs,
+        advantages=advantages,
+        action_mask=mask,
+        cfg=GrpoLossConfig(clip_epsilon=0.2),
+    )
+"""
+
+from archetype.rl.grpo.pytorch_grpo import (
+    GrpoLossConfig,
+    compute_grpo_loss,
+    forward_logprobs_for_causal_lm,
+)
+
+__all__ = [
+    "GrpoLossConfig",
+    "compute_grpo_loss",
+    "forward_logprobs_for_causal_lm",
+]
