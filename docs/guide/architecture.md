@@ -1,72 +1,130 @@
 # Architecture
 
-Archetype is an ECS runtime where “state” is a columnar table, “behavior” is a DataFrame transform, and “time” is an append-only tick log.
+Archetype is structured in three layers: **DSL** → **App** → **Core**.
 
-## High-level mental model
+## Layer Overview
 
 ```
-Processors (pure transforms)
-    │
-    ▼
-System (priority-ordered)
-    │ execute(df, sig)
-    ▼
-World.step()
-  1) query previous tick
-  2) materialize spawns/dispawns
-  3) execute processors
-  4) persist tick output
-    │
-    ▼
-Store (LanceDB tables per archetype signature)
+┌─────────────────────────────────────────────────────┐
+│                  archetype.dsl                       │
+│                                                      │
+│  World           - Ergonomic context manager         │
+│  @behavior       - Decorator compiles to Processor   │
+│  spawn_world()   - Fork for MCTS/counterfactuals    │
+│  AgentProxy      - Natural attribute access          │
+└─────────────────────────────────────────────────────┘
+                         │ compiles to
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│                  archetype.app                       │
+│                                                      │
+│  CommandBroker      - Priority queue for commands    │
+│  WorldOrchestrator  - Multi-world lifecycle          │
+│  WorldFactory       - Storage-aware world creation   │
+│  StorageBackendManager - Lance/Iceberg backends      │
+└─────────────────────────────────────────────────────┘
+                         │ orchestrates
+                         ▼
+┌─────────────────────────────────────────────────────┐
+│                  archetype.core                      │
+│                                                      │
+│  AsyncWorld     - Tick loop, entity management       │
+│  AsyncSystem    - Processor execution                │
+│  AsyncProcessor - DataFrame transform interface      │
+│  Resources      - Type-safe DI container             │
+│  LanceDB Store  - Columnar persistence               │
+└─────────────────────────────────────────────────────┘
 ```
 
-## Code map (where things live)
+## Data Flow (One Tick)
 
-### Core ECS runtime
+```
+1. World.step() called
+       │
+2. Hooks: pre_tick callbacks
+       │
+3. CommandBroker: dequeue due commands
+       │
+4. System.execute():
+   ├─ Query latest state (DataFrame per archetype)
+   ├─ Run processors in priority order
+   └─ Each processor: df_in → df_out (pure transform)
+       │
+5. Updater: persist tick output to LanceDB
+       │
+6. Hooks: post_tick callbacks
+       │
+7. Return control
+```
 
-- `src/archetype/core/component.py`: component base class + schema prefixing
-- `src/archetype/core/archetype.py`: archetype signatures + unified Arrow schema + stable archetype naming
-- `src/archetype/core/interfaces.py`: protocol interfaces (sync + async)
+## Key Design Decisions
 
-### Sync runtime (simple scripting)
+### State as DataFrames
 
-- `src/archetype/core/sync/world.py`: `SyncWorld` tick loop
-- `src/archetype/core/sync/system.py`: processor execution / priority ordering
+Entity state is stored in columnar tables (LanceDB/Arrow). Each **archetype** (unique set of components) has its own table with schema:
 
-### Async runtime (parallel rollouts)
+```
+world_id | run_id | entity_id | tick | is_active | component__field | ...
+```
 
-- `src/archetype/core/aio/async_world.py`: `AsyncWorld` tick loop (parallel-by-archetype) + live snapshot reads
-- `src/archetype/core/aio/async_system.py`: async processor execution
+This enables:
+- Vectorized transforms (Daft)
+- Time-travel queries ("state at tick N")
+- Efficient bulk operations
 
-### Storage
+### Behaviors Compile to Processors
 
-- `src/archetype/core/runtime/storage.py`: `StorageContextFactory` (local vs remote object store + Iceberg catalog init)
-- `src/archetype/core/storage/lancedb.py`: LanceDB-backed store (async) + index creation
+The `@behavior` decorator creates a `BehaviorSpec` that compiles to an `AsyncProcessor` at registration time. The DSL handles:
+- Wrapping row-wise logic in DataFrame transforms
+- JSON serialization for complex types
+- Mutation tracking and batching
 
-### Application layer (multi-world orchestration)
+### Resources for Shared State
 
-- `src/archetype/app/orchestrator.py`: `WorldOrchestrator` (create/run/shutdown many worlds)
-- `src/archetype/app/container.py`: `ServiceContainer` wiring
-- `src/archetype/app/episodes/episode.py`: `Episode` wrapper for trajectory collection
+The `Resources` container provides type-safe dependency injection for world-level services:
 
-### RL + dataflow training primitives
+```python
+# Register
+world.resources.register(CommandBroker, broker)
 
-- `src/archetype/rl/grpo/pipeline.py`: Daft-native rollouts → rewards → group-relative advantages
-- `src/archetype/rl/grpo/rollout_transformers.py`: CPU-friendly rollout engine (artifact contract)
-- `src/archetype/rl/grpo/rollout_vllm.py`: vLLM rollout engine (artifact contract)
-- `src/archetype/rl/grpo/train_udf.py`: “weights as data” PyTorch trainer UDF
+# Retrieve
+broker = world.resources.get(CommandBroker)
+```
 
-### MCP server
+### Hooks for Extensibility
 
-- `src/archetype/mcp/server.py`: MCP tool surface (world lifecycle + command submission)
+Lifecycle hooks allow external code to observe or modify behavior:
 
-## The storage/time-travel idea
+```python
+world.hooks.add_pre_tick(lambda w, t: print(f"Starting tick {t}"))
+world.hooks.add_post_tick(lambda w, t: save_checkpoint(w))
+```
 
-Each archetype signature corresponds to a physical table. Each tick appends a new “state row” per active entity with:
+## File Map
 
-- `(world_id, run_id, tick, entity_id)`
-- component fields (prefixed)
-- `is_active` (soft delete)
-
-That gives you replay/debuggability: “what did the world look like at tick N?” becomes a query, not a reconstruction.
+```
+src/archetype/
+├── __init__.py          # Re-exports Component, etc.
+├── core/
+│   ├── component.py     # Component base class
+│   ├── archetype.py     # Archetype signatures
+│   ├── resources.py     # DI container
+│   ├── config.py        # Configuration
+│   ├── aio/             # Async runtime
+│   │   ├── async_world.py
+│   │   ├── async_system.py
+│   │   └── async_processor.py
+│   ├── sync/            # Sync runtime
+│   │   ├── world.py
+│   │   └── system.py
+│   └── storage/
+│       └── lancedb.py   # LanceDB store
+├── app/
+│   ├── broker.py        # CommandBroker
+│   ├── orchestrator.py  # WorldOrchestrator
+│   ├── factory.py       # WorldFactory
+│   └── models.py        # Command, CommandType
+└── dsl/
+    ├── core.py          # World, @behavior, spawn_world
+    └── primitives.py    # Inbox, broadcast
+```

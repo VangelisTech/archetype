@@ -1,63 +1,92 @@
 # Glossary
 
-## Archetype
+## Core Concepts
 
-In Archetype (the engine), an **archetype** is the set of component types attached to an entity. It maps to a physical table with a unified schema.
+### Component
+A typed data record (Pydantic model) that defines a schema for entity state. Components are stored with prefixed column names (e.g., `position__x`).
 
-## Component
+### Entity
+A unique identifier (`entity_id: UUID`) that groups components together. Entities don't store data directly—they reference rows in archetype tables.
 
-A **component** is a typed record (Pydantic + LanceModel) that defines a schema fragment. Stored columns are prefixed by component name (e.g. `position__x`).
+### Archetype
+The unique set of component types attached to an entity. Entities with identical archetypes share a physical table. Example: `(Position, Velocity)` is one archetype, `(Position, Velocity, Health)` is another.
 
-## Entity
+### Processor
+A pure function that transforms a DataFrame of entities. Processors declare required components and execution priority.
 
-An **entity** is an ID (`entity_id`) whose state is represented by the components attached to it.
+### System
+An ordered collection of processors. Executes processors in priority order each tick.
 
-## Processor
+### World
+The container for a simulation. Owns entity namespace, tick counter, and archetype tables.
 
-A **processor** is a pure transformation: `DataFrame -> DataFrame`. It declares which components it requires and runs inside a system.
+### Tick
+One step of the simulation. Each tick: query state → run processors → persist output.
 
-## System
+### Run
+A sequence of ticks grouped by `run_id`. Useful for organizing experiments.
 
-A **system** is a priority-ordered collection of processors. Each tick, the system runs processors that match an archetype signature.
+## DSL Concepts
 
-## World
+### @behavior
+Decorator that defines agent behavior. Compiles to a Processor at registration time.
 
-A **world** is the unit of simulation execution. It owns:
+### AgentProxy
+Wrapper providing natural attribute access to an entity's components. Tracks mutations for batching.
 
-- entity IDs + entity → archetype mapping
-- the tick counter
-- the system (processors)
-- the querier/updater (storage I/O)
+### ComponentProxy
+Handles attribute access for a single component within an AgentProxy.
 
-## Tick
+### spawn_world()
+Async context manager that creates a child world, optionally forking state from parent. Used for MCTS and counterfactual reasoning.
 
-A **tick** is one simulation step. Each tick produces new state rows and persists them (append-only).
+### broadcast()
+Send a message to all entities with an Inbox component.
 
-## Run ID
+## Infrastructure
 
-A **run_id** groups ticks into a run (a contiguous sequence of ticks) and enables time-travel queries across runs.
+### CommandBroker
+Priority queue for commands (spawn, despawn, message). Commands are processed at tick boundaries.
 
-## Live snapshot
+### WorldOrchestrator
+Manages lifecycle of multiple worlds. Handles creation, execution, and shutdown.
 
-The **live snapshot** is an in-memory cache of the most recent DataFrame per archetype signature. It enables fast reads without hitting storage (when enabled).
+### WorldFactory
+Creates worlds with proper storage configuration.
 
-## Time travel
+### StorageBackendManager
+Manages storage backend instances (LanceDB, Iceberg).
 
-“Time travel” means you can query historic state by `(world_id, run_id, tick)` — because state is stored append-only per tick.
+### Resources
+Type-safe dependency injection container for world-level services.
 
-## GRPO
+### Hooks
+Lifecycle callbacks: `pre_tick`, `post_tick`. Allow external code to observe or modify behavior.
 
-**Group Relative Policy Optimization**: an RL method where you sample K completions per prompt, score them, and compute group-relative advantages.
+## Storage
 
-## Rollout artifact contract
+### LanceDB
+Columnar database optimized for vector similarity search and append-heavy workloads.
 
-For RL correctness, rollouts must provide:
+### Iceberg
+Open table format for data lakes. Provides ACID transactions and schema evolution.
 
-- exact generated token IDs
-- per-token logprobs under the behavior policy
+### AsyncCachedStore
+Caching layer that keeps recent ticks in memory.
 
-This avoids retokenization drift between inference and training.
+### StorageContext
+Configuration for storage backends (local path, S3 URI, catalog settings).
 
-## Weights as data
+## Patterns
 
-“Weights as data” is the pattern where training steps **write** new checkpoints and pass the path forward (rather than trying to “return weights” from a distributed UDF).
+### Time Travel
+Query historical state at any tick. Enabled by append-only storage model.
+
+### Fork
+Create a branch of simulation from current or historical state.
+
+### MCTS (Monte Carlo Tree Search)
+Search algorithm using `spawn_world()` to simulate possible futures and select best action.
+
+### Counterfactual Reasoning
+"What if" analysis by forking simulation and exploring alternative scenarios.

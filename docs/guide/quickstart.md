@@ -1,85 +1,127 @@
 # Quickstart
 
-Archetype is a data-centric ECS simulation runtime built on Daft. You write **processors** as DataFrame transforms and Archetype handles storage, ticks, and orchestration.
+Archetype is a data-centric ECS simulation runtime built on Daft DataFrames.
 
 ## Install
 
-Archetype targets **Python 3.12**.
-
 ```bash
+# From PyPI (when released)
+pip install archetype
+
+# From source
+git clone https://github.com/vangelis-tech/archetype.git
 cd archetype
-
-# Recommended (matches repo tooling)
 uv sync
-
-# Or: editable install
-python -m pip install -e .
 ```
 
-## Your first world (sync)
+## Hello World with the DSL
 
-This uses `archetype.init()` which builds a simple, synchronous simulation wrapper.
-
-```python
-import archetype
-from archetype import Component, Processor
-from daft import DataFrame, col
-
-
-class Position(Component):
-    x: float
-    y: float
-
-
-class Velocity(Component):
-    vx: float
-    vy: float
-
-
-class Movement(Processor):
-    components = (Position, Velocity)
-    priority = 1
-
-    def process(self, df: DataFrame, dt: float = 0.1) -> DataFrame:
-        return df.with_columns(
-            {
-                "position__x": col("position__x") + col("velocity__vx") * dt,
-                "position__y": col("position__y") + col("velocity__vy") * dt,
-            }
-        )
-
-
-sim = archetype.init("./archetype_data")
-world_id = sim.spawn_world("physics")
-sim.add_processor_to_world(world_id, Movement())
-sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=1, vy=1))
-sim.step_world(world_id, dt=0.1)
-```
-
-## Async worlds (parallel rollouts)
-
-For high-throughput rollouts, use the application layer and `AsyncWorld`.
+The simplest way to use Archetype is through the DSL layer:
 
 ```python
 import asyncio
-from archetype.app import ArchetypeApp
+from archetype import Component
+from archetype.dsl import World, behavior
 
+# Define components (state schema)
+class Greeter(Component):
+    name: str = ""
+    message: str = ""
 
-async def main() -> None:
-    app = await ArchetypeApp.create(storage_uri="./archetype_data")
-    world = await app.create_world("rollouts")
-    await app.run_world(world.world_id, steps=10)
-    await app.shutdown()
+# Define behavior (pure transform)
+@behavior(Greeter)
+async def greet(agent, ctx):
+    agent.greeter.message = f"Hello from {agent.greeter.name}! (tick {ctx.tick})"
 
+async def main():
+    async with World("hello") as world:
+        world.register(greet)
+        
+        # Spawn agents
+        await world.spawn(Greeter(name="Alice"))
+        await world.spawn(Greeter(name="Bob"))
+        
+        # Run simulation
+        await world.step()
+        
+        # Query results
+        for agent in world.find(Greeter):
+            print(agent.greeter.message)
 
 asyncio.run(main())
 ```
 
-## Run a known-good example
-
-Text-only GRPO end-to-end smoke test:
-
-```bash
-cd archetype
-PYTHONPATH=src uv run python examples/grpo_text_end_to_end.py
+Output:
 ```
+Hello from Alice! (tick 1)
+Hello from Bob! (tick 1)
+```
+
+## LLM-Powered Agents
+
+Using `daft.functions.prompt` for AI-driven behavior:
+
+```python
+import daft
+from archetype import Component
+from archetype.dsl import World, behavior
+
+class Debater(Component):
+    perspective: str = ""
+    argument: str = ""
+    history_json: str = "[]"
+
+@behavior(Debater)
+async def debate(agent, ctx):
+    # Build prompt from state
+    prompt = f"""You are debating from the {agent.debater.perspective} perspective.
+    Previous arguments: {agent.debater.history_json}
+    Provide your next argument in 2-3 sentences."""
+    
+    # LLM call happens in Daft's vectorized prompt function
+    # (actual implementation uses df.with_column + daft.functions.prompt)
+    agent.debater.argument = prompt  # Simplified for example
+
+async def main():
+    async with World("debate") as world:
+        world.register(debate)
+        await world.spawn(Debater(perspective="optimist"))
+        await world.spawn(Debater(perspective="pessimist"))
+        
+        for tick in range(3):
+            await world.step()
+
+asyncio.run(main())
+```
+
+## Inner Simulations (MCTS)
+
+Fork worlds for counterfactual reasoning:
+
+```python
+from archetype.dsl import World, behavior, spawn_world
+
+@behavior(Agent)
+async def think(agent, ctx):
+    # Fork the world to explore possibilities
+    async with spawn_world(ctx.world, fork_state=True) as inner:
+        inner.register(simple_behavior)
+        
+        # Run hypothetical scenarios
+        for _ in range(5):
+            await inner.step()
+        
+        # Evaluate outcome
+        results = list(inner.find(Agent))
+        best_score = max(a.state.score for a in results)
+    
+    # Use insight in outer world
+    agent.state.decision = f"Best possible score: {best_score}"
+```
+
+## Next Steps
+
+- [Architecture](./architecture.md) - How the layers fit together
+- [Core Concepts](./core-concepts.md) - ECS fundamentals
+- [DSL Guide](./dsl.md) - Full DSL reference
+- [Storage](./storage.md) - Persistence and time-travel
