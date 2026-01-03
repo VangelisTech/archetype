@@ -66,6 +66,8 @@ branch = true
 source = ["archetype"]
 omit = [
     "tests/*",
+    # Re-export stubs
+    "src/archetype/core/storage/storage.py",
 ]
 disable_warnings = [
     "module-not-measured",

@@ -281,7 +281,11 @@ def inbox_recent(agent: AgentProxy, limit: int = 10) -> MessageCollection:
     try:
         inbox = agent.inbox
         messages_json = inbox.messages_json
-        messages = json.loads(messages_json) if messages_json else []
+        # Handle both string and already-deserialized list
+        if isinstance(messages_json, str):
+            messages = json.loads(messages_json) if messages_json else []
+        else:
+            messages = messages_json if messages_json else []
         return MessageCollection(messages=messages[-limit:])
     except (AttributeError, json.JSONDecodeError):
         return MessageCollection()
