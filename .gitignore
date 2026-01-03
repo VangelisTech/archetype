@@ -3,6 +3,8 @@ build/
 *.egg-info/
 __pycache__/
 .venv/
+.mintlify/
+node_modules/
 .bench_out/
 ./ref
 ./.venv
@@ -60,5 +62,7 @@ data/archetypes.db/
 data/catalog.db
 .archetype_examples/
 .archetype_benchmarks/
+.archetype_meta/
 .pytest_cache/
 archetype.egg-info/
+coverage.xml

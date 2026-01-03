@@ -13,7 +13,11 @@
 # limitations under the License.
 
 from .lancedb import AsyncLancedbStore
+from .managed import CatalogEntry, ManagedStorage, SyncManagedStorage
 
 __all__ = [
     "AsyncLancedbStore",
+    "ManagedStorage",
+    "SyncManagedStorage",
+    "CatalogEntry",
 ]

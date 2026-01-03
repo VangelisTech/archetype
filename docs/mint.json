@@ -1,0 +1,53 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "navigation": [
+    {
+      "group": "Guides",
+      "pages": [
+        "index",
+        "guide/quickstart",
+        "guide/architecture",
+        "guide/core-concepts",
+        "guide/storage",
+        "guide/episodes",
+        "guide/grpo",
+        "guide/mcp",
+        "guide/datasets",
+        "guide/glossary"
+      ]
+    },
+    {
+      "group": "Design notes",
+      "pages": [
+        "ooda-agent-architecture",
+        "weights-as-data-discovery",
+        "rl-architecture-decisions",
+        "simulation_scripting",
+        "rl-remediation-plan",
+        "rl-v2-testing-plan",
+        "daft-model-weights-file-proposal"
+      ]
+    },
+    {
+      "group": "Design (historical / WIP)",
+      "pages": [
+        "design/00_ACCEPTANCE_CRITERIA",
+        "design/01_SECURITY_AND_AUTH",
+        "design/02_OBSERVABILITY",
+        "design/03_BROKER_ARCHITECTURE",
+        "design/04_API_AND_AGENTS",
+        "design/05_LLM_INTEGRATION",
+        "design/06_DRY_RUN_VALIDATION",
+        "design/07_VISUALIZATION_ENTRY_POINTS",
+        "design/08_CMD_Flow_Architecture",
+        "design/09_Execution_Runtime",
+        "design/10_LLM_UDF_Integration",
+        "design/11_Folder_Structure",
+        "design/benchmarks",
+        "design/MCTS_DECISION",
+        "design/MCTS",
+        "design/o3"
+      ]
+    }
+  ]
+}
