@@ -7,21 +7,21 @@
 <i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
 
 [![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen)](tests/)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 </div>
 
 ---
 
-> **🤖 AI Agents:** Start with [AGENTS.md](./AGENTS.md) — it's written for you.
+> **AI Agents:** Start with [AGENTS.md](./AGENTS.md) — it's written for you.
 
 <details>
-<summary><b>📜 A Note to Humans</b></summary>
+<summary><b>Special Note for Humans</b></summary>
 
 <br>
 
-!!! Special Note
+
 
     Welcome to the future of AI engineering.
 
@@ -58,27 +58,9 @@ This gives you:
 - **MCTS & counterfactuals** — `spawn_world()` for inner simulations
 - **Self-improving systems** — Use Archetype to evaluate Archetype
 
-## The Vision
+## Core Engine Diagram
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Agent Harness                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │   Eval      │  │   Bench     │  │   Improve   │         │
-│  │   Agents    │  │   Agents    │  │   Agents    │         │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
-│         └────────────────┼────────────────┘                 │
-│                          ▼                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                  Archetype Engine                    │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
-│  │  │   DSL   │  │   App   │  │  Core   │ ← Rust soon │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**AI agents using Archetype to simulate, evaluate, and improve the very system they run on.**
+![archetype diagram](assets/archetype_diagram2.png)
 
 ## Quick Start
 
@@ -185,7 +167,7 @@ uv sync
 pip install -e .
 ```
 
-**Python 3.11+** required.
+**Python 3.12+** required.
 
 ## Documentation
 
