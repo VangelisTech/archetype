@@ -30,7 +30,6 @@ node_modules/
 .cursorignore
 *.lance
 Claude.md
-Agents.md
 .claude/
 data/
 

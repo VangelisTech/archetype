@@ -2,6 +2,26 @@
 
 *Documented from sessions with Everett, December 2024 – January 2025*
 
+> **For AI Agents:** This document contains hard-won architectural knowledge. Read it before proposing changes to core patterns.
+
+---
+
+## The Meta-Goal (Jan 2025)
+
+Archetype has a recursive purpose:
+
+> **Use Archetype to build the harness that evaluates and improves Archetype.**
+
+The `spawn_world()` primitive enables:
+1. **Benchmarking** — Thousands of simulation scenarios in parallel
+2. **Evaluation** — Compare behavioral outcomes across configurations
+3. **Self-improvement** — Agents proposing and testing architectural changes
+
+The `core/` module is human-curated, but everything else is fair game for agent contribution. The plan:
+- **Now:** Python core, optimized for iteration
+- **Next:** Rust rewrite for production performance
+- **Future:** Agents continuously improving the system
+
 ---
 
 ## Core Insight: DataFrames ARE the Batch

@@ -2,140 +2,188 @@
 
 # Archetype
 
-Data-centric simulation engine for scalable agent worlds.
+**AI-native simulation engine for emergent composite AI systems.**
 
-<i>Powered by Daft (dataframes/compute) + LanceDB (storage) + PyTorch (training).</i>
+<i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
+
+[![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen)](tests/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
 </div>
 
-![Archetype Diagram](./assets/archetype_diagram2.png)
+---
 
-Archetype is an **AI-native simulation engine**: an ECS runtime where *world state is a columnar table* (Daft DataFrames / Arrow) and each tick is an append-only write to storage (LanceDB). This gives you:
+> **🤖 AI Agents:** Start with [AGENTS.md](./AGENTS.md) — it's written for you.
 
-- **Simulation as data**: processors are pure DataFrame transforms (lazy until execution)
-- **Time-travel state**: query any `tick`/`run_id`/`world_id`
-- **Parallel worlds and episodes**: async execution primitives for rollouts
-- **RL-friendly artifact contracts**: rollouts emit token IDs + per-token logprobs (no retokenization)
-- **“Weights as data”**: training steps write new checkpoints and pass paths forward
+---
 
-If you want the shortest path to “does this work?”, run the end-to-end GRPO example: `examples/grpo_text_end_to_end.py`.
+## What is Archetype?
+
+Archetype is a **data-centric Entity-Component-System (ECS) runtime** where:
+- World state is **columnar tables** (Daft DataFrames / Arrow)
+- Each tick is an **append-only write** to storage (LanceDB)
+- Agent behaviors are **pure DataFrame transforms**
+
+This gives you:
+
+- **Simulation as data** — Query any tick, replay any run
+- **Time-travel state** — Fork worlds, branch futures, compare outcomes
+- **MCTS & counterfactuals** — `spawn_world()` for inner simulations
+- **Self-improving systems** — Use Archetype to evaluate Archetype
+
+## The Vision
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Agent Harness                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │   Eval      │  │   Bench     │  │   Improve   │         │
+│  │   Agents    │  │   Agents    │  │   Agents    │         │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
+│         └────────────────┼────────────────┘                 │
+│                          ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                  Archetype Engine                    │   │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
+│  │  │   DSL   │  │   App   │  │  Core   │ ← Rust soon │   │
+│  │  └─────────┘  └─────────┘  └─────────┘             │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+The dream: **AI agents using Archetype to simulate, evaluate, and improve the very system they run on.**
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/vangelis-tech/archetype.git
+cd archetype
+uv sync
+
+# Run the flagship demo (4 agents + inner simulation)
+uv run python examples/debate_mcts.py
+```
+
+## Minimal Example
+
+```python
+from archetype import Component
+from archetype.dsl import World, behavior
+
+class Agent(Component):
+    name: str = ""
+    energy: int = 100
+
+@behavior
+class Think:
+    requires = [Agent]
+    
+    async def act(self, agent, world, tick):
+        agent.agent.energy = agent.agent.energy + 10
+
+async with World("simulation") as world:
+    world.add_behavior(Think)
+    await world.spawn(Agent(name="Explorer"))
+    await world.run(ticks=10)
+    
+    print(world.agents[0].agent.energy)  # 200
+```
+
+## spawn_world() — The Core Primitive
+
+Fork worlds for MCTS, counterfactual reasoning, and self-evaluation:
+
+```python
+from archetype.dsl import spawn_world
+
+@behavior
+class Planner:
+    requires = [Agent]
+    
+    async def act(self, agent, world, tick):
+        best = None
+        for scenario in ["A", "B", "C"]:
+            async with spawn_world(scenario, parent=world, fork_state=True) as inner:
+                await inner.run(ticks=5)
+                score = evaluate(inner)
+                if not best or score > best:
+                    best = scenario
+        
+        agent.agent.decision = best
+```
+
+## Architecture
+
+```
+archetype/
+├── src/archetype/
+│   ├── core/     # 🔒 Human-curated ECS engine (Rust rewrite planned)
+│   ├── app/      # Infrastructure (CommandBroker, WorldOrchestrator)  
+│   └── dsl/      # Agent DSL (World, @behavior, spawn_world)
+├── tests/        # 165 tests
+├── docs/         # Agent-friendly documentation
+├── AGENTS.md     # Start here if you're an AI
+└── LEARNINGS.md  # Hard-won architectural knowledge
+```
+
+## For AI Agents
+
+This repository is **AI-native**. It was built for AI agents to:
+
+1. **Rapidly prototype** emergent multi-agent systems
+2. **Use spawn_world()** for reasoning and self-improvement
+3. **Contribute** to the codebase as collaborators
+
+Read [AGENTS.md](./AGENTS.md) for orientation.
+
+## For Humans
+
+The `core/` module is the one part of this codebase carefully curated by a single human. It represents years of iteration on ECS patterns and DataFrame-centric simulation. The plan:
+
+1. **Now:** Python core, optimized for iteration speed
+2. **Next:** Rust rewrite for production performance
+3. **Future:** Agents using Archetype to improve Archetype
 
 ## Install
 
-Archetype targets **Python 3.12**.
-
-From this repo:
-
 ```bash
-cd archetype
-
-# Option A: uv (recommended; matches repo tooling)
+# Recommended (matches repo tooling)
 uv sync
 
-# Option B: pip (editable)
-python -m pip install -e .
+# Or pip
+pip install -e .
 ```
 
-Optional extras:
+**Python 3.11+** required.
 
-- `pip install -e ".[inference]"` for vLLM rollouts
-- `pip install -e ".[dev]"` for tests/lint tooling
+## Documentation
 
-## Quick start (sync world)
+| Doc | Purpose |
+|-----|---------|
+| [AGENTS.md](./AGENTS.md) | AI agent orientation |
+| [LEARNINGS.md](./LEARNINGS.md) | Architectural knowledge |
+| [docs/](./docs/) | Full documentation |
+| [examples/](./examples/) | Working examples |
 
-The sync API is the quickest way to prototype processors:
-
-```python
-import archetype
-from archetype import Component, Processor
-from daft import DataFrame, col
-
-
-class Position(Component):
-    x: float
-    y: float
-
-
-class Velocity(Component):
-    vx: float
-    vy: float
-
-
-class Movement(Processor):
-    components = (Position, Velocity)
-    priority = 1
-
-    def process(self, df: DataFrame, dt: float = 0.1) -> DataFrame:
-        return df.with_columns(
-            {
-                "position__x": col("position__x") + col("velocity__vx") * dt,
-                "position__y": col("position__y") + col("velocity__vy") * dt,
-            }
-        )
-
-
-sim = archetype.init("./archetype_data")
-world_id = sim.spawn_world("physics")
-sim.add_processor_to_world(world_id, Movement())
-sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=1, vy=1))
-sim.step_world(world_id, dt=0.1)
-```
-
-## Quick start (async, multi-world)
-
-For parallel rollouts, use the application layer:
-
-```python
-import asyncio
-from archetype.app import ArchetypeApp
-
-
-async def main() -> None:
-    app = await ArchetypeApp.create(storage_uri="./archetype_data")
-    world = await app.create_world("rollouts")
-    await app.run_world(world.world_id, steps=10)
-    await app.shutdown()
-
-
-asyncio.run(main())
-```
-
-## RL: GRPO building blocks (rollouts + training)
-
-Archetype includes a small, explicit GRPO toolkit under `archetype.rl.grpo`:
-
-- **Rollouts**: `rollout_transformers.py` (CPU-friendly dev) and `rollout_vllm.py` (fast inference)
-- **Pipeline glue**: `pipeline.py` builds a Daft DataFrame with GRPO artifacts
-- **Training**: `train_udf.py` is a “weights as data” trainer UDF; `pytorch_grpo.py` contains loss helpers
-
-Run the end-to-end demo:
+## Tests
 
 ```bash
-cd archetype
-PYTHONPATH=src uv run python examples/grpo_text_end_to_end.py
+uv run pytest tests/ -v              # All 165 tests
+uv run pytest tests/integration/ -v  # Full-stack integration
 ```
 
-## Datasets: image understanding curation
+## License
 
-There’s an Archetype-native dataset job that curates less-biased VLM multiple-choice samples via ablations + structured judges:
+Apache 2.0
 
-```bash
-cd archetype
-PYTHONPATH=src uv run python examples/build_image_understanding_dataset.py --limit 50
-```
+---
 
-## MCP server (agent-native simulation control plane)
+<div align="center">
 
-Archetype exposes world management via MCP:
+**Vangelis Technologies Inc.**
 
-```bash
-cd archetype
-python -m archetype.mcp
-```
+*Building the future, one simulation at a time.*
 
-## Docs
-
-- Start here: `docs/README.md`
-- Architecture overview: `docs/guide/architecture.md`
-- Glossary: `docs/guide/glossary.md`
-- Design notes (historical): `docs/design/`
+</div>
