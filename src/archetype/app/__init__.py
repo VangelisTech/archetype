@@ -83,7 +83,14 @@ from archetype.app.runtime import (
     WorldFactory,
     WorldOrchestrator,
 )
-from archetype.app.services import CommandService, SimulationService, WorldService
+from archetype.app.services import (
+    CatalogEntry,
+    CommandService,
+    ManagedStorage,
+    SimulationService,
+    SyncManagedStorage,
+    WorldService,
+)
 
 # Core config (re-export for convenience)
 from archetype.core import CacheConfig, RunConfig, StorageConfig, WorldConfig
@@ -234,6 +241,9 @@ __all__ = [
     "SimulationService",
     "CommandService",
     "WorldService",
+    "ManagedStorage",
+    "SyncManagedStorage",
+    "CatalogEntry",
     # Runtime
     "WorldOrchestrator",
     "WorldFactory",

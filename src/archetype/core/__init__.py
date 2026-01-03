@@ -38,7 +38,7 @@ from .component import Component
 from .config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from .interfaces import ArchetypeSignature
 from .resources import Resources
-from .storage import AsyncLancedbStore, CatalogEntry, ManagedStorage, SyncManagedStorage
+from .storage import AsyncLancedbStore
 
 # Sync Module
 from .sync import (
@@ -78,7 +78,4 @@ __all__ = [
     "AsyncProcessor",
     # Storage backends
     "AsyncLancedbStore",
-    "ManagedStorage",
-    "SyncManagedStorage",
-    "CatalogEntry",
 ]

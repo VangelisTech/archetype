@@ -21,10 +21,10 @@ This is the single entry point for accessing services.
 """
 
 from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
 from archetype.app.orchestrator import WorldOrchestrator
-from archetype.app.simulation_service import SimulationService
-from archetype.app.world_service import WorldService
+from archetype.app.services.command import CommandService
+from archetype.app.services.simulation import SimulationService
+from archetype.app.services.world import WorldService
 from archetype.core.config import CacheConfig, StorageConfig
 
 

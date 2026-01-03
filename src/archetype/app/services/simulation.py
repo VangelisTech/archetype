@@ -28,7 +28,7 @@ from typing import Any
 from uuid_utils import UUID
 
 from archetype.app.orchestrator import WorldOrchestrator
-from archetype.app.world_service import WorldService
+from archetype.app.services.world import WorldService
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import (
     CacheConfig,
