@@ -61,6 +61,25 @@ pythonpath = [
 ]
 asyncio_default_fixture_loop_scope = "function"
 
+[tool.coverage.run]
+branch = true
+source = ["archetype"]
+omit = [
+    "tests/*",
+]
+disable_warnings = [
+    "module-not-measured",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+precision = 1
+fail_under = 60
+
+[tool.coverage.xml]
+output = "coverage.xml"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",

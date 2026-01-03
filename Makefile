@@ -37,6 +37,11 @@ help:
 	@echo "  make build          build sdist+wheel (uv build)"
 	@echo "  make release-check  sync-dev + check + test + lock-check + build"
 	@echo ""
+	@echo "Docs (Mintlify):"
+	@echo "  make docs           build docs site (mint build)"
+	@echo "  make docs-serve     serve docs locally (mint dev)"
+	@echo "  make docs-test      check docs for broken links (mint broken-links)"
+	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          remove build artifacts"
 	@echo "  make mcp            run MCP server (python -m archetype.mcp)"
@@ -130,6 +135,66 @@ release-check: sync-dev check test lock-check build
 # ------------------------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------------------------
+
+.PHONY: docs-check-node
+docs-check-node:
+	@command -v node >/dev/null 2>&1 || ( \
+		echo "Error: Node.js is required for docs (unless using Bun)."; \
+		echo "Install Node ^18.17.0 or ^20.3.0 or >=21.0.0."; \
+		exit 1; \
+	)
+	@node -e ' \
+		const v = (process.versions && process.versions.node) ? process.versions.node : ""; \
+		if (!v) { \
+			console.error("Error: Unable to determine Node.js version."); \
+			console.error("Required: ^18.17.0 || ^20.3.0 || >=21.0.0"); \
+			process.exit(1); \
+		} \
+		const [maj, min, pat] = v.split(".").map((x) => parseInt(x, 10)); \
+		const ok = (maj === 18 && (min > 17 || (min === 17 && pat >= 0))) \
+			|| (maj === 20 && (min > 3 || (min === 3 && pat >= 0))) \
+			|| maj >= 21; \
+		if (!ok) { \
+			console.error(`Error: Node.js ${v} is not supported by Mintlify dependencies (sharp).`); \
+			console.error("Please upgrade to Node ^18.17.0 or ^20.3.0 or >=21.0.0."); \
+			process.exit(1); \
+		} \
+	'
+
+.PHONY: docs-check-runtime
+docs-check-runtime:
+	@if command -v bun >/dev/null 2>&1; then \
+		echo "Using Bun for docs: $$(bun --version)"; \
+	else \
+		$(MAKE) docs-check-node; \
+	fi
+
+.PHONY: docs
+.PHONY: docs
+docs: docs-check-runtime
+	@if command -v bun >/dev/null 2>&1; then \
+		cd docs && bunx mint build; \
+	else \
+		cd docs && npx --yes mint build; \
+	fi
+
+.PHONY: docs-serve
+.PHONY: docs-serve
+docs-serve: docs-check-runtime
+	@if command -v bun >/dev/null 2>&1; then \
+		cd docs && bunx mint dev; \
+	else \
+		cd docs && npx --yes mint dev; \
+	fi
+
+.PHONY: docs-test
+.PHONY: docs-test
+docs-test: docs-check-runtime
+	@if command -v bun >/dev/null 2>&1; then \
+		cd docs && bunx mint broken-links; \
+	else \
+		cd docs && npx --yes mint broken-links; \
+	fi
 
 .PHONY: clean
 clean:

@@ -31,6 +31,7 @@ from archetype.core.interfaces import (
     iUpdateManager,
     iWorld,
 )
+from archetype.core.resources import Resources
 from archetype.core.sync.processor import SyncProcessor
 
 logger = getLogger(__name__)
@@ -56,6 +57,9 @@ class SyncWorld(iWorld):
         self.querier = querier
         self.updater = updater
         self.system = system
+
+        # Resources: type-safe DI container for shared state
+        self.resources = Resources()
 
         # Internal State
         self.tick = 0
@@ -319,9 +323,9 @@ class SyncWorld(iWorld):
         **input_kwargs,
     ) -> DataFrame:
         """
-        Execute system processors.
+        Execute system processors, passing resources for type-safe dependency injection.
         """
-        return self.system.execute(df, sig, run_config, **input_kwargs)
+        return self.system.execute(df, sig, run_config, resources=self.resources, **input_kwargs)
 
     def update(
         self,

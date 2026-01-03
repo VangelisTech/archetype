@@ -22,3 +22,17 @@ If you’re new, start with the guides. The `design/` folder contains historical
 - `rl-architecture-decisions.md`: decision record for RL architecture
 - `simulation_scripting.md`: (legacy) scripting patterns; see `guide/quickstart.md` for the current API
 - `design/`: broader architecture notes and acceptance criteria
+
+## Mintlify (local preview)
+
+From `archetype/`:
+
+- `make docs`: build docs (`mint build`)
+- `make docs-serve`: local server (`mint dev`)
+- `make docs-test`: broken link check (`mint broken-links`)
+
+Notes:
+
+- Mintlify expects a `mint.json` in this folder (`archetype/docs/mint.json`).
+- Mintlify depends on `sharp`, which requires Node `^18.17.0 || ^20.3.0 || >=21.0.0` (so Node `20.0.x` will fail).
+- If you have Bun installed, the `make docs*` targets will prefer `bunx mint ...` over `npx mint ...` (Mintlify officially targets Node, but Bun often works in practice).

@@ -18,6 +18,7 @@ from daft import DataFrame
 
 from archetype.core.config import RunConfig
 from archetype.core.interfaces import ArchetypeSignature, iSystem
+from archetype.core.resources import Resources
 from archetype.core.sync.processor import SyncProcessor
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,22 @@ class SyncSystem(iSystem):
         df: DataFrame,
         sig: ArchetypeSignature,
         run_config: RunConfig | None = None,
+        resources: Resources | None = None,
         **input_kwargs,
     ) -> DataFrame:
         """
         Execute all processors on the given archetype in priority order.
-        Returns a tuple of (archetype_signature, modified_df)
+
+        Args:
+            df: The DataFrame to process
+            sig: The archetype signature
+            run_config: Optional run configuration
+            resources: Type-safe resource container (available as kwarg to processors)
+            **input_kwargs: Additional kwargs passed to processors
         """
+        # Include resources in kwargs for processors that want it
+        if resources is not None:
+            input_kwargs["resources"] = resources
 
         # Process archetype through all processors in priority order
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
