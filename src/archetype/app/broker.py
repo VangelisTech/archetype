@@ -33,14 +33,18 @@ Features:
 - Async-safe with locks
 - Pending/history tracking for audit
 - Supports entity, processor, and simulation-level commands
+- Debug logging for tracing command flow
 """
 
 import asyncio
 import heapq
+import logging
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from archetype.app.models import Command
+
+logger = logging.getLogger(__name__)
 
 
 class CommandBroker:
@@ -55,12 +59,13 @@ class CommandBroker:
     Auth is handled at the API layer before commands reach the broker.
     """
 
-    def __init__(self, max_dequeue: int = 50_000):
+    def __init__(self, max_dequeue: int = 50_000, debug: bool = False):
         self._queues: dict[str, list[Command]] = {}  # world_id -> priority queue
         self._pending: dict[UUID, Command] = {}
         self._history: dict[str, list[Command]] = {}
         self._lock = asyncio.Lock()
         self._max_dequeue = max_dequeue
+        self._debug = debug
 
         # Optional command handlers for simulation-level operations
         self._handlers: dict[str, Callable[[Command], Awaitable]] = {}
@@ -79,6 +84,12 @@ class CommandBroker:
             heapq.heappush(self._queues[key], cmd)
             self._pending[cmd.id] = cmd
             self._history.setdefault(key, []).append(cmd)
+
+            if self._debug:
+                logger.debug(
+                    f"[broker] enqueue: world={key}, type={cmd.type.value}, "
+                    f"tick={cmd.tick}, pending={len(self._queues[key])}"
+                )
 
     async def enqueue_bulk(self, world_id: str | UUID, cmds: list[Command]):
         """Enqueue multiple commands for a specific world."""
@@ -99,6 +110,8 @@ class CommandBroker:
         async with self._lock:
             key = str(world_id)
             if key not in self._queues or not self._queues[key]:
+                if self._debug:
+                    logger.debug(f"[broker] dequeue: world={key}, returned=0, remaining=0")
                 return []
 
             commands = []
@@ -110,6 +123,16 @@ class CommandBroker:
                     commands.append(cmd)
                     # Remove from pending
                     self._pending.pop(cmd.id, None)
+
+            if self._debug:
+                # Group by type for summary
+                type_counts = {}
+                for cmd in commands:
+                    type_counts[cmd.type.value] = type_counts.get(cmd.type.value, 0) + 1
+                logger.debug(
+                    f"[broker] dequeue: world={key}, returned={len(commands)}, "
+                    f"remaining={len(queue)}, types={type_counts}"
+                )
 
             return commands
 

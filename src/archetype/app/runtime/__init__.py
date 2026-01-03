@@ -23,15 +23,16 @@ Core infrastructure for creating and managing worlds.
 
 - WorldOrchestrator: Manages multiple worlds, coordinates execution
 - WorldFactory: Creates world instances with proper wiring
-- StorageResourceManager: Manages shared storage backends
+- StorageBackendManager: Manages shared storage backends (was StorageResourceManager)
 """
 
 from archetype.app.factory import WorldFactory
 from archetype.app.orchestrator import WorldOrchestrator
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager, StorageResourceManager
 
 __all__ = [
     "WorldOrchestrator",
     "WorldFactory",
-    "StorageResourceManager",
+    "StorageBackendManager",
+    "StorageResourceManager",  # Backwards compat alias
 ]

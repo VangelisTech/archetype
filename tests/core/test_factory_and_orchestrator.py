@@ -2,7 +2,7 @@ import pytest
 
 from archetype.app.factory import WorldFactory
 from archetype.app.orchestrator import WorldOrchestrator
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -10,7 +10,7 @@ from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 @pytest.mark.asyncio
 async def test_factory_creates_async_world_and_default_system(tmp_path):
     """Creating a world with no explicit system yields a default async world and runs 1 step without error."""
-    mgr = StorageResourceManager()
+    mgr = StorageBackendManager()
     try:
         factory = WorldFactory(mgr)
         world = await factory.create_world(

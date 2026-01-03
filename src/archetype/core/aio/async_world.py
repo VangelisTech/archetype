@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import asyncio
+from collections import defaultdict
 from itertools import count
 from logging import getLogger
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import daft
 import pyarrow as pa
@@ -34,6 +35,10 @@ from archetype.core.interfaces import (
     iAsyncUpdateManager,
     iAsyncWorld,
 )
+from archetype.core.resources import Resources
+
+# Type alias for hook functions
+HookFn = Callable[..., Awaitable[None]]
 
 logger = getLogger(__name__)
 
@@ -58,6 +63,12 @@ class AsyncWorld(iAsyncWorld):
         self.updater = updater
         self.system = system
 
+        # Resources: type-safe DI container for shared state
+        self.resources = Resources()
+
+        # Hooks: lifecycle callbacks for observability
+        self._hooks: dict[str, list[HookFn]] = defaultdict(list)
+
         # Internal State
         self.tick = 0
         self.run_id: str | None = None
@@ -68,6 +79,37 @@ class AsyncWorld(iAsyncWorld):
 
         # Live snapshot of the most recent processed DataFrame per signature (current tick)
         self._live: dict[ArchetypeSignature, DataFrame] = {}
+
+    # -------------------------------------------------------------------------
+    # Hooks: Lifecycle callbacks for observability
+    # -------------------------------------------------------------------------
+
+    def add_hook(self, event: str, fn: HookFn) -> None:
+        """
+        Register a hook for lifecycle events.
+
+        Supported events:
+            - "pre_tick": Before any processing (world, tick)
+            - "post_tick": After all processing (world, tick, results)
+            - "on_spawn": When entity created (world, entity_id, components)
+            - "on_despawn": When entity removed (world, entity_id)
+
+        Example:
+            world.add_hook("post_tick", lambda world, tick, **kw: print(f"Tick {tick} done"))
+        """
+        self._hooks[event].append(fn)
+
+    def remove_hook(self, event: str, fn: HookFn) -> None:
+        """Unregister a hook."""
+        self._hooks[event] = [h for h in self._hooks[event] if h != fn]
+
+    async def _fire_hooks(self, event: str, **kwargs) -> None:
+        """Fire all hooks for an event, logging but not raising on errors."""
+        for hook in self._hooks[event]:
+            try:
+                await hook(**kwargs)
+            except Exception as e:
+                logger.warning(f"Hook {getattr(hook, '__name__', hook)} failed on {event}: {e}")
 
     async def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
@@ -82,8 +124,39 @@ class AsyncWorld(iAsyncWorld):
     async def step(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Executes one full, parallel simulation tick.
+
+        Tick Lifecycle:
+            1. pre_tick hook fires
+            2. For each archetype (parallel):
+               a. Query previous state (tick N-1)
+               b. Materialize mutations (spawn/despawn caches)
+               c. Execute processors (priority order)
+               d. Persist to store
+            3. Update _live snapshots
+            4. Increment tick
+            5. post_tick hook fires (tick is now N+1)
+
+        Note: Messages enqueued in tick N are dequeued in tick N+1.
         """
+        debug = run_config.debug
+
+        if debug:
+            self._debug_log(
+                "tick_start",
+                tick=self.tick,
+                active_entities=len(self._entity2sig),
+                spawn_pending=sum(len(v) for v in self._spawn_cache.values()),
+                despawn_pending=sum(len(v) for v in self._despawn_cache.values()),
+            )
+
+        # Fire pre-tick hooks
+        await self._fire_hooks("pre_tick", world=self, tick=self.tick)
+
         sigs = sorted(self.active_signatures, key=Archetype.get_name)
+
+        if debug:
+            self._debug_log("archetypes_processing", tick=self.tick, count=len(sigs))
+
         futures = [self._run_archetype(sig, run_config, **input_kwargs) for sig in sigs]
         results = await asyncio.gather(*futures, return_exceptions=True)
         errors = {
@@ -100,6 +173,22 @@ class AsyncWorld(iAsyncWorld):
         }
 
         self.tick += 1
+
+        if debug:
+            total_live = sum(
+                df.count_rows() if hasattr(df, "count_rows") else 0 for df in self._live.values()
+            )
+            self._debug_log("tick_end", tick=self.tick, live_entities=total_live)
+
+        # Fire post-tick hooks
+        await self._fire_hooks("post_tick", world=self, tick=self.tick, results=results)
+
+    def _debug_log(self, event: str, **data) -> None:
+        """Emit structured debug event."""
+        import json
+
+        payload = {"event": event, "world_id": str(self.world_id), **data}
+        logger.debug(f"[archetype] {json.dumps(payload)}")
 
     async def _run_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
@@ -123,7 +212,7 @@ class AsyncWorld(iAsyncWorld):
         df = self.materialize_mutations(df, sig)
 
         # 3. Execute Processors for this archetype via system
-        df = await self.execute(df, sig, **input_kwargs)
+        df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
 
         # 4. Update (returns materialized df with tick/world/run/entity_id set)
         df_mat = await self.update(df, sig, run_config)
@@ -379,9 +468,9 @@ class AsyncWorld(iAsyncWorld):
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
         """
-        Execute system processors.
+        Execute system processors, passing resources for type-safe dependency injection.
         """
-        return await self.system.execute(df, sig, **input_kwargs)
+        return await self.system.execute(df, sig, resources=self.resources, **input_kwargs)
 
     async def update(
         self,

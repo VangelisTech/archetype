@@ -16,10 +16,10 @@
 World Factory
 
 Assembles world instances by wiring together storage, querier, updater, and system
-components. Delegates resource management to the injected StorageResourceManager.
+components. Delegates backend management to the injected StorageBackendManager.
 """
 
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncSystem, iWorld
@@ -34,13 +34,13 @@ class WorldFactory:
     Factory for creating world instances.
 
     Assembles a world by:
-    1. Delegating storage backend management to the resource manager
+    1. Delegating storage backend management to the backend manager
     2. Selecting the appropriate world class (sync/async)
     3. Wiring dependencies together
     """
 
-    def __init__(self, resource_manager: StorageResourceManager):
-        self._resource_manager = resource_manager
+    def __init__(self, backend_manager: StorageBackendManager):
+        self._backend_manager = backend_manager
 
     async def create_world(
         self,
@@ -62,7 +62,7 @@ class WorldFactory:
             Configured world instance ready for use
         """
         # Get shared backend resources
-        store, querier, updater = await self._resource_manager.get_backend(
+        store, querier, updater = await self._backend_manager.get_backend(
             storage_config, cache_config
         )
 

@@ -24,7 +24,7 @@ import asyncio
 from uuid_utils import UUID, uuid7
 
 from archetype.app.factory import WorldFactory
-from archetype.app.resources import StorageResourceManager
+from archetype.app.storage_manager import StorageBackendManager
 from archetype.core.aio import AsyncWorld
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncSystem, iSystem, iWorld
@@ -43,14 +43,14 @@ class WorldOrchestrator:
 
     def __init__(self):
         """Initializes the orchestrator and its owned resources."""
-        self.storage_manager = StorageResourceManager()
-        self.factory = WorldFactory(self.storage_manager)
+        self.backend_manager = StorageBackendManager()
+        self.factory = WorldFactory(self.backend_manager)
         self._worlds: dict[UUID, iWorld] = {}
         self._world_names: dict[str, UUID] = {}
 
     async def shutdown(self):
         """Gracefully shuts down all managed resources and worlds."""
-        await self.storage_manager.shutdown()
+        await self.backend_manager.shutdown()
         self._worlds.clear()
         self._world_names.clear()
 

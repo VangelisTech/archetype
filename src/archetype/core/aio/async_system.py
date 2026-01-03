@@ -18,7 +18,9 @@ import logging
 from daft import DataFrame
 
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.archetype import Archetype
 from archetype.core.interfaces import ArchetypeSignature, iAsyncSystem
+from archetype.core.resources import Resources
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +48,43 @@ class AsyncSystem(iAsyncSystem):
         """Remove all processors of the given type."""
         self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
-    async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
+    async def execute(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        resources: Resources | None = None,
+        debug: bool = False,
+        **input_kwargs,
+    ) -> DataFrame:
         """
         Process a single archetype through all relevant processors.
 
         This is where the concurrency happens - each archetype gets its own task
         but within each archetype, processors run in priority order (same as sync).
+
+        Args:
+            df: The DataFrame to process
+            sig: The archetype signature
+            resources: Type-safe resource container (available as kwarg to processors)
+            debug: Enable debug logging for processor execution
+            **input_kwargs: Additional kwargs passed to processors
         """
+        # Include resources in kwargs for processors that want it
+        if resources is not None:
+            input_kwargs["resources"] = resources
+
+        archetype_name = Archetype.get_name(sig) if debug else None
 
         for proc_instance in sorted(self.processors, key=lambda x: x.priority):
             if set(proc_instance.components).issubset(set(sig)):
+                proc_name = proc_instance.__class__.__name__
+
+                if debug:
+                    logger.debug(
+                        f"[archetype] processor_start: {proc_name} "
+                        f"(priority={proc_instance.priority}, archetype={archetype_name})"
+                    )
+
                 # Gracefully handle errors in processors.
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
@@ -66,6 +95,13 @@ class AsyncSystem(iAsyncSystem):
                         k: v for k, v in input_kwargs.items() if k in sig_params
                     }
                     df = await proc_instance.process(df, **filtered_input_kwargs)
+
+                    if debug:
+                        row_count = df.count_rows() if hasattr(df, "count_rows") else "?"
+                        logger.debug(
+                            f"[archetype] processor_end: {proc_name} "
+                            f"(rows_out={row_count})"
+                        )
                 except Exception as e:
                     logger.error(
                         f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}"

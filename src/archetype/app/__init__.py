@@ -78,7 +78,8 @@ from archetype.app.models import Command, CommandType
 
 # Runtime layer
 from archetype.app.runtime import (
-    StorageResourceManager,
+    StorageBackendManager,
+    StorageResourceManager,  # Backwards compat alias
     WorldFactory,
     WorldOrchestrator,
 )
@@ -236,7 +237,8 @@ __all__ = [
     # Runtime
     "WorldOrchestrator",
     "WorldFactory",
-    "StorageResourceManager",
+    "StorageBackendManager",
+    "StorageResourceManager",  # Backwards compat alias
     # Broker (universal simulation interface)
     "CommandBroker",
     "Command",

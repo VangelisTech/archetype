@@ -17,8 +17,9 @@ Archetype Core
 
 Pure ECS primitives: Component, Archetype, World, System, Processor.
 Storage interfaces and implementations.
+Resources: Type-safe DI container for passing services to processors.
 
-Application-level orchestration (WorldOrchestrator, WorldFactory, StorageResourceManager)
+Application-level orchestration (WorldOrchestrator, WorldFactory, StorageBackendManager)
 lives in archetype.app.
 """
 
@@ -36,7 +37,8 @@ from .archetype import Archetype
 from .component import Component
 from .config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from .interfaces import ArchetypeSignature
-from .storage import AsyncLancedbStore
+from .resources import Resources
+from .storage import AsyncLancedbStore, CatalogEntry, ManagedStorage, SyncManagedStorage
 
 # Sync Module
 from .sync import (
@@ -53,6 +55,7 @@ __all__ = [
     "Component",
     "ArchetypeSignature",
     "Archetype",
+    "Resources",
     # Config
     "RunConfig",
     "StorageConfig",
@@ -75,4 +78,7 @@ __all__ = [
     "AsyncProcessor",
     # Storage backends
     "AsyncLancedbStore",
+    "ManagedStorage",
+    "SyncManagedStorage",
+    "CatalogEntry",
 ]

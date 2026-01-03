@@ -41,51 +41,14 @@ Quick Start:
     >>> world.step()
 """
 
-# Core ECS primitives
-# Application layer (orchestration, resource management)
-from archetype.app import (
-    ArchetypeApp,
-    StorageResourceManager,
-    WorldFactory,
-    WorldOrchestrator,
-)
-from archetype.core import (
-    Archetype,
-    ArchetypeSignature,
-    AsyncCachedStore,
-    AsyncLancedbStore,
-    AsyncProcessor,
-    AsyncQueryManager,
-    AsyncStore,
-    AsyncSystem,
-    AsyncUpdateManager,
-    AsyncWorld,
-    CacheConfig,
-    # Core types
-    Component,
-    QueryManager,
-    RunConfig,
-    # Config
-    StorageConfig,
-    # Processors
-    SyncProcessor,
-    # Storage & Query
-    SyncStore,
-    # Systems
-    SyncSystem,
-    # Worlds
-    SyncWorld,
-    UpdateManager,
-    WorldConfig,
-)
+from __future__ import annotations
 
-# Convenience aliases matching the diagram
-Processor = SyncProcessor  # Default to sync for simplicity
-World = SyncWorld
-System = SyncSystem
-Store = SyncStore
-Querier = QueryManager
-Updater = UpdateManager
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from archetype.core.component import Component
+    from archetype.core.sync.processor import SyncProcessor
 
 __version__ = "0.1.0"
 
@@ -94,6 +57,7 @@ __all__ = [
     "Component",
     "Archetype",
     "ArchetypeSignature",
+    "Resources",
     # Processor (with alias)
     "Processor",
     "SyncProcessor",
@@ -122,17 +86,93 @@ __all__ = [
     # Orchestration (from app layer)
     "WorldOrchestrator",
     "WorldFactory",
-    "StorageResourceManager",
+    "StorageBackendManager",
+    "StorageResourceManager",  # Backwards compat alias
     "ArchetypeApp",
     # Config
     "StorageConfig",
     "CacheConfig",
     "RunConfig",
     "WorldConfig",
+    # Managed Storage
+    "ManagedStorage",
+    "SyncManagedStorage",
+    "CatalogEntry",
     # Factory
     "Simulation",
     "init",
 ]
+
+_EXPORTS: dict[str, tuple[str, str]] = {
+    # Core types
+    "Component": ("archetype.core", "Component"),
+    "Archetype": ("archetype.core", "Archetype"),
+    "ArchetypeSignature": ("archetype.core", "ArchetypeSignature"),
+    "Resources": ("archetype.core", "Resources"),
+    # Processors (and aliases)
+    "SyncProcessor": ("archetype.core", "SyncProcessor"),
+    "AsyncProcessor": ("archetype.core", "AsyncProcessor"),
+    "Processor": ("archetype.core", "SyncProcessor"),
+    # Worlds (and aliases)
+    "SyncWorld": ("archetype.core", "SyncWorld"),
+    "AsyncWorld": ("archetype.core", "AsyncWorld"),
+    "World": ("archetype.core", "SyncWorld"),
+    # Systems (and aliases)
+    "SyncSystem": ("archetype.core", "SyncSystem"),
+    "AsyncSystem": ("archetype.core", "AsyncSystem"),
+    "System": ("archetype.core", "SyncSystem"),
+    # Stores (and aliases)
+    "SyncStore": ("archetype.core", "SyncStore"),
+    "AsyncStore": ("archetype.core", "AsyncStore"),
+    "AsyncCachedStore": ("archetype.core", "AsyncCachedStore"),
+    "AsyncLancedbStore": ("archetype.core", "AsyncLancedbStore"),
+    "Store": ("archetype.core", "SyncStore"),
+    # Query/update managers (and aliases)
+    "QueryManager": ("archetype.core", "QueryManager"),
+    "UpdateManager": ("archetype.core", "UpdateManager"),
+    "AsyncQueryManager": ("archetype.core", "AsyncQueryManager"),
+    "AsyncUpdateManager": ("archetype.core", "AsyncUpdateManager"),
+    "Querier": ("archetype.core", "QueryManager"),
+    "Updater": ("archetype.core", "UpdateManager"),
+    # Config
+    "StorageConfig": ("archetype.core", "StorageConfig"),
+    "CacheConfig": ("archetype.core", "CacheConfig"),
+    "RunConfig": ("archetype.core", "RunConfig"),
+    "WorldConfig": ("archetype.core", "WorldConfig"),
+    # Managed storage
+    "ManagedStorage": ("archetype.core", "ManagedStorage"),
+    "SyncManagedStorage": ("archetype.core", "SyncManagedStorage"),
+    "CatalogEntry": ("archetype.core", "CatalogEntry"),
+    # Orchestration (app layer)
+    "WorldOrchestrator": ("archetype.app", "WorldOrchestrator"),
+    "WorldFactory": ("archetype.app", "WorldFactory"),
+    "StorageBackendManager": ("archetype.app", "StorageBackendManager"),
+    "StorageResourceManager": ("archetype.app", "StorageResourceManager"),  # Backwards compat
+    "ArchetypeApp": ("archetype.app", "ArchetypeApp"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """
+    Lazy public API loader.
+
+    Archetype has heavy (and sometimes optional) dependencies. Avoid importing
+    the entire world at `import archetype` time so small utilities can run in
+    minimal environments.
+    """
+
+    target = _EXPORTS.get(name)
+    if not target:
+        raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+    module_name, attr_name = target
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(list(globals().keys()) + list(_EXPORTS.keys())))
 
 
 class Simulation:
@@ -153,6 +193,7 @@ class Simulation:
     ):
         from pathlib import Path
 
+        from archetype.core import StorageConfig
         from archetype.core.runtime.storage import StorageContextFactory
 
         self.debug = debug
@@ -188,6 +229,15 @@ class Simulation:
         """
         from uuid_utils import uuid7
 
+        from archetype.core import (
+            QueryManager,
+            SyncStore,
+            SyncSystem,
+            SyncWorld,
+            UpdateManager,
+            WorldConfig,
+        )
+
         world_uuid = uuid7()
         world_id_str = str(world_uuid)
 
@@ -222,6 +272,8 @@ class Simulation:
 
     def step_world(self, world_id: str, **kwargs) -> None:
         """Execute one simulation step for the specified world."""
+        from archetype.core import RunConfig
+
         run_config = RunConfig(num_steps=1)
         self._worlds[world_id].step(run_config, **kwargs)
 

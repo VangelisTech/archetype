@@ -57,6 +57,9 @@ class CommandType(str, Enum):
     RUN_EPISODE = "run_episode"  # Full episode with sampled ICs
     QUERY_WORLD = "query_world"  # Get state/results from a world
 
+    # Agent-to-agent messaging (realized at tick boundary)
+    MESSAGE = "message"  # payload: {sender_id, receiver_id, channel?, content}
+
     # Extensible
     CUSTOM = "custom"
 

@@ -13,11 +13,15 @@
 # limitations under the License.
 
 """
-Storage Resource Management
+Storage Backend Manager
 
 Manages the lifecycle of shared storage backend resources using a multiton pattern.
 This ensures that for any given storage URI, only one (Store, Querier, Updater) triplet
 is created and shared among all worlds using that backend.
+
+Note: This is distinct from `archetype.core.resources.Resources`, which is a type-safe
+DI container for passing services to processors at runtime. This module manages the
+underlying storage infrastructure.
 """
 
 from __future__ import annotations
@@ -35,12 +39,15 @@ from archetype.core.sync import SyncStore
 # See metrics/otel.py for trace/span utilities
 
 
-class StorageResourceManager:
+class StorageBackendManager:
     """
     Manages shared storage backend resources.
 
     Implements a multiton pattern: for any (uri, namespace) pair, only one
     (Store, Querier, Updater) triplet is created and reused.
+
+    This is infrastructure plumbing—it creates and pools storage backends.
+    For runtime DI in processors, use `archetype.core.resources.Resources`.
     """
 
     def __init__(self):
@@ -123,3 +130,7 @@ class StorageResourceManager:
 
         self._instances.clear()
         self._locks.clear()
+
+
+# Backwards compatibility alias (deprecated)
+StorageResourceManager = StorageBackendManager
