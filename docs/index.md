@@ -16,24 +16,24 @@ Archetype is a data-centric Entity-Component-System (ECS) runtime built on Daft 
 from archetype import Component
 from archetype.dsl import World, behavior
 
-class Agent(Component):
+class Philosopher(Component):
     name: str = ""
     thought: str = ""
 
 @behavior
 class Think:
-    requires = [Agent]
+    requires = [Philosopher]
     
     async def act(self, agent, world, tick):
-        agent.agent.thought = f"Tick {tick}: I think, therefore I am."
+        agent.philosopher.thought = f"Tick {tick}: I think, therefore I am."
 
 async with World("cogito") as world:
     world.add_behavior(Think)
-    await world.spawn(Agent(name="Descartes"))
+    await world.spawn(Philosopher(name="Descartes"))
     await world.run(ticks=3)
     
     for agent in world.agents:
-        print(agent.agent.thought)
+        print(agent.philosopher.thought)
 ```
 
 ## The Core Primitive: spawn_world()

@@ -47,21 +47,21 @@ archetype/
 from archetype import Component
 from archetype.dsl import World, behavior, spawn_world
 
-class MyAgent(Component):
+class Explorer(Component):
     name: str = ""
     state_json: str = "{}"
 
 @behavior
 class Think:
-    requires = [MyAgent]
+    requires = [Explorer]
     
     async def act(self, agent, world, tick):
-        # Your logic here
-        agent.my_agent.state_json = '{"thought": "I exist"}'
+        # agent.explorer accesses the Explorer component
+        agent.explorer.state_json = '{"thought": "I exist"}'
 
 async with World("experiment") as world:
     world.add_behavior(Think)
-    await world.spawn(MyAgent(name="Explorer"))
+    await world.spawn(Explorer(name="Scout"))
     await world.run(ticks=10)
 ```
 
@@ -70,7 +70,7 @@ async with World("experiment") as world:
 ```python
 @behavior
 class Planner:
-    requires = [MyAgent]
+    requires = [Explorer]
     
     async def act(self, agent, world, tick):
         best_outcome = None
@@ -84,7 +84,7 @@ class Planner:
                 if not best_outcome or outcome > best_outcome:
                     best_outcome = outcome
         
-        agent.my_agent.state_json = json.dumps({"chosen": best_outcome})
+        agent.explorer.state_json = json.dumps({"chosen": best_outcome})
 ```
 
 ### 3. Run Tests Freely

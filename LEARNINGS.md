@@ -1,12 +1,12 @@
 # Learnings: Daft 0.7.x & Archetype Patterns
 
-*Documented from sessions with Everett, December 2024 – January 2025*
+*Documented from sessions with Everett, December 2024 – January 2026*
 
 > **For AI Agents:** This document contains hard-won architectural knowledge. Read it before proposing changes to core patterns.
 
 ---
 
-## The Meta-Goal (Jan 2025)
+## The Meta-Goal (Jan 2026)
 
 Archetype has a recursive purpose:
 
@@ -185,7 +185,7 @@ Everything must be Arrow-serializable for LanceDB storage:
 
 ## Common Mistakes I Made
 
-1. **Used `@daft.udf`** — Deprecated in 0.7.0, removed in 0.8.0. Use `@daft.func.batch` instead. ✅ *All UDFs migrated Jan 2025*
+1. **Used `@daft.udf`** — Deprecated in 0.7.0, removed in 0.8.0. Use `@daft.func.batch` instead. ✅ *All UDFs migrated Jan 2026*
 
 2. **Used `.struct.get()`** — Use `[]` indexing instead
 
@@ -217,7 +217,7 @@ class Trainer:
 
 ---
 
-## Two "Resources" Concepts (Jan 2025)
+## Two "Resources" Concepts (Jan 2026)
 
 There are two distinct concepts, unfortunately both historically called "resources":
 
@@ -244,7 +244,7 @@ broker = resources.require(CommandBroker)
 
 ---
 
-## Resources: Type-Safe DI (Jan 2025)
+## Resources: Type-Safe DI (Jan 2026)
 
 Processors often need shared state (configs, brokers, services). The `Resources` container provides type-safe dependency injection:
 
@@ -273,7 +273,7 @@ class MyProcessor(AsyncProcessor):
 
 ---
 
-## Hooks: Lifecycle Callbacks (Jan 2025)
+## Hooks: Lifecycle Callbacks (Jan 2026)
 
 For observability and debugging without coupling to processor logic:
 
@@ -296,7 +296,7 @@ Hooks are async, errors are logged but don't crash the world.
 
 ---
 
-## Agent Communication: MESSAGE Command (Jan 2025)
+## Agent Communication: MESSAGE Command (Jan 2026)
 
 Agent-to-agent messaging via the CommandBroker:
 
@@ -360,7 +360,7 @@ Enable with `run_config.debug = True`:
 
 ---
 
-## Daft Lazy Evaluation Gotcha (Jan 2025)
+## Daft Lazy Evaluation Gotcha (Jan 2026)
 
 Daft is lazily evaluated. Intermediate `.select(...).collect()` calls break the DAG and may cause upstream operations (like `prompt()`) to execute on a **separate plan** that discards downstream work.
 
@@ -380,7 +380,7 @@ result = df.collect()  # Single materialization
 
 ---
 
-## Row-wise `@daft.func` vs `@daft.func.batch` (Jan 2025)
+## Row-wise `@daft.func` vs `@daft.func.batch` (Jan 2026)
 
 For simple row transforms, prefer `@daft.func` over `@daft.func.batch`:
 
@@ -407,7 +407,7 @@ def update_history_batch(history: Series, agent: Series, response: Series) -> Se
 
 ---
 
-## Tick-Gated Processing (Jan 2025)
+## Tick-Gated Processing (Jan 2026)
 
 For expensive operations (LLM calls, inner simulations), gate on tick to avoid unnecessary work:
 
@@ -429,7 +429,7 @@ This pattern is especially useful for:
 
 ---
 
-## JSON-Encoding Complex Types (Jan 2025)
+## JSON-Encoding Complex Types (Jan 2026)
 
 LanceDB/Arrow can't store `list[dict]` directly. JSON-encode to `str`:
 
@@ -451,7 +451,7 @@ for entry in history:
 
 ---
 
-## Agent DSL: Ergonomic Layer (Jan 2025)
+## Agent DSL: Ergonomic Layer (Jan 2026)
 
 The `archetype.dsl` module provides agent-centric ergonomics on top of the DataFrame engine:
 

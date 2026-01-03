@@ -52,7 +52,7 @@ This gives you:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The dream: **AI agents using Archetype to simulate, evaluate, and improve the very system they run on.**
+**AI agents using Archetype to simulate, evaluate, and improve the very system they run on.**
 
 ## Quick Start
 
@@ -72,23 +72,23 @@ uv run python examples/debate_mcts.py
 from archetype import Component
 from archetype.dsl import World, behavior
 
-class Agent(Component):
+class Explorer(Component):
     name: str = ""
     energy: int = 100
 
 @behavior
-class Think:
-    requires = [Agent]
+class Forage:
+    requires = [Explorer]
     
     async def act(self, agent, world, tick):
-        agent.agent.energy = agent.agent.energy + 10
+        agent.explorer.energy = agent.explorer.energy + 10
 
 async with World("simulation") as world:
-    world.add_behavior(Think)
-    await world.spawn(Agent(name="Explorer"))
+    world.add_behavior(Forage)
+    await world.spawn(Explorer(name="Scout"))
     await world.run(ticks=10)
     
-    print(world.agents[0].agent.energy)  # 200
+    print(world.agents[0].explorer.energy)  # 200
 ```
 
 ## spawn_world() — The Core Primitive
@@ -98,9 +98,12 @@ Fork worlds for MCTS, counterfactual reasoning, and self-evaluation:
 ```python
 from archetype.dsl import spawn_world
 
+class Planner(Component):
+    decision: str = ""
+
 @behavior
-class Planner:
-    requires = [Agent]
+class Plan:
+    requires = [Planner]
     
     async def act(self, agent, world, tick):
         best = None
@@ -111,7 +114,7 @@ class Planner:
                 if not best or score > best:
                     best = scenario
         
-        agent.agent.decision = best
+        agent.planner.decision = best
 ```
 
 ## Architecture
