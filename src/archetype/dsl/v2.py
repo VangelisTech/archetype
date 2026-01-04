@@ -46,7 +46,19 @@ from archetype.core.resources import Resources
 
 
 # =============================================================================
-# Component Field Expression Builder
+# Component Name Utilities
+# =============================================================================
+
+
+def to_snake_case(name: str) -> str:
+    """Convert CamelCase to snake_case."""
+    import re
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
+
+
+# =============================================================================
+# Field Expression Builder
 # =============================================================================
 
 
@@ -171,7 +183,12 @@ class BinaryOp:
 
 
 class ComponentFieldAccessor:
-    """Provides field access for a component type."""
+    """
+    Provides field access for a component type.
+    
+    Uses Component.get_prefix() to generate column names like "position__x".
+    This method is defined in archetype.core.component.Component.
+    """
     
     def __init__(self, component_cls: type[Component]):
         self._component_cls = component_cls
@@ -191,14 +208,8 @@ class ArchetypeAccessor:
         
         for cls in components:
             # Convert ClassName to class_name for attribute access
-            attr_name = self._to_snake_case(cls.__name__)
+            attr_name = to_snake_case(cls.__name__)
             self._accessors[attr_name] = ComponentFieldAccessor(cls)
-    
-    @staticmethod
-    def _to_snake_case(name: str) -> str:
-        import re
-        s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-        return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
     
     def __getattr__(self, name: str) -> ComponentFieldAccessor:
         if name in self._accessors:
@@ -288,12 +299,15 @@ class DataFrameProcessor(AsyncProcessor):
             updates = self._instance.transform(arch, tick=tick, dt=dt)
             
             if updates:
-                # Apply updates as with_columns
+                # Apply all updates at once with df.with_columns() for better performance
+                compiled_updates = {}
                 for col_name, expr in updates.items():
                     if hasattr(expr, 'to_expr'):
-                        df = df.with_column(col_name, expr.to_expr())
+                        compiled_updates[col_name] = expr.to_expr()
                     else:
-                        df = df.with_column(col_name, expr)
+                        compiled_updates[col_name] = expr
+                
+                df = df.with_columns(compiled_updates)
         
         return df
 
@@ -316,14 +330,8 @@ class AgentView:
         self._component_views = {}
         
         for cls in components:
-            attr_name = self._to_snake_case(cls.__name__)
+            attr_name = to_snake_case(cls.__name__)
             self._component_views[attr_name] = ComponentView(cls, row_data)
-    
-    @staticmethod
-    def _to_snake_case(name: str) -> str:
-        import re
-        s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
-        return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
     
     def __getattr__(self, name: str):
         if name in self._component_views:
