@@ -182,14 +182,32 @@ You, as an AI agent, are part of this loop. When you:
 │                          ▼                                  │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                  Archetype Engine                    │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
-│  │  │   DSL   │  │   App   │  │  Core   │ ← Rust soon │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
+│  │  ┌──────────┐  ┌─────────┐  ┌─────────┐            │   │
+│  │  │ DSL/Ray  │  │   App   │  │  Core   │ ← Rust soon│   │
+│  │  └──────────┘  └─────────┘  └─────────┘            │   │
 │  └─────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 The dream: AI agents using Archetype to simulate, evaluate, and improve the very system they run on.
+
+## Two Agent Patterns
+
+Archetype now offers two complementary agent patterns:
+
+### DSL Pattern (`archetype.dsl`)
+- **Tick-based simulation** — Agents act on each tick
+- **spawn_world()** — Inner simulations and MCTS
+- **Ergonomic** — Natural Python syntax
+- **Best for:** Tight loops, counterfactual reasoning
+
+### Ray Actor Pattern (`archetype.ray`)
+- **Distributed execution** — Agents as Ray actors
+- **Async by default** — Full async/await
+- **Vectorized services** — Automatic batching
+- **Best for:** Large-scale, distributed AI systems
+
+See [docs/ray_actors.md](docs/ray_actors.md) for detailed comparison.
 
 ---
 

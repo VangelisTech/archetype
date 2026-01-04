@@ -58,6 +58,40 @@ This gives you:
 - **MCTS & counterfactuals** — `spawn_world()` for inner simulations
 - **Self-improving systems** — Use Archetype to evaluate Archetype
 
+## Two Agent Patterns
+
+Archetype offers two complementary ways to build agent systems:
+
+### DSL Pattern (`archetype.dsl`)
+```python
+from archetype.dsl import World, behavior
+
+@behavior
+class MyBehavior:
+    requires = [MyComponent]
+    async def act(self, agent, world, tick):
+        # Tick-based, ergonomic syntax
+        agent.my_component.value += 1
+```
+
+**Best for:** Tight simulations, spawn_world(), MCTS
+
+### Ray Actor Pattern (`archetype.ray`)
+```python
+import ray
+from archetype.ray import RayAgent
+
+@ray.remote
+class MyAgent(RayAgent):
+    async def act(self, tick, context):
+        # Distributed, async execution
+        response = await self.request_service("inference", {...})
+```
+
+**Best for:** Large-scale distributed AI systems, vectorized services
+
+See [docs/ray_actors.md](docs/ray_actors.md) for detailed comparison.
+
 ## Core Engine Diagram
 
 ![archetype diagram](assets/archetype_diagram2.png)
