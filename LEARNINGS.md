@@ -453,7 +453,11 @@ for entry in history:
 
 ## Agent DSL: Ergonomic Layer (Jan 2026)
 
-The `archetype.dsl` module provides agent-centric ergonomics on top of the DataFrame engine:
+The `archetype.dsl` module provides agent-centric ergonomics on top of the DataFrame engine.
+
+**Two versions available:**
+
+### DSL v1 - Agent-centric mutations (Original)
 
 ```python
 from archetype.dsl import World, behavior, spawn_world, Inbox
@@ -487,7 +491,61 @@ async with World("my_sim", storage="./data") as world:
         print(agent.perspective.name)
 ```
 
-### spawn_world() for Inner Simulations / MCTS
+**Trade-offs:**
+- ✅ Ergonomic imperative style
+- ✅ Easy to prototype
+- ❌ Collects DataFrame to Python list
+- ❌ Loops through rows (defeats batching)
+- ❌ ~7x slower than v2
+
+### DSL v2 - DataFrame-first compilation (Jan 2026)
+
+```python
+from archetype.dsl import WorldV2, processor
+
+@processor
+class Move:
+    requires = [Position, Velocity]
+    priority = 10
+    
+    @staticmethod
+    def filter(arch):
+        # Compiles to df.where()
+        return arch.velocity.vx != 0
+    
+    def transform(self, arch, tick, dt):
+        # arch.position.x compiles to Field("position__x")
+        # which compiles to col("position__x")
+        return {
+            "position__x": arch.position.x + arch.velocity.vx * dt,
+            "position__y": arch.position.y + arch.velocity.vy * dt,
+        }
+
+async with WorldV2("my_sim") as world:
+    world.register(Move)
+    await world.spawn(Position(x=0, y=0), Velocity(vx=1, vy=2))
+    await world.run(ticks=10, dt=1.0)
+    
+    # Query API for read-only inspection
+    for agent in world.query(Position, Velocity):
+        print(agent.position.x, agent.position.y)
+```
+
+**Trade-offs:**
+- ✅ Pure DataFrame transforms
+- ✅ ~7x faster than v1
+- ✅ Honors core engine architecture
+- ✅ Leverages Daft optimization
+- ❌ More constrained API
+- ❌ Conditionals require filters/multiple processors
+
+**When to use which:**
+- **v1**: Prototyping, complex logic, <100 entities, ergonomics priority
+- **v2**: Production, performance-critical, >100 entities, DataFrame-native
+
+See `docs/DSL_V2_MIGRATION.md`, `docs/DSL_PHILOSOPHY.md`, and `docs/DSL_COMPARISON.md` for details.
+
+### spawn_world() for Inner Simulations / MCTS (v1 only, for now)
 
 ```python
 async with spawn_world("scenario_1", parent=world, fork_state=True) as inner:
@@ -520,5 +578,6 @@ Use cases:
 10. **MESSAGE commands** for agent communication via broker
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
-13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
-14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+13. **Agent DSL v1** for ergonomic prototyping (collect-and-loop trade-off)
+14. **Agent DSL v2** for production (DataFrame-first, 7x faster)
+15. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
