@@ -5,84 +5,56 @@
 Archetype DSL
 =============
 
-Two DSL versions are available:
+A DataFrame-first DSL that honors the core engine by compiling behaviors
+to pure DataFrame transforms.
 
-**DSL v1 (archetype.dsl.core)** - Agent-centric with ergonomic mutations
-- Good for: Prototyping, small entity counts (<100), rapid iteration
-- Trade-off: Collects DataFrames to Python lists, row-by-row processing
+Features:
+- Agent-centric syntax: arch.position.x
+- Compiles to DataFrame operations: col("position__x")
+- Conditional logic with when/otherwise
+- spawn_world() for inner simulations / MCTS
 
-**DSL v2 (archetype.dsl.v2)** - DataFrame-first compilation
-- Good for: Production, large entity counts (>100), performance-critical code
-- Trade-off: More constrained API, but 7x faster
-
-See docs/DSL_V2_MIGRATION.md for migration guide.
-See docs/DSL_PHILOSOPHY.md for design rationale.
-
-Usage (v1):
-    from archetype.dsl import World, behavior
+Usage:
+    from archetype.dsl import World, behavior, when
     
     @behavior
     class Move:
         requires = [Position, Velocity]
-        async def act(self, agent, world, tick):
-            agent.position.x += agent.velocity.vx
-
-Usage (v2):
-    from archetype.dsl import WorldV2, processor
-    
-    @processor
-    class Move:
-        requires = [Position, Velocity]
+        
         def transform(self, arch, tick, dt):
-            return {"position__x": arch.position.x + arch.velocity.vx * dt}
+            return {
+                "position__x": arch.position.x + arch.velocity.vx * dt,
+                "position__y": arch.position.y + arch.velocity.vy * dt,
+            }
+    
+    async with World("sim") as world:
+        world.register(Move)
+        await world.spawn(Position(x=0, y=0), Velocity(vx=1, vy=2))
+        await world.run(ticks=10, dt=1.0)
 """
 
-# DSL v1 - Legacy agent-centric API
 from archetype.dsl.core import (
-    AgentProxy,
-    BehaviorSpec,
-    ComponentProxy,
-    RolloutResult,
-    World,
-    behavior,
-    component_column,
-    component_prefix,
-    parallel_rollouts,
-    spawn_world,
-)
-from archetype.dsl.primitives import Inbox, broadcast
-
-# DSL v2 - DataFrame-first API
-from archetype.dsl.v2 import (
     AgentView,
     ArchetypeAccessor,
+    BehaviorSpec,
     ComponentView,
     Field,
-    ProcessorSpec,
-    WorldV2,
-    processor,
+    World,
+    behavior,
+    spawn_world,
+    when,
 )
+from archetype.dsl.primitives import Inbox
 
 __all__ = [
-    # v1 API
     "World",
-    "AgentProxy",
-    "ComponentProxy",
     "behavior",
     "BehaviorSpec",
     "spawn_world",
-    "parallel_rollouts",
-    "RolloutResult",
-    "component_prefix",
-    "component_column",
-    "Inbox",
-    "broadcast",
-    # v2 API
-    "WorldV2",
-    "processor",
-    "ProcessorSpec",
+    "when",
     "Field",
     "ArchetypeAccessor",
     "AgentView",
     "ComponentView",
+    "Inbox",
 ]

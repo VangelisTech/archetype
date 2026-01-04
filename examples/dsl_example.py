@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-DSL v2 Example - DataFrame-First Design
-========================================
+DataFrame-First DSL Example
+============================
 
-This example demonstrates the improved DSL that honors the core engine by:
-1. Compiling behaviors to pure DataFrame transforms
-2. Separating query API from behavior definition
-3. Making archetypes explicit
-4. Preserving batch operations (no collect-and-loop)
+Demonstrates the simplified DSL that honors the core engine by compiling
+agent-centric syntax to pure DataFrame transforms.
 
-Run: python examples/dsl_v2_example.py
+Features:
+- Field expressions compile to col() operations
+- when/otherwise for conditional logic
+- Pure DataFrame transforms (no collect-and-loop)
+
+Run: python examples/dsl_example.py
 """
 
 import asyncio
 
 from archetype.core.component import Component
-from archetype.dsl.v2 import WorldV2, processor
+from archetype.dsl import World, behavior, when
 
 
 # =============================================================================
@@ -48,11 +50,11 @@ class Energy(Component):
 
 
 # =============================================================================
-# Processors - DataFrame-First Behaviors
+# Behaviors - DataFrame-First
 # =============================================================================
 
 
-@processor
+@behavior
 class Movement:
     """Update positions based on velocity."""
     
@@ -60,22 +62,19 @@ class Movement:
     priority = 10
     
     def transform(self, arch, tick, dt):
-        """
-        Pure DataFrame transform.
-        arch.position.x compiles to col("position__x")
-        """
+        """Pure DataFrame transform."""
         return {
             "position__x": arch.position.x + arch.velocity.vx * dt,
             "position__y": arch.position.y + arch.velocity.vy * dt,
         }
 
 
-@processor
+@behavior
 class EnergyDrain:
     """Drain energy when moving."""
     
     requires = [Energy, Velocity]
-    priority = 15  # After movement
+    priority = 15
     
     @staticmethod
     def filter(arch):
@@ -84,72 +83,52 @@ class EnergyDrain:
     
     def transform(self, arch, tick, dt):
         """Drain energy proportional to velocity."""
-        speed = (arch.velocity.vx ** 2 + arch.velocity.vy ** 2) ** 0.5
-        drain = speed * 2.0 * dt
+        # Use power for speed calculation
+        speed_squared = arch.velocity.vx ** 2 + arch.velocity.vy ** 2
+        drain = speed_squared ** 0.5 * 2.0 * dt
         return {
             "energy__current": arch.energy.current - drain,
         }
 
 
-@processor
-class Friction:
-    """Apply friction to slow down entities."""
-    
-    requires = [Velocity, Energy]
-    priority = 20  # After energy drain
-    
-    def transform(self, arch, tick, dt):
-        """Reduce velocity, more when low energy."""
-        friction_factor = 0.95
-        
-        # Higher friction when low energy
-        energy_ratio = arch.energy.current / arch.energy.max
-        adjusted_friction = friction_factor - (1.0 - energy_ratio) * 0.2
-        
-        return {
-            "velocity__vx": arch.velocity.vx * adjusted_friction,
-            "velocity__vy": arch.velocity.vy * adjusted_friction,
-        }
-
-
-@processor
-class HealthRegen:
-    """Regenerate health when stationary."""
+@behavior
+class ConditionalHealthRegen:
+    """Regenerate health when stationary, using when/otherwise."""
     
     requires = [Health, Velocity]
-    priority = 25
-    
-    @staticmethod
-    def filter(arch):
-        """Only regen when stationary."""
-        return (arch.velocity.vx == 0) & (arch.velocity.vy == 0)
+    priority = 20
     
     def transform(self, arch, tick, dt):
-        """Regenerate 5 health per tick, capped at max."""
-        new_health = arch.health.current + 5
-        # Note: We'd need a min() function for proper capping
+        """
+        Use Daft's when/otherwise for conditional logic.
+        Regenerate 5 health per tick when stationary, otherwise damage by 2.
+        """
+        is_stationary = (arch.velocity.vx == 0) & (arch.velocity.vy == 0)
+        
         return {
-            "health__current": new_health,
+            "health__current": when(is_stationary)
+                .then(arch.health.current + 5)
+                .otherwise(arch.health.current - 2)
         }
 
 
-@processor
-class CollisionDamage:
-    """Damage entities that collide (simple boundary check)."""
+@behavior
+class EnergyBasedVelocity:
+    """Reduce velocity when low on energy using when/otherwise."""
     
-    requires = [Health, Position]
-    priority = 30
-    
-    @staticmethod
-    def filter(arch):
-        """Check if out of bounds."""
-        return (arch.position.x < 0) | (arch.position.x > 100) | \
-               (arch.position.y < 0) | (arch.position.y > 100)
+    requires = [Velocity, Energy]
+    priority = 25
     
     def transform(self, arch, tick, dt):
-        """Take damage when out of bounds."""
+        """Apply friction based on energy levels."""
+        energy_ratio = arch.energy.current / arch.energy.max
+        
+        # When energy is low (<30%), reduce velocity more aggressively
+        friction = when(energy_ratio < 0.3).then(0.5).otherwise(0.95)
+        
         return {
-            "health__current": arch.health.current - 20,
+            "velocity__vx": arch.velocity.vx * friction,
+            "velocity__vy": arch.velocity.vy * friction,
         }
 
 
@@ -160,25 +139,23 @@ class CollisionDamage:
 
 async def main():
     print("=" * 60)
-    print("DSL v2 Example - DataFrame-First Design")
+    print("DataFrame-First DSL Example")
     print("=" * 60)
     
-    async with WorldV2("dsl_v2_demo") as world:
-        # Register processors (order doesn't matter, priority does)
+    async with World("dsl_demo") as world:
+        # Register behaviors
         world.register(Movement)
         world.register(EnergyDrain)
-        world.register(Friction)
-        world.register(HealthRegen)
-        world.register(CollisionDamage)
+        world.register(ConditionalHealthRegen)
+        world.register(EnergyBasedVelocity)
         
-        print("\n✓ Registered 5 processors")
+        print("\n✓ Registered 4 behaviors")
         print("  - Movement (priority 10)")
         print("  - EnergyDrain (priority 15)")
-        print("  - Friction (priority 20)")
-        print("  - HealthRegen (priority 25)")
-        print("  - CollisionDamage (priority 30)")
+        print("  - ConditionalHealthRegen (priority 20) - uses when/otherwise")
+        print("  - EnergyBasedVelocity (priority 25) - uses when/otherwise")
         
-        # Spawn entities with different configurations
+        # Spawn entities
         print("\n✓ Spawning entities...")
         
         # Fast moving entity
@@ -208,15 +185,6 @@ async def main():
         )
         print("  - Stationary at (25, 25)")
         
-        # Entity heading out of bounds
-        await world.spawn(
-            Position(x=95.0, y=50.0),
-            Velocity(vx=3.0, vy=0.0),
-            Health(current=100, max=100),
-            Energy(current=100.0, max=100.0),
-        )
-        print("  - Boundary tester at (95, 50)")
-        
         # Run simulation
         print("\n" + "-" * 60)
         print("Running 10 ticks...")
@@ -244,12 +212,12 @@ async def main():
         print("=" * 60)
         
         print("\nKey observations:")
-        print("1. Fast mover drained energy quickly due to high velocity")
-        print("2. Slow mover maintained energy better")
-        print("3. Stationary entity regenerated health (if implemented)")
-        print("4. Boundary tester took collision damage")
-        print("\nAll updates happened via pure DataFrame transforms!")
-        print("No Python loops in the hot path. ✓")
+        print("1. All updates happened via pure DataFrame transforms")
+        print("2. when/otherwise used for conditional logic")
+        print("3. No Python loops in execution path")
+        print("4. Fast mover drained energy and slowed down")
+        print("5. Stationary entity regenerated health (when/otherwise)")
+        print("\n✓ Honors the core engine's DataFrame-first architecture!")
 
 
 if __name__ == "__main__":
