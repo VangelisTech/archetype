@@ -1,6 +1,23 @@
 # DSL Guide
 
-The Archetype DSL provides an ergonomic, agent-centric programming model that compiles down to efficient DataFrame operations.
+> **Note**: This guide covers DSL v1. For the new DataFrame-first DSL v2, see:
+> - [DSL v2 Migration Guide](../DSL_V2_MIGRATION.md)
+> - [DSL Design Philosophy](../DSL_PHILOSOPHY.md)
+> - [DSL Comparison: v1 vs v2](../DSL_COMPARISON.md)
+
+The Archetype DSL v1 provides an ergonomic, agent-centric programming model that compiles down to DataFrame operations.
+
+**When to use v1:**
+- Prototyping and rapid development
+- Small entity counts (<100)
+- Complex inter-entity logic
+- When ergonomics matter more than performance
+
+**When to use v2:**
+- Production systems
+- Large entity counts (>100)
+- Performance-critical code
+- When you want to honor the core DataFrame architecture
 
 ## World Context Manager
 
