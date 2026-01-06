@@ -31,16 +31,13 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 fn test_signature() -> ArchetypeSignature {
-    let meta = ComponentMeta {
-        name: "BenchComponent".to_string(),
-        schema: Schema::new(vec![
-            Field::new("x", DataType::Float64, false),
-            Field::new("y", DataType::Float64, false),
-            Field::new("z", DataType::Float64, false),
-        ]),
-        prefix: "benchcomponent__".to_string(),
-    };
-    ArchetypeSignature::new(vec![meta])
+    let meta = ComponentMeta::new("BenchComponent", "benchcomponent__");
+    let schema = Schema::new(vec![
+        Field::new("benchcomponent__x", DataType::Float64, false),
+        Field::new("benchcomponent__y", DataType::Float64, false),
+        Field::new("benchcomponent__z", DataType::Float64, false),
+    ]);
+    ArchetypeSignature::new(vec![(meta, schema)])
 }
 
 fn create_world() -> AsyncWorld<QueryManager<InMemoryStore>, UpdateManager<InMemoryStore>, System> {

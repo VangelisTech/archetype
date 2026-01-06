@@ -309,14 +309,16 @@ where
             .query_archetype(sig, &world_id, run_id, ticks, None)
             .await?;
 
-        // Concatenate batches (simplified - in production would use arrow concat)
+        // Concatenate all batches using arrow concat
+        let schema = Archetype::get_schema(sig);
         if batches.is_empty() {
-            let schema = Archetype::get_schema(sig);
             return Ok(RecordBatch::new_empty(Arc::new(schema)));
         }
 
-        // Return first batch (simplified for now)
-        Ok(batches.into_iter().next().unwrap())
+        // Concatenate all batches into one
+        use arrow::compute::concat_batches;
+        let combined = concat_batches(&Arc::new(schema), &batches)?;
+        Ok(combined)
     }
 
     /// Returns the current tick.
@@ -369,9 +371,12 @@ where
             .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
             .ok_or_else(|| ArchetypeError::StorageError("Missing entity_id column".to_string()))?;
 
+        // Convert despawn_ids to HashSet for O(1) lookup
+        let despawn_set: std::collections::HashSet<i32> = despawn_ids.iter().cloned().collect();
+
         // Build new is_active column
         let is_active: Vec<bool> = (0..num_rows)
-            .map(|i| !despawn_ids.contains(&entity_col.value(i)))
+            .map(|i| !despawn_set.contains(&entity_col.value(i)))
             .collect();
 
         // Rebuild batch with new is_active
@@ -419,12 +424,14 @@ where
         // Create new batch from spawn rows
         let spawn_batch = self.build_batch_from_values(&schema, new_columns)?;
 
-        // Concatenate with existing batch
+        // Concatenate with existing batch using arrow concat
         if batch.num_rows() == 0 {
             Ok(spawn_batch)
         } else {
-            // Simple concatenation (in production use arrow concat_batches)
-            Ok(spawn_batch)
+            // Concatenate existing batch with new spawn batch
+            use arrow::compute::concat_batches;
+            let combined = concat_batches(&batch.schema(), &[batch, spawn_batch])?;
+            Ok(combined)
         }
     }
 
