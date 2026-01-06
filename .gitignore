@@ -65,3 +65,9 @@ data/catalog.db
 .pytest_cache/
 archetype.egg-info/
 coverage.xml
+
+# Rust
+rust/archetype-aio/target/
+rust/archetype-aio/Cargo.lock
+*.rlib
+*.rmeta

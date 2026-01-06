@@ -1,0 +1,54 @@
+[package]
+name = "archetype-aio"
+version = "0.1.0"
+edition = "2021"
+authors = ["Vangelis Technologies Inc. <everett@vangelis.tech>"]
+license = "Apache-2.0"
+description = "AI-native simulation engine: ECS as data (Arrow) with async runtime (Tokio)"
+repository = "https://github.com/vangelis-tech/archetype"
+keywords = ["simulation", "ecs", "arrow", "async", "tokio"]
+categories = ["simulation", "data-structures", "asynchronous"]
+
+[dependencies]
+# Arrow ecosystem for columnar data
+arrow = { version = "55", features = ["prettyprint"] }
+arrow-schema = "55"
+arrow-array = "55"
+arrow-cast = "55"
+
+# Async runtime
+tokio = { version = "1.45", features = ["full", "sync", "rt-multi-thread", "macros"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Utilities
+uuid = { version = "1.17", features = ["v7", "serde"] }
+tracing = "0.1"
+parking_lot = "0.12"
+dashmap = "6.1"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tokio-test = "0.4"
+criterion = { version = "0.6", features = ["async_tokio"] }
+tempfile = "3.19"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bench]]
+name = "world_benchmark"
+harness = false
+
+[features]
+default = []
+# Future feature flags
+lance = []
+iceberg = []
