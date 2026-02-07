@@ -24,7 +24,7 @@ The `core/` module is human-curated, but everything else is fair game for agent 
 
 ---
 
-## Core Insight: DataFrames ARE the Batch
+## Daft DataFrames are lazy, columnar, and vectorized.
 
 The DataFrame is already columnar. Operations on columns are inherently batched/vectorized. Don't overthink it.
 
@@ -114,7 +114,7 @@ If the model doesn't batch, using `@daft.method.batch` and looping internally is
 
 ---
 
-## Struct Field Access (0.7.x)
+## Expression namespaces were deprecated v0.7.x 
 
 **Old way (deprecated):**
 ```python
