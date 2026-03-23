@@ -19,7 +19,7 @@ Pure ECS primitives: Component, Archetype, World, System, Processor.
 Storage interfaces and implementations.
 Resources: Type-safe DI container for passing services to processors.
 
-Application-level orchestration (WorldOrchestrator, WorldFactory, StorageBackendManager)
+Application-level orchestration (WorldService, WorldFactory, StorageService)
 lives in archetype.app.
 """
 

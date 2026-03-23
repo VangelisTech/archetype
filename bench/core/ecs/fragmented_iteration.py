@@ -4,7 +4,8 @@ import string
 
 from daft import col, lit
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.world_service import WorldService
+from archetype.app.storage_service import StorageService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig
@@ -48,7 +49,7 @@ async def run(
     entities_per_component: int = 100,
     steps: int = 1,
     *,
-    orchestrator: WorldOrchestrator | None = None,
+    orchestrator: WorldService | None = None,
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
     instrumented: bool | None = None,

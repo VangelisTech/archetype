@@ -1,7 +1,8 @@
 import pytest
 from daft import col
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -23,13 +24,13 @@ class MoveRight(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_prefer_live_reads_uses_live_snapshot_when_true(tmp_path):
     """With prefer_live_reads=True, world should reuse live snapshot instead of querier for previous state."""
-    orch = WorldOrchestrator()
+    ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await orch.create_world(
-            WorldConfig(name="w"), system=system, storage_config=storage
+        world = await ws.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
         )
 
         # spawn entity with Pos(x=0)
@@ -45,19 +46,19 @@ async def test_prefer_live_reads_uses_live_snapshot_when_true(tmp_path):
         df = await world.get_components([Pos])
         assert df.where(col("is_active")).select("pos__x").to_pylist()[-1]["pos__x"] == 2
     finally:
-        await orch.shutdown()
+        await ws.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
     """With prefer_live_reads=False, world queries prior tick from store rather than using live snapshot."""
-    orch = WorldOrchestrator()
+    ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store2"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await orch.create_world(
-            WorldConfig(name="w2"), system=system, storage_config=storage
+        world = await ws.create_world(
+            WorldConfig(name="w2"), storage_config=storage, system=system
         )
 
         await world.create_entity([Pos(x=5)])
@@ -67,4 +68,4 @@ async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
         df = await world.get_components([Pos])
         assert df.where(col("is_active")).select("pos__x").to_pylist()[-1]["pos__x"] == 7
     finally:
-        await orch.shutdown()
+        await ws.shutdown()

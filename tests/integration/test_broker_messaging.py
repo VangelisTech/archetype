@@ -12,7 +12,6 @@ import pytest
 from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
-from archetype.dsl import Inbox, World
 
 # =============================================================================
 # Test Components
@@ -91,69 +90,6 @@ class TestCommandBroker:
         assert len(batch1) == 30
         assert len(batch2) == 30
         assert len(batch3) == 40  # Remaining
-
-
-# =============================================================================
-# Integration Tests: Messaging via DSL
-# =============================================================================
-
-
-class TestMessaging:
-    @pytest.mark.asyncio
-    async def test_broadcast_delivers_messages(self, tmp_path):
-        """Test that broadcast messages are delivered via broker."""
-
-        async with World("messaging", storage=tmp_path / "data") as world:
-            await world.spawn(Agent(name="Alice"), Inbox(messages_json="[]"))
-            await world.spawn(Agent(name="Bob"), Inbox(messages_json="[]"))
-            await world.run(ticks=1)
-
-            alice = await world.find_one(lambda a: a.agent.name == "Alice")
-
-            # Alice broadcasts
-            await world.broadcast(
-                content="Hello everyone!",
-                sender=alice,
-                exclude=[alice],
-            )
-
-            # Check broker has message for Bob
-            pending = await world.broker.get_pending_count(world.name)
-            assert pending == 1
-
-            # Run another tick to realize messages
-            await world.run(ticks=1)
-
-    @pytest.mark.asyncio
-    async def test_targeted_message(self, tmp_path):
-        """Test sending message to specific agent."""
-
-        async with World("targeted", storage=tmp_path / "data") as world:
-            await world.spawn(Agent(name="Sender"), Inbox())
-            await world.spawn(Agent(name="Target"), Inbox())
-            await world.spawn(Agent(name="Bystander"), Inbox())
-            await world.run(ticks=1)
-
-            sender = await world.find_one(lambda a: a.agent.name == "Sender")
-            target = await world.find_one(lambda a: a.agent.name == "Target")
-            _ = await world.find_one(lambda a: a.agent.name == "Bystander")  # Verify exists
-
-            # Send directly via broker
-            cmd = Command(
-                type=CommandType.MESSAGE,
-                payload={
-                    "sender_id": sender.entity_id,
-                    "sender_name": "Sender",
-                    "receiver_id": target.entity_id,
-                    "receiver_name": "Target",
-                    "content": "Private message",
-                },
-            )
-            await world.broker.enqueue(world.name, cmd)
-
-            # Only one message should be pending
-            pending = await world.broker.get_pending_count(world.name)
-            assert pending == 1
 
 
 # =============================================================================

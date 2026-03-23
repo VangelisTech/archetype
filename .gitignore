@@ -28,6 +28,7 @@ node_modules/
 .codex/
 .cursor/
 .cursorignore
+.worktrees/
 *.lance
 Claude.md
 .claude/

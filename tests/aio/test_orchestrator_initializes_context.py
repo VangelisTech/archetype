@@ -1,26 +1,22 @@
 import pytest
 
-from archetype.app.orchestrator import WorldOrchestrator
-from archetype.core.aio import AsyncSystem
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldService
+from archetype.core.config import StorageConfig, WorldConfig
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_builds_context_once(tmp_path):
-    orch = WorldOrchestrator()
+async def test_world_service_builds_context_once(tmp_path):
+    ws = WorldService(StorageService())
     try:
         cfg = WorldConfig(name="w1")
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
-        _w1 = await orch.create_world(cfg, system=AsyncSystem(), storage_config=storage)
-        _w2 = await orch.create_world(
-            WorldConfig(name="w2"), system=AsyncSystem(), storage_config=storage
+        _w1 = await ws.create_world(cfg, storage_config=storage)
+        _w2 = await ws.create_world(
+            WorldConfig(name="w2"), storage_config=storage
         )
 
-        # Running both should work and share the same backing context transparently
-        rc = RunConfig(num_steps=1)
-        await orch.run_all_worlds(rc)
-
-        assert len(orch.list_worlds()) == 2
+        assert len(ws.list_worlds()) == 2
     finally:
-        await orch.shutdown()
+        await ws.shutdown()

@@ -153,7 +153,7 @@ class iWorld(Protocol):
         4. Persist results via Updater
 
     Worlds are isolated - each has its own entity namespace and can
-    run in parallel via the WorldOrchestrator.
+    run in parallel via the WorldService.
     """
 
     def run(self, run_config: RunConfig, **input_kwargs) -> None:

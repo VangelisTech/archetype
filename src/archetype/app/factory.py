@@ -16,17 +16,19 @@
 World Factory
 
 Assembles world instances by wiring together storage, querier, updater, and system
-components. Delegates backend management to the injected StorageBackendManager.
+components. Delegates backend management to the injected StorageService.
 """
 
-from archetype.app.storage_manager import StorageBackendManager
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncSystem, iWorld
-from archetype.core.sync import SyncSystem, SyncWorld
 
-# OpenTelemetry instrumentation is now handled via decorators in archetype.core.metrics.otel
-# See metrics/otel.py for trace/span utilities
+if TYPE_CHECKING:
+    from archetype.app.storage_service import StorageService
 
 
 class WorldFactory:
@@ -34,23 +36,22 @@ class WorldFactory:
     Factory for creating world instances.
 
     Assembles a world by:
-    1. Delegating storage backend management to the backend manager
-    2. Selecting the appropriate world class (sync/async)
-    3. Wiring dependencies together
+    1. Delegating storage backend management to the StorageService
+    2. Wiring dependencies together
     """
 
-    def __init__(self, backend_manager: StorageBackendManager):
-        self._backend_manager = backend_manager
+    def __init__(self, storage_service: StorageService):
+        self._storage_service = storage_service
 
     async def create_world(
         self,
         world_config: WorldConfig,
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
-        system: iAsyncSystem | object | None = None,
+        system: iAsyncSystem | None = None,
     ) -> iWorld:
         """
-        Assembles and returns a new world instance.
+        Assembles and returns a new async world instance.
 
         Args:
             world_config: Configuration for the world (name, id, etc.)
@@ -61,23 +62,13 @@ class WorldFactory:
         Returns:
             Configured world instance ready for use
         """
-        # Get shared backend resources
-        store, querier, updater = await self._backend_manager.get_backend(
+        store, querier, updater = await self._storage_service.get_backend(
             storage_config, cache_config
         )
 
-        # Select world class based on storage config
-        if storage_config.is_async:
-            world_class = AsyncWorld
-            default_system = AsyncSystem()
-        else:
-            world_class = SyncWorld
-            default_system = SyncSystem()
-
-        # Assemble and return
-        return world_class(
+        return AsyncWorld(
             world_config=world_config,
             querier=querier,
             updater=updater,
-            system=system or default_system,
+            system=system or AsyncSystem(),
         )

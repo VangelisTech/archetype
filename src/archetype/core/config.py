@@ -33,26 +33,6 @@ class StorageBackend(Enum):
     LANCEDB = "lancedb"
 
 
-class UnityCatalogConfig(BaseModel):
-    """
-    Unity Catalog configuration. Optional; when provided enables UC-aware behavior.
-    """
-
-    enabled: bool = Field(default=False, description="Enable Unity Catalog awareness")
-    enforce_permissions: bool = Field(
-        default=False, description="Wrap query/update with UC permission enforcement"
-    )
-    endpoint: str | None = Field(default=None, description="UC REST endpoint base URL")
-    token: str | None = Field(
-        default=None, description="Bearer token to access UC if not using user tokens"
-    )
-    uc_catalog: str | None = Field(default=None, description="Default UC catalog to operate in")
-    uc_schema: str | None = Field(default=None, description="Default UC schema to operate in")
-    default_region: str | None = Field(
-        default=None, description="Default region for temporary credentials"
-    )
-
-
 class StorageConfig(BaseModel):
     """
     Storage Backend Context for configuring local or cloud storage access
@@ -69,18 +49,13 @@ class StorageConfig(BaseModel):
     )
     namespace: str = Field(default="archetypes")
     backend: StorageBackend = Field(
-        default=StorageBackend.ICEBERG,
-        description="Storage backend engine: 'iceberg (default)' or 'lancedb'",
+        default=StorageBackend.LANCEDB,
+        description="Storage backend engine: 'iceberg' or 'lancedb (default)'",
     )
     io_config: IOConfig | None = Field(
         default=None,
         description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.",
     )
-    uc_config: UnityCatalogConfig | None = Field(
-        default=None,
-        description="Optional Unity Catalog configuration. When provided, enables UC integration.",
-    )
-
     model_config = dict(arbitrary_types_allowed=True)
 
     # Coerce Path to str for downstream components
@@ -255,44 +230,3 @@ class WorldConfig(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
 
 
-class SimulationConfig(BaseModel):
-    """
-    A simulation configuration is a container for the simulation configuration, including:
-      - run_configs: List[RunConfig] - The configuration for the run sequence
-      - cache_config: CacheConfig - The configuration for the cache
-      - storage_config: StorageConfig - The configuration for the storage backend
-      - world_configs: List[WorldConfig] - The configuration for the world
-    """
-
-    run_config: RunConfig = Field(
-        default_factory=RunConfig, description="The configuration for the run sequence"
-    )
-    cache_config: CacheConfig = Field(
-        default_factory=CacheConfig, description="The configuration for the cache"
-    )
-    storage_config: StorageConfig = Field(
-        default_factory=StorageConfig, description="The configuration for the storage backend"
-    )
-    world_configs: list[WorldConfig] = Field(
-        default_factory=list, description="The configuration for the world"
-    )
-
-    model_config = dict(arbitrary_types_allowed=True)
-
-
-class ArchetypeConfig(BaseModel):
-    """Top-level application configuration."""
-
-    storage: StorageConfig = Field(default_factory=StorageConfig)
-    cache: CacheConfig = Field(default_factory=CacheConfig)
-    worlds: list[WorldConfig] = Field(default_factory=list)
-
-    model_config = dict(arbitrary_types_allowed=True)
-
-    @classmethod
-    def from_toml(cls, path: str) -> "ArchetypeConfig":
-        import tomllib as toml  # type: ignore[import-not-found]  # Python 3.11+
-
-        with open(path) as f:
-            data = toml.load(f)
-        return cls(**data)

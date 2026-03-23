@@ -6,7 +6,8 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.world_service import WorldService
+from archetype.app.storage_service import StorageService
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 
 from . import add_remove, entity_cycle, fragmented_iteration, packed_iteration, simple_iteration
@@ -28,7 +29,7 @@ async def run_all(
         ("add_remove", add_remove.run),
     ]
 
-    orch = WorldOrchestrator()
+    orch = WorldService(StorageService())
     try:
         for name, fn in benches:
             res, ids = await fn(

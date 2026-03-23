@@ -33,23 +33,14 @@ Architecture (see assets/archetype_diagram.png):
                           daft df
 
 Quick Start:
-    >>> import archetype
-    >>> sim = archetype.init("./data")
-    >>> world = sim.create_world("demo")
-    >>> entity = world.create_entity([Position(x=0, y=0), Velocity(vx=1, vy=1)])
-    >>> world.add_processor(MovementProcessor())
-    >>> world.step()
+    >>> from archetype.app import ServiceContainer
+    >>> container = ServiceContainer()
 """
 
 from __future__ import annotations
 
 from importlib import import_module
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from archetype.core.component import Component
-    from archetype.core.sync.processor import SyncProcessor
-    from archetype.core.sync.world import SyncWorld
+from typing import Any
 
 __version__ = "0.1.0"
 
@@ -84,24 +75,23 @@ __all__ = [
     "UpdateManager",
     "AsyncQueryManager",
     "AsyncUpdateManager",
-    # Orchestration (from app layer)
-    "WorldOrchestrator",
-    "WorldFactory",
-    "StorageBackendManager",
-    "StorageResourceManager",  # Backwards compat alias
-    "ArchetypeApp",
     # Config
     "StorageConfig",
     "CacheConfig",
     "RunConfig",
     "WorldConfig",
-    # Managed Storage
-    "ManagedStorage",
-    "SyncManagedStorage",
-    "CatalogEntry",
-    # Factory
-    "Simulation",
-    "init",
+    # App layer services
+    "CommandBroker",
+    "WorldService",
+    "WorldFactory",
+    "StorageService",
+    "CommandService",
+    "SimulationService",
+    "QueryService",
+    "ServiceContainer",
+    # Models
+    "Command",
+    "CommandType",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -140,16 +130,17 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CacheConfig": ("archetype.core", "CacheConfig"),
     "RunConfig": ("archetype.core", "RunConfig"),
     "WorldConfig": ("archetype.core", "WorldConfig"),
-    # Managed storage
-    "ManagedStorage": ("archetype.core", "ManagedStorage"),
-    "SyncManagedStorage": ("archetype.core", "SyncManagedStorage"),
-    "CatalogEntry": ("archetype.core", "CatalogEntry"),
-    # Orchestration (app layer)
-    "WorldOrchestrator": ("archetype.app", "WorldOrchestrator"),
+    # App layer
+    "CommandBroker": ("archetype.app", "CommandBroker"),
+    "WorldService": ("archetype.app", "WorldService"),
     "WorldFactory": ("archetype.app", "WorldFactory"),
-    "StorageBackendManager": ("archetype.app", "StorageBackendManager"),
-    "StorageResourceManager": ("archetype.app", "StorageResourceManager"),  # Backwards compat
-    "ArchetypeApp": ("archetype.app", "ArchetypeApp"),
+    "StorageService": ("archetype.app", "StorageService"),
+    "CommandService": ("archetype.app", "CommandService"),
+    "SimulationService": ("archetype.app", "SimulationService"),
+    "QueryService": ("archetype.app", "QueryService"),
+    "ServiceContainer": ("archetype.app", "ServiceContainer"),
+    "Command": ("archetype.app", "Command"),
+    "CommandType": ("archetype.app", "CommandType"),
 }
 
 
@@ -174,157 +165,3 @@ def __getattr__(name: str) -> Any:
 
 def __dir__() -> list[str]:
     return sorted(set(list(globals().keys()) + list(_EXPORTS.keys())))
-
-
-class Simulation:
-    """
-    Simple synchronous simulation environment.
-
-    This is a lightweight wrapper matching the diagram flow:
-    System → World → Querier/Updater → Store → LanceDB
-
-    For async/distributed workloads, use ArchetypeApp instead.
-    """
-
-    def __init__(
-        self,
-        uri: str,
-        namespace: str = "archetypes",
-        debug: bool = False,
-    ):
-        from pathlib import Path
-
-        from archetype.core import StorageConfig
-        from archetype.core.runtime.storage import StorageContextFactory
-
-        self.debug = debug
-
-        # Resolve to absolute path
-        path = Path(uri).resolve()
-
-        # Build storage context using the existing factory
-        storage_config = StorageConfig(uri=str(path), namespace=namespace)
-        self._context = StorageContextFactory.build(storage_config)
-        self.uri = Path(self._context.uri)
-        self.namespace = self._context.namespace
-
-        # World registry
-        self._worlds: dict[str, SyncWorld] = {}
-
-    def spawn_world(
-        self,
-        name: str = "default",
-        *,
-        is_async: bool = False,
-        **kwargs,
-    ) -> str:
-        """
-        Create a new simulation world.
-
-        Args:
-            name: Human-readable name for the world
-            is_async: Use async world (default False for sync)
-
-        Returns:
-            world_id string
-        """
-        from uuid_utils import uuid7
-
-        from archetype.core import (
-            QueryManager,
-            SyncStore,
-            SyncSystem,
-            SyncWorld,
-            UpdateManager,
-            WorldConfig,
-        )
-
-        world_uuid = uuid7()
-        world_id_str = str(world_uuid)
-
-        # Create store, querier, updater, system
-        store = SyncStore(uri=str(self.uri), session=self._context.session, debug=self.debug)
-        querier = QueryManager(store=store, debug=self.debug)
-        updater = UpdateManager(store=store)
-        system = SyncSystem()
-
-        config = WorldConfig(name=name, world_id=world_uuid)
-        world = SyncWorld(
-            world_config=config,
-            querier=querier,
-            updater=updater,
-            system=system,
-        )
-
-        self._worlds[world_id_str] = world
-        return world_id_str
-
-    def get_world(self, world_id: str) -> SyncWorld:
-        """Get a world by ID."""
-        return self._worlds[world_id]
-
-    def add_processor_to_world(self, world_id: str, processor: SyncProcessor) -> None:
-        """Add a processor to a world's system."""
-        self._worlds[world_id].add_processor(processor)
-
-    def spawn_entity(self, world_id: str, *components: Component) -> int:
-        """Create an entity with the given components in the specified world."""
-        return self._worlds[world_id].create_entity(list(components))
-
-    def step_world(self, world_id: str, **kwargs) -> None:
-        """Execute one simulation step for the specified world."""
-        from archetype.core import RunConfig
-
-        run_config = RunConfig(num_steps=1)
-        self._worlds[world_id].step(run_config, **kwargs)
-
-
-def init(
-    uri: str = "./archetype_data",
-    *,
-    namespace: str = "archetypes",
-    debug: bool = False,
-) -> Simulation:
-    """
-    Initialize an Archetype simulation environment.
-
-    This is the recommended entry point for synchronous simulations.
-    For async/distributed workloads, use ArchetypeApp.create() instead.
-
-    Args:
-        uri: Path to the data directory (created if not exists)
-        namespace: Storage namespace for archetype tables
-        debug: Enable debug logging and query tracing
-
-    Returns:
-        Simulation instance for creating and managing worlds
-
-    Example:
-        >>> import archetype
-        >>> from archetype import Component, Processor
-        >>> from daft import DataFrame, col
-        >>>
-        >>> class Position(Component):
-        ...     x: float
-        ...     y: float
-        >>>
-        >>> class Velocity(Component):
-        ...     vx: float
-        ...     vy: float
-        >>>
-        >>> class MovementProcessor(Processor):
-        ...     components = (Position, Velocity)
-        ...     priority = 1
-        ...     def process(self, df: DataFrame, dt: float = 0.1) -> DataFrame:
-        ...         return df.with_columns({
-        ...             "position__x": col("position__x") + col("velocity__vx") * dt,
-        ...             "position__y": col("position__y") + col("velocity__vy") * dt,
-        ...         })
-        >>>
-        >>> sim = archetype.init("./data")
-        >>> world_id = sim.spawn_world("physics")
-        >>> sim.add_processor_to_world(world_id, MovementProcessor())
-        >>> sim.spawn_entity(world_id, Position(x=0, y=0), Velocity(vx=1, vy=1))
-        >>> sim.step_world(world_id, dt=0.1)
-    """
-    return Simulation(uri=uri, namespace=namespace, debug=debug)

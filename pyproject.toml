@@ -1,9 +1,9 @@
 [project]
-name = "archetype"
+name = "archetype-ecs"
 version = "0.1.0"
 description = "AI-native simulation engine: ECS as data (Daft) with time-travel storage (LanceDB)."
 readme = "README.md"
-requires-python = ">=3.12, <3.13"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [
@@ -17,26 +17,26 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "daft[openai,google,lance,iceberg,sql,unity]==0.7.1",
+    "daft[openai,lance,iceberg]>=0.7.4",
     "lancedb>=0.22.0",
-    "pyiceberg[daft,sql-sqlite]>=0.7.0,<0.9.1",
-    "unitycatalog-client>=0.3.0",
+    "pyiceberg[daft,sql-sqlite]>=11.0.0",
     "uuid-utils>=0.11.0",
-    "igraph",
-    "psutil",
-    "torch>=2.6.0",
-    "safetensors>=0.5.3",
-    "mcp>=1.25.0",
+    "pydantic>=2.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "typer>=0.9",
 ]
 
+[project.scripts]
+archetype = "archetype.cli.main:app"
+
 [project.optional-dependencies]
-ray        = ["ray[default]>=2.47", "fastapi>=0.110", "uvicorn[standard]>=0.29"]
-inference  = ["ray[serve,llm]>=2.47", "vllm>=0.7.2", "huggingface-hub>=0.26", "transformers>=4.49", "accelerate>=0.29", "datasets>=3.6"]
 benchmark  = ["esper>=2.45"]
 otel       = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-grpc>=1.20"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
     "ruff>=0.9",
+    "httpx>=0.27",
     "matplotlib>=3.9",
     "viztracer>=1.0.4",
     "ipykernel",
@@ -88,6 +88,7 @@ dev = [
     "pytest-asyncio>=0.26",
     "pytest-cov>=5.0",
     "ruff>=0.9",
+    "httpx>=0.27",
     "pre-commit>=4.0",
 ]
 
@@ -104,8 +105,10 @@ extend-exclude = [
 select = ["E", "F", "I", "UP", "B"]
 ignore = [
     "E501",   # Line too long (handled by formatter)
-    "E731",   # Lambda assignment (used in DSL filter= pattern)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/archetype/api/routes/*.py" = ["B008"]  # Depends() in defaults is standard FastAPI
 
 [tool.ruff.format]
 quote-style = "double"

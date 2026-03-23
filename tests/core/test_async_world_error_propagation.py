@@ -1,6 +1,7 @@
 import pytest
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -29,14 +30,14 @@ class BadProc(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog):
     """If processors raise, system logs error and world continues (current design)."""
-    orch = WorldOrchestrator()
+    ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(OKProc())
         await system.add_processor(BadProc())
-        world = await orch.create_world(
-            WorldConfig(name="w"), system=system, storage_config=storage
+        world = await ws.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
         )
         await world.create_entity([Foo(x=1)])
 
@@ -44,4 +45,4 @@ async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog
             await world.run(RunConfig(num_steps=1))
         assert any("Error processing archetype" in rec.message for rec in caplog.records)
     finally:
-        await orch.shutdown()
+        await ws.shutdown()

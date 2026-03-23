@@ -6,7 +6,7 @@
 
 <i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
 
-[![Tests](https://img.shields.io/badge/tests-165%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
@@ -29,15 +29,15 @@
 
     The codebase is built to be rewritten. With the exception of the core modules, you could re-write the entire DSL to your liking if you wanted. The decoupling patterns have been sufficiently scoped to support arbitrary experimentation both in the simulation and in the design of the DSL.
 
-    Build what you want.  
-    Build what brings you joy.  
+    Build what you want.
+    Build what brings you joy.
     Build what inspires you.
 
-    I know I have.  
+    I know I have.
     And it's made all the difference...
 
-    — **Everett Kleven**  
-    *Founder of Vangelis Technologies*  
+    — **Everett Kleven**
+    *Founder of Vangelis Technologies*
     *Creator of Archetype*
 
 </details>
@@ -55,7 +55,7 @@ This gives you:
 
 - **Simulation as data** — Query any tick, replay any run
 - **Time-travel state** — Fork worlds, branch futures, compare outcomes
-- **MCTS & counterfactuals** — `spawn_world()` for inner simulations
+- **MCTS & counterfactuals** — Fork worlds for inner simulations
 - **Self-improving systems** — Use Archetype to evaluate Archetype
 
 ## Core Engine Diagram
@@ -70,59 +70,49 @@ git clone https://github.com/vangelis-tech/archetype.git
 cd archetype
 uv sync
 
-# Run the flagship demo (4 agents + inner simulation)
-uv run python examples/debate_mcts.py
+# Start the API server
+archetype serve
+
+# Or use the CLI directly
+archetype world create --name my-sim
+archetype run <world-id> --steps 100
+archetype query <world-id>
 ```
 
 ## Minimal Example
 
 ```python
-from archetype import Component
-from archetype.dsl import World, behavior
+import asyncio
+from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
+from archetype.app.auth.models import ActorCtx
+from archetype.core.config import WorldConfig, StorageConfig, RunConfig
+from uuid_utils import uuid7
 
-class Explorer(Component):
-    name: str = ""
-    energy: int = 100
+async def main():
+    container = ServiceContainer()
 
-@behavior
-class Forage:
-    requires = [Explorer]
-    
-    async def act(self, agent, world, tick):
-        agent.explorer.energy = agent.explorer.energy + 10
+    # Create a world
+    world = await container.world_service.create_world(
+        WorldConfig(name="my-sim"),
+        StorageConfig(),
+    )
 
-async with World("simulation") as world:
-    world.add_behavior(Forage)
-    await world.spawn(Explorer(name="Scout"))
-    await world.run(ticks=10)
-    
-    print(world.agents[0].explorer.energy)  # 200
-```
+    # Submit a spawn command
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
+    await container.command_service.submit(world.world_id, cmd, ctx)
 
-## spawn_world() — The Core Primitive
+    # Step the simulation
+    result = await container.simulation_service.run(
+        world.world_id,
+        RunConfig(num_steps=10),
+    )
+    print(f"Completed {result.ticks_completed} ticks")
 
-Fork worlds for MCTS, counterfactual reasoning, and self-evaluation:
+    await container.shutdown()
 
-```python
-from archetype.dsl import spawn_world
-
-class Planner(Component):
-    decision: str = ""
-
-@behavior
-class Plan:
-    requires = [Planner]
-    
-    async def act(self, agent, world, tick):
-        best = None
-        for scenario in ["A", "B", "C"]:
-            async with spawn_world(scenario, parent=world, fork_state=True) as inner:
-                await inner.run(ticks=5)
-                score = evaluate(inner)
-                if not best or score > best:
-                    best = scenario
-        
-        agent.planner.decision = best
+asyncio.run(main())
 ```
 
 ## Architecture
@@ -130,37 +120,93 @@ class Plan:
 ```
 archetype/
 ├── src/archetype/
-│   ├── core/     # 🔒 Human-curated ECS engine (Rust rewrite planned)
-│   ├── app/      # Infrastructure (CommandBroker, WorldOrchestrator)  
-│   └── dsl/      # Agent DSL (World, @behavior, spawn_world)
-├── tests/        # 165 tests
-├── docs/         # Agent-friendly documentation
-├── AGENTS.md     # Start here if you're an AI
-└── LEARNINGS.md  # Hard-won architectural knowledge
+│   ├── core/          # ECS engine (Daft + Arrow + LanceDB)
+│   ├── app/           # Service layer
+│   │   ├── auth/      #   RBAC guard (ActorCtx, role permissions, quotas)
+│   │   ├── broker.py  #   CommandBroker (priority queue, RBAC, history)
+│   │   ├── command_service.py    # Command dispatch
+│   │   ├── world_service.py      # World lifecycle
+│   │   ├── simulation_service.py # Tick stepping / runs
+│   │   ├── query_service.py      # Read path (time-travel queries)
+│   │   ├── storage_service.py    # Storage backend pooling
+│   │   └── container.py          # Wires all services together
+│   ├── api/           # FastAPI REST layer
+│   │   ├── routes/    #   worlds, commands, simulation, query
+│   │   ├── deps.py    #   Dependency injection
+│   │   └── app.py     #   App factory with lifespan
+│   └── cli/           # Typer CLI
+├── tests/             # 182 tests
+├── AGENTS.md          # Start here if you're an AI
+└── LEARNINGS.md       # Hard-won architectural knowledge
 ```
+
+## API
+
+Start with `archetype serve` (default: `http://localhost:8000`).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/worlds` | Create a world |
+| GET | `/worlds` | List worlds |
+| GET | `/worlds/{id}` | Get world info |
+| DELETE | `/worlds/{id}` | Remove a world |
+| POST | `/worlds/{id}/fork` | Fork a world |
+| POST | `/worlds/{id}/commands` | Submit a command |
+| POST | `/worlds/{id}/commands/batch` | Submit batch |
+| GET | `/worlds/{id}/commands` | Command history |
+| POST | `/worlds/{id}/step` | Single tick |
+| POST | `/worlds/{id}/run` | Run N ticks |
+| GET | `/worlds/{id}/state` | World snapshot |
+| GET | `/worlds/{id}/entities/{eid}` | Entity state |
+| GET | `/worlds/{id}/components` | Query components |
+| GET | `/worlds/{id}/history` | Command history |
+| GET | `/worlds/{id}/processors` | List processors |
+
+## CLI
+
+```
+archetype serve [--host] [--port]     # Start API server
+archetype status                      # Show all worlds
+archetype world create --name NAME    # Create world
+archetype world list                  # List worlds
+archetype world inspect WORLD_ID      # Inspect world
+archetype world remove WORLD_ID       # Remove world
+archetype run WORLD_ID --steps N      # Run simulation
+archetype step WORLD_ID               # Single tick
+archetype query WORLD_ID [--tick T]   # Query state
+archetype history WORLD_ID            # Command history
+```
+
+## Service Layer
+
+All mutations flow through the **CommandBroker** with RBAC enforcement:
+
+```
+External API → CommandService → CommandBroker (RBAC + queue) → World
+                                     ↓
+                              SimulationService (drain + step)
+                                     ↓
+                              QueryService (read path)
+```
+
+**Roles:** `viewer` (read-only), `player` (spawn/despawn/message), `coder` (processors), `maintainer` (worlds), `admin` (all)
+
+**Quotas:** 500 commands/tick, 200k token budget/day
 
 ## For AI Agents
 
 This repository is **AI-native**. It was built for AI agents to:
 
 1. **Rapidly prototype** emergent multi-agent systems
-2. **Use spawn_world()** for reasoning and self-improvement
+2. **Fork worlds** for reasoning and self-improvement
 3. **Contribute** to the codebase as collaborators
 
 Read [AGENTS.md](./AGENTS.md) for orientation.
 
-## For Humans
-
-The `core/` module is the one part of this codebase carefully curated by a single human. It represents years of iteration on ECS patterns and DataFrame-centric simulation. The plan:
-
-1. **Now:** Python core, optimized for iteration speed
-2. **Next:** Rust rewrite for production performance
-3. **Future:** Agents using Archetype to improve Archetype
-
 ## Install
 
 ```bash
-# Recommended (matches repo tooling)
+# Recommended
 uv sync
 
 # Or pip
@@ -169,20 +215,13 @@ pip install -e .
 
 **Python 3.12+** required.
 
-## Documentation
-
-| Doc | Purpose |
-|-----|---------|
-| [AGENTS.md](./AGENTS.md) | AI agent orientation |
-| [LEARNINGS.md](./LEARNINGS.md) | Architectural knowledge |
-| [docs/](./docs/) | Full documentation |
-| [examples/](./examples/) | Working examples |
-
 ## Tests
 
 ```bash
-uv run pytest tests/ -v              # All 165 tests
+uv run pytest tests/ -v              # All 182 tests
 uv run pytest tests/integration/ -v  # Full-stack integration
+uv run pytest tests/api/ -v          # API routes
+uv run pytest tests/app/ -v          # Auth + services
 ```
 
 ## License

@@ -1,7 +1,7 @@
 import pytest
 
-from archetype.app.orchestrator import WorldOrchestrator
-from archetype.core.aio import AsyncSystem
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -17,11 +17,11 @@ class B(Component):
 @pytest.mark.asyncio
 async def test_get_components_unions_across_signatures_and_projects_schema(tmp_path):
     """get_components([A]) should union rows from all active archetypes that include A and project to A's schema; get_components([A,B]) should only return rows that include both."""
-    orch = WorldOrchestrator()
+    ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await orch.create_world(
-            WorldConfig(name="w"), system=AsyncSystem(), storage_config=storage
+        world = await ws.create_world(
+            WorldConfig(name="w"), storage_config=storage
         )
 
         # Spawn across multiple signatures: (A), (A,B), (B), (A)
@@ -50,4 +50,4 @@ async def test_get_components_unions_across_signatures_and_projects_schema(tmp_p
         row = df_ab.select("a__x", "b__y").to_pylist()[0]
         assert row["a__x"] == 2 and row["b__y"] == 20
     finally:
-        await orch.shutdown()
+        await ws.shutdown()

@@ -17,15 +17,14 @@ from dataclasses import dataclass
 import daft
 from daft import DataFrame, col
 
+from archetype.app.broker import CommandBroker
+from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.resources import Resources
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
-
 
 # =============================================================================
 # Components
@@ -83,8 +82,8 @@ class GreetingProcessor(AsyncProcessor):
     ) -> DataFrame:
         """Generate greeting messages and enqueue via broker."""
         broker = resources.require(CommandBroker)
-        config = resources.require(SimConfig)
-        
+        resources.require(SimConfig)  # validate config exists
+
         # Collect entities to process
         rows = df.select("entity_id", "agentstate__name").collect().to_pylist()
         
@@ -124,8 +123,8 @@ class MessageRealizationProcessor(AsyncProcessor):
     ) -> DataFrame:
         """Drain MESSAGE commands from broker and populate inboxes."""
         broker = resources.require(CommandBroker)
-        config = resources.require(SimConfig)
-        
+        resources.require(SimConfig)  # validate config exists
+
         # Dequeue all pending MESSAGE commands
         cmds = await broker.dequeue("demo_world", max_items=1000)
         message_cmds = [c for c in cmds if c.type == CommandType.MESSAGE]
@@ -148,7 +147,7 @@ class MessageRealizationProcessor(AsyncProcessor):
         @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
         def update_inbox(entity_ids: daft.Series, current_inboxes: daft.Series) -> list:
             results = []
-            for eid, inbox in zip(entity_ids.to_pylist(), current_inboxes.to_pylist()):
+            for eid, inbox in zip(entity_ids.to_pylist(), current_inboxes.to_pylist(), strict=False):
                 inbox = list(inbox) if inbox else []
                 new_msgs = messages_by_receiver.get(eid, [])
                 results.append(inbox + new_msgs)
@@ -220,8 +219,9 @@ class InMemoryQuerier:
         self._store: dict[tuple, DataFrame] = {}
     
     async def query_archetype(self, **kwargs):
-        from archetype.core.archetype import Archetype
         import pyarrow as pa
+
+        from archetype.core.archetype import Archetype
         sig = kwargs["sig"]
         ticks = kwargs.get("ticks", [0])
         

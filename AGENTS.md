@@ -7,7 +7,7 @@
 Archetype is a data-centric Entity-Component-System (ECS) simulation runtime built on Daft DataFrames. It exists to enable:
 
 1. **Multi-agent simulations** where AI agents debate, reason, and collaborate
-2. **MCTS and counterfactual reasoning** via `spawn_world()` for branching futures
+2. **MCTS and counterfactual reasoning** via world forking for branching futures
 3. **Self-improving systems** where agents can use Archetype to evaluate and improve Archetype itself
 
 You are not just a user of this codebase—you are a collaborator in its evolution.
@@ -19,13 +19,20 @@ You are not just a user of this codebase—you are a collaborator in its evoluti
 ```
 archetype/
 ├── src/archetype/
-│   ├── core/           # 🔒 HUMAN-CURATED — The sacred ECS engine
-│   ├── app/            # Infrastructure (broker, orchestrator)
-│   └── dsl/            # Your interface — ergonomic agent DSL
-├── examples/
-│   └── debate_mcts.py  # Start here — 4 agents + inner simulation
-├── tests/              # 165 tests, run freely
-├── docs/               # Mintlify docs, agent-friendly
+│   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
+│   ├── app/            # Service layer
+│   │   ├── auth/       #   RBAC guard (ActorCtx, roles, quotas)
+│   │   ├── broker.py   #   CommandBroker (priority queue + RBAC)
+│   │   ├── command_service.py    # All mutations flow through here
+│   │   ├── world_service.py      # World lifecycle management
+│   │   ├── simulation_service.py # Tick stepping and runs
+│   │   ├── query_service.py      # Read path (time-travel queries)
+│   │   ├── storage_service.py    # Storage backend pooling
+│   │   └── container.py          # Wires all services together
+│   ├── api/            # FastAPI REST layer
+│   └── cli/            # Typer CLI
+├── examples/           # Working examples
+├── tests/              # 182 tests, run freely
 └── LEARNINGS.md        # Hard-won architectural knowledge
 ```
 
@@ -33,67 +40,137 @@ archetype/
 
 | Layer | Purpose | Your Access |
 |-------|---------|-------------|
-| `dsl/` | Agent-centric API (`World`, `@behavior`, `spawn_world`) | **Write freely** |
-| `app/` | Infrastructure (CommandBroker, WorldOrchestrator) | Extend carefully |
+| `app/` | Service layer (CommandBroker, WorldService, RBAC) | **Extend carefully** |
+| `api/` + `cli/` | REST API and CLI interface | Write freely |
 | `core/` | ECS primitives (AsyncWorld, Component, Resources) | **Read-only for now** |
 
 ---
 
 ## How to Work Here
 
-### 1. Start with the DSL
+### 1. Use the Service Layer
 
 ```python
-from archetype import Component
-from archetype.dsl import World, behavior, spawn_world
+import asyncio
+from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
+from archetype.app.auth.models import ActorCtx
+from archetype.core.config import WorldConfig, StorageConfig, RunConfig
+from uuid_utils import uuid7
 
-class Explorer(Component):
+async def main():
+    container = ServiceContainer()
+
+    # Create a world
+    world = await container.world_service.create_world(
+        WorldConfig(name="experiment"),
+        StorageConfig(),
+    )
+
+    # Submit commands through the broker (RBAC-gated)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
+    await container.command_service.submit(world.world_id, cmd, ctx)
+
+    # Step the simulation
+    result = await container.simulation_service.run(
+        world.world_id,
+        RunConfig(num_steps=10),
+    )
+    print(f"Completed {result.ticks_completed} ticks")
+    await container.shutdown()
+
+asyncio.run(main())
+```
+
+### 2. Build LLM-Powered Processors
+
+The real power: `daft.functions.prompt` inside ECS processors. Every entity gets an LLM call, every tick, in parallel.
+
+```python
+from daft import DataFrame, col
+from daft.functions import prompt
+from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
+
+class Agent(Component):
     name: str = ""
-    state_json: str = "{}"
+    memory: str = "[]"
+    last_thought: str = ""
 
-@behavior
-class Think:
-    requires = [Explorer]
-    
-    async def act(self, agent, world, tick):
-        # agent.explorer accesses the Explorer component
-        agent.explorer.state_json = '{"thought": "I exist"}'
+class ThinkProcessor(AsyncProcessor):
+    """Each agent thinks once per tick using an LLM."""
+    components = (Agent,)
+    priority = 10
 
-async with World("experiment") as world:
-    world.add_behavior(Think)
-    await world.spawn(Explorer(name="Scout"))
-    await world.run(ticks=10)
+    async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
+        return df.with_column(
+            "agent__last_thought",
+            prompt(
+                col("agent__name").str.format(
+                    "You are {}. Tick: " + str(tick) + ". "
+                    "What is your next action? Be brief."
+                ),
+                model="gpt-5-nano",
+            ),
+        )
 ```
 
-### 2. Use spawn_world() for Reasoning
-
-```python
-@behavior
-class Planner:
-    requires = [Explorer]
-    
-    async def act(self, agent, world, tick):
-        best_outcome = None
-        
-        for scenario in ["A", "B", "C"]:
-            async with spawn_world(f"sim_{scenario}", parent=world, fork_state=True) as inner:
-                # Simulate this scenario
-                await inner.run(ticks=5)
-                outcome = evaluate(inner)
-                
-                if not best_outcome or outcome > best_outcome:
-                    best_outcome = outcome
-        
-        agent.explorer.state_json = json.dumps({"chosen": best_outcome})
-```
-
-### 3. Run Tests Freely
+### 3. Use the CLI
 
 ```bash
-uv run pytest tests/ -v              # All 165 tests
-uv run pytest tests/dsl/ -v          # DSL tests only
-uv run pytest tests/integration/ -v  # Full-stack integration
+archetype serve                          # Start API server
+archetype world create --name my-sim     # Create world
+archetype run <world-id> --steps 10      # Run simulation
+archetype query <world-id>               # Query state
+archetype history <world-id>             # Command audit trail
 ```
+
+### 4. Use the REST API
+
+```bash
+# Create a world
+curl -X POST localhost:8000/worlds -H 'Content-Type: application/json' \
+  -d '{"name": "experiment"}'
+
+# Submit a spawn command
+curl -X POST localhost:8000/worlds/{id}/commands -H 'Content-Type: application/json' \
+  -d '{"type": "spawn", "payload": {"components": []}}'
+
+# Step
+curl -X POST localhost:8000/worlds/{id}/step
+
+# Query state
+curl localhost:8000/worlds/{id}/state
+```
+
+### 5. Run Tests Freely
+
+```bash
+uv run pytest tests/ -v              # All 182 tests
+uv run pytest tests/integration/ -v  # Full-stack integration
+uv run pytest tests/api/ -v          # API routes
+uv run pytest tests/app/ -v          # Auth + services
+```
+
+---
+
+## Command Flow
+
+All mutations are RBAC-gated through the CommandBroker:
+
+```
+External API → CommandService → CommandBroker → World
+                                  ↓ RBAC check
+                                  ↓ priority queue
+                            SimulationService
+                              (drain + step)
+                                  ↓
+                            QueryService
+                              (read path)
+```
+
+**Roles:** `viewer` (read-only) → `player` (spawn/despawn/message) → `coder` (processors) → `maintainer` (worlds) → `admin` (all)
 
 ---
 
@@ -118,10 +195,10 @@ This repository has a recursive purpose:
 
 > **Use Archetype to build the harness that evaluates and improves Archetype.**
 
-The `spawn_world()` primitive exists not just for agent reasoning—it's the foundation for:
+World forking exists not just for agent reasoning—it's the foundation for:
 
 1. **Benchmarking** — Run thousands of simulation scenarios
-2. **Evaluation** — Compare behavioral outcomes
+2. **Evaluation** — Compare behavioral outcomes across forked worlds
 3. **Self-improvement** — Agents proposing and testing architectural changes
 
 You, as an AI agent, are part of this loop. When you:
@@ -136,10 +213,10 @@ You, as an AI agent, are part of this loop. When you:
 | File | Why |
 |------|-----|
 | `LEARNINGS.md` | Architectural decisions and hard-won knowledge |
-| `examples/debate_mcts.py` | Full working example with LLM calls |
-| `src/archetype/dsl/core.py` | The DSL implementation (~500 lines) |
-| `tests/dsl/test_dsl_core.py` | How the DSL is tested |
-| `docs/guide/dsl.md` | Full DSL reference |
+| `src/archetype/app/container.py` | How services wire together |
+| `src/archetype/app/command_service.py` | How mutations dispatch |
+| `src/archetype/app/broker.py` | RBAC + priority queue |
+| `src/archetype/core/aio/async_world.py` | The ECS world runtime |
 
 ---
 
@@ -150,11 +227,11 @@ You, as an AI agent, are part of this loop. When you:
 - Keep components small and focused
 - Prefer composition over inheritance
 
-### Behaviors
-- One behavior = one concern
-- Use `filter` for conditional execution
+### Processors
+- One processor = one concern
 - Use `priority` for ordering (lower runs first)
-- Use `runs_on` for tick-specific logic
+- `daft.functions.prompt` for LLM calls inside processors
+- Return a new DataFrame, never mutate in place
 
 ### Testing
 - Every new feature needs tests
@@ -165,31 +242,6 @@ You, as an AI agent, are part of this loop. When you:
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`
 - Reference issues when applicable
 - Keep commits atomic
-
----
-
-## What We're Building Toward
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Agent Harness                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │   Eval      │  │   Bench     │  │   Improve   │         │
-│  │   Agents    │  │   Agents    │  │   Agents    │         │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘         │
-│         │                │                │                 │
-│         └────────────────┼────────────────┘                 │
-│                          ▼                                  │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                  Archetype Engine                    │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │   │
-│  │  │   DSL   │  │   App   │  │  Core   │ ← Rust soon │   │
-│  │  └─────────┘  └─────────┘  └─────────┘             │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-The dream: AI agents using Archetype to simulate, evaluate, and improve the very system they run on.
 
 ---
 

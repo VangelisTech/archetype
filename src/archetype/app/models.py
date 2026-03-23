@@ -15,7 +15,7 @@
 import json
 from enum import Enum
 from itertools import count
-from typing import Any, Literal
+from typing import Any
 
 import pyarrow as pa
 import uuid_utils as uuid
@@ -67,30 +67,15 @@ class CommandType(str, Enum):
 class Command(BaseModel):
     id: UUID = Field(default_factory=uuid.uuid7)
     tick: int = 0
-    actor_id: UUID | None = None  # Make optional for simpler examples
+    actor_id: UUID | None = None
     type: CommandType = CommandType.CUSTOM
-    op: (
-        Literal[
-            "create_entity",
-            "delete_entity",
-            "add_component",
-            "remove_component",
-            "add_processor",
-            "remove_processor",
-            "custom",
-        ]
-        | None
-    ) = None  # Keep for backward compatibility
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
     version: int = 1
     seq: int = Field(default_factory=lambda: next(_SEQ))
 
-    model_config = dict(frozen=True, arbitrary_types_allowed=True)  # hashable & heap-friendly
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
-    # ------------------------------------------------------------------ #
-    # Provide Arrow-friendly serialisers
-    # ------------------------------------------------------------------ #
     @field_serializer("id", "actor_id")
     def serialize_uuids(self, v: UUID | None, info: FieldSerializationInfo):
         if v is None:
@@ -107,8 +92,8 @@ class Command(BaseModel):
                 ("id", pa.binary(16)),
                 ("tick", pa.int32()),
                 ("actor_id", pa.binary(16)),
-                ("op", pa.string()),
-                ("payload", pa.string()),  # JSON-encoded; keep simple
+                ("type", pa.string()),
+                ("payload", pa.string()),
                 ("priority", pa.int16()),
                 ("version", pa.int8()),
                 ("seq", pa.int64()),
@@ -121,7 +106,7 @@ class Command(BaseModel):
                 [self.id.bytes],
                 [self.tick],
                 [self.actor_id.bytes if self.actor_id else None],
-                [self.op or self.type.value],  # Use type if op is None
+                [self.type.value],
                 [json.dumps(self.payload)],
                 [self.priority],
                 [self.version],
@@ -130,12 +115,44 @@ class Command(BaseModel):
             schema=self.arrow_schema(),
         )
 
-    # ------------------------------------------------------------------ #
-    # Keep the heap ordering contract
-    # ------------------------------------------------------------------ #
     def __lt__(self, other: "Command") -> bool:
         return (self.tick, self.priority, self.seq) < (
             other.tick,
             other.priority,
             other.seq,
         )
+
+
+# ── Service layer models ──
+
+
+class WorldInfo(BaseModel):
+    model_config = dict(arbitrary_types_allowed=True)
+    world_id: UUID
+    name: str | None = None
+    tick: int = 0
+    entity_count: int = 0
+    archetype_signatures: list[str] = Field(default_factory=list)
+
+
+class RunResult(BaseModel):
+    model_config = dict(arbitrary_types_allowed=True)
+    run_id: UUID
+    world_id: UUID
+    ticks_completed: int = 0
+    commands_applied: int = 0
+    final_tick: int = 0
+
+
+class ProcessorInfo(BaseModel):
+    name: str
+    priority: int
+    components: list[str] = Field(default_factory=list)
+
+
+class WorldSnapshot(BaseModel):
+    model_config = dict(arbitrary_types_allowed=True)
+    world_id: UUID
+    tick: int = 0
+    entities: dict[int, list[str]] = Field(default_factory=dict)
+    archetype_counts: dict[str, int] = Field(default_factory=dict)

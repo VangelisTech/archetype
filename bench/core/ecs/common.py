@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.world_service import WorldService
+from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig, WorldConfig
 
@@ -44,22 +45,21 @@ async def make_world(
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
     instrumented: bool | None = None,
-    orchestrator: WorldOrchestrator | None = None,
-) -> tuple[object, WorldOrchestrator]:
+    orchestrator: WorldService | None = None,
+) -> tuple[object, WorldService]:
     """
     Create a world for a given (storage, cache) configuration.
 
     - Accepts an optional existing orchestrator so suites can reuse a single orchestrator across many runs
-      (this shares the StorageResourceManager and reduces setup overhead).
+      (this shares the StorageService and reduces setup overhead).
     - Defaults to a sane local StorageConfig if none is provided.
     """
-    orch = orchestrator or WorldOrchestrator()
+    orch = orchestrator or WorldService(StorageService())
     world = await orch.create_world(
         config=WorldConfig(name=name),
-        system=system or AsyncSystem(),
-        cache_config=cache_config,
         storage_config=storage or _default_storage(),
-        instrumented=instrumented,
+        cache_config=cache_config,
+        system=system or AsyncSystem(),
     )
     return world, orch
 

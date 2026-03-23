@@ -1,6 +1,7 @@
 import pytest
 
-from archetype.app.orchestrator import WorldOrchestrator
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -22,13 +23,13 @@ class Noop(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
     """Exercise cast and left-join branches in materialize_mutations by creating despawns and spawns and ensure no type errors."""
-    orch = WorldOrchestrator()
+    ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await orch.create_world(
-            WorldConfig(name="w"), system=system, storage_config=storage
+        world = await ws.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=system
         )
 
         # Spawn two entities
@@ -50,4 +51,4 @@ async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
         df = await world.query_archetype(sig, run_config=RunConfig())
         assert set(df.column_names) >= {"entity_id", "pos__x", "is_active"}
     finally:
-        await orch.shutdown()
+        await ws.shutdown()

@@ -21,27 +21,23 @@ It enables recursive/hierarchical simulation where agents can spawn and run thei
 simulations (mental models, MCTS, counterfactual reasoning).
 
 Architecture:
-    FastAPI/MCP → CommandService → CommandBroker → WorldOrchestrator → AsyncWorld
-
-    Agents inside worlds can also submit commands:
-    Agent → Broker.enqueue(CREATE_WORLD) → Child simulation spawned
-    Agent → Broker.enqueue(RUN_ROLLOUT) → Mental simulation executed
-    Agent → Broker.enqueue(QUERY_WORLD) → Results returned
+    FastAPI/MCP → CommandService → CommandBroker → WorldService → AsyncWorld
 
 Features:
 - Priority queue per world (heapq-based)
+- RBAC guardrails via ActorCtx
 - Async-safe with locks
 - Pending/history tracking for audit
-- Supports entity, processor, and simulation-level commands
-- Debug logging for tracing command flow
+- Tick-aware dequeue (dequeue_due)
 """
 
 import asyncio
 import heapq
 import logging
-from collections.abc import Awaitable, Callable
 from uuid import UUID
 
+from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.models import ActorCtx
 from archetype.app.models import Command
 
 logger = logging.getLogger(__name__)
@@ -51,12 +47,7 @@ class CommandBroker:
     """
     Universal simulation interface for command-based interaction with worlds.
 
-    The broker mediates all external and agent-initiated commands:
-    - Entity mutations (spawn, despawn, components)
-    - Processor mutations (hot-swap behavior)
-    - Simulation operations (create/destroy worlds, run rollouts)
-
-    Auth is handled at the API layer before commands reach the broker.
+    The broker mediates all external and agent-initiated commands with RBAC enforcement.
     """
 
     def __init__(self, max_dequeue: int = 50_000, debug: bool = False):
@@ -67,15 +58,19 @@ class CommandBroker:
         self._max_dequeue = max_dequeue
         self._debug = debug
 
-        # Optional command handlers for simulation-level operations
-        self._handlers: dict[str, Callable[[Command], Awaitable]] = {}
+    async def enqueue(
+        self,
+        world_id: str | UUID,
+        cmd: Command,
+        ctx: ActorCtx | None = None,
+    ) -> None:
+        """
+        Enqueue a single command for a specific world.
+        If ctx is provided, validates RBAC permissions and quotas.
+        """
+        if ctx is not None:
+            guardrail_allow(cmd, ctx)
 
-    def register_handler(self, command_type: str, handler: Callable[[Command], Awaitable]):
-        """Register a handler for simulation-level commands (CREATE_WORLD, RUN_ROLLOUT, etc.)."""
-        self._handlers[command_type] = handler
-
-    async def enqueue(self, world_id: str | UUID, cmd: Command):
-        """Enqueue a single command for a specific world."""
         async with self._lock:
             key = str(world_id)
             if key not in self._queues:
@@ -91,8 +86,20 @@ class CommandBroker:
                     f"tick={cmd.tick}, pending={len(self._queues[key])}"
                 )
 
-    async def enqueue_bulk(self, world_id: str | UUID, cmds: list[Command]):
-        """Enqueue multiple commands for a specific world."""
+    async def enqueue_bulk(
+        self,
+        world_id: str | UUID,
+        cmds: list[Command],
+        ctx: ActorCtx | None = None,
+    ) -> None:
+        """
+        Enqueue multiple commands for a specific world.
+        All-or-nothing: validates all commands before enqueueing any.
+        """
+        if ctx is not None:
+            for cmd in cmds:
+                guardrail_allow(cmd, ctx)
+
         async with self._lock:
             key = str(world_id)
             if key not in self._queues:
@@ -104,14 +111,12 @@ class CommandBroker:
                 self._history.setdefault(key, []).append(cmd)
 
     async def dequeue(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
-        """Dequeue commands for a specific world."""
+        """Dequeue commands for a specific world (all pending, regardless of tick)."""
         max_items = min(max_items or self._max_dequeue, self._max_dequeue)
 
         async with self._lock:
             key = str(world_id)
             if key not in self._queues or not self._queues[key]:
-                if self._debug:
-                    logger.debug(f"[broker] dequeue: world={key}, returned=0, remaining=0")
                 return []
 
             commands = []
@@ -121,26 +126,51 @@ class CommandBroker:
                 if queue:
                     cmd = heapq.heappop(queue)
                     commands.append(cmd)
-                    # Remove from pending
                     self._pending.pop(cmd.id, None)
 
-            if self._debug:
-                # Group by type for summary
-                type_counts = {}
-                for cmd in commands:
-                    type_counts[cmd.type.value] = type_counts.get(cmd.type.value, 0) + 1
+            if self._debug and commands:
                 logger.debug(
-                    f"[broker] dequeue: world={key}, returned={len(commands)}, "
-                    f"remaining={len(queue)}, types={type_counts}"
+                    f"[broker] dequeue: world={key}, count={len(commands)}, "
+                    f"remaining={len(queue)}"
                 )
 
             return commands
 
-    # Back-compat alias used by CommandService
-    async def dequeue_batch(
-        self, world_id: str | UUID, max_items: int | None = None
+    async def dequeue_due(
+        self,
+        world_id: str | UUID,
+        tick: int,
+        limit: int | None = None,
     ) -> list[Command]:
-        return await self.dequeue(world_id, max_items)
+        """
+        Pop all commands where cmd.tick <= tick.
+        Ordered by (tick, priority, seq).
+        """
+        limit = min(limit or self._max_dequeue, self._max_dequeue)
+
+        async with self._lock:
+            key = str(world_id)
+            if key not in self._queues or not self._queues[key]:
+                return []
+
+            commands = []
+            queue = self._queues[key]
+
+            while queue and len(commands) < limit:
+                if queue[0].tick <= tick:
+                    cmd = heapq.heappop(queue)
+                    commands.append(cmd)
+                    self._pending.pop(cmd.id, None)
+                else:
+                    break
+
+            return commands
+
+    async def ack(self, cmd_ids: list[UUID]) -> None:
+        """Remove from pending after successful application."""
+        async with self._lock:
+            for cid in cmd_ids:
+                self._pending.pop(cid, None)
 
     async def peek(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
         """Peek at commands without removing them."""
@@ -150,8 +180,6 @@ class CommandBroker:
             key = str(world_id)
             if key not in self._queues:
                 return []
-
-            # Return sorted copy without modifying queue
             queue = self._queues[key]
             return sorted(queue)[:max_items]
 
