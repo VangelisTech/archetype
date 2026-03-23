@@ -32,7 +32,6 @@ from pathlib import Path
 from archetype.app.container import ServiceContainer
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
-from .components import Extraction, Perspective, Segment, Voice
 from .loader import load_conversations
 from .processors import ExtractProcessor, PerspectiveProcessor, VoiceProcessor
 

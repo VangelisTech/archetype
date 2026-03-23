@@ -2,6 +2,22 @@
 
 Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
 
+## Philosophy
+
+Archetype is more than an ECS — it is a **Virtual Data Architecture (VDA)**.
+
+Traditional ECS engines couple compute to in-memory state. Archetype inverts this. World state is virtual tables across time — lazily-evaluated Daft DataFrames backed by append-only Arrow storage. Processors are pure DataFrame transforms that never touch raw storage directly. Every mutation flows through the CommandBroker, which enforces RBAC and maintains a complete audit trail.
+
+This clean decoupling of compute from data unlocks properties that conventional engines cannot offer:
+
+- **Lazy evaluation** — Daft DataFrames are lazily evaluated. Work is only materialized when needed, enabling query optimization and efficient resource use across large state spaces.
+- **Auto-evolving codebase** — Processors can submit commands back into the broker. Worlds can fork. The system can modify, evaluate, and improve itself across branching timelines.
+- **Command-driven mutations** — All state changes flow through a single RBAC-gated broker. There is one path for writes, one audit trail, one place to enforce policy.
+- **Virtual tables across time** — Every tick appends; nothing is overwritten. World state at any point in time is a queryable virtual table. Time-travel, replay, and forking are structural properties of the storage model, not bolted-on features.
+- **Distributed execution** — Because compute is decoupled from data, processors parallelize naturally on Ray or Daft Cloud. Scaling out does not require architectural changes.
+
+The result: a simulation runtime where data is the first-class citizen, compute is stateless and portable, and the entire history of every world is always available for introspection.
+
 ## System Diagram
 
 ```

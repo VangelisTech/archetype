@@ -12,10 +12,8 @@ import daft
 from daft import DataFrame, col
 from daft.functions import prompt
 
+from archetype.app.autoresearch.components import BranchHead, Experiment, Result
 from archetype.core.aio.async_processor import AsyncProcessor
-
-from archetype.app.autoresearch.components import BranchHead, Experiment, Result, Run
-
 
 PROPOSE_SYSTEM = """You are an AI research scientist optimizing a scoring function.
 

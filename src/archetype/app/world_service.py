@@ -35,10 +35,12 @@ class WorldService:
         self,
         storage_service: StorageService,
         broker: CommandBroker | None = None,
+        default_storage_config: StorageConfig | None = None,
     ):
         self.storage_service = storage_service
         self.factory = WorldFactory(storage_service)
         self._broker = broker
+        self._default_storage_config = default_storage_config or StorageConfig()
         self._worlds: dict[UUID, iWorld] = {}
         self._world_names: dict[str, UUID] = {}
 
@@ -51,7 +53,7 @@ class WorldService:
     async def create_world(
         self,
         config: WorldConfig,
-        storage_config: StorageConfig,
+        storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> iWorld:
@@ -60,6 +62,8 @@ class WorldService:
         Idempotent: if a world_id already exists, returns the existing instance.
         Injects CommandBroker into world resources if available.
         """
+        storage_config = storage_config or self._default_storage_config
+
         world_id = config.world_id or uuid7()
 
         if world_id in self._worlds:
@@ -136,7 +140,7 @@ class WorldService:
 
         # Use same storage config as source or provided override
         if storage_config is None:
-            storage_config = StorageConfig()
+            storage_config = self._default_storage_config
 
         new_world = await self.create_world(
             config=config,

@@ -46,10 +46,16 @@
 
 ## What is Archetype?
 
-Archetype is a **data-centric Entity-Component-System (ECS) runtime** where:
-- World state is **columnar tables** (Daft DataFrames / Arrow)
+Archetype is an **auto-evolving Virtual Data Architecture** for AI agents — a lazily-evaluated, command-driven interface where world state is columnar DataFrames and every mutation flows through an RBAC-gated broker.
+
+It **cleanly decouples compute from data.** Processors are pure DataFrame transforms. Storage is append-only Arrow tables. World state is virtual tables across time. Parallelize on Ray if you need scale, or ship to Daft Cloud.
+
+Under the hood, Archetype is a **data-centric Entity-Component-System (ECS) runtime** where:
+- World state is **columnar tables** (Daft DataFrames / Arrow) — lazily evaluated
 - Each tick is an **append-only write** to storage (LanceDB)
 - Agent behaviors are **pure DataFrame transforms**
+- All mutations flow through the **CommandBroker** — RBAC-gated, priority-queued
+- The codebase **auto-evolves** — processors can submit commands, worlds can fork
 
 This gives you:
 
@@ -57,6 +63,7 @@ This gives you:
 - **Time-travel state** — Fork worlds, branch futures, compare outcomes
 - **MCTS & counterfactuals** — Fork worlds for inner simulations
 - **Self-improving systems** — Use Archetype to evaluate Archetype
+- **Distributed execution** — Parallelize on Ray or Daft Cloud
 
 ## Core Engine Diagram
 

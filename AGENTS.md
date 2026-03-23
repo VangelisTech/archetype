@@ -4,7 +4,11 @@
 
 ## Welcome, Agent
 
-Archetype is a data-centric Entity-Component-System (ECS) simulation runtime built on Daft DataFrames. It exists to enable:
+Archetype is your **lazily-evaluated Virtual Data Architecture** — an auto-evolving codebase that cleanly decouples compute from data. World state is columnar DataFrames (Daft). Every mutation flows through an RBAC-gated CommandBroker. Processors are pure DataFrame transforms; storage is append-only Arrow tables in LanceDB. Parallelize on Ray if you need scale, or ship to Daft Cloud.
+
+Think of it as a command-driven interface where world state is virtual tables across time. The codebase auto-evolves: processors can submit commands, worlds can fork, and the simulation can improve itself.
+
+It exists to enable:
 
 1. **Multi-agent simulations** where AI agents debate, reason, and collaborate
 2. **MCTS and counterfactual reasoning** via world forking for branching futures

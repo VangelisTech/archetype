@@ -177,7 +177,7 @@ class DocstringUpdater:
             k: v for k, v in self.class_info.items() if Path(v["file_path"]) == file_path
         }
 
-        for class_key, class_info in file_classes.items():
+        for _class_key, class_info in file_classes.items():
             class_name = class_info["name"]
             new_docstring = self.generate_docstring(class_info)
 
@@ -246,7 +246,7 @@ class DocstringUpdater:
 
         # Group classes by module
         modules: dict[str, list[dict[str, Any]]] = {}
-        for class_key, class_info in self.class_info.items():
+        for _class_key, class_info in self.class_info.items():
             file_path = Path(class_info["file_path"])
             module_path = (
                 str(file_path.relative_to(self.root_dir)).replace("/", ".").replace(".py", "")
