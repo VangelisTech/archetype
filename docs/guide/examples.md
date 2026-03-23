@@ -22,8 +22,8 @@ class ThinkProcessor(AsyncProcessor):
         return df.with_columns({
             "agent__last_thought": prompt(
                 col("agent__role") + "\nTick " + str(tick) + ". What next?",
-                model="gpt-4.1-nano",
-                max_tokens=60,
+                model="gpt-5-mini",
+                max_output_tokens=60,
             ),
         })
 ```
@@ -70,7 +70,7 @@ class DebateProcessor(AsyncProcessor):
         return df.with_columns({
             "agent__last_thought": prompt(
                 col("agent__role") + ": Respond to the debate. Tick " + str(tick),
-                model="gpt-4.1-nano",
+                model="gpt-5-mini",
             ),
         })
 ```

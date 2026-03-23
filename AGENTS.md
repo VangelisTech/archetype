@@ -109,7 +109,7 @@ class ThinkProcessor(AsyncProcessor):
                 "You are " + col("agent__name")
                 + ". Tick: " + str(tick)
                 + ". What is your next action? Be brief.",
-                model="gpt-4.1-nano",
+                model="gpt-5-mini",
             ),
         })
 ```

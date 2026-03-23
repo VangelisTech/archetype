@@ -79,8 +79,8 @@ class ThinkProcessor(AsyncProcessor):
                 "Respond with a single short thought or action. "
                 "Be creative and stay in character."
             ),
-            model="gpt-4.1-nano",
-            max_tokens=60,
+            model="gpt-5-mini",
+            max_output_tokens=60,
         )
 
         # Append the new thought to the journal

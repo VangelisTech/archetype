@@ -88,8 +88,8 @@ class ThinkProcessor(AsyncProcessor):
                 col("agent__role") + "\nYou are " + col("agent__name")
                 + ". Tick " + str(tick) + ". What do you do next? One sentence.",
                 system_message="You are an agent in a simulation. Stay in character.",
-                model="gpt-4.1-nano",
-                max_tokens=60,
+                model="gpt-5-mini",
+                max_output_tokens=60,
             ),
         })
 ```
@@ -117,7 +117,7 @@ class DecisionProcessor(AsyncProcessor):
             "decision": prompt(
                 col("agent__role") + ": Choose an action.",
                 return_format=Decision,
-                model="gpt-4.1-nano",
+                model="gpt-5-mini",
             ),
         }).unnest("decision")
 ```

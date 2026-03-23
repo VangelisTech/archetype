@@ -92,6 +92,19 @@ class CommandService:
 
         return commands
 
+    @staticmethod
+    def _hydrate_components(raw: list) -> list:
+        """Convert dicts in a component list back to Component instances."""
+        from archetype.core.component import Component
+
+        result = []
+        for item in raw:
+            if isinstance(item, dict):
+                result.append(Component.from_dict(dict(item)))  # copy to avoid mutating payload
+            else:
+                result.append(item)
+        return result
+
     async def apply(self, world: AsyncWorld, cmd: Command) -> None:
         """
         Dispatch a single command to the world.
@@ -100,7 +113,7 @@ class CommandService:
 
         match cmd.type:
             case CommandType.SPAWN:
-                components = payload.get("components", [])
+                components = self._hydrate_components(payload.get("components", []))
                 await world.create_entity(components)
 
             case CommandType.DESPAWN:
@@ -109,7 +122,7 @@ class CommandService:
 
             case CommandType.UPDATE | CommandType.ADD_COMPONENT:
                 entity_id = payload["entity_id"]
-                components = payload.get("components", [])
+                components = self._hydrate_components(payload.get("components", []))
                 await world.add_components(entity_id, components)
 
             case CommandType.REMOVE_COMPONENT:
