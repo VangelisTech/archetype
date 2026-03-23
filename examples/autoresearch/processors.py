@@ -8,12 +8,13 @@ Each processor does ONE thing: call the LLM. Status transitions
 happen in the runner after collecting results.
 """
 
+import daft
 from daft import DataFrame, col
 from daft.functions import prompt
 
 from archetype.core.aio.async_processor import AsyncProcessor
 
-from .components import BranchHead, Experiment, Result, Run
+from archetype.app.autoresearch.components import BranchHead, Experiment, Result, Run
 
 
 PROPOSE_SYSTEM = """You are an AI research scientist optimizing a scoring function.
@@ -56,7 +57,7 @@ class ProposeProcessor(AsyncProcessor):
         return df.with_columns({
             "experiment__hypothesis": prompt(
                 "Current best strategy (score="
-                + col("branchhead__frontier_metric").cast(str)
+                + col("branchhead__frontier_metric_value").cast(daft.DataType.string())
                 + "): "
                 + col("experiment__strategy")
                 + "\n\nPropose a better one. Reply with ONLY the lambda.",
