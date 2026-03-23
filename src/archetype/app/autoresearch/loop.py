@@ -13,10 +13,8 @@ runs the pipeline, collects results, and advances the frontier.
 from __future__ import annotations
 
 import logging
-import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable
 
 from archetype.app.container import ServiceContainer
 from archetype.core.aio.async_processor import AsyncProcessor
