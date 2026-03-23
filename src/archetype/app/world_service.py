@@ -9,6 +9,9 @@ Manages the lifecycle of multiple worlds. Renamed from WorldOrchestrator for v0.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from urllib.parse import urlparse
 from uuid_utils import UUID, uuid7
 
 from archetype.app.broker import CommandBroker
@@ -48,10 +51,38 @@ class WorldService:
         self._worlds.clear()
         self._world_names.clear()
 
+    def _validate_storage_path(self, storage_config: StorageConfig) -> None:
+        """Validate that the storage path is writable for local URIs."""
+        # Only validate local paths, not remote object stores (s3://, gs://, etc.)
+        scheme = urlparse(storage_config.uri).scheme.lower()
+        if scheme and scheme not in ("file",):
+            return  # Skip validation for remote URIs
+        
+        # Resolve the path
+        base_path = Path(storage_config.uri)
+        if not base_path.is_absolute():
+            base_path = Path.cwd() / base_path
+            
+        # Check if we can create the directory structure
+        try:
+            base_path.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError) as e:
+            raise ValueError(
+                f"Storage path '{storage_config.uri}' is not writable. "
+                f"Please ensure the directory exists and has write permissions: {e}"
+            ) from e
+            
+        # Verify write permissions on the directory
+        if not os.access(base_path, os.W_OK):
+            raise ValueError(
+                f"Storage path '{storage_config.uri}' does not have write permissions. "
+                "Please check directory permissions."
+            )
+
     async def create_world(
         self,
         config: WorldConfig,
-        storage_config: StorageConfig,
+        storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> iWorld:
@@ -59,7 +90,24 @@ class WorldService:
         Creates or retrieves a world based on the provided configuration.
         Idempotent: if a world_id already exists, returns the existing instance.
         Injects CommandBroker into world resources if available.
+        
+        Args:
+            config: World configuration (name, id, etc.)
+            storage_config: Optional storage configuration. If None, uses StorageConfig() 
+                           defaults (uri="./archetype_data", backend=LANCEDB) for persistent storage.
+            cache_config: Optional cache configuration.
+            system: Optional system instance; creates default if not provided.
+        
+        Raises:
+            ValueError: If the storage path is not writable.
         """
+        # Ensure we have a storage config with durable defaults
+        if storage_config is None:
+            storage_config = StorageConfig()
+        
+        # Validate that the storage path is writable
+        self._validate_storage_path(storage_config)
+        
         world_id = config.world_id or uuid7()
 
         if world_id in self._worlds:
