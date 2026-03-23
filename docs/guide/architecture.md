@@ -149,13 +149,15 @@ All mutations from external actors flow through the command pipeline:
 
 Every command submission requires an `ActorCtx` specifying the actor's roles:
 
+Roles are flat (not hierarchical) — an actor can have multiple roles:
+
 | Role | Permissions |
 |------|-------------|
-| `viewer` | Read-only (query, history) |
-| `player` | spawn, despawn, update, message |
-| `coder` | + add/remove processors |
-| `maintainer` | + create/destroy/fork worlds |
-| `admin` | All commands |
+| `viewer` | Read-only (query, get state, get world) |
+| `player` | spawn, despawn, update, message, custom |
+| `coder` | add/remove components, update |
+| `maintainer` | spawn, despawn, components, processors, update |
+| `admin` | All commands (wildcard) |
 
 Quotas: 500 commands per tick, 200k token budget per day.
 

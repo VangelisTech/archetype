@@ -32,7 +32,7 @@ archetype/
 │   ├── api/            # FastAPI REST layer
 │   └── cli/            # Typer CLI
 ├── examples/           # Working examples
-├── tests/              # 182 tests, run freely
+├── tests/              # Full test suite, run freely
 └── LEARNINGS.md        # Hard-won architectural knowledge
 ```
 
@@ -104,23 +104,21 @@ class ThinkProcessor(AsyncProcessor):
     priority = 10
 
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
-        return df.with_column(
-            "agent__last_thought",
-            prompt(
-                col("agent__name").str.format(
-                    "You are {}. Tick: " + str(tick) + ". "
-                    "What is your next action? Be brief."
-                ),
-                model="gpt-5-nano",
+        return df.with_columns({
+            "agent__last_thought": prompt(
+                "You are " + col("agent__name")
+                + ". Tick: " + str(tick)
+                + ". What is your next action? Be brief.",
+                model="gpt-4.1-nano",
             ),
-        )
+        })
 ```
 
 ### 3. Use the CLI
 
 ```bash
 archetype serve                          # Start API server
-archetype world create --name my-sim     # Create world
+archetype world create my-sim     # Create world
 archetype run <world-id> --steps 10      # Run simulation
 archetype query <world-id>               # Query state
 archetype history <world-id>             # Command audit trail
@@ -147,7 +145,7 @@ curl localhost:8000/worlds/{id}/state
 ### 5. Run Tests Freely
 
 ```bash
-uv run pytest tests/ -v              # All 182 tests
+uv run pytest tests/ -v              # All tests
 uv run pytest tests/integration/ -v  # Full-stack integration
 uv run pytest tests/api/ -v          # API routes
 uv run pytest tests/app/ -v          # Auth + services
@@ -170,7 +168,14 @@ External API → CommandService → CommandBroker → World
                               (read path)
 ```
 
-**Roles:** `viewer` (read-only) → `player` (spawn/despawn/message) → `coder` (processors) → `maintainer` (worlds) → `admin` (all)
+**Roles (flat, not hierarchical):**
+| Role | Permissions |
+|------|-------------|
+| `viewer` | Read-only (query, get state) |
+| `player` | spawn, despawn, update, message, custom |
+| `coder` | add/remove components, update |
+| `maintainer` | spawn, despawn, components, processors, update |
+| `admin` | All commands (wildcard) |
 
 ---
 

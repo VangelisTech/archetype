@@ -19,14 +19,13 @@ class ThinkProcessor(AsyncProcessor):
     priority = 10
 
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
-        return df.with_column(
-            "agent__last_thought",
-            prompt(
+        return df.with_columns({
+            "agent__last_thought": prompt(
                 col("agent__role") + "\nTick " + str(tick) + ". What next?",
                 model="gpt-4.1-nano",
                 max_tokens=60,
             ),
-        )
+        })
 ```
 
 ## Agent Messaging
@@ -68,13 +67,12 @@ class DebateProcessor(AsyncProcessor):
 
     async def process(self, df, tick=0, **kwargs):
         # Each agent uses a different model based on their role
-        return df.with_column(
-            "agent__last_thought",
-            prompt(
+        return df.with_columns({
+            "agent__last_thought": prompt(
                 col("agent__role") + ": Respond to the debate. Tick " + str(tick),
-                model=col("agent__model"),  # per-entity model selection
+                model="gpt-4.1-nano",
             ),
-        )
+        })
 ```
 
 ### Processor Pipeline

@@ -6,7 +6,7 @@
 
 <i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
 
-[![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](tests/)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
@@ -25,9 +25,9 @@
 
     Welcome to the future of AI engineering.
 
-    The DSL presented in this release is a nominal implementation from Claude 4.5 Opus. It represents the first time I genuinely ran my first multi-agent simulation on top of the columnar ECS engine I designed and built by hand. It has taken several years and hundreds of attempts to finally reach this stage. I wish I could say it was me that improved—undoubtedly I have... But really it's been the model's exponentially improving capacity to engineer and develop software that has truly enabled this project to finally be realized.
+    This project represents years of iteration on ECS patterns and DataFrame-centric simulation. The core engine was designed and built by hand; the service layer, API, and CLI were built with AI assistance.
 
-    The codebase is built to be rewritten. With the exception of the core modules, you could re-write the entire DSL to your liking if you wanted. The decoupling patterns have been sufficiently scoped to support arbitrary experimentation both in the simulation and in the design of the DSL.
+    The codebase is built to be rewritten. With the exception of the core modules, you could re-write the entire service layer to your liking. The decoupling patterns support arbitrary experimentation in both simulation logic and infrastructure.
 
     Build what you want.
     Build what brings you joy.
@@ -74,7 +74,7 @@ uv sync
 archetype serve
 
 # Or use the CLI directly
-archetype world create --name my-sim
+archetype world create my-sim
 archetype run <world-id> --steps 100
 archetype query <world-id>
 ```
@@ -135,7 +135,7 @@ archetype/
 │   │   ├── deps.py    #   Dependency injection
 │   │   └── app.py     #   App factory with lifespan
 │   └── cli/           # Typer CLI
-├── tests/             # 182 tests
+├── tests/             # Comprehensive test suite
 ├── AGENTS.md          # Start here if you're an AI
 └── LEARNINGS.md       # Hard-won architectural knowledge
 ```
@@ -189,7 +189,7 @@ External API → CommandService → CommandBroker (RBAC + queue) → World
                               QueryService (read path)
 ```
 
-**Roles:** `viewer` (read-only), `player` (spawn/despawn/message), `coder` (processors), `maintainer` (worlds), `admin` (all)
+**Roles:** `viewer` (read-only), `player` (spawn/despawn/message), `coder` (components/update), `maintainer` (+ processors), `admin` (all)
 
 **Quotas:** 500 commands/tick, 200k token budget/day
 
@@ -218,7 +218,7 @@ pip install -e .
 ## Tests
 
 ```bash
-uv run pytest tests/ -v              # All 182 tests
+uv run pytest tests/ -v              # All tests
 uv run pytest tests/integration/ -v  # Full-stack integration
 uv run pytest tests/api/ -v          # API routes
 uv run pytest tests/app/ -v          # Auth + services

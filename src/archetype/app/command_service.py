@@ -146,15 +146,9 @@ class CommandService:
                 await self._world_service.fork_world(source_id, world_config, StorageConfig())
 
             case CommandType.MESSAGE:
-                # Message delivery via resources if inbox exists
-                if hasattr(world, "resources"):
-                    try:
-
-                        inbox = world.resources.get("Inbox")
-                        if inbox and hasattr(inbox, "deliver"):
-                            inbox.deliver(payload)
-                    except Exception:
-                        pass
+                # Message delivery — future extension point
+                # Processors can read MESSAGE commands from broker history
+                pass
 
             case CommandType.QUERY_WORLD:
                 pass  # Read-only, delegated to QueryService

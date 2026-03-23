@@ -163,7 +163,7 @@ POST /worlds/{world_id}/step
 ```
 
 ```json
-{"debug": false}
+{"num_steps": 1, "debug": false}
 ```
 
 Response:

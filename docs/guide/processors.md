@@ -83,16 +83,15 @@ class ThinkProcessor(AsyncProcessor):
     priority = 10
 
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
-        return df.with_column(
-            "agent__last_thought",
-            prompt(
+        return df.with_columns({
+            "agent__last_thought": prompt(
                 col("agent__role") + "\nYou are " + col("agent__name")
                 + ". Tick " + str(tick) + ". What do you do next? One sentence.",
                 system_message="You are an agent in a simulation. Stay in character.",
                 model="gpt-4.1-nano",
                 max_tokens=60,
             ),
-        )
+        })
 ```
 
 Because Daft executes prompts across the entire DataFrame, all entities get LLM calls in parallel — no manual batching needed.
@@ -114,12 +113,13 @@ class DecisionProcessor(AsyncProcessor):
     priority = 20
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        decisions = prompt(
-            col("agent__role") + ": Choose an action.",
-            return_format=Decision,
-            model="gpt-4.1-nano",
-        )
-        return df.with_column("decision", decisions).unnest("decision")
+        return df.with_columns({
+            "decision": prompt(
+                col("agent__role") + ": Choose an action.",
+                return_format=Decision,
+                model="gpt-4.1-nano",
+            ),
+        }).unnest("decision")
 ```
 
 ## Tick and Run Context
