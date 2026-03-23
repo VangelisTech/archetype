@@ -1,5 +1,15 @@
 # Architecture
 
+## Philosophy
+
+Archetype is an **auto-evolving codebase** that cleanly decouples compute from data. It is your agent's lazily-evaluated **Virtual Data Architecture** — a command-driven interface where world state is columnar DataFrames and every mutation flows through an RBAC-gated broker.
+
+Key principles:
+- **Compute decoupled from data** — processors are pure DataFrame transforms, storage is append-only Arrow/LanceDB
+- **Lazily evaluated** — Daft DataFrames are lazy; processors build query plans, execution is deferred
+- **Command-driven** — all mutations flow through CommandBroker, RBAC-gated, auditable
+- **Parallelizable** — Daft runs on Ray or Daft Cloud for distributed execution
+
 Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
 
 ## System Diagram

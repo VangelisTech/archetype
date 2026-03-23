@@ -46,7 +46,13 @@
 
 ## What is Archetype?
 
-Archetype is a **data-centric Entity-Component-System (ECS) runtime** where:
+Archetype is an **auto-evolving codebase** that cleanly decouples compute from data. It is your agent's lazily-evaluated **Virtual Data Architecture** — a command-driven interface where world state is columnar DataFrames and every mutation flows through an RBAC-gated broker.
+
+Parallelize on Ray if needed, or on Daft Cloud.
+
+### Technical Foundation
+
+Built as a **data-centric Entity-Component-System (ECS) runtime** where:
 - World state is **columnar tables** (Daft DataFrames / Arrow)
 - Each tick is an **append-only write** to storage (LanceDB)
 - Agent behaviors are **pure DataFrame transforms**
