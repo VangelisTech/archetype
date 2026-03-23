@@ -23,6 +23,7 @@ Usage:
 
 import asyncio
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -35,15 +36,17 @@ from .components import Extraction, Perspective, Segment, Voice
 from .loader import load_conversations
 from .processors import ExtractProcessor, PerspectiveProcessor, VoiceProcessor
 
-DEFAULT_DIR = str(
-    Path.home() / ".claude/projects/-Users-everettkleven-git-other"
+DEFAULT_DIR = os.environ.get(
+    "MIND_CONVERSATION_DIR",
+    str(Path.home() / ".claude/projects/-Users-everettkleven-git-other"),
 )
 
 
 async def main(conversation_dir: str = DEFAULT_DIR):
     # ── Load conversations ──
     print(f"Loading conversations from {conversation_dir}...")
-    entities = load_conversations(conversation_dir, max_segments=50)
+    max_segments = int(os.environ.get("MIND_MAX_SEGMENTS", "50"))
+    entities = load_conversations(conversation_dir, max_segments=max_segments)
     print(f"Loaded {len(entities)} user message segments\n")
 
     if not entities:

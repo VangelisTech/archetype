@@ -48,6 +48,7 @@ def load_conversations(
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
+                    print(f"  warning: skipped malformed JSON in {jsonl_path.name}")
                     continue
 
                 # Only process user messages
