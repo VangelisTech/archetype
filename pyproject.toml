@@ -42,6 +42,7 @@ dev        = [
     "ipykernel",
     "pyiceberg[sql-sqlite]>=0.7.0",
 ]
+synth      = ["torch>=2.2", "tiktoken>=0.7", "scikit-learn>=1.4"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -58,7 +59,8 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 pythonpath = [
-    "src"
+    "src",
+    ".",
 ]
 asyncio_default_fixture_loop_scope = "function"
 
