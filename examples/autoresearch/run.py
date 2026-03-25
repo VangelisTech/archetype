@@ -37,23 +37,99 @@ TEST_TEXTS = [
 ]
 
 
-BLOCKED_NAMES = {"import", "exec", "eval", "compile", "open", "system", "getattr", "setattr", "delattr", "globals", "locals", "__import__"}
+_ALLOWED_NAMES: dict[str, object] = {
+    "len": len,
+    "min": min,
+    "max": max,
+    "abs": abs,
+    "float": float,
+    "int": int,
+    "str": str,
+    "sum": sum,
+    "round": round,
+    "sorted": sorted,
+    "enumerate": enumerate,
+    "range": range,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+    "True": True,
+    "False": False,
+    "None": None,
+}
+
+_ALLOWED_NODE_TYPES = (
+    ast.Expression,
+    ast.Lambda,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.IfExp,
+    ast.Call,
+    ast.Constant,
+    ast.Name,
+    ast.Tuple,
+    ast.List,
+    ast.Subscript,
+    ast.Slice,
+    ast.Index,  # Python 3.8 compat, harmless on 3.12
+    ast.Load,
+    ast.Store,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.USub,
+    ast.UAdd,
+    ast.Not,
+    ast.And,
+    ast.Or,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.In,
+    ast.NotIn,
+    ast.Is,
+    ast.IsNot,
+    ast.arguments,
+    ast.arg,
+    ast.ListComp,
+    ast.GeneratorExp,
+    ast.comprehension,
+    ast.Starred,
+    ast.JoinedStr,
+    ast.FormattedValue,
+)
 
 
-def _is_safe_lambda(code: str) -> bool:
-    """Check that a lambda contains no dangerous calls."""
+def _validate_lambda_ast(code: str) -> ast.Expression | None:
+    """Parse and whitelist-validate a lambda expression. Returns AST or None."""
     try:
         tree = ast.parse(code, mode="eval")
     except SyntaxError:
-        return False
+        return None
+    if not isinstance(tree.body, ast.Lambda):
+        return None
     for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in BLOCKED_NAMES:
-            return False
-        if isinstance(node, ast.Attribute) and node.attr in BLOCKED_NAMES:
-            return False
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__import__":
-            return False
-    return True
+        if not isinstance(node, _ALLOWED_NODE_TYPES):
+            return None
+        # Only allow names from the allowlist + the lambda parameter
+        if isinstance(node, ast.Name) and node.id not in _ALLOWED_NAMES:
+            # Check if it's the lambda param (e.g., "text" or "t")
+            params = {a.arg for a in tree.body.args.args}
+            if node.id not in params:
+                return None
+        # Block all attribute access (no obj.method calls)
+        if isinstance(node, ast.Attribute):
+            return None
+    return tree
 
 
 def evaluate_strategy(strategy_text: str) -> float:
@@ -62,10 +138,13 @@ def evaluate_strategy(strategy_text: str) -> float:
     if not match:
         return 0.0
     lambda_str = match.group(1).strip()
-    if not _is_safe_lambda(lambda_str):
+    tree = _validate_lambda_ast(lambda_str)
+    if tree is None:
         return 0.0
     try:
-        func = eval(lambda_str)  # noqa: S307 — validated by _is_safe_lambda
+        code = compile(tree, filename="<strategy>", mode="eval")
+        namespace = {**_ALLOWED_NAMES, "__builtins__": {}}
+        func = eval(code, namespace)  # noqa: S307
     except Exception:
         return 0.0
     scores = []
