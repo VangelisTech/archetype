@@ -9,6 +9,7 @@ Wires all services together. Single point of construction.
 
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
+from archetype.app.memory.service import MemoryService
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
@@ -25,7 +26,7 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
     """
 
-    def __init__(self):
+    def __init__(self, memory_storage_uri: str = "./memory_data"):
         # Infrastructure
         self.storage_service = StorageService()
         self.broker = CommandBroker()
@@ -35,6 +36,7 @@ class ServiceContainer:
         self.command_service = CommandService(self.broker, self.world_service)
         self.simulation_service = SimulationService(self.world_service, self.command_service)
         self.query_service = QueryService(self.world_service, broker=self.broker)
+        self.memory_service = MemoryService(self, storage_uri=memory_storage_uri)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

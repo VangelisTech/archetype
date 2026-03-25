@@ -12,7 +12,9 @@ import typer
 
 app = typer.Typer(name="archetype", help="Archetype ECS — AI-Native Simulation Engine")
 world_app = typer.Typer(help="World management commands")
+memory_app = typer.Typer(help="Agent memory — ingest, query, list")
 app.add_typer(world_app, name="world")
+app.add_typer(memory_app, name="memory")
 
 
 def _run(coro):
@@ -239,6 +241,97 @@ def history(
             await container.shutdown()
 
     _run(_history())
+
+
+# ── Memory commands ──
+# Memory commands hit the running HTTP server (archetype serve).
+# Set ARCHETYPE_SERVER or pass --server to override the base URL.
+
+_DEFAULT_SERVER = "http://localhost:8000"
+
+
+def _server_url(server: str) -> str:
+    import os
+    return os.environ.get("ARCHETYPE_SERVER", server).rstrip("/")
+
+
+def _http(server: str):
+    try:
+        import httpx
+        return httpx.Client(base_url=_server_url(server), timeout=30)
+    except ImportError:
+        typer.echo("httpx is required for memory commands. Install with: pip install httpx", err=True)
+        raise typer.Exit(1)
+
+
+@memory_app.command("ingest")
+def memory_ingest(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+    text: str = typer.Argument(..., help="Text to ingest"),
+    source: str = typer.Option("unknown", "--source", "-s", help="Source label"),
+    server: str = typer.Option(_DEFAULT_SERVER, "--server", envvar="ARCHETYPE_SERVER"),
+):
+    """Ingest a text chunk. Requires `archetype serve` to be running."""
+    with _http(server) as client:
+        resp = client.post("/memory/ingest", json={
+            "session_id": session_id, "text": text, "source": source,
+        })
+        resp.raise_for_status()
+        r = resp.json()
+        if r.get("is_duplicate"):
+            typer.echo(
+                f"[duplicate] chunk_id={r['chunk_id']}  "
+                f"canonical={r.get('canonical_id', '')}  "
+                f"jaccard={r.get('similarity_score', 0):.3f}"
+            )
+        else:
+            typer.echo(f"[stored]    chunk_id={r['chunk_id']}")
+
+
+@memory_app.command("query")
+def memory_query(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+    q: str = typer.Argument(..., help="Query text"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Number of results"),
+    server: str = typer.Option(_DEFAULT_SERVER, "--server", envvar="ARCHETYPE_SERVER"),
+):
+    """Query the top-K most relevant memory chunks. Requires `archetype serve`."""
+    with _http(server) as client:
+        resp = client.post("/memory/query", json={
+            "session_id": session_id, "q": q, "top_k": top_k,
+        })
+        resp.raise_for_status()
+        results = resp.json()
+        if not results:
+            typer.echo("No results found.")
+            return
+        for i, r in enumerate(results, 1):
+            typer.echo(
+                f"[{i}] sim={r.get('query_similarity', 0):.3f}  "
+                f"source={r.get('source', '?')}  "
+                f"{r.get('content', '')[:120]}"
+            )
+
+
+@memory_app.command("list")
+def memory_list(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+    server: str = typer.Option(_DEFAULT_SERVER, "--server", envvar="ARCHETYPE_SERVER"),
+):
+    """List non-duplicate chunks for a session. Requires `archetype serve`."""
+    with _http(server) as client:
+        resp = client.get(f"/memory/sessions/{session_id}/chunks")
+        resp.raise_for_status()
+        chunks = resp.json()
+        if not chunks:
+            typer.echo("No chunks found.")
+            return
+        typer.echo(f"{len(chunks)} chunk(s) in session '{session_id}':")
+        for c in chunks:
+            typer.echo(
+                f"  {c['chunk_id']}  source={c.get('source', '?')}  "
+                f"{c.get('content', '')[:80]}"
+            )
 
 
 if __name__ == "__main__":
