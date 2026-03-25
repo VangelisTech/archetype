@@ -522,3 +522,26 @@ Use cases:
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
 14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+
+---
+
+## Chained `with_column` Plan Dependency Bug (March 2026)
+
+When two `with_column` calls share a condition expression, the second sees the already-updated column from the first:
+
+```python
+# ❌ WRONG: second with_column evaluates advances against the UPDATED avg_quality
+df = (
+    df.with_column("col_a", when(condition, then=new_a).otherwise(col("col_a")))
+      .with_column("col_b", when(condition, then=new_b).otherwise(col("col_b")))
+    # condition references col_a — but col_a was just updated above!
+)
+
+# ✅ CORRECT: with_columns (plural) applies both from the same base plan
+df = df.with_columns({
+    "col_a": when(condition, then=new_a).otherwise(col("col_a")),
+    "col_b": when(condition, then=new_b).otherwise(col("col_b")),
+})
+```
+
+**Root cause:** `condition = col_a > col_b`. After step 1 updates `col_a`, step 2 re-evaluates `condition` against the new `col_a`, making it false even when it should be true. `with_columns` evaluates all expressions simultaneously from the same input plan.
