@@ -21,7 +21,11 @@ from collections import Counter
 import daft
 import mlx.core as mx
 import numpy as np
-from daft import DataType, Series, col
+from daft import DataFrame, DataType, Series, col
+
+from archetype.core.sync.processor import SyncProcessor
+
+from .components import Cluster, Embedding
 
 # ─── Approach 1: sklearn baseline ─────────────────────────────────────────────
 
@@ -383,6 +387,105 @@ def mlx_power(vectors: Series, n_clusters: int) -> list[dict]:
     ]
 
 
+# ─── Tier 2: Materialized numpy (collect → compute → push back) ──────────────
+
+
+def run_materialized_power(df: daft.DataFrame, n_clusters: int) -> daft.DataFrame:
+    """Collect to numpy, run power iteration, push results back as DataFrame."""
+    rows = df.collect().to_pylist()
+    X = np.array([r["embedding__vector"] for r in rows])
+    labels, dists = _mlx_power_spectral_core(X, n_clusters)
+    # Rebuild DataFrame from scratch (full materialization round-trip)
+    return daft.from_pydict({
+        "embedding__vector": [r["embedding__vector"] for r in rows],
+        "cluster_id": labels.tolist(),
+        "centroid_distance": dists.tolist(),
+    })
+
+
+# ─── Tier 3: Archetype ECS simulation tick ───────────────────────────────────
+
+
+class SpectralClusterProcessor(SyncProcessor):
+    """SyncProcessor wrapping MLX power iteration for ECS world ticks."""
+
+    components = (Embedding, Cluster)
+    priority = 50
+
+    def __init__(self, n_clusters: int = 4):
+        self.n_clusters = n_clusters
+
+    def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        return df.select(
+            col("*"),
+            mlx_power(col("embedding__vector"), self.n_clusters),
+        ).with_columns_renamed({
+            "cluster_id": "cluster__cluster_id",
+            "centroid_distance": "cluster__centroid_distance",
+        })
+
+
+def run_archetype_tick(
+    vectors: list[list[float]], n_clusters: int,
+) -> list[dict]:
+    """Create a sync world, spawn entities, register processor, tick, query."""
+    from daft import Schema
+    from daft.session import Session
+
+    from archetype.core.archetype import Archetype
+    from archetype.core.config import RunConfig, WorldConfig
+    from archetype.core.interfaces import ArchetypeSignature, iStore
+    from archetype.core.sync.querier import QueryManager
+    from archetype.core.sync.system import SyncSystem
+    from archetype.core.sync.updater import UpdateManager
+    from archetype.core.sync.world import SyncWorld
+
+    class MemStore(iStore):
+        """In-memory store using temp tables for benchmarking."""
+
+        def __init__(self):
+            self.sess = Session()
+            self._tables: set[str] = set()
+
+        def _ensure_table(self, sig: ArchetypeSignature):
+            name = Archetype.get_name(sig)
+            if name not in self._tables:
+                schema = Schema.from_pyarrow_schema(Archetype.get_archetype_schema(sig))
+                self.sess.create_temp_table(name, source=schema)
+                self._tables.add(name)
+            return self.sess.read_table(name)
+
+        def get_archetype_df(self, sig, world_id, run_id):
+            self._ensure_table(sig)
+            df = self.sess.read_table(Archetype.get_name(sig))
+            return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
+
+        def append(self, sig, df):
+            name = Archetype.get_name(sig)
+            self._ensure_table(sig)
+            self.sess.write_table(name, df)
+
+    store = MemStore()
+    world = SyncWorld(
+        world_config=WorldConfig(name="bench"),
+        querier=QueryManager(store=store, debug=False),
+        updater=UpdateManager(store=store),
+        system=SyncSystem(),
+    )
+    world.add_processor(SpectralClusterProcessor(n_clusters=n_clusters))
+
+    for vec in vectors:
+        world.create_entity([Embedding(vector=vec, model_version="bench")])
+
+    run_config = RunConfig.benchmark(steps=1)
+    world.step(run_config)
+
+    result_df = world.get_components(
+        [Embedding(), Cluster()],
+    )
+    return result_df.collect().to_pylist()
+
+
 # ─── Benchmark harness ───────────────────────────────────────────────────────
 
 
@@ -397,12 +500,20 @@ def make_synthetic_data(n: int, dim: int, k: int, seed: int = 42) -> daft.DataFr
     return daft.from_pydict({"embedding__vector": vectors})
 
 
+def _run_tier3(vectors: list[list[float]], n_clusters: int) -> list[dict]:
+    """Run tier 3 via SyncWorld."""
+    return run_archetype_tick(vectors, n_clusters)
+
+
 def run_benchmark(
     sizes: list[int], n_clusters: int, dim: int, n_landmarks: int,
+    *, tiers: str = "1,2,3",
 ) -> list[dict]:
     results = []
+    tier_set = {int(t) for t in tiers.split(",")}
 
-    approaches = [
+    # Tier 1: Daft batch UDFs
+    tier1_approaches = [
         ("sklearn", lambda df, k: df.select(
             col("*"), sklearn_spectral(col("embedding__vector"), k),
         )),
@@ -418,50 +529,71 @@ def run_benchmark(
     ]
 
     for n in sizes:
-        print(f"\n{'=' * 60}")
+        print(f"\n{'=' * 70}")
         print(f"n={n}, dim={dim}, k={n_clusters}")
-        print(f"{'=' * 60}")
+        print(f"{'=' * 70}")
 
         df = make_synthetic_data(n, dim, n_clusters)
 
-        for name, fn in approaches:
-            # Warm up MLX / sklearn
-            if n == sizes[0]:
-                small = make_synthetic_data(50, dim, n_clusters)
-                try:
-                    fn(small, n_clusters).collect()
-                except Exception:
-                    pass
+        # ── Tier 1: batch UDFs ──
+        if 1 in tier_set:
+            for name, fn in tier1_approaches:
+                if n == sizes[0]:
+                    small = make_synthetic_data(50, dim, n_clusters)
+                    try:
+                        fn(small, n_clusters).collect()
+                    except Exception:
+                        pass
 
+                t0 = time.perf_counter()
+                try:
+                    rows = fn(df, n_clusters).collect().to_pylist()
+                    elapsed = time.perf_counter() - t0
+                    cluster_ids = [r["cluster_id"] for r in rows]
+                    n_found = len(set(cluster_ids))
+                    dist_counts = Counter(cluster_ids)
+                    label = f"T1:{name}"
+                    print(f"\n  {label:25s}  {elapsed:6.3f}s  clusters={n_found}  dist={dict(sorted(dist_counts.items()))}")
+                    results.append({"approach": label, "n": n, "time_s": round(elapsed, 4), "clusters_found": n_found})
+                except Exception as e:
+                    elapsed = time.perf_counter() - t0
+                    print(f"\n  T1:{name:21s}  FAILED ({elapsed:.3f}s): {e}")
+                    results.append({"approach": f"T1:{name}", "n": n, "time_s": round(elapsed, 4), "error": str(e)})
+
+        # ── Tier 2: materialized numpy ──
+        if 2 in tier_set:
             t0 = time.perf_counter()
             try:
-                result_df = fn(df, n_clusters)
+                result_df = run_materialized_power(df, n_clusters)
                 rows = result_df.collect().to_pylist()
                 elapsed = time.perf_counter() - t0
                 cluster_ids = [r["cluster_id"] for r in rows]
                 n_found = len(set(cluster_ids))
                 dist_counts = Counter(cluster_ids)
-
-                print(f"\n  {name:20s}  {elapsed:6.3f}s  clusters={n_found}  dist={dict(sorted(dist_counts.items()))}")
-                results.append({
-                    "approach": name,
-                    "n": n,
-                    "dim": dim,
-                    "k": n_clusters,
-                    "time_s": round(elapsed, 4),
-                    "clusters_found": n_found,
-                })
+                print(f"\n  {'T2:materialized':25s}  {elapsed:6.3f}s  clusters={n_found}  dist={dict(sorted(dist_counts.items()))}")
+                results.append({"approach": "T2:materialized", "n": n, "time_s": round(elapsed, 4), "clusters_found": n_found})
             except Exception as e:
                 elapsed = time.perf_counter() - t0
-                print(f"\n  {name:20s}  FAILED ({elapsed:.3f}s): {e}")
-                results.append({
-                    "approach": name,
-                    "n": n,
-                    "dim": dim,
-                    "k": n_clusters,
-                    "time_s": round(elapsed, 4),
-                    "error": str(e),
-                })
+                print(f"\n  {'T2:materialized':25s}  FAILED ({elapsed:.3f}s): {e}")
+                results.append({"approach": "T2:materialized", "n": n, "time_s": round(elapsed, 4), "error": str(e)})
+
+        # ── Tier 3: archetype ECS tick ──
+        if 3 in tier_set:
+            t0 = time.perf_counter()
+            try:
+                vecs = df.select("embedding__vector").collect().to_pylist()
+                vectors = [r["embedding__vector"] for r in vecs]
+                rows = _run_tier3(vectors, n_clusters)
+                elapsed = time.perf_counter() - t0
+                cluster_ids = [r["cluster__cluster_id"] for r in rows]
+                n_found = len(set(cluster_ids))
+                dist_counts = Counter(cluster_ids)
+                print(f"\n  {'T3:archetype_tick':25s}  {elapsed:6.3f}s  clusters={n_found}  dist={dict(sorted(dist_counts.items()))}")
+                results.append({"approach": "T3:archetype_tick", "n": n, "time_s": round(elapsed, 4), "clusters_found": n_found})
+            except Exception as e:
+                elapsed = time.perf_counter() - t0
+                print(f"\n  {'T3:archetype_tick':25s}  FAILED ({elapsed:.3f}s): {e}")
+                results.append({"approach": "T3:archetype_tick", "n": n, "time_s": round(elapsed, 4), "error": str(e)})
 
     return results
 
@@ -472,25 +604,27 @@ def main():
     parser.add_argument("--k", type=int, default=4, help="Number of clusters")
     parser.add_argument("--dim", type=int, default=128, help="Embedding dimension")
     parser.add_argument("--landmarks", type=int, default=100, help="Nyström landmark count")
+    parser.add_argument("--tiers", default="1,2,3", help="Tiers to run: 1=UDF, 2=materialized, 3=archetype")
     args = parser.parse_args()
 
     sizes = [int(s) for s in args.sizes.split(",")]
     print("Spectral Clustering Benchmark — MLX in Daft UDFs")
     print(f"Sizes: {sizes}, k={args.k}, dim={args.dim}, landmarks={args.landmarks}")
+    print(f"Tiers: {args.tiers}")
 
-    results = run_benchmark(sizes, args.k, args.dim, args.landmarks)
+    results = run_benchmark(sizes, args.k, args.dim, args.landmarks, tiers=args.tiers)
 
     # Summary table
-    print(f"\n{'=' * 60}")
+    print(f"\n{'=' * 70}")
     print("SUMMARY")
-    print(f"{'=' * 60}")
-    print(f"{'Approach':20s} {'n':>6} {'Time (s)':>10} {'Clusters':>10}")
-    print(f"{'─' * 20} {'─' * 6} {'─' * 10} {'─' * 10}")
+    print(f"{'=' * 70}")
+    print(f"{'Approach':25s} {'n':>6} {'Time (s)':>10} {'Clusters':>10}")
+    print(f"{'─' * 25} {'─' * 6} {'─' * 10} {'─' * 10}")
     for r in results:
         if "error" in r:
-            print(f"{r['approach']:20s} {r['n']:>6} {'FAILED':>10}")
+            print(f"{r['approach']:25s} {r['n']:>6} {'FAILED':>10}")
         else:
-            print(f"{r['approach']:20s} {r['n']:>6} {r['time_s']:>10.4f} {r['clusters_found']:>10}")
+            print(f"{r['approach']:25s} {r['n']:>6} {r['time_s']:>10.4f} {r['clusters_found']:>10}")
 
 
 if __name__ == "__main__":
