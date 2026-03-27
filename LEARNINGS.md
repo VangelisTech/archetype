@@ -522,3 +522,129 @@ Use cases:
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
 14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+
+---
+
+## Contrastive Embedding Pipeline (Mar 2026)
+
+### The Synth Engine Pattern
+
+Train a tiny encoder on conversation labels, deploy as a Daft UDF, recurse — cluster-derived labels feed back as training signal with zero API calls after the initial labeling pass.
+
+```
+Labels (one-time API) → Triplets → Train → Embed → Cluster → New Labels → Retrain → ...
+```
+
+On 35 segments from mind extraction: 87% perspective purity, 98% voice purity at cycle 0. Model converges immediately on small data — the bottleneck is data volume, not compute or architecture.
+
+### `@daft.func.batch` for Fit-Predict Operations
+
+When an operation needs to see the entire partition to fit (k-means, spectral clustering), use `@daft.func.batch`. It receives a `Series`, not individual rows. The fit and predict happen in a single call — no collect needed.
+
+```python
+@daft.func.batch(
+    return_dtype=DataType.struct({
+        "cluster_id": DataType.int64(),
+        "centroid_distance": DataType.float64(),
+    }),
+    unnest=True,
+)
+def kmeans_cluster(vectors: Series, n_clusters: int) -> list[dict]:
+    from sklearn.cluster import KMeans
+    X = np.array(vectors.to_pylist())
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = km.fit_predict(X)
+    dists = np.linalg.norm(X - km.cluster_centers_[labels], axis=1)
+    return [{"cluster_id": int(l), "centroid_distance": float(d)} for l, d in zip(labels, dists)]
+```
+
+This replaces the old pattern of collecting → fitting in Python → pushing results back as lists. The processor body becomes 4 lines.
+
+### `@daft.func` Generators for Row Explosion
+
+When one input row should produce N output rows (e.g., generating multiple triplets per anchor), use a generator function. Daft handles the row explosion.
+
+```python
+@daft.func(
+    return_dtype=DataType.struct({...}),
+    unnest=True,
+)
+def _sample_pairs(anchor: str, positives: list[str], negatives: list[str], ...) -> Iterator[dict]:
+    for _ in range(n):
+        yield {"positive_text": rng.choice(positives), "negative_text": rng.choice(negatives)}
+```
+
+Combine with `groupby` + `list_agg` to avoid collecting the full DataFrame just to group rows.
+
+### `@daft.method` Struct Returns with `unnest=True`
+
+When a `@daft.cls` method returns multiple fields, use a struct return type with `unnest=True` to get separate columns. Must use `df.select(col("*"), cls.method(...))` instead of `df.with_columns(...)`.
+
+```python
+@daft.method(
+    return_dtype=DataType.struct({
+        "neighbor_ids": DataType.list(DataType.string()),
+        "distances": DataType.list(DataType.float64()),
+    }),
+    unnest=True,
+)
+def query(self, vector: list[float]) -> dict:
+    ...
+```
+
+Use `with_columns_renamed({"field": "component__field"})` afterward to match ECS naming conventions.
+
+### MLX: Unified Memory is Real, But Watch the API Gaps
+
+MLX on Apple Silicon gives zero-copy CPU↔GPU. But:
+- `eigh` (eigendecomposition) is CPU-only — pass `stream=mx.cpu` explicitly
+- Boolean indexing (`X[mask]`) is not supported — use one-hot scatter or `mx.where`
+- No QR factorization — implement Gram-Schmidt manually
+- `mx.array.at[i, j].add(v)` is the scatter pattern (no in-place mutation)
+
+The workaround for spectral clustering: skip eigendecomposition entirely. Power iteration on the diffusion operator `D⁻¹W` converges to the invariant subspace via repeated matmul — all GPU. 44x faster than sklearn at n=5000.
+
+### k-NN Sparsification Fixes Dense Affinity Issues
+
+Full cosine affinity matrices (`W = X @ X.T`) create too many weak cross-cluster connections at scale. Spectral clustering merges clusters that should be separate.
+
+Fix: keep only the top-k nearest neighbors per row, zero everything else, symmetrize. At k=10, perfect cluster quality on 2000 points where dense affinity found only 3/4 clusters.
+
+### Recursive Training Converges Fast on Small Data
+
+With 35 segments, the recursion loop locks in at cycle 0:
+- Cluster structure `{10, 11, 8, 6}` never changes across 5 cycles
+- Loss keeps dropping (0.075 → 0.026) but no new structure emerges
+- Triplet count grows (298 → 718) as cluster labels add more contrastive pairs
+
+The 87% ceiling is because superjective (2 segments) and abjective (2 segments) are too small to form their own groups. They get absorbed into adjacent clusters. More data is the only fix — not more cycles, not different hyperparameters.
+
+### Premature `.collect()` Kills Parallelism
+
+Every `.collect().to_pylist()` forces Daft to materialize the full DataFrame, breaking the lazy evaluation DAG. The synth processors were doing this unnecessarily:
+
+| Before | After | Improvement |
+|--------|-------|-------------|
+| Collect all rows → numpy → list | `@daft.func.batch` | Zero collect |
+| Collect all rows → percentile → score | `approx_percentiles` agg + `@daft.func` | Single scalar collect |
+| Collect full DF for entity_ids | Select only needed columns | Narrow collect |
+
+The only justified collect is in `train_encoder` — PyTorch gradient descent inherently needs all triplets in memory.
+
+### `eval()` Blocklists are Trivially Bypassable
+
+An AST blocklist checking for dangerous names (`exec`, `eval`, `import`) can be circumvented via `__builtins__`, subscript access (`globals()["ev"+"al"]`), or attribute chains. Replace with:
+
+1. AST **allowlist** — only permit whitelisted node types
+2. `compile(ast)` — compile from the validated AST, not from string
+3. Restricted namespace — `{"__builtins__": {}}` with only safe functions
+
+### Duplicate Column Names Across Cycles
+
+When a processor adds columns (e.g., `cluster__cluster_id`) and runs again on the next cycle, Daft throws "ambiguous column" errors. Drop stale columns before re-running:
+
+```python
+drop = [c for c in df.column_names if c in ("cluster__cluster_id", "cluster__centroid_distance")]
+if drop:
+    df = df.exclude(*drop)
+```
