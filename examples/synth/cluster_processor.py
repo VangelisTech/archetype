@@ -4,7 +4,7 @@
 
 import daft
 import numpy as np
-from daft import DataFrame, DataType, col
+from daft import DataFrame, DataType, Series, col
 
 from archetype.core.sync.processor import SyncProcessor
 
@@ -12,7 +12,7 @@ from .components import Cluster, Embedding
 
 
 def cluster_embeddings(vectors: list[list[float]], n_clusters: int = 8) -> dict[str, list]:
-    """Standalone helper — kept for use in recurse.py and tests."""
+    """Standalone helper — kept for use in tests."""
     if len(vectors) < n_clusters:
         return {"cluster_id": [-1] * len(vectors), "centroid_distance": [0.0] * len(vectors)}
     from sklearn.cluster import KMeans
@@ -24,25 +24,28 @@ def cluster_embeddings(vectors: list[list[float]], n_clusters: int = 8) -> dict[
     return {"cluster_id": labels.tolist(), "centroid_distance": distances.tolist()}
 
 
-@daft.cls
-class KMeansScorer:
-    """Stateful Daft class — fits KMeans once, predicts per-row."""
+@daft.func.batch(
+    return_dtype=DataType.struct({
+        "cluster_id": DataType.int64(),
+        "centroid_distance": DataType.float64(),
+    }),
+    unnest=True,
+)
+def kmeans_cluster(vectors: Series, n_clusters: int) -> list[dict]:
+    """Batch UDF: fits KMeans on the full partition, returns per-row assignments."""
+    from sklearn.cluster import KMeans
 
-    def __init__(self, centers: list[list[float]]):
-        self._centers = np.array(centers)
-
-    @daft.method(
-        return_dtype=DataType.struct({
-            "cluster_id": DataType.int64(),
-            "centroid_distance": DataType.float64(),
-        }),
-        unnest=True,
-    )
-    def predict(self, vector: list[float]) -> dict:
-        v = np.array(vector)
-        dists = np.linalg.norm(self._centers - v, axis=1)
-        idx = int(np.argmin(dists))
-        return {"cluster_id": idx, "centroid_distance": float(dists[idx])}
+    vecs = vectors.to_pylist()
+    X = np.array(vecs)
+    if len(X) < n_clusters:
+        return [{"cluster_id": -1, "centroid_distance": 0.0}] * len(X)
+    km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+    labels = km.fit_predict(X)
+    dists = np.linalg.norm(X - km.cluster_centers_[labels], axis=1)
+    return [
+        {"cluster_id": int(label), "centroid_distance": float(dist)}
+        for label, dist in zip(labels, dists, strict=True)
+    ]
 
 
 class ClusterProcessor(SyncProcessor):
@@ -53,20 +56,10 @@ class ClusterProcessor(SyncProcessor):
         self.n_clusters = n_clusters
 
     def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        # Fit step: collect vectors once to compute centroids
-        rows = df.select("embedding__vector").collect().to_pylist()
-        vectors = [r["embedding__vector"] for r in rows if r["embedding__vector"]]
-        if not vectors or len(vectors) < self.n_clusters:
-            return df
-        from sklearn.cluster import KMeans
-
-        X = np.array(vectors)
-        km = KMeans(n_clusters=self.n_clusters, random_state=42, n_init=10)
-        km.fit(X)
-
-        # Score step: per-row via daft.cls (no second collect)
-        scorer = KMeansScorer(km.cluster_centers_.tolist())
-        return df.select(col("*"), scorer.predict(col("embedding__vector"))).with_columns_renamed({
+        return df.select(
+            col("*"),
+            kmeans_cluster(col("embedding__vector"), self.n_clusters),
+        ).with_columns_renamed({
             "cluster_id": "cluster__cluster_id",
             "centroid_distance": "cluster__centroid_distance",
         })
