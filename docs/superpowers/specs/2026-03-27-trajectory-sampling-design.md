@@ -613,6 +613,100 @@ All sources converge to the same `Event` record. Fields that don't exist in a so
 
 ---
 
+## Agent Trace Integration
+
+> **Context for reviewers**: [Agent Trace](https://agent-trace.dev/) is an open spec (v0.1.0, RFC) for attributing AI-generated code at the file and line level. It was developed by Anthropic, OpenAI, Google, Vercel, Cognition, and others. It answers "who wrote this line?" — we answer "what happened in the conversation that produced this line, and was the user satisfied?" The two specs are orthogonal and composable.
+
+### What Agent Trace provides that we lack
+
+Agent Trace records contain:
+- **Line-range attribution**: file path + start/end lines for each AI contribution
+- **Content hashing**: `murmur3:{hash}` of produced content — survives refactors, rebases, and file moves
+- **Contributor taxonomy**: `human` / `ai` / `mixed` / `unknown` per range
+- **Model provenance**: `provider/model-name` (e.g., `anthropic/claude-opus-4-5-20251101`)
+- **`related` field**: designed for linking to external resources like session IDs
+
+Our event schema captures the *process* (conversation, tool calls, decisions) but has no durable link to the *artifacts* produced. Timestamps are the only join key to git, which is lossy — rebases, squash merges, and delayed commits break the correlation.
+
+### What we adopt
+
+**1. Content hash on code-producing events**
+
+When an event produces a code artifact (Write, Edit, or Bash that creates files), compute a content hash at ingest time. This is the join key to Agent Trace records and to `git blame`.
+
+> **Reviewer note**: We adopt the hashing *convention* (`murmur3:{hash}`), not the Agent Trace tooling or file format. No runtime dependency. The hash is computed from `toolUseResult.structuredPatch`, `toolUseResult.content`, or file-history-snapshot diffs — data we already have.
+
+**2. Contributor type as a free label axis**
+
+Agent Trace's contributor taxonomy maps directly to our turn-level outcome labels:
+
+| Agent Trace contributor | Our turn-level meaning |
+|------------------------|----------------------|
+| `ai` | User accepted assistant's code verbatim |
+| `mixed` | User edited the assistant's output before committing |
+| `human` | User wrote their own code after rejecting the suggestion |
+| `unknown` | Can't determine from available signals |
+
+This is a **free label** — derivable from the diff between what the assistant wrote (tool_use input) and what actually got committed (git diff). No API calls needed.
+
+> **Reviewer note**: This doesn't require Agent Trace to be present in the repo. We infer `contributor_type` from our own event data. If Agent Trace records *are* present, they serve as ground truth validation.
+
+**3. Session ID as the `related` join key**
+
+Agent Trace's `conversations[].related` array is designed for linking to external resources. We register our `session_id` + `uuid` there. Any Agent Trace record in a git repo can then be traced back to the exact conversation event that produced it.
+
+> **Reviewer note**: This is a convention, not a hard dependency. If a project uses Agent Trace, we get free provenance linking. If it doesn't, we fall back to timestamp-based git correlation (lossy but functional).
+
+### Schema addition
+
+```python
+@dataclass
+class AgentTraceLink:
+    """Optional field on events that produce code artifacts."""
+    content_hash: str                     # murmur3 of produced content (Agent Trace convention)
+    file_path: str                        # repo-relative path
+    line_range: tuple[int, int] | None    # (start, end) if known from structuredPatch
+    contributor_type: str                 # "ai" | "mixed" | "human" | "unknown"
+
+@dataclass
+class Event:
+    ...
+    agent_trace: AgentTraceLink | None    # Present on Write, Edit, Bash-that-creates-files
+```
+
+**When `agent_trace` is populated** (at ingest time):
+- `tool_calls` with `name` in (`Write`, `Edit`): hash the `input.content` or `input.new_string`
+- `toolUseResult` with `structuredPatch`: hash the patch content, extract file path and line range
+- `file-history-snapshot` with version transitions (v1→v2): hash the delta
+
+**When it's NOT populated**: user messages, assistant text-only responses, search/read tool calls, system events. These don't produce code artifacts.
+
+### Canonical schema alignment (updated)
+
+| Field | Claude Code | ChatGPT | Git | Agent Trace |
+|-------|------------|---------|-----|-------------|
+| `uuid` | `uuid` | `mapping[id].id` | `commit.sha` | `id` |
+| `parent_uuid` | `parentUuid` | `mapping[id].parent` | `commit.parent` | N/A |
+| `text` | `message.content` | `parts[0]` | `commit.message` | N/A |
+| `tool_calls` | Content blocks | Limited/None | N/A | N/A |
+| `tool_result` | `toolUseResult` | N/A | `diff` | N/A |
+| `content_hash` | Computed from patches | N/A | Computed from diff hunks | `ranges[].content_hash` |
+| `contributor_type` | Inferred from turn outcome | N/A | `git blame` authorship | `contributor.type` |
+| `file_path` | From tool input | N/A | From diff | `files[].path` |
+| `model` | `message.model` | Metadata | N/A | `contributor.model_id` |
+| `session_id` | `sessionId` | Conversation ID | N/A | `conversations[].related[]` |
+
+> **Reviewer note**: The `content_hash` column is the Rosetta Stone. It lets us join across all four data sources without relying on timestamps, line numbers, or file paths — all of which shift over time. A conversation event, a git commit hunk, and an Agent Trace record that all share the same content hash are provably about the same code.
+
+### What we explicitly don't adopt
+
+- **Agent Trace's file-centric schema**: Our atom is the event, not the file. We don't restructure around files.
+- **Agent Trace's storage format**: They're unopinionated about storage. We use our event graph in LanceDB.
+- **Agent Trace tooling**: No dependency on their libraries. We adopt conventions (hash format, contributor types) that happen to be compatible.
+- **Legal attribution**: Agent Trace explicitly disclaims code ownership semantics. We don't add any.
+
+---
+
 ## Dual Encoder Architecture (revised)
 
 v1 used a single mean-pooled 256-token encoder for everything. This erases order, phase, reversals, and branch structure — exactly the nonlinear dynamics that matter for trajectory analysis.
@@ -648,3 +742,152 @@ Event Graph
   → Graph/Sequence Aggregator (trajectory embedding)
   → Contrastive Loss (same user similar trajectories close, different users far)
 ```
+
+
+Here's the full schema, clean:
+
+  history (6,733 events) — Top-level user prompts
+
+  display              str          # User's message text
+  pastedContents       dict         # Pasted file references (keyed by index)
+  project              str          # Working directory path
+  sessionId            str          # Session UUID
+  timestamp            int          # Unix ms
+
+  user (2,181 events) — Session user messages
+
+  uuid                 str          # Event ID
+  parentUuid           str | None   # DAG parent edge
+  type                 "user"
+  message              {role, content}  # content is str or list[tool_result]
+  cwd                  str          # Working directory
+  gitBranch            str          # Active git branch
+  sessionId            str
+  timestamp            str
+  version              str          # Claude Code version
+  userType             str          # "external"
+  isMeta               bool         # True for local command caveats
+  isSidechain          bool         # True in subagent sessions
+  permissionMode       str          # "allowedTools", etc.
+  slug                 str
+
+  # Tool result fields (when user approves/returns a tool result)
+  toolUseResult        dict | str   # stdout, stderr, interrupted, isImage, structuredPatch,
+                                    # filePath, numFiles, numMatches, durationMs, status,
+                                    # returnCodeInterpretation, success, truncated, ...
+  sourceToolAssistantUUID  str      # Links back to the assistant turn
+  sourceToolUseID      str          # Links back to the specific tool call
+
+  # State
+  thinkingMetadata     {level, disabled, maxThinkingTokens, triggers}
+  todos                list[{content, status, activeForm}]
+  imagePasteIds        list[int]
+  isCompactSummary     bool
+  isVisibleInTranscriptOnly  bool
+
+  assistant (4,361 events) — Claude responses
+
+  uuid                 str
+  parentUuid           str | None
+  type                 "assistant"
+  message              {
+    role: "assistant",
+    model: str,        # e.g. "claude-opus-4-5-20251101"
+    id: str,           # API message ID
+    content: [         # Array of blocks:
+      {type: "thinking", thinking: str, signature: str},
+      {type: "text", text: str},
+      {type: "tool_use", id: str, name: str, input: dict},
+    ],
+    usage: {input_tokens, output_tokens, cache_read_input_tokens,
+            cache_creation_input_tokens, ephemeral_5m_input_tokens,
+            ephemeral_1h_input_tokens},
+    stop_reason: str,
+    context_management: dict,  # optional
+  }
+  requestId            str          # Groups streaming chunks
+  cwd, gitBranch, sessionId, timestamp, version, userType, slug, isSidechain
+  agentId              str          # Present in subagent sessions
+
+  progress (2,475 events) — Streaming tool execution
+
+  uuid                 str
+  parentUuid           str | None
+  toolUseID            str          # ID of this progress stream
+  parentToolUseID      str          # Links to the tool_use that spawned this
+  type                 "progress"
+  data                 {
+    type: str,         # "bash_progress" | "hook_progress" | "search_progress" | "agent_progress"
+    output: str,       # Current output chunk
+    fullOutput: str,   # Accumulated output
+    elapsedTimeSeconds: float,
+    totalLines: int,
+    # Agent-specific:
+    agentId: str,
+    taskDescription: str,
+    taskType: str,
+    message: str,
+    # Search-specific:
+    query: str,
+    resultCount: int,
+  }
+  cwd, gitBranch, sessionId, timestamp, version, userType, slug, isSidechain
+
+  system (84 events) — Lifecycle events
+
+  uuid                 str
+  parentUuid           str | None
+  type                 "system"
+  subtype              str          # "turn_duration" | "compact_boundary" | "microcompact_boundary"
+                                    # | "stop_hook_summary" | "api_error" | "local_command" | "informational"
+  content              str
+  level                str
+  durationMs           int          # For turn_duration
+  cwd, gitBranch, sessionId, timestamp, version, userType, slug, isSidechain
+
+  # Compaction metadata
+  compactMetadata      {preTokens, trigger}
+  logicalParentUuid    str
+
+  # Stop hook metadata
+  stopReason           str
+  hookCount            int
+  hookInfos            list[{command}]
+  hookErrors           list
+  preventedContinuation  bool
+  hasOutput            bool
+  toolUseID            str
+
+  summary (18 events) — Compaction summaries
+
+  type                 "summary"
+  summary              str          # What the model thought mattered
+  leafUuid             str          # Last event before compaction
+
+  file-history-snapshot (280 events) — File state tracking
+
+  type                 "file-history-snapshot"
+  messageId            str
+  isSnapshotUpdate     bool
+  snapshot             {
+    messageId: str,
+    timestamp: int,
+    trackedFileBackups: [...]  # Versioned file backups (v1, v2, v3)
+  }
+
+  queue-operation (57 events) — Async task management
+
+  type                 "queue-operation"
+  operation            str          # "enqueue" | "dequeue" | "remove"
+  content              str
+  sessionId            str
+  timestamp            str
+
+  Subagent variants
+
+  user(subagent) and assistant(subagent) have the same schema as their parent types, plus agentId and isSidechain: true. They live
+  in {sessionId}/subagents/agent-{agentId}.jsonl.
+
+  ---
+  The toolUseResult nested dict is the richest field we were ignoring — it has stdout, stderr, structured patches, file paths,
+  match counts, duration, success/failure, and truncation flags. That alone gives us most of the tool-mediated outcome signals.
