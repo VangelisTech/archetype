@@ -127,9 +127,14 @@ def run_cycle(
         print("  EMBEDDING COLLAPSE detected. Stopping recursion.")
         return df, {"stopped": True, "reason": "collapse", "variance": var}
 
-    # ── Cluster via ClusterProcessor (daft.cls KMeansScorer) ──
+    # ── Cluster via ClusterProcessor — drop stale cluster columns first ──
     n = df.count_rows()
     nc = min(n_clusters, n // 3)
+    stale = [c for c in df.column_names if c.startswith("cluster__c") and c != "cluster__cycle_" + str(cycle - 1)]
+    # Keep prior cycle labels but drop cluster_id/centroid_distance from previous run
+    drop = [c for c in stale if c in ("cluster__cluster_id", "cluster__centroid_distance")]
+    if drop:
+        df = df.exclude(*drop)
     cluster_proc = ClusterProcessor(n_clusters=nc)
     df = cluster_proc.process(df)
 
