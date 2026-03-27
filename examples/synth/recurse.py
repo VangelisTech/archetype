@@ -26,6 +26,18 @@ from examples.synth.cluster_processor import ClusterProcessor
 from examples.synth.pair_generator import generate_triplets
 from examples.synth.train_processor import train_encoder
 
+# Lazy import — only needed if --method spectral
+_SpectralClusterProcessor = None
+
+
+def _get_spectral_processor(n_clusters: int):
+    global _SpectralClusterProcessor
+    if _SpectralClusterProcessor is None:
+        from examples.synth.bench_spectral import SpectralClusterProcessor
+
+        _SpectralClusterProcessor = SpectralClusterProcessor
+    return _SpectralClusterProcessor(n_clusters=n_clusters)
+
 
 def load_labeled_segments(mind_json_path: str) -> daft.DataFrame:
     """Convert mind_extraction.json into a labeled segment DataFrame."""
@@ -83,6 +95,7 @@ def run_cycle(
     model_dir: Path,
     n_clusters: int = 4,
     num_epochs: int = 15,
+    method: str = "kmeans",
 ) -> tuple[daft.DataFrame, dict]:
     """Run one cycle of the recursion loop. Returns (updated df, metrics)."""
 
@@ -135,7 +148,10 @@ def run_cycle(
     drop = [c for c in stale if c in ("cluster__cluster_id", "cluster__centroid_distance")]
     if drop:
         df = df.exclude(*drop)
-    cluster_proc = ClusterProcessor(n_clusters=nc)
+    if method == "spectral":
+        cluster_proc = _get_spectral_processor(nc)
+    else:
+        cluster_proc = ClusterProcessor(n_clusters=nc)
     df = cluster_proc.process(df)
 
     cluster_counts = Counter(
@@ -176,6 +192,7 @@ def main():
     parser.add_argument("--cycles", type=int, default=3, help="Number of recursion cycles")
     parser.add_argument("--clusters", type=int, default=4, help="Number of clusters per cycle")
     parser.add_argument("--epochs", type=int, default=15, help="Training epochs per cycle")
+    parser.add_argument("--method", default="kmeans", choices=["kmeans", "spectral"], help="Clustering method")
     args = parser.parse_args()
 
     mind_json = Path("mind_extraction.json")
@@ -185,7 +202,7 @@ def main():
     df = load_labeled_segments(str(mind_json))
     n = df.count_rows()
     print(f"Loaded {n} segments")
-    print(f"Running {args.cycles} recursive cycles, {args.clusters} clusters, {args.epochs} epochs each")
+    print(f"Running {args.cycles} recursive cycles, {args.clusters} clusters, {args.epochs} epochs each, method={args.method}")
 
     base_label_cols = ["perspective__lens", "voice__classification", "extraction__memory_type"]
     label_cols = list(base_label_cols)
@@ -199,6 +216,7 @@ def main():
             model_dir=model_dir,
             n_clusters=args.clusters,
             num_epochs=args.epochs,
+            method=args.method,
         )
         history.append(result)
 
