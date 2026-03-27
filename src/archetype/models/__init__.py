@@ -1,4 +1,4 @@
-from .embed_udf import EmbedCls
+from .embed_udf import EmbedCls, EmbedColumn
 from .encoder import ENCODER_CONFIG, BidirectionalEncoder
 
-__all__ = ["BidirectionalEncoder", "EmbedCls", "ENCODER_CONFIG"]
+__all__ = ["BidirectionalEncoder", "EmbedCls", "EmbedColumn", "ENCODER_CONFIG"]
