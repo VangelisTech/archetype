@@ -19,39 +19,52 @@ from pathlib import Path
 
 import daft
 import numpy as np
+from daft import col
 
-from archetype.models.embed_udf import EmbedCls
-from examples.synth.cluster_processor import cluster_embeddings
+from archetype.models.embed_udf import EmbedColumn
+from examples.synth.cluster_processor import ClusterProcessor
 from examples.synth.pair_generator import generate_triplets
 from examples.synth.train_processor import train_encoder
 
 
-def load_labeled_segments(mind_json_path: str) -> list[dict]:
+def load_labeled_segments(mind_json_path: str) -> daft.DataFrame:
+    """Convert mind_extraction.json into a labeled segment DataFrame."""
     with open(mind_json_path) as f:
         data = json.load(f)
-    segments = []
+
+    segments: dict[str, list] = {
+        "entity_id": [],
+        "segment__content": [],
+        "perspective__lens": [],
+        "voice__classification": [],
+        "extraction__memory_type": [],
+    }
+    idx = 0
     for lens, entries in data["by_perspective"].items():
         for entry in entries:
-            segments.append({
-                "segment__content": entry.get("memory", ""),
-                "perspective__lens": lens,
-                "voice__classification": entry.get("voice", "unknown"),
-                "extraction__memory_type": entry.get("type", "unknown"),
-            })
-    return segments
+            segments["entity_id"].append(f"seg_{idx}")
+            segments["segment__content"].append(entry.get("memory", ""))
+            segments["perspective__lens"].append(lens)
+            segments["voice__classification"].append(entry.get("voice", "unknown"))
+            segments["extraction__memory_type"].append(entry.get("type", "unknown"))
+            idx += 1
+
+    return daft.from_pydict(segments)
 
 
-def embedding_variance(embeddings: list[list[float]]) -> float:
+def embedding_variance(df: daft.DataFrame) -> float:
     """Check for embedding collapse — low variance means degenerate model."""
-    arr = np.array(embeddings)
+    vecs = df.select("embedding__vector").collect().to_pylist()
+    arr = np.array([r["embedding__vector"] for r in vecs])
     return float(arr.var(axis=0).mean())
 
 
-def cluster_purity(segments: list[dict], cluster_ids: list[int], label_col: str) -> float:
+def cluster_purity(df: daft.DataFrame, label_col: str) -> float:
     """Average purity across clusters: how well clusters align with a label."""
+    rows = df.select("cluster__cluster_id", label_col).collect().to_pylist()
     cluster_to_labels: dict[int, list[str]] = {}
-    for i, cid in enumerate(cluster_ids):
-        cluster_to_labels.setdefault(cid, []).append(segments[i][label_col])
+    for r in rows:
+        cluster_to_labels.setdefault(r["cluster__cluster_id"], []).append(r[label_col])
 
     purities = []
     for labels in cluster_to_labels.values():
@@ -65,34 +78,17 @@ def cluster_purity(segments: list[dict], cluster_ids: list[int], label_col: str)
 
 def run_cycle(
     cycle: int,
-    segments: list[dict],
+    df: daft.DataFrame,
+    label_cols: list[str],
     model_dir: Path,
     n_clusters: int = 4,
     num_epochs: int = 15,
-) -> dict:
-    """Run one cycle of the recursion loop. Returns metrics."""
+) -> tuple[daft.DataFrame, dict]:
+    """Run one cycle of the recursion loop. Returns (updated df, metrics)."""
 
     print(f"\n{'=' * 70}")
     print(f"CYCLE {cycle}")
     print(f"{'=' * 70}")
-
-    # ── Build DataFrame with all available labels ──
-    cols = {
-        "segment__content": [s["segment__content"] for s in segments],
-        "perspective__lens": [s["perspective__lens"] for s in segments],
-        "voice__classification": [s["voice__classification"] for s in segments],
-        "extraction__memory_type": [s["extraction__memory_type"] for s in segments],
-    }
-
-    # Add cluster labels from previous cycle if they exist
-    label_cols = ["perspective__lens", "voice__classification", "extraction__memory_type"]
-    cluster_col = f"cluster__cycle_{cycle - 1}"
-    if cluster_col.replace(f"cluster__cycle_{cycle - 1}", "") == "" and cycle > 0:
-        if cluster_col in {k for s in segments for k in s}:
-            cols[cluster_col] = [str(s.get(cluster_col, "")) for s in segments]
-            label_cols.append(cluster_col)
-
-    df = daft.from_pydict(cols)
 
     # ── Generate triplets from all label sources ──
     all_triplets = []
@@ -107,7 +103,7 @@ def run_cycle(
 
     if len(all_triplets) < 10:
         print("  Insufficient triplets. Stopping.")
-        return {"stopped": True}
+        return df, {"stopped": True}
 
     # ── Train ──
     model_path = model_dir / f"encoder_v{cycle}.pt"
@@ -120,35 +116,41 @@ def run_cycle(
     )
     print(f"  Loss: {metrics['initial_loss']:.4f} → {metrics['final_loss']:.4f}")
 
-    # ── Embed ──
-    embed = EmbedCls(model_path=str(model_path))
-    texts = [s["segment__content"] for s in segments]
-    embeddings = embed(texts)
+    # ── Embed via EmbedColumn (daft.cls, per-row) ──
+    embedder = EmbedColumn(model_path=str(model_path))
+    df = df.with_columns({"embedding__vector": embedder.embed(col("segment__content"))})
 
     # ── Check for collapse ──
-    var = embedding_variance(embeddings)
+    var = embedding_variance(df)
     print(f"  Embedding variance: {var:.6f}")
     if var < 1e-6:
         print("  EMBEDDING COLLAPSE detected. Stopping recursion.")
-        return {"stopped": True, "reason": "collapse", "variance": var}
+        return df, {"stopped": True, "reason": "collapse", "variance": var}
 
-    # ── Cluster ──
-    nc = min(n_clusters, len(embeddings) // 3)
-    result = cluster_embeddings(embeddings, n_clusters=nc)
-    cluster_counts = Counter(result["cluster_id"])
+    # ── Cluster via ClusterProcessor (daft.cls KMeansScorer) ──
+    n = df.count_rows()
+    nc = min(n_clusters, n // 3)
+    cluster_proc = ClusterProcessor(n_clusters=nc)
+    df = cluster_proc.process(df)
+
+    cluster_counts = Counter(
+        r["cluster__cluster_id"]
+        for r in df.select("cluster__cluster_id").collect().to_pylist()
+    )
     print(f"  Clusters: {dict(sorted(cluster_counts.items()))}")
 
     # ── Measure purity against original labels ──
-    p_purity = cluster_purity(segments, result["cluster_id"], "perspective__lens")
-    v_purity = cluster_purity(segments, result["cluster_id"], "voice__classification")
+    p_purity = cluster_purity(df, "perspective__lens")
+    v_purity = cluster_purity(df, "voice__classification")
     print(f"  Purity — perspective: {p_purity:.0%}, voice: {v_purity:.0%}")
 
-    # ── Attach cluster labels to segments for next cycle ──
-    new_cluster_col = f"cluster__cycle_{cycle}"
-    for i, s in enumerate(segments):
-        s[new_cluster_col] = result["cluster_id"][i]
+    # ── Rename cluster column for next cycle's label source ──
+    cycle_label = f"cluster__cycle_{cycle}"
+    df = df.with_columns({
+        cycle_label: col("cluster__cluster_id").cast(daft.DataType.string()),
+    })
 
-    return {
+    return df, {
         "cycle": cycle,
         "triplets": len(all_triplets),
         "loss_initial": metrics["initial_loss"],
@@ -164,6 +166,7 @@ def run_cycle(
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Recursive self-improvement loop")
     parser.add_argument("--cycles", type=int, default=3, help="Number of recursion cycles")
     parser.add_argument("--clusters", type=int, default=4, help="Number of clusters per cycle")
@@ -174,15 +177,20 @@ def main():
     model_dir = Path("synth_models")
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    segments = load_labeled_segments(str(mind_json))
-    print(f"Loaded {len(segments)} segments")
+    df = load_labeled_segments(str(mind_json))
+    n = df.count_rows()
+    print(f"Loaded {n} segments")
     print(f"Running {args.cycles} recursive cycles, {args.clusters} clusters, {args.epochs} epochs each")
 
+    base_label_cols = ["perspective__lens", "voice__classification", "extraction__memory_type"]
+    label_cols = list(base_label_cols)
     history = []
+
     for cycle in range(args.cycles):
-        result = run_cycle(
+        df, result = run_cycle(
             cycle=cycle,
-            segments=segments,
+            df=df,
+            label_cols=label_cols,
             model_dir=model_dir,
             n_clusters=args.clusters,
             num_epochs=args.epochs,
@@ -192,6 +200,9 @@ def main():
         if result.get("stopped"):
             print(f"\nRecursion stopped at cycle {cycle}: {result.get('reason', 'insufficient data')}")
             break
+
+        # Add this cycle's cluster labels for next cycle's triplet generation
+        label_cols.append(f"cluster__cycle_{cycle}")
 
     # ── Summary ──
     print(f"\n{'=' * 70}")

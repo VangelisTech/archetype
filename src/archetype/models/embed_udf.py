@@ -1,5 +1,6 @@
 """Daft stateful class UDF for batch embedding inference."""
 
+import daft
 import tiktoken
 import torch
 
@@ -7,6 +8,8 @@ from .encoder import ENCODER_CONFIG, BidirectionalEncoder
 
 
 class EmbedCls:
+    """Batch embedding inference — call with a list of strings."""
+
     def __init__(self, model_path: str | None = None, config: dict | None = None):
         cfg = config or ENCODER_CONFIG
         self.model = BidirectionalEncoder(cfg)
@@ -33,3 +36,14 @@ class EmbedCls:
         with torch.no_grad():
             embeddings = self.model.encode(tokens, padding_mask=mask)
         return embeddings.tolist()
+
+
+@daft.cls
+class EmbedColumn:
+    """Daft column UDF — model loads once per worker, embeds per-row."""
+
+    def __init__(self, model_path: str | None = None, config: dict | None = None):
+        self._embed = EmbedCls(model_path=model_path, config=config)
+
+    def embed(self, text: str) -> list[float]:
+        return self._embed([text])[0]

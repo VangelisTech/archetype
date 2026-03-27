@@ -6,37 +6,50 @@
 Test the synthetic data engine on real .claude conversation data.
 
 Uses existing mind_extraction.json as the label source (skips API calls).
-Runs: labels → triplets → train → embed → cluster → analyze.
+Runs the full Daft-native pipeline: labels → triplets → train → embed → cluster → analyze.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 
 import daft
+from daft import col
 
-from archetype.models.embed_udf import EmbedCls
-from examples.synth.cluster_processor import cluster_embeddings
+from archetype.models.embed_udf import EmbedColumn
+from examples.synth.anomaly_processor import AnomalyProcessor
+from examples.synth.cluster_processor import ClusterProcessor
+from examples.synth.drift_processor import DriftProcessor
 from examples.synth.pair_generator import generate_triplets
+from examples.synth.similarity_processor import SimilarityProcessor
 from examples.synth.train_processor import train_encoder
 
 
-def load_labeled_segments(mind_json_path: str) -> list[dict]:
-    """Convert mind_extraction.json into labeled segments for triplet generation."""
+def load_labeled_segments(mind_json_path: str) -> daft.DataFrame:
+    """Convert mind_extraction.json into a labeled segment DataFrame."""
     with open(mind_json_path) as f:
         data = json.load(f)
 
-    segments = []
+    segments: dict[str, list] = {
+        "entity_id": [],
+        "segment__content": [],
+        "perspective__lens": [],
+        "voice__classification": [],
+        "extraction__memory_type": [],
+        "confidence": [],
+    }
+    idx = 0
     for lens, entries in data["by_perspective"].items():
         for entry in entries:
-            segments.append({
-                "segment__content": entry.get("memory", ""),
-                "perspective__lens": lens,
-                "voice__classification": entry.get("voice", "unknown"),
-                "extraction__memory_type": entry.get("type", "unknown"),
-                "confidence": entry.get("confidence", 0.0),
-                "source_preview": entry.get("source", "")[:60],
-            })
-    return segments
+            segments["entity_id"].append(f"seg_{idx}")
+            segments["segment__content"].append(entry.get("memory", ""))
+            segments["perspective__lens"].append(lens)
+            segments["voice__classification"].append(entry.get("voice", "unknown"))
+            segments["extraction__memory_type"].append(entry.get("type", "unknown"))
+            segments["confidence"].append(entry.get("confidence", 0.0))
+            idx += 1
+
+    return daft.from_pydict(segments)
 
 
 def main():
@@ -46,18 +59,18 @@ def main():
 
     # ── Phase 1: Load labeled segments ──
     print("=" * 70)
-    print("SYNTHETIC DATA ENGINE — Real .claude Session Data")
+    print("SYNTHETIC DATA ENGINE — Real .claude Session Data (Daft-native)")
     print("=" * 70)
     print()
 
-    segments = load_labeled_segments(str(mind_json))
-    print(f"Loaded {len(segments)} labeled memories from mind_extraction.json")
+    df = load_labeled_segments(str(mind_json))
+    n = df.count_rows()
+    print(f"Loaded {n} labeled memories from mind_extraction.json")
 
-    # Show distribution
-    from collections import Counter
-    lens_dist = Counter(s["perspective__lens"] for s in segments)
-    voice_dist = Counter(s["voice__classification"] for s in segments)
-    type_dist = Counter(s["extraction__memory_type"] for s in segments)
+    rows = df.collect().to_pylist()
+    lens_dist = Counter(r["perspective__lens"] for r in rows)
+    voice_dist = Counter(r["voice__classification"] for r in rows)
+    type_dist = Counter(r["extraction__memory_type"] for r in rows)
     print(f"\nPerspective: {dict(lens_dist)}")
     print(f"Voice:       {dict(voice_dist)}")
     print(f"Type:        {dict(type_dist)}")
@@ -67,14 +80,12 @@ def main():
     print("PHASE 2: Generating contrastive triplets")
     print(f"{'─' * 70}")
 
-    df = daft.from_pydict({k: [s[k] for s in segments] for k in ["segment__content", "perspective__lens", "voice__classification", "extraction__memory_type"]})
-
     all_triplets = []
     for label_col in ["perspective__lens", "voice__classification", "extraction__memory_type"]:
         triplets = generate_triplets(df, label_col=label_col, min_per_group=2, max_triplets_per_anchor=3)
-        rows = triplets.collect().to_pylist()
-        print(f"  {label_col}: {len(rows)} triplets")
-        all_triplets.extend(rows)
+        trip_rows = triplets.collect().to_pylist()
+        print(f"  {label_col}: {len(trip_rows)} triplets")
+        all_triplets.extend(trip_rows)
 
     print(f"\n  Total triplets: {len(all_triplets)}")
 
@@ -104,67 +115,104 @@ def main():
     improved = metrics["final_loss"] < metrics["initial_loss"]
     print(f"  Converged: {'YES' if improved else 'NO'}")
 
-    # ── Phase 4: Embed ──
+    # ── Phase 4: Embed via EmbedColumn (daft.cls, per-row) ──
     print(f"\n{'─' * 70}")
-    print("PHASE 4: Embedding all segments")
+    print("PHASE 4: Embedding all segments (EmbedColumn @daft.cls)")
     print(f"{'─' * 70}")
 
-    embed = EmbedCls(model_path=str(model_path))
-    texts = [s["segment__content"] for s in segments]
-    embeddings = embed(texts)
+    embedder = EmbedColumn(model_path=str(model_path))
+    df = df.with_columns({"embedding__vector": embedder.embed(col("segment__content"))})
+    emb_dim = len(df.select("embedding__vector").limit(1).collect().to_pylist()[0]["embedding__vector"])
+    print(f"  Embedded {n} segments → {emb_dim}-dim vectors")
 
-    print(f"  Embedded {len(embeddings)} segments → {len(embeddings[0])}-dim vectors")
-
-    # ── Phase 5: Cluster ──
+    # ── Phase 5: Cluster via ClusterProcessor (daft.cls KMeansScorer) ──
     print(f"\n{'─' * 70}")
-    print("PHASE 5: Clustering embeddings")
+    print("PHASE 5: Clustering (ClusterProcessor @daft.cls)")
     print(f"{'─' * 70}")
 
-    n_clusters = min(4, len(embeddings) // 3)
-    result = cluster_embeddings(embeddings, n_clusters=n_clusters)
+    n_clusters = min(4, n // 3)
+    cluster_proc = ClusterProcessor(n_clusters=n_clusters)
+    df = cluster_proc.process(df)
 
-    cluster_counts = Counter(result["cluster_id"])
-    print(f"  Found {len(cluster_counts)} clusters:")
-    for cid, count in sorted(cluster_counts.items()):
-        print(f"    Cluster {cid}: {count} segments")
+    # ── Phase 5b: Similarity via SimilarityProcessor (daft.cls KNNIndex) ──
+    print(f"\n{'─' * 70}")
+    print("PHASE 5b: k-NN similarity (SimilarityProcessor @daft.cls)")
+    print(f"{'─' * 70}")
 
-    # ── Phase 6: Analyze ──
+    sim_proc = SimilarityProcessor(k=min(5, n - 1))
+    df = sim_proc.process(df)
+
+    # ── Phase 5c: Anomaly via AnomalyProcessor (daft.func) ──
+    print(f"\n{'─' * 70}")
+    print("PHASE 5c: Anomaly scoring (AnomalyProcessor @daft.func)")
+    print(f"{'─' * 70}")
+
+    anomaly_proc = AnomalyProcessor(threshold_percentile=90.0)
+    df = anomaly_proc.process(df)
+
+    # ── Phase 5d: Drift via DriftProcessor (daft.func) ──
+    print(f"\n{'─' * 70}")
+    print("PHASE 5d: Drift detection (DriftProcessor @daft.func)")
+    print(f"{'─' * 70}")
+
+    drift_proc = DriftProcessor()
+    df = drift_proc.process(df)
+
+    # ── Materialize and analyze ──
     print(f"\n{'─' * 70}")
     print("PHASE 6: Analysis — what did the model learn?")
     print(f"{'─' * 70}")
 
-    # Show what's in each cluster
+    results = df.collect().to_pylist()
+
+    cluster_counts = Counter(r["cluster__cluster_id"] for r in results)
+    print(f"\n  Found {len(cluster_counts)} clusters:")
+    for cid, count in sorted(cluster_counts.items()):
+        print(f"    Cluster {cid}: {count} segments")
+
     for cid in sorted(cluster_counts.keys()):
         print(f"\n  CLUSTER {cid}:")
-        cluster_segments = [
-            segments[i] for i in range(len(segments))
-            if result["cluster_id"][i] == cid
-        ]
+        cluster_rows = [r for r in results if r["cluster__cluster_id"] == cid]
 
-        # Show perspective/voice distribution within cluster
-        c_lens = Counter(s["perspective__lens"] for s in cluster_segments)
-        c_voice = Counter(s["voice__classification"] for s in cluster_segments)
+        c_lens = Counter(r["perspective__lens"] for r in cluster_rows)
+        c_voice = Counter(r["voice__classification"] for r in cluster_rows)
         print(f"    Perspective: {dict(c_lens)}")
         print(f"    Voice: {dict(c_voice)}")
 
-        # Show sample memories
-        for s in cluster_segments[:3]:
-            preview = s["segment__content"][:100]
-            print(f"    [{s['perspective__lens']:>13}|{s['voice__classification']:>8}] {preview}")
+        for r in cluster_rows[:3]:
+            preview = r["segment__content"][:100]
+            print(f"    [{r['perspective__lens']:>13}|{r['voice__classification']:>8}] {preview}")
 
-    # ── Compare: model clusters vs original labels ──
+    # ── Anomaly report ──
+    print(f"\n{'─' * 70}")
+    print("PHASE 6b: Anomaly outliers (score > 1.0)")
+    print(f"{'─' * 70}")
+
+    outliers = [r for r in results if r["anomaly__outlier_score"] > 1.0]
+    print(f"  {len(outliers)} outlier(s) found")
+    for r in outliers[:5]:
+        print(f"    score={r['anomaly__outlier_score']:.2f}  {r['segment__content'][:80]}")
+
+    # ── Drift report ──
+    print(f"\n{'─' * 70}")
+    print("PHASE 6c: Embedding drift")
+    print(f"{'─' * 70}")
+
+    divergence = results[0]["drift__divergence"]
+    window_counts = Counter(r["drift__window"] for r in results)
+    print(f"  Divergence: {divergence:.4f}")
+    print(f"  Windows: {dict(window_counts)}")
+
+    # ── Label agreement ──
     print(f"\n{'─' * 70}")
     print("PHASE 7: Label agreement — did the model rediscover the original structure?")
     print(f"{'─' * 70}")
 
-    # For each original label, what cluster do its segments land in?
     for label_col in ["perspective__lens", "voice__classification"]:
         print(f"\n  {label_col}:")
-        label_to_clusters = {}
-        for i, s in enumerate(segments):
-            label = s[label_col]
-            cid = result["cluster_id"][i]
-            label_to_clusters.setdefault(label, []).append(cid)
+        label_to_clusters: dict[str, list[int]] = {}
+        for r in results:
+            label_to_clusters.setdefault(r[label_col], []).append(r["cluster__cluster_id"])
 
         for label, clusters in sorted(label_to_clusters.items()):
             dist = Counter(clusters)
@@ -174,10 +222,12 @@ def main():
 
     # ── Export ──
     output = {
-        "segments": len(segments),
+        "segments": n,
         "triplets": len(all_triplets),
         "training": metrics,
         "clusters": {str(k): v for k, v in cluster_counts.items()},
+        "anomalies": len(outliers),
+        "drift_divergence": divergence,
         "model_path": str(model_path),
     }
     output_path = Path("synth_results.json")
