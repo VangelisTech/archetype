@@ -41,7 +41,12 @@ dev        = [
     "viztracer>=1.0.4",
     "ipykernel",
 ]
-synth      = ["torch>=2.2", "tiktoken>=0.7", "scikit-learn>=1.4"]
+synth      = [
+    "torch>=2.2",
+    "tiktoken>=0.7",
+    "scikit-learn>=1.4",
+    "mlx>=0.31.1",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
