@@ -8,30 +8,33 @@ Archetype is a data-centric Entity-Component-System (ECS) simulation engine. Wor
                   ┌──────────────────────────────────────────────┐
                   │              External Actors                  │
                   │     (REST API, CLI, Python scripts, agents)   │
-                  └──────────────┬───────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Service Layer                             │
-│                                                                  │
-│  CommandService ──→ CommandBroker ──→ WorldService ──→ AsyncWorld│
-│       │                  │                                │      │
-│       │            RBAC + queue              ┌────────────┤      │
-│       │                  │                   │            │      │
-│  SimulationService       │            Resources      Processors  │
-│    (drain + step)        │           (type-safe DI)   (DataFrame │
-│       │                  │                            transforms)│
-│       ▼                  ▼                                       │
-│  QueryService      Command History                               │
-│  (read path)        (audit trail)                                │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                  ┌──────────────────────────────────────┐
-                  │           Storage Layer                │
-                  │    LanceDB (default) or Iceberg        │
-                  │    Append-only, partitioned by tick     │
-                  └──────────────────────────────────────┘
+                  └──────┬─────────────────────────┬─────────────┘
+                         │                         │
+                         ▼                         ▼
+┌────────────────────────────────────┐  ┌─────────────────────────────────┐
+│          Simulation Layer          │  │          Memory Layer           │
+│                                    │  │                                 │
+│  CommandService → CommandBroker    │  │  MemoryService                  │
+│       │               │            │  │    │                            │
+│       │         RBAC + queue       │  │    │  MinHashProcessor (10)     │
+│       │               │            │  │    │  DedupeProcessor   (20)    │
+│  SimulationService    │            │  │    │  (LSH band keys,           │
+│    (drain + step)     ▼            │  │    │   Jaccard ≥ 0.8)           │
+│       │          WorldService      │  │    │                            │
+│       │           → AsyncWorld     │  │  ingest / query / list          │
+│       │          ┌──────┴──────┐   │  │  sessions via REST + CLI        │
+│       ▼          │             │   │  └──────────────┬──────────────────┘
+│  QueryService  Resources  Processors│                │
+│  (read path)  (type-safe)  (DataFrame                │
+│                             transforms)              │
+└──────────────────────┬─────────────┘                │
+                       │                              │
+                       ▼                              ▼
+          ┌─────────────────────────┐   ┌─────────────────────────┐
+          │   World Storage          │   │   Memory Storage         │
+          │   LanceDB / Iceberg      │   │   LanceDB                │
+          │   append-only, by tick   │   │   MemoryChunk vectors    │
+          └─────────────────────────┘   └─────────────────────────┘
 ```
 
 ## Core ECS Concepts
@@ -61,6 +64,7 @@ An entity is just an integer ID (`entity_id`). It has no behavior — it's a bag
 ### Archetypes
 
 An archetype is a group of entities sharing the same component types. Each archetype is a single DataFrame where:
+
 - Rows are entities
 - Columns are prefixed component fields + metadata (`entity_id`, `tick`, `world_id`, `run_id`, `is_active`)
 
@@ -128,12 +132,13 @@ Wires everything together:
 from archetype.app.container import ServiceContainer
 
 container = ServiceContainer()
-# container.world_service     — world lifecycle
-# container.command_service   — command submission
+# container.world_service      — world lifecycle
+# container.command_service    — command submission
 # container.simulation_service — tick stepping
-# container.query_service     — read path
-# container.broker            — command queue
-# container.storage_service   — storage backends
+# container.query_service      — read path
+# container.broker             — command queue
+# container.storage_service    — storage backends
+# container.memory_service     — agent memory (ingest, query, dedupe)
 ```
 
 ### Command Flow
@@ -151,13 +156,15 @@ Every command submission requires an `ActorCtx` specifying the actor's roles:
 
 Roles are flat (not hierarchical) — an actor can have multiple roles:
 
-| Role | Permissions |
-|------|-------------|
-| `viewer` | Read-only (query, get state, get world) |
-| `player` | spawn, despawn, update, message, custom |
-| `coder` | add/remove components, update |
+
+| Role         | Permissions                                    |
+| ------------ | ---------------------------------------------- |
+| `viewer`     | Read-only (query, get state, get world)        |
+| `player`     | spawn, despawn, update, message, custom        |
+| `coder`      | add/remove components, update                  |
 | `maintainer` | spawn, despawn, components, processors, update |
-| `admin` | All commands (wildcard) |
+| `admin`      | All commands (wildcard)                        |
+
 
 Quotas: 500 commands per tick, 200k token budget per day.
 
