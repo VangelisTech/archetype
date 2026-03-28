@@ -10,7 +10,7 @@ Runs an experiment loop that evolves scoring strategies:
     frontier → propose → execute → evaluate → keep|discard → advance
 
 Usage:
-    cd /Users/everettkleven/git/other/archetype
+    cd <repo-root>
     source .env
     .venv/bin/python -m examples.autoresearch.run
 """
