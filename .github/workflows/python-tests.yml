@@ -6,8 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  ci:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -28,19 +32,10 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --group dev
 
-      - name: Run tests with coverage
-        run: |
-          uv run pytest tests/ \
-            --maxfail=3 \
-            --tb=short \
-            -v \
-            --cov=archetype \
-            --cov-branch \
-            --cov-report=term-missing:skip-covered \
-            --cov-report=xml \
-            --cov-fail-under=70
+      - name: Run CI gate (lint + lock-check + tests with coverage)
+        run: make ci
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
@@ -52,7 +47,7 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  lint:
+  format:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -69,12 +64,9 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --group dev
 
-      - name: Run ruff check
-        run: uv run ruff check src/ tests/
-
-      - name: Run ruff format check
+      - name: Check formatting
         run: uv run ruff format --check src/ tests/
 
   typecheck:
@@ -94,7 +86,7 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --group dev
 
       - name: Run pyright
         run: uv run pyright src/archetype/
