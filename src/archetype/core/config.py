@@ -228,5 +228,3 @@ class WorldConfig(BaseModel):
     name: str | None = Field(default=None, description="A human-readable alias for the world")
 
     model_config = dict(arbitrary_types_allowed=True)
-
-

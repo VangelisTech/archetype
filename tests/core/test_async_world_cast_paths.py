@@ -28,9 +28,7 @@ async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage, system=system
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
 
         # Spawn two entities
         e1 = await world.create_entity([Pos(x=1)])

@@ -29,9 +29,7 @@ async def test_prefer_live_reads_uses_live_snapshot_when_true(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage, system=system
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
 
         # spawn entity with Pos(x=0)
         await world.create_entity([Pos(x=0)])
@@ -57,9 +55,7 @@ async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store2"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(MoveRight())
-        world = await ws.create_world(
-            WorldConfig(name="w2"), storage_config=storage, system=system
-        )
+        world = await ws.create_world(WorldConfig(name="w2"), storage_config=storage, system=system)
 
         await world.create_entity([Pos(x=5)])
 

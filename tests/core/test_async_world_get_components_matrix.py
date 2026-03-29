@@ -51,9 +51,7 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
     ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
 
         a1_ids = []
         a2_ids = []

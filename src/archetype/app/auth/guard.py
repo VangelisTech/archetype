@@ -84,9 +84,7 @@ def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
             break
 
     if not allowed:
-        raise PermissionError(
-            f"Actor {ctx.id} with roles {ctx.roles} cannot execute '{cmd_type}'"
-        )
+        raise PermissionError(f"Actor {ctx.id} with roles {ctx.roles} cannot execute '{cmd_type}'")
 
     # 2. Per-tick quota
     current_count = _tick_counters.get(ctx.id, 0)
