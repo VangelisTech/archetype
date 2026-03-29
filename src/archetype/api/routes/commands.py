@@ -37,6 +37,7 @@ async def submit_command(
         priority=req.priority,
         append_history=req.append_history,
         parent_id=parent_id,
+        channel=req.channel,
     )
     try:
         cmd_id = await cs.submit(world_id, cmd, ctx)
@@ -66,6 +67,7 @@ async def submit_batch(
             priority=r.priority,
             append_history=r.append_history,
             parent_id=parent_id,
+            channel=r.channel,
         ))
 
     try:

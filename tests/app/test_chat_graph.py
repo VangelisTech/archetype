@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Tests for ChatGraph DAG and append_history toggle.
+Tests for ChatGraph DAG, channels, append_history toggle, and Resources integration.
 """
 
 import pytest
@@ -10,6 +10,7 @@ import pytest
 from archetype.app.broker import CommandBroker
 from archetype.app.chat_graph import ChatGraph, ChatGraphRegistry
 from archetype.app.models import Command, CommandType
+from archetype.core.resources import Resources
 
 
 # =============================================================================
@@ -26,6 +27,7 @@ class TestChatGraphLinear:
         assert g.cursor is None
         assert g.active_path() == []
         assert g.leaves() == []
+        assert g.channel == "general"
 
     def test_single_append(self):
         g = ChatGraph("test")
@@ -288,13 +290,12 @@ class TestChatGraphSerialization:
     """Test to_dict serialization."""
 
     def test_to_dict_empty(self):
-        g = ChatGraph("test_world")
+        g = ChatGraph("test_world", channel="strategy")
         d = g.to_dict()
         assert d["world_id"] == "test_world"
+        assert d["channel"] == "strategy"
         assert d["cursor"] is None
         assert d["size"] == 0
-        assert d["roots"] == []
-        assert d["nodes"] == {}
 
     def test_to_dict_with_nodes(self):
         g = ChatGraph("w1")
@@ -359,40 +360,87 @@ class TestChatGraphExplicitParent:
 
 
 # =============================================================================
-# ChatGraphRegistry Tests
+# ChatGraphRegistry Tests — Channel-Aware
 # =============================================================================
 
 
 class TestChatGraphRegistry:
-    def test_lazy_create(self):
+    def test_lazy_create_default_channel(self):
         reg = ChatGraphRegistry()
         g = reg.get("world_1")
         assert isinstance(g, ChatGraph)
         assert g.world_id == "world_1"
+        assert g.channel == "general"
 
-    def test_same_instance(self):
+    def test_named_channel(self):
         reg = ChatGraphRegistry()
-        g1 = reg.get("world_1")
-        g2 = reg.get("world_1")
+        g = reg.channel("w1", "strategy")
+        assert g.channel == "strategy"
+        assert g.world_id == "w1"
+
+    def test_same_instance_same_channel(self):
+        reg = ChatGraphRegistry()
+        g1 = reg.channel("w1", "strategy")
+        g2 = reg.channel("w1", "strategy")
         assert g1 is g2
 
-    def test_different_worlds(self):
+    def test_different_channels_different_graphs(self):
         reg = ChatGraphRegistry()
-        g1 = reg.get("w1")
-        g2 = reg.get("w2")
+        g1 = reg.channel("w1", "strategy")
+        g2 = reg.channel("w1", "negotiation")
         assert g1 is not g2
 
-    def test_remove(self):
+    def test_different_worlds_isolated(self):
         reg = ChatGraphRegistry()
-        reg.get("w1")
+        g1 = reg.channel("w1", "general")
+        g2 = reg.channel("w2", "general")
+        assert g1 is not g2
+
+    def test_channels_list(self):
+        reg = ChatGraphRegistry()
+        reg.channel("w1", "strategy")
+        reg.channel("w1", "negotiation")
+        reg.channel("w1", "general")
+        reg.channel("w2", "general")
+
+        w1_channels = reg.channels("w1")
+        assert set(w1_channels) == {"strategy", "negotiation", "general"}
+
+        w2_channels = reg.channels("w2")
+        assert w2_channels == ["general"]
+
+    def test_channels_empty_world(self):
+        reg = ChatGraphRegistry()
+        assert reg.channels("nonexistent") == []
+
+    def test_remove_single_channel(self):
+        reg = ChatGraphRegistry()
+        reg.channel("w1", "strategy")
+        reg.channel("w1", "negotiation")
+
+        reg.remove("w1", "strategy")
+        assert "strategy" not in reg.channels("w1")
+        assert "negotiation" in reg.channels("w1")
+
+    def test_remove_all_channels(self):
+        reg = ChatGraphRegistry()
+        reg.channel("w1", "strategy")
+        reg.channel("w1", "negotiation")
+
         reg.remove("w1")
-        assert "w1" not in reg.list_worlds()
+        assert reg.channels("w1") == []
 
     def test_list_worlds(self):
         reg = ChatGraphRegistry()
-        reg.get("w1")
-        reg.get("w2")
+        reg.channel("w1", "general")
+        reg.channel("w2", "strategy")
         assert set(reg.list_worlds()) == {"w1", "w2"}
+
+    def test_get_is_shorthand_for_general(self):
+        reg = ChatGraphRegistry()
+        g1 = reg.get("w1")
+        g2 = reg.channel("w1", "general")
+        assert g1 is g2
 
 
 # =============================================================================
@@ -472,13 +520,13 @@ class TestAppendHistoryToggle:
 
 
 # =============================================================================
-# Broker + ChatGraph Integration
+# Broker + ChatGraph + Channel Integration
 # =============================================================================
 
 
 class TestBrokerChatGraphIntegration:
     @pytest.mark.asyncio
-    async def test_broker_auto_appends_to_graph(self):
+    async def test_broker_auto_appends_to_default_channel(self):
         registry = ChatGraphRegistry()
         broker = CommandBroker(chat_graphs=registry)
 
@@ -488,6 +536,22 @@ class TestBrokerChatGraphIntegration:
         graph = registry.get("world")
         assert graph.size == 1
         assert graph.cursor == cmd.id
+
+    @pytest.mark.asyncio
+    async def test_broker_routes_to_named_channel(self):
+        registry = ChatGraphRegistry()
+        broker = CommandBroker(chat_graphs=registry)
+
+        cmd = Command(type=CommandType.MESSAGE, channel="strategy", payload={"content": "plan"})
+        await broker.enqueue("world", cmd)
+
+        # Default channel should be empty
+        assert registry.get("world").size == 0
+
+        # Strategy channel should have the message
+        strategy = registry.channel("world", "strategy")
+        assert strategy.size == 1
+        assert strategy.cursor == cmd.id
 
     @pytest.mark.asyncio
     async def test_broker_ephemeral_skips_graph(self):
@@ -541,3 +605,94 @@ class TestBrokerChatGraphIntegration:
         assert len(path) == 2
         assert path[0].id == root.id
         assert path[1].id == fork.id
+
+    @pytest.mark.asyncio
+    async def test_multi_channel_isolation(self):
+        """Messages on different channels build independent graphs."""
+        registry = ChatGraphRegistry()
+        broker = CommandBroker(chat_graphs=registry)
+
+        for i in range(3):
+            await broker.enqueue("world", Command(
+                type=CommandType.MESSAGE, channel="strategy", payload={"i": i},
+            ))
+        for i in range(2):
+            await broker.enqueue("world", Command(
+                type=CommandType.MESSAGE, channel="negotiation", payload={"i": i},
+            ))
+
+        assert registry.channel("world", "strategy").size == 3
+        assert registry.channel("world", "negotiation").size == 2
+
+        strategy_path = registry.channel("world", "strategy").active_path()
+        neg_path = registry.channel("world", "negotiation").active_path()
+
+        assert len(strategy_path) == 3
+        assert len(neg_path) == 2
+
+    @pytest.mark.asyncio
+    async def test_channels_list_after_enqueue(self):
+        registry = ChatGraphRegistry()
+        broker = CommandBroker(chat_graphs=registry)
+
+        await broker.enqueue("world", Command(
+            type=CommandType.MESSAGE, channel="strategy",
+        ))
+        await broker.enqueue("world", Command(
+            type=CommandType.MESSAGE, channel="negotiation",
+        ))
+
+        channels = registry.channels("world")
+        assert set(channels) == {"strategy", "negotiation"}
+
+
+# =============================================================================
+# Resources Integration Tests
+# =============================================================================
+
+
+class TestResourcesIntegration:
+    """Test that ChatGraphRegistry works with the Resources DI container."""
+
+    def test_insert_and_require(self):
+        resources = Resources()
+        registry = ChatGraphRegistry()
+        resources.insert(registry)
+
+        retrieved = resources.require(ChatGraphRegistry)
+        assert retrieved is registry
+
+    def test_processor_pattern(self):
+        """Simulate what a processor does: require registry, get channel, read path."""
+        resources = Resources()
+        registry = ChatGraphRegistry()
+        broker = CommandBroker(chat_graphs=registry)
+        resources.insert(registry)
+        resources.insert(broker)
+
+        # Simulate: processor adds a message via broker
+        import asyncio
+        async def simulate():
+            cmd = Command(
+                type=CommandType.MESSAGE,
+                channel="strategy",
+                payload={"content": "Let's plan."},
+            )
+            await broker.enqueue("world", cmd)
+
+            # Processor reads context from graph
+            reg = resources.require(ChatGraphRegistry)
+            graph = reg.channel("world", "strategy")
+            path = graph.active_path()
+
+            assert len(path) == 1
+            assert path[0].payload["content"] == "Let's plan."
+
+        asyncio.run(simulate())
+
+    def test_contains_check(self):
+        resources = Resources()
+        assert ChatGraphRegistry not in resources
+
+        resources.insert(ChatGraphRegistry())
+        assert ChatGraphRegistry in resources

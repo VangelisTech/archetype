@@ -25,6 +25,7 @@ class SubmitCommandRequest(BaseModel):
     priority: int = 0
     append_history: bool = True
     parent_id: str | None = None
+    channel: str = "general"
 
 
 class SubmitBatchRequest(BaseModel):
@@ -70,6 +71,7 @@ class BranchRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
     label: str | None = None
+    channel: str = "general"
 
 
 class NavigateRequest(BaseModel):
@@ -78,6 +80,7 @@ class NavigateRequest(BaseModel):
 
 class ChatGraphResponse(BaseModel):
     world_id: str
+    channel: str = "general"
     cursor: str | None = None
     size: int = 0
     roots: list[str] = Field(default_factory=list)
@@ -86,7 +89,13 @@ class ChatGraphResponse(BaseModel):
 
 class ActivePathResponse(BaseModel):
     world_id: str
+    channel: str = "general"
     path: list[CommandResponse] = Field(default_factory=list)
+
+
+class ChannelListResponse(BaseModel):
+    world_id: str
+    channels: list[str] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

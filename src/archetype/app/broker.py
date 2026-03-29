@@ -94,12 +94,13 @@ class CommandBroker:
             if cmd.append_history:
                 self._history.setdefault(key, []).append(cmd)
                 if self._chat_graphs is not None:
-                    self._chat_graphs.get(key).append(cmd)
+                    self._chat_graphs.channel(key, cmd.channel).append(cmd)
 
             if self._debug:
                 logger.debug(
-                    f"[broker] enqueue: world={key}, type={cmd.type.value}, "
-                    f"tick={cmd.tick}, ephemeral={not cmd.append_history}, "
+                    f"[broker] enqueue: world={key}, ch={cmd.channel}, "
+                    f"type={cmd.type.value}, tick={cmd.tick}, "
+                    f"ephemeral={not cmd.append_history}, "
                     f"pending={len(self._queues[key])}"
                 )
 
@@ -128,7 +129,7 @@ class CommandBroker:
                 if cmd.append_history:
                     self._history.setdefault(key, []).append(cmd)
                     if self._chat_graphs is not None:
-                        self._chat_graphs.get(key).append(cmd)
+                        self._chat_graphs.channel(key, cmd.channel).append(cmd)
 
     async def dequeue(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
         """Dequeue commands for a specific world (all pending, regardless of tick)."""

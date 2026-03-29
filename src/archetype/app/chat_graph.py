@@ -2,23 +2,29 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Chat Graph: DAG-based Conversation Threading
-=============================================
+Chat Graph: DAG-based Conversation Threading with Channels
+==========================================================
 
-Replaces the single-threaded linear chat with a directed acyclic graph.
-Each node is a message (command). Edges are parent→child. You can branch
-at any point (edit-and-fork instead of edit-and-truncate).
+Each world has named channels. Each channel has its own conversation graph
+(DAG of ChatNodes). Agents access channels via Resources to read context,
+branch conversations, and navigate threads.
 
-Features:
-- **Append toggle**: Messages can be ephemeral (not in history) or persistent.
-  Controlled by Command.append_history — the graph only tracks persistent nodes.
-- **Branching**: Any node can have multiple children (alternative replies).
-- **Cursor / auto-nav**: A cursor tracks the "active" leaf per world.
-  Default navigation follows the most recent child (depth-first, rightmost).
-- **Linear by default**: If you never branch, it behaves exactly like a flat list.
-- **Path extraction**: Get the linear path from root→cursor for context windows.
+Architecture:
+    Processor → resources.require(ChatGraphRegistry)
+             → registry.channel(world_id, "strategy")
+             → graph.active_path()  →  LLM context window
 
-Inspired by nanochat's simplicity — but with actual graph structure.
+Channels:
+    - "general" is the default. If you never specify a channel, everything
+      goes there and it behaves like a flat list.
+    - Each channel is a separate ChatGraph. No cross-contamination.
+    - Agents can list channels, subscribe to specific ones, or browse.
+
+Graph:
+    - Nodes are Commands. Edges are parent→child.
+    - Cursor tracks the active leaf. Auto-advances on append.
+    - active_path() returns root→cursor: the linear context for LLM prompts.
+    - branch() forks from any node without destroying the original path.
 """
 
 from __future__ import annotations
@@ -30,6 +36,8 @@ from uuid import UUID
 from archetype.app.models import Command
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CHANNEL = "general"
 
 
 @dataclass
@@ -44,7 +52,7 @@ class ChatNode:
 
 class ChatGraph:
     """
-    DAG-based conversation graph for a single world.
+    DAG-based conversation graph for a single (world, channel) pair.
 
     Sensible defaults:
     - Linear mode: append() auto-parents to cursor. No config needed.
@@ -53,8 +61,9 @@ class ChatGraph:
     - Path: active_path() returns root→cursor for context assembly.
     """
 
-    def __init__(self, world_id: str | UUID):
+    def __init__(self, world_id: str | UUID, channel: str = DEFAULT_CHANNEL):
         self.world_id = str(world_id)
+        self.channel = channel
         self._nodes: dict[UUID, ChatNode] = {}
         self._roots: list[UUID] = []  # entry points (first messages)
         self._cursor: UUID | None = None  # active leaf
@@ -228,6 +237,7 @@ class ChatGraph:
         """Serialize the graph for API responses."""
         return {
             "world_id": self.world_id,
+            "channel": self.channel,
             "cursor": str(self._cursor) if self._cursor else None,
             "size": self.size,
             "roots": [str(r) for r in self._roots],
@@ -247,21 +257,47 @@ class ChatGraph:
 
 class ChatGraphRegistry:
     """
-    Manages ChatGraph instances per world.
+    Manages ChatGraph instances per (world, channel) pair.
     Lazy-creates on first access.
+
+    This is the object injected into Resources:
+        world.resources.insert(registry)
+
+    Processors access it via:
+        registry = resources.require(ChatGraphRegistry)
+        graph = registry.channel(world_id, "strategy")
+        context = graph.active_path()
     """
 
     def __init__(self):
-        self._graphs: dict[str, ChatGraph] = {}
+        self._graphs: dict[tuple[str, str], ChatGraph] = {}
 
-    def get(self, world_id: str | UUID) -> ChatGraph:
-        key = str(world_id)
+    def channel(self, world_id: str | UUID, channel: str = DEFAULT_CHANNEL) -> ChatGraph:
+        """Get or create a ChatGraph for a specific (world, channel)."""
+        key = (str(world_id), channel)
         if key not in self._graphs:
-            self._graphs[key] = ChatGraph(key)
+            self._graphs[key] = ChatGraph(str(world_id), channel)
         return self._graphs[key]
 
-    def remove(self, world_id: str | UUID) -> None:
-        self._graphs.pop(str(world_id), None)
+    def get(self, world_id: str | UUID) -> ChatGraph:
+        """Shorthand for channel(world_id, "general"). Backward-compatible."""
+        return self.channel(world_id, DEFAULT_CHANNEL)
+
+    def channels(self, world_id: str | UUID) -> list[str]:
+        """List all channels that have messages for a given world."""
+        wid = str(world_id)
+        return [ch for (w, ch) in self._graphs if w == wid]
+
+    def remove(self, world_id: str | UUID, channel: str | None = None) -> None:
+        """Remove a specific channel graph, or all channels for a world."""
+        wid = str(world_id)
+        if channel is not None:
+            self._graphs.pop((wid, channel), None)
+        else:
+            keys = [k for k in self._graphs if k[0] == wid]
+            for k in keys:
+                del self._graphs[k]
 
     def list_worlds(self) -> list[str]:
-        return list(self._graphs.keys())
+        """List all world IDs that have any channel graphs."""
+        return list({w for w, _ in self._graphs})

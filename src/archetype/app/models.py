@@ -75,6 +75,7 @@ class Command(BaseModel):
     seq: int = Field(default_factory=lambda: next(_SEQ))
     append_history: bool = True
     parent_id: UUID | None = None
+    channel: str = "general"
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
@@ -101,6 +102,7 @@ class Command(BaseModel):
                 ("seq", pa.int64()),
                 ("append_history", pa.bool_()),
                 ("parent_id", pa.binary(16)),
+                ("channel", pa.string()),
             ]
         )
 
@@ -117,6 +119,7 @@ class Command(BaseModel):
                 [self.seq],
                 [self.append_history],
                 [self.parent_id.bytes if self.parent_id else None],
+                [self.channel],
             ],
             schema=self.arrow_schema(),
         )
