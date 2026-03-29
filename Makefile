@@ -29,6 +29,11 @@ help:
 	@echo "  make test-all       Run all tests verbose"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo ""
+	@echo "Benchmarks & Evals:"
+	@echo "  make bench          Run ECS microbenchmarks (1 step)"
+	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
+	@echo "  make eval           Run correctness evals"
+	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
 	@echo "  make release-check  Full pre-release validation"
@@ -116,6 +121,24 @@ test-all:
 .PHONY: ci
 ci: format-check lint lock-check test-cov
 	@echo "CI gate passed"
+
+# ------------------------------------------------------------------------------
+# Benchmarks & Evals
+# ------------------------------------------------------------------------------
+
+.PHONY: bench
+bench:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 1 --out bench-results.json
+	@echo "Benchmark results written to bench-results.json"
+
+.PHONY: bench-full
+bench-full:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 3 --out bench-results.json
+	@echo "Benchmark results written to bench-results.json"
+
+.PHONY: eval
+eval:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --out eval-results.json
 
 # ------------------------------------------------------------------------------
 # Build & Release
