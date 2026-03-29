@@ -27,6 +27,7 @@ help:
 	@echo "  make test           Run tests (fast)"
 	@echo "  make test-cov       Run tests with coverage"
 	@echo "  make test-all       Run all tests verbose"
+	@echo "  make ci             CI gate (lint + lock-check + test-cov)"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
@@ -86,6 +87,7 @@ test:
 test-cov:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest \
 		--cov=archetype \
+		--cov-branch \
 		--cov-report=term-missing:skip-covered \
 		--cov-report=xml \
 		--cov-fail-under=70
@@ -93,6 +95,10 @@ test-cov:
 .PHONY: test-all
 test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
+
+.PHONY: ci
+ci: lint lock-check test-cov
+	@echo "CI gate passed"
 
 # ------------------------------------------------------------------------------
 # Build & Release
