@@ -1,119 +1,118 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Core eval types: EvalCase, EvalResult, Grader.
+"""Core eval types following Anthropic's agent eval framework.
 
-Follows the pattern from Anthropic's eval guide:
-- EvalCase: what to test (input + expected)
-- Grader: how to score (binary, numeric, rubric)
-- EvalResult: the outcome (score + metadata)
+Vocabulary matches the article:
+- Task: a single test with inputs, expected outcomes, and graders
+- Trial: one attempt at a task (run multiple for non-determinism)
+- Grader: scoring logic applied to the outcome of a trial
+- EvalResult: aggregated result across trials for a task
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 
-class Tier(StrEnum):
-    UNIT = "unit"
-    INTEGRATION = "integration"
-    END_TO_END = "end_to_end"
-
-
-class Status(StrEnum):
-    PASS = "pass"
-    FAIL = "fail"
-    ERROR = "error"
-
-
 @dataclass
-class EvalCase:
-    """A single eval case: input, expected output, and metadata."""
+class GraderResult:
+    """Output of a single grader applied to a single trial."""
 
-    name: str
-    input: dict[str, Any]
-    expected: Any
-    tier: Tier
-    tags: list[str] = field(default_factory=list)
-
-
-@dataclass
-class EvalResult:
-    """Outcome of running and grading a single eval case."""
-
-    case_name: str
-    tier: Tier
-    status: Status
-    score: float  # 0.0 = fail, 1.0 = pass (or continuous for rubric)
-    elapsed_s: float = 0.0
+    grader_name: str
+    passed: bool
+    score: float  # 0.0-1.0
     details: str = ""
-    error: str | None = None
+
+
+@dataclass
+class TrialResult:
+    """Outcome of one trial (attempt) at a task."""
+
+    trial_idx: int
+    passed: bool  # True if ALL graders passed
+    score: float  # Average score across graders (supports partial credit)
+    elapsed_s: float = 0.0
+    grader_results: list[GraderResult] = field(default_factory=list)
+    error: str | None = None  # Non-None if the trial crashed
+
+
+@dataclass
+class TaskResult:
+    """Aggregated result of running a task across k trials."""
+
+    task_id: str
+    suite: str  # "regression" or "capability"
+    trials: list[TrialResult] = field(default_factory=list)
+    desc: str = ""
 
     @property
-    def passed(self) -> bool:
-        return self.status == Status.PASS
+    def k(self) -> int:
+        return len(self.trials)
 
+    @property
+    def pass_at_k(self) -> float:
+        """Probability of at least one success in k trials.
 
-# ---------------------------------------------------------------------------
-# Graders
-# ---------------------------------------------------------------------------
+        If any trial passed, pass@k = 1.0.  This is the simplified
+        version for small k; for large k with estimated p, use the
+        unbiased estimator.
+        """
+        if not self.trials:
+            return 0.0
+        return 1.0 if any(t.passed for t in self.trials) else 0.0
 
+    @property
+    def pass_pow_k(self) -> float:
+        """Probability of ALL k trials succeeding.
 
-def binary(
-    actual: Any, expected: Any, *, case_name: str = "", tier: Tier = Tier.UNIT
-) -> EvalResult:
-    """Binary grader: 1.0 if actual == expected, 0.0 otherwise."""
-    passed = actual == expected
-    return EvalResult(
-        case_name=case_name,
-        tier=tier,
-        status=Status.PASS if passed else Status.FAIL,
-        score=1.0 if passed else 0.0,
-        details=f"expected={expected!r}, actual={actual!r}" if not passed else "",
-    )
+        pass^k = (per-trial success rate) ^ k.
+        For reliability-critical tasks.
+        """
+        if not self.trials:
+            return 0.0
+        p = sum(1 for t in self.trials if t.passed) / len(self.trials)
+        return p ** len(self.trials)
 
+    @property
+    def avg_score(self) -> float:
+        """Average score across all trials (supports partial credit)."""
+        if not self.trials:
+            return 0.0
+        return sum(t.score for t in self.trials) / len(self.trials)
 
-def numeric_close(
-    actual: float,
-    expected: float,
-    *,
-    tolerance: float = 0.01,
-    case_name: str = "",
-    tier: Tier = Tier.UNIT,
-) -> EvalResult:
-    """Numeric grader: passes if |actual - expected| <= tolerance."""
-    diff = abs(actual - expected)
-    passed = diff <= tolerance
-    return EvalResult(
-        case_name=case_name,
-        tier=tier,
-        status=Status.PASS if passed else Status.FAIL,
-        score=1.0 if passed else max(0.0, 1.0 - diff),
-        details="" if passed else f"expected={expected}, actual={actual}, diff={diff}",
-    )
+    @property
+    def all_passed(self) -> bool:
+        return all(t.passed for t in self.trials)
 
-
-def rubric(
-    checks: dict[str, bool],
-    *,
-    case_name: str = "",
-    tier: Tier = Tier.END_TO_END,
-    threshold: float = 1.0,
-) -> EvalResult:
-    """Rubric grader: score = fraction of checks that pass.
-
-    Passes if score >= threshold (default: all checks must pass).
-    """
-    total = len(checks)
-    passed_count = sum(1 for v in checks.values() if v)
-    score = passed_count / total if total > 0 else 0.0
-    failed = {k for k, v in checks.items() if not v}
-    return EvalResult(
-        case_name=case_name,
-        tier=tier,
-        status=Status.PASS if score >= threshold else Status.FAIL,
-        score=score,
-        details=f"failed checks: {failed}" if failed else "",
-    )
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "suite": self.suite,
+            "desc": self.desc,
+            "k": self.k,
+            "pass_at_k": self.pass_at_k,
+            "pass_pow_k": round(self.pass_pow_k, 4),
+            "avg_score": round(self.avg_score, 4),
+            "all_passed": self.all_passed,
+            "trials": [
+                {
+                    "trial": t.trial_idx,
+                    "passed": t.passed,
+                    "score": round(t.score, 4),
+                    "elapsed_s": round(t.elapsed_s, 4),
+                    "error": t.error,
+                    "graders": [
+                        {
+                            "name": g.grader_name,
+                            "passed": g.passed,
+                            "score": round(g.score, 4),
+                            "details": g.details,
+                        }
+                        for g in t.grader_results
+                    ],
+                }
+                for t in self.trials
+            ],
+        }

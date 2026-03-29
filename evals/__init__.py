@@ -3,14 +3,16 @@
 
 """Archetype evaluation suite.
 
-Structured after Anthropic's eval taxonomy (unit → integration → end-to-end):
+Structured after Anthropic's guide to agent evals:
 https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents
 
-- **Unit evals**: Test a single operation in isolation (deterministic, fast).
-- **Integration evals**: Test multi-step component interactions (storage, command pipeline).
-- **End-to-end evals**: Test full simulation workflows against real environments.
-
-Each eval is an EvalCase with inputs, expected outputs, and a Grader that
-produces an EvalResult with a score.  The runner collects results by tier
-and reports pass/fail with timing.
+Core concepts:
+- **Task**: A single test with defined inputs, success criteria, and graders.
+- **Trial**: One attempt at a task.  Multiple trials handle non-determinism.
+- **Grader**: Logic that scores an aspect of agent performance (code-based,
+  model-based, or human).  A task can have multiple graders.
+- **Eval suite**: A collection of tasks measuring specific capabilities.
+  - *Regression suites* should have ~100% pass rate (protect against backsliding).
+  - *Capability suites* start at a low pass rate (give teams a hill to climb).
+- **pass@k / pass^k**: Metrics for success across multiple trials.
 """
