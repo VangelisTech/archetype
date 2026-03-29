@@ -7,7 +7,7 @@ Trajectory Processors
 
 Three pipeline stages, priority-ordered:
 
-    SamplingProcessor  (priority=10)  — selects which sessions to evaluate
+    SamplingProcessor  (priority=10)  — selects which trajectories to evaluate
     LabelingProcessor  (priority=20)  — applies a labeling technique via LLM
     ScoringProcessor   (priority=30)  — normalizes and aggregates scores
 
@@ -25,25 +25,25 @@ from daft import DataFrame, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
-from archetype.trajectories.components import Label, Session
+from archetype.trajectories.components import Label, Trajectory
 
 # ── Resources (injected into world.resources) ──
 
 
 @dataclass
 class SamplingConfig:
-    """Configures which sessions get evaluated.
+    """Configures which trajectories get evaluated.
 
     Attributes:
-        max_sessions:  Maximum number of sessions to sample (0 = all)
-        min_turns:     Minimum turn count to include
-        max_turns:     Maximum turn count to include (0 = no limit)
-        require_tags:  Only include sessions with ALL of these tags
-        exclude_tags:  Exclude sessions with ANY of these tags
-        outcome_filter: If set, only include sessions matching this outcome substring
+        max_trajectories: Maximum number of trajectories to sample (0 = all)
+        min_turns:        Minimum turn count to include
+        max_turns:        Maximum turn count to include (0 = no limit)
+        require_tags:     Only include trajectories with ALL of these tags
+        exclude_tags:     Exclude trajectories with ANY of these tags
+        outcome_filter:   If set, only include trajectories matching this outcome substring
     """
 
-    max_sessions: int = 0
+    max_trajectories: int = 0
     min_turns: int = 0
     max_turns: int = 0
     require_tags: list[str] | None = None
@@ -70,13 +70,13 @@ class LabelingConfig:
 
 
 class SamplingProcessor(AsyncProcessor):
-    """Selects which sessions to evaluate based on SamplingConfig.
+    """Selects which trajectories to evaluate based on SamplingConfig.
 
     Sets label__sampled = True/False. Downstream processors skip
-    unsampled sessions.
+    unsampled trajectories.
     """
 
-    components = (Session, Label)
+    components = (Trajectory, Label)
     priority = 10
 
     async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
@@ -86,43 +86,43 @@ class SamplingProcessor(AsyncProcessor):
         sampled = col("label__sampled")
 
         if config.min_turns > 0:
-            sampled = sampled & (col("session__total_turns") >= config.min_turns)
+            sampled = sampled & (col("trajectory__total_turns") >= config.min_turns)
 
         if config.max_turns > 0:
-            sampled = sampled & (col("session__total_turns") <= config.max_turns)
+            sampled = sampled & (col("trajectory__total_turns") <= config.max_turns)
 
         if config.outcome_filter:
-            sampled = sampled & col("session__outcome").str.contains(config.outcome_filter)
+            sampled = sampled & col("trajectory__outcome").str.contains(config.outcome_filter)
 
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & col("session__tags").str.contains(f'"{tag}"')
+                sampled = sampled & col("trajectory__tags").str.contains(f'"{tag}"')
 
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~col("session__tags").str.contains(f'"{tag}"')
+                sampled = sampled & ~col("trajectory__tags").str.contains(f'"{tag}"')
 
         df = df.with_columns({"label__sampled": sampled})
 
-        if config.max_sessions > 0:
-            df = df.limit(config.max_sessions)
+        if config.max_trajectories > 0:
+            df = df.limit(config.max_trajectories)
 
         return df
 
 
 class LabelingProcessor(AsyncProcessor):
-    """Applies a labeling technique to sampled sessions via LLM.
+    """Applies a labeling technique to sampled trajectories via LLM.
 
     Reads label__description (the natural language labeling instruction)
-    and session__turns (the full trajectory), then calls an LLM to produce:
+    and trajectory__turns (the full trajectory), then calls an LLM to produce:
         - label__value:     categorical or freeform label
         - label__score:     numeric 0.0-1.0
         - label__rationale: explanation
 
-    Only processes sessions where label__sampled is True.
+    Only processes trajectories where label__sampled is True.
     """
 
-    components = (Session, Label)
+    components = (Trajectory, Label)
     priority = 20
 
     async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
@@ -132,24 +132,24 @@ class LabelingProcessor(AsyncProcessor):
         from daft.functions import prompt
 
         eval_prompt = (
-            "You are an expert evaluator of AI agent sessions.\n\n"
+            "You are an expert evaluator of AI agent trajectories.\n\n"
             "## Evaluation Technique\n"
             + col("label__technique")
             + ": "
             + col("label__description")
-            + "\n\n## Session Trajectory\n"
+            + "\n\n## Trajectory\n"
             "Source: "
-            + col("session__source")
+            + col("trajectory__source")
             + "\nOutcome: "
-            + col("session__outcome")
+            + col("trajectory__outcome")
             + "\nTotal turns: "
-            + col("session__total_turns").cast(daft.DataType.string())
+            + col("trajectory__total_turns").cast(daft.DataType.string())
             + "\nDuration: "
-            + col("session__duration_seconds").cast(daft.DataType.string())
+            + col("trajectory__duration_seconds").cast(daft.DataType.string())
             + "s\n\nTurns:\n"
-            + col("session__turns")
+            + col("trajectory__turns")
             + "\n\n## Instructions\n"
-            "Evaluate this session according to the technique above.\n"
+            "Evaluate this trajectory according to the technique above.\n"
             "Respond in EXACTLY this format (no other text):\n"
             "VALUE: <a short categorical label>\n"
             "SCORE: <float 0.0 to 1.0>\n"
@@ -211,10 +211,10 @@ class ScoringProcessor(AsyncProcessor):
     """Post-processes scores for normalization and summary stats.
 
     Runs after labeling. Clamps scores to [0, 1] and could be extended
-    for cross-session normalization, percentile ranking, etc.
+    for cross-trajectory normalization, percentile ranking, etc.
     """
 
-    components = (Session, Label)
+    components = (Trajectory, Label)
     priority = 30
 
     async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:

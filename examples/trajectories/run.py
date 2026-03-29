@@ -5,7 +5,7 @@
 Trajectory Analysis Example
 ============================
 
-Demonstrates the full pipeline: ingest sessions, label them with
+Demonstrates the full pipeline: ingest trajectories, label them with
 natural language descriptions, compare techniques via world forking.
 
 Usage:
@@ -17,18 +17,18 @@ the pipeline structure (labeling will fail gracefully).
 
 import asyncio
 
-from archetype.trajectories import Session, TrajectoryPipeline
+from archetype.trajectories import Trajectory, TrajectoryPipeline
 from archetype.trajectories.components import Turn
 
-# ── Synthetic session data ──
+# ── Synthetic trajectory data ──
 
 
-def make_sessions() -> list[Session]:
-    """Build a few synthetic agent sessions for demonstration."""
+def make_trajectories() -> list[Trajectory]:
+    """Build a few synthetic agent trajectories for demonstration."""
 
-    # Session 1: Clean, efficient problem-solving
-    efficient = Session.from_turns(
-        session_id="session-001",
+    # Trajectory 1: Clean, efficient problem-solving
+    efficient = Trajectory.from_turns(
+        trajectory_id="traj-001",
         source="claude-code",
         outcome="success: implemented feature correctly on first attempt",
         tags=["feature", "python", "clean"],
@@ -65,9 +65,9 @@ def make_sessions() -> list[Session]:
         ],
     )
 
-    # Session 2: Backtracking, multiple attempts
-    backtracking = Session.from_turns(
-        session_id="session-002",
+    # Trajectory 2: Backtracking, multiple attempts
+    backtracking = Trajectory.from_turns(
+        trajectory_id="traj-002",
         source="claude-code",
         outcome="success: fixed bug after two wrong approaches",
         tags=["bugfix", "python", "backtracking"],
@@ -159,9 +159,9 @@ def make_sessions() -> list[Session]:
         ],
     )
 
-    # Session 3: Failed session
-    failed = Session.from_turns(
-        session_id="session-003",
+    # Trajectory 3: Failed trajectory
+    failed = Trajectory.from_turns(
+        trajectory_id="traj-003",
         source="claude-code",
         outcome="failure: could not resolve circular import",
         tags=["refactor", "python", "failed"],
@@ -214,8 +214,8 @@ def make_sessions() -> list[Session]:
 
 
 async def main():
-    sessions = make_sessions()
-    print(f"Created {len(sessions)} synthetic sessions\n")
+    trajectories = make_trajectories()
+    print(f"Created {len(trajectories)} synthetic trajectories\n")
 
     # Build pipeline with two labeling techniques
     pipeline = (
@@ -226,9 +226,9 @@ async def main():
     )
 
     # Ingest
-    print("Ingesting sessions...")
-    await pipeline.ingest(sessions)
-    print(f"  → {len(sessions)} sessions × {len(pipeline._labels)} techniques = {len(sessions) * len(pipeline._labels)} entities\n")
+    print("Ingesting trajectories...")
+    await pipeline.ingest(trajectories)
+    print(f"  → {len(trajectories)} trajectories × {len(pipeline._labels)} techniques = {len(trajectories) * len(pipeline._labels)} entities\n")
 
     # Run (this calls the LLM for labeling — skip if no API key)
     print("Running pipeline (sample → label → score)...")
@@ -242,7 +242,7 @@ async def main():
     print("Results:")
     results = await pipeline.results()
     for r in results:
-        print(f"  [{r['technique']}] {r['session_id']}: score={r['score']:.2f} value={r['value']!r}")
+        print(f"  [{r['technique']}] {r['trajectory_id']}: score={r['score']:.2f} value={r['value']!r}")
         if r["rationale"]:
             print(f"    rationale: {r['rationale']}")
     print()

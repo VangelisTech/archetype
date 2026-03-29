@@ -13,20 +13,20 @@ Fork a world to try a different labeling technique on the same data.
 Storage is the version control.
 
 Quick Start:
-    >>> from archetype.trajectories import Session, Label, TrajectoryPipeline
+    >>> from archetype.trajectories import Trajectory, Label, TrajectoryPipeline
     >>> pipeline = TrajectoryPipeline(name="my-experiment")
     >>> pipeline.label("efficiency", "Rate how directly the agent reached the solution without backtracking")
-    >>> await pipeline.ingest(sessions)
+    >>> await pipeline.ingest(trajectories)
     >>> await pipeline.run()
     >>> results = await pipeline.results()
 """
 
-from archetype.trajectories.components import Label, Session, Turn
+from archetype.trajectories.components import Label, Trajectory, Turn
 from archetype.trajectories.pipeline import TrajectoryPipeline
 from archetype.trajectories.processors import LabelingProcessor, SamplingProcessor, ScoringProcessor
 
 __all__ = [
-    "Session",
+    "Trajectory",
     "Turn",
     "Label",
     "TrajectoryPipeline",

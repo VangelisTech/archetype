@@ -10,8 +10,8 @@ The high-level API. Describe what you want, it wires the world.
     pipeline = TrajectoryPipeline(name="eval-backtracking")
     pipeline.label("efficiency", "Rate how directly the agent solved the problem")
     pipeline.label("correctness", "Did the agent produce the right final answer?")
-    pipeline.sample(min_turns=5, max_sessions=100)
-    await pipeline.ingest(sessions)
+    pipeline.sample(min_turns=5, max_trajectories=100)
+    await pipeline.ingest(trajectories)
     await pipeline.run()
     results = await pipeline.results()
 
@@ -32,7 +32,7 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.trajectories.components import Label, Session
+from archetype.trajectories.components import Label, Trajectory
 from archetype.trajectories.processors import (
     LabelingConfig,
     LabelingProcessor,
@@ -45,8 +45,8 @@ from archetype.trajectories.processors import (
 class TrajectoryPipeline:
     """Wires up a trajectory analysis experiment as an archetype world.
 
-    Each pipeline is a world. Each session is an entity with (Session, Label)
-    components — one entity per (session, technique) pair. Processors run
+    Each pipeline is a world. Each trajectory is an entity with (Trajectory, Label)
+    components — one entity per (trajectory, technique) pair. Processors run
     in priority order: sample → label → score.
 
     All state lives in LanceDB. Fork to compare. Query to analyze.
@@ -77,7 +77,7 @@ class TrajectoryPipeline:
     def sample(
         self,
         *,
-        max_sessions: int = 0,
+        max_trajectories: int = 0,
         min_turns: int = 0,
         max_turns: int = 0,
         require_tags: list[str] | None = None,
@@ -86,7 +86,7 @@ class TrajectoryPipeline:
     ) -> TrajectoryPipeline:
         """Configure sampling. Chainable."""
         self._sampling = SamplingConfig(
-            max_sessions=max_sessions,
+            max_trajectories=max_trajectories,
             min_turns=min_turns,
             max_turns=max_turns,
             require_tags=require_tags,
@@ -112,21 +112,21 @@ class TrajectoryPipeline:
         self._world.resources.insert(LabelingConfig(model=self._model))
         self._initialized = True
 
-    async def ingest(self, sessions: list[Session]) -> list[int]:
-        """Ingest sessions into the world. Creates one entity per (session, technique) pair."""
+    async def ingest(self, trajectories: list[Trajectory]) -> list[int]:
+        """Ingest trajectories into the world. Creates one entity per (trajectory, technique) pair."""
         await self._ensure_init()
         if not self._labels:
             raise ValueError("No labeling techniques defined. Call .label() first.")
 
         entity_ids = []
-        for session in sessions:
+        for trajectory in trajectories:
             for technique, description in self._labels:
                 label = Label(technique=technique, description=description)
                 cmd = Command(
                     type=CommandType.SPAWN,
                     payload={
                         "components": [
-                            session.model_dump(),
+                            trajectory.model_dump(),
                             label.model_dump(),
                         ],
                     },
@@ -156,16 +156,16 @@ class TrajectoryPipeline:
                     continue
                 rows.append(
                     {
-                        "session_id": row.get("session__session_id", ""),
+                        "trajectory_id": row.get("trajectory__trajectory_id", ""),
                         "technique": row.get("label__technique", ""),
                         "description": row.get("label__description", ""),
                         "value": row.get("label__value", ""),
                         "score": row.get("label__score", 0.0),
                         "rationale": row.get("label__rationale", ""),
                         "sampled": row.get("label__sampled", True),
-                        "total_turns": row.get("session__total_turns", 0),
-                        "outcome": row.get("session__outcome", ""),
-                        "source": row.get("session__source", ""),
+                        "total_turns": row.get("trajectory__total_turns", 0),
+                        "outcome": row.get("trajectory__outcome", ""),
+                        "source": row.get("trajectory__source", ""),
                     }
                 )
         return rows
@@ -181,7 +181,7 @@ class TrajectoryPipeline:
     async def fork(self, new_name: str) -> TrajectoryPipeline:
         """Fork this pipeline into a new world with the same data.
 
-        Use this to compare labeling techniques on identical sessions.
+        Use this to compare labeling techniques on identical trajectories.
         Modify the fork's labels, then run it.
         """
         await self._ensure_init()

@@ -5,11 +5,13 @@
 Trajectory Components
 =====================
 
-Session: The raw trajectory — every turn, tool call, output, and timing.
-Label:   An evaluation result attached to a session.
+Trajectory: The raw agent trajectory — every turn, tool call, output, and timing.
+Label:      An evaluation result attached to a trajectory.
 
 Both are Arrow-serializable. Complex nested data (turns, tool calls)
 is stored as JSON strings for LanceDB compatibility.
+
+Note: Named 'Trajectory' not 'Session' to avoid collision with daft.session.Session.
 """
 
 from __future__ import annotations
@@ -23,8 +25,8 @@ from archetype.core.component import Component
 
 @dataclass
 class Turn:
-    """A single turn in an agent session. Not a Component — just a data class
-    for building Session.turns JSON."""
+    """A single turn in an agent trajectory. Not a Component — just a data class
+    for building Trajectory.turns JSON."""
 
     role: str  # "user", "assistant", "tool_call", "tool_result", "system"
     content: str = ""
@@ -60,14 +62,14 @@ class Turn:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
-class Session(Component):
-    """A complete agent session trajectory.
+class Trajectory(Component):
+    """A complete agent trajectory.
 
     Stores the full history of an agent session — every turn, tool call,
     reasoning step, output, error, and timing — as a JSON-encoded list of turns.
 
     Fields:
-        session_id:       External reference (e.g., Claude Code session ID)
+        trajectory_id:    External reference (e.g., Claude Code session ID)
         source:           Origin system ("claude-code", "api", "custom")
         turns:            JSON list of Turn dicts — the full trajectory
         total_turns:      Count of turns (denormalized for filtering)
@@ -78,7 +80,7 @@ class Session(Component):
         metadata:         JSON dict of arbitrary session metadata
     """
 
-    session_id: str = ""
+    trajectory_id: str = ""
     source: str = ""
     turns: str = "[]"
     total_turns: int = 0
@@ -91,19 +93,19 @@ class Session(Component):
     @classmethod
     def from_turns(
         cls,
-        session_id: str,
+        trajectory_id: str,
         turns: list[Turn],
         *,
         source: str = "",
         outcome: str = "",
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> Session:
-        """Build a Session from a list of Turn objects."""
+    ) -> Trajectory:
+        """Build a Trajectory from a list of Turn objects."""
         total_tokens = sum(t.tokens for t in turns)
         duration = sum(t.duration_ms for t in turns) / 1000.0
         return cls(
-            session_id=session_id,
+            trajectory_id=trajectory_id,
             source=source,
             turns=json.dumps([t.to_dict() for t in turns]),
             total_turns=len(turns),
@@ -120,10 +122,10 @@ class Session(Component):
 
 
 class Label(Component):
-    """An evaluation label attached to a session trajectory.
+    """An evaluation label attached to a trajectory.
 
-    Each (Session, Label) entity represents one labeling technique
-    applied to one session. To compare techniques, fork the world
+    Each (Trajectory, Label) entity represents one labeling technique
+    applied to one trajectory. To compare techniques, fork the world
     and swap the LabelingProcessor's description.
 
     Fields:
