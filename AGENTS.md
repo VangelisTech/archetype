@@ -145,11 +145,13 @@ curl localhost:8000/worlds/{id}/state
 ### 5. Run Tests Freely
 
 ```bash
-uv run pytest tests/ -v              # All tests
-uv run pytest tests/integration/ -v  # Full-stack integration
-uv run pytest tests/api/ -v          # API routes
-uv run pytest tests/app/ -v          # Auth + services
+make ci          # CI gate: lint + lock-check + tests w/ coverage (always run before pushing)
+make test        # Fast tests, no coverage
+make check       # Format + lint
+make test-cov    # Tests with coverage report
 ```
+
+See [CLAUDE.md](./CLAUDE.md) for full dev workflow reference.
 
 ---
 
