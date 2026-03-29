@@ -27,7 +27,7 @@ help:
 	@echo "  make test           Run tests (fast)"
 	@echo "  make test-cov       Run tests with coverage"
 	@echo "  make test-all       Run all tests verbose"
-	@echo "  make ci             CI gate (lint + lock-check + test-cov)"
+	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
@@ -72,6 +72,10 @@ lint:
 lint-fix:
 	@uv run ruff check src tests --fix
 
+.PHONY: format-check
+format-check:
+	@uv run ruff format --check src tests
+
 .PHONY: check
 check: format lint
 
@@ -97,7 +101,7 @@ test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 .PHONY: ci
-ci: lint lock-check test-cov
+ci: format-check lint lock-check test-cov
 	@echo "CI gate passed"
 
 # ------------------------------------------------------------------------------

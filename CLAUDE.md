@@ -6,7 +6,7 @@
 make sync-dev       # Install all deps (uses uv dependency-groups, not optional-deps)
 make ci             # THE gate: lint + lock-check + tests w/ coverage (what CI runs)
 make test           # Fast tests, no coverage
-make check          # Format + lint (ruff)
+make check          # Auto-format + lint (ruff, writes files)
 make lint-fix       # Auto-fix lint issues
 ```
 
