@@ -30,7 +30,7 @@ class ServiceContainer:
         # Infrastructure
         self.storage_service = StorageService()
         self.chat_graphs = ChatGraphRegistry()
-        self.broker = CommandBroker(chat_graphs=self.chat_graphs)
+        self.broker = CommandBroker()
 
         # Services (order matters — dependency chain)
         self.world_service = WorldService(self.storage_service, broker=self.broker)

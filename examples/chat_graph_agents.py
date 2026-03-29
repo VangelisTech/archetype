@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """
-Chat Graph Agents: Channel-Aware LLM Context Assembly
-======================================================
+Chat Graph Agents: Processor-Driven Messaging with Channels
+============================================================
 
-Demonstrates agents using ChatGraphRegistry as a Resource to:
-1. Post messages to named channels
-2. Read conversation context from the graph (not the flat inbox)
-3. Branch conversations for counterfactual exploration
-4. Use active_path() to build clean LLM prompts per channel
+Demonstrates the decoupled messaging architecture:
+
+1. **Broker** = governance only (RBAC, quotas). Does NOT own messages.
+2. **MessageDeliveryProcessor** = routes Outbox → Inbox, updates ChatGraph,
+   handles rejections — all inside the ECS tick as an AsyncProcessor.
+3. **ChatGraphRegistry** = Resource for conversation structure. Processors
+   read active_path() for LLM context per channel/branch.
 
 Three agents negotiate across two channels:
 - #strategy: high-level planning (all agents)
 - #negotiation: Alice and Bob haggle over terms
 
-The key difference from messaging_example.py:
-- Processors use graph.active_path() for LLM context, not Inbox components
-- Messages are threaded, not flat — agents see the conversation tree
-- Ephemeral system messages (append_history=False) don't pollute the graph
+Key patterns shown:
+- Agents write to Outbox, MessageDeliveryProcessor handles delivery
+- ChatGraph is a Resource: processors read/write it directly
+- Ephemeral messages (system probes) skip the graph via _append_history flag
+- Governance rejections are visible (bad receiver_id → delivery fails)
 
 Run: uv run python examples/chat_graph_agents.py
 """
@@ -24,12 +27,15 @@ Run: uv run python examples/chat_graph_agents.py
 import asyncio
 import json
 
-from archetype.app.broker import CommandBroker
 from archetype.app.chat_graph import ChatGraphRegistry
+from archetype.app.messaging import Inbox, MessageDeliveryProcessor, Outbox
 from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.resources import Resources
+
+import daft
+from daft import DataFrame, col
 
 # ── Components ──
 
@@ -39,141 +45,124 @@ class Agent(Component):
     role: str = ""
 
 
-class Inbox(Component):
-    messages: list[str] = []
-
-
 # ── Processors ──
 
 
-class ChannelPostProcessor(AsyncProcessor):
+class NegotiationProcessor(AsyncProcessor):
     """
-    Agents post to channels. Each message becomes a node in the channel's graph.
+    Agents decide what to say and write to their Outbox.
 
-    This processor demonstrates the write path:
-    broker.enqueue(cmd with channel="strategy") → graph auto-appends
+    This is where LLM calls would go. For this demo, agents follow
+    a scripted negotiation.
     """
 
-    components = (Agent,)
-    priority = 10
+    components = (Agent, Outbox)
+    priority = 10  # runs AFTER MessageDeliveryProcessor (-100)
 
-    async def process(self, df, resources: Resources, tick: int = 0, **kwargs):
-        broker = resources.require(CommandBroker)
-        world_id = kwargs.get("world_id", "demo")
+    async def process(self, df: DataFrame, resources: Resources, tick: int = 0, **kwargs):
+        world_id = str(kwargs.get("world_id", "demo"))
+        registry = resources.require(ChatGraphRegistry)
 
-        rows = df.select("entity_id", "agent__name", "agent__role").collect().to_pylist()
+        rows = df.select("entity_id", "agent__name").collect().to_pylist()
+
+        # Build entity_id → name lookup
+        name_by_id = {r["entity_id"]: r["agent__name"] for r in rows}
+        id_by_name = {v: k for k, v in name_by_id.items()}
+
+        messages_by_entity: dict[int, list[str]] = {}
 
         for row in rows:
             name = row["agent__name"]
             eid = row["entity_id"]
 
+            # Read conversation context from the graph (not from Inbox)
+            strategy_ctx = registry.channel(world_id, "strategy").active_path()
+
             # All agents post to #strategy
-            await broker.enqueue(world_id, Command(
-                type=CommandType.MESSAGE,
-                tick=tick,
-                channel="strategy",
-                payload={
-                    "sender_id": eid,
-                    "sender_name": name,
-                    "content": f"[tick {tick}] {name}: Strategy update from my perspective.",
-                },
-            ))
+            strategy_msg = json.dumps({
+                "receiver_id": None,  # broadcast — will be sent to each agent
+                "channel": "strategy",
+                "content": f"{name}: Tick {tick} strategy update.",
+            })
 
-            # Only Alice and Bob post to #negotiation
-            if name in ("Alice", "Bob"):
-                content = {
-                    "Alice": f"[tick {tick}] Alice: I propose we split {60 - tick * 5}/{40 + tick * 5}.",
-                    "Bob": f"[tick {tick}] Bob: Counter-offer. {50}/{50} is the only fair deal.",
-                }.get(name, "")
+            # For broadcast: send to every other agent on #strategy
+            for other_name, other_id in id_by_name.items():
+                if other_id != eid:
+                    msg = json.dumps({
+                        "receiver_id": other_id,
+                        "channel": "strategy",
+                        "content": f"{name}: Tick {tick} strategy update "
+                                   f"(context depth: {len(strategy_ctx)}).",
+                    })
+                    messages_by_entity.setdefault(eid, []).append(msg)
 
-                await broker.enqueue(world_id, Command(
-                    type=CommandType.MESSAGE,
-                    tick=tick,
-                    channel="negotiation",
-                    payload={
-                        "sender_id": eid,
-                        "sender_name": name,
-                        "content": content,
-                    },
-                ))
+            # Alice and Bob negotiate directly
+            if name == "Alice" and "Bob" in id_by_name:
+                neg_ctx = registry.channel(world_id, "negotiation").active_path()
+                msg = json.dumps({
+                    "receiver_id": id_by_name["Bob"],
+                    "channel": "negotiation",
+                    "content": f"Alice: I propose {60 - tick * 5}/{40 + tick * 5}. "
+                               f"(I can see {len(neg_ctx)} prior messages in this thread.)",
+                })
+                messages_by_entity.setdefault(eid, []).append(msg)
 
-            # System heartbeat — ephemeral, never lands in graph
-            await broker.enqueue(world_id, Command(
-                type=CommandType.MESSAGE,
-                tick=tick,
-                channel="system",
-                append_history=False,
-                payload={"sender_id": eid, "type": "heartbeat"},
-            ))
+            elif name == "Bob" and "Alice" in id_by_name:
+                msg = json.dumps({
+                    "receiver_id": id_by_name["Alice"],
+                    "channel": "negotiation",
+                    "content": f"Bob: Counter. 50/50 is the only fair split.",
+                })
+                messages_by_entity.setdefault(eid, []).append(msg)
 
-        return df
+            # System heartbeat — ephemeral, won't land in ChatGraph
+            for other_id in id_by_name.values():
+                if other_id != eid:
+                    hb = json.dumps({
+                        "receiver_id": other_id,
+                        "channel": "system",
+                        "content": "heartbeat",
+                        "_append_history": False,
+                    })
+                    messages_by_entity.setdefault(eid, []).append(hb)
+
+        # Write to Outbox via batch UDF
+        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
+        def write_outbox(entity_ids: daft.Series) -> list:
+            return [messages_by_entity.get(eid, []) for eid in entity_ids.to_pylist()]
+
+        return df.with_column("outbox__messages", write_outbox(col("entity_id")))
 
 
-class ContextAssemblyProcessor(AsyncProcessor):
+class ContextReportProcessor(AsyncProcessor):
     """
-    Demonstrates the READ path: using active_path() to build LLM context.
-
-    Instead of reading from a flat Inbox component, this processor reads
-    from the channel graph. Each agent gets a prompt built from the
-    conversation thread they're participating in.
-
-    This is where ChatGraph replaces the journal/inbox pattern.
+    After delivery, report what each agent sees in their inbox and channels.
+    In a real system this would be where you build LLM prompts.
     """
 
-    components = (Agent,)
-    priority = 20
+    components = (Agent, Inbox)
+    priority = 20  # runs after NegotiationProcessor
 
-    async def process(self, df, resources: Resources, tick: int = 0, **kwargs):
+    async def process(self, df: DataFrame, resources: Resources, tick: int = 0, **kwargs):
+        if tick != 0:
+            return df
+
+        world_id = str(kwargs.get("world_id", "demo"))
         registry = resources.require(ChatGraphRegistry)
-        world_id = kwargs.get("world_id", "demo")
 
-        rows = df.select("entity_id", "agent__name").collect().to_pylist()
+        rows = df.select("entity_id", "agent__name", "inbox__messages").collect().to_pylist()
 
+        print(f"\n  Tick {tick} context report:")
         for row in rows:
             name = row["agent__name"]
+            inbox_count = len(row.get("inbox__messages") or [])
 
-            # Build context from #strategy channel
-            strategy_graph = registry.channel(world_id, "strategy")
-            strategy_context = strategy_graph.active_path()
+            strategy_depth = len(registry.channel(world_id, "strategy").active_path())
+            neg_depth = len(registry.channel(world_id, "negotiation").active_path())
 
-            # An LLM call would use this as the conversation history:
-            strategy_messages = [
-                cmd.payload.get("content", "")
-                for cmd in strategy_context
-            ]
-
-            if name in ("Alice", "Bob"):
-                # Also read the #negotiation channel
-                neg_graph = registry.channel(world_id, "negotiation")
-                neg_context = neg_graph.active_path()
-                neg_messages = [
-                    cmd.payload.get("content", "")
-                    for cmd in neg_context
-                ]
-            else:
-                neg_messages = []
-
-            # This is where you'd call the LLM:
-            #
-            #   prompt = f"""You are {name}. {role}
-            #
-            #   ## #strategy channel:
-            #   {chr(10).join(strategy_messages)}
-            #
-            #   ## #negotiation channel:
-            #   {chr(10).join(neg_messages)}
-            #
-            #   What do you say next?"""
-            #
-            #   response = await llm.complete(prompt)
-            #
-            # The key insight: active_path() gives you ONLY the current
-            # branch's messages. If someone branched the negotiation to
-            # explore a counterfactual, each branch gets its own clean context.
-
-            if tick == 0:
-                print(f"  {name}: reading {len(strategy_messages)} msgs from #strategy"
-                      f", {len(neg_messages)} msgs from #negotiation")
+            print(f"    {name}: inbox={inbox_count} msgs, "
+                  f"#strategy depth={strategy_depth}, "
+                  f"#negotiation depth={neg_depth}")
 
         return df
 
@@ -182,15 +171,13 @@ class ContextAssemblyProcessor(AsyncProcessor):
 
 
 async def main():
+    import pyarrow as pa
     from archetype.core.aio.async_system import AsyncSystem
     from archetype.core.aio.async_world import AsyncWorld
+    from archetype.core.archetype import Archetype
     from archetype.core.config import RunConfig, WorldConfig
 
-    import daft
-    import pyarrow as pa
-    from archetype.core.archetype import Archetype
-
-    # Minimal in-memory infrastructure (same pattern as messaging_example.py)
+    # Minimal in-memory infrastructure
     class InMemoryQuerier:
         def __init__(self):
             self._store = {}
@@ -223,7 +210,7 @@ async def main():
             return df_mat
 
     print("=" * 60)
-    print("Chat Graph Agents: Channel-Aware Context Assembly")
+    print("Chat Graph Agents: Processor-Driven Messaging")
     print("=" * 60)
 
     # Create world
@@ -237,32 +224,38 @@ async def main():
         system=system,
     )
 
-    # Wire resources — this is the key integration point
+    # Wire resources — ChatGraphRegistry is the key integration
+    # No broker in resources: governance is not needed for in-world messaging
     registry = ChatGraphRegistry()
-    broker = CommandBroker(chat_graphs=registry)
-
-    world.resources.insert(broker)
-    world.resources.insert(registry)  # agents can now require(ChatGraphRegistry)
+    world.resources.insert(registry)
 
     print(f"\nResources: {world.resources}")
 
-    # Register processors
-    await system.add_processor(ChannelPostProcessor())
-    await system.add_processor(ContextAssemblyProcessor())
+    # Register processors (priority order determines execution):
+    #   -100: MessageDeliveryProcessor  (Outbox → Inbox, graph updates)
+    #     10: NegotiationProcessor      (agents decide what to say)
+    #     20: ContextReportProcessor    (report what agents see)
+    await system.add_processor(MessageDeliveryProcessor())
+    await system.add_processor(NegotiationProcessor())
+    await system.add_processor(ContextReportProcessor())
 
-    # Spawn agents
+    print("Processors registered:")
+    for p in sorted(system.processors, key=lambda x: x.priority):
+        print(f"  [{p.priority:4d}] {type(p).__name__} → {[c.__name__ for c in p.components]}")
+
+    # Spawn agents with Outbox + Inbox (messaging components)
     agents = [
-        [Agent(name="Alice", role="Lead negotiator"), Inbox()],
-        [Agent(name="Bob", role="Counterparty"), Inbox()],
-        [Agent(name="Charlie", role="Observer and strategist"), Inbox()],
+        [Agent(name="Alice", role="Lead negotiator"), Outbox(), Inbox()],
+        [Agent(name="Bob", role="Counterparty"), Outbox(), Inbox()],
+        [Agent(name="Charlie", role="Observer"), Outbox(), Inbox()],
     ]
     for components in agents:
         await world.create_entity(components)
 
-    print(f"Spawned {len(agents)} agents: Alice, Bob, Charlie\n")
+    print(f"\nSpawned {len(agents)} agents: Alice, Bob, Charlie")
 
     # Run 3 ticks
-    print("-" * 60)
+    print("\n" + "-" * 60)
     print("Running 3 ticks...")
     print("-" * 60)
 
@@ -274,73 +267,62 @@ async def main():
     print("Channel State After Simulation")
     print("=" * 60)
 
-    for ch_name in registry.channels("demo"):
+    for ch_name in sorted(registry.channels("demo")):
         graph = registry.channel("demo", ch_name)
         path = graph.active_path()
-        print(f"\n#{ch_name} ({graph.size} messages, cursor at depth {len(path)}):")
-        for cmd in path:
-            content = cmd.payload.get("content", cmd.payload.get("type", "?"))
+        print(f"\n#{ch_name} ({graph.size} total nodes, active path depth={len(path)}):")
+        for cmd in path[-5:]:  # show last 5 in active path
+            content = cmd.payload.get("content", "?")
             if len(content) > 70:
                 content = content[:67] + "..."
-            print(f"  {content}")
+            print(f"  [tick {cmd.tick}] {content}")
 
-    # Demonstrate branching: what if Alice took a harder line at tick 1?
+    # Verify ephemeral messages didn't create a channel
+    all_channels = registry.channels("demo")
+    if "system" not in all_channels:
+        print("\n'system' channel empty — heartbeats were ephemeral.")
+
+    # Demonstrate branching
     print("\n" + "=" * 60)
-    print("Counterfactual Branch: Alice takes harder line")
+    print("Counterfactual: Branch #negotiation")
     print("=" * 60)
 
     neg_graph = registry.channel("demo", "negotiation")
-
-    # Find Alice's tick-1 message to branch from
-    all_nodes = list(neg_graph._nodes.values())
-    alice_tick1 = None
-    for node in all_nodes:
-        if (node.cmd.tick == 1
-                and node.cmd.payload.get("sender_name") == "Alice"):
-            alice_tick1 = node
-            break
-
-    if alice_tick1:
-        # Branch: alternative Alice response
+    if neg_graph.size > 0:
+        # Branch from root with an alternative opening
+        root_id = neg_graph._roots[0]
         counterfactual = Command(
             type=CommandType.MESSAGE,
-            tick=1,
+            tick=0,
             channel="negotiation",
             payload={
-                "sender_name": "Alice",
-                "content": "[tick 1] Alice: 65/35. Non-negotiable. Walk if you want.",
+                "sender_id": -1,
+                "content": "Alice: 70/30. Take it or leave it.",
             },
         )
-        neg_graph.branch(alice_tick1.cmd.id, counterfactual, label="hardball")
+        neg_graph.branch(root_id, counterfactual, label="hardball")
 
-        print(f"\nBranched from Alice's tick-1 message.")
-        print(f"Original path had {len(all_nodes)} nodes.")
+        print(f"\nBranched from root. Now {neg_graph.size} nodes, "
+              f"{len(neg_graph.leaves())} leaves.")
 
-        # Show the two paths
         print("\nActive path (hardball branch):")
         for cmd in neg_graph.active_path():
-            print(f"  {cmd.payload.get('content', '?')}")
+            print(f"  [tick {cmd.tick}] {cmd.payload.get('content', '?')}")
 
-        # Navigate back to original
-        original_leaf = neg_graph.leaves()
-        for leaf_id in original_leaf:
-            leaf_node = neg_graph.get_node(leaf_id)
-            if leaf_node and leaf_node.branch_label != "hardball":
+        # Navigate back to original leaf
+        for leaf_id in neg_graph.leaves():
+            node = neg_graph.get_node(leaf_id)
+            if node and node.branch_label != "hardball":
                 neg_graph.navigate(leaf_id)
+                neg_graph.auto_nav_to_leaf()
                 break
 
-        neg_graph.auto_nav_to_leaf()
-        print("\nOriginal path (after navigate back):")
+        print("\nOriginal path:")
         for cmd in neg_graph.active_path():
-            print(f"  {cmd.payload.get('content', '?')}")
-
-    # Show that ephemeral messages didn't land in the graph
-    system_channels = registry.channels("demo")
-    if "system" not in system_channels:
-        print("\n'system' channel has no graph — all heartbeats were ephemeral.")
-    else:
-        sys_graph = registry.channel("demo", "system")
-        print(f"\n'system' channel: {sys_graph.size} messages (should be 0)")
+            content = cmd.payload.get("content", "?")
+            if len(content) > 70:
+                content = content[:67] + "..."
+            print(f"  [tick {cmd.tick}] {content}")
 
 
 if __name__ == "__main__":
