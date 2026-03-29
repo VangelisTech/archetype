@@ -65,9 +65,7 @@ async def get_command_history(
 ):
     history = await broker.get_history(world_id, limit)
     return [
-        CommandResponse(
-            id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority
-        )
+        CommandResponse(id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority)
         for cmd in history
     ]
 

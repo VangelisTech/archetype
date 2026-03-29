@@ -27,9 +27,7 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()
         await system.add_processor(Noop())
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage, system=system
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
 
         # Create one entity, then enqueue another spawn for the same entity id by patching next id backwards
         eid = await world.create_entity([A(i=1)])

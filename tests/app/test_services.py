@@ -68,9 +68,7 @@ class TestCommandService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             cmds = [
@@ -89,9 +87,7 @@ class TestSimulationService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             cmds_applied = await container.simulation_service.step(world.world_id)
             assert cmds_applied == 0  # no commands queued
@@ -103,13 +99,9 @@ class TestSimulationService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
-            result = await container.simulation_service.run(
-                world.world_id, RunConfig(num_steps=3)
-            )
+            result = await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
             assert result.ticks_completed == 3
             assert result.world_id == world.world_id
         finally:
@@ -122,9 +114,7 @@ class TestQueryService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             snapshot = await container.query_service.get_world_state(world.world_id)
             assert snapshot.world_id == world.world_id
@@ -136,9 +126,7 @@ class TestQueryService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             history = await container.query_service.get_command_history(world.world_id)
             assert history == []
@@ -150,9 +138,7 @@ class TestQueryService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="test"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             cmd = Command(type=CommandType.SPAWN, payload={})
@@ -170,9 +156,7 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="w1"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="w1"), storage)
             worlds = container.world_service.list_worlds()
             assert len(worlds) == 1
             assert worlds[0].world_id == world.world_id
@@ -184,9 +168,7 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="w1"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="w1"), storage)
             container.world_service.remove_world(world.world_id)
             assert len(container.world_service.list_worlds()) == 0
         finally:
@@ -197,9 +179,7 @@ class TestWorldService:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="alpha"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
             found = container.world_service.get_world_by_name("alpha")
             assert found.world_id == world.world_id
         finally:

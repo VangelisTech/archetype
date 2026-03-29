@@ -20,9 +20,7 @@ async def test_get_components_unions_across_signatures_and_projects_schema(tmp_p
     ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
 
         # Spawn across multiple signatures: (A), (A,B), (B), (A)
         await world.create_entity([A(x=1)])
