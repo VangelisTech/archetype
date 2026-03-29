@@ -32,7 +32,10 @@ help:
 	@echo "Benchmarks & Evals:"
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
-	@echo "  make eval           Run correctness evals"
+	@echo "  make eval           Run all evals (unit + integration + e2e)"
+	@echo "  make eval-unit      Run unit evals only"
+	@echo "  make eval-integ     Run integration evals only"
+	@echo "  make eval-e2e       Run end-to-end evals only"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
@@ -139,6 +142,18 @@ bench-full:
 .PHONY: eval
 eval:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --out eval-results.json
+
+.PHONY: eval-unit
+eval-unit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --tier unit
+
+.PHONY: eval-integ
+eval-integ:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --tier integration
+
+.PHONY: eval-e2e
+eval-e2e:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --tier end_to_end
 
 # ------------------------------------------------------------------------------
 # Build & Release
