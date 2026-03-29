@@ -9,6 +9,12 @@
 
 Processors are pure functions: `DataFrame → DataFrame`. If the data looks right at the end of a tick, nothing else matters. Not how you called the LLM. Not whether it was async. Not how long it took.
 
+## What You're Building
+
+Archetype is an experiment harness disguised as an ECS engine. World state is DataFrames. Mutations are commands. Processors are transforms. Storage is append-only. **Storage is the version control** — no git ceremony for experimentation. Fork the world, tweak the processor, run again. Both versions coexist in LanceDB, queryable side by side.
+
+Current focus: **trajectory analysis** — evaluating agent session trajectories through configurable sampling regimes and labeling techniques described in natural language.
+
 ## Hard Constraints
 
 ### 1. Never break the lazy DAG unless you must
@@ -156,6 +162,7 @@ Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional
 - **`src/archetype/core/`** — ECS engine. **Read-only.** Do not modify without explicit approval.
 - **`src/archetype/app/`** — Service layer. Extend carefully.
 - **`src/archetype/api/`** + **`cli/`** — REST API and CLI. Safe to modify freely.
+- **`src/archetype/trajectories/`** — Trajectory analysis pipeline.
 - **`tests/`** — Every new feature needs tests.
 
 ## Key Files
