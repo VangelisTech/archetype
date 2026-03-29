@@ -31,14 +31,20 @@ Features:
 - Tick-aware dequeue (dequeue_due)
 """
 
+from __future__ import annotations
+
 import asyncio
 import heapq
 import logging
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from archetype.app.auth.guard import guardrail_allow
 from archetype.app.auth.models import ActorCtx
 from archetype.app.models import Command
+
+if TYPE_CHECKING:
+    from archetype.app.chat_graph import ChatGraphRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +54,22 @@ class CommandBroker:
     Universal simulation interface for command-based interaction with worlds.
 
     The broker mediates all external and agent-initiated commands with RBAC enforcement.
+    Optionally integrates with a ChatGraphRegistry to track conversation structure.
     """
 
-    def __init__(self, max_dequeue: int = 50_000, debug: bool = False):
+    def __init__(
+        self,
+        max_dequeue: int = 50_000,
+        debug: bool = False,
+        chat_graphs: ChatGraphRegistry | None = None,
+    ):
         self._queues: dict[str, list[Command]] = {}  # world_id -> priority queue
         self._pending: dict[UUID, Command] = {}
         self._history: dict[str, list[Command]] = {}
         self._lock = asyncio.Lock()
         self._max_dequeue = max_dequeue
         self._debug = debug
+        self._chat_graphs = chat_graphs
 
     async def enqueue(
         self,
@@ -78,12 +91,16 @@ class CommandBroker:
 
             heapq.heappush(self._queues[key], cmd)
             self._pending[cmd.id] = cmd
-            self._history.setdefault(key, []).append(cmd)
+            if cmd.append_history:
+                self._history.setdefault(key, []).append(cmd)
+                if self._chat_graphs is not None:
+                    self._chat_graphs.get(key).append(cmd)
 
             if self._debug:
                 logger.debug(
                     f"[broker] enqueue: world={key}, type={cmd.type.value}, "
-                    f"tick={cmd.tick}, pending={len(self._queues[key])}"
+                    f"tick={cmd.tick}, ephemeral={not cmd.append_history}, "
+                    f"pending={len(self._queues[key])}"
                 )
 
     async def enqueue_bulk(
@@ -108,7 +125,10 @@ class CommandBroker:
             for cmd in cmds:
                 heapq.heappush(self._queues[key], cmd)
                 self._pending[cmd.id] = cmd
-                self._history.setdefault(key, []).append(cmd)
+                if cmd.append_history:
+                    self._history.setdefault(key, []).append(cmd)
+                    if self._chat_graphs is not None:
+                        self._chat_graphs.get(key).append(cmd)
 
     async def dequeue(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
         """Dequeue commands for a specific world (all pending, regardless of tick)."""

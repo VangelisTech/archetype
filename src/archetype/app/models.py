@@ -73,10 +73,12 @@ class Command(BaseModel):
     priority: int = 0
     version: int = 1
     seq: int = Field(default_factory=lambda: next(_SEQ))
+    append_history: bool = True
+    parent_id: UUID | None = None
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
-    @field_serializer("id", "actor_id")
+    @field_serializer("id", "actor_id", "parent_id")
     def serialize_uuids(self, v: UUID | None, info: FieldSerializationInfo):
         if v is None:
             return None
@@ -97,6 +99,8 @@ class Command(BaseModel):
                 ("priority", pa.int16()),
                 ("version", pa.int8()),
                 ("seq", pa.int64()),
+                ("append_history", pa.bool_()),
+                ("parent_id", pa.binary(16)),
             ]
         )
 
@@ -111,6 +115,8 @@ class Command(BaseModel):
                 [self.priority],
                 [self.version],
                 [self.seq],
+                [self.append_history],
+                [self.parent_id.bytes if self.parent_id else None],
             ],
             schema=self.arrow_schema(),
         )

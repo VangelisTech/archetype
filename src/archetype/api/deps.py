@@ -9,6 +9,7 @@ from uuid_utils import uuid7
 
 from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
+from archetype.app.chat_graph import ChatGraphRegistry
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.query_service import QueryService
@@ -52,6 +53,10 @@ def get_query_service() -> QueryService:
 
 def get_broker() -> CommandBroker:
     return get_container().broker
+
+
+def get_chat_graphs() -> ChatGraphRegistry:
+    return get_container().chat_graphs
 
 
 def get_actor_ctx() -> ActorCtx:

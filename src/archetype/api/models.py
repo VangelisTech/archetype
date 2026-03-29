@@ -23,6 +23,8 @@ class SubmitCommandRequest(BaseModel):
     tick: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
+    append_history: bool = True
+    parent_id: str | None = None
 
 
 class SubmitBatchRequest(BaseModel):
@@ -59,6 +61,32 @@ class RunResultResponse(BaseModel):
     ticks_completed: int
     commands_applied: int
     final_tick: int
+
+
+class BranchRequest(BaseModel):
+    parent_id: str
+    type: str = "message"
+    tick: int = 0
+    payload: dict[str, Any] = Field(default_factory=dict)
+    priority: int = 0
+    label: str | None = None
+
+
+class NavigateRequest(BaseModel):
+    node_id: str
+
+
+class ChatGraphResponse(BaseModel):
+    world_id: str
+    cursor: str | None = None
+    size: int = 0
+    roots: list[str] = Field(default_factory=list)
+    nodes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ActivePathResponse(BaseModel):
+    world_id: str
+    path: list[CommandResponse] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):

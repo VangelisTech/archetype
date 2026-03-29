@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from archetype.api.deps import get_container, set_container
-from archetype.api.routes import commands, query, simulation, worlds
+from archetype.api.routes import chat, commands, query, simulation, worlds
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ def create_app() -> FastAPI:
     app.include_router(commands.router)
     app.include_router(simulation.router)
     app.include_router(query.router)
+    app.include_router(chat.router)
 
     @app.get("/")
     async def root():

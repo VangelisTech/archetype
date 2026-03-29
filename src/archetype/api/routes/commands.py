@@ -5,6 +5,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from uuid_utils import UUID as UUID7
+
 from archetype.api.deps import get_actor_ctx, get_broker, get_command_service
 from archetype.api.models import CommandResponse, SubmitBatchRequest, SubmitCommandRequest
 from archetype.app.auth.models import ActorCtx
@@ -27,7 +29,15 @@ async def submit_command(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown command type: {req.type}") from None
 
-    cmd = Command(type=cmd_type, tick=req.tick, payload=req.payload, priority=req.priority)
+    parent_id = UUID7(req.parent_id) if req.parent_id else None
+    cmd = Command(
+        type=cmd_type,
+        tick=req.tick,
+        payload=req.payload,
+        priority=req.priority,
+        append_history=req.append_history,
+        parent_id=parent_id,
+    )
     try:
         cmd_id = await cs.submit(world_id, cmd, ctx)
         return CommandResponse(id=str(cmd_id), type=req.type, tick=req.tick, priority=req.priority)
@@ -48,7 +58,15 @@ async def submit_batch(
             cmd_type = CommandType(r.type)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Unknown command type: {r.type}") from None
-        cmds.append(Command(type=cmd_type, tick=r.tick, payload=r.payload, priority=r.priority))
+        parent_id = UUID7(r.parent_id) if r.parent_id else None
+        cmds.append(Command(
+            type=cmd_type,
+            tick=r.tick,
+            payload=r.payload,
+            priority=r.priority,
+            append_history=r.append_history,
+            parent_id=parent_id,
+        ))
 
     try:
         ids = await cs.submit_batch(world_id, cmds, ctx)
