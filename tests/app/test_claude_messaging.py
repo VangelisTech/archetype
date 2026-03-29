@@ -8,13 +8,19 @@ Proves end-to-end correctness of an Anthropic SDK-powered processor
 sending messages through the ECS messaging pipeline.
 
 All Claude API calls are mocked for deterministic, offline testing.
+
+Architecture note: @daft.func closures must be serializable (picklable).
+API clients (anthropic.AsyncAnthropic, mocks) are NOT serializable.
+For production code, use @daft.cls() — the client lives in __init__,
+which runs once per worker and doesn't need serialization.
+For tests with mock injection, we use a targeted .collect() for the
+API call step only, keeping prompt building and outbox writing row-wise.
 """
 
 import json
-from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import daft
 import pytest
@@ -42,6 +48,13 @@ class ClaudeThinkProcessor(AsyncProcessor):
     """
     Calls Claude for each agent, writes response to Outbox.
     Reads ChatGraph context via Resources for conversation history.
+
+    Uses @daft.func for prompt assembly (row-wise, serializable), then
+    a targeted .collect() for the API call step (client is non-serializable),
+    then @daft.func for outbox writing (row-wise, serializable).
+
+    In production, use @daft.cls() instead (see examples/claude_messaging_agents.py).
+    The test uses .collect() because mock clients aren't picklable.
     """
 
     components = (Agent, Outbox, Inbox)
@@ -61,78 +74,95 @@ class ClaudeThinkProcessor(AsyncProcessor):
         world_id = str(kwargs.get("world_id", "test"))
         registry: ChatGraphRegistry | None = resources.get(ChatGraphRegistry)
 
-        rows = df.select(
-            "entity_id", "agent__name", "agent__role", "inbox__messages",
-        ).collect().to_pylist()
+        # Cross-row context: name lookups for conversation history + targeting.
+        # This is justified — we need global entity knowledge for name resolution
+        # and round-robin targeting. Only entity_id + name, not the full DataFrame.
+        id_name_rows = df.select("entity_id", "agent__name").collect().to_pylist()
+        name_by_id = {r["entity_id"]: r["agent__name"] for r in id_name_rows}
+        all_ids = sorted(name_by_id.keys())
 
-        name_by_id = {r["entity_id"]: r["agent__name"] for r in rows}
-        id_by_name = {v: k for k, v in name_by_id.items()}
-        all_ids = list(name_by_id.keys())
-
-        # Build conversation history from ChatGraph
-        conversation_history: list[dict[str, str]] = []
+        # Build shared conversation history from ChatGraph (Resource, not DataFrame)
+        context_json = "[]"
         if registry is not None:
             graph = registry.channel(world_id, self.channel)
+            context_msgs = []
             for cmd in graph.active_path():
                 sender = cmd.payload.get("sender_id", "system")
                 sender_name = name_by_id.get(sender, f"agent-{sender}")
-                conversation_history.append({
+                context_msgs.append({
                     "role": "user",
                     "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
                 })
+            context_json = json.dumps(context_msgs)
 
-        messages_by_entity: dict[int, list[str]] = {}
+        # Step 1: Build prompts row-wise (all captured state is serializable)
+        @daft.func
+        def build_prompt(
+            name: str,
+            role: str,
+            inbox_messages: list[str],
+        ) -> str:
+            """Row-wise: assemble Claude prompt from context + inbox."""
+            history = json.loads(context_json)
 
-        async def think(row: dict) -> tuple[int, list[str]]:
-            eid = row["entity_id"]
-            name = row["agent__name"]
-            role = row["agent__role"]
-
-            # Add inbox to context
-            agent_history = list(conversation_history)
-            for raw in (row.get("inbox__messages") or []):
+            for raw in (inbox_messages or []):
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
                 sid = parsed.get("sender_id", "?")
                 sname = name_by_id.get(sid, f"agent-{sid}")
-                agent_history.append({
+                history.append({
                     "role": "user",
                     "content": f"[{sname}]: {parsed.get('content', '')}",
                 })
 
-            agent_history.append({
+            history.append({
                 "role": "user",
                 "content": f"You are {name}. Tick {tick}. Respond in character.",
             })
 
-            # Call Claude (or mock)
+            return json.dumps({"system": role, "messages": history})
+
+        df = df.with_column(
+            "_prompt",
+            build_prompt(col("agent__name"), col("agent__role"), col("inbox__messages")),
+        )
+
+        # Step 2: Call Claude API — targeted .collect() on prompts only.
+        # The client (AsyncMock / AsyncAnthropic) is non-serializable,
+        # so we can't capture it in a @daft.func closure. In production
+        # code, use @daft.cls() (see examples/claude_messaging_agents.py).
+        prompt_rows = df.select("entity_id", "agent__name", "_prompt").collect().to_pylist()
+
+        async def call_claude(row: dict) -> tuple[int, str, str]:
+            prompt_data = json.loads(row["_prompt"])
             response = await self.client.messages.create(
                 model=self.model,
                 max_tokens=150,
-                system=role,
-                messages=agent_history,
+                system=prompt_data["system"],
+                messages=prompt_data["messages"],
             )
-            response_text = response.content[0].text
+            return row["entity_id"], row["agent__name"], response.content[0].text
 
-            # Send to next agent (round-robin)
-            other_ids = [aid for aid in all_ids if aid != eid]
+        results = await asyncio.gather(*[call_claude(r) for r in prompt_rows])
+
+        # Step 3: Write to outbox row-wise (all captured state is serializable)
+        response_by_id = {eid: (name, text) for eid, name, text in results}
+        channel = self.channel
+
+        @daft.func
+        def write_outbox(entity_id: int) -> list[str]:
+            """Row-wise: build outbox message from Claude response."""
+            if entity_id not in response_by_id:
+                return []
+            name, response_text = response_by_id[entity_id]
+            other_ids = [aid for aid in all_ids if aid != entity_id]
             if not other_ids:
-                return eid, []
-
+                return []
             target_id = other_ids[tick % len(other_ids)]
-            outgoing = [json.dumps({
+            return [json.dumps({
                 "receiver_id": target_id,
-                "channel": self.channel,
+                "channel": channel,
                 "content": f"{name}: {response_text}",
             })]
-            return eid, outgoing
-
-        results = await asyncio.gather(*[think(row) for row in rows])
-        for eid, msgs in results:
-            messages_by_entity[eid] = msgs
-
-        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
-        def write_outbox(entity_ids: daft.Series) -> list:
-            return [messages_by_entity.get(eid, []) for eid in entity_ids.to_pylist()]
 
         return df.with_column("outbox__messages", write_outbox(col("entity_id")))
 
@@ -142,7 +172,7 @@ class ClaudeThinkProcessor(AsyncProcessor):
 
 def make_mock_client(responses: dict[str, str]):
     """
-    Create a mock Anthropic client that returns deterministic responses.
+    Create a mock async Anthropic client that returns deterministic responses.
 
     responses: mapping of agent name → response text.
     The mock inspects the last message to find which agent is speaking.
@@ -151,14 +181,12 @@ def make_mock_client(responses: dict[str, str]):
 
     async def mock_create(**kwargs):
         messages = kwargs.get("messages", [])
-        # Last message contains "You are {name}"
         last_content = messages[-1]["content"] if messages else ""
         for agent_name, response_text in responses.items():
             if f"You are {agent_name}" in last_content:
                 return SimpleNamespace(
                     content=[SimpleNamespace(text=response_text)]
                 )
-        # Fallback
         return SimpleNamespace(
             content=[SimpleNamespace(text="(no response)")]
         )

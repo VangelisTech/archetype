@@ -222,21 +222,15 @@ class MessageDeliveryProcessor(AsyncProcessor):
                 )
                 graphs.channel(world_id, channel).append(cmd)
 
-        # 4. Apply inbox deliveries and receipts via batch UDFs
-        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
-        def deliver_inbox(entity_ids_col: daft.Series, current_inbox: daft.Series) -> list:
-            results = []
-            for eid, inbox in zip(
-                entity_ids_col.to_pylist(), current_inbox.to_pylist(), strict=False,
-            ):
-                inbox = list(inbox) if inbox else []
-                new_msgs = deliveries.get(eid, [])
-                results.append(inbox + new_msgs)
-            return results
+        # 4. Apply inbox deliveries and clear outboxes via row-wise UDFs
+        @daft.func
+        def deliver_inbox(entity_id: int, current_inbox: list[str]) -> list[str]:
+            inbox = list(current_inbox) if current_inbox else []
+            return inbox + deliveries.get(entity_id, [])
 
-        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
-        def clear_outbox(entity_ids_col: daft.Series) -> list:
-            return [[] for _ in entity_ids_col.to_pylist()]
+        @daft.func
+        def clear_outbox(entity_id: int) -> list[str]:
+            return []
 
         df = df.with_columns({
             "inbox__messages": deliver_inbox(col("entity_id"), col("inbox__messages")),

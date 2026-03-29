@@ -52,12 +52,13 @@ class ClaudeThinkProcessor(AsyncProcessor):
     Each tick, every agent calls Claude with channel context, then
     writes a message to the Outbox targeting another agent.
 
+    Uses async @daft.func for row-wise LLM calls — Daft manages
+    concurrency across entities. No .collect().to_pylist() loop.
+
     Claude sees:
     - The agent's role as a system prompt
     - The channel's active_path() as conversation history
     - The agent's inbox (new messages this tick)
-
-    Claude's response becomes an Outbox message to a target agent.
     """
 
     components = (Agent, Outbox, Inbox)
@@ -75,54 +76,51 @@ class ClaudeThinkProcessor(AsyncProcessor):
         world_id = str(kwargs.get("world_id", "demo"))
         registry = resources.require(ChatGraphRegistry)
 
-        # Materialize entity data
-        rows = df.select(
-            "entity_id", "agent__name", "agent__role", "inbox__messages",
-        ).collect().to_pylist()
+        # Cross-row context: name lookups for conversation history.
+        # This is the ONE justified .collect() — we need global entity
+        # knowledge for name resolution and round-robin targeting.
+        id_name_rows = df.select("entity_id", "agent__name").collect().to_pylist()
+        name_by_id = {r["entity_id"]: r["agent__name"] for r in id_name_rows}
+        all_ids = sorted(name_by_id.keys())
 
-        # Build name/id lookups
-        name_by_id = {r["entity_id"]: r["agent__name"] for r in rows}
-        id_by_name = {v: k for k, v in name_by_id.items()}
-        all_ids = list(name_by_id.keys())
-
-        # Get conversation context from ChatGraph
+        # Build shared conversation history from ChatGraph (Resource, not DataFrame)
         graph = registry.channel(world_id, self.channel)
-        context_cmds = graph.active_path()
-
-        # Build shared conversation history for Claude
-        conversation_history = []
-        for cmd in context_cmds:
+        context_msgs = []
+        for cmd in graph.active_path():
             sender = cmd.payload.get("sender_id", "system")
             sender_name = name_by_id.get(sender, f"agent-{sender}")
-            content = cmd.payload.get("content", "")
-            # Alternate roles based on perspective (simplified: all as "user")
-            conversation_history.append({
+            context_msgs.append({
                 "role": "user",
-                "content": f"[{sender_name}]: {content}",
+                "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
             })
+        context_json = json.dumps(context_msgs)
 
-        # Call Claude for each agent in parallel
-        messages_by_entity: dict[int, list[str]] = {}
+        # Capture for closure
+        client = self.client
+        model = self.model
+        channel = self.channel
 
-        async def think_for_agent(row: dict) -> tuple[int, list[str]]:
-            eid = row["entity_id"]
-            name = row["agent__name"]
-            role = row["agent__role"]
+        @daft.func
+        async def think_and_respond(
+            entity_id: int,
+            name: str,
+            role: str,
+            inbox_messages: list[str],
+        ) -> list[str]:
+            """Row-wise async: each entity calls Claude and produces outbox messages."""
+            history = json.loads(context_json)
 
-            # Add inbox messages to context
-            inbox_msgs = row.get("inbox__messages") or []
-            agent_history = list(conversation_history)
-            for raw in inbox_msgs:
+            # Add this entity's inbox to context
+            for raw in (inbox_messages or []):
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
-                sender_id = parsed.get("sender_id", "?")
-                sender_name = name_by_id.get(sender_id, f"agent-{sender_id}")
-                agent_history.append({
+                sid = parsed.get("sender_id", "?")
+                sname = name_by_id.get(sid, f"agent-{sid}")
+                history.append({
                     "role": "user",
-                    "content": f"[{sender_name}]: {parsed.get('content', '')}",
+                    "content": f"[{sname}]: {parsed.get('content', '')}",
                 })
 
-            # Add a prompt for this agent to respond
-            agent_history.append({
+            history.append({
                 "role": "user",
                 "content": (
                     f"You are {name}. It is tick {tick}. "
@@ -131,50 +129,36 @@ class ClaudeThinkProcessor(AsyncProcessor):
                 ),
             })
 
-            # Call Claude
-            response = await self.client.messages.create(
-                model=self.model,
+            # Call Claude (async — Daft manages concurrency)
+            response = await client.messages.create(
+                model=model,
                 max_tokens=150,
                 system=role,
-                messages=agent_history if agent_history else [
-                    {"role": "user", "content": f"You are {name}. Introduce yourself briefly."}
-                ],
+                messages=history,
             )
-
             response_text = response.content[0].text
 
-            # Pick a target agent (round-robin: send to next agent)
-            other_ids = [aid for aid in all_ids if aid != eid]
+            # Round-robin target
+            other_ids = [aid for aid in all_ids if aid != entity_id]
             if not other_ids:
-                return eid, []
+                return []
 
             target_id = other_ids[tick % len(other_ids)]
-
-            outgoing = [json.dumps({
+            return [json.dumps({
                 "receiver_id": target_id,
-                "channel": self.channel,
+                "channel": channel,
                 "content": f"{name}: {response_text}",
             })]
 
-            return eid, outgoing
-
-        # Run all Claude calls concurrently
-        results = await asyncio.gather(
-            *[think_for_agent(row) for row in rows]
+        return df.with_column(
+            "outbox__messages",
+            think_and_respond(
+                col("entity_id"),
+                col("agent__name"),
+                col("agent__role"),
+                col("inbox__messages"),
+            ),
         )
-
-        for eid, msgs in results:
-            messages_by_entity[eid] = msgs
-
-        # Write to Outbox via batch UDF
-        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
-        def write_outbox(entity_ids: daft.Series) -> list:
-            return [
-                messages_by_entity.get(eid, [])
-                for eid in entity_ids.to_pylist()
-            ]
-
-        return df.with_column("outbox__messages", write_outbox(col("entity_id")))
 
 
 # ── Main Demo ──

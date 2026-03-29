@@ -53,7 +53,9 @@ class NegotiationProcessor(AsyncProcessor):
     Agents decide what to say and write to their Outbox.
 
     This is where LLM calls would go. For this demo, agents follow
-    a scripted negotiation.
+    a scripted negotiation. Uses @daft.func for row-wise message building.
+
+    The one .collect() is for entity_id→name lookups (cross-row context).
     """
 
     components = (Agent, Outbox)
@@ -63,75 +65,61 @@ class NegotiationProcessor(AsyncProcessor):
         world_id = str(kwargs.get("world_id", "demo"))
         registry = resources.require(ChatGraphRegistry)
 
-        rows = df.select("entity_id", "agent__name").collect().to_pylist()
-
-        # Build entity_id → name lookup
-        name_by_id = {r["entity_id"]: r["agent__name"] for r in rows}
+        # Cross-row context: name lookups for targeting
+        id_name_rows = df.select("entity_id", "agent__name").collect().to_pylist()
+        name_by_id = {r["entity_id"]: r["agent__name"] for r in id_name_rows}
         id_by_name = {v: k for k, v in name_by_id.items()}
 
-        messages_by_entity: dict[int, list[str]] = {}
+        # Read conversation context from the graph (shared, from Resource)
+        strategy_depth = len(registry.channel(world_id, "strategy").active_path())
+        neg_depth = len(registry.channel(world_id, "negotiation").active_path())
 
-        for row in rows:
-            name = row["agent__name"]
-            eid = row["entity_id"]
+        @daft.func
+        def build_messages(entity_id: int, name: str) -> list[str]:
+            """Row-wise: each agent builds its outbox messages."""
+            msgs: list[str] = []
 
-            # Read conversation context from the graph (not from Inbox)
-            strategy_ctx = registry.channel(world_id, "strategy").active_path()
-
-            # All agents post to #strategy
-            strategy_msg = json.dumps({
-                "receiver_id": None,  # broadcast — will be sent to each agent
-                "channel": "strategy",
-                "content": f"{name}: Tick {tick} strategy update.",
-            })
-
-            # For broadcast: send to every other agent on #strategy
+            # Broadcast to #strategy: send to every other agent
             for other_name, other_id in id_by_name.items():
-                if other_id != eid:
-                    msg = json.dumps({
+                if other_id != entity_id:
+                    msgs.append(json.dumps({
                         "receiver_id": other_id,
                         "channel": "strategy",
                         "content": f"{name}: Tick {tick} strategy update "
-                                   f"(context depth: {len(strategy_ctx)}).",
-                    })
-                    messages_by_entity.setdefault(eid, []).append(msg)
+                                   f"(context depth: {strategy_depth}).",
+                    }))
 
             # Alice and Bob negotiate directly
             if name == "Alice" and "Bob" in id_by_name:
-                neg_ctx = registry.channel(world_id, "negotiation").active_path()
-                msg = json.dumps({
+                msgs.append(json.dumps({
                     "receiver_id": id_by_name["Bob"],
                     "channel": "negotiation",
                     "content": f"Alice: I propose {60 - tick * 5}/{40 + tick * 5}. "
-                               f"(I can see {len(neg_ctx)} prior messages in this thread.)",
-                })
-                messages_by_entity.setdefault(eid, []).append(msg)
-
+                               f"(I can see {neg_depth} prior messages in this thread.)",
+                }))
             elif name == "Bob" and "Alice" in id_by_name:
-                msg = json.dumps({
+                msgs.append(json.dumps({
                     "receiver_id": id_by_name["Alice"],
                     "channel": "negotiation",
                     "content": f"Bob: Counter. 50/50 is the only fair split.",
-                })
-                messages_by_entity.setdefault(eid, []).append(msg)
+                }))
 
             # System heartbeat — ephemeral, won't land in ChatGraph
             for other_id in id_by_name.values():
-                if other_id != eid:
-                    hb = json.dumps({
+                if other_id != entity_id:
+                    msgs.append(json.dumps({
                         "receiver_id": other_id,
                         "channel": "system",
                         "content": "heartbeat",
                         "_append_history": False,
-                    })
-                    messages_by_entity.setdefault(eid, []).append(hb)
+                    }))
 
-        # Write to Outbox via batch UDF
-        @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
-        def write_outbox(entity_ids: daft.Series) -> list:
-            return [messages_by_entity.get(eid, []) for eid in entity_ids.to_pylist()]
+            return msgs
 
-        return df.with_column("outbox__messages", write_outbox(col("entity_id")))
+        return df.with_column(
+            "outbox__messages",
+            build_messages(col("entity_id"), col("agent__name")),
+        )
 
 
 class ContextReportProcessor(AsyncProcessor):
