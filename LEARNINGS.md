@@ -393,7 +393,7 @@ context = graph.active_path()  # root → cursor, for LLM context windows
 
 **Channels** are first-class routing keys. Each channel gets its own independent conversation graph. Default is `"general"`.
 
-**`append_history` toggle:** a command with `payload={"append_history": False}` (or equivalent) makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
+**`append_history` toggle:** `Command(append_history=False)` makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
 
 ---
 
@@ -576,17 +576,22 @@ Use cases:
 
 ## Summary
 
-1. **DataFrames are batched by nature** — use expressions first
-2. **`@daft.func`** for simple row-wise transforms (auto type inference)
-3. **`@daft.func.batch`** only when operation actually benefits from batching
-4. **`@daft.cls()`** for stateful (models), methods are row-by-row by default
+**Core principle: Archetype is data-centric. The DataFrame is the source of truth. If the data looks right, nothing else matters.**
+
+1. **Never break the lazy DAG unless you must** — `.collect()` is justified ONLY for cross-row context (name lookups, message routing). Document every `.collect()` inline.
+2. **`@daft.func`** for row-wise transforms (default choice, supports async)
+3. **`@daft.func.batch`** only when operation actually benefits from batching (vectorized NumPy, batch inference)
+4. **`@daft.cls()`** for non-serializable state (API clients, models) — `__init__` runs per worker
 5. **`@daft.method.batch`** only when the model actually supports batching
 6. **`col("x")["field"]`** for struct access
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
-8. **Resources** for type-safe DI in processors
+8. **Resources** for type-safe DI — shared services (ChatGraphRegistry, CommandBroker) injected via `resources.require(Type)`
 9. **Hooks** for observability without processor coupling
-10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
-11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
-12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
-13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
-14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+10. **Outbox/Inbox components** for agent messaging — NOT the broker. Broker is governance only.
+11. **MessageDeliveryProcessor** (priority -100) routes Outbox → Inbox + ChatGraph
+12. **Tick-gating** for expensive operations (LLM calls, inner worlds)
+13. **Keep columns in DAG** — no `asyncio.gather` over collected rows, no building dicts from pylist loops
+14. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
+15. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+16. **Channels** are first-class routing keys on messages and ChatGraph — default is `"general"`
+17. **`append_history=False`** for ephemeral messages (heartbeats, probes) that skip ChatGraph
