@@ -162,53 +162,38 @@ class LabelingProcessor(AsyncProcessor):
             max_output_tokens=config.max_output_tokens,
         )
 
-        @daft.udf(return_dtype=daft.DataType.string())
-        def extract_value(responses, sampled):
-            results = []
-            for resp, is_sampled in zip(responses.to_pylist(), sampled.to_pylist(), strict=False):
-                if not is_sampled or not resp:
-                    results.append("")
-                    continue
-                for line in resp.split("\n"):
-                    if line.startswith("VALUE:"):
-                        results.append(line[6:].strip())
-                        break
-                else:
-                    results.append(resp[:100])
-            return results
+        # Row-wise extractors — @daft.func with auto type inference (LEARNINGS.md §4)
+        # No batching benefit here, just parsing strings.
 
-        @daft.udf(return_dtype=daft.DataType.float64())
-        def extract_score(responses, sampled):
-            results = []
-            for resp, is_sampled in zip(responses.to_pylist(), sampled.to_pylist(), strict=False):
-                if not is_sampled or not resp:
-                    results.append(0.0)
-                    continue
-                for line in resp.split("\n"):
-                    if line.startswith("SCORE:"):
-                        try:
-                            results.append(float(line[6:].strip()))
-                        except ValueError:
-                            results.append(0.0)
-                        break
-                else:
-                    results.append(0.0)
-            return results
+        @daft.func
+        def extract_value(response: str, sampled: bool) -> str:
+            if not sampled or not response:
+                return ""
+            for line in response.split("\n"):
+                if line.startswith("VALUE:"):
+                    return line[6:].strip()
+            return response[:100]
 
-        @daft.udf(return_dtype=daft.DataType.string())
-        def extract_rationale(responses, sampled):
-            results = []
-            for resp, is_sampled in zip(responses.to_pylist(), sampled.to_pylist(), strict=False):
-                if not is_sampled or not resp:
-                    results.append("")
-                    continue
-                for line in resp.split("\n"):
-                    if line.startswith("RATIONALE:"):
-                        results.append(line[10:].strip())
-                        break
-                else:
-                    results.append("")
-            return results
+        @daft.func
+        def extract_score(response: str, sampled: bool) -> float:
+            if not sampled or not response:
+                return 0.0
+            for line in response.split("\n"):
+                if line.startswith("SCORE:"):
+                    try:
+                        return float(line[6:].strip())
+                    except ValueError:
+                        return 0.0
+            return 0.0
+
+        @daft.func
+        def extract_rationale(response: str, sampled: bool) -> str:
+            if not sampled or not response:
+                return ""
+            for line in response.split("\n"):
+                if line.startswith("RATIONALE:"):
+                    return line[10:].strip()
+            return ""
 
         llm_col = llm_output
         sampled_col = col("label__sampled")
