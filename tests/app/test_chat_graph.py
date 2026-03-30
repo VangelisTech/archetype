@@ -15,7 +15,6 @@ from archetype.app.chat_graph import ChatGraph, ChatGraphRegistry
 from archetype.app.models import Command, CommandType
 from archetype.core.resources import Resources
 
-
 # =============================================================================
 # ChatGraph Unit Tests
 # =============================================================================
@@ -45,8 +44,7 @@ class TestChatGraphLinear:
     def test_linear_chain(self):
         g = ChatGraph("test")
         cmds = [
-            Command(type=CommandType.MESSAGE, payload={"content": f"msg-{i}"})
-            for i in range(5)
+            Command(type=CommandType.MESSAGE, payload={"content": f"msg-{i}"}) for i in range(5)
         ]
 
         for cmd in cmds:
@@ -181,6 +179,7 @@ class TestChatGraphNavigation:
 
     def test_navigate_nonexistent_raises(self):
         import uuid_utils as uuid
+
         g = ChatGraph("test")
         with pytest.raises(KeyError):
             g.navigate(uuid.uuid7())
@@ -497,7 +496,7 @@ class TestMessageDeliveryProcessor:
         """Message from entity 1 → entity 2 lands in entity 2's inbox."""
         import daft as daft_mod
 
-        from archetype.app.messaging import Inbox, MessageDeliveryProcessor, Outbox
+        from archetype.app.messaging import MessageDeliveryProcessor
 
         resources, registry = resources_with_graph
         proc = MessageDeliveryProcessor()
@@ -505,12 +504,14 @@ class TestMessageDeliveryProcessor:
         msg = json.dumps({"receiver_id": 2, "channel": "general", "content": "hello"})
 
         # Build a DataFrame with two entities
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[msg], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[msg], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -539,12 +540,14 @@ class TestMessageDeliveryProcessor:
 
         msg = json.dumps({"receiver_id": 999, "channel": "general", "content": "hello"})
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1],
-            "is_active": [True],
-            "outbox__messages": [[msg]],
-            "inbox__messages": [[]],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1],
+                "is_active": [True],
+                "outbox__messages": [[msg]],
+                "inbox__messages": [[]],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -566,12 +569,14 @@ class TestMessageDeliveryProcessor:
 
         msg = json.dumps({"receiver_id": 1, "channel": "general", "content": "echo"})
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1],
-            "is_active": [True],
-            "outbox__messages": [[msg]],
-            "inbox__messages": [[]],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1],
+                "is_active": [True],
+                "outbox__messages": [[msg]],
+                "inbox__messages": [[]],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -589,12 +594,14 @@ class TestMessageDeliveryProcessor:
 
         msg = json.dumps({"receiver_id": 2, "channel": "strategy", "content": "plan"})
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[msg], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[msg], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         await proc.process(df, resources, tick=0, world_id="test")
 
@@ -613,19 +620,23 @@ class TestMessageDeliveryProcessor:
         resources, registry = resources_with_graph
         proc = MessageDeliveryProcessor()
 
-        msg = json.dumps({
-            "receiver_id": 2,
-            "channel": "system",
-            "content": "heartbeat",
-            "_append_history": False,
-        })
+        msg = json.dumps(
+            {
+                "receiver_id": 2,
+                "channel": "system",
+                "content": "heartbeat",
+                "_append_history": False,
+            }
+        )
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[msg], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[msg], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -652,12 +663,14 @@ class TestMessageDeliveryProcessor:
             json.dumps({"receiver_id": 2, "channel": "negotiation", "content": "offer"}),
         ]
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [msgs, []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [msgs, []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         await proc.process(df, resources, tick=0, world_id="test")
 
@@ -676,12 +689,14 @@ class TestMessageDeliveryProcessor:
 
         msg = json.dumps({"receiver_id": 2, "channel": "general", "content": "hi"})
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[msg], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[msg], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -699,12 +714,14 @@ class TestMessageDeliveryProcessor:
         resources, _ = resources_with_graph
         proc = MessageDeliveryProcessor()
 
-        df = daft_mod.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft_mod.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()

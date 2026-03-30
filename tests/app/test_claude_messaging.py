@@ -32,7 +32,6 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.resources import Resources
 
-
 # ── Test Components ──
 
 
@@ -89,10 +88,12 @@ class ClaudeThinkProcessor(AsyncProcessor):
             for cmd in graph.active_path():
                 sender = cmd.payload.get("sender_id", "system")
                 sender_name = name_by_id.get(sender, f"agent-{sender}")
-                context_msgs.append({
-                    "role": "user",
-                    "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
-                })
+                context_msgs.append(
+                    {
+                        "role": "user",
+                        "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
+                    }
+                )
             context_json = json.dumps(context_msgs)
 
         # Step 1: Build prompts row-wise (all captured state is serializable)
@@ -105,19 +106,23 @@ class ClaudeThinkProcessor(AsyncProcessor):
             """Row-wise: assemble Claude prompt from context + inbox."""
             history = json.loads(context_json)
 
-            for raw in (inbox_messages or []):
+            for raw in inbox_messages or []:
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
                 sid = parsed.get("sender_id", "?")
                 sname = name_by_id.get(sid, f"agent-{sid}")
-                history.append({
-                    "role": "user",
-                    "content": f"[{sname}]: {parsed.get('content', '')}",
-                })
+                history.append(
+                    {
+                        "role": "user",
+                        "content": f"[{sname}]: {parsed.get('content', '')}",
+                    }
+                )
 
-            history.append({
-                "role": "user",
-                "content": f"You are {name}. Tick {tick}. Respond in character.",
-            })
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"You are {name}. Tick {tick}. Respond in character.",
+                }
+            )
 
             return json.dumps({"system": role, "messages": history})
 
@@ -158,11 +163,15 @@ class ClaudeThinkProcessor(AsyncProcessor):
             if not other_ids:
                 return []
             target_id = other_ids[tick % len(other_ids)]
-            return [json.dumps({
-                "receiver_id": target_id,
-                "channel": channel,
-                "content": f"{name}: {response_text}",
-            })]
+            return [
+                json.dumps(
+                    {
+                        "receiver_id": target_id,
+                        "channel": channel,
+                        "content": f"{name}: {response_text}",
+                    }
+                )
+            ]
 
         return df.with_column("outbox__messages", write_outbox(col("entity_id")))
 
@@ -184,12 +193,8 @@ def make_mock_client(responses: dict[str, str]):
         last_content = messages[-1]["content"] if messages else ""
         for agent_name, response_text in responses.items():
             if f"You are {agent_name}" in last_content:
-                return SimpleNamespace(
-                    content=[SimpleNamespace(text=response_text)]
-                )
-        return SimpleNamespace(
-            content=[SimpleNamespace(text="(no response)")]
-        )
+                return SimpleNamespace(content=[SimpleNamespace(text=response_text)])
+        return SimpleNamespace(content=[SimpleNamespace(text="(no response)")])
 
     client.messages.create = AsyncMock(side_effect=mock_create)
     return client
@@ -224,19 +229,23 @@ class TestClaudeProcessorUnit:
     @pytest.mark.asyncio
     async def test_claude_writes_to_outbox(self):
         """Claude's response should appear in the sender's Outbox."""
-        mock_client = make_mock_client({
-            "Alice": "I think we should cooperate.",
-            "Bob": "I disagree, competition drives innovation.",
-        })
+        mock_client = make_mock_client(
+            {
+                "Alice": "I think we should cooperate.",
+                "Bob": "I disagree, competition drives innovation.",
+            }
+        )
 
         proc = ClaudeThinkProcessor(client=mock_client, channel="debate")
         resources = Resources()
         resources.insert(ChatGraphRegistry())
 
-        df = build_df([
-            {"id": 1, "name": "Alice", "role": "optimist"},
-            {"id": 2, "name": "Bob", "role": "skeptic"},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "Alice", "role": "optimist"},
+                {"id": 2, "name": "Bob", "role": "skeptic"},
+            ]
+        )
 
         result = await proc.process(df, resources, tick=0, world_id="test")
         rows = result.collect().to_pylist()
@@ -266,10 +275,12 @@ class TestClaudeProcessorUnit:
         resources = Resources()
         resources.insert(ChatGraphRegistry())
 
-        df = build_df([
-            {"id": 1, "name": "Alice", "role": "You are a helpful scientist."},
-            {"id": 2, "name": "Bob", "role": "You are a bold explorer."},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "Alice", "role": "You are a helpful scientist."},
+                {"id": 2, "name": "Bob", "role": "You are a bold explorer."},
+            ]
+        )
 
         await proc.process(df, resources, tick=0, world_id="test")
 
@@ -284,10 +295,12 @@ class TestClaudeProcessorUnit:
         """Claude should receive conversation history from ChatGraph."""
         from archetype.app.models import Command, CommandType
 
-        mock_client = make_mock_client({
-            "Alice": "building on that...",
-            "Bob": "interesting point",
-        })
+        mock_client = make_mock_client(
+            {
+                "Alice": "building on that...",
+                "Bob": "interesting point",
+            }
+        )
 
         resources = Resources()
         registry = ChatGraphRegistry()
@@ -295,25 +308,31 @@ class TestClaudeProcessorUnit:
 
         # Pre-populate the graph with history
         graph = registry.channel("test", "debate")
-        graph.append(Command(
-            type=CommandType.MESSAGE,
-            tick=0,
-            channel="debate",
-            payload={"sender_id": 1, "content": "Let's discuss AI safety."},
-        ))
-        graph.append(Command(
-            type=CommandType.MESSAGE,
-            tick=0,
-            channel="debate",
-            payload={"sender_id": 2, "content": "Good topic. What concerns you?"},
-        ))
+        graph.append(
+            Command(
+                type=CommandType.MESSAGE,
+                tick=0,
+                channel="debate",
+                payload={"sender_id": 1, "content": "Let's discuss AI safety."},
+            )
+        )
+        graph.append(
+            Command(
+                type=CommandType.MESSAGE,
+                tick=0,
+                channel="debate",
+                payload={"sender_id": 2, "content": "Good topic. What concerns you?"},
+            )
+        )
 
         proc = ClaudeThinkProcessor(client=mock_client, channel="debate")
 
-        df = build_df([
-            {"id": 1, "name": "Alice", "role": "optimist"},
-            {"id": 2, "name": "Bob", "role": "skeptic"},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "Alice", "role": "optimist"},
+                {"id": 2, "name": "Bob", "role": "skeptic"},
+            ]
+        )
 
         await proc.process(df, resources, tick=1, world_id="test")
 
@@ -328,19 +347,25 @@ class TestClaudeProcessorUnit:
     @pytest.mark.asyncio
     async def test_claude_called_count(self):
         """Claude should be called exactly once per agent."""
-        mock_client = make_mock_client({
-            "A": "hi", "B": "hi", "C": "hi",
-        })
+        mock_client = make_mock_client(
+            {
+                "A": "hi",
+                "B": "hi",
+                "C": "hi",
+            }
+        )
 
         proc = ClaudeThinkProcessor(client=mock_client, channel="general")
         resources = Resources()
         resources.insert(ChatGraphRegistry())
 
-        df = build_df([
-            {"id": 1, "name": "A", "role": ""},
-            {"id": 2, "name": "B", "role": ""},
-            {"id": 3, "name": "C", "role": ""},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "A", "role": ""},
+                {"id": 2, "name": "B", "role": ""},
+                {"id": 3, "name": "C", "role": ""},
+            ]
+        )
 
         await proc.process(df, resources, tick=0, world_id="test")
 
@@ -361,10 +386,12 @@ class TestEndToEndPipeline:
             Delivery: MessageDeliveryProcessor routes Outbox → Inbox
             Verify: recipient has the message in Inbox + ChatGraph updated
         """
-        mock_client = make_mock_client({
-            "Alice": "I propose we collaborate on safety research.",
-            "Bob": "Let me think about the risks first.",
-        })
+        mock_client = make_mock_client(
+            {
+                "Alice": "I propose we collaborate on safety research.",
+                "Bob": "Let me think about the risks first.",
+            }
+        )
 
         resources = Resources()
         registry = ChatGraphRegistry()
@@ -372,12 +399,15 @@ class TestEndToEndPipeline:
 
         # Step 1: Claude generates messages → Outbox
         claude_proc = ClaudeThinkProcessor(
-            client=mock_client, channel="collab",
+            client=mock_client,
+            channel="collab",
         )
-        df = build_df([
-            {"id": 1, "name": "Alice", "role": "cooperative researcher"},
-            {"id": 2, "name": "Bob", "role": "risk analyst"},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "Alice", "role": "cooperative researcher"},
+                {"id": 2, "name": "Bob", "role": "risk analyst"},
+            ]
+        )
 
         df = await claude_proc.process(df, resources, tick=0, world_id="test")
 
@@ -392,12 +422,14 @@ class TestEndToEndPipeline:
         delivery_proc = MessageDeliveryProcessor()
 
         # Need to re-create df from the collected rows since Daft DFs are lazy
-        df = daft.from_pydict({
-            "entity_id": [r["entity_id"] for r in rows],
-            "is_active": [r["is_active"] for r in rows],
-            "outbox__messages": [r["outbox__messages"] for r in rows],
-            "inbox__messages": [r["inbox__messages"] for r in rows],
-        })
+        df = daft.from_pydict(
+            {
+                "entity_id": [r["entity_id"] for r in rows],
+                "is_active": [r["is_active"] for r in rows],
+                "outbox__messages": [r["outbox__messages"] for r in rows],
+                "inbox__messages": [r["inbox__messages"] for r in rows],
+            }
+        )
 
         df = await delivery_proc.process(df, resources, tick=0, world_id="test")
         rows = df.collect().to_pylist()
@@ -454,6 +486,7 @@ class TestEndToEndPipeline:
         # Track context depth seen by Claude at each tick
         context_depths: dict[int, list[int]] = {}
 
+        prev_rows: list[dict] = []
         for tick in range(2):
             mock_client = make_mock_client(tick_responses[tick])
 
@@ -468,33 +501,38 @@ class TestEndToEndPipeline:
             mock_client.messages.create = AsyncMock(side_effect=capturing_create)
 
             claude_proc = ClaudeThinkProcessor(
-                client=mock_client, channel="chat",
+                client=mock_client,
+                channel="chat",
             )
 
             if tick == 0:
                 df = build_df(entities)
             else:
                 # Carry forward: entities keep their inbox from prior delivery
-                df = daft.from_pydict({
-                    "entity_id": [r["entity_id"] for r in prev_rows],
-                    "is_active": [True, True],
-                    "agent__name": [r["agent__name"] for r in prev_rows],
-                    "agent__role": [r["agent__role"] for r in prev_rows],
-                    "outbox__messages": [[], []],
-                    "inbox__messages": [r["inbox__messages"] for r in prev_rows],
-                })
+                df = daft.from_pydict(
+                    {
+                        "entity_id": [r["entity_id"] for r in prev_rows],
+                        "is_active": [True, True],
+                        "agent__name": [r["agent__name"] for r in prev_rows],
+                        "agent__role": [r["agent__role"] for r in prev_rows],
+                        "outbox__messages": [[], []],
+                        "inbox__messages": [r["inbox__messages"] for r in prev_rows],
+                    }
+                )
 
             # Claude thinks → Outbox
             df = await claude_proc.process(df, resources, tick=tick, world_id="test")
             rows = df.collect().to_pylist()
 
             # Delivery → Inbox + ChatGraph
-            df = daft.from_pydict({
-                "entity_id": [r["entity_id"] for r in rows],
-                "is_active": [True, True],
-                "outbox__messages": [r["outbox__messages"] for r in rows],
-                "inbox__messages": [r["inbox__messages"] for r in rows],
-            })
+            df = daft.from_pydict(
+                {
+                    "entity_id": [r["entity_id"] for r in rows],
+                    "is_active": [True, True],
+                    "outbox__messages": [r["outbox__messages"] for r in rows],
+                    "inbox__messages": [r["inbox__messages"] for r in rows],
+                }
+            )
             df = await delivery_proc.process(df, resources, tick=tick, world_id="test")
             prev_rows = df.collect().to_pylist()
             # Preserve agent columns for next tick
@@ -509,10 +547,12 @@ class TestEndToEndPipeline:
         # Verify: context depth increased from tick 0 to tick 1
         # Tick 0: just the prompt (1 message per agent)
         # Tick 1: 2 graph messages + inbox + prompt (more messages)
-        assert all(d == 1 for d in context_depths[0]), \
+        assert all(d == 1 for d in context_depths[0]), (
             f"Tick 0 should have minimal context, got {context_depths[0]}"
-        assert all(d > 1 for d in context_depths[1]), \
+        )
+        assert all(d > 1 for d in context_depths[1]), (
             f"Tick 1 should have growing context, got {context_depths[1]}"
+        )
 
     @pytest.mark.asyncio
     async def test_ephemeral_claude_message_skips_graph(self):
@@ -524,19 +564,23 @@ class TestEndToEndPipeline:
         resources.insert(registry)
 
         # Manually place an ephemeral message in the outbox
-        ephemeral_msg = json.dumps({
-            "receiver_id": 2,
-            "channel": "system",
-            "content": "heartbeat",
-            "_append_history": False,
-        })
+        ephemeral_msg = json.dumps(
+            {
+                "receiver_id": 2,
+                "channel": "system",
+                "content": "heartbeat",
+                "_append_history": False,
+            }
+        )
 
-        df = daft.from_pydict({
-            "entity_id": [1, 2],
-            "is_active": [True, True],
-            "outbox__messages": [[ephemeral_msg], []],
-            "inbox__messages": [[], []],
-        })
+        df = daft.from_pydict(
+            {
+                "entity_id": [1, 2],
+                "is_active": [True, True],
+                "outbox__messages": [[ephemeral_msg], []],
+                "inbox__messages": [[], []],
+            }
+        )
 
         delivery_proc = MessageDeliveryProcessor()
         df = await delivery_proc.process(df, resources, tick=0, world_id="test")
@@ -555,11 +599,13 @@ class TestEndToEndPipeline:
         Three agents: Claude response routing is round-robin.
         Each agent messages one other agent per tick.
         """
-        mock_client = make_mock_client({
-            "Alice": "hello from alice",
-            "Bob": "hello from bob",
-            "Charlie": "hello from charlie",
-        })
+        mock_client = make_mock_client(
+            {
+                "Alice": "hello from alice",
+                "Bob": "hello from bob",
+                "Charlie": "hello from charlie",
+            }
+        )
 
         resources = Resources()
         registry = ChatGraphRegistry()
@@ -568,11 +614,13 @@ class TestEndToEndPipeline:
         claude_proc = ClaudeThinkProcessor(client=mock_client, channel="general")
         delivery_proc = MessageDeliveryProcessor()
 
-        df = build_df([
-            {"id": 1, "name": "Alice", "role": ""},
-            {"id": 2, "name": "Bob", "role": ""},
-            {"id": 3, "name": "Charlie", "role": ""},
-        ])
+        df = build_df(
+            [
+                {"id": 1, "name": "Alice", "role": ""},
+                {"id": 2, "name": "Bob", "role": ""},
+                {"id": 3, "name": "Charlie", "role": ""},
+            ]
+        )
 
         # Claude thinks
         df = await claude_proc.process(df, resources, tick=0, world_id="test")
@@ -580,16 +628,19 @@ class TestEndToEndPipeline:
 
         # Each agent should have exactly 1 outgoing message
         for row in rows:
-            assert len(row["outbox__messages"]) == 1, \
+            assert len(row["outbox__messages"]) == 1, (
                 f"Agent {row['entity_id']} should have 1 outgoing message"
+            )
 
         # Deliver
-        df = daft.from_pydict({
-            "entity_id": [r["entity_id"] for r in rows],
-            "is_active": [True, True, True],
-            "outbox__messages": [r["outbox__messages"] for r in rows],
-            "inbox__messages": [r["inbox__messages"] for r in rows],
-        })
+        df = daft.from_pydict(
+            {
+                "entity_id": [r["entity_id"] for r in rows],
+                "is_active": [True, True, True],
+                "outbox__messages": [r["outbox__messages"] for r in rows],
+                "inbox__messages": [r["inbox__messages"] for r in rows],
+            }
+        )
         df = await delivery_proc.process(df, resources, tick=0, world_id="test")
         rows = df.collect().to_pylist()
 

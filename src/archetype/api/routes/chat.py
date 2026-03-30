@@ -59,7 +59,9 @@ async def get_active_path(
         world_id=world_id,
         channel=channel,
         path=[
-            CommandResponse(id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority)
+            CommandResponse(
+                id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority
+            )
             for cmd in commands
         ],
     )
@@ -96,7 +98,9 @@ async def branch_conversation(
     try:
         graph.branch(parent_uuid, cmd, label=req.label)
     except KeyError:
-        raise HTTPException(status_code=404, detail=f"Parent node {req.parent_id} not found") from None
+        raise HTTPException(
+            status_code=404, detail=f"Parent node {req.parent_id} not found"
+        ) from None
 
     # Enqueue for processing (append_history=False avoids double-insert into graph)
     await broker.enqueue(world_id, cmd, ctx)
@@ -123,7 +127,9 @@ async def navigate_to_node(
         world_id=world_id,
         channel=channel,
         path=[
-            CommandResponse(id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority)
+            CommandResponse(
+                id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority
+            )
             for cmd in commands
         ],
     )
@@ -143,7 +149,9 @@ async def auto_navigate(
         world_id=world_id,
         channel=channel,
         path=[
-            CommandResponse(id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority)
+            CommandResponse(
+                id=str(cmd.id), type=cmd.type.value, tick=cmd.tick, priority=cmd.priority
+            )
             for cmd in commands
         ],
     )

@@ -131,9 +131,15 @@ class MessageDeliveryProcessor(AsyncProcessor):
         world_id = str(kwargs.get("world_id", "default"))
 
         # 1. Collect all outgoing messages from all entities
-        rows = df.select(
-            "entity_id", "outbox__messages", "inbox__messages",
-        ).collect().to_pylist()
+        rows = (
+            df.select(
+                "entity_id",
+                "outbox__messages",
+                "inbox__messages",
+            )
+            .collect()
+            .to_pylist()
+        )
 
         # Build message routing table
         outgoing: list[dict[str, Any]] = []  # parsed outbox entries
@@ -154,8 +160,8 @@ class MessageDeliveryProcessor(AsyncProcessor):
             return df
 
         # 2. Route messages: group by receiver
-        deliveries: dict[int, list[str]] = {}   # receiver_id → [json messages]
-        receipts: dict[int, list[str]] = {}      # sender_id → [json receipts]
+        deliveries: dict[int, list[str]] = {}  # receiver_id → [json messages]
+        receipts: dict[int, list[str]] = {}  # sender_id → [json receipts]
 
         entity_ids = {row["entity_id"] for row in rows}
 
@@ -166,45 +172,53 @@ class MessageDeliveryProcessor(AsyncProcessor):
 
             # Governance: receiver must exist in this archetype
             if receiver_id is None or receiver_id not in entity_ids:
-                receipt = json.dumps({
-                    "receiver_id": receiver_id,
-                    "channel": channel,
-                    "status": "rejected",
-                    "reason": "receiver not found",
-                    "tick": tick,
-                })
+                receipt = json.dumps(
+                    {
+                        "receiver_id": receiver_id,
+                        "channel": channel,
+                        "status": "rejected",
+                        "reason": "receiver not found",
+                        "tick": tick,
+                    }
+                )
                 receipts.setdefault(sender_id, []).append(receipt)
                 continue
 
             # Governance: sender cannot message themselves
             if receiver_id == sender_id:
-                receipt = json.dumps({
-                    "receiver_id": receiver_id,
-                    "channel": channel,
-                    "status": "rejected",
-                    "reason": "cannot message self",
-                    "tick": tick,
-                })
+                receipt = json.dumps(
+                    {
+                        "receiver_id": receiver_id,
+                        "channel": channel,
+                        "status": "rejected",
+                        "reason": "cannot message self",
+                        "tick": tick,
+                    }
+                )
                 receipts.setdefault(sender_id, []).append(receipt)
                 continue
 
             # Deliver
-            delivery = json.dumps({
-                "sender_id": sender_id,
-                "channel": channel,
-                "content": msg.get("content", ""),
-                "tick": tick,
-            })
+            delivery = json.dumps(
+                {
+                    "sender_id": sender_id,
+                    "channel": channel,
+                    "content": msg.get("content", ""),
+                    "tick": tick,
+                }
+            )
             deliveries.setdefault(receiver_id, []).append(delivery)
 
             # Delivery receipt for sender
-            receipt = json.dumps({
-                "receiver_id": receiver_id,
-                "channel": channel,
-                "status": "delivered",
-                "reason": None,
-                "tick": tick,
-            })
+            receipt = json.dumps(
+                {
+                    "receiver_id": receiver_id,
+                    "channel": channel,
+                    "status": "delivered",
+                    "reason": None,
+                    "tick": tick,
+                }
+            )
             receipts.setdefault(sender_id, []).append(receipt)
 
             # 3. Update ChatGraph if available
@@ -232,9 +246,11 @@ class MessageDeliveryProcessor(AsyncProcessor):
         def clear_outbox(entity_id: int) -> list[str]:
             return []
 
-        df = df.with_columns({
-            "inbox__messages": deliver_inbox(col("entity_id"), col("inbox__messages")),
-            "outbox__messages": clear_outbox(col("entity_id")),
-        })
+        df = df.with_columns(
+            {
+                "inbox__messages": deliver_inbox(col("entity_id"), col("inbox__messages")),
+                "outbox__messages": clear_outbox(col("entity_id")),
+            }
+        )
 
         return df

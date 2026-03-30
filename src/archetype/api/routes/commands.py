@@ -4,7 +4,6 @@
 """Command routes."""
 
 from fastapi import APIRouter, Depends, HTTPException
-
 from uuid_utils import UUID as UUID7
 
 from archetype.api.deps import get_actor_ctx, get_broker, get_command_service
@@ -60,15 +59,17 @@ async def submit_batch(
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Unknown command type: {r.type}") from None
         parent_id = UUID7(r.parent_id) if r.parent_id else None
-        cmds.append(Command(
-            type=cmd_type,
-            tick=r.tick,
-            payload=r.payload,
-            priority=r.priority,
-            append_history=r.append_history,
-            parent_id=parent_id,
-            channel=r.channel,
-        ))
+        cmds.append(
+            Command(
+                type=cmd_type,
+                tick=r.tick,
+                payload=r.payload,
+                priority=r.priority,
+                append_history=r.append_history,
+                parent_id=parent_id,
+                channel=r.channel,
+            )
+        )
 
     try:
         ids = await cs.submit_batch(world_id, cmds, ctx)
