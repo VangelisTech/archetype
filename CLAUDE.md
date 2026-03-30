@@ -162,8 +162,8 @@ Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional
 | `src/archetype/core/resources.py` | Type-safe DI container |
 | `src/archetype/core/aio/async_processor.py` | AsyncProcessor base class |
 | `src/archetype/core/aio/async_system.py` | Processor execution + Resources injection |
-| `src/archetype/app/messaging.py` | Outbox, Inbox, MessageDeliveryProcessor |
-| `src/archetype/app/chat_graph.py` | ChatGraph DAG, ChatGraphRegistry |
+| `src/archetype/app/messaging.py` | (PLANNED, not yet implemented) Outbox, Inbox, MessageDeliveryProcessor |
+| `src/archetype/app/chat_graph.py` | (PLANNED, not yet implemented) ChatGraph DAG, ChatGraphRegistry |
 | `src/archetype/app/broker.py` | CommandBroker (governance only) |
 | `src/archetype/app/models.py` | Command model (append_history, parent_id, channel) |
 | `LEARNINGS.md` | Extended architectural knowledge — read before major changes |
