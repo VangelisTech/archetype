@@ -9,6 +9,30 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": {
+          "tool_name": "Edit"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-write-lint.sh"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tool_name": "Write"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/post-write-lint.sh"
+          }
+        ]
+      }
     ]
   }
 }
