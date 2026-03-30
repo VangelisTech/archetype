@@ -7,8 +7,7 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 # ── Dependencies ──
-# Install project dependencies directly (pip install -e fails due to
-# pyiceberg version constraint typo in pyproject.toml: >=11.0.0 vs >=0.11.0)
+# Install project dependencies directly instead of using 'pip install -e'.
 pip install --quiet \
   "daft[openai,lance,iceberg]>=0.7.4" \
   "lancedb>=0.22.0" \
