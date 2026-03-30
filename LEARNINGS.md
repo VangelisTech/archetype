@@ -393,7 +393,7 @@ context = graph.active_path()  # root → cursor, for LLM context windows
 
 **Channels** are first-class routing keys. Each channel gets its own independent conversation graph. Default is `"general"`.
 
-**`append_history` toggle:** `Command(append_history=False)` makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
+**`append_history` toggle:** a command with `payload={"append_history": False}` (or equivalent) makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
 
 ---
 
