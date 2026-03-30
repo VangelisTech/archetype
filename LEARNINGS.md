@@ -296,36 +296,104 @@ Hooks are async, errors are logged but don't crash the world.
 
 ---
 
-## Agent Communication: MESSAGE Command (Jan 2026)
+## The Data-Centric Principle (Mar 2026)
 
-Agent-to-agent messaging via the CommandBroker:
+> **For AI Agents:** This is the most important section. Read it before writing any processor.
+
+Archetype is **data-centric**. The DataFrame is the source of truth. Processors are pure functions `DataFrame → DataFrame`. So long as the data looks right at the end of a tick, nothing else matters — not how the LLM was called, not whether it was async or sync, not how long it took.
+
+This means:
+
+1. **Never break the lazy DAG unless you must.** `.collect().to_pylist()` pulls data out of Daft's execution engine. You lose lazy evaluation, automatic parallelism, and plan optimization. The default instinct — collect everything, loop in Python, push back — is wrong for this codebase.
+
+2. **Use `@daft.func` (row-wise) by default.** If your "batch" UDF is just a for-loop over `Series.to_pylist()`, it should be `@daft.func`. Daft supports async `@daft.func` natively.
+
+3. **Use `@daft.cls()` for non-serializable state.** API clients, model weights, DB connections — anything that can't be pickled goes in `@daft.cls().__init__()`. Methods are row-wise. Daft recreates the class per worker.
+
+4. **Only `.collect()` for cross-row context.** Message routing (sender → receiver) requires global visibility. Name lookups across entities require global visibility. These are justified collects. Document them inline.
+
+5. **Don't import actor patterns.** No `asyncio.gather` over collected rows. No building dicts from pylist loops and feeding them back through batch UDFs. If you find yourself doing this, you're fighting the execution model.
 
 ```python
-from archetype.app.models import Command, CommandType
+# ❌ WRONG: Imperative actor pattern in a data-centric system
+rows = df.select("entity_id", "agent__name", "inbox__messages").collect().to_pylist()
+results = await asyncio.gather(*[call_llm(row) for row in rows])
+response_by_id = {r["id"]: r["text"] for r in results}
 
-# In a processor, send a message
-cmd = Command(
-    type=CommandType.MESSAGE,
-    tick=tick,
-    payload={
-        "sender_id": entity_id,
-        "receiver_id": target_id,
-        "content": "Hello!",
-    },
-)
-await broker.enqueue(world_id, cmd)
+@daft.func.batch(return_dtype=...)
+def write_back(entity_ids: Series) -> list:
+    return [response_by_id.get(eid, "") for eid in entity_ids.to_pylist()]
+
+# ✅ RIGHT: Row-wise, Daft manages execution
+@daft.func
+async def think_and_respond(name: str, role: str, inbox: list[str]) -> list[str]:
+    response = await client.messages.create(...)  # Daft handles concurrency
+    return [json.dumps({"receiver_id": target, "content": response.content[0].text})]
+
+df = df.with_column("outbox__messages", think_and_respond(col("agent__name"), ...))
 ```
 
-**Key insight:** Messages enqueued at tick N are realized at tick N+1. This maintains tick-boundary consistency.
+**The serialization constraint:** `@daft.func` closures must be picklable. API clients, mocks, and anything with network state are NOT picklable. Use `@daft.cls()` for these — the client lives in `__init__`, reconstructed per worker, never serialized.
 
-**Components pattern:**
 ```python
-class Inbox(Component):
-    messages: list[str] = []  # JSON-encoded, not list[dict] (LanceDB limitation)
+# ✅ Production pattern: @daft.cls() for non-serializable clients
+@daft.cls()
+class ClaudeAgent:
+    def __init__(self):
+        import anthropic
+        self.client = anthropic.AsyncAnthropic()
 
+    async def respond(self, name: str, role: str, inbox: list[str]) -> list[str]:
+        response = await self.client.messages.create(model="claude-sonnet-4-6", ...)
+        return [json.dumps({...})]
+
+agent = ClaudeAgent()
+df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
+```
+
+---
+
+## Agent Communication: Messaging Pipeline (Mar 2026)
+
+Agent-to-agent messaging is processor-driven, not broker-driven.
+
+**The broker is governance only** — RBAC, quotas, command queuing. It does NOT own message delivery or conversation structure.
+
+**Components:**
+```python
 class Outbox(Component):
-    pending: list[str] = []
+    messages: list[str] = []  # JSON-encoded: {"receiver_id": int, "channel": str, "content": str}
+
+class Inbox(Component):
+    messages: list[str] = []  # JSON-encoded: {"sender_id": int, "channel": str, "content": str, "tick": int}
 ```
+
+**Delivery pipeline:**
+```
+Agent processor writes to Outbox (priority 10+)
+        ↓
+MessageDeliveryProcessor (priority -100, runs first next tick)
+  ├── reads Outbox via DataFrame
+  ├── validates: receiver exists? not self-messaging?
+  ├── routes to recipient Inbox via @daft.func
+  ├── updates ChatGraph Resource (if present)
+  └── rejected → sender's DeliveryReceipt
+        ↓
+Downstream processors read Inbox for LLM context
+```
+
+**Key insight:** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. This enforces causal ordering — no agent can read a message from the same tick it was sent.
+
+**ChatGraph** is a Resource (not entity data). It tracks conversation structure as a DAG per (world, channel):
+```python
+registry = resources.require(ChatGraphRegistry)
+graph = registry.channel(world_id, "strategy")
+context = graph.active_path()  # root → cursor, for LLM context windows
+```
+
+**Channels** are first-class routing keys. Each channel gets its own independent conversation graph. Default is `"general"`.
+
+**`append_history` toggle:** a command with `payload={"append_history": False}` (or equivalent) makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
 
 ---
 
@@ -517,7 +585,7 @@ Use cases:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **MESSAGE commands** for agent communication via broker
+10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
