@@ -28,9 +28,7 @@ async def test_submit_spawn_step_verify(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(
-            WorldConfig(name="e2e"), storage
-        )
+        world = await container.world_service.create_world(WorldConfig(name="e2e"), storage)
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         cmd = Command(
@@ -66,9 +64,7 @@ async def test_rbac_denies_viewer_spawn(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(
-            WorldConfig(name="rbac_test"), storage
-        )
+        world = await container.world_service.create_world(WorldConfig(name="rbac_test"), storage)
 
         viewer_ctx = ActorCtx(id=uuid7(), roles={"viewer"})
         cmd = Command(type=CommandType.SPAWN, payload={})
@@ -85,9 +81,7 @@ async def test_player_can_spawn_but_not_add_processor(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(
-            WorldConfig(name="player_test"), storage
-        )
+        world = await container.world_service.create_world(WorldConfig(name="player_test"), storage)
 
         player_ctx = ActorCtx(id=uuid7(), roles={"player"})
 

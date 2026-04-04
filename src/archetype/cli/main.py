@@ -46,7 +46,9 @@ def status():
                 typer.echo("No worlds found.")
                 return
             for w in worlds:
-                typer.echo(f"  {w.world_id}  name={w.name}  tick={w.tick}  entities={w.entity_count}")
+                typer.echo(
+                    f"  {w.world_id}  name={w.name}  tick={w.tick}  entities={w.entity_count}"
+                )
         finally:
             await container.shutdown()
 

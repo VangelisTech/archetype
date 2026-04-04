@@ -130,8 +130,7 @@ class CommandBroker:
 
             if self._debug and commands:
                 logger.debug(
-                    f"[broker] dequeue: world={key}, count={len(commands)}, "
-                    f"remaining={len(queue)}"
+                    f"[broker] dequeue: world={key}, count={len(commands)}, remaining={len(queue)}"
                 )
 
             return commands

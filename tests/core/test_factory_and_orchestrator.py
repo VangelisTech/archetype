@@ -30,9 +30,7 @@ async def test_world_service_lifecycle_and_name_lookup(tmp_path):
     ws = WorldService(StorageService())
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        w1 = await ws.create_world(
-            WorldConfig(name="alpha"), storage_config=storage
-        )
+        w1 = await ws.create_world(WorldConfig(name="alpha"), storage_config=storage)
         # idempotent create with same world_id returns same instance
         w1_again = await ws.create_world(
             WorldConfig(world_id=w1.world_id, name="alpha"),

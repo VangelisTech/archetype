@@ -36,9 +36,7 @@ async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog
         system = AsyncSystem()
         await system.add_processor(OKProc())
         await system.add_processor(BadProc())
-        world = await ws.create_world(
-            WorldConfig(name="w"), storage_config=storage, system=system
-        )
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
         await world.create_entity([Foo(x=1)])
 
         with caplog.at_level("ERROR"):
