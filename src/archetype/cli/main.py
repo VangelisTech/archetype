@@ -10,6 +10,9 @@ import json
 
 import typer
 
+from archetype.app.container import ServiceContainer
+from archetype.app.registry import default_registry_path
+
 app = typer.Typer(name="archetype", help="Archetype ECS — AI-Native Simulation Engine")
 world_app = typer.Typer(help="World management commands")
 app.add_typer(world_app, name="world")
@@ -18,6 +21,14 @@ app.add_typer(world_app, name="world")
 def _run(coro):
     """Run an async coroutine synchronously."""
     return asyncio.run(coro)
+
+
+async def _make_container() -> ServiceContainer:
+    """Create a ServiceContainer with the persistent world registry enabled and
+    rehydrate any worlds recorded by previous CLI invocations."""
+    container = ServiceContainer(registry_path=default_registry_path())
+    await container.world_service.discover_worlds()
+    return container
 
 
 @app.command()
@@ -37,9 +48,7 @@ def status():
     """Show all worlds and their state."""
 
     async def _status():
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             worlds = container.world_service.list_worlds()
             if not worlds:
@@ -67,10 +76,9 @@ def world_create(
     """Create a new world."""
 
     async def _create():
-        from archetype.app.container import ServiceContainer
         from archetype.core.config import StorageConfig, WorldConfig
 
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             config = WorldConfig(name=name)
             storage_config = StorageConfig(uri=uri, namespace=namespace)
@@ -87,9 +95,7 @@ def world_list():
     """List all worlds."""
 
     async def _list():
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             worlds = container.world_service.list_worlds()
             if not worlds:
@@ -110,9 +116,7 @@ def world_inspect(world_id: str = typer.Argument(..., help="World ID")):
     async def _inspect():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             world = container.world_service.get_world(UUID(world_id))
             typer.echo(f"World ID: {world.world_id}")
@@ -131,9 +135,7 @@ def world_remove(world_id: str = typer.Argument(..., help="World ID")):
     async def _remove():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             container.world_service.remove_world(UUID(world_id))
             typer.echo(f"Removed world: {world_id}")
@@ -156,10 +158,9 @@ def run(
     async def _run_sim():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
         from archetype.core.config import RunConfig
 
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             run_config = RunConfig(num_steps=steps)
             result = await container.simulation_service.run(UUID(world_id), run_config)
@@ -180,9 +181,7 @@ def step(world_id: str = typer.Argument(..., help="World ID")):
     async def _step():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             cmds = await container.simulation_service.step(UUID(world_id))
             typer.echo(f"Step complete: {cmds} commands applied")
@@ -205,9 +204,7 @@ def query(
     async def _query():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             snapshot = await container.query_service.get_world_state(UUID(world_id), tick)
             typer.echo(json.dumps(snapshot.model_dump(mode="json"), indent=2))
@@ -227,9 +224,7 @@ def history(
     async def _history():
         from uuid_utils import UUID
 
-        from archetype.app.container import ServiceContainer
-
-        container = ServiceContainer()
+        container = await _make_container()
         try:
             cmds = await container.query_service.get_command_history(UUID(world_id), limit)
             if not cmds:
