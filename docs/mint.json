@@ -28,6 +28,12 @@
         "guide/storage",
         "guide/glossary"
       ]
+    },
+    {
+      "group": "Contributing",
+      "pages": [
+        "guide/auto-merge"
+      ]
     }
   ]
 }
