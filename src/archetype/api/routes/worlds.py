@@ -74,13 +74,12 @@ async def fork_world(
     ws: WorldService = Depends(get_world_service),
 ):
     try:
-        config = WorldConfig(name=req.name)
-        new_world = await ws.fork_world(UUID(world_id), config)
+        new_world = await ws.fork_world(UUID(world_id), req.name, StorageConfig())
         return WorldResponse(
             world_id=str(new_world.world_id),
             name=getattr(new_world, "name", None),
             tick=getattr(new_world, "tick", 0),
             entity_count=getattr(new_world, "entity_count", 0),
         )
-    except (KeyError, TypeError) as e:
+    except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from None

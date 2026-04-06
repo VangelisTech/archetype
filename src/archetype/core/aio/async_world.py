@@ -15,7 +15,6 @@
 import asyncio
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
-from itertools import count
 from logging import getLogger
 from typing import Any
 
@@ -73,7 +72,7 @@ class AsyncWorld(iAsyncWorld):
         # Internal State
         self.tick = 0
         self.run_id: str | None = None
-        self._entity_counter = count(start=1)
+        self._next_entity_id = 1
         self._entity2sig: dict[int, ArchetypeSignature] = {}
         self._spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] = {}
         self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
@@ -319,7 +318,8 @@ class AsyncWorld(iAsyncWorld):
     # ---------------------------------------------------------------------
 
     async def create_entity(self, components: list[Component]) -> int:
-        entity_id = next(self._entity_counter)
+        entity_id = self._next_entity_id
+        self._next_entity_id += 1
         sig = Archetype.sig_from_components(components)
         self._entity2sig[entity_id] = sig
 

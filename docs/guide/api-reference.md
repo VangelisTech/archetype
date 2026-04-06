@@ -86,7 +86,7 @@ All mutations flow through commands. Each command has a type, payload, tick, and
 | `remove_processor` | `{"processor_type": ...}` | Remove processor |
 | `create_world` | `{"config": {...}}` | Create child world |
 | `destroy_world` | `{"world_id": str}` | Destroy child world |
-| `fork_world` | `{"source_world_id": str, "config": {...}}` | Fork world |
+| `fork_world` | `{"source_world_id": str, "name": str \| null}` | Fork world |
 | `message` | `{"sender_id", "receiver_id", "content"}` | Agent message |
 | `custom` | `{...}` | User-defined |
 

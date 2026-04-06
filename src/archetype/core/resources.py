@@ -72,6 +72,10 @@ class Resources:
         """Support 'in' operator: `SimConfig in resources`."""
         return resource_type in self._store
 
+    def items(self):
+        """Iterate over (type, instance) pairs."""
+        return self._store.items()
+
     def __repr__(self) -> str:
         types = ", ".join(t.__name__ for t in self._store.keys())
         return f"Resources({types})"

@@ -49,7 +49,8 @@ Key pattern: Processors access the broker via `Resources` and enqueue commands t
 for gravity in [5.0, 9.8, 15.0]:
     fork = await container.world_service.fork_world(
         source_world_id=world.world_id,
-        config=WorldConfig(name=f"gravity-{gravity}"),
+        name=f"gravity-{gravity}",
+        storage_config=StorageConfig(),
     )
     fork.resources.insert(PhysicsConfig(gravity=gravity))
     await container.simulation_service.run(fork.world_id, RunConfig(num_steps=100))

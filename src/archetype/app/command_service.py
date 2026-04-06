@@ -151,12 +151,11 @@ class CommandService:
                 self._world_service.remove_world(target_id)
 
             case CommandType.FORK_WORLD:
-                from archetype.core.config import StorageConfig, WorldConfig
+                from archetype.core.config import StorageConfig
 
                 source_id = UUID(str(payload["source_world_id"]))
-                cfg = payload.get("config", {})
-                world_config = WorldConfig(**cfg) if isinstance(cfg, dict) else cfg
-                await self._world_service.fork_world(source_id, world_config, StorageConfig())
+                fork_name = payload.get("name") or payload.get("config", {}).get("name")
+                await self._world_service.fork_world(source_id, fork_name, StorageConfig())
 
             case CommandType.MESSAGE:
                 # Message delivery — future extension point
