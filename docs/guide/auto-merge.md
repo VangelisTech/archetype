@@ -64,7 +64,8 @@ here surface as broken agents in the field. The 70% branch-coverage floor
 **Required checks:**
 - `format`
 - `ci`
-- `typecheck` **promoted to required** (remove `continue-on-error` for core/)
+- `typecheck` **(planned:** promote to required by removing
+  `continue-on-error` for core/; currently non-blocking)
 - **Coverage delta ≥ 0** on changed files
 - **Benchmark regression check** (if/when added; `bench/` runs and >10%
   regression blocks)
@@ -103,12 +104,16 @@ maintainer attention; major-version jumps should never land unseen.
 
 ---
 
-## Determining a PR's Tier
+## Determining a PR's Tier (proposed)
 
-Enforced by a labeler workflow that reads changed paths:
+> **Status:** This section describes the target implementation. The labeler
+> workflow and `auto-merge-gate` check do not exist yet. Today, `ci` and
+> `format` are the only required status checks.
+
+The plan is a labeler workflow that reads changed paths and assigns tier labels:
 
 ```yaml
-# .github/labeler.yml (sketch)
+# .github/labeler.yml (proposed)
 tier-0-docs:
   - docs/**
   - "**/*.md"
@@ -126,10 +131,10 @@ tier-d-deps:
   - uv.lock
 ```
 
-A workflow then picks the **highest** tier label present and configures the
-matching required-checks set via a status check named `auto-merge-gate`. Branch
-protection on `main` requires `auto-merge-gate` to pass; the gate resolves to
-the correct check matrix per tier.
+A companion workflow would pick the **highest** tier label present and configure
+the matching required-checks set via a status check named `auto-merge-gate`.
+Branch protection on `main` would require `auto-merge-gate` to pass; the gate
+resolves to the correct check matrix per tier.
 
 **Tier precedence** (highest to lowest): Tier 3 > Tier 2 > Tier 1 > Tier 0.
 Tier D is evaluated independently — if a PR touches *only* `pyproject.toml` /
