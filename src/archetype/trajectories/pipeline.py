@@ -215,7 +215,7 @@ class TrajectoryPipeline:
         forked._owns_container = True
         forked._world = await forked._container.world_service.fork_world(
             source_world_id=self._world.world_id,
-            config=WorldConfig(name=new_name),
+            name=new_name,
             storage_config=StorageConfig(uri=self._storage_uri, namespace="trajectories"),
         )
         await forked._setup_processors()
