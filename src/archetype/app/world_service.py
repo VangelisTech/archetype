@@ -265,24 +265,14 @@ class WorldService:
             )
             config = WorldConfig(world_id=wid, name=name)
 
-            world = await self.factory.create_world(
-                world_config=config,
-                storage_config=storage_config,
-                system=AsyncSystem(),
-            )
+            # Reuse create_world so broker injection, registry hooks, and
+            # name tracking all go through a single code path.
+            world = await self.create_world(config, storage_config)
+
             # Restore tick from registry so step/run continues where left off.
             if isinstance(world, AsyncWorld):
                 world.tick = int(entry.get("tick", 0) or 0)
 
-            if self._broker and isinstance(world, AsyncWorld):
-                world.resources.insert(self._broker)
-
-            self._worlds[world.world_id] = world
-            if name:
-                # If a name collision occurs (e.g. from stale entries), last wins.
-                self._world_names[name] = world.world_id
-
-            self._attach_registry_sync(world)
             loaded.append(wid)
 
         return loaded
@@ -302,16 +292,22 @@ class WorldService:
         )
 
     def _attach_registry_sync(self, world: iWorld) -> None:
-        """Attach a post_tick hook that keeps the registry tick in sync."""
+        """Attach a post_tick hook that keeps the registry tick in sync.
+
+        Captures the full registry entry in the closure so each tick only
+        writes (no read-modify-write) and never drops metadata fields.
+        """
         if self._registry is None or not isinstance(world, AsyncWorld):
             return
         registry = self._registry
         world_id = world.world_id
+        # Snapshot the current entry so the hook never re-reads from disk.
+        cached_entry = dict(registry.get(world_id) or {})
+        cached_entry.setdefault("world_id", str(world_id))
+        cached_entry.setdefault("name", getattr(world, "name", None))
 
         async def _sync_tick(world, tick, **_kw):  # noqa: ARG001 — hook signature
-            entry = registry.get(world_id) or {}
-            entry["tick"] = int(tick)
-            entry.setdefault("world_id", str(world_id))
-            registry.upsert(world_id, entry)
+            cached_entry["tick"] = int(tick)
+            registry.upsert(world_id, cached_entry)
 
         world.add_hook("post_tick", _sync_tick)

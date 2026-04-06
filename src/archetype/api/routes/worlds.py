@@ -25,7 +25,6 @@ router = APIRouter(prefix="/worlds", tags=["worlds"])
 async def create_world(
     req: CreateWorldRequest,
     cs: CommandService = Depends(get_command_service),
-    ws: WorldService = Depends(get_world_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     cmd = Command(
@@ -39,10 +38,7 @@ async def create_world(
     )
     await cs.submit("__global__", cmd, ctx)
     # Apply immediately — world lifecycle commands are not tick-scheduled.
-    await cs.apply_world_lifecycle(cmd)
-
-    # Return the newly created world.
-    world = ws.get_world_by_name(req.name) if req.name else ws.list_worlds()[-1]
+    world = await cs.apply_world_lifecycle(cmd)
     return WorldResponse(
         world_id=str(world.world_id),
         name=getattr(world, "name", None),
@@ -100,7 +96,6 @@ async def fork_world(
     world_id: str,
     req: ForkWorldRequest,
     cs: CommandService = Depends(get_command_service),
-    ws: WorldService = Depends(get_world_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     cmd = Command(
@@ -113,11 +108,10 @@ async def fork_world(
     )
     await cs.submit("__global__", cmd, ctx)
     try:
-        await cs.apply_world_lifecycle(cmd)
+        new_world = await cs.apply_world_lifecycle(cmd)
     except (KeyError, TypeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from None
 
-    new_world = ws.get_world_by_name(req.name) if req.name else ws.list_worlds()[-1]
     return WorldResponse(
         world_id=str(new_world.world_id),
         name=getattr(new_world, "name", None),

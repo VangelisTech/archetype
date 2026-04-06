@@ -37,7 +37,7 @@ def _check_server(client: httpx.Client) -> None:
     """Verify the server is reachable, give a clear error if not."""
     try:
         client.get("/")
-    except httpx.ConnectError as exc:
+    except httpx.RequestError as exc:
         typer.echo(
             f"Error: Cannot reach Archetype server at {_base_url()}.\n"
             "Start the server first:  archetype serve\n"

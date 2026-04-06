@@ -23,6 +23,7 @@ from archetype.app.models import Command, CommandType
 if TYPE_CHECKING:
     from archetype.app.world_service import WorldService
     from archetype.core.aio import AsyncWorld
+    from archetype.core.interfaces import iWorld
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +106,14 @@ class CommandService:
                 result.append(item)
         return result
 
-    async def apply_world_lifecycle(self, cmd: Command) -> None:
+    async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
         """Dispatch a world-level lifecycle command (create/destroy/fork).
 
         These commands operate on ``WorldService`` directly and don't require
         a pre-existing world instance, so they are separated from the
         per-world ``apply()`` path.
+
+        Returns the created/forked world for CREATE and FORK, None for DESTROY.
         """
         payload = cmd.payload
 
@@ -124,18 +127,21 @@ class CommandService:
                     uri=payload.get("storage_uri", "./archetype_data"),
                     namespace=payload.get("namespace", "archetypes"),
                 )
-                await self._world_service.create_world(world_config, storage_config)
+                return await self._world_service.create_world(world_config, storage_config)
 
             case CommandType.DESTROY_WORLD:
                 target_id = UUID(str(payload["world_id"]))
                 self._world_service.remove_world(target_id)
+                return None
 
             case CommandType.FORK_WORLD:
                 from archetype.core.config import StorageConfig
 
                 source_id = UUID(str(payload["source_world_id"]))
                 fork_name = payload.get("name") or payload.get("config", {}).get("name")
-                await self._world_service.fork_world(source_id, fork_name, StorageConfig())
+                return await self._world_service.fork_world(
+                    source_id, fork_name, StorageConfig()
+                )
 
             case _:
                 raise ValueError(f"apply_world_lifecycle does not handle {cmd.type.value}")

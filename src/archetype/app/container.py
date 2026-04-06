@@ -30,8 +30,8 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
 
     Pass ``registry_path`` to enable persistent world discovery across
-    processes — required for the CLI, where each command runs in a fresh
-    process with a fresh container.
+    server restarts.  The long-running ``archetype serve`` process uses
+    the registry to rehydrate previously created worlds on startup.
     """
 
     def __init__(self, registry_path: str | Path | None = None):
