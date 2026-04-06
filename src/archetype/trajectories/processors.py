@@ -17,6 +17,7 @@ one tick = sample → label → score. Fork the world to try different configs.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,12 +59,22 @@ class LabelingConfig:
     Attributes:
         model:             LLM model to use for labeling
         max_output_tokens: Max tokens for LLM response
-        temperature:       Sampling temperature
     """
 
     model: str = "gpt-5-mini"
     max_output_tokens: int = 512
-    temperature: float = 0.0
+
+
+# ── Tag matching UDF ──
+
+
+@daft.func
+def _tags_contain(tags_json: str, tag: str) -> bool:
+    """Exact membership check against JSON-encoded tag list."""
+    try:
+        return tag in json.loads(tags_json)
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 # ── Processors ──
@@ -73,7 +84,7 @@ class SamplingProcessor(AsyncProcessor):
     """Selects which trajectories to evaluate based on SamplingConfig.
 
     Sets label__sampled = True/False. Downstream processors skip
-    unsampled trajectories.
+    unsampled trajectories. Never drops rows — all entities are preserved.
     """
 
     components = (Trajectory, Label)
@@ -83,7 +94,8 @@ class SamplingProcessor(AsyncProcessor):
         resources: Resources = kwargs.get("resources", Resources())
         config = resources.get(SamplingConfig) or SamplingConfig()
 
-        sampled = col("label__sampled")
+        # Start fresh from True so sampling is recomputed each tick
+        sampled = daft.lit(True)
 
         if config.min_turns > 0:
             sampled = sampled & (col("trajectory__total_turns") >= config.min_turns)
@@ -96,16 +108,27 @@ class SamplingProcessor(AsyncProcessor):
 
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & col("trajectory__tags").str.contains(f'"{tag}"')
+                sampled = sampled & _tags_contain(
+                    col("trajectory__tags_json"), daft.lit(tag)
+                )
 
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~col("trajectory__tags").str.contains(f'"{tag}"')
+                sampled = sampled & ~_tags_contain(
+                    col("trajectory__tags_json"), daft.lit(tag)
+                )
 
         df = df.with_columns({"label__sampled": sampled})
 
+        # Enforce max_trajectories without dropping rows: mark excess as unsampled
         if config.max_trajectories > 0:
-            df = df.limit(config.max_trajectories)
+            df = df._add_monotonically_increasing_id("_sample_idx")
+            df = df.with_columns(
+                {
+                    "label__sampled": col("label__sampled")
+                    & (col("_sample_idx") < config.max_trajectories),
+                }
+            ).exclude("_sample_idx")
 
         return df
 
@@ -114,12 +137,12 @@ class LabelingProcessor(AsyncProcessor):
     """Applies a labeling technique to sampled trajectories via LLM.
 
     Reads label__description (the natural language labeling instruction)
-    and trajectory__turns (the full trajectory), then calls an LLM to produce:
+    and trajectory__turns_json (the full trajectory), then calls an LLM to produce:
         - label__value:     categorical or freeform label
         - label__score:     numeric 0.0-1.0
         - label__rationale: explanation
 
-    Only processes trajectories where label__sampled is True.
+    Only invokes the LLM for trajectories where label__sampled is True.
     """
 
     components = (Trajectory, Label)
@@ -130,6 +153,10 @@ class LabelingProcessor(AsyncProcessor):
         config = resources.get(LabelingConfig) or LabelingConfig()
 
         from daft.functions import prompt
+
+        # Split sampled vs unsampled to avoid LLM calls on unsampled rows
+        sampled_df = df.where(col("label__sampled"))
+        unsampled_df = df.where(~col("label__sampled"))
 
         eval_prompt = (
             "You are an expert evaluator of AI agent trajectories.\n\n"
@@ -147,7 +174,7 @@ class LabelingProcessor(AsyncProcessor):
             + "\nDuration: "
             + col("trajectory__duration_seconds").cast(daft.DataType.string())
             + "s\n\nTurns:\n"
-            + col("trajectory__turns")
+            + col("trajectory__turns_json")
             + "\n\n## Instructions\n"
             "Evaluate this trajectory according to the technique above.\n"
             "Respond in EXACTLY this format (no other text):\n"
@@ -163,11 +190,10 @@ class LabelingProcessor(AsyncProcessor):
         )
 
         # Row-wise extractors — @daft.func with auto type inference (LEARNINGS.md §4)
-        # No batching benefit here, just parsing strings.
 
         @daft.func
-        def extract_value(response: str, sampled: bool) -> str:
-            if not sampled or not response:
+        def extract_value(response: str) -> str:
+            if not response:
                 return ""
             for line in response.split("\n"):
                 if line.startswith("VALUE:"):
@@ -175,8 +201,8 @@ class LabelingProcessor(AsyncProcessor):
             return response[:100]
 
         @daft.func
-        def extract_score(response: str, sampled: bool) -> float:
-            if not sampled or not response:
+        def extract_score(response: str) -> float:
+            if not response:
                 return 0.0
             for line in response.split("\n"):
                 if line.startswith("SCORE:"):
@@ -187,8 +213,8 @@ class LabelingProcessor(AsyncProcessor):
             return 0.0
 
         @daft.func
-        def extract_rationale(response: str, sampled: bool) -> str:
-            if not sampled or not response:
+        def extract_rationale(response: str) -> str:
+            if not response:
                 return ""
             for line in response.split("\n"):
                 if line.startswith("RATIONALE:"):
@@ -196,15 +222,17 @@ class LabelingProcessor(AsyncProcessor):
             return ""
 
         llm_col = llm_output
-        sampled_col = col("label__sampled")
 
-        return df.with_columns(
+        sampled_df = sampled_df.with_columns(
             {
-                "label__value": extract_value(llm_col, sampled_col),
-                "label__score": extract_score(llm_col, sampled_col),
-                "label__rationale": extract_rationale(llm_col, sampled_col),
+                "label__value": extract_value(llm_col),
+                "label__score": extract_score(llm_col),
+                "label__rationale": extract_rationale(llm_col),
             }
         )
+
+        # Rejoin: unsampled rows keep their existing label values
+        return sampled_df.concat(unsampled_df)
 
 
 class ScoringProcessor(AsyncProcessor):
@@ -218,10 +246,8 @@ class ScoringProcessor(AsyncProcessor):
     priority = 30
 
     async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
-        clamped = col("label__score").if_else(
-            col("label__score") > 1.0,
-            1.0,
-            col("label__score"),
-        )
-        clamped = clamped.if_else(clamped < 0.0, 0.0, clamped)
-        return df.with_columns({"label__score": clamped})
+        @daft.func
+        def clamp_score(score: float) -> float:
+            return max(0.0, min(1.0, score))
+
+        return df.with_columns({"label__score": clamp_score(col("label__score"))})

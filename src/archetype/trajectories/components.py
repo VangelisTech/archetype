@@ -71,24 +71,24 @@ class Trajectory(Component):
     Fields:
         trajectory_id:    External reference (e.g., Claude Code session ID)
         source:           Origin system ("claude-code", "api", "custom")
-        turns:            JSON list of Turn dicts — the full trajectory
+        turns_json:       JSON list of Turn dicts — the full trajectory
         total_turns:      Count of turns (denormalized for filtering)
         total_tokens:     Total token usage across all turns
         duration_seconds: Wall-clock duration of the session
         outcome:          Final outcome summary (success/failure/partial + description)
-        tags:             JSON list of string tags for categorization
-        metadata:         JSON dict of arbitrary session metadata
+        tags_json:        JSON list of string tags for categorization
+        metadata_json:    JSON dict of arbitrary session metadata
     """
 
     trajectory_id: str = ""
     source: str = ""
-    turns: str = "[]"
+    turns_json: str = "[]"
     total_turns: int = 0
     total_tokens: int = 0
     duration_seconds: float = 0.0
     outcome: str = ""
-    tags: str = "[]"
-    metadata: str = "{}"
+    tags_json: str = "[]"
+    metadata_json: str = "{}"
 
     @classmethod
     def from_turns(
@@ -107,18 +107,18 @@ class Trajectory(Component):
         return cls(
             trajectory_id=trajectory_id,
             source=source,
-            turns=json.dumps([t.to_dict() for t in turns]),
+            turns_json=json.dumps([t.to_dict() for t in turns]),
             total_turns=len(turns),
             total_tokens=total_tokens,
             duration_seconds=duration,
             outcome=outcome,
-            tags=json.dumps(tags or []),
-            metadata=json.dumps(metadata or {}),
+            tags_json=json.dumps(tags or []),
+            metadata_json=json.dumps(metadata or {}),
         )
 
     def get_turns(self) -> list[Turn]:
         """Deserialize turns JSON back to Turn objects."""
-        return [Turn.from_dict(d) for d in json.loads(self.turns)]
+        return [Turn.from_dict(d) for d in json.loads(self.turns_json)]
 
 
 class Label(Component):

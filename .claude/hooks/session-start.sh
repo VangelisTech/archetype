@@ -9,8 +9,9 @@ fi
 cd "$CLAUDE_PROJECT_DIR"
 
 # Bootstrap uv if the sandbox doesn't ship with it
+UV_VERSION="0.8.17"
 if ! command -v uv >/dev/null 2>&1; then
-  pip install --user uv
+  pip install --user "uv==${UV_VERSION}"
   export PATH="$HOME/.local/bin:$PATH"
 fi
 

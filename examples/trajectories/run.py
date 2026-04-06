@@ -218,17 +218,18 @@ async def main():
     print(f"Created {len(trajectories)} synthetic trajectories\n")
 
     # Build pipeline with two labeling techniques
-    pipeline = (
-        TrajectoryPipeline(name="trajectory-eval", storage_uri="./trajectory_data")
-        .label("efficiency", "Rate how directly the agent reached the solution without unnecessary backtracking or wasted steps. A perfect score means the agent identified the correct approach immediately.")
-        .label("correctness", "Did the agent produce the correct final result? Score 1.0 for fully correct, 0.5 for partially correct, 0.0 for incorrect or unresolved.")
-        .sample(min_turns=3)
-    )
+    label_specs = [
+        ("efficiency", "Rate how directly the agent reached the solution without unnecessary backtracking or wasted steps. A perfect score means the agent identified the correct approach immediately."),
+        ("correctness", "Did the agent produce the correct final result? Score 1.0 for fully correct, 0.5 for partially correct, 0.0 for incorrect or unresolved."),
+    ]
+    pipeline = TrajectoryPipeline(name="trajectory-eval", storage_uri="./trajectory_data").sample(min_turns=3)
+    for name, desc in label_specs:
+        pipeline = pipeline.label(name, desc)
 
     # Ingest
     print("Ingesting trajectories...")
     await pipeline.ingest(trajectories)
-    print(f"  → {len(trajectories)} trajectories × {len(pipeline._labels)} techniques = {len(trajectories) * len(pipeline._labels)} entities\n")
+    print(f"  → {len(trajectories)} trajectories × {len(label_specs)} techniques = {len(trajectories) * len(label_specs)} entities\n")
 
     # Run (this calls the LLM for labeling — skip if no API key)
     print("Running pipeline (sample → label → score)...")

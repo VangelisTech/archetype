@@ -25,6 +25,7 @@ Fork to compare techniques:
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from uuid_utils import uuid7
 
@@ -58,6 +59,7 @@ class TrajectoryPipeline:
         *,
         storage_uri: str = "./trajectory_data",
         model: str = "gpt-5-mini",
+        ctx: ActorCtx | None = None,
     ):
         self.name = name
         self._storage_uri = storage_uri
@@ -66,8 +68,14 @@ class TrajectoryPipeline:
         self._sampling = SamplingConfig()
         self._container: ServiceContainer | None = None
         self._world: Any = None  # AsyncWorld, set after init
-        self._ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        self._ctx = ctx or ActorCtx(id=uuid7(), roles={"pipeline"})
         self._initialized = False
+        self._owns_container = False  # tracks whether we created the container
+
+    @property
+    def label_specs(self) -> list[tuple[str, str]]:
+        """Public accessor for (technique, description) pairs."""
+        return list(self._labels)
 
     def label(self, technique: str, description: str) -> TrajectoryPipeline:
         """Add a labeling technique. Describe it in natural language."""
@@ -93,32 +101,42 @@ class TrajectoryPipeline:
             exclude_tags=exclude_tags,
             outcome_filter=outcome_filter,
         )
+        # If already initialized, update the live resource
+        if self._initialized and self._world is not None:
+            self._world.resources.insert(self._sampling)
         return self
 
     async def _ensure_init(self) -> None:
         if self._initialized:
             return
         self._container = ServiceContainer()
+        self._owns_container = True
         self._world = await self._container.world_service.create_world(
             WorldConfig(name=self.name),
             StorageConfig(uri=self._storage_uri, namespace="trajectories"),
         )
-        # Wire processors
+        await self._setup_processors()
+        self._initialized = True
+
+    async def _setup_processors(self) -> None:
+        """Wire processors and resources into the world."""
         await self._world.system.add_processor(SamplingProcessor())
         await self._world.system.add_processor(LabelingProcessor())
         await self._world.system.add_processor(ScoringProcessor())
-        # Inject resources
         self._world.resources.insert(self._sampling)
         self._world.resources.insert(LabelingConfig(model=self._model))
-        self._initialized = True
 
-    async def ingest(self, trajectories: list[Trajectory]) -> list[int]:
-        """Ingest trajectories into the world. Creates one entity per (trajectory, technique) pair."""
+    async def ingest(self, trajectories: list[Trajectory]) -> list[UUID]:
+        """Ingest trajectories into the world.
+
+        Creates one entity per (trajectory, technique) pair.
+        Returns the command UUIDs from submission.
+        """
         await self._ensure_init()
         if not self._labels:
             raise ValueError("No labeling techniques defined. Call .label() first.")
 
-        entity_ids = []
+        command_ids = []
         for trajectory in trajectories:
             for technique, description in self._labels:
                 label = Label(technique=technique, description=description)
@@ -126,62 +144,63 @@ class TrajectoryPipeline:
                     type=CommandType.SPAWN,
                     payload={
                         "components": [
-                            trajectory.model_dump(),
-                            label.model_dump(),
+                            {"type": "Trajectory", **trajectory.model_dump()},
+                            {"type": "Label", **label.model_dump()},
                         ],
                     },
                 )
-                await self._container.command_service.submit(
+                cmd_id = await self._container.command_service.submit(
                     self._world.world_id, cmd, self._ctx
                 )
-                entity_ids.append(len(entity_ids))
-        return entity_ids
+                command_ids.append(cmd_id)
+        return command_ids
 
     async def run(self, steps: int = 1) -> None:
         """Run the pipeline. One step = sample → label → score."""
         await self._ensure_init()
-        await self._container.simulation_service.run(
-            self._world.world_id,
-            RunConfig(num_steps=steps, suite=self.name),
-        )
+        for _ in range(steps):
+            await self._container.simulation_service.step(
+                self._world.world_id,
+                RunConfig(num_steps=1),
+            )
 
     async def results(self) -> list[dict[str, Any]]:
         """Collect results as a list of dicts."""
         await self._ensure_init()
+        df = await self._world.get_components([Trajectory, Label])
+        if df is None:
+            return []
+
         rows = []
-        for _sig, df in self._world._live.items():
-            collected = df.collect().to_pylist()
-            for row in collected:
-                if not row.get("is_active", True):
-                    continue
-                rows.append(
-                    {
-                        "trajectory_id": row.get("trajectory__trajectory_id", ""),
-                        "technique": row.get("label__technique", ""),
-                        "description": row.get("label__description", ""),
-                        "value": row.get("label__value", ""),
-                        "score": row.get("label__score", 0.0),
-                        "rationale": row.get("label__rationale", ""),
-                        "sampled": row.get("label__sampled", True),
-                        "total_turns": row.get("trajectory__total_turns", 0),
-                        "outcome": row.get("trajectory__outcome", ""),
-                        "source": row.get("trajectory__source", ""),
-                    }
-                )
+        collected = df.collect().to_pylist()
+        for row in collected:
+            if not row.get("is_active", True):
+                continue
+            rows.append(
+                {
+                    "trajectory_id": row.get("trajectory__trajectory_id", ""),
+                    "technique": row.get("label__technique", ""),
+                    "description": row.get("label__description", ""),
+                    "value": row.get("label__value", ""),
+                    "score": row.get("label__score", 0.0),
+                    "rationale": row.get("label__rationale", ""),
+                    "sampled": row.get("label__sampled", True),
+                    "total_turns": row.get("trajectory__total_turns", 0),
+                    "outcome": row.get("trajectory__outcome", ""),
+                    "source": row.get("trajectory__source", ""),
+                }
+            )
         return rows
 
     async def results_df(self) -> Any:
         """Return raw Daft DataFrame of live state (for advanced queries)."""
         await self._ensure_init()
-        dfs = list(self._world._live.values())
-        if not dfs:
-            return None
-        return dfs[0] if len(dfs) == 1 else dfs
+        return await self._world.get_components([Trajectory, Label])
 
     async def fork(self, new_name: str) -> TrajectoryPipeline:
-        """Fork this pipeline into a new world with the same data.
+        """Fork this pipeline into a new world.
 
-        Use this to compare labeling techniques on identical trajectories.
+        The forked pipeline gets its own container and world.
         Modify the fork's labels, then run it.
         """
         await self._ensure_init()
@@ -192,22 +211,18 @@ class TrajectoryPipeline:
         )
         forked._labels = list(self._labels)
         forked._sampling = self._sampling
-        # Initialize with a fresh world (fork semantics via archetype)
-        forked._container = self._container
-        forked._world = await self._container.world_service.fork_world(
-            source_id=self._world.world_id,
-            new_config=WorldConfig(name=new_name),
+        forked._container = ServiceContainer()
+        forked._owns_container = True
+        forked._world = await forked._container.world_service.fork_world(
+            source_world_id=self._world.world_id,
+            config=WorldConfig(name=new_name),
             storage_config=StorageConfig(uri=self._storage_uri, namespace="trajectories"),
         )
-        await forked._world.system.add_processor(SamplingProcessor())
-        await forked._world.system.add_processor(LabelingProcessor())
-        await forked._world.system.add_processor(ScoringProcessor())
-        forked._world.resources.insert(forked._sampling)
-        forked._world.resources.insert(LabelingConfig(model=forked._model))
+        await forked._setup_processors()
         forked._initialized = True
         return forked
 
     async def shutdown(self) -> None:
-        """Clean up."""
-        if self._container:
+        """Clean up. Only shuts down the container if we created it."""
+        if self._container and self._owns_container:
             await self._container.shutdown()
