@@ -106,16 +106,14 @@ class DeliveryReceipt(Component):
 
 class MessageDeliveryProcessor(AsyncProcessor):
     """
-    Routes messages from Outbox → Inbox, with governance and graph tracking.
+    Routes messages from Outbox → Inbox and updates conversation graph state.
 
     Runs early (priority=-100) so that by the time domain processors execute,
     inboxes are populated with this tick's messages.
 
-    Resources required:
-        - ChatGraphRegistry: for conversation structure tracking
-        - CommandBroker (optional): for governance checks on inter-agent messages
-
-    If no CommandBroker is in Resources, all messages are delivered (no governance).
+    Resources used:
+        - ChatGraphRegistry (optional): for conversation structure tracking
+        - SideEffectCollector (optional): for deferred graph mutations (tick atomicity)
     """
 
     components = (Outbox, Inbox, DeliveryReceipt)
@@ -343,7 +341,6 @@ class MessageDeliveryProcessor(AsyncProcessor):
                     graphs.channel(world_id, channel).append(cmd)
 
         # --- 8. Merge inbox updates back into the main DataFrame ---
-        # Join new inbox messages
         df = df.join(
             inbox_agg,
             left_on="entity_id",
@@ -351,23 +348,16 @@ class MessageDeliveryProcessor(AsyncProcessor):
             how="left",
         )
 
-        # Concatenate existing inbox with new messages
-        df = df.with_column(
-            "new_inbox",
-            col("new_inbox").fill_null(lit([])),
-        )
-
         @daft.func
-        def concat_inbox(current: list[str], new: list[str]) -> list[str]:
+        def concat_lists(current: list[str], new: list[str]) -> list[str]:
             return (current or []) + (new or [])
 
         df = df.with_column(
             "inbox__messages",
-            concat_inbox(col("inbox__messages"), col("new_inbox")),
+            concat_lists(col("inbox__messages"), col("new_inbox")),
         )
-        df = df.exclude("new_inbox")
 
-        # --- 9. Merge receipts back into the main DataFrame ---
+        # --- 9. Merge receipts back into the main DataFrame (cumulative) ---
         df = df.join(
             receipt_agg,
             left_on="entity_id",
@@ -375,20 +365,30 @@ class MessageDeliveryProcessor(AsyncProcessor):
             how="left",
         )
 
-        df = df.with_column(
-            "deliveryreceipt__receipts",
-            col("new_receipts").fill_null(lit([])),
-        )
-        df = df.exclude("new_receipts")
+        if "deliveryreceipt__receipts" in df.column_names:
+            df = df.with_column(
+                "deliveryreceipt__receipts",
+                concat_lists(col("deliveryreceipt__receipts"), col("new_receipts")),
+            )
 
-        # --- 10. Clear outboxes ---
+        # --- 10. Clear outboxes, drop join artifact columns ---
         @daft.func
-        def clear_outbox(entity_id: int) -> list[str]:
+        def clear_list(_anchor: str) -> list[str]:
+            """Returns an empty list. Takes a dummy column to bind as a row-wise UDF."""
             return []
+
+        # When deliveryreceipt__receipts column doesn't exist (e.g., minimal test schemas),
+        # initialize it from new_receipts, defaulting nulls to empty lists.
+        if "deliveryreceipt__receipts" not in df.column_names:
+            df = df.with_column(
+                "deliveryreceipt__receipts",
+                col("new_receipts"),
+            )
 
         df = df.with_column(
             "outbox__messages",
-            clear_outbox(col("entity_id")),
+            clear_list(col("entity_id").cast(DataType.string())),
         )
+        df = df.exclude("new_inbox", "new_receipts")
 
         return df

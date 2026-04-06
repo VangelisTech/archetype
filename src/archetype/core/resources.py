@@ -72,6 +72,17 @@ class Resources:
         """Support 'in' operator: `SimConfig in resources`."""
         return resource_type in self._store
 
+    def fork(self) -> "Resources":
+        """Create a shallow copy. Shares the same resource objects but has its own store dict.
+
+        Used by _run_archetype to give each concurrent archetype its own
+        Resources view so per-archetype resources (like SideEffectCollector)
+        don't collide across asyncio.gather tasks.
+        """
+        copy = Resources()
+        copy._store = dict(self._store)
+        return copy
+
     def __repr__(self) -> str:
         types = ", ".join(t.__name__ for t in self._store.keys())
         return f"Resources({types})"

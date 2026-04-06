@@ -281,6 +281,10 @@ class ChatGraphRegistry:
             self._graphs[key] = ChatGraph(str(world_id), channel)
         return self._graphs[key]
 
+    def get_channel(self, world_id: str | UUID, channel: str = DEFAULT_CHANNEL) -> ChatGraph | None:
+        """Get a ChatGraph without creating it. Returns None if not found."""
+        return self._graphs.get((str(world_id), channel))
+
     def get(self, world_id: str | UUID) -> ChatGraph:
         """Shorthand for channel(world_id, "general"). Backward-compatible."""
         return self.channel(world_id, DEFAULT_CHANNEL)

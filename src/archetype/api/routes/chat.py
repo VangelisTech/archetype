@@ -42,7 +42,11 @@ async def get_chat_graph(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """Get the full conversation graph for a world channel."""
-    graph = graphs.channel(world_id, channel)
+    graph = graphs.get_channel(world_id, channel)
+    if graph is None:
+        return ChatGraphResponse(
+            world_id=world_id, channel=channel, cursor=None, size=0, roots=[], nodes={}
+        )
     return ChatGraphResponse(**graph.to_dict())
 
 
@@ -53,8 +57,8 @@ async def get_active_path(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """Get the linear message path from root to cursor (context window)."""
-    graph = graphs.channel(world_id, channel)
-    commands = graph.active_path()
+    graph = graphs.get_channel(world_id, channel)
+    commands = graph.active_path() if graph else []
     return ActivePathResponse(
         world_id=world_id,
         channel=channel,

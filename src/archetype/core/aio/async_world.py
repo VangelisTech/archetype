@@ -210,16 +210,26 @@ class AsyncWorld(iAsyncWorld):
                 components=None,
             )
 
-        # Create side effect collector for tick-level atomicity
+        # Fork resources so each concurrent archetype gets its own view.
+        # Shared resources (ChatGraphRegistry, CommandBroker) are still accessible,
+        # but per-archetype resources (SideEffectCollector) don't collide.
+        local_resources = self.resources.fork()
         collector = SideEffectCollector()
-        self.resources.insert(collector)
+        local_resources.insert(collector)
 
         try:
             # 2. Materialize Mutations (Spawns/Despawns)
             df = self.materialize_mutations(df, sig)
 
             # 3. Execute Processors for this archetype via system (side effects deferred via collector)
-            df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+            df = await self.system.execute(
+                df,
+                sig,
+                resources=local_resources,
+                tick=self.tick,
+                debug=run_config.debug,
+                **input_kwargs,
+            )
 
             # 4. Update (returns materialized df with tick/world/run/entity_id set)
             df_mat = await self.update(df, sig, run_config)
@@ -231,8 +241,6 @@ class AsyncWorld(iAsyncWorld):
         except Exception:
             collector.rollback()
             raise
-        finally:
-            self.resources.remove(SideEffectCollector)
 
     # ---------------------------------------------------------------------
     #  Step Planning

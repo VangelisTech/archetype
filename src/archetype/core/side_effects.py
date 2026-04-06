@@ -43,10 +43,16 @@ class SideEffectCollector:
         self._pending.append(fn)
 
     def commit(self) -> None:
-        """Apply all pending mutations in order, then clear the buffer."""
-        for fn in self._pending:
-            fn()
-        self._pending.clear()
+        """Apply all pending mutations in order, then clear the buffer.
+
+        Always clears the buffer, even if a mutation raises. This prevents
+        stale mutations from being re-committed on a subsequent call.
+        """
+        try:
+            for fn in self._pending:
+                fn()
+        finally:
+            self._pending.clear()
 
     def rollback(self) -> None:
         """Discard all pending mutations without applying them."""
