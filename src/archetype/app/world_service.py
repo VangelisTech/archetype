@@ -136,7 +136,7 @@ class WorldService:
         current tick. Source and fork then diverge independently.
 
         Inheritance policy (see archetype#61):
-          * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_entity_counter``,
+          * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_next_entity_id``,
             live archetype snapshots (re-stamped with the new ``world_id``),
             processors (shared instances), and non-broker resources.
           * Persisted: the live snapshots are written to the store under the new
@@ -153,8 +153,6 @@ class WorldService:
             ValueError: If the source has pending mutations (un-materialized
                 spawn/despawn caches).
         """
-        import copy as _copy
-
         from daft import lit
 
         from archetype.app.broker import CommandBroker
@@ -195,7 +193,7 @@ class WorldService:
         new_world.tick = source.tick
         new_world.run_id = source.run_id
         new_world._entity2sig = dict(source._entity2sig)
-        new_world._entity_counter = _copy.copy(source._entity_counter)
+        new_world._next_entity_id = source._next_entity_id
 
         # Re-stamp live snapshots with the new world_id so they stay consistent
         # with the fork's identity (used by prefer_live_reads).

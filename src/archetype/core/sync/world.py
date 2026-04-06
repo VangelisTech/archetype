@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from itertools import count
 from logging import getLogger
 from typing import Any
 
@@ -63,7 +62,7 @@ class SyncWorld(iWorld):
 
         # Internal State
         self.tick = 0
-        self._entity_counter = count(start=1)
+        self._next_entity_id = 1
         self._entity2sig: dict[int, ArchetypeSignature] = {}
         self._spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] = {}
         self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
@@ -230,7 +229,8 @@ class SyncWorld(iWorld):
     # ---------------------------------------------------------------------
 
     def create_entity(self, components: list[Component]) -> int:
-        entity_id = next(self._entity_counter)
+        entity_id = self._next_entity_id
+        self._next_entity_id += 1
         sig = Archetype.sig_from_components(components)
         self._entity2sig[entity_id] = sig
 

@@ -32,10 +32,8 @@ async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
         # Create one entity, then enqueue another spawn for the same entity id by patching next id backwards
         eid = await world.create_entity([A(i=1)])
 
-        # Force the next created entity id to be the same as previous by monkeypatching the counter
-        from itertools import repeat
-
-        world._entity_counter = repeat(eid)  # type: ignore[attr-defined]
+        # Force the next created entity id to be the same as previous
+        world._next_entity_id = eid  # type: ignore[attr-defined]
         await world.create_entity([A(i=99)])
 
         await world.run(RunConfig(num_steps=1))

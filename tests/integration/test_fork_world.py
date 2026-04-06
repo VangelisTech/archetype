@@ -50,9 +50,7 @@ async def test_fork_preserves_tick_and_entity_state(tmp_path):
         assert set(fork._entity2sig) == {e1, e2}
 
         # Entity counter resumes from where the source left off.
-        next_id_source = next(source._entity_counter)
-        next_id_fork = next(fork._entity_counter)
-        assert next_id_fork == next_id_source
+        assert fork._next_entity_id == source._next_entity_id
     finally:
         await container.shutdown()
 

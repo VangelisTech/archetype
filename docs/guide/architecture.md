@@ -187,12 +187,19 @@ config = StorageConfig(
 Create a new world from a snapshot of an existing one:
 
 ```python
-from archetype.core.config import WorldConfig
+from archetype.core.config import StorageConfig
 
 new_world = await container.world_service.fork_world(
     source_world_id=original.world_id,
-    config=WorldConfig(name="branch-A"),
+    name="branch-A",
+    storage_config=StorageConfig(),
 )
 ```
 
-The forked world gets a new ID and independent state. Use this for MCTS, counterfactual reasoning, or A/B testing simulation strategies.
+The fork gets a system-generated `world_id` and an identical entity/component snapshot at the source's current tick. Source and fork then diverge independently.
+
+**What's cloned:** tick, entity-to-signature mapping, entity counter, live archetype snapshots (re-stamped with the new `world_id`), processors, and non-broker resources.
+
+**What's not cloned:** pending spawn/despawn caches (step first to materialize), lifecycle hooks, and the `CommandBroker` (re-injected by the service).
+
+Use this for MCTS, counterfactual reasoning, or A/B testing simulation strategies.
