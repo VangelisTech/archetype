@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -94,7 +94,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyiceberg", extras = ["daft", "sql-sqlite"], specifier = ">=0.11.0" },
+    { name = "pyiceberg", extras = ["daft", "sql-sqlite"] },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.26" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
