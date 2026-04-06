@@ -65,3 +65,8 @@ data/catalog.db
 .pytest_cache/
 archetype.egg-info/
 coverage.xml
+.coverage
+
+# Rust build artifacts
+crates/*/target/
+Cargo.lock
