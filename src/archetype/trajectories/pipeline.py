@@ -161,7 +161,7 @@ class TrajectoryPipeline:
         for _ in range(steps):
             await self._container.simulation_service.step(
                 self._world.world_id,
-                RunConfig(num_steps=1),
+                RunConfig(num_steps=1, prefer_live_reads=True),
             )
 
     async def results(self) -> list[dict[str, Any]]:
