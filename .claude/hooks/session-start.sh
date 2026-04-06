@@ -1,16 +1,26 @@
 #!/bin/bash
 set -euo pipefail
 
-# Only run in remote (web) environments
+# Only run in remote (Claude Code on the web) environments
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
-# Install dev tools (linter, test runner, HTTP client)
-pip install ruff pytest pytest-asyncio pytest-cov httpx
+cd "$CLAUDE_PROJECT_DIR"
 
-# Try editable install; may fail due to Python version or dep pins
-pip install --no-deps -e . 2>/dev/null || true
+# Bootstrap uv if the sandbox doesn't ship with it
+if ! command -v uv >/dev/null 2>&1; then
+  pip install --user uv
+  export PATH="$HOME/.local/bin:$PATH"
+fi
 
-# Ensure PYTHONPATH includes src/ for imports regardless
-echo 'export PYTHONPATH="${CLAUDE_PROJECT_DIR}/src:${PYTHONPATH:-}"' >> "$CLAUDE_ENV_FILE"
+# Project requires Python >=3.12 — uv fetches the interpreter if missing
+uv python install 3.12
+
+# Sync project + dev dependency-group from pyproject.toml / uv.lock
+# This mirrors `make sync-dev` and is the same env CI uses for `make ci`.
+uv sync --group dev
+
+# Expose the venv on PATH so `ruff`, `pytest`, `archetype` work without `uv run`
+echo "export PATH=\"${CLAUDE_PROJECT_DIR}/.venv/bin:\${PATH}\"" >> "$CLAUDE_ENV_FILE"
+echo "export VIRTUAL_ENV=\"${CLAUDE_PROJECT_DIR}/.venv\"" >> "$CLAUDE_ENV_FILE"
