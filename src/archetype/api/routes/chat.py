@@ -124,11 +124,13 @@ async def navigate_to_node(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """Move the cursor to a specific node and return the new active path."""
-    graph = graphs.channel(world_id, channel)
     try:
         node_uuid = UUID7(req.node_id)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Malformed UUID: {req.node_id}") from None
+    graph = graphs.get_channel(world_id, channel)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Channel {channel} not found")
     try:
         graph.navigate(node_uuid)
     except KeyError:
@@ -154,7 +156,9 @@ async def auto_navigate(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """Auto-navigate to the deepest leaf along the most recent branch."""
-    graph = graphs.channel(world_id, channel)
+    graph = graphs.get_channel(world_id, channel)
+    if graph is None:
+        return ActivePathResponse(world_id=world_id, channel=channel, path=[])
     graph.auto_nav_to_leaf()
     commands = graph.active_path()
     return ActivePathResponse(
@@ -177,7 +181,9 @@ async def get_branches(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """List all branches (children) at a given node."""
-    graph = graphs.channel(world_id, channel)
+    graph = graphs.get_channel(world_id, channel)
+    if graph is None:
+        return []
     try:
         nid = UUID7(node_id)
     except ValueError:
@@ -202,7 +208,9 @@ async def prune_subtree(
     graphs: ChatGraphRegistry = Depends(get_chat_graphs),
 ):
     """Remove a node and all its descendants."""
-    graph = graphs.channel(world_id, channel)
+    graph = graphs.get_channel(world_id, channel)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Channel {channel} not found")
     try:
         nid = UUID7(node_id)
     except ValueError:

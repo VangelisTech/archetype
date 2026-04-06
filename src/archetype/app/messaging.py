@@ -382,13 +382,17 @@ class MessageDeliveryProcessor(AsyncProcessor):
         if "deliveryreceipt__receipts" not in df.column_names:
             df = df.with_column(
                 "deliveryreceipt__receipts",
-                col("new_receipts"),
+                concat_lists(
+                    clear_list(col("entity_id").cast(DataType.string())),
+                    col("new_receipts"),
+                ),
             )
 
         df = df.with_column(
             "outbox__messages",
             clear_list(col("entity_id").cast(DataType.string())),
         )
-        df = df.exclude("new_inbox", "new_receipts")
+        # Drop join artifact columns — LEFT JOINs leak right-side keys
+        df = df.exclude("new_inbox", "new_receipts", "receiver_id", "sender_id")
 
         return df
