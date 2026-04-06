@@ -2,8 +2,8 @@
 
 Auto-merge is gated by **tiered status checks**. The tier is determined by the
 paths a PR touches. A PR's tier is the *highest* tier any changed path falls
-into — touching `core/` once makes the whole PR Tier 1, regardless of what else
-it changes.
+into — touching `src/archetype/core/` once makes the whole PR Tier 3,
+regardless of what else it changes.
 
 The principle: **the blast radius of a change sets the bar for merging it.** A
 docs typo and a scheduler rewrite should not clear the same gate.
@@ -12,12 +12,11 @@ docs typo and a scheduler rewrite should not clear the same gate.
 
 ### Tier 0 — Docs & Meta
 
-**Paths:** `docs/**`, `*.md`, `LICENSE`, `assets/**`, `.github/ISSUE_TEMPLATE/**`
+**Paths:** `docs/**`, `**/*.md`, `LICENSE`, `assets/**`, `.github/ISSUE_TEMPLATE/**`
 
 **Required checks:**
-- `format` (ruff format --check, in case of embedded code blocks touched via
-  tooling)
-- Link-check on changed markdown (if/when added)
+- `format` (`ruff format --check` on `src/` and `tests/`)
+- Link-check on changed markdown (if/when added as a docs-specific check)
 
 **Rationale:** Zero runtime impact. Don't gate on `ci` — there's nothing to
 test. Auto-merge should be near-instant.
@@ -67,7 +66,8 @@ here surface as broken agents in the field. The 70% branch-coverage floor
 - `ci`
 - `typecheck` **promoted to required** (remove `continue-on-error` for core/)
 - **Coverage delta ≥ 0** on changed files
-- **Benchmark regression check** (`bench/` runs; >10% regression blocks)
+- **Benchmark regression check** (if/when added; `bench/` runs and >10%
+  regression blocks)
 - **Human approval required** — auto-merge disabled or requires CODEOWNERS
   approval from a core maintainer
 
@@ -88,7 +88,9 @@ require synchronous human review.
 
 **Required checks:**
 - `ci` (lock-check + full test suite)
-- **Security audit** (`daily-security-audit.yml` or equivalent on-PR run)
+- **Security audit** (requires a PR-triggered variant of
+  `daily-security-audit.yml`; the current workflow is schedule-only and cannot
+  report PR status — see #65 for adding this)
 - **Semver discrimination:**
   - Patch bumps (`x.y.Z`): auto-merge if `ci` green
   - Minor bumps (`x.Y.z`): auto-merge if `ci` green *and* no core/ imports
@@ -124,10 +126,16 @@ tier-d-deps:
   - uv.lock
 ```
 
-A workflow then picks the **highest-numbered** tier label present and
-configures the matching required-checks set via a status check named
-`auto-merge-gate`. Branch protection on `main` requires `auto-merge-gate` to
-pass; the gate resolves to the correct check matrix per tier.
+A workflow then picks the **highest** tier label present and configures the
+matching required-checks set via a status check named `auto-merge-gate`. Branch
+protection on `main` requires `auto-merge-gate` to pass; the gate resolves to
+the correct check matrix per tier.
+
+**Tier precedence** (highest to lowest): Tier 3 > Tier 2 > Tier 1 > Tier 0.
+Tier D is evaluated independently — if a PR touches *only* `pyproject.toml` /
+`uv.lock`, Tier D applies. If it also touches source code, the numeric tier
+takes precedence and Tier D's semver rules are ignored (the full code-change
+gates apply instead).
 
 ## Disabling Auto-Merge
 
