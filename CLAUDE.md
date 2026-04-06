@@ -150,7 +150,7 @@ Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional
 
 ## Project Structure
 
-- **`src/archetype/core/`** — ECS engine. **Read-only.** Do not modify without explicit approval.
+- **`src/archetype/core/`** — ECS engine. Changes here must not alter existing semantics or break existing contracts. Adding a public accessor to expose existing state (e.g. `Resources.items()`) or replacing a deprecated stdlib pattern is fine. Changing how processors execute, how entities are stored, or how the tick lifecycle works requires discussion.
 - **`src/archetype/app/`** — Service layer. Extend carefully.
 - **`src/archetype/api/`** + **`cli/`** — REST API and CLI. Safe to modify freely.
 - **`tests/`** — Every new feature needs tests.
@@ -174,10 +174,11 @@ Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional
 - **Components:** `_json` suffix for complex types serialized as strings
 - **Processors:** one concern each, use `priority` for ordering (lower = first)
 - **Imports:** ruff handles sorting (isort rules via `I` select)
+- **System-generated identities:** When a service method creates a resource with a system-generated identity (`world_id`, `entity_id`, `run_id`), the interface must not accept that identity as a parameter. Expose only what callers legitimately control (e.g. a human-readable `name`, not a `WorldConfig` that bundles a `world_id` field).
 
 ## What NOT to Do
 
 - Don't run `uv sync --dev` in CI — use `--group dev`
 - Don't bypass `make ci` with raw pytest invocations for validation
-- Don't modify `core/` without discussion
+- Don't change `core/` semantics without discussion (additive, non-breaking changes are OK)
 - Don't add deps without checking `uv lock --check` passes
