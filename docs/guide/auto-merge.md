@@ -14,11 +14,15 @@ docs typo and a scheduler rewrite should not clear the same gate.
 
 **Paths:** `docs/**`, `**/*.md`, `LICENSE`, `assets/**`, `.github/ISSUE_TEMPLATE/**`
 
-**Required checks (today):**
+**Required checks:**
 - `format` (`ruff format --check` on `src/` and `tests/`)
+- `spelling` — typos-cli spell check ([`_typos.toml`](../../_typos.toml))
+- `markdown-lint` — markdownlint-cli2 ([`.markdownlint.yaml`](../../.markdownlint.yaml))
+- `link-check` — lychee link validation ([`lychee.toml`](../../lychee.toml))
+- `mintlify-build` — Mintlify build to catch broken frontmatter/MDX
 
-**Planned checks (not yet implemented):**
-- Link-check on changed markdown (see [#65](https://github.com/VangelisTech/archetype/issues/65))
+These checks run via the [`docs.yml`](../../.github/workflows/docs.yml) workflow
+on PRs touching `docs/**` or `**/*.md`.
 
 **Rationale:** Zero runtime impact. Don't gate on `ci` — there's nothing to
 test. Auto-merge should be near-instant.

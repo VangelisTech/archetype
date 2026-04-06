@@ -1,0 +1,39 @@
+# lychee link checker configuration
+# https://lychee.cli.rs/
+
+# Timeout per request (seconds)
+timeout = 30
+
+# Max concurrent requests
+max_concurrency = 8
+
+# Accept status codes (200 + redirects)
+accept = [200, 204, 301, 302, 403, 429]
+
+# Exclude patterns
+exclude = [
+    # Localhost / dev servers
+    "http://localhost",
+    "http://127\\.0\\.0\\.1",
+    # Mintlify internal links (resolved at build time)
+    "^/",
+    # Email addresses
+    "^mailto:",
+    # Anchors-only links
+    "^#",
+]
+
+# Only check docs and markdown
+include = [
+    "docs/**/*.md",
+    "docs/**/*.mdx",
+    "*.md",
+]
+
+# Skip these paths entirely
+exclude_path = [
+    "node_modules",
+    ".venv",
+    "uv.lock",
+    "docs/.mintlify",
+]
