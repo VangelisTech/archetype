@@ -66,3 +66,4 @@ data/catalog.db
 .pytest_cache/
 archetype.egg-info/
 coverage.xml
+.coverage
