@@ -17,6 +17,15 @@ if TYPE_CHECKING:
 ROLE_PERMS: dict[str, set[str]] = {
     "viewer": {"get_state", "get_world", "get_run", "query_world"},
     "coder": {"add_component", "remove_component", "update"},
+    "operator": {
+        "spawn",
+        "despawn",
+        "update",
+        "get_state",
+        "get_world",
+        "get_run",
+        "query_world",
+    },
     "maintainer": {
         "spawn",
         "despawn",

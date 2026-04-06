@@ -68,7 +68,7 @@ class TrajectoryPipeline:
         self._sampling = SamplingConfig()
         self._container: ServiceContainer | None = None
         self._world: Any = None  # AsyncWorld, set after init
-        self._ctx = ctx or ActorCtx(id=uuid7(), roles={"pipeline"})
+        self._ctx = ctx or ActorCtx(id=uuid7(), roles={"operator"})
         self._initialized = False
         self._owns_container = False  # tracks whether we created the container
 
