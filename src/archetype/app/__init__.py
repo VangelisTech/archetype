@@ -29,6 +29,7 @@ from archetype.app.models import (
     WorldSnapshot,
 )
 from archetype.app.query_service import QueryService
+from archetype.app.registry import WorldRegistry
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
@@ -47,6 +48,7 @@ __all__ = [
     # Infrastructure
     "CommandBroker",
     "WorldFactory",
+    "WorldRegistry",
     # Models
     "Command",
     "CommandType",

@@ -12,6 +12,7 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.query_service import QueryService
+from archetype.app.registry import default_registry_path
 from archetype.app.simulation_service import SimulationService
 from archetype.app.world_service import WorldService
 
@@ -25,7 +26,7 @@ _default_ctx = ActorCtx(id=uuid7(), roles={"admin"})
 def get_container() -> ServiceContainer:
     global _container
     if _container is None:
-        _container = ServiceContainer()
+        _container = ServiceContainer(registry_path=default_registry_path())
     return _container
 
 

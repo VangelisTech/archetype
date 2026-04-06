@@ -590,3 +590,39 @@ Use cases:
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
 14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
+
+---
+
+## Single Process, Single Event Loop (Apr 2026)
+
+> **For AI Agents:** This is a hard architectural constraint. Do not design for multi-process or multi-server deployments.
+
+Archetype runs as **one `archetype serve` process**. Daft owns the cores — it manages thread pools, memory, and parallelism internally. `SimulationService.run_all` drives all worlds concurrently via `asyncio.gather` in a single event loop. `AsyncWorld.step` parallelizes across archetypes the same way.
+
+**Consequences:**
+
+- **The CLI is a thin HTTP client.** Every command (except `serve`) is an `httpx` call to the running server. The CLI never instantiates a `ServiceContainer` — that would create an isolated, ephemeral process that can't participate in the server's event loop or share world state.
+- **Never spin up a second server.** There is no multi-node or multi-process coordination layer. If you need more compute, scale the Daft cluster, not the server count.
+- **World lifecycle mutations route through the CommandBroker.** `CREATE_WORLD`, `DESTROY_WORLD`, `FORK_WORLD` go through `CommandService.submit()` → broker lock → `apply_world_lifecycle()`. This gives RBAC, audit history, and serialized writes for free. Use `tick=0` for immediate execution (not tick-scheduled).
+
+**State across restarts:**
+
+A `WorldRegistry` (JSON file at `./archetype_data/archetype_registry.json`) catalogs world metadata (id, name, storage URI, namespace, tick). The server calls `discover_worlds()` on startup to rehydrate. This is a **boot catalog**, not a coordination mechanism — single writer, no locking needed.
+
+---
+
+## Daft 0.7.x: `with_column` Not `with_columns` (Apr 2026)
+
+`DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional arguments` in Daft 0.7.x. The method accepts **one expression at a time**. Chain calls instead:
+
+```python
+# ❌ WRONG — multiple positional args
+df = df.with_columns(
+    (col("position__x") + col("velocity__vx")).alias("position__x"),
+    (col("position__y") + col("velocity__vy")).alias("position__y"),
+)
+
+# ✅ RIGHT — chain single expressions
+df = df.with_column("position__x", col("position__x") + col("velocity__vx"))
+df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
+```

@@ -14,6 +14,7 @@ from uuid_utils import UUID, uuid7
 from archetype.app.broker import CommandBroker
 from archetype.app.factory import WorldFactory
 from archetype.app.models import WorldInfo
+from archetype.app.registry import WorldRegistry
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
@@ -29,16 +30,19 @@ class WorldService:
     - World lookup by ID or name
     - World forking
     - Clean shutdown of all managed resources
+    - Optional persistent discovery via ``WorldRegistry``
     """
 
     def __init__(
         self,
         storage_service: StorageService,
         broker: CommandBroker | None = None,
+        registry: WorldRegistry | None = None,
     ):
         self.storage_service = storage_service
         self.factory = WorldFactory(storage_service)
         self._broker = broker
+        self._registry = registry
         self._worlds: dict[UUID, iWorld] = {}
         self._world_names: dict[str, UUID] = {}
 
@@ -83,6 +87,9 @@ class WorldService:
                 raise ValueError(f"World with name '{config.name}' already exists.")
             self._world_names[config.name] = world.world_id
 
+        self._persist_entry(world, storage_config)
+        self._attach_registry_sync(world)
+
         return world
 
     def get_world(self, world_id: UUID) -> iWorld:
@@ -118,6 +125,8 @@ class WorldService:
                 if uid == world_id:
                     del self._world_names[name]
             del self._worlds[world_id]
+        if self._registry is not None:
+            self._registry.delete(world_id)
 
     async def fork_world(
         self,
@@ -226,3 +235,79 @@ class WorldService:
                 )
 
         return new_world
+
+    # ------------------------------------------------------------------
+    # Registry-backed discovery
+    # ------------------------------------------------------------------
+
+    async def discover_worlds(self) -> list[UUID]:
+        """Rehydrate worlds listed in the registry into the in-memory cache.
+
+        Returns the list of newly loaded world IDs. If no registry is
+        configured, returns an empty list.
+        """
+        if self._registry is None:
+            return []
+
+        loaded: list[UUID] = []
+        for entry in self._registry.list_entries():
+            try:
+                wid = UUID(entry["world_id"])
+            except (KeyError, ValueError):
+                continue
+            if wid in self._worlds:
+                continue
+
+            name = entry.get("name")
+            storage_config = StorageConfig(
+                uri=entry.get("storage_uri", "./archetype_data"),
+                namespace=entry.get("namespace", "archetypes"),
+            )
+            config = WorldConfig(world_id=wid, name=name)
+
+            # Reuse create_world so broker injection, registry hooks, and
+            # name tracking all go through a single code path.
+            world = await self.create_world(config, storage_config)
+
+            # Restore tick from registry so step/run continues where left off.
+            if isinstance(world, AsyncWorld):
+                world.tick = int(entry.get("tick", 0) or 0)
+
+            loaded.append(wid)
+
+        return loaded
+
+    def _persist_entry(self, world: iWorld, storage_config: StorageConfig) -> None:
+        if self._registry is None:
+            return
+        self._registry.upsert(
+            world.world_id,
+            {
+                "world_id": str(world.world_id),
+                "name": getattr(world, "name", None),
+                "storage_uri": str(storage_config.uri),
+                "namespace": storage_config.namespace,
+                "tick": int(getattr(world, "tick", 0)),
+            },
+        )
+
+    def _attach_registry_sync(self, world: iWorld) -> None:
+        """Attach a post_tick hook that keeps the registry tick in sync.
+
+        Captures the full registry entry in the closure so each tick only
+        writes (no read-modify-write) and never drops metadata fields.
+        """
+        if self._registry is None or not isinstance(world, AsyncWorld):
+            return
+        registry = self._registry
+        world_id = world.world_id
+        # Snapshot the current entry so the hook never re-reads from disk.
+        cached_entry = dict(registry.get(world_id) or {})
+        cached_entry.setdefault("world_id", str(world_id))
+        cached_entry.setdefault("name", getattr(world, "name", None))
+
+        async def _sync_tick(world, tick, **_kw):  # noqa: ARG001 — hook signature
+            cached_entry["tick"] = int(tick)
+            registry.upsert(world_id, cached_entry)
+
+        world.add_hook("post_tick", _sync_tick)

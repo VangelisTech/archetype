@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 
 [[package]]
@@ -41,6 +41,7 @@ source = { editable = "." }
 dependencies = [
     { name = "daft", extra = ["iceberg", "lance", "openai"] },
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "lancedb" },
     { name = "psutil" },
     { name = "pydantic" },
@@ -85,6 +86,7 @@ requires-dist = [
     { name = "daft", extras = ["openai", "lance", "iceberg"], specifier = ">=0.7.4" },
     { name = "esper", marker = "extra == 'benchmark'", specifier = ">=2.45" },
     { name = "fastapi", specifier = ">=0.110" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "ipykernel", marker = "extra == 'dev'" },
     { name = "lancedb", specifier = ">=0.22.0" },
@@ -94,7 +96,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "pyiceberg", extras = ["daft", "sql-sqlite"], specifier = ">=0.11.0" },
+    { name = "pyiceberg", extras = ["daft", "sql-sqlite"] },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.26" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },

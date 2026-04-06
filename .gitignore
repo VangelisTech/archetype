@@ -1,5 +1,6 @@
 dist/
 build/
+archetype_data/
 *.egg-info/
 __pycache__/
 .venv/
@@ -65,3 +66,4 @@ data/catalog.db
 .pytest_cache/
 archetype.egg-info/
 coverage.xml
+.coverage
