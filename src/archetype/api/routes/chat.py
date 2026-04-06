@@ -82,7 +82,11 @@ async def branch_conversation(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown command type: {req.type}") from None
 
-    parent_uuid = UUID7(req.parent_id)
+    try:
+        parent_uuid = UUID7(req.parent_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Malformed UUID: {req.parent_id}") from None
+
     # append_history=False: the branch route manages graph insertion directly
     cmd = Command(
         type=cmd_type,
@@ -94,6 +98,9 @@ async def branch_conversation(
         channel=channel,
     )
 
+    # Governance check BEFORE mutating the graph — rejected commands must not leave branches
+    await broker.enqueue(world_id, cmd, ctx)
+
     graph = graphs.channel(world_id, channel)
     try:
         graph.branch(parent_uuid, cmd, label=req.label)
@@ -101,9 +108,6 @@ async def branch_conversation(
         raise HTTPException(
             status_code=404, detail=f"Parent node {req.parent_id} not found"
         ) from None
-
-    # Enqueue for processing (append_history=False avoids double-insert into graph)
-    await broker.enqueue(world_id, cmd, ctx)
 
     return CommandResponse(id=str(cmd.id), type=req.type, tick=req.tick, priority=req.priority)
 
@@ -118,7 +122,11 @@ async def navigate_to_node(
     """Move the cursor to a specific node and return the new active path."""
     graph = graphs.channel(world_id, channel)
     try:
-        graph.navigate(UUID7(req.node_id))
+        node_uuid = UUID7(req.node_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Malformed UUID: {req.node_id}") from None
+    try:
+        graph.navigate(node_uuid)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Node {req.node_id} not found") from None
 
@@ -166,7 +174,11 @@ async def get_branches(
 ):
     """List all branches (children) at a given node."""
     graph = graphs.channel(world_id, channel)
-    branches = graph.branches_at(UUID7(node_id))
+    try:
+        nid = UUID7(node_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Malformed UUID: {node_id}") from None
+    branches = graph.branches_at(nid)
     return [
         {
             "cmd_id": str(b.cmd.id),
@@ -187,5 +199,9 @@ async def prune_subtree(
 ):
     """Remove a node and all its descendants."""
     graph = graphs.channel(world_id, channel)
-    removed = graph.prune(UUID7(node_id))
+    try:
+        nid = UUID7(node_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Malformed UUID: {node_id}") from None
+    removed = graph.prune(nid)
     return {"removed": removed, "cursor": str(graph.cursor) if graph.cursor else None}

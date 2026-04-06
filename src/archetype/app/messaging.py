@@ -116,7 +116,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
     If no CommandBroker is in Resources, all messages are delivered (no governance).
     """
 
-    components = (Outbox, Inbox)
+    components = (Outbox, Inbox, DeliveryReceipt)
     priority = -100
 
     async def process(
@@ -143,9 +143,12 @@ class MessageDeliveryProcessor(AsyncProcessor):
 
         # Build message routing table
         outgoing: list[dict[str, Any]] = []  # parsed outbox entries
+        has_outbox_data = False
         for row in rows:
             sender_id = row["entity_id"]
             raw_msgs = row.get("outbox__messages") or []
+            if raw_msgs:
+                has_outbox_data = True
             for raw in raw_msgs:
                 try:
                     msg = json.loads(raw) if isinstance(raw, str) else raw
@@ -156,7 +159,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
                 msg["tick"] = tick
                 outgoing.append(msg)
 
-        if not outgoing:
+        if not has_outbox_data:
             return df
 
         # 2. Route messages: group by receiver
@@ -236,11 +239,15 @@ class MessageDeliveryProcessor(AsyncProcessor):
                 )
                 graphs.channel(world_id, channel).append(cmd)
 
-        # 4. Apply inbox deliveries and clear outboxes via row-wise UDFs
+        # 4. Apply inbox deliveries, receipts, and clear outboxes via row-wise UDFs
         @daft.func
         def deliver_inbox(entity_id: int, current_inbox: list[str]) -> list[str]:
             inbox = list(current_inbox) if current_inbox else []
             return inbox + deliveries.get(entity_id, [])
+
+        @daft.func
+        def deliver_receipts(entity_id: int) -> list[str]:
+            return receipts.get(entity_id, [])
 
         @daft.func
         def clear_outbox(entity_id: int) -> list[str]:
@@ -249,6 +256,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
         df = df.with_columns(
             {
                 "inbox__messages": deliver_inbox(col("entity_id"), col("inbox__messages")),
+                "deliveryreceipt__receipts": deliver_receipts(col("entity_id")),
                 "outbox__messages": clear_outbox(col("entity_id")),
             }
         )

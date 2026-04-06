@@ -71,7 +71,6 @@ class BranchRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     priority: int = 0
     label: str | None = None
-    channel: str = "general"
 
 
 class NavigateRequest(BaseModel):

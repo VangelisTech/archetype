@@ -28,7 +28,10 @@ async def submit_command(
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown command type: {req.type}") from None
 
-    parent_id = UUID7(req.parent_id) if req.parent_id else None
+    try:
+        parent_id = UUID7(req.parent_id) if req.parent_id else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Malformed UUID: {req.parent_id}") from None
     cmd = Command(
         type=cmd_type,
         tick=req.tick,
@@ -58,7 +61,10 @@ async def submit_batch(
             cmd_type = CommandType(r.type)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Unknown command type: {r.type}") from None
-        parent_id = UUID7(r.parent_id) if r.parent_id else None
+        try:
+            parent_id = UUID7(r.parent_id) if r.parent_id else None
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Malformed UUID: {r.parent_id}") from None
         cmds.append(
             Command(
                 type=cmd_type,

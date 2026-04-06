@@ -187,12 +187,14 @@ class ChatGraph:
 
     def subtree(self, node_id: UUID) -> list[UUID]:
         """BFS from node_id, return all descendant IDs (including node_id)."""
+        from collections import deque
+
         if node_id not in self._nodes:
             return []
         result = []
-        queue = [node_id]
+        queue = deque([node_id])
         while queue:
-            nid = queue.pop(0)
+            nid = queue.popleft()
             result.append(nid)
             node = self._nodes.get(nid)
             if node:

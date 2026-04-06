@@ -89,70 +89,88 @@ class ClaudeThinkProcessor(AsyncProcessor):
         for cmd in graph.active_path():
             sender = cmd.payload.get("sender_id", "system")
             sender_name = name_by_id.get(sender, f"agent-{sender}")
-            context_msgs.append({
-                "role": "user",
-                "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
-            })
+            context_msgs.append(
+                {
+                    "role": "user",
+                    "content": f"[{sender_name}]: {cmd.payload.get('content', '')}",
+                }
+            )
         context_json = json.dumps(context_msgs)
 
-        # Capture for closure
-        client = self.client
+        # @daft.cls() for non-serializable state — client created per worker,
+        # never captured in a pickle-unfriendly closure.
         model = self.model
         channel = self.channel
 
-        @daft.func
-        async def think_and_respond(
-            entity_id: int,
-            name: str,
-            role: str,
-            inbox_messages: list[str],
-        ) -> list[str]:
-            """Row-wise async: each entity calls Claude and produces outbox messages."""
-            history = json.loads(context_json)
+        @daft.cls()
+        class ClaudeResponder:
+            def __init__(self):
+                import anthropic
 
-            # Add this entity's inbox to context
-            for raw in (inbox_messages or []):
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
-                sid = parsed.get("sender_id", "?")
-                sname = name_by_id.get(sid, f"agent-{sid}")
-                history.append({
-                    "role": "user",
-                    "content": f"[{sname}]: {parsed.get('content', '')}",
-                })
+                self.client = anthropic.AsyncAnthropic()
 
-            history.append({
-                "role": "user",
-                "content": (
-                    f"You are {name}. It is tick {tick}. "
-                    f"Respond in character with a short message (1-2 sentences) "
-                    f"to continue the conversation."
-                ),
-            })
+            async def respond(
+                self,
+                entity_id: int,
+                name: str,
+                role: str,
+                inbox_messages: list[str],
+            ) -> list[str]:
+                """Row-wise async: each entity calls Claude and produces outbox messages."""
+                history = json.loads(context_json)
 
-            # Call Claude (async — Daft manages concurrency)
-            response = await client.messages.create(
-                model=model,
-                max_tokens=150,
-                system=role,
-                messages=history,
-            )
-            response_text = response.content[0].text
+                # Add this entity's inbox to context
+                for raw in inbox_messages or []:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                    sid = parsed.get("sender_id", "?")
+                    sname = name_by_id.get(sid, f"agent-{sid}")
+                    history.append(
+                        {
+                            "role": "user",
+                            "content": f"[{sname}]: {parsed.get('content', '')}",
+                        }
+                    )
 
-            # Round-robin target
-            other_ids = [aid for aid in all_ids if aid != entity_id]
-            if not other_ids:
-                return []
+                history.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"You are {name}. It is tick {tick}. "
+                            f"Respond in character with a short message (1-2 sentences) "
+                            f"to continue the conversation."
+                        ),
+                    }
+                )
 
-            target_id = other_ids[tick % len(other_ids)]
-            return [json.dumps({
-                "receiver_id": target_id,
-                "channel": channel,
-                "content": f"{name}: {response_text}",
-            })]
+                # Call Claude (async — Daft manages concurrency)
+                response = await self.client.messages.create(
+                    model=model,
+                    max_tokens=150,
+                    system=role,
+                    messages=history,
+                )
+                response_text = response.content[0].text
 
+                # Round-robin target
+                other_ids = [aid for aid in all_ids if aid != entity_id]
+                if not other_ids:
+                    return []
+
+                target_id = other_ids[tick % len(other_ids)]
+                return [
+                    json.dumps(
+                        {
+                            "receiver_id": target_id,
+                            "channel": channel,
+                            "content": f"{name}: {response_text}",
+                        }
+                    )
+                ]
+
+        responder = ClaudeResponder()
         return df.with_column(
             "outbox__messages",
-            think_and_respond(
+            responder.respond(
                 col("entity_id"),
                 col("agent__name"),
                 col("agent__role"),
@@ -166,6 +184,7 @@ class ClaudeThinkProcessor(AsyncProcessor):
 
 async def main():
     import pyarrow as pa
+
     from archetype.core.aio.async_system import AsyncSystem
     from archetype.core.aio.async_world import AsyncWorld
     from archetype.core.archetype import Archetype
@@ -194,8 +213,7 @@ async def main():
 
         async def update(self, df, sig, tick, world_id, run_id):
             df = (
-                df
-                .with_column("tick", daft.lit(tick))
+                df.with_column("tick", daft.lit(tick))
                 .with_column("world_id", daft.lit(str(world_id)))
                 .with_column("run_id", daft.lit(str(run_id)))
             )
@@ -224,10 +242,12 @@ async def main():
 
     # Register processors
     await system.add_processor(MessageDeliveryProcessor())
-    await system.add_processor(ClaudeThinkProcessor(
-        model="claude-sonnet-4-6",
-        channel="debate",
-    ))
+    await system.add_processor(
+        ClaudeThinkProcessor(
+            model="claude-sonnet-4-6",
+            channel="debate",
+        )
+    )
 
     print(f"\nResources: {world.resources}")
     print("Processors:")
@@ -240,17 +260,19 @@ async def main():
             Agent(
                 name="Optimist",
                 role="You believe AI will be enormously beneficial for humanity. "
-                     "You are thoughtful but enthusiastic. Keep responses to 1-2 sentences.",
+                "You are thoughtful but enthusiastic. Keep responses to 1-2 sentences.",
             ),
-            Outbox(), Inbox(),
+            Outbox(),
+            Inbox(),
         ],
         [
             Agent(
                 name="Skeptic",
                 role="You are cautious about AI risks and push back on hype. "
-                     "You ask hard questions. Keep responses to 1-2 sentences.",
+                "You ask hard questions. Keep responses to 1-2 sentences.",
             ),
-            Outbox(), Inbox(),
+            Outbox(),
+            Inbox(),
         ],
     ]
     for components in agents:

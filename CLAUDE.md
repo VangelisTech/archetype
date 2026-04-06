@@ -124,7 +124,10 @@ Column naming:  componentname__fieldname
 ## Development
 
 ```bash
-# Install
+# Install (primary — matches CI)
+uv sync --group dev
+
+# Alternative
 pip install -e ".[dev]"
 
 # Test
