@@ -40,9 +40,7 @@ async def test_fork_preserves_tick_and_entity_state(tmp_path):
         await source.run(rc)
         source_tick = source.tick
 
-        fork = await container.world_service.fork_world(
-            source.world_id, WorldConfig(name="fork-a"), storage
-        )
+        fork = await container.world_service.fork_world(source.world_id, "fork-a", storage)
         assert isinstance(fork, AsyncWorld)
 
         # Fork has a new world_id and identical tick/entity mapping.
@@ -75,9 +73,7 @@ async def test_fork_state_visible_via_store_reads(tmp_path):
         rc = RunConfig(num_steps=2)
         await source.run(rc)
 
-        fork = await container.world_service.fork_world(
-            source.world_id, WorldConfig(name="fork-b"), storage
-        )
+        fork = await container.world_service.fork_world(source.world_id, "fork-b", storage)
         assert isinstance(fork, AsyncWorld)
 
         # Query the store directly under the new world_id for the last source tick.
@@ -109,9 +105,7 @@ async def test_fork_diverges_independently_from_source(tmp_path):
         rc = RunConfig(num_steps=1)
         await source.run(rc)
 
-        fork = await container.world_service.fork_world(
-            source.world_id, WorldConfig(name="fork-c"), storage
-        )
+        fork = await container.world_service.fork_world(source.world_id, "fork-c", storage)
         assert isinstance(fork, AsyncWorld)
 
         # entity_counter was cloned: each world has its own counter, but both
@@ -159,9 +153,7 @@ async def test_fork_inherits_processors_not_hooks_or_broker(tmp_path):
 
         source.add_hook("post_tick", _hook)
 
-        fork = await container.world_service.fork_world(
-            source.world_id, WorldConfig(name="fork-d"), storage
-        )
+        fork = await container.world_service.fork_world(source.world_id, "fork-d", storage)
         assert isinstance(fork, AsyncWorld)
 
         # Processors inherited.
@@ -195,9 +187,7 @@ async def test_fork_rejects_pending_mutations(tmp_path):
         await source.create_entity([Position(x=1, y=1)])
 
         with pytest.raises(ValueError, match="pending mutations"):
-            await container.world_service.fork_world(
-                source.world_id, WorldConfig(name="fork-e"), storage
-            )
+            await container.world_service.fork_world(source.world_id, "fork-e", storage)
     finally:
         await container.shutdown()
 
@@ -209,9 +199,7 @@ async def test_fork_unknown_source_raises(tmp_path):
         from uuid_utils import uuid7
 
         with pytest.raises(KeyError):
-            await container.world_service.fork_world(
-                uuid7(), WorldConfig(name="x"), StorageConfig()
-            )
+            await container.world_service.fork_world(uuid7(), "x", StorageConfig())
     finally:
         await container.shutdown()
 
@@ -229,6 +217,6 @@ async def test_fork_rejects_non_async_world(tmp_path):
     with pytest.raises(TypeError):
         await svc.fork_world(
             _Fake.world_id,
-            WorldConfig(name="x"),
+            "x",
             StorageConfig(),  # type: ignore[arg-type]
         )

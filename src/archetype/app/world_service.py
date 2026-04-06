@@ -122,15 +122,18 @@ class WorldService:
     async def fork_world(
         self,
         source_world_id: UUID,
-        config: WorldConfig,
+        name: str | None,
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> iWorld:
         """
         Fork a world: create a new world that clones the current state of the source.
 
-        The fork gets a new ``world_id`` but starts from an identical entity/component
-        snapshot at the source's current tick. Source and fork then diverge independently.
+        The fork always receives a system-generated ``world_id``. Callers control
+        only the human-readable ``name`` and storage placement.
+
+        The fork starts from an identical entity/component snapshot at the source's
+        current tick. Source and fork then diverge independently.
 
         Inheritance policy (see archetype#61):
           * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_entity_counter``,
@@ -148,8 +151,7 @@ class WorldService:
             KeyError: If ``source_world_id`` is not managed.
             TypeError: If the source is not an ``AsyncWorld``.
             ValueError: If the source has pending mutations (un-materialized
-                spawn/despawn caches) or if ``config.world_id`` collides with
-                an already-managed world.
+                spawn/despawn caches).
         """
         import copy as _copy
 
@@ -172,10 +174,7 @@ class WorldService:
                 "Call step() to materialize spawn/despawn caches first."
             )
 
-        # Guard: force a fresh world_id to avoid the idempotent create_world
-        # returning an existing world whose state we'd then overwrite.
-        fork_id = uuid7()
-        fork_config = WorldConfig(world_id=fork_id, name=config.name)
+        fork_config = WorldConfig(world_id=uuid7(), name=name)
 
         # Build a fresh system that shares processor instances with the source.
         # Processors are stateless DataFrame transforms, so sharing is safe.
