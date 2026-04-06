@@ -17,16 +17,16 @@
       "pages": [
         "index",
         "guide/quickstart",
-        "guide/architecture",
-        "guide/core-concepts"
+        "guide/architecture"
       ]
     },
     {
       "group": "Guides",
       "pages": [
-        "guide/dsl",
-        "guide/storage",
-        "guide/glossary"
+        "guide/processors",
+        "guide/examples",
+        "guide/api-reference",
+        "guide/cli-reference"
       ]
     },
     {
