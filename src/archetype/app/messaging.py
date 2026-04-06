@@ -36,16 +36,18 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 import daft
-from daft import DataFrame, col
+from daft import DataFrame, col, lit
+from daft.datatype import DataType
+from daft.functions import try_deserialize
 
 from archetype.app.chat_graph import ChatGraphRegistry
 from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.resources import Resources
+from archetype.core.side_effects import SideEffectCollector
 
 logger = logging.getLogger(__name__)
 
@@ -128,92 +130,131 @@ class MessageDeliveryProcessor(AsyncProcessor):
     ) -> DataFrame:
         # Get optional resources
         graphs: ChatGraphRegistry | None = resources.get(ChatGraphRegistry)
+        collector: SideEffectCollector | None = resources.get(SideEffectCollector)
         world_id = str(kwargs.get("world_id", "default"))
 
-        # 1. Collect all outgoing messages from all entities
-        rows = (
-            df.select(
-                "entity_id",
-                "outbox__messages",
-                "inbox__messages",
-            )
-            .collect()
-            .to_pylist()
-        )
+        # --- 1. Explode outbox messages into individual rows ---
+        msgs = df.select(
+            col("entity_id").alias("sender_id"),
+            col("outbox__messages"),
+        ).explode(col("outbox__messages"))
 
-        # Build message routing table
-        outgoing: list[dict[str, Any]] = []  # parsed outbox entries
-        has_outbox_data = False
-        for row in rows:
-            sender_id = row["entity_id"]
-            raw_msgs = row.get("outbox__messages") or []
-            if raw_msgs:
-                has_outbox_data = True
-            for raw in raw_msgs:
-                try:
-                    msg = json.loads(raw) if isinstance(raw, str) else raw
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                msg["sender_id"] = sender_id
-                msg.setdefault("channel", "general")
-                msg["tick"] = tick
-                outgoing.append(msg)
+        # Drop rows where the exploded value is null (from empty outbox lists)
+        msgs = msgs.where(col("outbox__messages").not_null())
 
-        if not has_outbox_data:
+        # Early exit: if no messages, just clear outboxes and return
+        if msgs.count_rows() == 0:
             return df
 
-        # 2. Route messages: group by receiver
-        deliveries: dict[int, list[str]] = {}  # receiver_id → [json messages]
-        receipts: dict[int, list[str]] = {}  # sender_id → [json receipts]
+        # --- 2. Parse JSON messages into structured fields ---
+        msg_struct_type = DataType.struct(
+            {
+                "receiver_id": DataType.int64(),
+                "channel": DataType.string(),
+                "content": DataType.string(),
+                "_append_history": DataType.bool(),
+                "parent_id": DataType.string(),
+            }
+        )
 
-        entity_ids = {row["entity_id"] for row in rows}
+        msgs = msgs.with_column(
+            "_parsed",
+            try_deserialize(col("outbox__messages"), format="json", dtype=msg_struct_type),
+        )
 
-        for msg in outgoing:
-            receiver_id = msg.get("receiver_id")
-            sender_id = msg["sender_id"]
-            channel = msg["channel"]
+        # Drop rows where JSON parsing failed (null _parsed)
+        msgs = msgs.where(col("_parsed").not_null())
 
-            # Governance: receiver must exist in this archetype
-            if receiver_id is None or receiver_id not in entity_ids:
-                receipt = json.dumps(
-                    {
-                        "receiver_id": receiver_id,
-                        "channel": channel,
-                        "status": "rejected",
-                        "reason": "receiver not found",
-                        "tick": tick,
-                    }
-                )
-                receipts.setdefault(sender_id, []).append(receipt)
-                continue
+        # Extract fields from the parsed struct, applying defaults
+        msgs = msgs.with_columns(
+            {
+                "receiver_id": col("_parsed")["receiver_id"],
+                "channel": col("_parsed")["channel"].fill_null(lit("general")),
+                "content": col("_parsed")["content"].fill_null(lit("")),
+                "_append_history": col("_parsed")["_append_history"].fill_null(lit(True)),
+                "parent_id": col("_parsed")["parent_id"],
+            }
+        )
 
-            # Governance: sender cannot message themselves
-            if receiver_id == sender_id:
-                receipt = json.dumps(
-                    {
-                        "receiver_id": receiver_id,
-                        "channel": channel,
-                        "status": "rejected",
-                        "reason": "cannot message self",
-                        "tick": tick,
-                    }
-                )
-                receipts.setdefault(sender_id, []).append(receipt)
-                continue
+        # Drop rows where receiver_id is null (invalid message)
+        msgs = msgs.where(col("receiver_id").not_null())
 
-            # Deliver
-            delivery = json.dumps(
+        # Drop the intermediate columns
+        msgs = msgs.exclude("outbox__messages", "_parsed")
+
+        # --- 3. Route messages via join: validate receivers exist ---
+        entities = df.select(col("entity_id"))
+
+        # Inner join: only messages whose receiver_id matches a valid entity_id
+        routed = msgs.join(
+            entities,
+            left_on="receiver_id",
+            right_on="entity_id",
+            how="inner",
+        )
+
+        # Filter out self-messaging
+        routed = routed.where(col("sender_id") != col("receiver_id"))
+
+        # --- 4. Build rejection receipts ---
+        # Messages to non-existent receivers (anti-join)
+        rejected_no_receiver = msgs.join(
+            entities,
+            left_on="receiver_id",
+            right_on="entity_id",
+            how="anti",
+        )
+
+        # Messages to self
+        msgs_with_valid_receiver = msgs.join(
+            entities,
+            left_on="receiver_id",
+            right_on="entity_id",
+            how="inner",
+        )
+        rejected_self = msgs_with_valid_receiver.where(col("sender_id") == col("receiver_id"))
+
+        # Build rejection receipt JSON strings
+        @daft.func
+        def make_reject_receipt_no_receiver(receiver_id: int, channel: str) -> str:
+            return json.dumps(
                 {
-                    "sender_id": sender_id,
+                    "receiver_id": receiver_id,
                     "channel": channel,
-                    "content": msg.get("content", ""),
+                    "status": "rejected",
+                    "reason": "receiver not found",
                     "tick": tick,
                 }
             )
-            deliveries.setdefault(receiver_id, []).append(delivery)
 
-            # Delivery receipt for sender
-            receipt = json.dumps(
+        @daft.func
+        def make_reject_receipt_self(receiver_id: int, channel: str) -> str:
+            return json.dumps(
+                {
+                    "receiver_id": receiver_id,
+                    "channel": channel,
+                    "status": "rejected",
+                    "reason": "cannot message self",
+                    "tick": tick,
+                }
+            )
+
+        rejected_receipts_no_receiver = rejected_no_receiver.select(
+            col("sender_id"),
+            make_reject_receipt_no_receiver(col("receiver_id"), col("channel")).alias(
+                "receipt_json"
+            ),
+        )
+
+        rejected_receipts_self = rejected_self.select(
+            col("sender_id"),
+            make_reject_receipt_self(col("receiver_id"), col("channel")).alias("receipt_json"),
+        )
+
+        # --- 5. Build delivery receipt JSON strings for successful deliveries ---
+        @daft.func
+        def make_delivery_receipt(receiver_id: int, channel: str) -> str:
+            return json.dumps(
                 {
                     "receiver_id": receiver_id,
                     "channel": channel,
@@ -222,43 +263,132 @@ class MessageDeliveryProcessor(AsyncProcessor):
                     "tick": tick,
                 }
             )
-            receipts.setdefault(sender_id, []).append(receipt)
 
-            # 3. Update ChatGraph if available
-            if graphs is not None and msg.get("_append_history", True):
+        delivered_receipts = routed.select(
+            col("sender_id"),
+            make_delivery_receipt(col("receiver_id"), col("channel")).alias("receipt_json"),
+        )
+
+        # Combine all receipts and group by sender
+        all_receipts = delivered_receipts.concat(rejected_receipts_no_receiver).concat(
+            rejected_receipts_self
+        )
+
+        receipt_agg = all_receipts.groupby("sender_id").agg(
+            col("receipt_json").list_agg().alias("new_receipts")
+        )
+
+        # --- 6. Build delivery JSON strings and aggregate by receiver ---
+        @daft.func
+        def make_delivery_json(sender_id: int, channel: str, content: str) -> str:
+            return json.dumps(
+                {
+                    "sender_id": sender_id,
+                    "channel": channel,
+                    "content": content,
+                    "tick": tick,
+                }
+            )
+
+        inbox_rows = routed.select(
+            col("receiver_id"),
+            make_delivery_json(col("sender_id"), col("channel"), col("content")).alias(
+                "delivery_json"
+            ),
+        )
+
+        inbox_agg = inbox_rows.groupby("receiver_id").agg(
+            col("delivery_json").list_agg().alias("new_inbox")
+        )
+
+        # --- 7. Update ChatGraph via SideEffectCollector (deferred) ---
+        if graphs is not None:
+            # Filter to messages that should be appended to history
+            routed_for_graph = routed.where(col("_append_history"))
+            routed_for_graph = routed_for_graph.select(
+                "sender_id", "receiver_id", "channel", "content", "parent_id"
+            )
+
+            # Justified .collect(): need cross-row context for ChatGraph Command construction
+            graph_rows = routed_for_graph.collect().to_pylist()
+            for row in graph_rows:
+                parent_id = row.get("parent_id")
+                # parent_id is stored as string in the struct; convert if present
+                parent_uuid = None
+                if parent_id is not None:
+                    try:
+                        import uuid_utils as uuid
+
+                        parent_uuid = uuid.UUID(parent_id)
+                    except (ValueError, TypeError):
+                        parent_uuid = None
+
                 cmd = Command(
                     type=CommandType.MESSAGE,
                     tick=tick,
-                    channel=channel,
+                    channel=row["channel"],
                     payload={
-                        "sender_id": sender_id,
-                        "receiver_id": receiver_id,
-                        "content": msg.get("content", ""),
+                        "sender_id": row["sender_id"],
+                        "receiver_id": row["receiver_id"],
+                        "content": row["content"],
                     },
-                    parent_id=msg.get("parent_id"),
+                    parent_id=parent_uuid,
                 )
-                graphs.channel(world_id, channel).append(cmd)
+                channel = row["channel"]
+                if collector is not None:
+                    collector.defer(
+                        lambda c=cmd, ch=channel: graphs.channel(world_id, ch).append(c)
+                    )
+                else:
+                    graphs.channel(world_id, channel).append(cmd)
 
-        # 4. Apply inbox deliveries, receipts, and clear outboxes via row-wise UDFs
+        # --- 8. Merge inbox updates back into the main DataFrame ---
+        # Join new inbox messages
+        df = df.join(
+            inbox_agg,
+            left_on="entity_id",
+            right_on="receiver_id",
+            how="left",
+        )
+
+        # Concatenate existing inbox with new messages
+        df = df.with_column(
+            "new_inbox",
+            col("new_inbox").fill_null(lit([])),
+        )
+
         @daft.func
-        def deliver_inbox(entity_id: int, current_inbox: list[str]) -> list[str]:
-            inbox = list(current_inbox) if current_inbox else []
-            return inbox + deliveries.get(entity_id, [])
+        def concat_inbox(current: list[str], new: list[str]) -> list[str]:
+            return (current or []) + (new or [])
 
-        @daft.func
-        def deliver_receipts(entity_id: int) -> list[str]:
-            return receipts.get(entity_id, [])
+        df = df.with_column(
+            "inbox__messages",
+            concat_inbox(col("inbox__messages"), col("new_inbox")),
+        )
+        df = df.exclude("new_inbox")
 
+        # --- 9. Merge receipts back into the main DataFrame ---
+        df = df.join(
+            receipt_agg,
+            left_on="entity_id",
+            right_on="sender_id",
+            how="left",
+        )
+
+        df = df.with_column(
+            "deliveryreceipt__receipts",
+            col("new_receipts").fill_null(lit([])),
+        )
+        df = df.exclude("new_receipts")
+
+        # --- 10. Clear outboxes ---
         @daft.func
         def clear_outbox(entity_id: int) -> list[str]:
             return []
 
-        df = df.with_columns(
-            {
-                "inbox__messages": deliver_inbox(col("entity_id"), col("inbox__messages")),
-                "deliveryreceipt__receipts": deliver_receipts(col("entity_id")),
-                "outbox__messages": clear_outbox(col("entity_id")),
-            }
+        df = df.with_column(
+            "outbox__messages",
+            clear_outbox(col("entity_id")),
         )
 
         return df

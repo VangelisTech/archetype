@@ -37,6 +37,7 @@ from archetype.core.interfaces import (
     iAsyncWorld,
 )
 from archetype.core.resources import Resources
+from archetype.core.side_effects import SideEffectCollector
 
 # Type alias for hook functions
 HookFn = Callable[..., Awaitable[None]]
@@ -209,16 +210,29 @@ class AsyncWorld(iAsyncWorld):
                 components=None,
             )
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self.materialize_mutations(df, sig)
+        # Create side effect collector for tick-level atomicity
+        collector = SideEffectCollector()
+        self.resources.insert(collector)
 
-        # 3. Execute Processors for this archetype via system
-        df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+        try:
+            # 2. Materialize Mutations (Spawns/Despawns)
+            df = self.materialize_mutations(df, sig)
 
-        # 4. Update (returns materialized df with tick/world/run/entity_id set)
-        df_mat = await self.update(df, sig, run_config)
+            # 3. Execute Processors for this archetype via system (side effects deferred via collector)
+            df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
 
-        return df_mat
+            # 4. Update (returns materialized df with tick/world/run/entity_id set)
+            df_mat = await self.update(df, sig, run_config)
+
+            # 5. COMMIT side effects only after successful persist
+            collector.commit()
+
+            return df_mat
+        except Exception:
+            collector.rollback()
+            raise
+        finally:
+            self.resources.remove(SideEffectCollector)
 
     # ---------------------------------------------------------------------
     #  Step Planning
