@@ -123,7 +123,7 @@ class WorldService:
         self,
         source_world_id: UUID,
         config: WorldConfig,
-        storage_config: StorageConfig | None = None,
+        storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> iWorld:
         """
@@ -136,13 +136,20 @@ class WorldService:
           * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_entity_counter``,
             live archetype snapshots (re-stamped with the new ``world_id``),
             processors (shared instances), and non-broker resources.
-          * Persisted: the live snapshots are written to the shared store under
-            the new ``world_id`` at tick ``(source.tick - 1)`` so store-backed
-            reads see the forked state from tick 0.
+          * Persisted: the live snapshots are written to the store under the new
+            ``world_id`` at tick ``(source.tick - 1)`` so store-backed reads
+            see the forked state.
           * Not copied: pending spawn/despawn caches (already reflected in
             ``_live`` once materialized), lifecycle hooks (fork-specific
             observers), and the ``CommandBroker`` reference (re-injected by
             ``create_world`` via the service's own broker).
+
+        Raises:
+            KeyError: If ``source_world_id`` is not managed.
+            TypeError: If the source is not an ``AsyncWorld``.
+            ValueError: If the source has pending mutations (un-materialized
+                spawn/despawn caches) or if ``config.world_id`` collides with
+                an already-managed world.
         """
         import copy as _copy
 
@@ -155,9 +162,20 @@ class WorldService:
         if not isinstance(source, AsyncWorld):
             raise TypeError("Can only fork AsyncWorld instances")
 
-        # Use same storage config as source or provided override
-        if storage_config is None:
-            storage_config = StorageConfig()
+        # Guard: reject if the source has un-materialized mutations; callers
+        # must step() first so _live reflects the intended snapshot.
+        has_pending_spawns = any(v for v in source._spawn_cache.values())
+        has_pending_despawns = any(v for v in source._despawn_cache.values())
+        if has_pending_spawns or has_pending_despawns:
+            raise ValueError(
+                "Cannot fork a world with pending mutations. "
+                "Call step() to materialize spawn/despawn caches first."
+            )
+
+        # Guard: force a fresh world_id to avoid the idempotent create_world
+        # returning an existing world whose state we'd then overwrite.
+        fork_id = uuid7()
+        fork_config = WorldConfig(world_id=fork_id, name=config.name)
 
         # Build a fresh system that shares processor instances with the source.
         # Processors are stateless DataFrame transforms, so sharing is safe.
@@ -165,7 +183,7 @@ class WorldService:
         new_system.processors = list(source.system.processors)
 
         new_world = await self.create_world(
-            config=config,
+            config=fork_config,
             storage_config=storage_config,
             cache_config=cache_config,
             system=new_system,
@@ -191,7 +209,7 @@ class WorldService:
         # --- Copy non-broker resources (selective policy) ---
         # The broker is world-scoped governance; create_world already injected
         # the service's broker into new_world.resources.
-        for resource_type, resource in source.resources._store.items():
+        for resource_type, resource in source.resources.items():
             if resource_type is CommandBroker or isinstance(resource, CommandBroker):
                 continue
             if resource_type in new_world.resources:

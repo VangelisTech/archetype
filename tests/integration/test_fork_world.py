@@ -183,13 +183,35 @@ async def test_fork_inherits_processors_not_hooks_or_broker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fork_rejects_pending_mutations(tmp_path):
+    """fork_world should refuse when spawn/despawn caches have un-materialized data."""
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="fork_ns5")
+        source = await container.world_service.create_world(WorldConfig(name="src"), storage)
+        assert isinstance(source, AsyncWorld)
+
+        # Create entity but do NOT step — data is still in _spawn_cache.
+        await source.create_entity([Position(x=1, y=1)])
+
+        with pytest.raises(ValueError, match="pending mutations"):
+            await container.world_service.fork_world(
+                source.world_id, WorldConfig(name="fork-e"), storage
+            )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_fork_unknown_source_raises(tmp_path):
     container = ServiceContainer()
     try:
         from uuid_utils import uuid7
 
         with pytest.raises(KeyError):
-            await container.world_service.fork_world(uuid7(), WorldConfig(name="x"))
+            await container.world_service.fork_world(
+                uuid7(), WorldConfig(name="x"), StorageConfig()
+            )
     finally:
         await container.shutdown()
 
@@ -205,4 +227,8 @@ async def test_fork_rejects_non_async_world(tmp_path):
     svc._worlds = {_Fake.world_id: _Fake()}  # type: ignore[attr-defined]
 
     with pytest.raises(TypeError):
-        await svc.fork_world(_Fake.world_id, WorldConfig(name="x"))  # type: ignore[arg-type]
+        await svc.fork_world(
+            _Fake.world_id,
+            WorldConfig(name="x"),
+            StorageConfig(),  # type: ignore[arg-type]
+        )
