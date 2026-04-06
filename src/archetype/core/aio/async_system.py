@@ -89,11 +89,18 @@ class AsyncSystem(iAsyncSystem):
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     assert isinstance(proc_instance, AsyncProcessor)
-                    # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs
+                    # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs.
+                    # If the processor accepts **kwargs (VAR_KEYWORD), pass everything through.
                     sig_params = inspect.signature(proc_instance.process).parameters
-                    filtered_input_kwargs = {
-                        k: v for k, v in input_kwargs.items() if k in sig_params
-                    }
+                    has_var_keyword = any(
+                        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig_params.values()
+                    )
+                    if has_var_keyword:
+                        filtered_input_kwargs = dict(input_kwargs)
+                    else:
+                        filtered_input_kwargs = {
+                            k: v for k, v in input_kwargs.items() if k in sig_params
+                        }
                     df = await proc_instance.process(df, **filtered_input_kwargs)
 
                     if debug:
