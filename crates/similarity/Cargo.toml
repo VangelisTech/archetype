@@ -1,0 +1,14 @@
+[package]
+name = "archetype-similarity"
+version = "0.1.0"
+edition = "2024"
+description = "Fast vector similarity operations for Archetype ECS"
+license = "Apache-2.0"
+
+[lib]
+name = "archetype_similarity"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+rayon = "1.10"
