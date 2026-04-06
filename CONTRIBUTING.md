@@ -26,10 +26,15 @@ behavior. The Makefile handles this correctly.
 
 Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
+> **Always use `make <target>`**, not the underlying commands directly.
+> The Makefile runs everything through `uv run` with the correct `PYTHONPATH`.
+> The "Command" column below is shorthand for readability — the Makefile is the
+> source of truth.
+
 ### Setup
 
-| Target | Command | Purpose |
-|--------|---------|---------|
+| Target | What it does | Purpose |
+|--------|-------------|---------|
 | `make sync` | `uv sync` | Install runtime deps only |
 | `make sync-dev` | `uv sync --group dev` | Install runtime + dev deps |
 | `make precommit-install` | `uv run pre-commit install` | Install git hooks |
@@ -37,21 +42,21 @@ Every target below is a `.PHONY` rule. Run `make help` for the quick version.
 
 ### Quality
 
-| Target | Command | Purpose |
-|--------|---------|---------|
-| `make format` | `ruff format src tests` | Auto-format code (writes files) |
-| `make format-check` | `ruff format --check src tests` | Check formatting (read-only) |
-| `make lint` | `ruff check src tests` | Lint code (read-only) |
-| `make lint-fix` | `ruff check src tests --fix` | Lint + auto-fix |
+| Target | What it does | Purpose |
+|--------|-------------|---------|
+| `make format` | `uv run ruff format src tests` | Auto-format code (writes files) |
+| `make format-check` | `uv run ruff format --check src tests` | Check formatting (read-only) |
+| `make lint` | `uv run ruff check src tests` | Lint code (read-only) |
+| `make lint-fix` | `uv run ruff check src tests --fix` | Lint + auto-fix |
 | `make check` | `format` + `lint` | Auto-format then lint (writes files) |
 
 ### Tests
 
-| Target | Command | Purpose |
-|--------|---------|---------|
-| `make test` | `pytest -q` | Fast test run, no coverage |
-| `make test-cov` | `pytest --cov --cov-branch --cov-fail-under=70` | Tests with 70% branch coverage gate |
-| `make test-all` | `pytest -v --tb=short` | Verbose test run |
+| Target | What it does | Purpose |
+|--------|-------------|---------|
+| `make test` | `PYTHONPATH=src uv run pytest -q` | Fast test run, no coverage |
+| `make test-cov` | `PYTHONPATH=src uv run pytest --cov --cov-branch --cov-fail-under=70` | Tests with 70% branch coverage gate |
+| `make test-all` | `PYTHONPATH=src uv run pytest -v --tb=short` | Verbose test run |
 
 ### CI Gate
 

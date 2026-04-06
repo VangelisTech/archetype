@@ -14,9 +14,11 @@ docs typo and a scheduler rewrite should not clear the same gate.
 
 **Paths:** `docs/**`, `**/*.md`, `LICENSE`, `assets/**`, `.github/ISSUE_TEMPLATE/**`
 
-**Required checks:**
+**Required checks (today):**
 - `format` (`ruff format --check` on `src/` and `tests/`)
-- Link-check on changed markdown (if/when added as a docs-specific check)
+
+**Planned checks (not yet implemented):**
+- Link-check on changed markdown (see [#65](https://github.com/VangelisTech/archetype/issues/65))
 
 **Rationale:** Zero runtime impact. Don't gate on `ci` — there's nothing to
 test. Auto-merge should be near-instant.
@@ -25,7 +27,7 @@ test. Auto-merge should be near-instant.
 
 ### Tier 1 — Examples & Benches
 
-**Paths:** `examples/**`, `bench/**`, `scripts/**`
+**Paths:** `examples/**`, `bench/**`
 
 **Required checks:**
 - `format`
