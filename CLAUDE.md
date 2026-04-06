@@ -131,6 +131,9 @@ make check          # Auto-format + lint (ruff, writes files)
 make lint-fix       # Auto-fix lint issues
 ```
 
+For the full dev workflow reference — all Make targets, CI job mappings,
+pre-commit hooks, and contribution process — see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Dependencies
 
 Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional-deps).
@@ -166,6 +169,7 @@ Use **`uv sync --group dev`** (dependency-groups), not `uv sync --dev` (optional
 | `src/archetype/app/chat_graph.py` | (PLANNED, not yet implemented) ChatGraph DAG, ChatGraphRegistry |
 | `src/archetype/app/broker.py` | CommandBroker (governance only) |
 | `src/archetype/app/models.py` | Command model (append_history, parent_id, channel) |
+| `CONTRIBUTING.md` | Dev workflow, Make targets, CI mappings, contribution process |
 | `LEARNINGS.md` | Extended architectural knowledge — read before major changes |
 
 ## Conventions
