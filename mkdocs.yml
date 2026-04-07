@@ -8,6 +8,11 @@ docs_dir: docs
 
 theme:
   name: shadcn
+  icon: assets/logo.png
+  favicon: assets/logo.png
+
+extra_css:
+  - assets/custom.css
 
 nav:
   - Getting Started:
