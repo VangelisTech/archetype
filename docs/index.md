@@ -8,42 +8,53 @@ World state is columnar tables. Every tick is an append-only write to storage. T
 
 ```bash
 pip install archetype-ecs
-
-archetype serve                          # start the server
-archetype world create my-sim            # create a world
-archetype run <world-id> --steps 100     # run 100 ticks
-archetype query <world-id>              # see the result
 ```
 
-## Fork a World
+```python
+import asyncio
+from daft import DataFrame, col
+from archetype.core.component import Component
+from archetype.dsl import World, behavior
 
-Branch a world to explore alternatives:
+class Agent(Component):
+    name: str = ""
+    skill: float = 1.0
+    experience: float = 0.0
+
+@behavior
+class GainExperience:
+    requires = [Agent]
+    priority = 10
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        return df.with_column(
+            "agent__experience",
+            col("agent__experience") + col("agent__skill") * 2.0,
+        )
+
+async def main():
+    async with World("my-sim") as world:
+        world.add_behavior(GainExperience)
+        await world.spawn(Agent(name="Alice", skill=3.0))
+        await world.spawn(Agent(name="Bob", skill=2.0))
+        await world.run(ticks=10)
+
+        for agent in world.agents:
+            print(f"{agent.name}: exp={agent.experience}")
+
+asyncio.run(main())
+```
+
+## CLI
 
 ```bash
+archetype serve
+archetype world create my-sim
+archetype run <world-id> --steps 100
+archetype query <world-id>
 archetype world fork <world-id> --name branch-A
-archetype run <fork-id> --steps 100
-```
-
-Source and fork diverge independently. Use this for MCTS, counterfactual reasoning, or A/B experiments.
-
-## Time-Travel
-
-Every tick is preserved. Query any point in history:
-
-```bash
 archetype query <world-id> --tick 42
 ```
-
-## How It Works
-
-Each `archetype run` step:
-
-1. Drains pending commands from the priority queue (RBAC-enforced)
-2. Applies them to the world (spawn/despawn/update entities)
-3. Runs all registered processors (DataFrame transforms, optionally LLM-powered)
-4. Appends the new state to LanceDB storage
-
-Nothing is overwritten. That's how forking and time-travel work.
 
 ## Try It Live
 
