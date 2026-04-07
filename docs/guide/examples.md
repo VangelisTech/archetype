@@ -2,6 +2,70 @@
 
 Every example on this page runs end-to-end with a single command. Copy, paste, run.
 
+## World Mutations
+
+Demonstrates every mutation type: spawn entities with components, inject processors at runtime, RBAC permission checks, fork a world, and query the full command audit trail.
+
+```bash
+uv run python examples/world_mutations.py
+```
+
+Source: [`examples/world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/world_mutations.py)
+
+**What it demonstrates:**
+
+- **SPAWN** with typed components (`Position`, `Velocity`, `Health`)
+- **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
+- **RBAC** checks: viewer denied spawn, player allowed spawn, player denied add_processor
+- **FORK** a world and run source and fork independently
+- **Command history** as a full audit trail
+
+Output:
+
+```
+1. SPAWN — create entities with components
+   Spawned 2 entities (tick=1)
+
+2. ADD_PROCESSOR — inject behavior at runtime
+   Added MovementProcessor (priority=10)
+   Ran 3 ticks (tick=4)
+
+4. RBAC — permission checks
+   viewer: SPAWN denied (correct)
+   player: SPAWN allowed (correct)
+   player: ADD_PROCESSOR denied (correct)
+
+5. FORK — branch the world
+   Fork tick=5 (matches source tick=5)
+   Fork after 5 more ticks: tick=10
+   Source unchanged: tick=5
+
+6. COMMAND HISTORY — full audit trail
+   tick=0: spawn
+   tick=0: spawn
+   tick=0: spawn
+```
+
+**All 13 command types:**
+
+| Command | Payload | Who Can Run It |
+|---------|---------|----------------|
+| `spawn` | `{"components": [...]}` | player, maintainer, admin |
+| `despawn` | `{"entity_id": int}` | player, maintainer, admin |
+| `update` | `{"entity_id": int, "components": [...]}` | player, coder, maintainer, admin |
+| `add_component` | `{"entity_id": int, "components": [...]}` | coder, maintainer, admin |
+| `remove_component` | `{"entity_id": int, "component_types": [...]}` | coder, maintainer, admin |
+| `add_processor` | `{"processor": ...}` | maintainer, admin |
+| `remove_processor` | `{"processor_type": str}` | maintainer, admin |
+| `create_world` | `{"config": {"name": str}}` | admin |
+| `destroy_world` | `{"world_id": str}` | admin |
+| `fork_world` | `{"source_world_id": str, "name": str}` | admin |
+| `message` | `{"sender_id", "receiver_id", "content"}` | player, admin |
+| `custom` | `{...}` | player, admin |
+| `query_world` | `{}` | viewer, operator, admin |
+
+---
+
 ## Fork for Counterfactuals
 
 Fork a world three times with different parameters, run each branch, compare results.
