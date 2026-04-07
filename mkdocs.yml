@@ -20,6 +20,8 @@ nav:
       - Quickstart: guide/quickstart.md
       - Architecture: guide/architecture.md
   - Guides:
+      - Building Simulations: guide/building-simulations.md
+      - Components: guide/components.md
       - Processors: guide/processors.md
       - Examples: guide/examples.md
       - API Reference: guide/api-reference.md
