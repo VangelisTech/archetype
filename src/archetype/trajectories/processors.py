@@ -108,15 +108,11 @@ class SamplingProcessor(AsyncProcessor):
 
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & _tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & _tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~_tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & ~_tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         df = df.with_columns({"label__sampled": sampled})
 
