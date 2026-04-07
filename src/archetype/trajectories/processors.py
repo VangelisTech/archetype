@@ -77,6 +77,18 @@ def _tags_contain(tags_json: str, tag: str) -> bool:
         return False
 
 
+def _make_outcome_matcher(substring: str):
+    """Create a row-wise UDF that checks if outcome contains the given substring."""
+
+    @daft.func
+    def _outcome_matches(outcome: str) -> bool:
+        if not outcome:
+            return False
+        return substring in outcome
+
+    return _outcome_matches
+
+
 # ── Processors ──
 
 
@@ -90,8 +102,10 @@ class SamplingProcessor(AsyncProcessor):
     components = (Trajectory, Label)
     priority = 10
 
-    async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
-        resources: Resources = kwargs.get("resources", Resources())
+    async def process(
+        self, df: DataFrame, resources: Resources | None = None, **kwargs: Any
+    ) -> DataFrame:
+        resources = resources or kwargs.get("resources") or Resources()
         config = resources.get(SamplingConfig) or SamplingConfig()
 
         # Start fresh from True so sampling is recomputed each tick
@@ -104,19 +118,16 @@ class SamplingProcessor(AsyncProcessor):
             sampled = sampled & (col("trajectory__total_turns") <= config.max_turns)
 
         if config.outcome_filter:
-            sampled = sampled & col("trajectory__outcome").str.contains(config.outcome_filter)
+            matcher = _make_outcome_matcher(config.outcome_filter)
+            sampled = sampled & matcher(col("trajectory__outcome"))
 
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & _tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & _tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~_tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & ~_tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         df = df.with_columns({"label__sampled": sampled})
 
@@ -148,8 +159,10 @@ class LabelingProcessor(AsyncProcessor):
     components = (Trajectory, Label)
     priority = 20
 
-    async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
-        resources: Resources = kwargs.get("resources", Resources())
+    async def process(
+        self, df: DataFrame, resources: Resources | None = None, **kwargs: Any
+    ) -> DataFrame:
+        resources = resources or kwargs.get("resources") or Resources()
         config = resources.get(LabelingConfig) or LabelingConfig()
 
         from daft.functions import prompt
