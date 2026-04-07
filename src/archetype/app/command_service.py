@@ -139,9 +139,7 @@ class CommandService:
 
                 source_id = UUID(str(payload["source_world_id"]))
                 fork_name = payload.get("name") or payload.get("config", {}).get("name")
-                return await self._world_service.fork_world(
-                    source_id, fork_name, StorageConfig()
-                )
+                return await self._world_service.fork_world(source_id, fork_name, StorageConfig())
 
             case _:
                 raise ValueError(f"apply_world_lifecycle does not handle {cmd.type.value}")
