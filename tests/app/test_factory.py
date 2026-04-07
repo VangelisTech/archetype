@@ -88,6 +88,8 @@ class TestWorldFactory:
 
     @pytest.mark.asyncio
     async def test_cache_config_wraps_store(self, tmp_path):
+        from archetype.core.aio import AsyncCachedStore
+
         ss = StorageService()
         factory = WorldFactory(ss)
         try:
@@ -97,5 +99,7 @@ class TestWorldFactory:
                 cache_config=CacheConfig(),
             )
             assert isinstance(world, AsyncWorld)
+            # Verify the store is wrapped with caching
+            assert isinstance(world.querier._store, AsyncCachedStore)
         finally:
             await ss.shutdown()

@@ -74,14 +74,15 @@ class TestWorldRoutes:
 
 class TestWorldRouteErrors:
     def test_get_world_invalid_uuid(self, client):
-        # ValueError from UUID parsing propagates — TestClient raises by default
-        with pytest.raises(ValueError, match="badly formed"):
-            client.get("/worlds/not-a-uuid")
+        resp = client.get("/worlds/not-a-uuid")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
 
     def test_delete_world_not_found(self, client):
         resp = client.delete("/worlds/00000000-0000-0000-0000-000000000000")
         # delete goes through CommandService → remove_world; non-existent is a no-op
-        assert resp.status_code in (200, 404)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "removed"
 
     def test_delete_world(self, client, tmp_path):
         create_resp = client.post(
