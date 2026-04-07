@@ -514,29 +514,31 @@ class TestPipelineLifecycle:
     @pytest.mark.asyncio
     async def test_shutdown_clean(self, tmp_path):
         container = ServiceContainer()
-        world, storage = await _setup_pipeline_world(container, tmp_path)
-        ctx = _operator_ctx()
+        try:
+            world, storage = await _setup_pipeline_world(container, tmp_path)
+            ctx = _operator_ctx()
 
-        trajs = [_make_trajectory("t-0", num_turns=3)]
-        labels = [("test", "test")]
-        await _ingest_trajectories(container, world, trajs, labels, ctx)
-        world.resources.insert(SamplingConfig())
+            trajs = [_make_trajectory("t-0", num_turns=3)]
+            labels = [("test", "test")]
+            await _ingest_trajectories(container, world, trajs, labels, ctx)
+            world.resources.insert(SamplingConfig())
 
-        await container.simulation_service.step(
-            world.world_id, RunConfig(num_steps=1, prefer_live_reads=True)
-        )
-
-        # First shutdown should succeed
-        await container.shutdown()
+            await container.simulation_service.step(
+                world.world_id, RunConfig(num_steps=1, prefer_live_reads=True)
+            )
+        finally:
+            await container.shutdown()
 
     @pytest.mark.asyncio
     async def test_double_shutdown_no_crash(self, tmp_path):
         container = ServiceContainer()
-        world, storage = await _setup_pipeline_world(container, tmp_path)
+        try:
+            world, storage = await _setup_pipeline_world(container, tmp_path)
 
-        await container.shutdown()
-        # Second shutdown should not raise
-        await container.shutdown()
+            await container.shutdown()
+        finally:
+            # Second shutdown should not raise
+            await container.shutdown()
 
     @pytest.mark.asyncio
     async def test_fork_isolation_shutdown(self, tmp_path):
