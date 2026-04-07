@@ -12,8 +12,6 @@ Python 3.12+ required.
 
 ## Start the Server
 
-The CLI is a thin HTTP client — it talks to a running `archetype serve` process.
-
 ```bash
 archetype serve
 ```
