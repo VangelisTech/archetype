@@ -96,7 +96,7 @@ df = df.with_columns({
 
 #### Images
 
-All image operations are direct Expression methods or standalone `daft.functions.*` — no `.image.*` namespace.
+Prefer standalone `daft.functions.*` or direct Expression methods for image operations. The legacy `.image.*` accessor still works but is deprecated.
 
 ```python
 from daft.functions import download, decode_image, resize, crop, encode_image
@@ -179,7 +179,7 @@ df = df.unnest("decision")
 
 ### String, numeric, and utility functions
 
-Replaces: most simple `@daft.func` string/math UDFs. No `.str.*` namespace — all operations are direct Expression methods or standalone `daft.functions.*`.
+Replaces: most simple `@daft.func` string/math UDFs. Prefer standalone `daft.functions.*` or direct Expression methods. The legacy `.str.*` accessor still works but is deprecated — use the flat API instead.
 
 ```python
 from daft.functions import (
@@ -316,7 +316,7 @@ Use `df.explain()` to debug, not intermediate collects.
 
 Check in this order — stop at the first match:
 
-1. **Built-in function?** → Use it (`prompt`, `embed`, `classify_text`, `minhash`, distance functions, etc.)
+1. **Built-in function?** → Use it (`prompt`, `embed_text`, `classify_text`, `minhash`, distance functions, etc.)
 2. **Column expression?** → Use it (`col("x") + col("y")`, `.lower()`, `.contains()`, `.resize()`, etc.)
 3. **Simple row transform?** → `@daft.func` (auto type inference, supports async)
 4. **Vectorized batch op?** → `@daft.func.batch` (NumPy, vLLM, PyTorch — must actually batch)
@@ -325,7 +325,7 @@ Check in this order — stop at the first match:
 
 | Decorator | When | Example |
 |-----------|------|---------|
-| Built-in function | Daft provides it | `prompt()`, `embed()`, `cosine_distance()` |
+| Built-in function | Daft provides it | `prompt()`, `embed_text()`, `cosine_distance()` |
 | DataFrame expressions | Always prefer over UDFs | `col("x") + col("y")`, `.contains()`, `.lower()` |
 | `@daft.func` | Row-wise transform, auto type inference | Simple string parsing, JSON encoding |
 | `@daft.func.batch` | Operation actually batches (NumPy, vLLM, PyTorch) | Vectorized math, batch inference |
