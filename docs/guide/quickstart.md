@@ -41,12 +41,9 @@ archetype history <world-id>
 Branch a world to explore alternatives:
 
 ```bash
-# Fork from an existing world
-curl -s -X POST localhost:8000/worlds/<world-id>/fork \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "branch-A"}' | python -m json.tool
+archetype world fork <world-id> --name branch-A
 
-# Run the fork with different parameters
+# Run the fork independently
 archetype run <fork-id> --steps 100
 
 # Compare states
@@ -59,7 +56,7 @@ archetype query <fork-id>
 Query any previous tick:
 
 ```bash
-curl -s localhost:8000/worlds/<world-id>/state?tick=42 | python -m json.tool
+archetype query <world-id> --tick 42
 ```
 
 ## What's Happening

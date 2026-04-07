@@ -33,10 +33,7 @@ archetype query <world-id>
 ## Fork a World
 
 ```bash
-curl -s -X POST localhost:8000/worlds/<world-id>/fork \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "branch-A"}' | python -m json.tool
-
+archetype world fork <world-id> --name branch-A
 archetype run <fork-id> --steps 100
 ```
 
@@ -47,10 +44,7 @@ Source and fork diverge independently. Use this for MCTS, counterfactual reasoni
 Every tick is append-only. Nothing is overwritten.
 
 ```bash
-# Query state at tick 42
-curl -s localhost:8000/worlds/<world-id>/state?tick=42 | python -m json.tool
-
-# Full command audit trail
+archetype query <world-id> --tick 42
 archetype history <world-id>
 ```
 

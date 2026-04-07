@@ -20,10 +20,7 @@ archetype query <world-id>              # see the result
 Branch a world to explore alternatives:
 
 ```bash
-curl -s -X POST localhost:8000/worlds/<world-id>/fork \
-  -H 'Content-Type: application/json' \
-  -d '{"name": "branch-A"}' | python -m json.tool
-
+archetype world fork <world-id> --name branch-A
 archetype run <fork-id> --steps 100
 ```
 
@@ -34,7 +31,7 @@ Source and fork diverge independently. Use this for MCTS, counterfactual reasoni
 Every tick is preserved. Query any point in history:
 
 ```bash
-curl -s localhost:8000/worlds/<world-id>/state?tick=42 | python -m json.tool
+archetype query <world-id> --tick 42
 ```
 
 ## How It Works
@@ -53,20 +50,28 @@ Nothing is overwritten. That's how forking and time-travel work.
 ``` { .python .live }
 import json
 
-world = {
-    "name": "cogito",
-    "tick": 0,
-    "entities": [
-        {"id": 1, "name": "Descartes", "thought": "I think, therefore I am."},
-        {"id": 2, "name": "Spinoza", "thought": "All things are in God."},
-    ]
-}
+# Define a world with agents
+world = {"name": "debate", "tick": 0, "agents": [
+    {"name": "Ada",  "role": "scientist",   "energy": 100, "mood": "curious"},
+    {"name": "Rex",  "role": "explorer",    "energy": 100, "mood": "bold"},
+    {"name": "Iris", "role": "philosopher", "energy": 100, "mood": "pensive"},
+]}
 
-world["tick"] += 1
-for entity in world["entities"]:
-    entity["thought"] = f"[Tick {world['tick']}] {entity['thought']}"
+# Run 5 ticks — energy decays, mood shifts
+for tick in range(1, 6):
+    world["tick"] = tick
+    for agent in world["agents"]:
+        agent["energy"] -= 12
+        if agent["energy"] > 60:
+            agent["mood"] = "energized"
+        elif agent["energy"] > 30:
+            agent["mood"] = "focused"
+        else:
+            agent["mood"] = "tired"
 
-print(json.dumps(world, indent=2))
+print(f"After {world['tick']} ticks:\n")
+for a in world["agents"]:
+    print(f"  {a['name']:5} ({a['role']:12}) energy={a['energy']:3}  mood={a['mood']}")
 ```
 
 ## Next Steps
