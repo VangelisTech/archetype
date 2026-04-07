@@ -64,17 +64,15 @@ async def list_worlds(ws: WorldService = Depends(get_world_service)):
 @router.get("/{world_id}", response_model=WorldResponse)
 async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)):
     try:
-        wid = UUID(world_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
-    try:
-        world = ws.get_world(wid)
+        world = ws.get_world(UUID(world_id))
         return WorldResponse(
             world_id=str(world.world_id),
             name=getattr(world, "name", None),
             tick=getattr(world, "tick", 0),
             entity_count=getattr(world, "entity_count", 0),
         )
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
 
