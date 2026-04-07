@@ -37,22 +37,23 @@ async def get_entity(
     try:
         entity = await qs.get_entity(UUID(world_id), entity_id, tick)
         return entity
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @router.get("/components")
 async def get_components(
     world_id: str,
     types: str = "",
+    tick: int | None = None,
     qs: QueryService = Depends(get_query_service),
 ):
     try:
         component_types = [t.strip() for t in types.split(",") if t.strip()]
-        result = await qs.get_components(UUID(world_id), component_types)
+        result = await qs.get_components(UUID(world_id), component_types, tick=tick)
         return result
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @router.get("/history")

@@ -122,6 +122,143 @@ class TestQueryService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_get_world_state_with_entities(self, tmp_path):
+        from archetype.core.component import Component
+
+        class Pos(Component):
+            x: int = 0
+            y: int = 0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            e1 = await world.create_entity([Pos(x=1, y=2)])
+            e2 = await world.create_entity([Pos(x=3, y=4)])
+            await world.step(RunConfig())
+
+            snapshot = await container.query_service.get_world_state(world.world_id)
+            assert snapshot.world_id == world.world_id
+            assert e1 in snapshot.entities
+            assert e2 in snapshot.entities
+            assert "Pos" in snapshot.entities[e1]
+            assert len(snapshot.archetype_counts) == 1
+            # Both entities share the same archetype → count should be 2
+            counts = list(snapshot.archetype_counts.values())
+            assert counts[0] == 2
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_returns_components(self, tmp_path):
+        from archetype.core.component import Component
+
+        class Marker(Component):
+            label: str = "default"
+            score: float = 0.0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            eid = await world.create_entity([Marker(label="hello", score=3.14)])
+            await world.step(RunConfig())
+
+            result = await container.query_service.get_entity(world.world_id, eid)
+            assert result["entity_id"] == eid
+            assert result["world_id"] == str(world.world_id)
+            assert "marker" in result["components"]
+            assert result["components"]["marker"]["label"] == "hello"
+            assert result["components"]["marker"]["score"] == pytest.approx(3.14)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_not_found(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            with pytest.raises(KeyError, match="Entity 999 not found"):
+                await container.query_service.get_entity(world.world_id, 999)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_filters_types(self, tmp_path):
+        from archetype.core.component import Component
+
+        class Alpha(Component):
+            a: int = 0
+
+        class Beta(Component):
+            b: int = 0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            await world.create_entity([Alpha(a=1)])
+            await world.create_entity([Alpha(a=2), Beta(b=10)])
+            await world.step(RunConfig())
+
+            # Query Alpha — should find both entities
+            result = await container.query_service.get_components(world.world_id, ["Alpha"])
+            assert len(result["rows"]) == 2
+            assert result["component_types"] == ["Alpha"]
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_time_travel_query(self, tmp_path):
+        from archetype.core.component import Component
+
+        class Counter(Component):
+            val: int = 0
+
+        from archetype.core.aio.async_processor import AsyncProcessor
+
+        class IncrementProcessor(AsyncProcessor):
+            components = (Counter,)
+            priority = 10
+
+            async def process(self, df, tick: int = 0, **kwargs):
+                from daft import col, lit
+
+                return df.with_column("counter__val", col("counter__val") + lit(1))
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await world.add_processor(IncrementProcessor())
+
+            eid = await world.create_entity([Counter(val=0)])
+
+            # Step 3 times: tick 0 → val=1, tick 1 → val=2, tick 2 → val=3
+            rc = RunConfig(num_steps=3)
+            await world.run(rc)
+
+            # Current state should be val=3 (after 3 increments)
+            current = await container.query_service.get_entity(world.world_id, eid)
+            assert current["components"]["counter"]["val"] == 3
+
+            # Historical: tick 0 should be val=1 (first increment)
+            tick0 = await container.query_service.get_entity(world.world_id, eid, tick=0)
+            assert tick0["components"]["counter"]["val"] == 1
+            assert tick0["tick"] == 0
+
+            # Historical: tick 1 should be val=2
+            tick1 = await container.query_service.get_entity(world.world_id, eid, tick=1)
+            assert tick1["components"]["counter"]["val"] == 2
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_get_command_history_empty(self, tmp_path):
         container = ServiceContainer()
         try:
