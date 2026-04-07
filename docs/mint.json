@@ -24,6 +24,9 @@
       "group": "Guides",
       "pages": [
         "guide/processors",
+        "guide/custom-commands",
+        "guide/trajectories",
+        "guide/token-quotas",
         "guide/examples",
         "guide/api-reference",
         "guide/cli-reference"
