@@ -135,6 +135,7 @@ archetype/
 │   │   ├── deps.py    #   Dependency injection
 │   │   └── app.py     #   App factory with lifespan
 │   └── cli/           # Typer CLI
+├── examples/          # Runnable examples (see examples/README.md)
 ├── tests/             # Comprehensive test suite
 ├── AGENTS.md          # Start here if you're an AI
 └── LEARNINGS.md       # Hard-won architectural knowledge
