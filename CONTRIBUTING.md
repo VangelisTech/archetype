@@ -127,9 +127,13 @@ GitHub Release is auto-created with generated release notes.
 Runs Claude Code via `@claude` mentions in issues and PR comments. Restricted
 to the `everettVT` actor.
 
-### `docs.yml` (Docs) — on PRs touching `docs/**` or `**/*.md`
+### `docs.yml` (Docs) — planned, on PRs touching `docs/**` or `**/*.md`
 
-Documentation quality checks. Contains four jobs:
+> **Note:** This workflow does not exist yet. The checks below can be run
+> locally via `make docs-lint`. See [#65](https://github.com/VangelisTech/archetype/issues/65)
+> for the tracking issue.
+
+Documentation quality checks (planned jobs):
 
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|

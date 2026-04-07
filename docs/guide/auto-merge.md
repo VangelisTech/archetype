@@ -21,8 +21,9 @@ docs typo and a scheduler rewrite should not clear the same gate.
 - `link-check` — lychee link validation ([`lychee.toml`](../../lychee.toml))
 - `mintlify-build` — Mintlify build to catch broken frontmatter/MDX
 
-These checks run via the [`docs.yml`](../../.github/workflows/docs.yml) workflow
-on PRs touching `docs/**` or `**/*.md`.
+These checks will run via a planned `docs.yml` workflow on PRs touching
+`docs/**` or `**/*.md`. Until then, run `make docs-lint` locally.
+See [#65](https://github.com/VangelisTech/archetype/issues/65).
 
 **Rationale:** Zero runtime impact. Don't gate on `ci` — there's nothing to
 test. Auto-merge should be near-instant.
