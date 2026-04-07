@@ -21,7 +21,7 @@ from daft.functions import prompt
 df = df.with_columns({
     "agent__response": prompt(
         col("agent__role") + "\nContext: " + col("agent__memory"),
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         system_message="You are a simulation agent.",
     ),
 })
@@ -36,7 +36,7 @@ class Decision(BaseModel):
 df = df.with_columns({
     "agent__decision": prompt(
         col("agent__context"),
-        model="gpt-4o",
+        model="gpt-5-mini",
         response_format=Decision,
     ),
 })
@@ -48,14 +48,14 @@ from daft.functions import file
 df = df.with_columns({
     "analysis": prompt(
         messages=[col("description"), col("image"), file(col("doc_path"))],
-        model="gpt-4o",
+        model="gpt-5-mini",
     ),
 })
 
 # Tool calling
 tools = [{"type": "function", "function": {"name": "search", ...}}]
 df = df.with_columns({
-    "tool_result": prompt(col("query"), model="gpt-4o", tools=tools),
+    "tool_result": prompt(col("query"), model="gpt-5-mini", tools=tools),
 })
 ```
 
@@ -138,7 +138,7 @@ from daft.functions import file
 df = df.with_column("doc", file(col("doc_path")))
 # Pass to prompt() for document understanding
 df = df.with_columns({
-    "summary": prompt(messages=[col("doc")], model="gpt-4o"),
+    "summary": prompt(messages=[col("doc")], model="gpt-5-mini"),
 })
 ```
 
