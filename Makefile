@@ -37,7 +37,7 @@ help:
 	@echo "  make version        Show current version"
 	@echo ""
 	@echo "Docs:"
-	@echo "  make docs           Build docs (Mintlify)"
+	@echo "  make docs           Build docs (MkDocs)"
 	@echo "  make docs-serve     Serve docs locally"
 	@echo ""
 	@echo "Utilities:"
@@ -145,27 +145,16 @@ publish: build
 	@uv publish
 
 # ------------------------------------------------------------------------------
-# Docs (Mintlify)
+# Docs (MkDocs)
 # ------------------------------------------------------------------------------
 
-.PHONY: docs-check-runtime
-docs-check-runtime:
-	@if command -v bun >/dev/null 2>&1; then \
-		echo "Using Bun: $$(bun --version)"; \
-	elif command -v node >/dev/null 2>&1; then \
-		echo "Using Node: $$(node --version)"; \
-	else \
-		echo "Error: Node.js or Bun required for docs"; \
-		exit 1; \
-	fi
-
 .PHONY: docs
-docs: docs-check-runtime
-	@cd docs && npx --yes mintlify build
+docs:
+	@uv run --extra docs mkdocs build
 
 .PHONY: docs-serve
-docs-serve: docs-check-runtime
-	@cd docs && npx --yes mintlify dev
+docs-serve:
+	@uv run --extra docs mkdocs serve
 
 # ------------------------------------------------------------------------------
 # Utilities
