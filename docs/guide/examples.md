@@ -46,7 +46,7 @@ Output:
    tick=0: spawn
 ```
 
-**All 13 command types:**
+**Command types** (15 total, including `run_rollout` and `run_episode` for MCTS):
 
 | Command | Payload | Who Can Run It |
 |---------|---------|----------------|

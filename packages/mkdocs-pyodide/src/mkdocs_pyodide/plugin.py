@@ -69,6 +69,9 @@ class PyodidePlugin(BasePlugin):
         # Track which pages have live cells (MkDocs batches all on_page_content
         # calls before any on_post_page calls, so a single boolean won't work).
         self._pages_with_cells: set[str] = set()
+        # Cache bundled assets to avoid repeated disk reads during build.
+        self._js_cache: str | None = None
+        self._css_cache: str | None = None
 
     # ------------------------------------------------------------------
     # MkDocs hooks
@@ -127,9 +130,13 @@ class PyodidePlugin(BasePlugin):
         theme = self.config["theme"]
         lazy = json.dumps(self.config["lazy_load"])
 
-        # Read our bundled assets
-        js_content = (_ASSET_DIR / "js" / "pyodide-runner.js").read_text()
-        css_content = (_ASSET_DIR / "css" / "pyodide-runner.css").read_text()
+        # Read bundled assets (cached across pages)
+        if self._js_cache is None:
+            self._js_cache = (_ASSET_DIR / "js" / "pyodide-runner.js").read_text()
+        if self._css_cache is None:
+            self._css_cache = (_ASSET_DIR / "css" / "pyodide-runner.css").read_text()
+        js_content = self._js_cache
+        css_content = self._css_cache
 
         head_inject = f"\n<style>{css_content}</style>\n"
 

@@ -14,25 +14,23 @@ Every simulation follows the same structure:
 
 ## Complete Example
 
-This simulation models a room of agents who gain energy from greetings and lose it from thinking. Copy this, run it.
+Agents gain experience each tick proportional to their skill. A second processor computes a rating. Copy this, run it.
 
 ```bash
 uv run python examples/simulation_script.py
 ```
 
+Source: [`examples/simulation_script.py`](https://github.com/VangelisTech/archetype/blob/main/examples/simulation_script.py)
+
 ```python
 import asyncio
-import json
-
+import daft
 from daft import DataFrame, col
-from uuid_utils import uuid7
-
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.aio.async_system import AsyncSystem
+from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, WorldConfig
 
 
 # ── Step 1: Define components ───────────────────────────────────────────
@@ -40,103 +38,55 @@ from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 class Agent(Component):
     name: str = ""
     role: str = ""
-    energy: float = 100.0
-    mood: str = "neutral"
-    log: str = "[]"   # JSON list of events
-
-
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
+    skill: float = 1.0
+    experience: float = 0.0
+    rating: float = 0.0
 
 
 # ── Step 2: Write processors ───────────────────────────────────────────
 
-class EnergyDecayProcessor(AsyncProcessor):
-    """Every tick, agents lose energy from existing."""
+class ExperienceProcessor(AsyncProcessor):
+    """Each tick, agents gain experience proportional to their skill."""
     components = (Agent,)
-    priority = 1
+    priority = 10
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_columns({
-            "agent__energy": (col("agent__energy") - 2.0).if_else(
-                col("agent__energy") - 2.0 > 0,
-                col("agent__energy") - 2.0,
-                daft.lit(0.0),
-            ),
-        })
+        return df.with_column(
+            "agent__experience",
+            col("agent__experience") + col("agent__skill") * 2.0,
+        )
 
 
-class MoodProcessor(AsyncProcessor):
-    """Update mood based on energy level."""
+class RatingProcessor(AsyncProcessor):
+    """Compute a rating from experience and skill."""
     components = (Agent,)
     priority = 50
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        import daft as _daft
-        mood = (
-            col("agent__energy")
-            .if_else(col("agent__energy") > 70, _daft.lit("happy"), _daft.lit("neutral"))
+        return df.with_column(
+            "agent__rating",
+            col("agent__experience") * col("agent__skill") / 10.0,
         )
-        # Override: low energy = tired
-        mood = col("agent__energy").if_else(
-            col("agent__energy") > 30,
-            mood,
-            _daft.lit("tired"),
-        )
-        return df.with_columns({"agent__mood": mood})
 
 
-# ── Step 3: Create world and register processors ───────────────────────
+# ── Step 3-5: Create world, spawn entities, run ────────────────────────
 
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    # (In-memory querier/updater omitted for brevity — see full source)
+    ...
+    await world.create_entity([Agent(name="Alice", role="engineer", skill=3.0)])
+    await world.create_entity([Agent(name="Bob", role="designer", skill=2.0)])
+    await world.create_entity([Agent(name="Charlie", role="manager", skill=1.5)])
 
-    world = await container.world_service.create_world(
-        WorldConfig(name="social-sim"),
-        StorageConfig(),
-    )
-    wid = world.world_id
+    await world.run(RunConfig(num_steps=10))
+```
 
-    await world.system.add_processor(EnergyDecayProcessor())
-    await world.system.add_processor(MoodProcessor())
+Output:
 
-    # ── Step 4: Spawn entities ─────────────────────────────────────────
-
-    agents = [
-        Agent(name="Alice", role="engineer", energy=100.0),
-        Agent(name="Bob", role="designer", energy=80.0),
-        Agent(name="Charlie", role="manager", energy=60.0),
-    ]
-
-    for agent in agents:
-        cmd = Command(
-            type=CommandType.SPAWN,
-            payload={"components": [agent.model_dump()]},
-        )
-        await container.command_service.submit(wid, cmd, ctx)
-
-    # ── Step 5: Run ────────────────────────────────────────────────────
-
-    result = await container.simulation_service.run(
-        wid, RunConfig(num_steps=20),
-    )
-    print(f"Ran {result.ticks_completed} ticks\n")
-
-    # Print final state
-    for sig, df in world._live.items():
-        rows = df.collect().to_pylist()
-        for row in rows:
-            name = row.get("agent__name", "?")
-            energy = row.get("agent__energy", 0)
-            mood = row.get("agent__mood", "?")
-            print(f"  {name}: energy={energy:.0f}, mood={mood}")
-
-    await container.shutdown()
-
-
-asyncio.run(main())
+```
+Alice:   skill=3.0, experience=60, rating=18.0
+Bob:     skill=2.0, experience=40, rating=8.0
+Charlie: skill=1.5, experience=30, rating=4.5
 ```
 
 ## Key Concepts

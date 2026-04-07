@@ -61,6 +61,10 @@ async function ensurePyodide() {
   return pyodidePromise;
 }
 
+// Global execution lock — only one cell runs at a time to prevent
+// stdout/stderr interleaving across cells sharing one Pyodide instance.
+let executionLock = Promise.resolve();
+
 // ── Cell initialisation ─────────────────────────────────────────────────────
 
 async function initCells() {
@@ -111,10 +115,11 @@ async function initCells() {
     });
 
     // ── Run ──
-    let running = false;
-    runBtn.addEventListener("click", async () => {
-      if (running) return;
-      running = true;
+    runBtn.addEventListener("click", () => {
+      executionLock = executionLock.then(() => runCell());
+    });
+
+    async function runCell() {
       runBtn.disabled = true;
       statusEl.textContent = "Loading Pyodide...";
       outputEl.textContent = "";
@@ -152,10 +157,9 @@ async function initCells() {
         outputEl.textContent = `Failed to load Pyodide: ${err.message}`;
         statusEl.textContent = "";
       } finally {
-        running = false;
         runBtn.disabled = false;
       }
-    });
+    }
 
     // ── Reset ──
     resetBtn.addEventListener("click", () => {
