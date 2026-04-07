@@ -22,10 +22,11 @@ class MovementProcessor(AsyncProcessor):
     priority = 10                       # Lower = runs earlier
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_columns({
-            "position__x": col("position__x") + col("velocity__vx"),
-            "position__y": col("position__y") + col("velocity__vy"),
-        })
+        return (
+            df
+            .with_column("position__x", col("position__x") + col("velocity__vx"))
+            .with_column("position__y", col("position__y") + col("velocity__vy"))
+        )
 ```
 
 Key points:
@@ -53,11 +54,12 @@ class PhysicsProcessor(AsyncProcessor):
 
     async def process(self, df: DataFrame, resources: Resources = None, **kwargs) -> DataFrame:
         config = resources.require(SimConfig) if resources else SimConfig()
-        return df.with_columns({
-            "velocity__vy": col("velocity__vy") - config.gravity,
-            "position__x": col("position__x") + col("velocity__vx"),
-            "position__y": col("position__y") + col("velocity__vy"),
-        })
+        return (
+            df
+            .with_column("velocity__vy", col("velocity__vy") - config.gravity)
+            .with_column("position__x", col("position__x") + col("velocity__vx"))
+            .with_column("position__y", col("position__y") + col("velocity__vy"))
+        )
 ```
 
 Setup:
@@ -83,15 +85,16 @@ class ThinkProcessor(AsyncProcessor):
     priority = 10
 
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
-        return df.with_columns({
-            "agent__last_thought": prompt(
+        return df.with_column(
+            "agent__last_thought",
+            prompt(
                 col("agent__role") + "\nYou are " + col("agent__name")
                 + ". Tick " + str(tick) + ". What do you do next? One sentence.",
                 system_message="You are an agent in a simulation. Stay in character.",
                 model="gpt-5-mini",
                 max_output_tokens=60,
             ),
-        })
+        )
 ```
 
 Because Daft executes prompts across the entire DataFrame, all entities get LLM calls in parallel — no manual batching needed.
@@ -113,13 +116,14 @@ class DecisionProcessor(AsyncProcessor):
     priority = 20
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_columns({
-            "decision": prompt(
+        return df.with_column(
+            "decision",
+            prompt(
                 col("agent__role") + ": Choose an action.",
                 return_format=Decision,
                 model="gpt-5-mini",
             ),
-        }).unnest("decision")
+        ).unnest("decision")
 ```
 
 ## Tick and Run Context
