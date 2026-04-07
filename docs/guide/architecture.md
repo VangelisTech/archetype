@@ -74,33 +74,11 @@ classDiagram
 ## Layers
 
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │              External Actors                  │
-                  │   (REST API, CLI (HTTP client), Python, AI)   │
-                  └──────────────┬───────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Service Layer                             │
-│                                                                  │
-│  CommandService ──→ CommandBroker ──→ WorldService ──→ AsyncWorld│
-│       │                  │                                │      │
-│       │            RBAC + queue              ┌────────────┤      │
-│       │                  │                   │            │      │
-│  SimulationService       │            Resources      Processors  │
-│    (drain + step)        │           (type-safe DI)   (DataFrame │
-│       │                  │                            transforms)│
-│       ▼                  ▼                                       │
-│  QueryService      WorldRegistry      TrajectoryPipeline         │
-│  (read path)      (JSON catalog)     (ingest, label, score)      │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                  ┌──────────────────────────────────────┐
-                  │           Storage Layer                │
-                  │    LanceDB (default) or Iceberg        │
-                  │    Append-only, partitioned by tick     │
-                  └──────────────────────────────────────┘
+archetype.api / cli          External interface (REST + HTTP client)
+       │
+archetype.app                Services, RBAC, CommandBroker, WorldRegistry
+       │
+archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 ```
 
 The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.

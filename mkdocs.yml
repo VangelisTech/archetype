@@ -37,7 +37,6 @@ markdown_extensions:
   - toc:
       permalink: true
   - pymdownx.superfences:
-      css_class: codehilite
       custom_fences:
         - name: mermaid
           class: mermaid
