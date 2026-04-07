@@ -1,0 +1,129 @@
+/* mkdocs-pyodide: Live Python cell styling */
+
+:root {
+  --pyodide-bg: #1e1e2e;
+  --pyodide-border: #313244;
+  --pyodide-text: #cdd6f4;
+  --pyodide-btn-bg: #45475a;
+  --pyodide-btn-hover: #585b70;
+  --pyodide-btn-run: #a6e3a1;
+  --pyodide-btn-run-text: #1e1e2e;
+  --pyodide-output-bg: #181825;
+  --pyodide-error: #f38ba8;
+  --pyodide-status: #9399b2;
+  --pyodide-radius: 8px;
+}
+
+/* Light theme overrides */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --pyodide-bg: #eff1f5;
+    --pyodide-border: #ccd0da;
+    --pyodide-text: #4c4f69;
+    --pyodide-btn-bg: #dce0e8;
+    --pyodide-btn-hover: #ccd0da;
+    --pyodide-btn-run: #40a02b;
+    --pyodide-btn-run-text: #ffffff;
+    --pyodide-output-bg: #e6e9ef;
+    --pyodide-error: #d20f39;
+    --pyodide-status: #8c8fa1;
+  }
+}
+
+.pyodide-cell {
+  border: 1px solid var(--pyodide-border);
+  border-radius: var(--pyodide-radius);
+  overflow: hidden;
+  margin: 1.5em 0;
+  background: var(--pyodide-bg);
+}
+
+/* Editor container */
+.pyodide-editor {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.pyodide-editor .cm-editor {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.pyodide-editor .cm-editor.cm-focused {
+  outline: none;
+}
+
+/* Toolbar */
+.pyodide-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--pyodide-border);
+  background: var(--pyodide-bg);
+}
+
+.pyodide-toolbar button {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 14px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.pyodide-run {
+  background: var(--pyodide-btn-run);
+  color: var(--pyodide-btn-run-text);
+}
+
+.pyodide-run:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.pyodide-run:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.pyodide-reset {
+  background: var(--pyodide-btn-bg);
+  color: var(--pyodide-text);
+}
+
+.pyodide-reset:hover {
+  background: var(--pyodide-btn-hover);
+}
+
+.pyodide-status {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--pyodide-status);
+}
+
+/* Output panel */
+.pyodide-output {
+  margin: 0;
+  padding: 12px 16px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--pyodide-text);
+  background: var(--pyodide-output-bg);
+  border-top: 1px solid var(--pyodide-border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.5em;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.pyodide-output:empty {
+  display: none;
+}
+
+.pyodide-output.pyodide-error {
+  color: var(--pyodide-error);
+}

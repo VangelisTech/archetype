@@ -7,7 +7,7 @@ Archetype is a data-centric Entity-Component-System (ECS) simulation engine. Wor
 ```
                   ┌──────────────────────────────────────────────┐
                   │              External Actors                  │
-                  │     (REST API, CLI, Python scripts, agents)   │
+                  │   (REST API, CLI (HTTP client), Python, AI)   │
                   └──────────────┬───────────────────────────────┘
                                  │
                                  ▼
@@ -22,8 +22,8 @@ Archetype is a data-centric Entity-Component-System (ECS) simulation engine. Wor
 │    (drain + step)        │           (type-safe DI)   (DataFrame │
 │       │                  │                            transforms)│
 │       ▼                  ▼                                       │
-│  QueryService      Command History                               │
-│  (read path)        (audit trail)                                │
+│  QueryService      WorldRegistry      TrajectoryPipeline         │
+│  (read path)      (JSON catalog)     (ingest, label, score)      │
 └─────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼
@@ -156,6 +156,7 @@ Roles are flat (not hierarchical) — an actor can have multiple roles:
 | `viewer` | Read-only (query, get state, get world) |
 | `player` | spawn, despawn, update, message, custom |
 | `coder` | add/remove components, update |
+| `operator` | trajectory ingestion and labeling |
 | `maintainer` | spawn, despawn, components, processors, update |
 | `admin` | All commands (wildcard) |
 

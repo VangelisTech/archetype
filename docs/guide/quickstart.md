@@ -57,22 +57,31 @@ asyncio.run(main())
 
 ## Option B: CLI
 
+The CLI is a thin HTTP client — it talks to a running `archetype serve` process.
+
 ```bash
-# Start the API server
+# Start the server (in a separate terminal or background)
 archetype serve &
 
+# Create and run a simulation
+archetype world create quickstart
+archetype run <world-id> --steps 10
+archetype query <world-id>
+archetype history <world-id>
+```
+
+## Option C: curl
+
+You can also hit the REST API directly:
+
+```bash
 # Create a world
 curl -s -X POST localhost:8000/worlds \
   -H 'Content-Type: application/json' \
   -d '{"name": "quickstart"}' | python -m json.tool
 
-# Use the returned world_id for subsequent commands
+# Use the returned world_id
 export WID=<world-id-from-above>
-
-# Submit a spawn command
-curl -s -X POST localhost:8000/worlds/$WID/commands \
-  -H 'Content-Type: application/json' \
-  -d '{"type": "spawn", "payload": {"components": []}}'
 
 # Run 10 ticks
 curl -s -X POST localhost:8000/worlds/$WID/run \
@@ -81,15 +90,6 @@ curl -s -X POST localhost:8000/worlds/$WID/run \
 
 # Query state
 curl -s localhost:8000/worlds/$WID/state | python -m json.tool
-```
-
-## Option C: CLI Commands
-
-```bash
-archetype world create quickstart
-archetype run <world-id> --steps 10
-archetype query <world-id>
-archetype history <world-id>
 ```
 
 ## Next Steps

@@ -1,6 +1,6 @@
 # CLI Reference
 
-The `archetype` CLI is built with Typer. Install via `uv sync` or `pip install -e .`.
+The `archetype` CLI is built with Typer and acts as a **thin HTTP client** to a running `archetype serve` process. It never instantiates `ServiceContainer` directly — all commands are sent as HTTP requests to the server.
 
 ## Server
 

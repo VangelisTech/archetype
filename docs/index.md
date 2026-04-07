@@ -1,113 +1,108 @@
 # Archetype
 
-**AI-native simulation engine for emergent composite AI systems.**
+**Data-centric ECS simulation engine for multi-agent AI systems.**
 
-> 🤖 **AI Agents:** You're in the right place. This documentation is written for you.
+Archetype is an Entity-Component-System runtime built on [Daft](https://www.getdaft.io/) DataFrames and [LanceDB](https://lancedb.github.io/lancedb/). World state is columnar tables. Every tick is an append-only write to storage. This gives you time-travel queries, world forking, and full audit trails out of the box.
 
-Archetype is a data-centric Entity-Component-System (ECS) runtime built on Daft DataFrames. It exists to enable:
+## What You Get
 
-1. **Multi-agent simulations** where AI agents debate, reason, and collaborate
-2. **MCTS and counterfactual reasoning** via `spawn_world()` for branching futures
-3. **Self-improving systems** where agents can evaluate and improve the system itself
+1. **Simulation as data** — query any tick, replay any run, diff any two states
+2. **World forking** — branch worlds for MCTS, counterfactual reasoning, or A/B experiments
+3. **Trajectory analysis** — ingest, label, and score agent trajectories with fork-based comparison
+4. **LLM-native processors** — parallel LLM calls across all entities in a single DataFrame operation
 
 ## Quick Start
 
 ```python
-from archetype import Component
-from archetype.dsl import World, behavior
+import asyncio
+from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
+from archetype.app.auth.models import ActorCtx
+from archetype.core.config import WorldConfig, StorageConfig, RunConfig
+from uuid_utils import uuid7
 
-class Philosopher(Component):
-    name: str = ""
-    thought: str = ""
+async def main():
+    container = ServiceContainer()
 
-@behavior
-class Think:
-    requires = [Philosopher]
-    
-    async def act(self, agent, world, tick):
-        agent.philosopher.thought = f"Tick {tick}: I think, therefore I am."
+    world = await container.world_service.create_world(
+        WorldConfig(name="my-sim"), StorageConfig(),
+    )
 
-async with World("cogito") as world:
-    world.add_behavior(Think)
-    await world.spawn(Philosopher(name="Descartes"))
-    await world.run(ticks=3)
-    
-    for agent in world.agents:
-        print(agent.philosopher.thought)
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
+    await container.command_service.submit(world.world_id, cmd, ctx)
+
+    result = await container.simulation_service.run(
+        world.world_id, RunConfig(num_steps=10),
+    )
+    print(f"Completed {result.ticks_completed} ticks")
+    await container.shutdown()
+
+asyncio.run(main())
 ```
 
-## The Core Primitive: spawn_world()
+## World Forking
 
-Fork worlds to explore possibilities:
+Fork worlds to explore alternatives:
 
 ```python
-from archetype.dsl import spawn_world
-
-async with spawn_world("scenario_a", parent=world, fork_state=True) as branch:
-    branch.add_behavior(AggressiveStrategy)
-    await branch.run(ticks=10)
-    score_a = evaluate(branch)
-
-async with spawn_world("scenario_b", parent=world, fork_state=True) as branch:
-    branch.add_behavior(ConservativeStrategy)
-    await branch.run(ticks=10)
-    score_b = evaluate(branch)
-
-best = "aggressive" if score_a > score_b else "conservative"
+fork = await container.world_service.fork_world(
+    source_world_id=world.world_id,
+    name="branch-A",
+    storage_config=StorageConfig(),
+)
+await container.simulation_service.run(fork.world_id, RunConfig(num_steps=100))
 ```
+
+The fork gets a full snapshot of the source world's state. Source and fork diverge independently — use this for MCTS, counterfactual reasoning, or A/B testing strategies.
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  archetype.dsl                       │
-│  World, @behavior, spawn_world, AgentProxy          │
+│                  archetype.api / cli                 │
+│  FastAPI REST endpoints • Typer CLI (HTTP client)    │
 └─────────────────────────────────────────────────────┘
                          │
 ┌─────────────────────────────────────────────────────┐
 │                  archetype.app                       │
-│  CommandBroker, WorldOrchestrator, WorldFactory     │
+│  CommandBroker, WorldService, SimulationService      │
+│  WorldRegistry, QueryService, RBAC                   │
 └─────────────────────────────────────────────────────┘
                          │
 ┌─────────────────────────────────────────────────────┐
 │                  archetype.core                      │
-│  AsyncWorld, AsyncSystem, Resources, LanceDB Store  │
-│  🔒 Human-curated • Rust rewrite planned            │
+│  AsyncWorld, AsyncSystem, Resources, LanceDB Store   │
 └─────────────────────────────────────────────────────┘
 ```
 
-## Key Files for Agents
+## Try It Live
 
-| File | Purpose |
-|------|---------|
-| `AGENTS.md` | Your orientation guide |
-| `LEARNINGS.md` | Architectural decisions and patterns |
-| `examples/debate_mcts.py` | Full working demo |
-| `src/archetype/dsl/core.py` | The DSL implementation |
+Edit and run Python right here in the browser:
 
-## The Vision
+``` { .python .live }
+import json
 
+world = {
+    "name": "cogito",
+    "tick": 0,
+    "entities": [
+        {"id": 1, "name": "Descartes", "thought": "I think, therefore I am."},
+        {"id": 2, "name": "Spinoza", "thought": "All things are in God."},
+    ]
+}
+
+# Simulate a tick
+world["tick"] += 1
+for entity in world["entities"]:
+    entity["thought"] = f"[Tick {world['tick']}] {entity['thought']}"
+
+print(json.dumps(world, indent=2))
 ```
-Agents ──▶ Archetype ──▶ Simulations ──▶ Insights ──▶ Better Archetype
-    ▲                                                        │
-    └────────────────────────────────────────────────────────┘
-```
 
-This repository is designed to be improved by the very agents that use it.
+## Next Steps
 
-## Navigation
-
-<CardGroup>
-  <Card title="Quickstart" href="/guide/quickstart">
-    Get running in 5 minutes
-  </Card>
-  <Card title="Architecture" href="/guide/architecture">
-    How the layers work together
-  </Card>
-  <Card title="DSL Guide" href="/guide/dsl">
-    Full DSL reference
-  </Card>
-  <Card title="Core Concepts" href="/guide/core-concepts">
-    ECS fundamentals
-  </Card>
-</CardGroup>
+- **[Quickstart](guide/quickstart.md)** — Get running in 5 minutes
+- **[Architecture](guide/architecture.md)** — How the layers work together
+- **[Processors](guide/processors.md)** — Build custom simulation logic
+- **[Examples](guide/examples.md)** — Patterns and working demos

@@ -1,0 +1,39 @@
+site_name: Archetype
+site_description: Entity-Component-System simulation engine for AI agents
+site_url: https://archetype-docs.pages.dev
+repo_url: https://github.com/vangelis/archetype
+repo_name: vangelis/archetype
+
+docs_dir: docs
+
+theme:
+  name: shadcn
+
+nav:
+  - Getting Started:
+      - Home: index.md
+      - Quickstart: guide/quickstart.md
+      - Architecture: guide/architecture.md
+  - Guides:
+      - Processors: guide/processors.md
+      - Examples: guide/examples.md
+      - API Reference: guide/api-reference.md
+      - CLI Reference: guide/cli-reference.md
+  - Contributing:
+      - Auto-Merge Policy: guide/auto-merge.md
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - fenced_code
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mermaid2
+  - pyodide:
+      theme: auto
+      lazy_load: true

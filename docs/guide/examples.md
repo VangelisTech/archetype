@@ -9,7 +9,7 @@ export OPENAI_API_KEY=sk-...
 uv run python examples/llm_agents.py
 ```
 
-Source: [`examples/llm_agents.py`](../../examples/llm_agents.py)
+Source: [`examples/llm_agents.py`](https://github.com/VangelisTech/archetype/blob/main/examples/llm_agents.py)
 
 Key pattern: `daft.functions.prompt` inside an `AsyncProcessor.process()` gives you parallel LLM calls across all entities in a single DataFrame operation.
 
@@ -36,7 +36,7 @@ Agents send messages to each other via the CommandBroker. Messages are enqueued 
 uv run python examples/messaging_example.py
 ```
 
-Source: [`examples/messaging_example.py`](../../examples/messaging_example.py)
+Source: [`examples/messaging_example.py`](https://github.com/VangelisTech/archetype/blob/main/examples/messaging_example.py)
 
 Key pattern: Processors access the broker via `Resources` and enqueue commands that other processors drain next tick.
 

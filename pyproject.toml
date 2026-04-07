@@ -43,6 +43,11 @@ dev        = [
     "viztracer>=1.0.4",
     "ipykernel",
 ]
+docs       = [
+    "mkdocs-shadcn",
+    "mkdocs-mermaid2-plugin",
+    "mkdocs-pyodide",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -93,6 +98,9 @@ dev = [
     "httpx>=0.27",
     "pre-commit>=4.0",
 ]
+
+[tool.uv.sources]
+mkdocs-pyodide = { path = "packages/mkdocs-pyodide" }
 
 [tool.ruff]
 target-version = "py312"
