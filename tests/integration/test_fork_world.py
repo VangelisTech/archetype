@@ -218,3 +218,77 @@ async def test_fork_rejects_non_async_world(tmp_path):
             "x",
             StorageConfig(),  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.asyncio
+async def test_fork_step_both_and_verify_divergence(tmp_path):
+    """Fork a world, step both independently, verify they diverge."""
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="fork_div")
+        source = await container.world_service.create_world(WorldConfig(name="src"), storage)
+        assert isinstance(source, AsyncWorld)
+
+        # Create two entities and step to materialize them
+        await source.create_entity([Position(x=1, y=1)])
+        await source.create_entity([Position(x=2, y=2)])
+        rc = RunConfig(num_steps=2)
+        await source.run(rc)
+
+        source_tick_before_fork = source.tick
+        source_entity_count = len(source._entity2sig)
+
+        # Fork
+        fork = await container.world_service.fork_world(source.world_id, "fork-div", storage)
+        assert isinstance(fork, AsyncWorld)
+        assert fork.tick == source_tick_before_fork
+
+        # Add entity to fork only, step it
+        await fork.create_entity([Position(x=99, y=99)])
+        await fork.step(RunConfig(num_steps=1))
+
+        # Step source (no new entities)
+        await source.step(RunConfig(num_steps=1))
+
+        # Fork has one more entity than source
+        assert len(fork._entity2sig) == source_entity_count + 1
+        assert len(source._entity2sig) == source_entity_count
+
+        # Ticks advanced independently
+        assert fork.tick == source_tick_before_fork + 1
+        assert source.tick == source_tick_before_fork + 1
+
+        # Their live snapshots are distinct objects
+        assert fork._live is not source._live
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_of_fork(tmp_path):
+    """Fork a fork to verify nested forking works."""
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="fork_nested")
+        source = await container.world_service.create_world(WorldConfig(name="root"), storage)
+        assert isinstance(source, AsyncWorld)
+
+        await source.create_entity([Position(x=1, y=1)])
+        await source.run(RunConfig(num_steps=1))
+
+        fork1 = await container.world_service.fork_world(source.world_id, "f1", storage)
+        assert isinstance(fork1, AsyncWorld)
+        assert fork1.tick == source.tick
+
+        # Step fork1 to materialize its state, then fork again
+        await fork1.step(RunConfig(num_steps=1))
+
+        fork2 = await container.world_service.fork_world(fork1.world_id, "f2", storage)
+        assert isinstance(fork2, AsyncWorld)
+        assert fork2.tick == fork1.tick
+
+        # All three worlds have unique IDs
+        ids = {source.world_id, fork1.world_id, fork2.world_id}
+        assert len(ids) == 3
+    finally:
+        await container.shutdown()
