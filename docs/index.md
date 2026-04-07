@@ -2,83 +2,53 @@
 
 **Data-centric ECS simulation engine for multi-agent AI systems.**
 
-Archetype is an Entity-Component-System runtime built on [Daft](https://www.getdaft.io/) DataFrames and [LanceDB](https://lancedb.github.io/lancedb/). World state is columnar tables. Every tick is an append-only write to storage. This gives you time-travel queries, world forking, and full audit trails out of the box.
+World state is columnar tables. Every tick is an append-only write to storage. This gives you time-travel queries, world forking, and full audit trails out of the box.
 
-## What You Get
+## Get Started
 
-1. **Simulation as data** — query any tick, replay any run, diff any two states
-2. **World forking** — branch worlds for MCTS, counterfactual reasoning, or A/B experiments
-3. **Trajectory analysis** — ingest, label, and score agent trajectories with fork-based comparison
-4. **LLM-native processors** — parallel LLM calls across all entities in a single DataFrame operation
+```bash
+pip install archetype-ecs
 
-## Quick Start
-
-```python
-import asyncio
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.app.auth.models import ActorCtx
-from archetype.core.config import WorldConfig, StorageConfig, RunConfig
-from uuid_utils import uuid7
-
-async def main():
-    container = ServiceContainer()
-
-    world = await container.world_service.create_world(
-        WorldConfig(name="my-sim"), StorageConfig(),
-    )
-
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_service.submit(world.world_id, cmd, ctx)
-
-    result = await container.simulation_service.run(
-        world.world_id, RunConfig(num_steps=10),
-    )
-    print(f"Completed {result.ticks_completed} ticks")
-    await container.shutdown()
-
-asyncio.run(main())
+archetype serve                          # start the server
+archetype world create my-sim            # create a world
+archetype run <world-id> --steps 100     # run 100 ticks
+archetype query <world-id>              # see the result
 ```
 
-## World Forking
+## Fork a World
 
-Fork worlds to explore alternatives:
+Branch a world to explore alternatives:
 
-```python
-fork = await container.world_service.fork_world(
-    source_world_id=world.world_id,
-    name="branch-A",
-    storage_config=StorageConfig(),
-)
-await container.simulation_service.run(fork.world_id, RunConfig(num_steps=100))
+```bash
+curl -s -X POST localhost:8000/worlds/<world-id>/fork \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "branch-A"}' | python -m json.tool
+
+archetype run <fork-id> --steps 100
 ```
 
-The fork gets a full snapshot of the source world's state. Source and fork diverge independently — use this for MCTS, counterfactual reasoning, or A/B testing strategies.
+Source and fork diverge independently. Use this for MCTS, counterfactual reasoning, or A/B experiments.
 
-## Architecture
+## Time-Travel
 
+Every tick is preserved. Query any point in history:
+
+```bash
+curl -s localhost:8000/worlds/<world-id>/state?tick=42 | python -m json.tool
 ```
-┌─────────────────────────────────────────────────────┐
-│                  archetype.api / cli                 │
-│  FastAPI REST endpoints • Typer CLI (HTTP client)    │
-└─────────────────────────────────────────────────────┘
-                         │
-┌─────────────────────────────────────────────────────┐
-│                  archetype.app                       │
-│  CommandBroker, WorldService, SimulationService      │
-│  WorldRegistry, QueryService, RBAC                   │
-└─────────────────────────────────────────────────────┘
-                         │
-┌─────────────────────────────────────────────────────┐
-│                  archetype.core                      │
-│  AsyncWorld, AsyncSystem, Resources, LanceDB Store   │
-└─────────────────────────────────────────────────────┘
-```
+
+## How It Works
+
+Each `archetype run` step:
+
+1. Drains pending commands from the priority queue (RBAC-enforced)
+2. Applies them to the world (spawn/despawn/update entities)
+3. Runs all registered processors (DataFrame transforms, optionally LLM-powered)
+4. Appends the new state to LanceDB storage
+
+Nothing is overwritten. That's how forking and time-travel work.
 
 ## Try It Live
-
-Edit and run Python right here in the browser:
 
 ``` { .python .live }
 import json
@@ -92,7 +62,6 @@ world = {
     ]
 }
 
-# Simulate a tick
 world["tick"] += 1
 for entity in world["entities"]:
     entity["thought"] = f"[Tick {world['tick']}] {entity['thought']}"
@@ -102,7 +71,7 @@ print(json.dumps(world, indent=2))
 
 ## Next Steps
 
-- **[Quickstart](guide/quickstart.md)** — Get running in 5 minutes
-- **[Architecture](guide/architecture.md)** — How the layers work together
-- **[Processors](guide/processors.md)** — Build custom simulation logic
-- **[Examples](guide/examples.md)** — Patterns and working demos
+- **[Quickstart](guide/quickstart.md)** -- full walkthrough with forking and time-travel
+- **[Architecture](guide/architecture.md)** -- how the layers fit together
+- **[Processors](guide/processors.md)** -- build custom simulation logic
+- **[Examples](guide/examples.md)** -- patterns and working demos
