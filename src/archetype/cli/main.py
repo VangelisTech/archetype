@@ -140,6 +140,19 @@ def world_inspect(world_id: str = typer.Argument(..., help="World ID")):
     typer.echo(f"Tick: {data.get('tick', 0)}")
 
 
+@world_app.command("fork")
+def world_fork(
+    world_id: str = typer.Argument(..., help="Source world ID"),
+    name: str = typer.Option(None, "--name", "-n", help="Name for the fork"),
+):
+    """Fork a world (branch from current state)."""
+    body: dict = {}
+    if name:
+        body["name"] = name
+    data = _request("post", f"/worlds/{world_id}/fork", json=body)
+    typer.echo(f"Forked: {data['world_id']} (from {world_id})")
+
+
 @world_app.command("remove")
 def world_remove(world_id: str = typer.Argument(..., help="World ID")):
     """Remove a world."""

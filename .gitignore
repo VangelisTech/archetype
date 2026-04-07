@@ -4,8 +4,7 @@ archetype_data/
 *.egg-info/
 __pycache__/
 .venv/
-.mintlify/
-node_modules/
+site/
 .bench_out/
 ./ref
 ./.venv
