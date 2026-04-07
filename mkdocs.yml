@@ -46,3 +46,6 @@ markdown_extensions:
 plugins:
   - search
   - mermaid2
+  - pyodide:
+      theme: auto
+      lazy_load: true

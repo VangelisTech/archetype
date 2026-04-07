@@ -67,6 +67,7 @@ dev = [
 ]
 docs = [
     { name = "mkdocs-mermaid2-plugin" },
+    { name = "mkdocs-pyodide" },
     { name = "mkdocs-shadcn" },
     { name = "pymdown-extensions" },
 ]
@@ -97,6 +98,7 @@ requires-dist = [
     { name = "lancedb", specifier = ">=0.22.0" },
     { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.9" },
     { name = "mkdocs-mermaid2-plugin", marker = "extra == 'docs'" },
+    { name = "mkdocs-pyodide", marker = "extra == 'docs'", directory = "packages/mkdocs-pyodide" },
     { name = "mkdocs-shadcn", marker = "extra == 'docs'" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "extra == 'otel'", specifier = ">=1.20" },
@@ -1292,6 +1294,22 @@ sdist = { url = "https://files.pythonhosted.org/packages/2a/6d/308f443a558b6a97c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/4b/6fd6dd632019b7f522f1b1f794ab6115cd79890330986614be56fd18f0eb/mkdocs_mermaid2_plugin-1.2.3-py3-none-any.whl", hash = "sha256:33f60c582be623ed53829a96e19284fc7f1b74a1dbae78d4d2e47fe00c3e190d", size = 17299, upload-time = "2025-10-17T19:38:51.874Z" },
 ]
+
+[[package]]
+name = "mkdocs-pyodide"
+version = "0.1.0"
+source = { directory = "packages/mkdocs-pyodide" }
+dependencies = [
+    { name = "mkdocs" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "beautifulsoup4", marker = "extra == 'dev'", specifier = ">=4.12" },
+    { name = "mkdocs", specifier = ">=1.4" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "mkdocs-shadcn"
