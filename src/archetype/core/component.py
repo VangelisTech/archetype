@@ -25,12 +25,28 @@ class Component(LanceModel):
 
     @classmethod
     def get_type_by_name(cls, name: str) -> type["Component"]:
-        """Finds a Component subclass by its name."""
-        # This could be optimized with a cache if needed
+        """Finds a Component subclass by its name (searches all descendants)."""
         for subclass in cls.__subclasses__():
             if subclass.__name__ == name:
                 return subclass
+            try:
+                found = subclass.get_type_by_name(name)
+            except ValueError:
+                continue
+            else:
+                return found
         raise ValueError(f"Component type '{name}' not found.")
+
+    def model_dump(self, **kwargs) -> dict[str, Any]:
+        """Serialize this component to a dict, including the ``type`` key.
+
+        The ``type`` key holds the class name and is used by :meth:`from_dict`
+        to reconstruct the correct subclass.  It is intentionally excluded from
+        :meth:`to_row_dict` so it is never written to the storage schema.
+        """
+        data = super().model_dump(**kwargs)
+        data["type"] = self.__class__.__name__
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Component":
@@ -76,5 +92,7 @@ class Component(LanceModel):
 
     def to_row_dict(self):
         prefix = self.get_prefix()
-        row_dict = {prefix + key: value for key, value in self.model_dump().items()}
+        row_dict = {
+            prefix + key: value for key, value in self.model_dump().items() if key != "type"
+        }
         return row_dict

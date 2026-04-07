@@ -127,6 +127,8 @@ class Archetype:
 
         for c in components:
             prefix = c.get_prefix()
-            row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
+            row_dict.update(
+                {prefix + key: value for key, value in c.model_dump().items() if key != "type"}
+            )
 
         return row_dict

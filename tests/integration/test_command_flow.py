@@ -10,7 +10,13 @@ from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
+from archetype.core.component import Component
 from archetype.core.config import StorageConfig, WorldConfig
+
+
+class _SpawnAgent(Component):
+    name: str = ""
+    score: int = 0
 
 
 @pytest.fixture(autouse=True)
@@ -95,3 +101,79 @@ async def test_player_can_spawn_but_not_add_processor(tmp_path):
             await container.command_service.submit(str(world.world_id), proc_cmd, player_ctx)
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_typed_component_preserves_archetype(tmp_path):
+    """SPAWN command submitted via model_dump() payload should create an entity
+    with the correct typed archetype, not a generic Component signature.
+
+    Regression test for: SPAWN command loses component type info through CommandService.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="typed"), storage)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+        # Use model_dump() — the idiomatic path that previously lost type info.
+        agent = _SpawnAgent(name="Alice", score=42)
+        cmd = Command(
+            type=CommandType.SPAWN,
+            payload={"components": [agent.model_dump()]},
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        # The entity must be registered under (_SpawnAgent,), not (Component,).
+        world_instance = container.world_service.get_world(world.world_id)
+        sigs = list(world_instance._live.keys())
+        assert len(sigs) == 1, f"Expected 1 archetype signature, got {sigs}"
+        sig = sigs[0]
+        assert _SpawnAgent in sig, (
+            f"_SpawnAgent missing from archetype signature {sig}; "
+            "component type info was lost during CommandService hydration"
+        )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_component_model_dump_includes_type():
+    """Component.model_dump() must include a 'type' key equal to the class name
+    so that round-trip serialization through command payloads works without any
+    manual annotation.
+    """
+    agent = _SpawnAgent(name="Bob", score=7)
+    data = agent.model_dump()
+    assert "type" in data, "model_dump() must include 'type' key"
+    assert data["type"] == "_SpawnAgent"
+    assert data["name"] == "Bob"
+    assert data["score"] == 7
+
+
+def test_spawn_to_row_dict_excludes_type():
+    """to_row_dict() must NOT include a 'type' column — it would pollute the
+    storage schema with a field that is not part of the component definition.
+    """
+    agent = _SpawnAgent(name="Carol", score=3)
+    row = agent.to_row_dict()
+    assert "_spawnagent__type" not in row
+    assert "_spawnagent__name" in row
+    assert "_spawnagent__score" in row
+
+
+def test_get_type_by_name_recursive():
+    """get_type_by_name must find components nested beyond the direct subclass
+    level (i.e., grandchildren of Component).
+    """
+
+    class _GrandparentComponent(Component):
+        x: int = 0
+
+    class _ChildComponent(_GrandparentComponent):
+        y: int = 0
+
+    found = Component.get_type_by_name("_ChildComponent")
+    assert found is _ChildComponent
