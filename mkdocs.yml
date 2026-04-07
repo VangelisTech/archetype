@@ -32,11 +32,15 @@ nav:
 markdown_extensions:
   - admonition
   - codehilite
-  - fenced_code
   - footnotes
   - tables
   - toc:
       permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
 
 plugins:
   - search

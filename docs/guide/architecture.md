@@ -2,37 +2,69 @@
 
 Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
 
-## System Diagram
+## Core Abstractions
+
+```mermaid
+classDiagram
+    class Component {
+        +to_row_dict()
+        +get_prefix()
+    }
+    class AsyncWorld {
+        +world_id
+        +tick
+        +resources
+        +create_entity()
+        +add_components()
+        +remove_entity()
+        +step()
+        +run()
+    }
+    class AsyncProcessor {
+        +components
+        +priority
+        +process()
+    }
+    class AsyncSystem {
+        +add_processor()
+        +remove_processor()
+    }
+    class Resources {
+        +insert()
+        +require()
+        +get()
+    }
+    class CommandBroker {
+        +enqueue()
+        +dequeue_due()
+        +get_history()
+    }
+    class ServiceContainer {
+        +world_service
+        +command_service
+        +simulation_service
+        +query_service
+        +broker
+    }
+    AsyncWorld --> AsyncSystem
+    AsyncWorld --> Resources
+    AsyncSystem --> AsyncProcessor
+    ServiceContainer --> CommandBroker
+    ServiceContainer --> AsyncWorld
+    AsyncProcessor --> Component : requires
+```
+
+## Layers
 
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │              External Actors                  │
-                  │   (REST API, CLI (HTTP client), Python, AI)   │
-                  └──────────────┬───────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Service Layer                             │
-│                                                                  │
-│  CommandService ──→ CommandBroker ──→ WorldService ──→ AsyncWorld│
-│       │                  │                                │      │
-│       │            RBAC + queue              ┌────────────┤      │
-│       │                  │                   │            │      │
-│  SimulationService       │            Resources      Processors  │
-│    (drain + step)        │           (type-safe DI)   (DataFrame │
-│       │                  │                            transforms)│
-│       ▼                  ▼                                       │
-│  QueryService      WorldRegistry      TrajectoryPipeline         │
-│  (read path)      (JSON catalog)     (ingest, label, score)      │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                  ┌──────────────────────────────────────┐
-                  │           Storage Layer                │
-                  │    LanceDB (default) or Iceberg        │
-                  │    Append-only, partitioned by tick     │
-                  └──────────────────────────────────────┘
+archetype.api / cli          External interface (REST + HTTP client)
+       │
+archetype.app                Services, RBAC, CommandBroker, WorldRegistry
+       │
+archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 ```
+
+The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.
 
 ## Core ECS Concepts
 

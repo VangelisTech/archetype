@@ -47,6 +47,7 @@ docs       = [
     "mkdocs-shadcn",
     "mkdocs-mermaid2-plugin",
     "mkdocs-pyodide",
+    "pymdown-extensions",
 ]
 
 [build-system]

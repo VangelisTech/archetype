@@ -27,10 +27,11 @@ from mkdocs.plugins import BasePlugin
 from mkdocs.structure.files import Files
 from mkdocs.structure.pages import Page
 
-# ── Pattern A: codehilite output ─────────────────────────────────────────────
-# <div class="live codehilite"><pre><span></span><code>HIGHLIGHTED</code></pre></div>
+# ── Pattern A: codehilite/superfences output ─────────────────────────────────
+# <div class="live codehilite"><pre>...<code>HIGHLIGHTED</code></pre></div>
+# <div class="live highlight"><pre>...<code>HIGHLIGHTED</code></pre></div>
 _CODEHILITE_RE = re.compile(
-    r'<div\s+class="[^"]*\blive\b[^"]*\bcodehilite\b[^"]*"[^>]*>'
+    r'<div\s+class="[^"]*\blive\b[^"]*(?:\bcodehilite\b|\bhighlight\b)[^"]*"[^>]*>'
     r"\s*<pre[^>]*>(?:<span></span>)?\s*<code>(.*?)</code>\s*</pre>\s*</div>",
     re.DOTALL,
 )
