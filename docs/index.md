@@ -45,35 +45,6 @@ Each `archetype run` step:
 
 Nothing is overwritten. That's how forking and time-travel work.
 
-## Try It Live
-
-``` { .python .live }
-import json
-
-# Define a world with agents
-world = {"name": "debate", "tick": 0, "agents": [
-    {"name": "Ada",  "role": "scientist",   "energy": 100, "mood": "curious"},
-    {"name": "Rex",  "role": "explorer",    "energy": 100, "mood": "bold"},
-    {"name": "Iris", "role": "philosopher", "energy": 100, "mood": "pensive"},
-]}
-
-# Run 5 ticks — energy decays, mood shifts
-for tick in range(1, 6):
-    world["tick"] = tick
-    for agent in world["agents"]:
-        agent["energy"] -= 12
-        if agent["energy"] > 60:
-            agent["mood"] = "energized"
-        elif agent["energy"] > 30:
-            agent["mood"] = "focused"
-        else:
-            agent["mood"] = "tired"
-
-print(f"After {world['tick']} ticks:\n")
-for a in world["agents"]:
-    print(f"  {a['name']:5} ({a['role']:12}) energy={a['energy']:3}  mood={a['mood']}")
-```
-
 ## Next Steps
 
 - **[Quickstart](guide/quickstart.md)** -- full walkthrough with forking and time-travel
