@@ -28,11 +28,24 @@ classDiagram
     class AsyncSystem {
         +add_processor()
         +remove_processor()
+        +execute()
     }
     class Resources {
         +insert()
         +require()
         +get()
+    }
+    class AsyncStore {
+        +get_archetype_df()
+        +append()
+        +shutdown()
+    }
+    class QueryManager {
+        +get_archetype()
+        +query_archetype()
+    }
+    class UpdateManager {
+        +update()
     }
     class CommandBroker {
         +enqueue()
@@ -48,7 +61,11 @@ classDiagram
     }
     AsyncWorld --> AsyncSystem
     AsyncWorld --> Resources
+    AsyncWorld --> QueryManager : reads
+    AsyncWorld --> UpdateManager : writes
     AsyncSystem --> AsyncProcessor
+    QueryManager --> AsyncStore
+    UpdateManager --> AsyncStore
     ServiceContainer --> CommandBroker
     ServiceContainer --> AsyncWorld
     AsyncProcessor --> Component : requires
