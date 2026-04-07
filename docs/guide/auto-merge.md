@@ -1,5 +1,23 @@
 # Auto-Merge Policy
 
+## Enabling Auto-Merge
+
+Auto-merge is **off by default**. Every PR requires human approval unless you
+explicitly opt in by setting `ARCHETYPE_AUTO_MERGE=1` in your repository
+[Variables](https://docs.github.com/en/actions/learn-github-actions/variables)
+(Settings → Secrets and variables → Actions → Variables).
+
+When enabled, the `.github/workflows/auto-merge.yml` workflow runs on every PR
+event and whenever the `Tests` workflow finishes. It determines the PR's tier,
+evaluates the corresponding required checks, and calls
+`gh pr merge --auto --squash` when all conditions are met.
+
+Any PR carrying the `manual-review` label bypasses auto-merge regardless of
+tier. Tier 3 (core engine) PRs additionally require a maintainer to apply the
+`auto-merge-approved` label before auto-merge is considered.
+
+---
+
 Auto-merge is gated by **tiered status checks**. The tier is determined by the
 paths a PR touches. A PR's tier is the *highest* tier any changed path falls
 into — touching `src/archetype/core/` once makes the whole PR Tier 3,
@@ -108,9 +126,15 @@ maintainer attention; major-version jumps should never land unseen.
 
 ## Determining a PR's Tier (proposed)
 
-> **Status:** This section describes the target implementation. The labeler
-> workflow and `auto-merge-gate` check do not exist yet. Today, `ci` and
-> `format` are the only required status checks.
+> **Status:** The `auto-merge-gate` workflow
+> (`.github/workflows/auto-merge.yml`) is implemented. It reads
+> `ARCHETYPE_AUTO_MERGE` from repository variables, determines the tier from
+> changed paths, evaluates tier-specific required checks, and enables
+> `gh pr merge --auto --squash` when all conditions are met.
+>
+> The labeler workflow (`.github/labeler.yml`) and branch-protection-level
+> `auto-merge-gate` required status check are not yet configured. The
+> path-pattern table below shows the intended labeler config for reference.
 
 The plan is a labeler workflow that reads changed paths and assigns tier labels:
 

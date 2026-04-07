@@ -1,0 +1,198 @@
+name: Auto-Merge Gate
+
+# Runs on every PR event and whenever the Tests workflow finishes so that
+# auto-merge is enabled as soon as all tier-specific requirements are met.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, ready_for_review]
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number || github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge-gate:
+    name: auto-merge-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # ── Resolve the PR number regardless of trigger ──────────────────────────
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # workflow_run: find the open PR that triggered this run by head SHA
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          PR="$(gh pr list --state open --json number,headRefOid \
+            --jq ".[] | select(.headRefOid == \"${HEAD_SHA}\") | .number" \
+            | head -1)"
+          echo "number=${PR}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if no PR found
+        if: steps.pr.outputs.number == ''
+        run: echo "No open PR found for this event — skipping auto-merge gate."
+
+      # ── Main gate logic ───────────────────────────────────────────────────────
+      - name: Evaluate and apply auto-merge
+        if: steps.pr.outputs.number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          ARCHETYPE_AUTO_MERGE: ${{ vars.ARCHETYPE_AUTO_MERGE }}
+        run: |
+          set -euo pipefail
+
+          # ── 1. Feature flag ──────────────────────────────────────────────────
+          if [ "${ARCHETYPE_AUTO_MERGE}" != "1" ]; then
+            echo "ARCHETYPE_AUTO_MERGE != 1 — auto-merge is disabled for this repository."
+            echo "Set ARCHETYPE_AUTO_MERGE=1 in Settings → Secrets and variables → Actions → Variables to enable."
+            exit 0
+          fi
+
+          # ── 2. manual-review label check ────────────────────────────────────
+          LABELS="$(gh pr view "${PR}" --json labels --jq '[.labels[].name] | join("\n")')"
+          if echo "${LABELS}" | grep -qx "manual-review"; then
+            echo "PR #${PR}: 'manual-review' label present — disabling auto-merge."
+            gh pr merge "${PR}" --disable-auto 2>/dev/null || true
+            exit 0
+          fi
+
+          # ── 3. Tier path patterns ────────────────────────────────────────────
+          PATTERN_CORE='^src/archetype/core/|^tests/core/|^tests/aio/|^tests/sync/|^tests/storage/'
+          PATTERN_APP='^src/archetype/app/|^src/archetype/api/|^src/archetype/cli/|^tests/app/|^tests/api/|^tests/cli/|^tests/integration/'
+          PATTERN_EXAMPLES='^examples/|^bench/'
+          PATTERN_DEPS='^(pyproject\.toml|uv\.lock)$'
+
+          # ── 4. Determine tier from changed file paths ────────────────────────
+          # Tier precedence (highest wins): 3 > 2 > 1 > 0.
+          # Tier D applies only when the PR exclusively touches pyproject.toml / uv.lock.
+          FILES="$(gh pr view "${PR}" --json files --jq '[.files[].path] | join("\n")')"
+          echo "Changed files:"
+          echo "${FILES}"
+
+          TIER_NUM=0
+          DEPS_ONLY=true
+
+          while IFS= read -r f; do
+            [ -z "${f}" ] && continue
+            if echo "${f}" | grep -qE "${PATTERN_CORE}"; then
+              TIER_NUM=3
+              DEPS_ONLY=false
+              break  # Tier 3 is the ceiling
+            elif echo "${f}" | grep -qE "${PATTERN_APP}"; then
+              [ "${TIER_NUM}" -lt 2 ] && TIER_NUM=2
+              DEPS_ONLY=false
+            elif echo "${f}" | grep -qE "${PATTERN_EXAMPLES}"; then
+              [ "${TIER_NUM}" -lt 1 ] && TIER_NUM=1
+              DEPS_ONLY=false
+            elif echo "${f}" | grep -qE "${PATTERN_DEPS}"; then
+              : # Tier D candidate — do not clear DEPS_ONLY
+            else
+              DEPS_ONLY=false  # docs / meta / other non-dep files → numeric tiers
+            fi
+          done <<< "${FILES}"
+
+          if [ "${DEPS_ONLY}" = "true" ]; then
+            TIER="D"
+          else
+            TIER="${TIER_NUM}"
+          fi
+          echo "Tier: ${TIER}"
+
+          # ── 5. Helpers ───────────────────────────────────────────────────────
+          # check_state NAME — returns the gh pr checks state for a named check
+          check_state() {
+            gh pr checks "${PR}" --json name,state \
+              --jq ".[] | select(.name == \"${1}\") | .state" 2>/dev/null | head -1
+          }
+
+          # evaluate_checks CHECK... — sets SHOULD_MERGE and REASON
+          evaluate_checks() {
+            SHOULD_MERGE=true
+            REASON=""
+            for check in "$@"; do
+              local state
+              state="$(check_state "${check}")"
+              if [ "${state}" != "pass" ]; then
+                SHOULD_MERGE=false
+                REASON="${check}=${state:-missing}"
+                return
+              fi
+            done
+            REASON="all required checks passed"
+          }
+
+          # ── 6. Tier-specific gate evaluation ─────────────────────────────────
+          SHOULD_MERGE=false
+          REASON=""
+
+          case "${TIER}" in
+            0)
+              # Tier 0 — Docs & Meta: only formatting required
+              evaluate_checks "format"
+              [ "${SHOULD_MERGE}" = "true" ] && REASON="Tier 0 gate satisfied (${REASON})"
+              [ "${SHOULD_MERGE}" = "false" ] && REASON="Tier 0: ${REASON}"
+              ;;
+            1)
+              # Tier 1 — Examples & Benches: format + full CI
+              evaluate_checks "format" "ci"
+              [ "${SHOULD_MERGE}" = "true" ] && REASON="Tier 1 gate satisfied (${REASON})"
+              [ "${SHOULD_MERGE}" = "false" ] && REASON="Tier 1: ${REASON}"
+              ;;
+            2)
+              # Tier 2 — App / API / CLI: format + ci
+              # (coverage delta check is enforced by review, not automated here)
+              evaluate_checks "format" "ci"
+              [ "${SHOULD_MERGE}" = "true" ] && REASON="Tier 2 gate satisfied (${REASON})"
+              [ "${SHOULD_MERGE}" = "false" ] && REASON="Tier 2: ${REASON}"
+              ;;
+            3)
+              # Tier 3 — Core Engine: auto-merge disabled unless explicitly approved
+              if echo "${LABELS}" | grep -qx "auto-merge-approved"; then
+                evaluate_checks "format" "ci"
+                [ "${SHOULD_MERGE}" = "true" ] && REASON="Tier 3 gate satisfied (auto-merge-approved label present, ${REASON})"
+                [ "${SHOULD_MERGE}" = "false" ] && REASON="Tier 3: ${REASON}"
+              else
+                REASON="Tier 3 (core): auto-merge disabled by default. A maintainer must add the 'auto-merge-approved' label to enable."
+              fi
+              ;;
+            D)
+              # Tier D — Dependencies only: full CI required
+              # (PR-triggered security audit is planned but not yet implemented)
+              evaluate_checks "ci"
+              [ "${SHOULD_MERGE}" = "true" ] && REASON="Tier D gate satisfied (${REASON})"
+              [ "${SHOULD_MERGE}" = "false" ] && REASON="Tier D: ${REASON}"
+              ;;
+          esac
+
+          echo "Gate result: should_merge=${SHOULD_MERGE} — ${REASON}"
+
+          # ── 7. Enable (or skip) auto-merge ───────────────────────────────────
+          if [ "${SHOULD_MERGE}" = "true" ]; then
+            echo "Enabling auto-merge (squash) for PR #${PR}"
+            MERGE_OUT="$(gh pr merge "${PR}" --auto --squash 2>&1)" && {
+              echo "${MERGE_OUT}"
+            } || {
+              EXIT_CODE=$?
+              echo "${MERGE_OUT}"
+              if echo "${MERGE_OUT}" | grep -qi "already.*auto-merge\|auto\.merge.*enabled"; then
+                echo "Auto-merge was already enabled for PR #${PR} — no change needed."
+              else
+                echo "Warning: gh pr merge --auto exited ${EXIT_CODE}; the PR may not be in a mergeable state yet."
+              fi
+            }
+          else
+            echo "Auto-merge not yet ready: ${REASON}"
+          fi
