@@ -1,9 +1,19 @@
 # Auto-Merge Policy
 
-Auto-merge is gated by **tiered status checks**. The tier is determined by the
-paths a PR touches. A PR's tier is the *highest* tier any changed path falls
-into — touching `src/archetype/core/` once makes the whole PR Tier 3,
-regardless of what else it changes.
+**Auto-merge is off by default.** Every PR requires human approval unless you
+explicitly opt in by setting `ARCHETYPE_AUTO_MERGE=1` in your repository
+environment variables. Even then, auto-merge is gated by tiered status checks
+and can be revoked per-PR with the `manual-review` label.
+
+This is a deliberate choice: automated merging is powerful but dangerous.
+It should be a conscious decision, not a default.
+
+---
+
+Auto-merge, when enabled, is gated by **tiered status checks**. The tier is
+determined by the paths a PR touches. A PR's tier is the *highest* tier any
+changed path falls into — touching `src/archetype/core/` once makes the whole
+PR Tier 3, regardless of what else it changes.
 
 The principle: **the blast radius of a change sets the bar for merging it.** A
 docs typo and a scheduler rewrite should not clear the same gate.
@@ -152,6 +162,20 @@ gates apply instead).
   of tier.
 - **Any PR failing a non-required check twice:** auto-merge disabled, flagged
   for review (likely flaky test or genuine regression).
+
+## Enabling Auto-Merge
+
+Auto-merge is **off by default**. To enable it:
+
+1. Set the `ARCHETYPE_AUTO_MERGE` environment variable to `1` in your GitHub
+   repository settings (Settings > Environments or Settings > Secrets and
+   variables > Variables)
+2. Ensure branch protection rules require the appropriate status checks
+3. A human must make this decision — there is no way to enable auto-merge
+   from within a PR or from CI itself
+
+To disable for a specific PR even when auto-merge is enabled, apply the
+`manual-review` label.
 
 ## What Auto-Merge Does NOT Replace
 
