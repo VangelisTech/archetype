@@ -334,6 +334,9 @@ class MessageDeliveryProcessor(AsyncProcessor):
                 )
                 channel = row["channel"]
                 if collector is not None:
+                    # Deferred: graph mutations commit after persist, so downstream
+                    # processors in the same tick see the previous tick's active_path().
+                    # This is intentional — tick N deliveries become visible at tick N+1.
                     collector.defer(
                         lambda c=cmd, ch=channel: graphs.channel(world_id, ch).append(c)
                     )

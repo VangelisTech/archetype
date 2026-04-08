@@ -4,7 +4,7 @@
 
 **A compound AI engine running on a data substrate.**
 
-Data-oriented design using a relational ECS pattern with declarative dataflow execution.
+An ECS pattern implemented with data-oriented design to enable declarative dataflow execution.
 
 <i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
 
