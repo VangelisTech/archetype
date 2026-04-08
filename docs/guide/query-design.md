@@ -35,6 +35,7 @@ No state needed across tool calls. Each query is a single self-contained command
 Each terminal session — each agent's interaction with the CLI — is itself an entity in the system. The session's stdio (commands issued, query results received, errors encountered) is stored as components on that entity.
 
 This means:
+
 - An agent runs `archetype query ...` and gets results in stdout
 - That stdout is captured as component data on the session entity
 - Other agents (or the same agent later) can query those session logs through the same CLI
@@ -49,6 +50,7 @@ This is the meta-goal made concrete: Archetype observing Archetype, using the sa
 **This PR** wires QueryService to real data. The REST API returns actual entity/component state with time-travel support. This is necessary plumbing — external consumers (dashboards, CLI, scripts) need JSON endpoints that work.
 
 **Next** (#103) is the DataFrame-native query path:
+
 1. Expose the DataFrame API through CLI subcommands
 2. Each session's stdio stored as components on a session entity
 3. QueryService stays for REST consumers — the CLI and session entities are the agent-native path
