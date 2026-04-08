@@ -140,7 +140,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
         # Drop rows where the exploded value is null (from empty outbox lists)
         msgs = msgs.where(col("outbox__messages").not_null())
 
-        # Early exit: if no messages, just clear outboxes and return
+        # Early exit: no outbox messages to route, nothing to do
         if msgs.count_rows() == 0:
             return df
 
