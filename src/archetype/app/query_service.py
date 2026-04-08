@@ -74,7 +74,7 @@ def _resolve_component_types(world: Any, type_names: list[str]) -> list[type]:
     for name in type_names:
         comp_cls = known.get(name.lower())
         if comp_cls is None:
-            raise KeyError(f"Unknown component type: {name!r}")
+            raise ValueError(f"Unknown component type: {name!r}")
         resolved.append(comp_cls)
     return resolved
 
@@ -152,7 +152,9 @@ class QueryService:
                         entities[eid] = [t.__name__ for t in sig]
                     archetype_counts[name] = len(rows)
                 except Exception:
-                    logger.debug("Failed to query archetype %s at tick %d", name, tick)
+                    logger.warning(
+                        "Failed to query archetype %s at tick %d", name, tick, exc_info=True
+                    )
                     archetype_counts[name] = 0
 
             return WorldSnapshot(
