@@ -8,6 +8,7 @@ docs_dir: docs
 
 theme:
   name: shadcn
+  custom_dir: docs/overrides
   icon: assets/logo.png
   favicon: assets/logo.png
 
@@ -18,12 +19,23 @@ nav:
   - Getting Started:
       - Home: index.md
       - Quickstart: guide/quickstart.md
-      - Architecture: guide/architecture.md
+  - Architecture:
+      - Overview: guide/architecture.md
+      - Core Primitives:
+          - Archetype: guide/archetype.md
+          - Components: guide/components.md
+          - Processors: guide/processors.md
+          - Systems: guide/system-execution.md
+      - Infrastructure:
+          - Worlds: guide/worlds.md
+          - Stores: guide/stores.md
+          - Querier: guide/querier.md
+          - Updater: guide/updater.md
   - Guides:
       - Building Simulations: guide/building-simulations.md
-      - Components: guide/components.md
-      - Processors: guide/processors.md
-      - System Execution: guide/system-execution.md
+      - Custom Commands: guide/custom-commands.md
+      - Trajectories: guide/trajectories.md
+      - Token Quotas: guide/token-quotas.md
       - Examples: guide/examples.md
   - Reference:
       - REST API: reference/rest-api.md
@@ -45,6 +57,9 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid
+
+hooks:
+  - docs/hooks/copy_page.py
 
 plugins:
   - search

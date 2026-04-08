@@ -1,0 +1,86 @@
+# Querier
+
+`AsyncQueryManager` is the read facade to the store. It provides filtered access to archetype tables by tick, entity ID, and component projections.
+
+## How It Works
+
+The querier sits between the world and the store:
+
+```text
+AsyncWorld.query_archetype()
+       |
+AsyncQueryManager.query_archetype()
+       |
+AsyncStore.get_archetype_df()
+```
+
+All queries start with the raw archetype DataFrame from the store, then apply filters in sequence.
+
+## API
+
+### get_archetype
+
+Fetch the raw DataFrame for a signature, world, and run:
+
+```python
+df = await querier.get_archetype(sig, world_id="abc", run_id="run-1")
+```
+
+This is a thin wrapper around `store.get_archetype_df()` -- no filtering is applied.
+
+### query_archetype
+
+The primary query method with full filtering:
+
+```python
+df = await querier.query_archetype(
+    sig=sig,
+    world_id="abc",
+    run_id="run-1",
+    ticks=[5, 6],           # only these ticks
+    entity_ids=[1, 2, 3],   # only these entities
+    components=[Position()], # project to these columns
+)
+```
+
+Filters are applied in order:
+
+1. **is_active** -- only active (alive) entities
+2. **ticks** -- restrict to specific tick numbers (if provided)
+3. **entity_ids** -- restrict to specific entities (if provided)
+4. **components** -- project to the schema of the given components (if provided)
+
+All filters are optional. With no filters, you get all active entities for the given world and run.
+
+### Component Projection
+
+When `components` is provided, the result DataFrame is projected to only the columns defined by those component types (plus base columns). This is useful when you only need a subset of an archetype's fields:
+
+```python
+# Archetype has (Health, Position, Velocity)
+# Only fetch position columns + base columns
+df = await querier.query_archetype(
+    sig=sig,
+    world_id="abc",
+    components=[Position()],
+)
+# Columns: world_id, run_id, entity_id, tick, is_active, position__x, position__y
+```
+
+## World Facade
+
+Most code uses the world's facade methods rather than the querier directly:
+
+```python
+# Delegates to querier with world_id and run_id filled in
+df = await world.query_archetype(sig, ticks=[5])
+
+# Multi-archetype union query
+df = await world.get_components([Position, Health])
+```
+
+`world.query_archetype()` automatically fills in `world_id` and `run_id` from the world's current state and defaults to the current tick if no ticks are specified.
+
+## Source Reference
+
+The querier is defined in `src/archetype/core/aio/async_querier.py`.
