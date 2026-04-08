@@ -129,8 +129,7 @@ class QueryService:
             archetype_counts: dict[str, int] = {}
             for sig, df in world._live.items():
                 name = Archetype.get_name(sig)
-                collected = df.where(col("is_active")).collect()
-                archetype_counts[name] = len(collected)
+                archetype_counts[name] = df.where(col("is_active")).count_rows()
 
             return WorldSnapshot(
                 world_id=world_id,
@@ -146,11 +145,10 @@ class QueryService:
                 name = Archetype.get_name(sig)
                 try:
                     df = await world.query_archetype(sig, ticks=[tick])
-                    rows = df.select("entity_id").collect().to_pylist()
-                    for row in rows:
-                        eid = row["entity_id"]
-                        entities[eid] = [t.__name__ for t in sig]
-                    archetype_counts[name] = len(rows)
+                    collected = df.select("entity_id").collect()
+                    archetype_counts[name] = collected.count_rows()
+                    for row in collected.to_pylist():
+                        entities[row["entity_id"]] = [t.__name__ for t in sig]
                 except Exception:
                     logger.warning(
                         "Failed to query archetype %s at tick %d", name, tick, exc_info=True
