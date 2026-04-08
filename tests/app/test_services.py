@@ -110,7 +110,7 @@ class TestSimulationService:
 
 class TestQueryService:
     @pytest.mark.asyncio
-    async def test_get_world_state(self, tmp_path):
+    async def test_get_world_state_empty_world(self, tmp_path):
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -118,6 +118,128 @@ class TestQueryService:
 
             snapshot = await container.query_service.get_world_state(world.world_id)
             assert snapshot.world_id == world.world_id
+            assert snapshot.entities == {}
+            assert snapshot.archetype_counts == {}
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_world_state_with_entities(self, tmp_path):
+        """After creating entities, get_world_state returns real entity data."""
+        from archetype.core.component import Component
+
+        class Agent(Component):
+            name: str = ""
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            await world.create_entity([Agent(name="Alice")])
+            await world.create_entity([Agent(name="Bob")])
+            # Step to materialize the entities into live state
+            await container.simulation_service.step(world.world_id)
+
+            snapshot = await container.query_service.get_world_state(world.world_id)
+            assert snapshot.world_id == world.world_id
+            assert len(snapshot.entities) == 2
+            # Each entity should list Agent as a component type
+            for _eid, comp_names in snapshot.entities.items():
+                assert "Agent" in comp_names
+            # Archetype counts should reflect 2 entities in the Agent archetype
+            assert sum(snapshot.archetype_counts.values()) == 2
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_returns_component_data(self, tmp_path):
+        """get_entity returns actual component field values."""
+        from archetype.core.component import Component
+
+        class Position(Component):
+            x: float = 0.0
+            y: float = 0.0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            eid = await world.create_entity([Position(x=10.0, y=20.0)])
+            await container.simulation_service.step(world.world_id)
+
+            result = await container.query_service.get_entity(world.world_id, eid)
+            assert result["entity_id"] == eid
+            assert result["world_id"] == str(world.world_id)
+            assert "Position" in result["component_types"]
+            assert "Position" in result["components"]
+            assert result["components"]["Position"]["x"] == 10.0
+            assert result["components"]["Position"]["y"] == 20.0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_not_found(self, tmp_path):
+        """get_entity raises KeyError for non-existent entity."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            with pytest.raises(KeyError):
+                await container.query_service.get_entity(world.world_id, 9999)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_returns_rows(self, tmp_path):
+        """get_components resolves type names and returns real DataFrame rows."""
+        from archetype.core.component import Component
+
+        class Score(Component):
+            val: float = 0.0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            await world.create_entity([Score(val=0.5)])
+            await world.create_entity([Score(val=0.9)])
+            await container.simulation_service.step(world.world_id)
+
+            result = await container.query_service.get_components(world.world_id, ["Score"])
+            assert result["component_types"] == ["Score"]
+            assert len(result["entities"]) == 2
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_unknown_type(self, tmp_path):
+        """get_components raises KeyError for unknown component type names."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            with pytest.raises(KeyError, match="Unknown component type"):
+                await container.query_service.get_components(
+                    world.world_id, ["NonExistentComponent"]
+                )
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_empty_types(self, tmp_path):
+        """get_components with empty type list returns empty entities."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            result = await container.query_service.get_components(world.world_id, [])
+            assert result["entities"] == []
         finally:
             await container.shutdown()
 
