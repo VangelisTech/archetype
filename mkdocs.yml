@@ -1,0 +1,48 @@
+site_name: Archetype
+site_description: Entity-Component-System simulation engine for AI agents
+site_url: https://archetype-docs.pages.dev
+repo_url: https://github.com/VangelisTech/archetype
+repo_name: VangelisTech/archetype
+
+docs_dir: docs
+
+theme:
+  name: shadcn
+  icon: assets/logo.png
+  favicon: assets/logo.png
+
+extra_css:
+  - assets/custom.css
+
+nav:
+  - Getting Started:
+      - Home: index.md
+      - Quickstart: guide/quickstart.md
+      - Architecture: guide/architecture.md
+  - Guides:
+      - Building Simulations: guide/building-simulations.md
+      - Components: guide/components.md
+      - Processors: guide/processors.md
+      - Examples: guide/examples.md
+      - API Reference: guide/api-reference.md
+      - CLI Reference: guide/cli-reference.md
+  - Contributing:
+      - Auto-Merge Policy: guide/auto-merge.md
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      css_class: codehilite
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid
+
+plugins:
+  - search
+  - mermaid2

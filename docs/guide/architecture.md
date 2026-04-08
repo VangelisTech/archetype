@@ -2,37 +2,86 @@
 
 Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
 
-## System Diagram
+## Core Abstractions
+
+```mermaid
+classDiagram
+    class Component {
+        +to_row_dict()
+        +get_prefix()
+    }
+    class AsyncWorld {
+        +world_id
+        +tick
+        +resources
+        +create_entity()
+        +add_components()
+        +remove_entity()
+        +step()
+        +run()
+    }
+    class AsyncProcessor {
+        +components
+        +priority
+        +process()
+    }
+    class AsyncSystem {
+        +add_processor()
+        +remove_processor()
+        +execute()
+    }
+    class Resources {
+        +insert()
+        +require()
+        +get()
+    }
+    class AsyncStore {
+        +get_archetype_df()
+        +append()
+        +shutdown()
+    }
+    class QueryManager {
+        +get_archetype()
+        +query_archetype()
+    }
+    class UpdateManager {
+        +update()
+    }
+    class CommandBroker {
+        +enqueue()
+        +dequeue_due()
+        +get_history()
+    }
+    class ServiceContainer {
+        +world_service
+        +command_service
+        +simulation_service
+        +query_service
+        +broker
+    }
+    AsyncWorld --> AsyncSystem
+    AsyncWorld --> Resources
+    AsyncWorld --> QueryManager : reads
+    AsyncWorld --> UpdateManager : writes
+    AsyncSystem --> AsyncProcessor
+    QueryManager --> AsyncStore
+    UpdateManager --> AsyncStore
+    ServiceContainer --> CommandBroker
+    ServiceContainer --> AsyncWorld
+    AsyncProcessor --> Component : requires
+```
+
+## Layers
 
 ```
-                  ┌──────────────────────────────────────────────┐
-                  │              External Actors                  │
-                  │     (REST API, CLI, Python scripts, agents)   │
-                  └──────────────┬───────────────────────────────┘
-                                 │
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        Service Layer                             │
-│                                                                  │
-│  CommandService ──→ CommandBroker ──→ WorldService ──→ AsyncWorld│
-│       │                  │                                │      │
-│       │            RBAC + queue              ┌────────────┤      │
-│       │                  │                   │            │      │
-│  SimulationService       │            Resources      Processors  │
-│    (drain + step)        │           (type-safe DI)   (DataFrame │
-│       │                  │                            transforms)│
-│       ▼                  ▼                                       │
-│  QueryService      Command History                               │
-│  (read path)        (audit trail)                                │
-└─────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                  ┌──────────────────────────────────────┐
-                  │           Storage Layer                │
-                  │    LanceDB (default) or Iceberg        │
-                  │    Append-only, partitioned by tick     │
-                  └──────────────────────────────────────┘
+archetype.api / cli          External interface (REST + HTTP client)
+       │
+archetype.app                Services, RBAC, CommandBroker, WorldRegistry
+       │
+archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 ```
+
+The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.
 
 ## Core ECS Concepts
 
@@ -156,6 +205,7 @@ Roles are flat (not hierarchical) — an actor can have multiple roles:
 | `viewer` | Read-only (query, get state, get world) |
 | `player` | spawn, despawn, update, message, custom |
 | `coder` | add/remove components, update |
+| `operator` | trajectory ingestion and labeling |
 | `maintainer` | spawn, despawn, components, processors, update |
 | `admin` | All commands (wildcard) |
 

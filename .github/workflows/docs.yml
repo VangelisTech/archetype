@@ -1,0 +1,89 @@
+name: Docs
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "**/*.md"
+      - ".markdownlint.yaml"
+      - "_typos.toml"
+      - "lychee.toml"
+      - "docs/mint.json"
+      - ".github/workflows/docs.yml"
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Spelling — typos-cli (~2s, Rust binary)
+  # --------------------------------------------------------------------------
+  spelling:
+    name: Spelling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: crate-ci/typos@v1
+        with:
+          config: ./_typos.toml
+
+  # --------------------------------------------------------------------------
+  # Markdown lint — markdownlint-cli2
+  # --------------------------------------------------------------------------
+  markdown-lint:
+    name: Markdown lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          config: .markdownlint.yaml
+          globs: |
+            docs/**/*.md
+            docs/**/*.mdx
+            *.md
+
+  # --------------------------------------------------------------------------
+  # Link check — lychee
+  # --------------------------------------------------------------------------
+  link-check:
+    name: Link check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --config lychee.toml
+            "docs/**/*.md"
+            "docs/**/*.mdx"
+            "*.md"
+          fail: true
+
+  # --------------------------------------------------------------------------
+  # Mintlify build — catches broken frontmatter, missing pages, MDX errors
+  # --------------------------------------------------------------------------
+  mintlify-build:
+    name: Mintlify build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Puppeteer/Chromium requires system libraries on Ubuntu
+      - name: Install Chromium dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
+            libcairo2 libasound2t64 libxshmfence1
+
+      - name: Build Mintlify docs
+        working-directory: docs
+        run: npx --yes mintlify build

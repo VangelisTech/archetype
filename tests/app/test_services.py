@@ -286,6 +286,30 @@ class TestQueryService:
         finally:
             await container.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_get_command_history_without_broker(self, tmp_path):
+        """QueryService without broker returns empty history."""
+        ws = WorldService(StorageService())
+        qs = QueryService(ws, broker=None)
+
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await ws.create_world(WorldConfig(name="nb"), storage)
+        try:
+            history = await qs.get_command_history(world.world_id)
+            assert history == []
+        finally:
+            await ws.storage_service.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_world_state_not_found(self):
+        """QueryService raises KeyError for unknown world."""
+        container = ServiceContainer()
+        try:
+            with pytest.raises(KeyError):
+                await container.query_service.get_world_state(uuid7())
+        finally:
+            await container.shutdown()
+
 
 class TestWorldService:
     @pytest.mark.asyncio
