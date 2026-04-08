@@ -611,6 +611,55 @@ A `WorldRegistry` (JSON file at `./archetype_data/archetype_registry.json`) cata
 
 ---
 
+## Trajectory Analysis Pipeline (Apr 2026)
+
+> **For AI Agents:** These are hard-won patterns from building the trajectory evaluation pipeline. Read before modifying anything in `src/archetype/trajectories/`.
+
+### Entity Model: (Trajectory, Technique) Pairs
+
+Each entity is a **(trajectory, technique)** pair. 3 trajectories with 2 techniques = 6 entities. The fan-out happens at ingest time via `pipeline.label()` declarations. Query results have one row per pair — group by `label__technique` to compare across techniques.
+
+### Sampling Never Drops Rows
+
+`SamplingProcessor` sets `label__sampled = True/False` but preserves all entities. This is critical: dropped rows can't be re-evaluated when config changes. Sampling recomputes from scratch each tick — unsampled rows can become sampled next tick if config changes.
+
+### Fork to Compare Techniques
+
+To compare evaluation criteria, **fork the world** and swap the Label description. Both worlds coexist in storage with independent Resources and state. Don't do A/B testing within a single world.
+
+```python
+fork = await pipeline.fork("strict-eval")
+fork.label("correctness", "Binary: 1.0 if exactly right, 0.0 otherwise")
+await fork.run()
+# pipeline.results() vs fork.results() — same trajectories, different criteria
+```
+
+### One Tick = Full Pipeline
+
+Priorities 10 → 20 → 30 (sample → label → score) execute in a single tick. One `pipeline.run()` = one complete evaluation pass. Multiple steps re-evaluate with potentially updated configs.
+
+### Label Description IS the Prompt
+
+`label__description` is the natural language evaluation instruction. Prompt engineering happens at the `pipeline.label()` API — not inside `LabelingProcessor`. The processor wraps the description with trajectory context and extracts structured `VALUE/SCORE/RATIONALE`.
+
+### prefer_live_reads for Forked Worlds
+
+Forked worlds MUST step with `prefer_live_reads=True`. Without it, forks read from storage where forked data may not be materialized. This applies to both `TrajectoryPipeline.run()` and direct `simulation_service.step()` calls.
+
+### LLM-Free Testing
+
+Exclude `LabelingProcessor` from test setups. `SamplingProcessor` + `ScoringProcessor` cover the full pipeline flow without API keys. Pre-set scores on `Label` components to test clamping and normalization.
+
+### Turn is a Dataclass, Not a Component
+
+`Turn` is a plain `@dataclass` for building the `Trajectory.turns_json` string. It's never stored as an entity. The `_json` suffix convention signals JSON-encoded strings for Arrow compatibility.
+
+### Pipeline Container Lifecycle
+
+`TrajectoryPipeline` creates and owns its `ServiceContainer`. Forks get independent containers. `shutdown()` only cleans up containers the pipeline created (`_owns_container=True`). Never share containers across pipelines unless you manage the lifecycle explicitly.
+
+---
+
 ## Daft 0.7.x: `with_column` Not `with_columns` (Apr 2026)
 
 `DataFrame.with_columns(expr1, expr2)` raises `TypeError: too many positional arguments` in Daft 0.7.x. The method accepts **one expression at a time**. Chain calls instead:

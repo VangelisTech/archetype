@@ -14,6 +14,7 @@ Skills in `.claude/skills/` enforce framework rules automatically. They fire bas
 | `daft-patterns` | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
 | `archetype-components` | Component definitions, Arrow serialization, field conventions |
 | `archetype-processors` | AsyncProcessor patterns, priority ordering, resource access |
+| `trajectory-analysis` | Trajectory pipeline patterns, entity model, sampling/forking rules |
 
 ## Layers
 
