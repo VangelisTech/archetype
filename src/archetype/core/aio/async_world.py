@@ -287,7 +287,27 @@ class AsyncWorld(iAsyncWorld):
         # Materialize and check for emptiness using count_rows to avoid expression truthiness
         df_mat = df.collect()
         if df_mat.count_rows() == 0:
-            return {}  # entity vanished, caller decides
+            # Entity not in _live yet — check _spawn_cache (pre-step mutations)
+            pending = self._spawn_cache.get(old_sig, [])
+            matches = [r for r in pending if r.get("entity_id") == entity_id]
+            if not matches:
+                return {}  # entity truly vanished, caller decides
+            row_dict = dict(matches[-1])  # last-write-wins, copy to avoid mutation
+            # Remove the old spawn entry; it will be re-inserted under new_sig
+            self._spawn_cache[old_sig] = [r for r in pending if r.get("entity_id") != entity_id]
+            # Overlay mutated components and stamp housekeeping
+            for c in mutated_components:
+                row_dict.update(c.to_row_dict())
+            row_dict.update(
+                {
+                    "entity_id": entity_id,
+                    "tick": self.tick,
+                    "world_id": str(self.world_id),
+                    "run_id": "",
+                    "is_active": True,
+                }
+            )
+            return row_dict
 
         # 2) take latest tick row
         row_dict = df_mat.sort(col("tick"), desc=True).limit(1).to_pylist()[0]
@@ -349,6 +369,9 @@ class AsyncWorld(iAsyncWorld):
             return
 
         row = await self._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning("add_components: entity %s vanished during move", entity_id)
+            return
 
         # 1) mark *old row* inactive
         self._despawn_cache.setdefault(old_sig, []).append(entity_id)
@@ -373,6 +396,9 @@ class AsyncWorld(iAsyncWorld):
         row = await self._move_entity(
             entity_id, old_sig, new_sig, []
         )  # remove ≡ keep remaining columns
+        if not row:
+            logger.warning("remove_components: entity %s vanished during move", entity_id)
+            return
 
         self._despawn_cache.setdefault(old_sig, []).append(entity_id)
         self._spawn_cache.setdefault(new_sig, []).append(row)

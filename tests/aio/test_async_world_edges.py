@@ -21,6 +21,11 @@ class Position(Component):
     y: int
 
 
+class Velocity(Component):
+    dx: int
+    dy: int
+
+
 @pytest_asyncio.fixture
 async def world(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -149,3 +154,47 @@ async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
         # Double-shutdown remains idempotent
         await cached.shutdown()
         await inner.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Regression: pre-step component mutations must not crash (GH fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_add_different_component_before_first_step(world):
+    """Adding a NEW component type before any step should not crash.
+
+    Previously, _move_entity only checked _live (empty pre-step) and returned
+    an empty dict, which caused KeyError in materialize_mutations.
+    """
+    ent = await world.create_entity([Position(x=1, y=1)])
+    # Add a *different* component type before stepping — changes the signature
+    await world.add_components(ent, [Velocity(dx=10, dy=20)])
+    rc = RunConfig()
+    await world.step(rc)
+
+    # Entity should exist under the combined signature with both components
+    sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(dx=0, dy=0)])
+    df = await world.query_archetype(sig, rc, ticks=[0])
+    rows = df.collect().to_pylist()
+    assert len(rows) == 1
+    assert rows[0]["entity_id"] == ent
+    assert rows[0]["position__x"] == 1
+    assert rows[0]["velocity__dx"] == 10
+
+
+@pytest.mark.asyncio
+async def test_remove_component_before_first_step(world):
+    """Removing a component before the first step should not crash."""
+    ent = await world.create_entity([Position(x=5, y=6), Velocity(dx=1, dy=2)])
+    await world.remove_components(ent, [Velocity])
+    rc = RunConfig()
+    await world.step(rc)
+
+    sig_pos = Archetype.sig_from_components([Position(x=0, y=0)])
+    df = await world.query_archetype(sig_pos, rc, ticks=[0])
+    rows = df.collect().to_pylist()
+    assert len(rows) == 1
+    assert rows[0]["entity_id"] == ent
+    assert rows[0]["position__x"] == 5
