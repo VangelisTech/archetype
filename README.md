@@ -2,7 +2,9 @@
 
 # Archetype
 
-**AI-native simulation engine for emergent composite AI systems.**
+**A compound AI engine running on a data substrate.**
+
+Data-oriented design using a relational ECS pattern with declarative dataflow execution. Processors are pure DataFrame transforms. Relationships are JOINs. The query plan is the program.
 
 <i>Built for agents, by agents. Powered by Daft DataFrames + LanceDB.</i>
 
