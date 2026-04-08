@@ -13,11 +13,15 @@
 # limitations under the License.
 
 """
-SideEffectCollector: Deferred mutation buffer for tick-level atomicity.
+SideEffectCollector: Deferred mutation buffer for tick-level isolation.
 
 Processors that need to mutate Resources (e.g., ChatGraphRegistry) should
 defer those mutations via the collector rather than applying them inline.
 The collector is committed after successful persist, or rolled back on failure.
+
+Note: commit() applies mutations sequentially. If a mutation raises, earlier
+mutations in the batch are already applied — this is ordered best-effort,
+not truly atomic. The buffer is always cleared regardless of success or failure.
 
 Usage in processors:
     collector = resources.get(SideEffectCollector)
@@ -31,7 +35,7 @@ from collections.abc import Callable
 
 
 class SideEffectCollector:
-    """Buffers deferred mutations for tick-level atomicity."""
+    """Buffers deferred mutations for tick-level isolation."""
 
     __slots__ = ("_pending",)
 

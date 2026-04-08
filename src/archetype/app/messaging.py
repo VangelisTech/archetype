@@ -116,7 +116,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
         - SideEffectCollector (optional): for deferred graph mutations (tick atomicity)
     """
 
-    components = (Outbox, Inbox, DeliveryReceipt)
+    components = (Outbox, Inbox)
     priority = -100
 
     async def process(
