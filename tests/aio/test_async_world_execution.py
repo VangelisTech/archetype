@@ -87,15 +87,16 @@ async def test_processors_run_in_priority_and_filter_kwargs(world, store_backend
     sig = Archetype.sig_from_components([Position(x=2, y=3)])
     _ = await world.create_entity([Position(x=2, y=3)])
 
-    # After one step with scale=4:
+    # N+1: tick 0 applies spawn post-processors; tick 1 processors run on the entity
     # P1: x *= 4  → 8
     # PBug: raises but should be swallowed
     # P2: y += 1  → 4
     rc = RunConfig()
-    await world.step(rc, scale=4)
+    await world.step(rc)  # tick 0: spawn applied, not processed
+    await world.step(rc, scale=4)  # tick 1: processors run
 
     df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
-    out = df.collect().to_pylist()
+    out = [r for r in df.collect().to_pylist() if r["tick"] == 1]
     assert len(out) == 1
     row = out[0]
     assert row["position__x"] == 8
@@ -152,17 +153,22 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     wcfg = WorldConfig(name="w2")
     w = AsyncWorld(wcfg, querier, updater, system)
     shared = {"current": 0, "peak": 0, "lock": asyncio.Lock()}
-    # Use events to deterministically coordinate overlap across archetypes
     start_evt = asyncio.Event()
     proceed_evt = asyncio.Event()
-    await w.add_processor(SleepProc(0, shared, start_evt=start_evt, proceed_evt=proceed_evt))
 
     # Two archetypes: A and B
     _ = await w.create_entity([Position(x=0, y=0)])
     _ = await w.create_entity([Position(x=1, y=1), Marker(value=1)])
 
     rc2 = RunConfig()
-    # Start the step concurrently so we can wait until at least one processor starts
+
+    # N+1: tick 0 applies spawns (no processors registered, so no blocking)
+    await w.step(rc2)
+
+    # Now add the event-coordinated processor for tick 1
+    await w.add_processor(SleepProc(0, shared, start_evt=start_evt, proceed_evt=proceed_evt))
+
+    # Start tick 1 concurrently so we can wait until at least one processor starts
     step_task = asyncio.create_task(w.step(rc2))
     # Wait for at least one processor to start, then allow all to proceed simultaneously
     await start_evt.wait()

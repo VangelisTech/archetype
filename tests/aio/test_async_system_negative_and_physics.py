@@ -70,7 +70,8 @@ async def test_processor_skipped_when_components_do_not_match(world):
 
     eid = await world.create_entity([Position(x=3.0, y=0.0)])
     rc = RunConfig()
-    await world.step(rc)
+    await world.step(rc)  # tick 0: spawn applied, not processed
+    await world.step(rc)  # tick 1: processors run
 
     df = await world.get_components([Position], entity_ids=[eid])
     rows = df.collect().to_pylist()
@@ -101,14 +102,15 @@ async def test_priority_and_removal_affect_results(world):
 
     eid = await world.create_entity([Position(x=2.0, y=0.0)])
     rc = RunConfig()
-    await world.step(rc)
+    await world.step(rc)  # tick 0: spawn applied, not processed
+    await world.step(rc)  # tick 1: processors run → (2*2)+1 = 5
     df = await world.get_components([Position], entity_ids=[eid])
     val1 = df.collect().to_pylist()[0]["position__x"]
     assert math.isclose(val1, (2.0 * 2) + 1)
 
     # Remove PlusOne, run again: now only TimesTwo applies
     await world.remove_processor(PlusOne)
-    await world.step(rc)
+    await world.step(rc)  # tick 2
     # Query from the store to avoid transient schema mismatches in live concat
     from archetype.core.archetype import Archetype
 
@@ -177,7 +179,8 @@ async def test_physics_dag_position_velocity_accel(world):
     e2 = await world.create_entity([Position(x=0.0, y=0.0), Velocity(dx=1.0, dy=0.0)])
 
     rc = RunConfig()
-    await world.step(rc, dt=1.0, g=9.8, k=0.1)
+    await world.step(rc)  # tick 0: spawns applied, not processed
+    await world.step(rc, dt=1.0, g=9.8, k=0.1)  # tick 1: physics runs
 
     # Check E1 under P,V,A
     df1 = await world.get_components([Position, Velocity, Accel], entity_ids=[e1])

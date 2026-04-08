@@ -146,18 +146,6 @@ class AsyncLancedbStore(iAsyncStore):
         """
         Append a table with a new dataframe.
         """
-        # Defensive no-op for empty frames to avoid Lance casting errors
-        try:
-            df.collect()
-            if df.count_rows() == 0 or not df.column_names:
-                logger.info(
-                    f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
-                )
-                return
-        except Exception as e:
-            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
-            return
-
         async_table = await self._ensure_table(sig)
         table_name = async_table.name
         try:

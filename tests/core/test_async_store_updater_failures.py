@@ -38,19 +38,20 @@ async def test_async_store_append_skips_on_empty_df(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_store_append_handles_collect_failure(tmp_path, caplog):
-    """AsyncStore.append should catch collect() failures and return without raising."""
+async def test_async_store_append_handles_bad_df_gracefully(tmp_path, caplog):
+    """AsyncStore.append should catch backend failures and log without raising."""
     ctx = build_context(tmp_path)
     store = AsyncStore(ctx)
     sig = Archetype.sig_from_components([Demo(v=1)])
 
     class BadDf:
-        def collect(self):
-            raise RuntimeError("boom")
+        """A non-DataFrame object that will fail when table.append tries to use it."""
+
+        pass
 
     with caplog.at_level("ERROR"):
         await store.append(sig, BadDf())
-    assert any("Append collect failed" in rec.message for rec in caplog.records)
+    assert any("Append failed" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio

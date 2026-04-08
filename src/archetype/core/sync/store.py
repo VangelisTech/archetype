@@ -96,11 +96,6 @@ class SyncStore(iStore):
         table_name = Archetype.get_name(sig)
         table = self.sess.get_table(table_name)
 
-        if self.debug:
-            df.collect()
-            logger.debug("Appending %s rows to table %s", df.count_rows(), table_name)
-            df.show()
-
         table.append(df)
 
     def shutdown(self) -> None:

@@ -101,8 +101,8 @@ class SyncWorld(iWorld):
         """
         Process a single archetype through the full pipeline.
         """
-        # 1. Fetch previous state for all entities and their components
-        if run_config.prefer_live_reads and sig in self._live and self.tick > 0:
+        # 1. Fetch previous state (materialized from last tick's _live)
+        if self.tick > 0 and sig in self._live:
             df = self._live[sig]
         else:
             df = self.query_archetype(
@@ -113,16 +113,16 @@ class SyncWorld(iWorld):
                 components=None,
             )
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self._materialize_mutations(df, sig, run_config)
-
-        # 3. Execute Processors for this archetype via system
+        # 2. Execute processors on current entities (spawns not yet applied)
         df = self.execute(df, sig, run_config, **input_kwargs)
 
-        # 4. Update
+        # 3. Apply pending mutations (spawns/despawns queued between ticks)
+        df = self._materialize_mutations(df, sig, run_config)
+
+        # 4. Persist (materializes the df)
         df_mat = self.update(df, sig, run_config, self.tick)
 
-        # Save live snapshot of active entities
+        # 5. Set _live from materialized df (active entities only)
         self._live[sig] = df_mat.where(col("is_active"))
 
     # ---------------------------------------------------------------------

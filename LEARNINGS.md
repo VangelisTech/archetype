@@ -403,14 +403,16 @@ context = graph.active_path()  # root → cursor, for LLM context windows
 Tick N:
   1. pre_tick hook fires (tick=N)
   2. For each archetype (parallel):
-     a. Query previous state (tick N-1)
-     b. Materialize mutations (spawn/despawn)
-     c. Execute processors (priority order, lower first)
-     d. Persist to store (tick=N)
-  3. Update _live snapshots
-  4. Increment tick → N+1
-  5. post_tick hook fires (tick=N+1)
+     a. Read previous state from _live (materialized)
+     b. Execute processors (priority order, lower first)
+     c. Apply pending mutations (spawn/despawn from between ticks)
+     d. Persist to store (tick=N, includes mutations)
+     e. Set _live snapshot (active entities, materialized)
+  3. Increment tick → N+1
+  4. post_tick hook fires (tick=N+1)
 ```
+
+**N+1 spawn/despawn semantics:** Mutations queued between ticks (via `create_entity`, `remove_entity`, `add_components`, `remove_components`) are applied AFTER processors run. This means spawned entities are first processed at tick N+1. Despawned entities are processed one final time at the tick they're despawned, then marked inactive and persisted. This matches message delivery semantics — messages sent at tick N arrive at tick N+1.
 
 ---
 

@@ -34,13 +34,13 @@ async def test_prefer_live_reads_uses_live_snapshot_when_true(tmp_path):
         # spawn entity with Pos(x=0)
         await world.create_entity([Pos(x=0)])
 
-        # Step 1: writes x=1; live holds active row
-        await world.run(RunConfig(num_steps=1, prefer_live_reads=True))
-        # Step 2 with prefer_live_reads=True should start from x=1 and go to x=2
-        await world.run(RunConfig(num_steps=1, prefer_live_reads=True))
+        # N+1: tick 0 applies spawn, tick 1+ processors run
+        # Step 1 (tick 0): spawn applied post-processors
+        # Step 2 (tick 1): MoveRight runs → x=1
+        # Step 3 (tick 2): MoveRight runs → x=2
+        await world.run(RunConfig(num_steps=3, prefer_live_reads=True))
 
-        # After two steps, active row should have x=2
-        # Use public get_components API instead of accessing internals
+        # After three steps, active row should have x=2 (processors ran at tick 1 and 2)
         df = await world.get_components([Pos])
         assert df.where(col("is_active")).select("pos__x").to_pylist()[-1]["pos__x"] == 2
     finally:
@@ -59,8 +59,8 @@ async def test_prefer_live_reads_false_queries_previous_tick(tmp_path):
 
         await world.create_entity([Pos(x=5)])
 
-        # Two steps without live reads; correctness should still be x+1 each step
-        await world.run(RunConfig(num_steps=2, prefer_live_reads=False))
+        # N+1: tick 0 applies spawn, ticks 1-2 processors run → x = 5 + 2 = 7
+        await world.run(RunConfig(num_steps=3, prefer_live_reads=False))
         df = await world.get_components([Pos])
         assert df.where(col("is_active")).select("pos__x").to_pylist()[-1]["pos__x"] == 7
     finally:

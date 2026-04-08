@@ -364,8 +364,8 @@ class TestResourcesInProcessor:
         await world.system.add_processor(ResourceAccessProcessor())
         await world.create_entity([Position(x=0, y=0)])
 
-        # Run
-        rc = RunConfig(num_steps=1)
+        # Run — N+1: tick 0 applies spawn, tick 1 processors run
+        rc = RunConfig(num_steps=2)
         await world.run(rc)
 
         # Verify - x should be 0 + 100 = 100

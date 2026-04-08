@@ -79,22 +79,12 @@ class AsyncStore(iAsyncStore):
         """
         Append a table with a new dataframe.
         """
-        # Defensive: skip zero-row or empty-schema appends to protect backends
-        try:
-            df.collect()
-            if df.count_rows() == 0 or not df.column_names:
-                logger.info(
-                    f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
-                )
-                return
-        except Exception as e:
-            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
-            return
-
         table = self._ensure_table(sig)
 
-        # Daft's Table.append is synchronous; do not await
-        table.append(df)
+        try:
+            table.append(df)
+        except Exception as e:
+            logger.error(f"Append failed for {Archetype.get_name(sig)}: {e}")
 
     async def shutdown(self) -> None:
         """

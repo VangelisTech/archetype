@@ -128,15 +128,18 @@ class AsyncWorld(iAsyncWorld):
         Tick Lifecycle:
             1. pre_tick hook fires
             2. For each archetype (parallel):
-               a. Query previous state (tick N-1)
-               b. Materialize mutations (spawn/despawn caches)
-               c. Execute processors (priority order)
-               d. Persist to store
-            3. Update _live snapshots
-            4. Increment tick
-            5. post_tick hook fires (tick is now N+1)
+               a. Query previous state from _live (materialized)
+               b. Execute processors (priority order)
+               c. Persist to store (materializes the lazy DAG)
+               d. Apply pending mutations (spawn/despawn) on materialized df
+               e. Set _live snapshot (materialized, includes mutations for next tick)
+            3. Increment tick
+            4. post_tick hook fires (tick is now N+1)
 
-        Note: Messages enqueued in tick N are dequeued in tick N+1.
+        Spawn/despawn semantics (N+1):
+            Mutations queued between ticks take effect AFTER processors run and
+            persist. Spawned entities are first processed at tick N+1. This matches
+            message delivery: messages sent at tick N arrive at tick N+1.
         """
         debug = run_config.debug
 
@@ -157,20 +160,15 @@ class AsyncWorld(iAsyncWorld):
         if debug:
             self._debug_log("archetypes_processing", tick=self.tick, count=len(sigs))
 
+        # _run_archetype now sets _live[sig] internally; no return value needed
         futures = [self._run_archetype(sig, run_config, **input_kwargs) for sig in sigs]
         results = await asyncio.gather(*futures, return_exceptions=True)
-        errors = {
-            sig: r for sig, r in zip(sigs, results, strict=False) if isinstance(r, Exception)
-        }  # from asyncio.gather docs: The order of result values corresponds to the order of awaitables in aws.
+        errors = {sig: r for sig, r in zip(sigs, results, strict=True) if isinstance(r, Exception)}
 
         if errors:
             raise RuntimeError(
                 "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
             )
-
-        self._live = {
-            sig: df.where(col("is_active")) for sig, df in zip(sigs, results, strict=False)
-        }
 
         self.tick += 1
 
@@ -181,7 +179,9 @@ class AsyncWorld(iAsyncWorld):
             self._debug_log("tick_end", tick=self.tick, live_entities=total_live)
 
         # Fire post-tick hooks
-        await self._fire_hooks("post_tick", world=self, tick=self.tick, results=results)
+        await self._fire_hooks(
+            "post_tick", world=self, tick=self.tick, results=list(self._live.values())
+        )
 
     def _debug_log(self, event: str, **data) -> None:
         """Emit structured debug event."""
@@ -192,11 +192,12 @@ class AsyncWorld(iAsyncWorld):
 
     async def _run_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
-    ) -> DataFrame:
+    ) -> None:
         "Atomic sequence of a world step with a dedicated execution and materialization helper for future remote operators."
 
-        # 1. Fetch previous state for all entities and their components
-        if self.tick > 0 and run_config.prefer_live_reads and sig in self._live:
+        # 1. Fetch previous state (materialized from last tick's _live)
+        #    _live is authoritative after the first tick; fall back to store on cold start.
+        if self.tick > 0 and sig in self._live:
             df = self._live[sig]
         else:
             # Builds a clean df with the correct schema for the archetype if tick is 0
@@ -208,16 +209,19 @@ class AsyncWorld(iAsyncWorld):
                 components=None,
             )
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self.materialize_mutations(df, sig)
-
-        # 3. Execute Processors for this archetype via system
+        # 2. Execute processors on current entities (spawns not yet applied)
         df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
 
-        # 4. Update (returns materialized df with tick/world/run/entity_id set)
+        # 3. Apply pending mutations (spawns/despawns queued between ticks)
+        #    Spawned entities are persisted now but first processed at tick N+1.
+        #    Despawned entities are marked is_active=False and persisted.
+        df = self.materialize_mutations(df, sig)
+
+        # 4. Persist (store.append materializes the df via .collect() / .to_arrow())
         df_mat = await self.update(df, sig, run_config)
 
-        return df_mat
+        # 5. Set _live from materialized df (active entities only for next tick)
+        self._live[sig] = df_mat.where(col("is_active"))
 
     # ---------------------------------------------------------------------
     #  Step Planning

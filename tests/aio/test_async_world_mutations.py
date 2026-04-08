@@ -65,6 +65,119 @@ async def world(store_backend):
     return AsyncWorld(wcfg, querier, updater, system)
 
 
+# ---------------------------------------------------------------------------
+# N+1 lifecycle: spawns and despawns take effect the tick AFTER they're queued
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_processed_at_next_tick(world, store_backend):
+    """Entity spawned between ticks is NOT processed until the next tick.
+
+    Tick lifecycle (N+1 semantics):
+      create_entity() → _spawn_cache
+      step (tick 0): processors run on empty df, then mutations applied to _live
+      step (tick 1): entity now in _live, processors see and modify it
+    """
+    from daft import lit
+
+    from archetype.core.aio.async_processor import AsyncProcessor
+
+    class Marker(AsyncProcessor):
+        """Stamps y = -1 to prove the processor ran on this entity."""
+
+        components = (Position,)
+        priority = 1
+
+        async def process(self, df, **kwargs):
+            return df.with_column("position__y", lit(-1))
+
+    await world.add_processor(Marker())
+
+    # Initial y = 99; Marker would set it to -1 if processors touch it
+    e1 = await world.create_entity([Position(x=1, y=99)])
+    rc = RunConfig()
+
+    # Tick 0: spawn applied post-processors → entity in _live but NOT processed
+    await world.step(rc)
+
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    df0 = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    rows0 = [r for r in df0.collect().to_pylist() if r["entity_id"] == e1 and r["tick"] == 0]
+
+    # Under N+1 semantics: tick 0 should NOT have the entity processed.
+    # Either no row at tick 0 (empty df written), or y is still 99 (Marker didn't run).
+    for r in rows0:
+        assert r["position__y"] == 99, (
+            f"Processor ran at tick 0 but shouldn't have (y={r['position__y']})"
+        )
+
+    # Tick 1: entity is in _live, Marker sets y = -1
+    await world.step(rc)
+
+    df1 = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    rows1 = [r for r in df1.collect().to_pylist() if r["entity_id"] == e1 and r["tick"] == 1]
+    assert len(rows1) == 1
+    assert rows1[0]["position__y"] == -1  # Marker processor ran at tick 1
+
+
+@pytest.mark.asyncio
+async def test_despawn_applied_after_processors(world, store_backend):
+    """Despawn queued between ticks: entity still processed this tick, removed next.
+
+    create_entity + step (tick 0) → entity active
+    remove_entity
+    step (tick 1) → entity still processed (despawn applied post-processors)
+    step (tick 2) → entity no longer in _live
+    """
+    e1 = await world.create_entity([Position(x=1, y=2)])
+    rc = RunConfig()
+    await world.step(rc)  # tick 0: spawn applied to _live
+
+    await world.step(rc)  # tick 1: entity processed (now in store)
+
+    await world.remove_entity(e1)
+    await world.step(rc)  # tick 2: despawn applied post-processors → _live removes it
+
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    # After tick 2, entity should have an inactive row
+    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    all_rows = df.collect().to_pylist()
+    e1_rows = sorted([r for r in all_rows if r["entity_id"] == e1], key=lambda r: r["tick"])
+    # Last row for e1 should be inactive
+    assert e1_rows[-1]["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_add_components_preserves_values_post_step(world, store_backend):
+    """Adding a component after stepping preserves existing component values."""
+    sig_pos_vel = Archetype.add_components(
+        Archetype.sig_from_components([Position(x=0, y=0)]), [Velocity]
+    )
+
+    e1 = await world.create_entity([Position(x=5, y=6)])
+    rc = RunConfig()
+    await world.step(rc)  # tick 0: spawn to _live
+    await world.step(rc)  # tick 1: entity processed, in store
+
+    await world.add_components(e1, [Velocity(dx=10, dy=20)])
+    await world.step(rc)  # tick 2: move applied post-processors
+    await world.step(rc)  # tick 3: entity under new sig processed
+
+    df = await store_backend.get_archetype_df(sig_pos_vel, world.world_id, rc.run_id)
+    rows = df.collect().to_pylist()
+    e1_rows = [r for r in rows if r["entity_id"] == e1]
+    assert len(e1_rows) >= 1
+    latest = sorted(e1_rows, key=lambda r: r["tick"])[-1]
+    assert latest["position__x"] == 5  # preserved from original
+    assert latest["velocity__dx"] == 10  # new component
+
+
+# ---------------------------------------------------------------------------
+# Original tests (adjusted for N+1 semantics where needed)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_create_and_remove_entity_spawns_and_despawns(world, store_backend):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
