@@ -77,6 +77,52 @@ def _tags_contain(tags_json: str, tag: str) -> bool:
         return False
 
 
+# ── Response-parsing UDFs ──
+# Extracted to module level for testability and reuse (see #78).
+
+
+@daft.func
+def extract_value(response: str) -> str:
+    """Extract VALUE from an LLM evaluation response.
+
+    Falls back to first 100 characters if no VALUE: line found.
+    """
+    if not response:
+        return ""
+    for line in response.split("\n"):
+        if line.startswith("VALUE:"):
+            return line[6:].strip()
+    return response[:100]
+
+
+@daft.func
+def extract_score(response: str) -> float:
+    """Extract SCORE from an LLM evaluation response.
+
+    Returns 0.0 if missing or malformed.
+    """
+    if not response:
+        return 0.0
+    for line in response.split("\n"):
+        if line.startswith("SCORE:"):
+            try:
+                return float(line[6:].strip())
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+@daft.func
+def extract_rationale(response: str) -> str:
+    """Extract RATIONALE from an LLM evaluation response."""
+    if not response:
+        return ""
+    for line in response.split("\n"):
+        if line.startswith("RATIONALE:"):
+            return line[10:].strip()
+    return ""
+
+
 # ── Processors ──
 
 
@@ -108,15 +154,11 @@ class SamplingProcessor(AsyncProcessor):
 
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & _tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & _tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~_tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & ~_tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         df = df.with_columns({"label__sampled": sampled})
 
@@ -188,38 +230,6 @@ class LabelingProcessor(AsyncProcessor):
             model=config.model,
             max_output_tokens=config.max_output_tokens,
         )
-
-        # Row-wise extractors — @daft.func with auto type inference (LEARNINGS.md §4)
-
-        @daft.func
-        def extract_value(response: str) -> str:
-            if not response:
-                return ""
-            for line in response.split("\n"):
-                if line.startswith("VALUE:"):
-                    return line[6:].strip()
-            return response[:100]
-
-        @daft.func
-        def extract_score(response: str) -> float:
-            if not response:
-                return 0.0
-            for line in response.split("\n"):
-                if line.startswith("SCORE:"):
-                    try:
-                        return float(line[6:].strip())
-                    except ValueError:
-                        return 0.0
-            return 0.0
-
-        @daft.func
-        def extract_rationale(response: str) -> str:
-            if not response:
-                return ""
-            for line in response.split("\n"):
-                if line.startswith("RATIONALE:"):
-                    return line[10:].strip()
-            return ""
 
         llm_col = llm_output
 
