@@ -371,27 +371,18 @@ class MessageDeliveryProcessor(AsyncProcessor):
             how="left",
         )
 
-        if "deliveryreceipt__receipts" in df.column_names:
-            df = df.with_column(
-                "deliveryreceipt__receipts",
-                concat_lists(col("deliveryreceipt__receipts"), col("new_receipts")),
-            )
-
         # --- 10. Clear outboxes, drop join artifact columns ---
         @daft.func
         def clear_list(_anchor: str) -> list[str]:
             """Returns an empty list. Takes a dummy column to bind as a row-wise UDF."""
             return []
 
-        # When deliveryreceipt__receipts column doesn't exist (e.g., minimal test schemas),
-        # initialize it from new_receipts, defaulting nulls to empty lists.
-        if "deliveryreceipt__receipts" not in df.column_names:
+        # Only write receipts when the archetype includes DeliveryReceipt.
+        # Otherwise the column would fail persistence (schema mismatch).
+        if "deliveryreceipt__receipts" in df.column_names:
             df = df.with_column(
                 "deliveryreceipt__receipts",
-                concat_lists(
-                    clear_list(col("entity_id").cast(DataType.string())),
-                    col("new_receipts"),
-                ),
+                concat_lists(col("deliveryreceipt__receipts"), col("new_receipts")),
             )
 
         df = df.with_column(

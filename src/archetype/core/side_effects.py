@@ -32,7 +32,7 @@ Usage in processors:
     if collector:
         collector.defer(
             apply=lambda: graph.append(cmd),
-            rollback=lambda node: graph.remove(node.cmd.id),
+            rollback=lambda node: graph.prune(node.cmd.id),
         )
     else:
         graph.append(cmd)  # fallback for tests without collector
