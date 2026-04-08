@@ -43,6 +43,11 @@ dev        = [
     "viztracer>=1.0.4",
     "ipykernel",
 ]
+docs       = [
+    "mkdocs-shadcn",
+    "mkdocs-mermaid2-plugin",
+    "pymdown-extensions",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
