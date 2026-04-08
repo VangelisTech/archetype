@@ -147,7 +147,7 @@ class MessageDeliveryProcessor(AsyncProcessor):
         # --- 2. Parse JSON messages into structured fields ---
         msg_struct_type = DataType.struct(
             {
-                "receiver_id": DataType.int64(),
+                "receiver_id": DataType.int32(),
                 "channel": DataType.string(),
                 "content": DataType.string(),
                 "_append_history": DataType.bool(),
