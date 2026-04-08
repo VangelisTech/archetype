@@ -338,7 +338,10 @@ class MessageDeliveryProcessor(AsyncProcessor):
                     # processors in the same tick see the previous tick's active_path().
                     # This is intentional — tick N deliveries become visible at tick N+1.
                     collector.defer(
-                        lambda c=cmd, ch=channel: graphs.channel(world_id, ch).append(c)
+                        apply=lambda c=cmd, ch=channel: graphs.channel(world_id, ch).append(c),
+                        rollback=lambda node, ch=channel: graphs.channel(world_id, ch).prune(
+                            node.cmd.id
+                        ),
                     )
                 else:
                     graphs.channel(world_id, channel).append(cmd)

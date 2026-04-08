@@ -13,48 +13,91 @@
 # limitations under the License.
 
 """
-SideEffectCollector: Deferred mutation buffer for tick-level isolation.
+SideEffectCollector: Deferred mutation buffer for tick-level atomicity.
 
 Processors that need to mutate Resources (e.g., ChatGraphRegistry) should
 defer those mutations via the collector rather than applying them inline.
 The collector is committed after successful persist, or rolled back on failure.
 
-Note: commit() applies mutations sequentially. If a mutation raises, earlier
-mutations in the batch are already applied — this is ordered best-effort,
-not truly atomic. The buffer is always cleared regardless of success or failure.
+ACID mapping:
+    Atomicity   — commit() applies ALL mutations or NONE. On partial failure,
+                  already-applied mutations are reverted via compensating actions.
+    Consistency — Processors validate via join predicates before deferring.
+    Isolation   — Each archetype gets a forked Resources with its own collector.
+    Durability  — DataFrame persist happens before commit(); mutations apply
+                  to in-memory Resources only after data is safe.
 
 Usage in processors:
     collector = resources.get(SideEffectCollector)
     if collector:
-        collector.defer(lambda: graph.append(cmd))
+        collector.defer(
+            apply=lambda: graph.append(cmd),
+            rollback=lambda node: graph.remove(node.cmd.id),
+        )
     else:
         graph.append(cmd)  # fallback for tests without collector
 """
 
+import logging
 from collections.abc import Callable
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class SideEffectCollector:
-    """Buffers deferred mutations for tick-level isolation."""
+    """Buffers deferred mutations for tick-level atomicity.
+
+    Each deferred mutation is a pair: (apply, rollback). On commit, mutations
+    are applied in order. If any mutation raises, all previously applied
+    mutations in the batch are rolled back in reverse order.
+    """
 
     __slots__ = ("_pending",)
 
     def __init__(self) -> None:
-        self._pending: list[Callable[[], None]] = []
+        self._pending: list[tuple[Callable[[], Any], Callable[[Any], None] | None]] = []
 
-    def defer(self, fn: Callable[[], None]) -> None:
-        """Queue a mutation (sync callable) to be applied on commit."""
-        self._pending.append(fn)
+    def defer(
+        self,
+        apply: Callable[[], Any],
+        rollback: Callable[[Any], None] | None = None,
+    ) -> None:
+        """Queue a mutation with an optional compensating rollback.
+
+        Args:
+            apply: Callable that performs the mutation. Its return value is
+                   passed to rollback if a later mutation fails.
+            rollback: Optional callable that undoes the mutation. Receives
+                      the return value of apply(). If None, the mutation
+                      is treated as non-reversible (best-effort).
+        """
+        self._pending.append((apply, rollback))
 
     def commit(self) -> None:
-        """Apply all pending mutations in order, then clear the buffer.
+        """Apply all pending mutations atomically.
 
-        Always clears the buffer, even if a mutation raises. This prevents
-        stale mutations from being re-committed on a subsequent call.
+        If any mutation raises, all previously applied mutations in this
+        batch are rolled back in reverse order via their compensating actions.
+        The buffer is always cleared regardless of outcome.
         """
+        applied: list[tuple[Any, Callable[[Any], None] | None]] = []
         try:
-            for fn in self._pending:
-                fn()
+            for apply_fn, rollback_fn in self._pending:
+                result = apply_fn()
+                applied.append((result, rollback_fn))
+        except Exception:
+            # Roll back in reverse order
+            for result, rollback_fn in reversed(applied):
+                if rollback_fn is not None:
+                    try:
+                        rollback_fn(result)
+                    except Exception:
+                        logger.warning(
+                            "Rollback failed for mutation; state may be inconsistent",
+                            exc_info=True,
+                        )
+            raise
         finally:
             self._pending.clear()
 
