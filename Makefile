@@ -39,6 +39,7 @@ help:
 	@echo "Docs:"
 	@echo "  make docs           Build docs (MkDocs)"
 	@echo "  make docs-serve     Serve docs locally"
+	@echo "  make docs-lint      Run doc quality checks (spelling, markdown lint, link check)"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          Remove build artifacts"
@@ -155,6 +156,38 @@ docs:
 .PHONY: docs-serve
 docs-serve:
 	@uv run --extra docs mkdocs serve
+
+.PHONY: docs-lint
+docs-lint:
+	@echo "=== Spelling (typos) ==="
+	@if command -v typos >/dev/null 2>&1; then \
+		typos "docs/**/*.md" "docs/**/*.mdx" "*.md" "*.mdx"; \
+	else \
+		echo "typos not installed — install via: cargo install typos-cli"; \
+		echo "  or: brew install typos-cli"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "=== Markdown lint ==="
+	@if command -v markdownlint-cli2 >/dev/null 2>&1; then \
+		markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	elif npx --yes markdownlint-cli2 --help >/dev/null 2>&1; then \
+		npx --yes markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	else \
+		echo "markdownlint-cli2 not available"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "=== Link check (lychee) ==="
+	@if command -v lychee >/dev/null 2>&1; then \
+		lychee --config lychee.toml "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	else \
+		echo "lychee not installed — install via: cargo install lychee"; \
+		echo "  or: brew install lychee"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "Docs lint passed"
 
 # ------------------------------------------------------------------------------
 # Utilities
