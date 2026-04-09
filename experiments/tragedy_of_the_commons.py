@@ -444,19 +444,22 @@ def print_results(results: list[dict]):
 # ---------------------------------------------------------------------------
 
 
+async def run_experiment(num_ticks: int = 50) -> list[dict]:
+    """Run all three scenarios and return results list."""
+    scenarios = ["all_cooperative", "mixed", "all_greedy"]
+    results = []
+    for scenario in scenarios:
+        result = await run_scenario(scenario, num_ticks=num_ticks)
+        results.append(result)
+    return results
+
+
 async def main():
     print("Tragedy of the Commons - Multi-Agent Resource Simulation")
     print("Using Archetype ECS with in-memory storage\n")
     print("Running 3 scenarios (50 ticks each)...")
 
-    scenarios = ["all_cooperative", "mixed", "all_greedy"]
-    results = []
-
-    for scenario in scenarios:
-        print(f"  Running: {scenario}...")
-        result = await run_scenario(scenario, num_ticks=50)
-        results.append(result)
-
+    results = await run_experiment(num_ticks=50)
     print_results(results)
 
 
