@@ -1,15 +1,26 @@
 name: Docs
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "**/*.md"
+      - "mkdocs.yml"
+      - "scripts/generate_*.py"
+      - "src/archetype/api/**"
+      - "src/archetype/cli/**"
+      - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
     paths:
       - "docs/**"
       - "**/*.md"
+      - "mkdocs.yml"
+      - "scripts/generate_*.py"
       - ".markdownlint.yaml"
       - "_typos.toml"
       - "lychee.toml"
-      - "docs/mint.json"
       - ".github/workflows/docs.yml"
 
 concurrency:
@@ -42,7 +53,6 @@ jobs:
           config: .markdownlint.yaml
           globs: |
             docs/**/*.md
-            docs/**/*.mdx
             *.md
 
   # --------------------------------------------------------------------------
@@ -58,32 +68,58 @@ jobs:
           args: >-
             --config lychee.toml
             "docs/**/*.md"
-            "docs/**/*.mdx"
             "*.md"
           fail: true
 
   # --------------------------------------------------------------------------
-  # Mintlify build — catches broken frontmatter, missing pages, MDX errors
+  # Build docs — MkDocs + auto-generated references
   # --------------------------------------------------------------------------
-  mintlify-build:
-    name: Mintlify build
+  build:
+    name: Build docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
+      - uses: astral-sh/setup-uv@v6
 
-      # Puppeteer/Chromium requires system libraries on Ubuntu
-      - name: Install Chromium dependencies
+      - name: Install dependencies
+        run: uv sync --extra docs
+
+      - name: Generate API & CLI reference
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 \
-            libxcomposite1 libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
-            libcairo2 libasound2t64 libxshmfence1
+          uv run python scripts/generate_api_docs.py
+          uv run python scripts/generate_cli_docs.py
 
-      - name: Build Mintlify docs
-        working-directory: docs
-        run: npx --yes mintlify build
+      - name: Build MkDocs
+        run: uv run --extra docs mkdocs build
+
+      - name: Upload site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: site/
+
+  # --------------------------------------------------------------------------
+  # Deploy to Cloudflare Pages — only on push to main
+  # --------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Cloudflare Pages
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docs-site
+          path: site/
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: f11df81ebc1ba9b7450c59398474827a
+          command: pages deploy site/ --project-name=archetype-docs
