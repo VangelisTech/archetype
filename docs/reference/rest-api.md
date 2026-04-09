@@ -8,7 +8,7 @@ This reference is auto-generated from the FastAPI application's OpenAPI schema. 
 
 ### List Worlds
 
-```
+```text
 GET /worlds
 ```
 
@@ -16,7 +16,7 @@ GET /worlds
 
 ### Create World
 
-```
+```text
 POST /worlds
 ```
 
@@ -43,7 +43,7 @@ POST /worlds
 
 ### Get World
 
-```
+```text
 GET /worlds/{world_id}
 ```
 
@@ -68,7 +68,7 @@ GET /worlds/{world_id}
 
 ### Remove World
 
-```
+```text
 DELETE /worlds/{world_id}
 ```
 
@@ -84,7 +84,7 @@ DELETE /worlds/{world_id}
 
 ### Fork World
 
-```
+```text
 POST /worlds/{world_id}/fork
 ```
 
@@ -117,7 +117,7 @@ POST /worlds/{world_id}/fork
 
 ### Submit Command
 
-```
+```text
 POST /worlds/{world_id}/commands
 ```
 
@@ -151,7 +151,7 @@ POST /worlds/{world_id}/commands
 
 ### Get Command History
 
-```
+```text
 GET /worlds/{world_id}/commands
 ```
 
@@ -173,7 +173,7 @@ GET /worlds/{world_id}/commands
 
 ### Submit Batch
 
-```
+```text
 POST /worlds/{world_id}/commands/batch
 ```
 
@@ -195,7 +195,7 @@ POST /worlds/{world_id}/commands/batch
 
 ### Get Pending Count
 
-```
+```text
 GET /worlds/{world_id}/commands/pending
 ```
 
@@ -213,7 +213,7 @@ GET /worlds/{world_id}/commands/pending
 
 ### Step World
 
-```
+```text
 POST /worlds/{world_id}/step
 ```
 
@@ -231,7 +231,7 @@ POST /worlds/{world_id}/step
 
 ### Run World
 
-```
+```text
 POST /worlds/{world_id}/run
 ```
 
@@ -264,7 +264,7 @@ POST /worlds/{world_id}/run
 
 ### List Processors
 
-```
+```text
 GET /worlds/{world_id}/processors
 ```
 
@@ -282,7 +282,7 @@ GET /worlds/{world_id}/processors
 
 ### Get World State
 
-```
+```text
 GET /worlds/{world_id}/state
 ```
 
@@ -304,7 +304,7 @@ GET /worlds/{world_id}/state
 
 ### Get Entity
 
-```
+```text
 GET /worlds/{world_id}/entities/{entity_id}
 ```
 
@@ -327,7 +327,7 @@ GET /worlds/{world_id}/entities/{entity_id}
 
 ### Get Components
 
-```
+```text
 GET /worlds/{world_id}/components
 ```
 
@@ -349,7 +349,7 @@ GET /worlds/{world_id}/components
 
 ### Get Command History
 
-```
+```text
 GET /worlds/{world_id}/history
 ```
 
@@ -373,7 +373,7 @@ GET /worlds/{world_id}/history
 
 ### Root
 
-```
+```text
 GET /
 ```
 

@@ -39,6 +39,7 @@ This is a **focused AuthN/AuthZ + API footgun review** of three directories: `ap
 ## How to use this document
 
 Each finding has:
+
 - **ID + Severity** for triage
 - **Location** (exact file:line)
 - **Problem** (what's wrong)
@@ -62,6 +63,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 
 **Fix spec:**
 1. Replace `hash_static_token_secret` with `hashlib.scrypt` (stdlib, no new deps):
+
    ```python
    import os, hashlib
 
@@ -77,6 +79,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
        candidate = hash_static_token_secret(secret, salt=salt)
        return hmac.compare_digest(candidate, stored)
    ```
+
 2. Update `StaticApiKeyProvider.authenticate_bearer_token` to use `verify_static_token_secret` instead of hashing + comparing directly.
 3. Update `ApiKeyRecord.secret_hash` format documentation to note the `salt:hash` format.
 4. Update all test fixtures that construct `_hashed_record` to use the new function.
@@ -104,9 +107,11 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 
 **Fix spec:**
 1. The rate limiting warning should always emit at startup, since the limiter is always in-process. In `src/archetype/api/app.py` `lifespan`, log at `INFO` level:
-   ```
+
+   ```text
    logger.info("Rate limiting is in-process only. Not safe for multi-worker deployments.")
    ```
+
 2. Add a `--workers` guard in `cli/main.py` `serve` command: if `workers > 1`, refuse to start with a clear error explaining why.
 3. Document in `AGENTS.md` that multi-worker is not safe until rate limits move to a shared backend.
 4. (Future) Abstract `_tick_counters` and `_daily_tokens` behind a `RateLimitBackend` protocol so Redis can be swapped in later.
@@ -139,6 +144,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 
 **Fix spec:**
 1. Create `src/archetype/app/auth/system_ctx.py`:
+
    ```python
    from archetype.app.auth.models import ActorCtx, PrincipalType
    from uuid_utils import UUID
@@ -155,6 +161,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
        rate_tier="trusted",
    )
    ```
+
 2. Change all service method signatures from `ctx: ActorCtx | None = None` to `ctx: ActorCtx` (required).
 3. Update all internal callers (e.g., `drain_and_apply`, `run_all`, tests) to pass `SYSTEM_CTX` explicitly.
 4. Add `guardrail_allow` check: if `ctx.auth_method == "internal"`, skip quota checks but still enforce operation permissions. This makes the bypass explicit and auditable.
@@ -178,6 +185,7 @@ Note: The original audit cited CORS as a CSRF defense, which is incorrect for be
 
 **Fix spec:**
 1. Add a global FastAPI dependency or middleware that enforces bearer-token presence on all routes by default. Whitelist only explicit public paths (`GET /`, and optionally `/docs`, `/openapi.json`, `/redoc`).
+
    ```python
    from starlette.middleware.base import BaseHTTPMiddleware
    from starlette.responses import JSONResponse
@@ -196,6 +204,7 @@ Note: The original audit cited CORS as a CSRF defense, which is incorrect for be
                    )
            return await call_next(request)
    ```
+
 2. Keep the per-endpoint `Depends(get_actor_ctx)` as the real auth that resolves the `ActorCtx` — the middleware is a safety net that ensures no route is accidentally exposed without any auth at all.
 3. CORS middleware is orthogonal to this fix and not required for bearer-token auth security. Add it only if/when browser clients are a supported use case.
 
@@ -220,6 +229,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 
 **Fix spec:**
 1. Replace `lru_cache` with a TTL-based cache across the full auth resolution path, not just static API key config. Minimal implementation:
+
    ```python
    import time
 
@@ -237,6 +247,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
        _AUTH_CONFIG_CACHE = (now, config)
        return config
    ```
+
 2. Apply the same TTL pattern to `load_auth_provider()` and `_env_workos_payload()`.
 3. `clear_auth_cache()` must invalidate all auth caches, not just the parsed config.
 4. TTL configurable via `ARCHETYPE_AUTH_CACHE_TTL_SEC` env var.
@@ -260,6 +271,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 
 **Fix spec:**
 1. Create generic error messages for external-facing exceptions:
+
    ```python
    class AuthorizationError(PermissionError):
        """External-facing error with sanitized message."""
@@ -267,6 +279,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
            self.internal_msg = internal_msg
            super().__init__("Forbidden")
    ```
+
 2. Replace all `raise PermissionError(f"Actor {ctx.id}...")` with `raise AuthorizationError(f"Actor {ctx.id}...")`.
 3. In the API layer (`deps.py`, route exception handlers), catch `AuthorizationError` and return only `exc.args[0]` ("Forbidden") to the client. Log `exc.internal_msg` server-side.
 4. In the CLI layer, do not echo raw `PermissionError` / `AuthorizationError` strings. Print sanitized user-facing messages (for example `Authentication failed` or `Forbidden`) and log detailed context separately if needed.
@@ -343,6 +356,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Fix spec:** Add `app.add_middleware` with a request body size limit, or configure via uvicorn `--limit-request-body`. A `SubmitBatchRequest` with >1000 commands should be rejected before parsing.
 
 Also: add `max_length` to `SubmitBatchRequest.commands`:
+
 ```python
 commands: list[SubmitCommandRequest] = Field(max_length=MAX_BATCH_COMMANDS)
 ```
@@ -366,10 +380,12 @@ commands: list[SubmitCommandRequest] = Field(max_length=MAX_BATCH_COMMANDS)
 **Disposition:** Adopt as written
 
 **Fix spec:** Add optional fields:
+
 ```python
 expires_at: datetime | None = None
 last_used_at: datetime | None = None
 ```
+
 Check `expires_at` in `StaticApiKeyProvider.authenticate_bearer_token`. Update `last_used_at` on successful auth (requires mutable state — defer to next auth backend iteration).
 
 ---

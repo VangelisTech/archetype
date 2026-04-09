@@ -7,12 +7,14 @@
 Archetype's security design is improving in the right direction: the API and CLI now share a provider-shaped authentication boundary, the public command channel blocks dangerous control-plane operations, and the authorization model already has the right primitives for roles, scoped actions, and per-world visibility. The biggest remaining structural risk is that service-layer authorization is still optional below the API boundary, which means any internal caller that omits `ctx` silently bypasses RBAC, quota, and scope checks.
 
 This review includes the standing detailed audit in `SECURITY_AUDIT_2026-03-28.md` and adds two things it did not fully cover:
+
 - a design-level assessment of which security decisions are worth preserving versus changing
 - a current dependency advisory review for the Python runtime and lockfile
 
 ## Included Audit
 
 The standing repository audit is included by reference:
+
 - `SECURITY_AUDIT_2026-03-28.md`
 
 That document remains the source of truth for the concrete AuthN/AuthZ remediation backlog. This report summarizes the higher-level conclusions and dependency risk picture around it.
@@ -70,6 +72,7 @@ Raw authorization and authentication error strings are still exposed through API
 ### No credible current advisory found
 
 No high-confidence current advisory was identified for:
+
 - `fastapi`
 - `uvicorn`
 - `lancedb`
@@ -92,6 +95,7 @@ Absence of a published advisory is not proof of safety. The biggest dependency s
 ## Automation Added In This Change
 
 This change set adds a daily GitHub Actions workflow that:
+
 - gathers dependency-audit evidence
 - runs a scheduled Claude security review
 - writes a daily report artifact
