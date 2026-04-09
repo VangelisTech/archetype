@@ -126,7 +126,7 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: f11df81ebc1ba9b7450c59398474827a
-          command: pages deploy site/ --project-name=archetype-docs --branch=${{ github.head_ref || 'main' }}
+          command: pages deploy site/ --project-name=archetype-docs --branch=${{ github.head_ref || 'main' }} --commit-dirty=true
 
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
