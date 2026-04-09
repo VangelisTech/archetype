@@ -62,6 +62,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 **Exploit:** Attacker obtains `ARCHETYPE_API_KEYS_JSON` or `ARCHETYPE_AUTH_FILE` → offline brute-force of all `secret_hash` values → full impersonation of any principal.
 
 **Fix spec:**
+
 1. Replace `hash_static_token_secret` with `hashlib.scrypt` (stdlib, no new deps):
 
    ```python
@@ -88,6 +89,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 **Disposition:** Adopt with changes (reviewer correction: replace brittle timing test)
 
 **Verification:** Existing auth tests pass. New tests:
+
 1. Same secret with different salts produces different stored hashes.
 2. Stored hash format matches `<salt_hex>:<derived_hex>` pattern (regex: `^[0-9a-f]{32}:[0-9a-f]{64}$`).
 3. `verify_static_token_secret(correct_secret, stored)` returns `True`; wrong secret returns `False`.
@@ -106,6 +108,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 **Disposition:** Adopt with changes (reviewer correction: fix contradictory verification)
 
 **Fix spec:**
+
 1. The rate limiting warning should always emit at startup, since the limiter is always in-process. In `src/archetype/api/app.py` `lifespan`, log at `INFO` level:
 
    ```text
@@ -117,6 +120,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 4. (Future) Abstract `_tick_counters` and `_daily_tokens` behind a `RateLimitBackend` protocol so Redis can be swapped in later.
 
 **Verification:**
+
 1. `archetype serve` with default config starts and emits the in-process rate limit info message in logs.
 2. If a `--workers` flag is added, `archetype serve --workers 2` exits with a non-zero code and prints a security error.
 3. `AGENTS.md` documents the single-worker constraint.
@@ -126,6 +130,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 ### C3. Optional `ctx` makes all guardrails bypassable
 
 **Location:** Every service method signature — `ctx: ActorCtx | None = None`
+
 - `broker.py:67` — `enqueue()`
 - `broker.py:105` — `enqueue_bulk()`
 - `broker.py:219` — `get_history()`
@@ -143,6 +148,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 **Disposition:** Adopt as written (strongest finding — reviewer confirmed)
 
 **Fix spec:**
+
 1. Create `src/archetype/app/auth/system_ctx.py`:
 
    ```python
@@ -184,6 +190,7 @@ Note: The original audit cited CORS as a CSRF defense, which is incorrect for be
 **Exploit:** A developer adds a new route, forgets the `Depends(get_actor_ctx)` parameter → endpoint is publicly accessible with no authentication.
 
 **Fix spec:**
+
 1. Add a global FastAPI dependency or middleware that enforces bearer-token presence on all routes by default. Whitelist only explicit public paths (`GET /`, and optionally `/docs`, `/openapi.json`, `/redoc`).
 
    ```python
@@ -219,6 +226,7 @@ Note: The original audit cited CORS as a CSRF defense, which is incorrect for be
 **Location:** `src/archetype/app/auth/credentials.py` — `load_auth_config()`, `load_auth_provider()`, `_env_workos_payload()`
 
 **Problem:** The auth stack uses unbounded `@lru_cache(maxsize=1)` entries for:
+
 - parsed auth config
 - provider construction
 - env-derived WorkOS config payload
@@ -228,6 +236,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Disposition:** Adopt as written
 
 **Fix spec:**
+
 1. Replace `lru_cache` with a TTL-based cache across the full auth resolution path, not just static API key config. Minimal implementation:
 
    ```python
@@ -253,6 +262,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 4. TTL configurable via `ARCHETYPE_AUTH_CACHE_TTL_SEC` env var.
 
 **Verification:**
+
 1. Test: load config, change `ARCHETYPE_API_KEYS_JSON`, wait >TTL, re-load → updated config is returned.
 2. Test: load provider with `ARCHETYPE_AUTH_PROVIDER=workos`, change `WORKOS_CLIENT_ID` or `WORKOS_API_KEY`, wait >TTL, re-load → rebuilt provider reflects the new values.
 3. Test: calling `clear_auth_cache()` invalidates config, provider, and env-derived WorkOS payload immediately.
@@ -264,12 +274,14 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Location:** `src/archetype/app/auth/guard.py` — all `PermissionError` raises; `src/archetype/api/deps.py`; `src/archetype/cli/main.py`
 
 **Problem:** Error messages include actor UUIDs, role sets, exact quota numbers, and world IDs. This is an information disclosure to external callers. The issue affects both:
+
 - API responses, where raw exception strings can be returned to clients
 - CLI stderr output, where raw auth/authorization errors are printed directly
 
 **Disposition:** Adopt as written
 
 **Fix spec:**
+
 1. Create generic error messages for external-facing exceptions:
 
    ```python
@@ -286,6 +298,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 5. Keep detailed messages in audit logs.
 
 **Verification:**
+
 1. Hit a forbidden endpoint → response body says `"Forbidden"`, not actor ID or role details.
 2. Run a CLI command with insufficient permissions → stderr contains only sanitized text, not actor UUIDs / role sets / quota numbers.
 3. Audit log still has the full internal message.
@@ -301,6 +314,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Disposition:** Adopt as written
 
 **Fix spec:**
+
 1. If `ARCHETYPE_STORAGE_ROOT` is not set, resolve it once at startup to an absolute path and cache it.
 2. Add `os.path.realpath()` to the resolved path to follow symlinks at check time (mitigates but doesn't eliminate TOCTOU).
 3. Consider: for non-admin callers, ignore user-provided `storage_uri` entirely and always use the default. The `storage_uri` field in `CreateWorldRequest` should only be respected when the actor has `choose_storage_backend` permission.
@@ -316,6 +330,7 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Disposition:** Adopt as written (will be subsumed by C3 fix if `ctx` becomes required everywhere)
 
 **Fix spec:**
+
 1. Add `ctx: ActorCtx` as a required parameter.
 2. For each world, check `guardrail_allow_operation("run_simulation", ctx, world_id=w.world_id)`.
 3. Or: prefix with `_` to make it private (`_run_all`), if it's truly internal-only.
@@ -331,11 +346,13 @@ Disabling a static API key, changing provider selection, or rotating `WORKOS_*` 
 **Disposition:** Adopt with changes (reviewer correction: `json.dumps` prevents raw newline injection, but schema control and log-shaping risks are real)
 
 **Problem:** `audit_event()` accepts arbitrary `**details` and serializes them directly via `json.dumps(..., default=str)`. While `json.dumps` escapes newlines (so raw line-break injection is not possible), the lack of schema control means:
+
 - User-controlled `payload` dicts can inject arbitrarily large or deeply nested data into audit logs, bloating log storage and complicating SIEM parsing.
 - The `default=str` serializer will happily stringify internal objects an attacker shouldn't see in logs.
 - An attacker can shape audit log content to make forensic analysis harder (log noise/pollution).
 
 **Fix spec:**
+
 1. Define an allow-list of types for audit detail values: `str`, `int`, `float`, `bool`, `None`, `UUID`. Coerce or drop anything else.
 2. Truncate string values to a max length (e.g., 1024 chars).
 3. At call sites, never pass raw `payload` dicts into audit details — extract only the specific fields needed for the audit record.
