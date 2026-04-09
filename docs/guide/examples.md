@@ -22,7 +22,7 @@ Source: [`examples/world_mutations.py`](https://github.com/VangelisTech/archetyp
 
 Output:
 
-```
+```text
 1. SPAWN — create entities with components
    Spawned 2 entities (tick=1)
 

@@ -25,6 +25,7 @@ docs typo and a scheduler rewrite should not clear the same gate.
 **Paths:** `docs/**`, `**/*.md`, `LICENSE`, `assets/**`, `.github/ISSUE_TEMPLATE/**`
 
 **Required checks:**
+
 - `format` (`ruff format --check` on `src/` and `tests/`)
 - `spelling` — typos-cli spell check ([`_typos.toml`](../../_typos.toml))
 - `markdown-lint` — markdownlint-cli2 ([`.markdownlint.yaml`](../../.markdownlint.yaml))
@@ -45,6 +46,7 @@ test. Auto-merge should be near-instant.
 **Paths:** `examples/**`, `bench/**`
 
 **Required checks:**
+
 - `format`
 - `ci` (the full gate — these import from `src/` and can break if APIs drift)
 
@@ -60,6 +62,7 @@ existing `ci` gate is sufficient.
 `tests/app/**`, `tests/api/**`, `tests/cli/**`, `tests/integration/**`
 
 **Required checks:**
+
 - `format`
 - `ci`
 - **Coverage delta ≥ 0** (no net coverage regression on changed files)
@@ -79,6 +82,7 @@ here surface as broken agents in the field. The 70% branch-coverage floor
 `tests/sync/**`, `tests/storage/**`
 
 **Required checks:**
+
 - `format`
 - `ci`
 - `typecheck` **(planned:** promote to required by removing
@@ -105,6 +109,7 @@ require synchronous human review.
 **Paths:** `pyproject.toml`, `uv.lock` only (Dependabot/Renovate PRs)
 
 **Required checks:**
+
 - `ci` (lock-check + full test suite)
 - **Security audit** (requires a PR-triggered variant of
   `daily-security-audit.yml`; the current workflow is schedule-only and cannot

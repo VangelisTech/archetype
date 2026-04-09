@@ -23,12 +23,8 @@ exclude = [
     "^#",
 ]
 
-# Only check docs and markdown
-include = [
-    "docs/**/*.md",
-    "docs/**/*.mdx",
-    "*.md",
-]
+# File globs are passed via CLI args, not here.
+# The `include` field filters URLs (regex), not input files.
 
 # Skip these paths entirely
 exclude_path = [

@@ -73,7 +73,7 @@ classDiagram
 
 ## Layers
 
-```
+```text
 archetype.api / cli          External interface (REST + HTTP client)
        │
 archetype.app                Services, RBAC, CommandBroker, WorldRegistry
@@ -110,6 +110,7 @@ An entity is just an integer ID (`entity_id`). It has no behavior — it's a bag
 ### Archetypes
 
 An archetype is a group of entities sharing the same component types. Each archetype is a single DataFrame where:
+
 - Rows are entities
 - Columns are prefixed component fields + metadata (`entity_id`, `tick`, `world_id`, `run_id`, `is_active`)
 
@@ -151,7 +152,7 @@ config = resources.require(SimConfig)
 
 Each tick executes these phases:
 
-```
+```text
 1. pre_tick hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (DataFrame)

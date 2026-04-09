@@ -67,9 +67,10 @@ jobs:
         with:
           args: >-
             --config lychee.toml
-            --glob-ignore-case
-            "docs/**/*.md"
-            "./*.md"
+            "docs/"
+            "README.md"
+            "CONTRIBUTING.md"
+            "AGENTS.md"
           fail: true
 
   # --------------------------------------------------------------------------
