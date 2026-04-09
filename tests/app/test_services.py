@@ -259,6 +259,82 @@ class TestQueryService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_get_components_with_limit(self, tmp_path):
+        """--show limits the number of returned rows."""
+        from archetype.core.component import Component
+
+        class Metric(Component):
+            val: float = 0.0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            for i in range(5):
+                await world.create_entity([Metric(val=float(i))])
+            await world.step(RunConfig())
+
+            result = await container.query_service.get_components(
+                world.world_id, ["Metric"], limit=2
+            )
+            assert len(result["rows"]) == 2
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_count_only(self, tmp_path):
+        """--count returns count without rows."""
+        from archetype.core.component import Component
+
+        class Tally(Component):
+            n: int = 0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            for i in range(3):
+                await world.create_entity([Tally(n=i)])
+            await world.step(RunConfig())
+
+            result = await container.query_service.get_components(
+                world.world_id, ["Tally"], count_only=True
+            )
+            assert result["count"] == 3
+            assert "rows" not in result
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_where_filter(self, tmp_path):
+        """--where filters rows by column expression."""
+        from archetype.core.component import Component
+
+        class Rating(Component):
+            val: float = 0.0
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            await world.create_entity([Rating(val=0.3)])
+            await world.create_entity([Rating(val=0.7)])
+            await world.create_entity([Rating(val=0.9)])
+            await world.step(RunConfig())
+
+            result = await container.query_service.get_components(
+                world.world_id, ["Rating"], where="rating__val > 0.5"
+            )
+            assert len(result["rows"]) == 2
+            for row in result["rows"]:
+                assert row["components"]["rating"]["val"] > 0.5
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_get_command_history_empty(self, tmp_path):
         container = ServiceContainer()
         try:
