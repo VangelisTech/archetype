@@ -29,6 +29,7 @@ class MovementProcessor(AsyncProcessor):
 ```
 
 Key points:
+
 - `components` declares required component types — the system only passes entities that have all of them
 - `priority` controls execution order within a tick (lower runs first)
 - `process()` receives a Daft DataFrame and must return a DataFrame
@@ -61,6 +62,7 @@ class PhysicsProcessor(AsyncProcessor):
 ```
 
 Setup:
+
 ```python
 world.resources.insert(SimConfig(gravity=9.8))
 await world.system.add_processor(PhysicsProcessor())

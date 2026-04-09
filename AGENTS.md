@@ -210,6 +210,7 @@ World forking exists not just for agent reasoning—it's the foundation for:
 3. **Self-improvement** — Agents proposing and testing architectural changes
 
 You, as an AI agent, are part of this loop. When you:
+
 - Find a limitation → document it in an issue
 - See a pattern → add it to LEARNINGS.md
 - Build something useful → propose it as a PR

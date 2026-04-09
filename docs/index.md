@@ -58,7 +58,7 @@ best = "aggressive" if score_a > score_b else "conservative"
 
 ## Architecture
 
-```
+```text
 ┌─────────────────────────────────────────────────────┐
 │                  archetype.dsl                       │
 │  World, @behavior, spawn_world, AgentProxy          │
@@ -87,7 +87,7 @@ best = "aggressive" if score_a > score_b else "conservative"
 
 ## The Vision
 
-```
+```text
 Agents ──▶ Archetype ──▶ Simulations ──▶ Insights ──▶ Better Archetype
     ▲                                                        │
     └────────────────────────────────────────────────────────┘
