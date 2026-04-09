@@ -100,16 +100,18 @@ jobs:
           path: site/
 
   # --------------------------------------------------------------------------
-  # Deploy to Cloudflare Pages — only on push to main
+  # Deploy to Cloudflare Pages
+  #   push to main  → production (archetype.vangelis.tech)
+  #   pull request   → preview   (<hash>.archetype-docs.pages.dev)
   # --------------------------------------------------------------------------
   deploy:
     name: Deploy to Cloudflare Pages
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       deployments: write
+      pull-requests: write
     steps:
       - name: Download site artifact
         uses: actions/download-artifact@v4
@@ -118,8 +120,37 @@ jobs:
           path: site/
 
       - name: Deploy to Cloudflare Pages
+        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: f11df81ebc1ba9b7450c59398474827a
-          command: pages deploy site/ --project-name=archetype-docs
+          command: pages deploy site/ --project-name=archetype-docs --branch=${{ github.head_ref || 'main' }}
+
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `### 📄 Docs preview\n\nDeployed to Cloudflare Pages:\n${{ steps.deploy.outputs.deployment-url }}`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes('Docs preview'));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
