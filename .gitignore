@@ -71,3 +71,4 @@ data/catalog.db
 archetype.egg-info/
 coverage.xml
 .coverage
+.wrangler/
