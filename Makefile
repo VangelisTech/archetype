@@ -146,15 +146,21 @@ publish: build
 	@uv publish
 
 # ------------------------------------------------------------------------------
-# Docs (MkDocs + shadcn)
+# Docs (MkDocs Material + shadcn)
 # ------------------------------------------------------------------------------
 
+.PHONY: docs-gen
+docs-gen:
+	@echo "Generating API & CLI reference docs..."
+	@uv run python scripts/generate_api_docs.py
+	@uv run python scripts/generate_cli_docs.py
+
 .PHONY: docs
-docs:
+docs: docs-gen
 	@uv run --extra docs mkdocs build
 
 .PHONY: docs-serve
-docs-serve:
+docs-serve: docs-gen
 	@uv run --extra docs mkdocs serve
 
 .PHONY: docs-lint

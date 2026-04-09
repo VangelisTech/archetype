@@ -12,7 +12,7 @@ theme:
   favicon: assets/logo.png
 
 extra_css:
-  - assets/custom.css
+  - stylesheets/shadcn.css
 
 nav:
   - Getting Started:
@@ -24,8 +24,10 @@ nav:
       - Components: guide/components.md
       - Processors: guide/processors.md
       - Examples: guide/examples.md
-      - API Reference: guide/api-reference.md
-      - CLI Reference: guide/cli-reference.md
+  - Reference:
+      - REST API: reference/rest-api.md
+      - CLI: reference/cli.md
+      - Python API: reference/python-api.md
   - Contributing:
       - Auto-Merge Policy: guide/auto-merge.md
 
@@ -46,3 +48,14 @@ markdown_extensions:
 plugins:
   - search
   - mermaid2
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: false
+            show_root_heading: true
+            show_root_full_path: false
+            heading_level: 3
+            members_order: source
+            docstring_style: google

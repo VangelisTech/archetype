@@ -5,6 +5,7 @@ archetype_data/
 __pycache__/
 .venv/
 site/
+node_modules/
 .bench_out/
 ./ref
 ./.venv
@@ -30,12 +31,11 @@ site/
 .cursorignore
 .worktrees/
 *.lance
-# Ignore claude user state, but track project config, hooks, skills, and agents
+# Ignore claude user state, but track project config, hooks, and skills
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
 !.claude/skills/
-!.claude/agents/
 data/
 
 .venv/

@@ -1,53 +1,104 @@
 # Archetype
 
-**Data-centric ECS simulation engine for multi-agent AI systems.**
+**AI-native simulation engine for emergent composite AI systems.**
 
-World state is columnar tables. Every tick is an append-only write to storage. This gives you time-travel queries, world forking, and full audit trails out of the box.
+> 🤖 **AI Agents:** You're in the right place. This documentation is written for you.
 
-## Get Started
+Archetype is a data-centric Entity-Component-System (ECS) runtime built on Daft DataFrames. It exists to enable:
 
-```bash
-pip install archetype-ecs
+1. **Multi-agent simulations** where AI agents debate, reason, and collaborate
+2. **MCTS and counterfactual reasoning** via `spawn_world()` for branching futures
+3. **Self-improving systems** where agents can evaluate and improve the system itself
 
-archetype serve                          # start the server
-archetype world create my-sim            # create a world
-archetype run <world-id> --steps 100     # run 100 ticks
-archetype query <world-id>              # see the result
+## Quick Start
+
+```python
+from archetype import Component
+from archetype.dsl import World, behavior
+
+class Philosopher(Component):
+    name: str = ""
+    thought: str = ""
+
+@behavior
+class Think:
+    requires = [Philosopher]
+    
+    async def act(self, agent, world, tick):
+        agent.philosopher.thought = f"Tick {tick}: I think, therefore I am."
+
+async with World("cogito") as world:
+    world.add_behavior(Think)
+    await world.spawn(Philosopher(name="Descartes"))
+    await world.run(ticks=3)
+    
+    for agent in world.agents:
+        print(agent.philosopher.thought)
 ```
 
-## Fork a World
+## The Core Primitive: spawn_world()
 
-Branch a world to explore alternatives:
+Fork worlds to explore possibilities:
 
-```bash
-archetype world fork <world-id> --name branch-A
-archetype run <fork-id> --steps 100
+```python
+from archetype.dsl import spawn_world
+
+async with spawn_world("scenario_a", parent=world, fork_state=True) as branch:
+    branch.add_behavior(AggressiveStrategy)
+    await branch.run(ticks=10)
+    score_a = evaluate(branch)
+
+async with spawn_world("scenario_b", parent=world, fork_state=True) as branch:
+    branch.add_behavior(ConservativeStrategy)
+    await branch.run(ticks=10)
+    score_b = evaluate(branch)
+
+best = "aggressive" if score_a > score_b else "conservative"
 ```
 
-Source and fork diverge independently. Use this for MCTS, counterfactual reasoning, or A/B experiments.
+## Architecture
 
-## Time-Travel
-
-Every tick is preserved. Query any point in history:
-
-```bash
-archetype query <world-id> --tick 42
+```
+┌─────────────────────────────────────────────────────┐
+│                  archetype.dsl                       │
+│  World, @behavior, spawn_world, AgentProxy          │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                  archetype.app                       │
+│  CommandBroker, WorldOrchestrator, WorldFactory     │
+└─────────────────────────────────────────────────────┘
+                         │
+┌─────────────────────────────────────────────────────┐
+│                  archetype.core                      │
+│  AsyncWorld, AsyncSystem, Resources, LanceDB Store  │
+│  🔒 Human-curated • Rust rewrite planned            │
+└─────────────────────────────────────────────────────┘
 ```
 
-## How It Works
+## Key Files for Agents
 
-Each `archetype run` step:
+| File | Purpose |
+|------|---------|
+| `AGENTS.md` | Your orientation guide |
+| `LEARNINGS.md` | Architectural decisions and patterns |
+| `examples/debate_mcts.py` | Full working demo |
+| `src/archetype/dsl/core.py` | The DSL implementation |
 
-1. Drains pending commands from the priority queue (RBAC-enforced)
-2. Applies them to the world (spawn/despawn/update entities)
-3. Runs all registered processors (DataFrame transforms, optionally LLM-powered)
-4. Appends the new state to LanceDB storage
+## The Vision
 
-Nothing is overwritten. That's how forking and time-travel work.
+```
+Agents ──▶ Archetype ──▶ Simulations ──▶ Insights ──▶ Better Archetype
+    ▲                                                        │
+    └────────────────────────────────────────────────────────┘
+```
 
-## Next Steps
+This repository is designed to be improved by the very agents that use it.
 
-- **[Quickstart](guide/quickstart.md)** -- full walkthrough with forking and time-travel
-- **[Architecture](guide/architecture.md)** -- how the layers fit together
-- **[Processors](guide/processors.md)** -- build custom simulation logic
-- **[Examples](guide/examples.md)** -- patterns and working demos
+## Navigation
+
+- [Quickstart](guide/quickstart.md) — Get running in 5 minutes
+- [Architecture](guide/architecture.md) — How the layers work together
+- [REST API Reference](reference/rest-api.md) — Auto-generated from OpenAPI schema
+- [CLI Reference](reference/cli.md) — Auto-generated from Typer commands
+- [Python API Reference](reference/python-api.md) — Key classes and their docstrings
