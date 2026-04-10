@@ -28,7 +28,7 @@ Sorting ensures that `[Inbox(), Outbox()]` and `[Outbox(), Inbox()]` produce the
 
 `Archetype.get_archetype_schema()` builds an Arrow schema by combining the base metadata columns with each component's prefixed fields:
 
-```
+```text
 BASE_SCHEMA:
   world_id (string), run_id (string), entity_id (int32),
   tick (int32), is_active (bool)
@@ -43,6 +43,7 @@ BASE_SCHEMA:
 ```
 
 Each component class generates its prefix via `Component.get_prefix()`:
+
 - `Inbox` becomes `inbox__`
 - `Outbox` becomes `outbox__`
 - `DeliveryReceipt` becomes `deliveryreceipt__`
@@ -69,7 +70,7 @@ for proc_instance in sorted(self.processors, key=lambda x: x.priority):
 
 ### What This Means
 
-```
+```text
 PhysicsProcessor(components=(Position, Velocity))
     runs on (Position, Velocity)                      # exact match
     runs on (Accel, Position, Velocity)               # superset matches

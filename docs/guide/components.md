@@ -73,7 +73,7 @@ journal = json.loads(row["agent__journal"])
 
 Entities with the **same set of component types** are grouped into an *archetype*. An archetype is a single DataFrame table where rows are entities and columns are prefixed component fields plus metadata.
 
-```
+```text
 Archetype (Position, Velocity):
   entity_id | tick | position__x | position__y | velocity__vx | velocity__vy
   1         | 0    | 5.0         | 10.0        | 0.5          | 1.0

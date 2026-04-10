@@ -48,7 +48,15 @@ archetype query <world-id> --tick 42
 archetype history <world-id>
 ```
 
-## What It Does
+## Architecture
+
+<p align="center">
+  <img src="assets/archetype_diagram.png" alt="Archetype — System, World, Processors, Store" width="700" />
+</p>
+
+<p align="center">
+  <img src="assets/archetype_diagram2.png" alt="Archetype Core — Orchestrator, Factory, Storage" width="700" />
+</p>
 
 ```
 archetype/

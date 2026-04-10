@@ -22,7 +22,7 @@ Source: [`examples/world_mutations.py`](https://github.com/VangelisTech/archetyp
 
 Output:
 
-```
+```text
 1. SPAWN — create entities with components
    Spawned 2 entities (tick=1)
 
@@ -126,7 +126,7 @@ asyncio.run(main())
 
 Output:
 
-```
+```text
 gravity=  1.0: tick=11
 gravity=  9.8: tick=11
 gravity= 25.0: tick=11
@@ -213,7 +213,7 @@ Source: [`examples/messaging_example.py`](https://github.com/VangelisTech/archet
 
 Output:
 
-```
+```text
 Archetype Messaging Demo: Resources + MESSAGE + Hooks
 
 -> Pre-tick 0: Starting processing...
