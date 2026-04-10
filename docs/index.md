@@ -7,66 +7,51 @@
 Archetype is a data-centric Entity-Component-System (ECS) runtime built on Daft DataFrames. It exists to enable:
 
 1. **Multi-agent simulations** where AI agents debate, reason, and collaborate
-2. **MCTS and counterfactual reasoning** via `spawn_world()` for branching futures
+2. **MCTS and counterfactual reasoning** via world forking for branching futures
 3. **Self-improving systems** where agents can evaluate and improve the system itself
 
 ## Quick Start
 
-```python
-from archetype import Component
-from archetype.dsl import World, behavior
+Install and start the server:
 
-class Philosopher(Component):
-    name: str = ""
-    thought: str = ""
-
-@behavior
-class Think:
-    requires = [Philosopher]
-    
-    async def act(self, agent, world, tick):
-        agent.philosopher.thought = f"Tick {tick}: I think, therefore I am."
-
-async with World("cogito") as world:
-    world.add_behavior(Think)
-    await world.spawn(Philosopher(name="Descartes"))
-    await world.run(ticks=3)
-    
-    for agent in world.agents:
-        print(agent.philosopher.thought)
+```bash
+pip install archetype-ecs
+archetype serve
 ```
 
-## The Core Primitive: spawn_world()
+Then, in another terminal, create a world and run a few ticks:
 
-Fork worlds to explore possibilities:
-
-```python
-from archetype.dsl import spawn_world
-
-async with spawn_world("scenario_a", parent=world, fork_state=True) as branch:
-    branch.add_behavior(AggressiveStrategy)
-    await branch.run(ticks=10)
-    score_a = evaluate(branch)
-
-async with spawn_world("scenario_b", parent=world, fork_state=True) as branch:
-    branch.add_behavior(ConservativeStrategy)
-    await branch.run(ticks=10)
-    score_b = evaluate(branch)
-
-best = "aggressive" if score_a > score_b else "conservative"
+```bash
+archetype world create hello
+archetype run <world-id> --steps 10
+archetype query <world-id>
 ```
+
+That's it — you have a running simulation. See [Quickstart](guide/quickstart.md) for the Python API and HTTP equivalents.
+
+## World Forking
+
+Fork worlds to explore possibilities — the core primitive for MCTS, counterfactual reasoning, and A/B experiments:
+
+```bash
+archetype world fork <world-id> --name branch-A
+archetype run <fork-id> --steps 10
+```
+
+Source and fork diverge independently. See [`examples/fork_counterfactual.py`](https://github.com/VangelisTech/archetype/blob/main/examples/fork_counterfactual.py) for a full walkthrough.
 
 ## Architecture
 
 ```text
 ┌─────────────────────────────────────────────────────┐
-│                  archetype.dsl                       │
-│  World, @behavior, spawn_world, AgentProxy          │
+│              archetype.api / archetype.cli          │
+│         FastAPI REST + Typer (HTTP client)          │
 └─────────────────────────────────────────────────────┘
                          │
 ┌─────────────────────────────────────────────────────┐
 │                  archetype.app                       │
-│  CommandBroker, WorldOrchestrator, WorldFactory     │
+│  ServiceContainer, CommandBroker, WorldService,     │
+│  SimulationService, QueryService, RBAC              │
 └─────────────────────────────────────────────────────┘
                          │
 ┌─────────────────────────────────────────────────────┐
@@ -76,14 +61,16 @@ best = "aggressive" if score_a > score_b else "conservative"
 └─────────────────────────────────────────────────────┘
 ```
 
+See [Architecture](guide/architecture.md) for the full class diagram.
+
 ## Key Files for Agents
 
 | File | Purpose |
 |------|---------|
-| `AGENTS.md` | Your orientation guide |
-| `LEARNINGS.md` | Architectural decisions and patterns |
-| `examples/debate_mcts.py` | Full working demo |
-| `src/archetype/dsl/core.py` | The DSL implementation |
+| [`AGENTS.md`](https://github.com/VangelisTech/archetype/blob/main/AGENTS.md) | Your orientation guide |
+| [`LEARNINGS.md`](https://github.com/VangelisTech/archetype/blob/main/LEARNINGS.md) | Architectural decisions and patterns |
+| [`examples/simulation_script.py`](https://github.com/VangelisTech/archetype/blob/main/examples/simulation_script.py) | Full working demo (components, processors, run) |
+| [`examples/fork_counterfactual.py`](https://github.com/VangelisTech/archetype/blob/main/examples/fork_counterfactual.py) | World forking for A/B experiments |
 
 ## The Vision
 

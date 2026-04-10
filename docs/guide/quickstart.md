@@ -55,7 +55,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## Option B: CLI
+## Option B: HTTP API (curl)
 
 ```bash
 # Start the API server

@@ -176,7 +176,7 @@ def generate() -> str:
 def main() -> None:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     content = generate()
-    OUTPUT.write_text(content)
+    OUTPUT.write_text(content, encoding="utf-8", newline="\n")
     print(f"Generated {OUTPUT} ({len(content)} bytes)")
 
 
