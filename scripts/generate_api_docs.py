@@ -163,11 +163,11 @@ def render_operation(
                 lines.extend(table)
                 lines.append("")
 
-    # Responses
+    # Responses — prefer 200, else lowest numeric 2xx for deterministic output
     responses = operation.get("responses", {})
-    success_codes = [c for c in responses if c.startswith("2")]
+    success_codes = sorted(c for c in responses if c.startswith("2"))
     if success_codes:
-        code = success_codes[0]
+        code = "200" if "200" in success_codes else success_codes[0]
         resp = responses[code]
         resp_content = resp.get("content", {})
         json_resp = resp_content.get("application/json", {})
