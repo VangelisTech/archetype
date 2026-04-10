@@ -23,14 +23,8 @@ exclude = [
     "^#",
 ]
 
-# Only check docs and markdown
-include = [
-    "docs/**/*.md",
-    "docs/**/*.mdx",
-    "*.md",
-]
-
 # Skip these paths entirely
+# (include globs are passed on the command line by the workflow)
 exclude_path = [
     "node_modules",
     ".venv",

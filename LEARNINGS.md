@@ -13,18 +13,20 @@ Archetype has a recursive purpose:
 > **Use Archetype to build the harness that evaluates and improves Archetype.**
 
 The `spawn_world()` primitive enables:
+
 1. **Benchmarking** — Thousands of simulation scenarios in parallel
 2. **Evaluation** — Compare behavioral outcomes across configurations
 3. **Self-improvement** — Agents proposing and testing architectural changes
 
 The `core/` module is human-curated, but everything else is fair game for agent contribution. The plan:
+
 - **Now:** Python core, optimized for iteration
 - **Next:** Rust rewrite for production performance
 - **Future:** Agents continuously improving the system
 
 ---
 
-## Daft DataFrames are lazy, columnar, and vectorized.
+## Daft DataFrames are lazy, columnar, and vectorized
 
 The DataFrame is already columnar. Operations on columns are inherently batched/vectorized. Don't overthink it.
 
@@ -114,14 +116,16 @@ If the model doesn't batch, using `@daft.method.batch` and looping internally is
 
 ---
 
-## Expression namespaces were deprecated v0.7.x 
+## Expression namespaces were deprecated v0.7.x
 
 **Old way (deprecated):**
+
 ```python
 col("result").struct.get("field")  # ✗ No longer works
 ```
 
 **New way:**
+
 ```python
 col("result")["field"]  # ✓ Use indexing
 ```
@@ -141,6 +145,7 @@ class EnvironmentComponent(Component):
 ```
 
 Components are prefixed in the DataFrame:
+
 - `EnvironmentComponent.gravity` → `environmentcomponent__gravity`
 
 ### Processors = DataFrame Transforms
@@ -265,6 +270,7 @@ class MyProcessor(AsyncProcessor):
 ```
 
 **API:**
+
 - `insert(obj)` — Store by type
 - `get(Type)` → `T | None`
 - `require(Type)` → `T` (raises `KeyError` if missing)
@@ -289,6 +295,7 @@ world.add_hook("post_tick", on_post_tick)
 ```
 
 **Events:**
+
 - `pre_tick` — Before any processing (tick=N)
 - `post_tick` — After all processing (tick=N+1, results=list of DataFrames)
 
@@ -360,6 +367,7 @@ Agent-to-agent messaging is processor-driven, not broker-driven.
 **The broker is governance only** — RBAC, quotas, command queuing. It does NOT own message delivery or conversation structure.
 
 **Components:**
+
 ```python
 class Outbox(Component):
     messages: list[str] = []  # JSON-encoded: {"receiver_id": int, "channel": str, "content": str}
@@ -369,6 +377,7 @@ class Inbox(Component):
 ```
 
 **Delivery pipeline:**
+
 ```
 Agent processor writes to Outbox (priority 10+)
         ↓
@@ -385,6 +394,7 @@ Downstream processors read Inbox for LLM context
 **Key insight:** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. This enforces causal ordering — no agent can read a message from the same tick it was sent.
 
 **ChatGraph** is a Resource (not entity data). It tracks conversation structure as a DAG per (world, channel):
+
 ```python
 registry = resources.require(ChatGraphRegistry)
 graph = registry.channel(world_id, "strategy")
@@ -491,6 +501,7 @@ class SuperjectiveInnerWorldProcessor(AsyncProcessor):
 ```
 
 This pattern is especially useful for:
+
 - Inner world simulations (superjective reasoning)
 - Checkpoint/save operations
 - Aggregation that only makes sense at simulation end
@@ -568,6 +579,7 @@ async with spawn_world("scenario_1", parent=world, fork_state=True) as inner:
 ```
 
 Use cases:
+
 - **MCTS**: Explore action sequences
 - **Counterfactual reasoning**: "What if agent X said Y?"
 - **Mental simulation**: Agent imagines consequences

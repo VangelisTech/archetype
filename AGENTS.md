@@ -171,6 +171,7 @@ External API → CommandService → CommandBroker → World
 ```
 
 **Roles (flat, not hierarchical):**
+
 | Role | Permissions |
 |------|-------------|
 | `viewer` | Read-only (query, get state) |
@@ -209,6 +210,7 @@ World forking exists not just for agent reasoning—it's the foundation for:
 3. **Self-improvement** — Agents proposing and testing architectural changes
 
 You, as an AI agent, are part of this loop. When you:
+
 - Find a limitation → document it in an issue
 - See a pattern → add it to LEARNINGS.md
 - Build something useful → propose it as a PR
@@ -230,22 +232,26 @@ You, as an AI agent, are part of this loop. When you:
 ## Conventions
 
 ### Components
+
 - Use `_json` suffix for complex types: `history_json: str = "[]"`
 - Keep components small and focused
 - Prefer composition over inheritance
 
 ### Processors
+
 - One processor = one concern
 - Use `priority` for ordering (lower runs first)
 - `daft.functions.prompt` for LLM calls inside processors
 - Return a new DataFrame, never mutate in place
 
 ### Testing
+
 - Every new feature needs tests
 - Integration tests in `tests/integration/`
 - Use `tmp_path` fixture for storage isolation
 
 ### Commits
+
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`
 - Reference issues when applicable
 - Keep commits atomic

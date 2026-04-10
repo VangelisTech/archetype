@@ -85,13 +85,26 @@ def _apply_where(df: DataFrame, expr: str) -> DataFrame:
     Supports: ``column > value``, ``column == value``, etc.
     Operators: ``>``, ``<``, ``>=``, ``<=``, ``==``, ``!=``
     """
-    import re
+    # Manual linear-time split avoids ReDoS from ambiguous \s* patterns.
+    # Multi-char operators must be checked before single-char ones.
+    stripped = expr.strip()
+    op = None
+    idx = -1
+    for candidate in (">=", "<=", "!=", "==", ">", "<"):
+        pos = stripped.find(candidate)
+        if pos != -1:
+            op = candidate
+            idx = pos
+            break
 
-    match = re.match(r"^\s*(\S+)\s*(>=|<=|!=|==|>|<)\s*(.+?)\s*$", expr)
-    if not match:
+    if op is None or idx == 0:
         raise ValueError(f"Invalid where expression: {expr!r}. Expected: column op value")
 
-    column, op, raw_value = match.groups()
+    column = stripped[:idx].strip()
+    raw_value = stripped[idx + len(op) :].strip()
+
+    if not column or not raw_value:
+        raise ValueError(f"Invalid where expression: {expr!r}. Expected: column op value")
 
     # Parse value: try float, then int, then bare string
     value: float | int | str

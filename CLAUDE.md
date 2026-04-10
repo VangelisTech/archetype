@@ -7,7 +7,7 @@ Read these before doing anything:
 
 Skills in `.claude/skills/` enforce framework rules automatically. They fire based on file paths — you don't need to invoke them manually.
 
-### Skills index
+## Skills index
 
 | Skill | What it enforces |
 |-------|-----------------|

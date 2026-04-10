@@ -26,6 +26,7 @@ archetype status
 ```
 
 Output:
+
 ```
   01965a3b-...  name=my-sim  tick=42  entities=100
   01965a3c-...  name=branch-A  tick=10  entities=50
@@ -41,6 +42,7 @@ archetype world create my-sim --uri ./data --namespace experiment_1
 ```
 
 Options:
+
 - `NAME` (required) — world name
 - `--uri` — storage path (default: `./archetype_data`)
 - `--namespace` — storage namespace (default: `archetypes`)
@@ -86,6 +88,7 @@ archetype run 01965a3b-... -n 1000
 ```
 
 Options:
+
 - `WORLD_ID` (required)
 - `--steps` / `-n` — number of ticks (default: 1)
 
@@ -122,6 +125,7 @@ archetype history 01965a3b-... -n 20
 ```
 
 Output:
+
 ```
   [0] spawn (priority=0)
   [0] spawn (priority=0)

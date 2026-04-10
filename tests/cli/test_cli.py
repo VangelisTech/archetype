@@ -171,11 +171,17 @@ class TestCLIIntegration:
 
     def test_query_help_shows_options(self):
         """query --help shows --show, --count, --where options."""
+        import re
+
         result = runner.invoke(app, ["query", "--help"])
         assert result.exit_code == 0
-        assert "--show" in result.output
-        assert "--count" in result.output
-        assert "--where" in result.output
+        # Strip ANSI escape codes — Rich wraps each dash in its own color
+        # sequence when FORCE_COLOR is set (as in CI), which breaks literal
+        # substring matching.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        assert "--show" in plain
+        assert "--count" in plain
+        assert "--where" in plain
 
     def test_no_server_gives_clear_error(self):
         """When the server is down, the CLI should exit with a useful message."""

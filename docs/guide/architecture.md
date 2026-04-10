@@ -110,6 +110,7 @@ An entity is just an integer ID (`entity_id`). It has no behavior — it's a bag
 ### Archetypes
 
 An archetype is a group of entities sharing the same component types. Each archetype is a single DataFrame where:
+
 - Rows are entities
 - Columns are prefixed component fields + metadata (`entity_id`, `tick`, `world_id`, `run_id`, `is_active`)
 

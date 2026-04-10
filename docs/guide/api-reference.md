@@ -19,6 +19,7 @@ POST /worlds
 ```
 
 Response:
+
 ```json
 {
   "world_id": "01965a3b-...",
@@ -51,6 +52,7 @@ DELETE /worlds/{world_id}
 ```
 
 Response:
+
 ```json
 {"status": "removed", "world_id": "01965a3b-..."}
 ```
@@ -106,6 +108,7 @@ POST /worlds/{world_id}/commands
 ```
 
 Response:
+
 ```json
 {
   "id": "01965a3b-...",
@@ -167,6 +170,7 @@ POST /worlds/{world_id}/step
 ```
 
 Response:
+
 ```json
 {"world_id": "...", "commands_applied": 3}
 ```
@@ -182,6 +186,7 @@ POST /worlds/{world_id}/run
 ```
 
 Response:
+
 ```json
 {
   "run_id": "01965a3b-...",
@@ -250,6 +255,7 @@ Returns serialized command history.
 ## Error Responses
 
 All errors follow:
+
 ```json
 {"detail": "World 01965a3b-... not found"}
 ```
