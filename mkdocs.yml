@@ -23,6 +23,7 @@ nav:
       - Building Simulations: guide/building-simulations.md
       - Components: guide/components.md
       - Processors: guide/processors.md
+      - System Execution: guide/system-execution.md
       - Examples: guide/examples.md
   - Reference:
       - REST API: reference/rest-api.md
