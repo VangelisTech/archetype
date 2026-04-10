@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from archetype.bookmarks.client import XBookmarksClient, XClientError
+from bookmarks.client import XBookmarksClient, XClientError
 
 
 def _mock_response(status_code: int, body: dict) -> MagicMock:
