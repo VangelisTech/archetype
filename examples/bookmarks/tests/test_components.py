@@ -5,7 +5,7 @@
 
 import json
 
-from archetype.bookmarks.components import Bookmark, KnowledgeEntry, Media, UrlEntity
+from bookmarks.components import Bookmark, KnowledgeEntry, Media, UrlEntity
 
 
 def test_media_round_trip():

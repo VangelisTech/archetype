@@ -12,8 +12,15 @@ Bookmarks are entities. Processors are pipeline stages.
 Fork a world to try a different enrichment model on the same data.
 Storage is the version control.
 
+This module lives in ``examples/bookmarks`` — a domain application that
+demonstrates how to build an ECS ingestion pipeline on top of Archetype's
+core runtime. It is intentionally outside ``src/archetype`` because it
+does not go through the ``CommandService``/``CommandBroker`` mutation path
+and is not part of the framework's public surface.
+
 Quick Start:
-    >>> from archetype.bookmarks import BookmarksPipeline
+    >>> # Run from the repo root so ``examples/`` is on sys.path
+    >>> from bookmarks import BookmarksPipeline
     >>> pipeline = BookmarksPipeline(
     ...     name="my-knowledge-base",
     ...     bearer_token="your-x-bearer-token",
@@ -33,10 +40,10 @@ Fork to compare models:
     >>> await fork.run()
 """
 
-from archetype.bookmarks.client import XBookmarksClient, XClientError
-from archetype.bookmarks.components import Bookmark, KnowledgeEntry, Media, UrlEntity
-from archetype.bookmarks.pipeline import BookmarksPipeline
-from archetype.bookmarks.processors import (
+from .client import XBookmarksClient, XClientError
+from .components import Bookmark, KnowledgeEntry, Media, UrlEntity
+from .pipeline import BookmarksPipeline
+from .processors import (
     DeduplicationProcessor,
     EnrichmentConfig,
     EnrichmentProcessor,

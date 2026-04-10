@@ -24,9 +24,10 @@ from typing import Any
 import daft
 from daft import DataFrame, col
 
-from archetype.bookmarks.components import Bookmark, KnowledgeEntry
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
+
+from .components import Bookmark, KnowledgeEntry
 
 # ── Resources (injected into world.resources) ──
 

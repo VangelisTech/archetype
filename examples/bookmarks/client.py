@@ -25,9 +25,9 @@ from typing import Any
 
 import httpx
 
-from archetype.bookmarks.components import Bookmark
+from .components import Bookmark
 
-logger = logging.getLogger("archetype.bookmarks")
+logger = logging.getLogger("bookmarks.client")
 
 X_API_BASE = "https://api.x.com/2"
 

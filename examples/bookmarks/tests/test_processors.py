@@ -8,8 +8,8 @@ import json
 import daft
 import pytest
 
-from archetype.bookmarks.components import Bookmark, KnowledgeEntry
-from archetype.bookmarks.processors import (
+from bookmarks.components import Bookmark, KnowledgeEntry
+from bookmarks.processors import (
     DeduplicationProcessor,
     IndexingProcessor,
 )

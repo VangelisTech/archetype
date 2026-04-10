@@ -44,18 +44,19 @@ from uuid_utils import uuid7
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
-from archetype.bookmarks.client import XBookmarksClient
-from archetype.bookmarks.components import Bookmark, KnowledgeEntry
-from archetype.bookmarks.processors import (
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+
+from .client import XBookmarksClient
+from .components import Bookmark, KnowledgeEntry
+from .processors import (
     DeduplicationProcessor,
     EnrichmentConfig,
     EnrichmentProcessor,
     IndexingConfig,
     IndexingProcessor,
 )
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
-logger = logging.getLogger("archetype.bookmarks")
+logger = logging.getLogger("bookmarks.pipeline")
 
 
 class BookmarksPipeline:
