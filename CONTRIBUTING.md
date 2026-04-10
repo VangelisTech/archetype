@@ -197,7 +197,7 @@ Installed via `make precommit-install`. Runs automatically on `git commit`:
 
 ## Project Structure & Modification Zones
 
-```
+```text
 src/archetype/
   core/     # ECS engine — READ-ONLY. Do not modify without explicit approval.
   app/      # Service layer — extend carefully, always add tests.
@@ -224,7 +224,7 @@ docs/       # Mintlify docs — deployed to archetype.vangelis.tech
 
 Use [conventional commits](https://www.conventionalcommits.org/):
 
-```
+```text
 feat:      New feature
 fix:       Bug fix
 docs:      Documentation only

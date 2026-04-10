@@ -83,7 +83,7 @@ async def main():
 
 Output:
 
-```
+```text
 Alice:   skill=3.0, experience=60, rating=18.0
 Bob:     skill=2.0, experience=40, rating=8.0
 Charlie: skill=1.5, experience=30, rating=4.5

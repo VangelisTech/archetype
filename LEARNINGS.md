@@ -1,6 +1,6 @@
 # Learnings: Daft 0.7.x & Archetype Patterns
 
-*Documented from sessions with Everett, December 2024 – January 2026*
+Documented from sessions with Everett, December 2024 – January 2026
 
 > **For AI Agents:** This document contains hard-won architectural knowledge. Read it before proposing changes to core patterns.
 
@@ -164,7 +164,7 @@ class PhysicsProcessor(Processor):
 
 ### The Loop
 
-```
+```text
 Entities (DataFrame) → Processor 1 → Processor 2 → ... → Store (LanceDB)
          ↑                                                      |
          └──────────────────────────────────────────────────────┘
@@ -378,7 +378,7 @@ class Inbox(Component):
 
 **Delivery pipeline:**
 
-```
+```text
 Agent processor writes to Outbox (priority 10+)
         ↓
 MessageDeliveryProcessor (priority -100, runs first next tick)
@@ -409,7 +409,7 @@ context = graph.active_path()  # root → cursor, for LLM context windows
 
 ## Tick Lifecycle
 
-```
+```text
 Tick N:
   1. pre_tick hook fires (tick=N)
   2. For each archetype (parallel):
@@ -428,7 +428,7 @@ Tick N:
 
 Enable with `run_config.debug = True`:
 
-```
+```text
 [archetype] {"event": "tick_start", "world_id": "...", "tick": 0}
 [archetype] processor_start: PhysicsProcessor (priority=10)
 [archetype] processor_end: PhysicsProcessor (rows_out=100)

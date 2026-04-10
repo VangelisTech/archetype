@@ -73,7 +73,7 @@ classDiagram
 
 ## Layers
 
-```
+```text
 archetype.api / cli          External interface (REST + HTTP client)
        │
 archetype.app                Services, RBAC, CommandBroker, WorldRegistry
@@ -152,7 +152,7 @@ config = resources.require(SimConfig)
 
 Each tick executes these phases:
 
-```
+```text
 1. pre_tick hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (DataFrame)

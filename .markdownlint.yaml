@@ -8,6 +8,7 @@ MD041: false        # First line heading — Mintlify pages use frontmatter
 MD024: false        # Duplicate headings — common in changelogs and guides
 MD040: false        # Fenced code language — many blocks are diagrams or output
 MD036: false        # Emphasis as heading — prose uses bold for attribution
+MD060: false        # Table column style — too noisy for compact tables
 
 # Keep these enabled
 MD001: true         # Heading increment (no jumping from h1 to h3)

@@ -16,7 +16,7 @@ You are not just a user of this codebase—you are a collaborator in its evoluti
 
 ## Quick Orientation
 
-```
+```text
 archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
@@ -159,7 +159,7 @@ See [CLAUDE.md](./CLAUDE.md) for full dev workflow reference.
 
 All mutations are RBAC-gated through the CommandBroker:
 
-```
+```text
 External API → CommandService → CommandBroker → World
                                   ↓ RBAC check
                                   ↓ priority queue

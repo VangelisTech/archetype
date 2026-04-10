@@ -111,7 +111,7 @@ Fix in severity order: Critical → High → Medium. Run `uv run pytest tests/ -
 
 1. The rate limiting warning should always emit at startup, since the limiter is always in-process. In `src/archetype/api/app.py` `lifespan`, log at `INFO` level:
 
-   ```
+   ```text
    logger.info("Rate limiting is in-process only. Not safe for multi-worker deployments.")
    ```
 

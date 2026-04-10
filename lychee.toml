@@ -23,8 +23,10 @@ exclude = [
     "^#",
 ]
 
+# File globs are passed via CLI args, not here.
+# The `include` field filters URLs (regex), not input files.
+
 # Skip these paths entirely
-# (include globs are passed on the command line by the workflow)
 exclude_path = [
     "node_modules",
     ".venv",
