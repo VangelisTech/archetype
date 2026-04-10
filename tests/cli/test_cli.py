@@ -158,6 +158,25 @@ class TestCLIIntegration:
         assert listing.exit_code == 0
         assert "No worlds found" in listing.output
 
+    @pytest.mark.usefixtures("_patch_request")
+    def test_query_no_components_returns_state(self, tmp_path):
+        """query without component types returns world state overview."""
+        uri = str(tmp_path / "store")
+        create = runner.invoke(app, ["world", "create", "q2-test", "--uri", uri])
+        world_id = create.output.split("Created world: ")[1].split()[0]
+
+        result = runner.invoke(app, ["query", world_id])
+        assert result.exit_code == 0, result.output
+        assert "world_id" in result.output
+
+    def test_query_help_shows_options(self):
+        """query --help shows --show, --count, --where options."""
+        result = runner.invoke(app, ["query", "--help"])
+        assert result.exit_code == 0
+        assert "--show" in result.output
+        assert "--count" in result.output
+        assert "--where" in result.output
+
     def test_no_server_gives_clear_error(self):
         """When the server is down, the CLI should exit with a useful message."""
         result = runner.invoke(app, ["status"])

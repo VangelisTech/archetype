@@ -46,11 +46,21 @@ async def get_components(
     world_id: str,
     types: str = "",
     tick: int | None = None,
+    show: int | None = None,
+    count: bool = False,
+    where: str | None = None,
     qs: QueryService = Depends(get_query_service),
 ):
     try:
         component_types = [t.strip() for t in types.split(",") if t.strip()]
-        result = await qs.get_components(UUID(world_id), component_types, tick=tick)
+        result = await qs.get_components(
+            UUID(world_id),
+            component_types,
+            tick=tick,
+            limit=show,
+            count_only=count,
+            where=where,
+        )
         return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None

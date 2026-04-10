@@ -79,6 +79,40 @@ def _resolve_component_types(world: Any, type_names: list[str]) -> list[type]:
     return resolved
 
 
+def _apply_where(df: DataFrame, expr: str) -> DataFrame:
+    """Apply a simple filter expression to a DataFrame.
+
+    Supports: ``column > value``, ``column == value``, etc.
+    Operators: ``>``, ``<``, ``>=``, ``<=``, ``==``, ``!=``
+    """
+    import re
+
+    match = re.match(r"^\s*(\S+)\s*(>=|<=|!=|==|>|<)\s*(.+?)\s*$", expr)
+    if not match:
+        raise ValueError(f"Invalid where expression: {expr!r}. Expected: column op value")
+
+    column, op, raw_value = match.groups()
+
+    # Parse value: try float, then int, then bare string
+    value: float | int | str
+    try:
+        value = float(raw_value)
+        if value == int(value) and "." not in raw_value:
+            value = int(value)
+    except ValueError:
+        value = raw_value.strip("'\"")
+
+    ops = {
+        ">": col(column) > value,
+        "<": col(column) < value,
+        ">=": col(column) >= value,
+        "<=": col(column) <= value,
+        "==": col(column) == value,
+        "!=": col(column) != value,
+    }
+    return df.where(ops[op])
+
+
 class QueryService:
     """
     Read path facade. Time-travel queries, entity state, cross-world reads.
@@ -205,18 +239,28 @@ class QueryService:
         component_types: list[str],
         entity_ids: list[int] | None = None,
         tick: int | None = None,
+        limit: int | None = None,
+        count_only: bool = False,
+        where: str | None = None,
     ) -> dict:
-        """Query specific component types across entities."""
+        """Query specific component types across entities.
+
+        Args:
+            limit: Maximum rows to return (``--show``).
+            count_only: Return only the row count (``--count``).
+            where: Simple filter expression, e.g. ``"score__val > 0.5"``.
+                   Supports ``>``, ``<``, ``>=``, ``<=``, ``==``, ``!=``.
+        """
         world = self._get_async_world(world_id)
         effective_tick = max(world.tick - 1, 0) if tick is None else tick
 
         if not component_types:
-            return {
+            base: dict = {
                 "world_id": str(world_id),
                 "tick": effective_tick,
                 "component_types": [],
-                "rows": [],
             }
+            return {**base, "count": 0} if count_only else {**base, "rows": []}
 
         resolved = _resolve_component_types(world, component_types)
 
@@ -239,6 +283,21 @@ class QueryService:
                 )
                 proj_cols = schema.names
                 df = df.concat(sig_df.select(*proj_cols))
+
+        # Apply where filter before count/limit
+        if where:
+            df = _apply_where(df, where)
+
+        if count_only:
+            return {
+                "world_id": str(world_id),
+                "tick": effective_tick,
+                "component_types": component_types,
+                "count": df.count_rows(),
+            }
+
+        if limit is not None:
+            df = df.limit(limit)
 
         rows = _df_to_rows(df)
         return {

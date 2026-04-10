@@ -189,14 +189,61 @@ def step(world_id: str = typer.Argument(..., help="World ID")):
 @app.command()
 def query(
     world_id: str = typer.Argument(..., help="World ID"),
-    tick: int | None = typer.Option(None, "--tick", "-t", help="Tick to query"),
+    component_types: str = typer.Argument(
+        "",
+        help="Comma-separated component types (e.g. Agent,Score). "
+        "Omit to get world state overview.",
+    ),
+    tick: int | None = typer.Option(None, "--tick", "-t", help="Query at this tick"),
+    show: int | None = typer.Option(None, "--show", "-s", help="Limit to N rows"),
+    count: bool = typer.Option(False, "--count", "-c", help="Return row count only"),
+    where: str | None = typer.Option(None, "--where", "-w", help='Filter: "col op val"'),
 ):
-    """Query world state at a tick."""
-    params = {}
+    """Query world state or specific components.
+
+    \b
+    Without component types, returns a world state overview.
+    With component types, queries entities matching those components.
+
+    \b
+    Examples:
+        archetype query <wid> Agent,Score --show 5
+        archetype query <wid> Agent --tick 3 --show 10
+        archetype query <wid> Trajectory,Label --count
+        archetype query <wid> Score --where "score__val > 0.5"
+    """
+    if not component_types:
+        # World state overview (original behavior)
+        params: dict = {}
+        if tick is not None:
+            params["tick"] = tick
+        data = _request("get", f"/worlds/{world_id}/state", params=params)
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # Component query
+    params = {"types": component_types}
     if tick is not None:
         params["tick"] = tick
-    data = _request("get", f"/worlds/{world_id}/state", params=params)
-    typer.echo(json.dumps(data, indent=2))
+    if show is not None:
+        params["show"] = show
+    if count:
+        params["count"] = "true"
+    if where:
+        params["where"] = where
+
+    data = _request("get", f"/worlds/{world_id}/components", params=params)
+
+    if count:
+        typer.echo(f"Count: {data.get('count', 0)}")
+        return
+
+    rows = data.get("rows", [])
+    if not rows:
+        typer.echo("No matching entities.")
+        return
+
+    typer.echo(json.dumps(rows, indent=2, default=str))
 
 
 @app.command()
