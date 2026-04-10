@@ -58,7 +58,30 @@ archetype history <world-id>
   <img src="assets/archetype_diagram2.png" alt="Archetype Core — Orchestrator, Factory, Storage" width="700" />
 </p>
 
-World state is columnar tables ([Daft](https://www.getdaft.io/) DataFrames + [LanceDB](https://lancedb.github.io/lancedb/)). Each tick drains a priority queue of commands, applies them, runs processors (pure DataFrame transforms), and appends the result to storage.
+```
+archetype/
+├── src/archetype/
+│   ├── core/          # ECS engine (Daft + Arrow + LanceDB)
+│   ├── app/           # Service layer
+│   │   ├── auth/      #   RBAC guard (ActorCtx, role permissions, quotas)
+│   │   ├── broker.py  #   CommandBroker (priority queue, RBAC, history)
+│   │   ├── command_service.py    # Command dispatch
+│   │   ├── world_service.py      # World lifecycle
+│   │   ├── simulation_service.py # Tick stepping / runs
+│   │   ├── query_service.py      # Read path (time-travel queries)
+│   │   ├── storage_service.py    # Storage backend pooling
+│   │   └── container.py          # Wires all services together
+│   ├── api/           # FastAPI REST layer
+│   │   ├── routes/    #   worlds, commands, simulation, query
+│   │   ├── deps.py    #   Dependency injection
+│   │   └── app.py     #   App factory with lifespan
+│   └── cli/           # Typer CLI
+├── examples/          # Runnable examples (see examples/README.md)
+├── tests/             # Comprehensive test suite
+├── AGENTS.md          # Start here if you're an AI
+└── LEARNINGS.md       # Hard-won architectural knowledge
+```
+World state is columnar tables ([Daft](https://www.daft.ai/) DataFrames + [LanceDB](https://lancedb.github.io/lancedb/)). Each tick drains a priority queue of commands, applies them, runs processors (pure DataFrame transforms), and appends the result to storage.
 
 - **Time-travel** -- query any tick, replay any run
 - **World forking** -- branch and compare divergent simulations
