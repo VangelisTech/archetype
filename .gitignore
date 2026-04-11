@@ -4,7 +4,7 @@ archetype_data/
 *.egg-info/
 __pycache__/
 .venv/
-.mintlify/
+site/
 node_modules/
 .bench_out/
 ./ref
@@ -71,3 +71,4 @@ data/catalog.db
 archetype.egg-info/
 coverage.xml
 .coverage
+.wrangler/

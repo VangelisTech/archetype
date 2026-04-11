@@ -1,0 +1,29 @@
+# markdownlint-cli2 configuration
+# https://github.com/DavidAnson/markdownlint
+
+# Disable rules that conflict with Mintlify MDX
+MD013: false        # Line length — handled by editors, not enforceable in prose
+MD033: false        # Inline HTML — Mintlify components use JSX/HTML tags
+MD041: false        # First line heading — Mintlify pages use frontmatter
+MD024: false        # Duplicate headings — common in changelogs and guides
+MD060: false        # Table column style — too noisy for compact tables
+
+# Keep these enabled
+MD001: true         # Heading increment (no jumping from h1 to h3)
+MD003:              # Heading style
+  style: "atx"
+MD009: true         # Trailing spaces
+MD010: true         # Hard tabs
+MD012: true         # Multiple blank lines
+MD018: true         # No space after hash on heading
+MD019: true         # Multiple spaces after hash
+MD022: true         # Headings should be surrounded by blank lines
+MD023: true         # Headings must start at the beginning of the line
+MD025: true         # Single top-level heading
+MD034: true         # Bare URLs
+MD037: true         # Spaces inside emphasis markers
+MD038: true         # Spaces inside code spans
+MD039: true         # Spaces inside link text
+MD046:              # Code block style
+  style: "fenced"
+MD047: true         # Files should end with a single newline

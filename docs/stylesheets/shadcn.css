@@ -1,0 +1,160 @@
+/* Archetype docs — overrides for mkdocs-shadcn theme */
+
+/* ── Fonts ───────────────────────────────────────────────────── */
+
+:root {
+  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", monospace;
+}
+
+body,
+html {
+  font-family: var(--font-sans);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+}
+
+.font-semibold {
+  font-family: var(--font-sans);
+  font-weight: 600;
+}
+
+/* ── Accent color (amber #F59E0B) ────────────────────────────── */
+
+a {
+  color: #C8962E;
+}
+
+a:hover {
+  color: #A67B1E;
+}
+
+.dark a {
+  color: #D4A843;
+}
+
+.dark a:hover {
+  color: #C8962E;
+}
+
+/* Sidebar active link */
+nav a[aria-current="page"],
+nav a.active {
+  color: #D4A843 !important;
+}
+
+/* ── Code blocks — padding + margin ──────────────────────────── */
+
+pre {
+  margin: 1.5em 0;
+}
+
+pre > code,
+pre code {
+  padding: 1em 1.25em;
+  display: block;
+}
+
+/* ── VS Code Dark+ High Contrast syntax theme ───────────────── */
+
+/* code block surface — true black in dark mode */
+.dark pre,
+.dark .codehilite pre,
+.dark .highlight pre {
+  background-color: #000000 !important;
+}
+
+.dark pre > code,
+.dark .codehilite pre > code,
+.dark .highlight pre > code {
+  background-color: #000000 !important;
+}
+
+.dark code:not(pre code) {
+  background-color: #0a0a0a;
+  border-color: #333333;
+}
+
+/* tokens — VS Code Dark+ HC palette */
+.dark .codehilite .c,
+.dark .codehilite .c1,
+.dark .codehilite .cm,
+.dark .codehilite .cs,
+.dark .codehilite .ch {
+  color: #7ca668;                     /* comments — muted green */
+}
+
+.dark .codehilite .k,
+.dark .codehilite .kc,
+.dark .codehilite .kd,
+.dark .codehilite .kn,
+.dark .codehilite .kp,
+.dark .codehilite .kr,
+.dark .codehilite .kt,
+.dark .codehilite .ow {
+  color: #569cd6;                     /* keywords — blue */
+}
+
+.dark .codehilite .nb,
+.dark .codehilite .bp {
+  color: #4ec9b0;                     /* builtins — teal */
+}
+
+.dark .codehilite .nf,
+.dark .codehilite .fm,
+.dark .codehilite .nc {
+  color: #dcdcaa;                     /* functions/classes — yellow */
+}
+
+.dark .codehilite .s,
+.dark .codehilite .s1,
+.dark .codehilite .s2,
+.dark .codehilite .sa,
+.dark .codehilite .sb,
+.dark .codehilite .sc,
+.dark .codehilite .sd,
+.dark .codehilite .se,
+.dark .codehilite .sh,
+.dark .codehilite .si,
+.dark .codehilite .sx,
+.dark .codehilite .sr {
+  color: #ce9178;                     /* strings — orange */
+}
+
+.dark .codehilite .mi,
+.dark .codehilite .mf,
+.dark .codehilite .mh,
+.dark .codehilite .mo,
+.dark .codehilite .mb,
+.dark .codehilite .il {
+  color: #b5cea8;                     /* numbers — light green */
+}
+
+.dark .codehilite .n,
+.dark .codehilite .na,
+.dark .codehilite .ni,
+.dark .codehilite .nl,
+.dark .codehilite .nn,
+.dark .codehilite .no,
+.dark .codehilite .nv,
+.dark .codehilite .nd {
+  color: #9cdcfe;                     /* names/variables — light blue */
+}
+
+.dark .codehilite .o,
+.dark .codehilite .p {
+  color: #d4d4d4;                     /* operators/punctuation — light grey */
+}
+
+.dark .codehilite .gd { color: #f44747; }  /* diff deleted */
+.dark .codehilite .gi { color: #6a9955; }  /* diff inserted */
+
+/* line numbers */
+.dark .codehilite .linenos,
+.dark .codehilite .linenodiv {
+  color: #5a5a5a;
+  border-right-color: #333333;
+}

@@ -55,7 +55,7 @@ class SyncStore(iStore):
         self.debug = debug
         self.sess = session
 
-        self._cache: dict[ArchetypeSignature, pa.Table]  # Omnicient, Multi-World
+        self._cache: dict[ArchetypeSignature, pa.Table]  # Omniscient, Multi-World
         self.flush_interval = None
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:

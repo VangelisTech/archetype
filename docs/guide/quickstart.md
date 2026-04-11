@@ -55,7 +55,7 @@ async def main():
 asyncio.run(main())
 ```
 
-## Option B: CLI
+## Option B: HTTP API (curl)
 
 ```bash
 # Start the API server
@@ -96,5 +96,5 @@ archetype history <world-id>
 
 - [Architecture](./architecture.md) — how the pieces fit together
 - [Writing Processors](./processors.md) — build custom simulation logic
-- [API Reference](./api-reference.md) — full REST endpoint docs
-- [CLI Reference](./cli-reference.md) — all CLI commands
+- [REST API Reference](../reference/rest-api.md) — full REST endpoint docs
+- [CLI Reference](../reference/cli.md) — all CLI commands

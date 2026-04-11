@@ -37,8 +37,9 @@ help:
 	@echo "  make version        Show current version"
 	@echo ""
 	@echo "Docs:"
-	@echo "  make docs           Build docs (Mintlify)"
+	@echo "  make docs           Build docs (MkDocs)"
 	@echo "  make docs-serve     Serve docs locally"
+	@echo "  make docs-lint      Run doc quality checks (spelling, markdown lint, link check)"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          Remove build artifacts"
@@ -145,27 +146,54 @@ publish: build
 	@uv publish
 
 # ------------------------------------------------------------------------------
-# Docs (Mintlify)
+# Docs (MkDocs + shadcn)
 # ------------------------------------------------------------------------------
 
-.PHONY: docs-check-runtime
-docs-check-runtime:
-	@if command -v bun >/dev/null 2>&1; then \
-		echo "Using Bun: $$(bun --version)"; \
-	elif command -v node >/dev/null 2>&1; then \
-		echo "Using Node: $$(node --version)"; \
-	else \
-		echo "Error: Node.js or Bun required for docs"; \
-		exit 1; \
-	fi
+.PHONY: docs-gen
+docs-gen:
+	@echo "Generating API & CLI reference docs..."
+	@uv run python scripts/generate_api_docs.py
+	@uv run python scripts/generate_cli_docs.py
 
 .PHONY: docs
-docs: docs-check-runtime
-	@cd docs && npx --yes mintlify build
+docs: docs-gen
+	@uv run --extra docs mkdocs build
 
 .PHONY: docs-serve
-docs-serve: docs-check-runtime
-	@cd docs && npx --yes mintlify dev
+docs-serve: docs-gen
+	@uv run --extra docs mkdocs serve
+
+.PHONY: docs-lint
+docs-lint:
+	@echo "=== Spelling (typos) ==="
+	@if command -v typos >/dev/null 2>&1; then \
+		typos "docs/**/*.md" "docs/**/*.mdx" "*.md" "*.mdx"; \
+	else \
+		echo "typos not installed — install via: cargo install typos-cli"; \
+		echo "  or: brew install typos-cli"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "=== Markdown lint ==="
+	@if command -v markdownlint-cli2 >/dev/null 2>&1; then \
+		markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	elif npx --yes markdownlint-cli2 --help >/dev/null 2>&1; then \
+		npx --yes markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	else \
+		echo "markdownlint-cli2 not available"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "=== Link check (lychee) ==="
+	@if command -v lychee >/dev/null 2>&1; then \
+		lychee --config lychee.toml "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+	else \
+		echo "lychee not installed — install via: cargo install lychee"; \
+		echo "  or: brew install lychee"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "Docs lint passed"
 
 # ------------------------------------------------------------------------------
 # Utilities

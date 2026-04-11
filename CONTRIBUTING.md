@@ -84,6 +84,7 @@ exactly what the `ci` job in GitHub Actions runs.
 |--------|---------|---------|
 | `make docs` | `npx --yes mintlify build` | Build docs (requires Node.js or Bun) |
 | `make docs-serve` | `npx --yes mintlify dev` | Serve docs locally with hot reload |
+| `make docs-lint` | typos + markdownlint-cli2 + lychee | Run all doc quality checks locally |
 
 ### Cleanup
 
@@ -126,6 +127,24 @@ GitHub Release is auto-created with generated release notes.
 Runs Claude Code via `@claude` mentions in issues and PR comments. Restricted
 to the `everettVT` actor.
 
+### `docs.yml` (Docs) — planned, on PRs touching `docs/**` or `**/*.md`
+
+> **Note:** This workflow does not exist yet. The checks below can be run
+> locally via `make docs-lint`. See [#65](https://github.com/VangelisTech/archetype/issues/65)
+> for the tracking issue.
+
+Documentation quality checks (planned jobs):
+
+| Job | What it runs | Required to merge? |
+|-----|--------------|-------------------|
+| `spelling` | typos-cli spell check (config: `_typos.toml`) | **Yes** (Tier 0) |
+| `markdown-lint` | markdownlint-cli2 (config: `.markdownlint.yaml`) | **Yes** (Tier 0) |
+| `link-check` | lychee link validation (config: `lychee.toml`) | **Yes** (Tier 0) |
+| `mintlify-build` | `npx --yes mintlify build` in `docs/` | **Yes** (Tier 0) |
+
+Only triggers when docs-related files change. See
+[Auto-Merge Policy](docs/guide/auto-merge.md) for tier definitions.
+
 ### `daily-security-audit.yml` — daily at 09:00 UTC + manual
 
 Runs `pip-audit` against exported dependencies, then uses Claude Code to
@@ -144,6 +163,10 @@ what to run locally to reproduce a CI failure.
 | `ci (3.12)` | `make ci` | Exact match — same Makefile target |
 | `format` | `make format-check` | Read-only check; use `make format` to fix |
 | `typecheck` | `uv run pyright src/archetype/` | No Makefile target yet; non-blocking in CI |
+| `spelling` | `typos` (via `make docs-lint`) | Requires typos-cli installed locally |
+| `markdown-lint` | `markdownlint-cli2` (via `make docs-lint`) | Requires markdownlint-cli2 or npx |
+| `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
+| `mintlify-build` | `make docs` | Requires Node.js or Bun |
 | Release `test` | `make test-all` | Uses `pytest -v --tb=short` |
 | Release `build` | `make build` | Builds sdist + wheel |
 
@@ -174,7 +197,7 @@ Installed via `make precommit-install`. Runs automatically on `git commit`:
 
 ## Project Structure & Modification Zones
 
-```
+```text
 src/archetype/
   core/     # ECS engine — READ-ONLY. Do not modify without explicit approval.
   app/      # Service layer — extend carefully, always add tests.
@@ -201,7 +224,7 @@ docs/       # Mintlify docs — deployed to archetype.vangelis.tech
 
 Use [conventional commits](https://www.conventionalcommits.org/):
 
-```
+```text
 feat:      New feature
 fix:       Bug fix
 docs:      Documentation only

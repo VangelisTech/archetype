@@ -15,6 +15,7 @@
 ### Task 1: Add git-native experiment models
 
 **Files:**
+
 - Modify: `src/archetype/app/models.py`
 - Test: `tests/app/test_experiment_models.py`
 
@@ -100,6 +101,7 @@ git commit -m "feat: add git-native experiment models"
 ### Task 2: Encode branch-head advancement rules
 
 **Files:**
+
 - Create: `src/archetype/app/experiment_state.py`
 - Test: `tests/app/test_experiment_state.py`
 
@@ -174,6 +176,7 @@ git commit -m "feat: add experiment state transitions"
 ### Task 3: Add a single app-layer git transaction module
 
 **Files:**
+
 - Create: `src/archetype/app/git_runtime.py`
 - Test: `tests/app/test_git_runtime.py`
 
@@ -234,6 +237,7 @@ git commit -m "feat: add transactional git runtime adapter"
 ### Task 4: Add an experiment service that coordinates models, git, and runs
 
 **Files:**
+
 - Create: `src/archetype/app/experiment_service.py`
 - Modify: `src/archetype/app/orchestrator.py`
 - Test: `tests/app/test_experiment_service.py`
@@ -291,6 +295,7 @@ git commit -m "feat: add experiment orchestration service"
 ### Task 5: Add a reference AutoResearch loop
 
 **Files:**
+
 - Create: `examples/autoresearch_loop.py`
 - Test: `tests/integration/test_autoresearch_loop.py`
 
@@ -338,6 +343,7 @@ git commit -m "feat: add autoresearch reference controller"
 ### Task 6: Verify the new surface end to end
 
 **Files:**
+
 - Modify: `README.md`
 - Modify: `docs/guide/index.md`
 - Test: `tests/app/`

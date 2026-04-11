@@ -1,0 +1,45 @@
+# typos-cli configuration — domain-specific allowlist
+# https://github.com/crate-ci/typos
+
+[default.extend-words]
+# Project & org names
+Vangelis = "Vangelis"
+VangelisTech = "VangelisTech"
+Kleven = "Kleven"
+everettVT = "everettVT"
+
+# Framework / library names
+Daft = "Daft"
+daft = "daft"
+LanceDB = "LanceDB"
+lancedb = "lancedb"
+ruff = "ruff"
+pyright = "pyright"
+mintlify = "mintlify"
+lychee = "lychee"
+typos = "typos"
+Ollama = "Ollama"
+vLLM = "vLLM"
+Cogito = "Cogito"
+
+# Technical terms
+ECS = "ECS"
+RBAC = "RBAC"
+MCTS = "MCTS"
+OIDC = "OIDC"
+DAG = "DAG"
+pylist = "pylist"
+unnest = "unnest"
+semver = "semver"
+
+[default.extend-identifiers]
+AsyncAnthropic = "AsyncAnthropic"
+
+[files]
+extend-exclude = [
+    "uv.lock",
+    "*.svg",
+    "*.png",
+    "*.ico",
+    "docs/.mintlify/**",
+]

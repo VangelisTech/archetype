@@ -244,6 +244,93 @@ class TestQueryService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_get_world_state_stub_returns_empty(self, tmp_path):
+        """QueryService.get_world_state is a stub: entities and archetype_counts are empty."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="stub"), storage)
+
+            snapshot = await container.query_service.get_world_state(world.world_id)
+            assert snapshot.entities == {}
+            assert snapshot.archetype_counts == {}
+            assert snapshot.tick == 0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_world_state_with_tick(self, tmp_path):
+        """When tick is specified, the stub echoes it back."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="t"), storage)
+
+            snapshot = await container.query_service.get_world_state(world.world_id, tick=42)
+            assert snapshot.tick == 42
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_stub(self, tmp_path):
+        """QueryService.get_entity is a stub: returns dict echoing inputs."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="e"), storage)
+
+            entity = await container.query_service.get_entity(world.world_id, entity_id=7)
+            assert entity["entity_id"] == 7
+            assert entity["world_id"] == str(world.world_id)
+            assert entity["tick"] == 0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_entity_stub_with_tick(self, tmp_path):
+        """When tick is specified, the stub echoes it back."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="et"), storage)
+
+            entity = await container.query_service.get_entity(world.world_id, entity_id=3, tick=10)
+            assert entity["tick"] == 10
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_stub(self, tmp_path):
+        """QueryService.get_components is a stub: returns dict echoing inputs."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="c"), storage)
+
+            result = await container.query_service.get_components(
+                world.world_id, ["Position", "Velocity"]
+            )
+            assert result["world_id"] == str(world.world_id)
+            assert result["component_types"] == ["Position", "Velocity"]
+            assert result["entity_ids"] is None
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_components_stub_with_entity_ids(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="ce"), storage)
+
+            result = await container.query_service.get_components(
+                world.world_id, ["Position"], entity_ids=[1, 2]
+            )
+            assert result["entity_ids"] == [1, 2]
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_get_command_history_empty(self, tmp_path):
         container = ServiceContainer()
         try:
@@ -268,6 +355,30 @@ class TestQueryService:
 
             history = await container.query_service.get_command_history(world.world_id)
             assert len(history) == 1
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_command_history_without_broker(self, tmp_path):
+        """QueryService without broker returns empty history."""
+        ws = WorldService(StorageService())
+        qs = QueryService(ws, broker=None)
+
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await ws.create_world(WorldConfig(name="nb"), storage)
+        try:
+            history = await qs.get_command_history(world.world_id)
+            assert history == []
+        finally:
+            await ws.storage_service.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_get_world_state_not_found(self):
+        """QueryService raises KeyError for unknown world."""
+        container = ServiceContainer()
+        try:
+            with pytest.raises(KeyError):
+                await container.query_service.get_world_state(uuid7())
         finally:
             await container.shutdown()
 

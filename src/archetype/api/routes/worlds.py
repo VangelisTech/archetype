@@ -71,6 +71,8 @@ async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)
             tick=getattr(world, "tick", 0),
             entity_count=getattr(world, "entity_count", 0),
         )
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
 
