@@ -126,13 +126,15 @@ class StalenessProcessor(AsyncProcessor):
     priority = 20
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        now = datetime.now(timezone.utc)
+
         @daft.func
         def age_days(created_at: str) -> float:
             if not created_at:
                 return 0.0
             try:
                 created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                delta = datetime.now(timezone.utc) - created
+                delta = now - created
                 return max(0.0, delta.total_seconds() / 86400.0)
             except (ValueError, TypeError):
                 return 0.0
@@ -217,19 +219,27 @@ class TriageProcessor(AsyncProcessor):
 
 def fetch_prs() -> list[dict]:
     """Fetch all PRs (open + merged) via gh CLI."""
-    result = subprocess.run(
-        [
-            "gh", "pr", "list",
-            "--repo", "VangelisTech/archetype",
-            "--state", "all",
-            "--limit", "100",
-            "--json", "number,title,state,author,createdAt,url",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "gh", "pr", "list",
+                "--repo", "VangelisTech/archetype",
+                "--state", "all",
+                "--limit", "100",
+                "--json", "number,title,state,author,createdAt,url",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print(
+            "Error: GitHub CLI ('gh') not found. "
+            "Install from https://cli.github.com/ and run 'gh auth login'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     if result.returncode != 0:
-        print(f"Error fetching PRs: {result.stderr}", file=sys.stderr)
+        print(f"Error fetching PRs: {result.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
     return json.loads(result.stdout)
 
