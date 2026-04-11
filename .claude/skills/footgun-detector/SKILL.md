@@ -38,6 +38,27 @@ Check every changed file in the diff against the categories below. For each file
 
 ### Footgun categories
 
+Footguns come from three perspectives. All three must be checked.
+
+**The Actor** (the code author) — structural mistakes in the code itself. Wrong patterns, wrong APIs, wrong types. These are the most common and the easiest to catch by pattern-matching against the knowledge base.
+
+**The Observed** (the data) — assumptions the code makes about its inputs that don't hold in reality. The code is structurally correct but semantically wrong because it models the domain incorrectly. These require understanding what the data actually looks like, not just how the code processes it. When a processor branches on a field value, verify the branch covers all real values — not just the ones the author imagined.
+
+**The Observer** (the reviewer) — blind spots in this very review process. If a finding relies on an assumption about runtime behavior, verify it. If a pattern-match flags something as safe, check whether the "safe" pattern actually holds for this specific case. The observer must audit its own confidence.
+
+---
+
+#### Incomplete domain modeling
+**(Observed)** Code that branches on a field value without covering all values that field can take in production. Examples: checking for `"MERGED"` but not `"CLOSED"`, handling `"success"` and `"failure"` but not `"pending"`, parsing `fix:` and `feat:` prefixes but not the actual distribution of titles. The fix is always to enumerate real values (from the data source, API docs, or a sample query) and verify exhaustive coverage.
+
+#### Unchecked external schema
+**(Observed)** Code that parses external data (API responses, CLI output, file formats) based on assumed field names, types, or shapes without documenting or validating the assumption. If `gh pr list --json` returns `createdAt` but the code reads `created_at`, it silently gets empty strings. If an API changes its response shape, the code produces wrong results with no error.
+
+#### Confidence without verification
+**(Observer)** The reviewer (you) reporting a finding — or marking something safe — based on pattern recognition alone. Before reporting, verify: does the function signature actually match? Does the field actually exist? Does the API actually return that value? Before marking safe, verify: does the "correct" pattern actually apply in this context, or is this an edge case the pattern doesn't cover? When in doubt, read the source or run a query — don't trust the pattern.
+
+---
+
 #### Row dropping
 Code that reduces the number of rows in a DataFrame representing world state. `df.limit()`, `df.filter()`, `df.where()` on entity DataFrames silently drops entities. If the intent is sampling, the pattern must preserve all rows (e.g., add a boolean `sampled` column, or cap via monotonic ID comparison).
 

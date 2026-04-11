@@ -46,6 +46,27 @@ Read the full file (not just the diff hunk) to understand the surrounding contex
 
 ### 4. Check against all footgun categories
 
+Footguns come from three perspectives. All three must be checked.
+
+**The Actor** (the code author) — structural mistakes in the code. Wrong patterns, wrong APIs, wrong types.
+
+**The Observed** (the data) — assumptions about inputs that don't hold in reality. The code is structurally correct but models the domain wrong.
+
+**The Observer** (the reviewer — you) — blind spots in this review process. Verify your own assumptions before reporting or marking something safe.
+
+---
+
+#### Incomplete domain modeling
+**(Observed)** Code branches on a field value without covering all values that field takes in production. Check for `"MERGED"` without `"CLOSED"`, handling `"success"` without `"pending"`, etc. Enumerate real values from the data source and verify exhaustive coverage.
+
+#### Unchecked external schema
+**(Observed)** Parsing external data (API responses, CLI output) based on assumed field names/types without validation. If the assumption is wrong, the code silently produces empty or wrong results.
+
+#### Confidence without verification
+**(Observer)** Before reporting a finding or marking something safe, verify the claim. Does the function signature actually match? Does the field exist? Does the API return that value? Read the source or run a query — don't trust pattern recognition alone.
+
+---
+
 #### Row dropping
 `df.limit()`, `df.filter()`, `df.where()` on entity DataFrames silently drops entities. World state DataFrames must preserve all entities. Sampling must use a boolean column, not row removal.
 

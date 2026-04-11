@@ -178,6 +178,8 @@ class TriageProcessor(AsyncProcessor):
         def decide(state: str, staleness: float, risk: str) -> str:
             if state == "MERGED":
                 return "done"
+            if state == "CLOSED":
+                return "closed"
             if staleness > 0.7:
                 return "close"
             if risk == "high":
@@ -188,7 +190,7 @@ class TriageProcessor(AsyncProcessor):
 
         @daft.func
         def rank(action: str, staleness: float, risk: str) -> int:
-            action_order = {"review": 0, "merge": 1, "park": 2, "close": 3, "done": 4}
+            action_order = {"review": 0, "merge": 1, "park": 2, "close": 3, "closed": 4, "done": 5}
             risk_order = {"high": 0, "med": 1, "low": 2}
             base = action_order.get(action, 5) * 100
             base += risk_order.get(risk, 3) * 10
@@ -294,7 +296,7 @@ async def main():
 
     # Print report
     print(f"\n=== Archetype PR Triage ({len(rows)} PRs, 1 tick) ===\n")
-    for action in ("review", "merge", "park", "close", "done"):
+    for action in ("review", "merge", "park", "close", "closed", "done"):
         group = groups.get(action, [])
         if not group:
             continue
