@@ -88,6 +88,18 @@ check: format lint
 test:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q
 
+# Narrow test target: run a specific path/file/nodeid.
+# Usage: make test-mod MOD=tests/lifecycle/
+# Fails fast if MOD is unset so it can't be confused with test-all.
+.PHONY: test-mod
+test-mod:
+	@if [ -z "$(MOD)" ]; then \
+		echo "Error: MOD is required for test-mod."; \
+		echo "Usage: make test-mod MOD=tests/lifecycle/"; \
+		exit 1; \
+	fi
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v $(MOD)
+
 .PHONY: test-cov
 test-cov:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest \
