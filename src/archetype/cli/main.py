@@ -170,20 +170,97 @@ def step(world_id: str = typer.Argument(..., help="World ID")):
     typer.echo(f"Step complete: {data['commands_applied']} commands applied")
 
 
+def _print_table(columns: list[str], rows: list[dict]) -> None:
+    """Print rows as a simple aligned table."""
+    if not rows:
+        return
+    # Compute column widths
+    widths = {c: len(c) for c in columns}
+    str_rows = []
+    for row in rows:
+        str_row = {c: str(row.get(c, "")) for c in columns}
+        for c in columns:
+            widths[c] = max(widths[c], len(str_row[c]))
+        str_rows.append(str_row)
+    # Header
+    header = "  ".join(c.ljust(widths[c]) for c in columns)
+    typer.echo(header)
+    typer.echo("  ".join("-" * widths[c] for c in columns))
+    # Rows
+    for sr in str_rows:
+        typer.echo("  ".join(sr[c].ljust(widths[c]) for c in columns))
+
+
 # ── Query commands ──
 
 
 @app.command()
 def query(
     world_id: str = typer.Argument(..., help="World ID"),
+    components: str = typer.Argument(
+        None, help="Comma-separated component types (e.g. Agent,Score)"
+    ),
     tick: int | None = typer.Option(None, "--tick", "-t", help="Tick to query"),
+    where: str | None = typer.Option(None, "--where", "-w", help="SQL filter expression"),
+    show: int = typer.Option(10, "--show", "-s", help="Number of rows to show"),
+    count: bool = typer.Option(False, "--count", "-c", help="Return count only"),
+    select: str | None = typer.Option(None, "--select", help="Comma-separated columns"),
+    sort: str | None = typer.Option(None, "--sort", help="Column to sort by"),
+    desc: bool = typer.Option(False, "--desc", help="Sort descending"),
+    offset: int = typer.Option(0, "--offset", help="Skip N rows"),
 ):
-    """Query world state at a tick."""
-    params = {}
+    """Query world components as a DataFrame.
+
+    Without component types, shows world state snapshot.
+    With component types, builds a lazy DataFrame query and materializes at
+    the terminal operation (--show or --count).
+
+    Examples:
+
+        archetype query <id> Agent,Score --show 5
+
+        archetype query <id> Agent,Score --where "score__val > 0.5" --show 10
+
+        archetype query <id> Trajectory,Label --count
+    """
+    if not components:
+        # Fallback: world state snapshot (original behavior)
+        params: dict = {}
+        if tick is not None:
+            params["tick"] = tick
+        data = _request("get", f"/worlds/{world_id}/state", params=params)
+        typer.echo(json.dumps(data, indent=2))
+        return
+
+    # Build DataFrame query body
+    body: dict = {
+        "components": [c.strip() for c in components.split(",") if c.strip()],
+        "limit": show,
+        "offset": offset,
+        "desc": desc,
+        "count": count,
+    }
     if tick is not None:
-        params["tick"] = tick
-    data = _request("get", f"/worlds/{world_id}/state", params=params)
-    typer.echo(json.dumps(data, indent=2))
+        body["tick"] = tick
+    if where:
+        body["where"] = where
+    if select:
+        body["select"] = [s.strip() for s in select.split(",") if s.strip()]
+    if sort:
+        body["sort"] = sort
+
+    data = _request("post", f"/worlds/{world_id}/query", json=body)
+
+    if count:
+        typer.echo(f"count: {data.get('count', 0)}")
+    else:
+        rows = data.get("rows", [])
+        columns = data.get("columns", [])
+        if not rows:
+            typer.echo("No results.")
+            return
+        # Tabular output
+        _print_table(columns, rows)
 
 
 @app.command()

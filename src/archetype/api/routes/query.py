@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from uuid_utils import UUID
 
 from archetype.api.deps import get_query_service
+from archetype.api.models import CountResponse, QueryRequest, QueryResponse
 from archetype.app.query_service import QueryService
 
 router = APIRouter(prefix="/worlds/{world_id}", tags=["query"])
@@ -66,3 +67,34 @@ async def get_command_history(
         return [cmd.model_dump(mode="json") for cmd in history]
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
+
+
+@router.post("/query", response_model=QueryResponse | CountResponse)
+async def query_dataframe(
+    world_id: str,
+    body: QueryRequest,
+    qs: QueryService = Depends(get_query_service),
+):
+    """Execute a DataFrame query against world components.
+
+    Builds a lazy chain server-side; materializes only at the terminal
+    operation (show rows or count).
+    """
+    try:
+        result = await qs.query_dataframe(
+            UUID(world_id),
+            body.components,
+            where=body.where,
+            select=body.select,
+            sort=body.sort,
+            desc=body.desc,
+            limit=body.limit,
+            offset=body.offset,
+            tick=body.tick,
+            count=body.count,
+        )
+        return result
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None

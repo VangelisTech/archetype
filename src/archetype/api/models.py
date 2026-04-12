@@ -61,5 +61,33 @@ class RunResultResponse(BaseModel):
     final_tick: int
 
 
+class QueryRequest(BaseModel):
+    """DataFrame query expressed as a self-contained JSON body."""
+
+    components: list[str]
+    where: str | None = None
+    select: list[str] | None = None
+    sort: str | None = None
+    desc: bool = False
+    limit: int = 50
+    offset: int = 0
+    tick: int | None = None
+    count: bool = False
+
+
+class QueryResponse(BaseModel):
+    """Rows returned by a DataFrame query."""
+
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+
+
+class CountResponse(BaseModel):
+    """Row count returned by a DataFrame count query."""
+
+    count: int = 0
+
+
 class ErrorResponse(BaseModel):
     detail: str

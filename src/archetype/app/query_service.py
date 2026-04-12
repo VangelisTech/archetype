@@ -10,11 +10,13 @@ All external reads go through here.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from daft import col, sql_expr
 from uuid_utils import UUID
 
 from archetype.app.models import Command, WorldSnapshot
+from archetype.core.component import Component
 
 if TYPE_CHECKING:
     from archetype.app.broker import CommandBroker
@@ -71,6 +73,65 @@ class QueryService:
             "component_types": component_types,
             "entity_ids": entity_ids,
         }
+
+    async def query_dataframe(
+        self,
+        world_id: UUID,
+        component_names: list[str],
+        *,
+        where: str | None = None,
+        select: list[str] | None = None,
+        sort: str | None = None,
+        desc: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+        tick: int | None = None,
+        count: bool = False,
+    ) -> dict[str, Any]:
+        """Build a lazy DataFrame query chain from component names, materialize at terminal.
+
+        The chain stays lazy until the terminal operation (show or count).
+        Returns a JSON-serializable dict: ``{columns, rows, total}`` or ``{count}``.
+        """
+        world = self._world_service.get_world(world_id)
+
+        # Resolve component type names to classes
+        comp_types = [Component.get_type_by_name(name) for name in component_names]
+
+        # Base lazy DataFrame — join across matching archetype signatures
+        df = await world.get_components(comp_types)
+
+        # Optional time-travel filter (tick column exists on all archetype rows)
+        if tick is not None:
+            df = df.where(col("tick") == tick)
+
+        # Where clause — parsed as SQL expression
+        if where:
+            df = df.where(sql_expr(where))
+
+        # Column projection
+        if select:
+            df = df.select(*select)
+
+        # Sorting
+        if sort:
+            df = df.sort(col(sort), desc=desc)
+
+        # Terminal: count
+        if count:
+            n = df.count_rows()
+            return {"count": n}
+
+        # Pagination
+        if offset > 0:
+            df = df.offset(offset)
+        df = df.limit(limit)
+
+        # Materialize to rows
+        rows = df.to_pylist()
+        columns = df.column_names
+
+        return {"columns": columns, "rows": rows, "total": len(rows)}
 
     async def get_command_history(
         self,
