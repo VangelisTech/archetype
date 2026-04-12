@@ -89,6 +89,51 @@ def _make_outcome_matcher(substring: str):
     return _outcome_matches
 
 
+# ── Response parsers (module-level, pure functions) ──
+#
+# Extracted from LabelingProcessor.process() so they can be unit tested
+# without constructing a DataFrame or invoking the LLM. Wrapped as row-wise
+# UDFs at the call site with `daft.func`.
+
+
+def _parse_value(response: str) -> str:
+    """Extract the VALUE line from a structured LLM response.
+
+    Falls back to the first 100 characters of the response if no VALUE
+    line is present (so an unparseable response still yields something
+    useful for debugging).
+    """
+    if not response:
+        return ""
+    for line in response.split("\n"):
+        if line.startswith("VALUE:"):
+            return line[6:].strip()
+    return response[:100]
+
+
+def _parse_score(response: str) -> float:
+    """Extract the SCORE line as a float. Returns 0.0 on missing/malformed."""
+    if not response:
+        return 0.0
+    for line in response.split("\n"):
+        if line.startswith("SCORE:"):
+            try:
+                return float(line[6:].strip())
+            except ValueError:
+                return 0.0
+    return 0.0
+
+
+def _parse_rationale(response: str) -> str:
+    """Extract the RATIONALE line. Returns empty string on missing."""
+    if not response:
+        return ""
+    for line in response.split("\n"):
+        if line.startswith("RATIONALE:"):
+            return line[10:].strip()
+    return ""
+
+
 # ── Processors ──
 
 
@@ -202,37 +247,21 @@ class LabelingProcessor(AsyncProcessor):
             max_output_tokens=config.max_output_tokens,
         )
 
-        # Row-wise extractors — @daft.func with auto type inference (LEARNINGS.md §4)
+        # Row-wise extractors — @daft.func with auto type inference (LEARNINGS.md §4).
+        # Thin wrappers that delegate to module-level pure functions so the
+        # parsing logic is unit-testable without a DataFrame.
 
         @daft.func
         def extract_value(response: str) -> str:
-            if not response:
-                return ""
-            for line in response.split("\n"):
-                if line.startswith("VALUE:"):
-                    return line[6:].strip()
-            return response[:100]
+            return _parse_value(response)
 
         @daft.func
         def extract_score(response: str) -> float:
-            if not response:
-                return 0.0
-            for line in response.split("\n"):
-                if line.startswith("SCORE:"):
-                    try:
-                        return float(line[6:].strip())
-                    except ValueError:
-                        return 0.0
-            return 0.0
+            return _parse_score(response)
 
         @daft.func
         def extract_rationale(response: str) -> str:
-            if not response:
-                return ""
-            for line in response.split("\n"):
-                if line.startswith("RATIONALE:"):
-                    return line[10:].strip()
-            return ""
+            return _parse_rationale(response)
 
         llm_col = llm_output
 
