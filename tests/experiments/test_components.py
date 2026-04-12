@@ -183,6 +183,43 @@ class TestRunComponent:
         ):
             assert forbidden not in Run.model_fields
 
+    def test_turn_budget_field_exists(self):
+        # Runner tasks must always be able to declare a turn budget.
+        assert "turn_budget" in Run.model_fields
+        assert "turn_count" in Run.model_fields
+
+    def test_default_run_is_unbounded(self):
+        # Default Run has turn_budget=0 which means unbounded.
+        # is_bounded must reflect that.
+        run = Run()
+        assert run.turn_budget == 0
+        assert run.turn_count == 0
+        assert run.is_bounded is False
+        assert run.exhausted_budget is False
+
+    def test_bounded_run_with_room_to_spare(self):
+        run = Run(run_id="x", turn_budget=10, turn_count=3)
+        assert run.is_bounded is True
+        assert run.exhausted_budget is False
+
+    def test_bounded_run_at_budget_is_exhausted(self):
+        run = Run(run_id="x", turn_budget=10, turn_count=10)
+        assert run.is_bounded is True
+        assert run.exhausted_budget is True
+
+    def test_bounded_run_over_budget_is_exhausted(self):
+        # Defensive: even if runner overshoots by one, we still
+        # classify as exhausted.
+        run = Run(run_id="x", turn_budget=10, turn_count=11)
+        assert run.exhausted_budget is True
+
+    def test_unbounded_run_is_never_exhausted(self):
+        # turn_budget=0 (unbounded) short-circuits the check —
+        # exhausted_budget is False regardless of turn_count.
+        run = Run(run_id="x", turn_budget=0, turn_count=99_999)
+        assert run.is_bounded is False
+        assert run.exhausted_budget is False
+
 
 class TestResultComponent:
     def test_is_archetype_component(self):

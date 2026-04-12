@@ -126,10 +126,19 @@ class Experiment(Component):
 class Run(Component):
     """A single autoresearch attempt: one VM, one agent, one task.
 
-    Pure facts about what happened — no evaluation or reward fields.
-    Field shapes mirror archetype-runner's ``AgentRecord`` so that the
-    runner's SQLite registry can be ingested into an archetype world
-    row-for-row without translation.
+    Mostly facts about what happened — plus two budget-related fields
+    (``turn_budget``, ``turn_count``) that describe the bound and the
+    actual usage. Runner tasks must always declare a turn budget;
+    unbounded runs are the failure mode you most want to prevent in
+    parallel autoresearch, where a single runaway agent can burn the
+    whole fleet's token budget.
+
+    Field shapes otherwise mirror archetype-runner's ``AgentRecord``
+    so that the runner's SQLite registry can be ingested row-for-row
+    without translation. The budget fields are a contract evolution:
+    runner should add these columns on adoption and default older
+    rows to ``0`` (which this module treats as "unbounded — do not
+    use outside smoke tests").
 
     Fields:
         run_id:          Opaque run identifier; same value runner stores as agent_id
@@ -140,6 +149,14 @@ class Run(Component):
         repo_url:        Git repository URL
         branch:          Git branch
         task:            Natural-language task prompt given to the agent
+        turn_budget:     Max LLM turns the agent may consume before the
+                         runner force-stops it. 0 means **unbounded** —
+                         acceptable only for smoke tests, forbidden in
+                         live autoresearch.
+        turn_count:      LLM turns actually consumed; set by runner on
+                         completion. 0 if the run has not produced a
+                         turn count yet (e.g., still running, or runner
+                         predates the schema evolution).
         started_at_ms:   Start time in Unix milliseconds
         finished_at_ms:  Finish time in Unix milliseconds (0 if not finished)
         agent_name:      Composite identity, conventionally '{experiment_name}-{harness}'
@@ -155,6 +172,8 @@ class Run(Component):
     repo_url: str = ""
     branch: str = "main"
     task: str = ""
+    turn_budget: int = 0
+    turn_count: int = 0
     started_at_ms: int = 0
     finished_at_ms: int = 0
     agent_name: str = ""
@@ -173,6 +192,26 @@ class Run(Component):
     def is_terminal(self) -> bool:
         """True once the run has reached a final state (stopped/crashed)."""
         return RunStatus.is_terminal(self.status)
+
+    @property
+    def is_bounded(self) -> bool:
+        """True if this run declares a turn budget.
+
+        Unbounded runs (``turn_budget == 0``) are a failure mode in
+        parallel autoresearch and should only exist in smoke tests.
+        Production fleet processors should filter them out.
+        """
+        return self.turn_budget > 0
+
+    @property
+    def exhausted_budget(self) -> bool:
+        """True if the run consumed its full turn budget.
+
+        Useful for fleet queries identifying runs that hit the cap
+        rather than completing organically. Returns False for
+        unbounded runs (budget=0) regardless of turn_count.
+        """
+        return self.turn_budget > 0 and self.turn_count >= self.turn_budget
 
 
 class Result(Component):
