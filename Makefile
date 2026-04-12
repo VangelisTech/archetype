@@ -49,6 +49,11 @@ help:
 	@echo "  make docs-serve     Serve docs locally"
 	@echo "  make docs-lint      Run doc quality checks (spelling, markdown lint, link check)"
 	@echo ""
+	@echo "Exploit / Explore:"
+	@echo "  make exploit MISSION=\"...\" [BRANCH=...] [METRIC=...] [ITERATIONS=5]"
+	@echo "                      Run a depth-first /exploit loop via archetype-runner autoresearch"
+	@echo "  make runner-check   Verify archetype-runner is reachable"
+	@echo ""
 	@echo "Utilities:"
 	@echo "  make clean          Remove build artifacts"
 	@echo "  make clean-all      Remove all generated files"
@@ -276,6 +281,88 @@ docs-lint:
 	fi
 	@echo ""
 	@echo "Docs lint passed"
+
+# ------------------------------------------------------------------------------
+# Exploit / Explore
+# ------------------------------------------------------------------------------
+#
+# `make exploit` is the stable entrypoint used by the /exploit slash command
+# in .claude/plugins/exploit-explore/. It dispatches to archetype-runner via
+# whichever interface is currently wired:
+#
+#   1. `uv run archetype-runner` — if runner is a project dependency
+#   2. `archetype-runner`        — if runner is on PATH
+#   3. error                     — if neither is reachable
+#
+# This indirection means the packaging transition (PATH binary -> uv dep ->
+# installed package) can happen without touching the slash command prompts.
+#
+# Required env vars:
+#   MISSION     — the task description (quoted string)
+#
+# Optional env vars:
+#   BRANCH      — target branch (default: generated from MISSION slug)
+#   METRIC      — eval metric (default: test_pass_rate)
+#   ITERATIONS  — max autoresearch iterations (default: 5)
+#   TIMEOUT     — per-run timeout in seconds (default: 1800)
+#   HARNESS     — agent harness (default: claude-code)
+#   REPO        — git repo URL (default: current origin)
+
+RUNNER_BIN := $(shell \
+	if uv run --no-sync archetype-runner --help >/dev/null 2>&1; then \
+		echo "uv run --no-sync archetype-runner"; \
+	elif command -v archetype-runner >/dev/null 2>&1; then \
+		echo "archetype-runner"; \
+	else \
+		echo ""; \
+	fi)
+
+.PHONY: runner-check
+runner-check:
+	@if [ -z "$(RUNNER_BIN)" ]; then \
+		echo "ERROR: archetype-runner is not reachable."; \
+		echo ""; \
+		echo "Install one of:"; \
+		echo "  1. uv add --optional runner 'archetype-runner @ git+ssh://git@github.com/<org>/archetype-runner'"; \
+		echo "  2. Put the archetype-runner binary on PATH"; \
+		echo ""; \
+		echo "Then re-run: make runner-check"; \
+		exit 1; \
+	else \
+		echo "archetype-runner: $(RUNNER_BIN)"; \
+		$(RUNNER_BIN) --version 2>/dev/null || echo "(version unknown)"; \
+	fi
+
+.PHONY: exploit
+exploit: runner-check
+	@if [ -z "$(MISSION)" ]; then \
+		echo "ERROR: MISSION is required."; \
+		echo "Usage: make exploit MISSION=\"<one-line task>\" [BRANCH=...] [METRIC=...]"; \
+		exit 1; \
+	fi
+	@REPO_URL="$${REPO:-$$(git config --get remote.origin.url)}"; \
+	BRANCH_NAME="$${BRANCH:-claude/exploit-$$(date +%s)}"; \
+	METRIC_NAME="$${METRIC:-test_pass_rate}"; \
+	ITER="$${ITERATIONS:-5}"; \
+	TIMEOUT_SEC="$${TIMEOUT:-1800}"; \
+	HARNESS_NAME="$${HARNESS:-claude-code}"; \
+	echo "Exploit launch"; \
+	echo "  mission:     $(MISSION)"; \
+	echo "  repo:        $$REPO_URL"; \
+	echo "  branch:      $$BRANCH_NAME"; \
+	echo "  metric:      $$METRIC_NAME"; \
+	echo "  iterations:  $$ITER"; \
+	echo "  timeout:     $${TIMEOUT_SEC}s per run"; \
+	echo "  harness:     $$HARNESS_NAME"; \
+	echo ""; \
+	$(RUNNER_BIN) autoresearch run \
+		--repo "$$REPO_URL" \
+		--branch "$$BRANCH_NAME" \
+		--task "$(MISSION)" \
+		--metric "$$METRIC_NAME" \
+		--max-iterations "$$ITER" \
+		--timeout-per-run "$$TIMEOUT_SEC" \
+		--harness "$$HARNESS_NAME"
 
 # ------------------------------------------------------------------------------
 # Utilities
