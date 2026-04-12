@@ -40,6 +40,28 @@ def resolve_ref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
+def unwrap_optional(
+    schema: dict[str, Any], root: dict[str, Any]
+) -> dict[str, Any]:
+    """Unwrap top-level anyOf/oneOf: pick the non-null option and resolve $ref.
+
+    Optional Pydantic models like ``StepRequest | None`` produce a top-level
+    ``anyOf: [{$ref}, {type: null}]``. For rendering tables we want the
+    underlying object schema.
+    """
+    schema = resolve_ref(schema, root)
+    for key in ("anyOf", "oneOf"):
+        options = schema.get(key)
+        if not options:
+            continue
+        non_null = [
+            opt for opt in options if opt.get("type") != "null"
+        ]
+        if len(non_null) == 1:
+            return unwrap_optional(non_null[0], root)
+    return schema
+
+
 def schema_to_table(
     schema: dict[str, Any], root: dict[str, Any], indent: int = 0
 ) -> list[str]:
@@ -128,7 +150,7 @@ def render_operation(
         lines.append("|-----------|------|-------------|")
         for p in path_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root)
             desc = p.get("description", "")
             lines.append(f"| `{p['name']}` | {typ} | {desc} |")
         lines.append("")
@@ -140,7 +162,7 @@ def render_operation(
         lines.append("|-----------|------|---------|-------------|")
         for p in query_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root)
             default = schema.get("default", "—")
             if default != "—":
                 default = f"`{json.dumps(default)}`"
@@ -155,29 +177,31 @@ def render_operation(
         json_content = content.get("application/json", {})
         body_schema = json_content.get("schema", {})
         if body_schema:
-            resolved = resolve_ref(body_schema, root)
-            lines.append("**Request body:**")
-            lines.append("")
+            resolved = unwrap_optional(body_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append("**Request body:**")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
-    # Responses — prefer 200, else lowest numeric 2xx for deterministic output
+    # Responses — prefer the lowest numeric 2xx for deterministic output
     responses = operation.get("responses", {})
-    success_codes = sorted(c for c in responses if c.startswith("2"))
-    if success_codes:
-        code = "200" if "200" in success_codes else success_codes[0]
+    numeric_2xx = sorted(
+        c for c in responses if c.isdigit() and 200 <= int(c) < 300
+    )
+    if numeric_2xx:
+        code = numeric_2xx[0]
         resp = responses[code]
         resp_content = resp.get("content", {})
         json_resp = resp_content.get("application/json", {})
         resp_schema = json_resp.get("schema", {})
         if resp_schema:
-            resolved = resolve_ref(resp_schema, root)
-            lines.append(f"**Response** (`{code}`):")
-            lines.append("")
+            resolved = unwrap_optional(resp_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append(f"**Response** (`{code}`):")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
@@ -217,10 +241,12 @@ def generate() -> str:
                 tag = tags[0] if tags else "Other"
                 tag_groups.setdefault(tag, []).append((method, path, operation))
 
-    for tag, operations in tag_groups.items():
+    for tag, operations in sorted(tag_groups.items(), key=lambda kv: kv[0]):
         lines.append(f"## {tag.title()}")
         lines.append("")
-        for method, path, operation in operations:
+        for method, path, operation in sorted(
+            operations, key=lambda op: (op[1], op[0])
+        ):
             lines.extend(render_operation(method, path, operation, schema))
 
     return "\n".join(lines)
