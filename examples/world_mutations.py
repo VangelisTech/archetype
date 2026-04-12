@@ -81,12 +81,14 @@ async def main():
     print("1. SPAWN — create entities with components")
 
     # Entity with Position + Velocity
+    # NOTE: use Component.to_payload() (not model_dump) so CommandService can
+    # reconstruct the concrete subclass on the other side. See Archetype #90.
     cmd = Command(
         type=CommandType.SPAWN,
         payload={
             "components": [
-                Position(x=0, y=0).model_dump(),
-                Velocity(vx=1, vy=2).model_dump(),
+                Position(x=0, y=0).to_payload(),
+                Velocity(vx=1, vy=2).to_payload(),
             ],
         },
     )
@@ -97,7 +99,7 @@ async def main():
         type=CommandType.SPAWN,
         payload={
             "components": [
-                Position(x=10, y=10).model_dump(),
+                Position(x=10, y=10).to_payload(),
             ],
         },
     )

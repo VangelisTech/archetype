@@ -129,10 +129,11 @@ class MovementProcessor(AsyncProcessor):
     priority = 10
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_columns({
-            "position__x": col("position__x") + col("velocity__vx"),
-            "position__y": col("position__y") + col("velocity__vy"),
-        })
+        return (
+            df
+            .with_column("position__x", col("position__x") + col("velocity__vx"))
+            .with_column("position__y", col("position__y") + col("velocity__vy"))
+        )
 ```
 
 Processors run in priority order (lower = earlier) and can access shared state via `Resources`.

@@ -143,9 +143,10 @@ class DecayProcessor(AsyncProcessor):
 
     async def process(self, df, resources=None, **kwargs):
         config = resources.require(SimConfig)
-        return df.with_columns({
-            "agent__energy": col("agent__energy") - config.decay_rate,
-        })
+        return df.with_column(
+            "agent__energy",
+            col("agent__energy") - config.decay_rate,
+        )
 ```
 
 ### Mutations Are Deferred

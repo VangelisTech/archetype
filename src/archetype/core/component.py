@@ -25,21 +25,56 @@ class Component(LanceModel):
 
     @classmethod
     def get_type_by_name(cls, name: str) -> type["Component"]:
-        """Finds a Component subclass by its name."""
-        # This could be optimized with a cache if needed
-        for subclass in cls.__subclasses__():
-            if subclass.__name__ == name:
-                return subclass
+        """Find a Component subclass (at any depth) by its class name.
+
+        Walks the full subclass tree — ``__subclasses__()`` only returns
+        direct subclasses, so a naive lookup misses components defined as
+        subclasses of intermediate base classes.
+        """
+        stack: list[type[Component]] = [cls]
+        seen: set[type[Component]] = set()
+        while stack:
+            current = stack.pop()
+            for subclass in current.__subclasses__():
+                if subclass in seen:
+                    continue
+                seen.add(subclass)
+                if subclass.__name__ == name:
+                    return subclass
+                stack.append(subclass)
         raise ValueError(f"Component type '{name}' not found.")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Component":
-        """Create a component instance from a dictionary."""
+        """Create a component instance from a dictionary.
+
+        The dict must either include a ``"type"`` key naming a concrete
+        Component subclass, or this method must be called on a concrete
+        subclass directly. Calling ``Component.from_dict({...})`` without
+        a ``"type"`` key raises ``ValueError`` rather than silently
+        constructing a base Component with lost type information.
+        """
         component_type_name = data.pop("type", None)
         if component_type_name:
             ComponentType = cls.get_type_by_name(component_type_name)
             return ComponentType(**data)
+        if cls is Component:
+            raise ValueError(
+                "Component.from_dict requires a 'type' key in the payload to "
+                "identify the concrete subclass. Use Component.to_payload() "
+                "to serialize, or include 'type' explicitly. Got keys: "
+                + ", ".join(sorted(data.keys()))
+            )
         return cls(**data)
+
+    def to_payload(self) -> dict[str, Any]:
+        """Serialize to a dict suitable for ``Command`` payloads.
+
+        Unlike ``model_dump()``, this includes a ``"type"`` key so that
+        ``Component.from_dict()`` can reconstruct the concrete subclass
+        on the other side of a round-trip through ``CommandService``.
+        """
+        return {"type": type(self).__name__, **self.model_dump()}
 
     @classmethod
     def get_prefix(cls) -> str:

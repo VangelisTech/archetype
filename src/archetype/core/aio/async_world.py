@@ -195,8 +195,17 @@ class AsyncWorld(iAsyncWorld):
     ) -> DataFrame:
         "Atomic sequence of a world step with a dedicated execution and materialization helper for future remote operators."
 
-        # 1. Fetch previous state for all entities and their components
-        if self.tick > 0 and run_config.prefer_live_reads and sig in self._live:
+        # 1. Fetch previous state for all entities and their components.
+        # ``_live`` is always the authoritative in-memory cache of the last
+        # completed tick. The store is the durability layer; reading from it
+        # between ticks is fragile because each SimulationService.step() emits
+        # a fresh ``run_id``, so store reads filtered by ``run_config.run_id``
+        # miss rows written by earlier ticks. Forks exhibit the same failure:
+        # the cloned snapshot is persisted under a placeholder run_id and
+        # the next step queries under a different one. Prefer ``_live`` when
+        # it is populated for this signature — this fixes archetype#72 and
+        # keeps consecutive steps correct under default run configs.
+        if self.tick > 0 and sig in self._live:
             df = self._live[sig]
         else:
             # Builds a clean df with the correct schema for the archetype if tick is 0
