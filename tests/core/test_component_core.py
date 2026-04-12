@@ -44,6 +44,50 @@ def test_get_type_by_name_raises_for_missing():
         Component.get_type_by_name("DoesNotExist")
 
 
+class _Intermediate(Component):
+    shared: int = 0
+
+
+class DeepNested(_Intermediate):
+    extra: str = ""
+
+
+def test_get_type_by_name_walks_subclass_tree():
+    """get_type_by_name should find components defined as subclasses of intermediate bases.
+
+    Regression test for #90: ``__subclasses__()`` only returns direct subclasses,
+    so a naive lookup silently misses deeply-nested component classes.
+    """
+    T = Component.get_type_by_name("DeepNested")
+    assert T is DeepNested
+    inst = Component.from_dict({"type": "DeepNested", "shared": 1, "extra": "x"})
+    assert isinstance(inst, DeepNested)
+    assert inst.shared == 1 and inst.extra == "x"
+
+
+def test_from_dict_without_type_key_raises_clearly():
+    """Component.from_dict on the base class must refuse to silently lose type info.
+
+    Regression test for #90: previously, missing 'type' produced a generic
+    ``Component`` instance with no fields, so SPAWN commands submitted via
+    ``CommandService`` landed in the wrong archetype.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="'type' key"):
+        Component.from_dict({"a": 5})
+
+
+def test_to_payload_round_trips_through_from_dict():
+    """to_payload() produces a dict that from_dict() reconstructs into the same type."""
+    original = DemoUnique(a=7)
+    payload = original.to_payload()
+    assert payload["type"] == "DemoUnique"
+    restored = Component.from_dict(payload)
+    assert isinstance(restored, DemoUnique)
+    assert restored.a == 7
+
+
 class Diverse(Component):
     an_int: int
     a_float: float

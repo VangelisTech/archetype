@@ -35,9 +35,10 @@ pos.to_row_dict()
 In a processor, you access these columns by their prefixed names:
 
 ```python
-df.with_columns({
-    "position__x": col("position__x") + col("velocity__vx"),
-})
+df.with_column(
+    "position__x",
+    col("position__x") + col("velocity__vx"),
+)
 ```
 
 ## Supported Field Types

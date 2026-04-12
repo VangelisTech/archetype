@@ -59,6 +59,116 @@ async def test_submit_spawn_step_verify(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spawn_preserves_typed_components_through_command_service(tmp_path):
+    """SPAWN with ``to_payload()`` dicts must land in the typed archetype, not ``(Component,)``.
+
+    Regression for #90: ``CommandService._hydrate_components`` used to call
+    ``Component.from_dict`` on dicts that lacked a ``"type"`` key, silently
+    falling through to a base ``Component`` instance. Entities ended up in
+    archetype ``(Component,)`` and processors declaring ``components = (Agent,)``
+    never matched them.
+    """
+    from archetype.core.component import Component
+
+    class Pose(Component):
+        x: float = 0.0
+        y: float = 0.0
+
+    class Tag(Component):
+        label: str = ""
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="typed-spawn"), storage)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={
+                "components": [
+                    Pose(x=1.0, y=2.0).to_payload(),
+                    Tag(label="hero").to_payload(),
+                ],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        # Entity should live in the (Pose, Tag) archetype — not (Component,).
+        signatures = {frozenset(sig) for sig in world._live}
+        assert frozenset({Pose, Tag}) in signatures, (
+            f"SPAWN lost component type info; world archetypes = {signatures}"
+        )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_with_component_instances_passes_through(tmp_path):
+    """Submitting raw Component instances in the payload should also work (pre-serialized)."""
+    from archetype.core.component import Component
+
+    class Foo(Component):
+        value: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="inst-spawn"), storage)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [Foo(value=42)]},
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        assert frozenset({Foo}) in {frozenset(sig) for sig in world._live}
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_with_bare_model_dump_raises(tmp_path):
+    """Dicts without a 'type' key must raise loudly instead of silently losing type info.
+
+    Regression guard for #90: the old behavior silently created base
+    ``Component`` instances, which was the original footgun.
+    """
+    from archetype.core.component import Component
+
+    class Bar(Component):
+        count: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="bare-spawn"), storage)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        # Uses bare model_dump() — missing the "type" discriminator.
+        cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [Bar(count=1).model_dump()]},
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        # drain_and_apply catches per-command exceptions and logs them, so we
+        # assert that the command was dequeued but no entity materialized in
+        # any typed archetype.
+        await container.simulation_service.step(world.world_id)
+
+        signatures = {frozenset(sig) for sig in world._live}
+        assert frozenset({Bar}) not in signatures
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_rbac_denies_viewer_spawn(tmp_path):
     """A viewer should not be able to submit a SPAWN command."""
     container = ServiceContainer()

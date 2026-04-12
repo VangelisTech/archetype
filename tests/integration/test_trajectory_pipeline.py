@@ -579,6 +579,46 @@ class TestPreferLiveReads:
     """prefer_live_reads=True is required for fork steps to work."""
 
     @pytest.mark.asyncio
+    async def test_fork_step_default_runconfig_preserves_state(self, tmp_path):
+        """Fork + step with *default* RunConfig must not lose the cloned snapshot.
+
+        Regression for archetype#72: previously, ``fork_world`` persisted the
+        cloned snapshot under a placeholder ``run_id`` while the next step
+        queried under a fresh run_id, producing an empty previous-state read
+        and wiping the fork's entities after one tick. Callers had to know to
+        pass ``prefer_live_reads=True`` — silent data loss otherwise. The fix
+        makes ``_live`` authoritative for post-tick-0 reads, so forks survive
+        default run configs.
+        """
+        container = ServiceContainer()
+        try:
+            world, storage = await _setup_pipeline_world(container, tmp_path)
+            ctx = _operator_ctx()
+
+            trajs = [_make_trajectory(f"t-{i}", num_turns=3) for i in range(4)]
+            labels = [("efficiency", "test")]
+            await _ingest_trajectories(container, world, trajs, labels, ctx)
+            world.resources.insert(SamplingConfig())
+
+            # Step source with default RunConfig — no prefer_live_reads flag.
+            await container.simulation_service.step(world.world_id)
+
+            fork = await container.world_service.fork_world(world.world_id, "fork-default", storage)
+            fork.resources.insert(SamplingConfig(min_turns=0))
+
+            # Step fork with default RunConfig — the #72 failure mode.
+            await container.simulation_service.step(fork.world_id)
+
+            fork_df = await fork.get_components([Trajectory, Label])
+            fork_rows = fork_df.collect().to_pylist()
+            fork_active = [r for r in fork_rows if r.get("is_active", True)]
+            assert len(fork_active) == 4, (
+                f"Fork lost entities after default-config step (#72). Got {len(fork_active)} rows."
+            )
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_fork_step_with_prefer_live_reads(self, tmp_path):
         """Fork + step with prefer_live_reads=True should use in-memory snapshots."""
         container = ServiceContainer()

@@ -130,7 +130,7 @@ async def main():
             type=CommandType.SPAWN,
             payload={
                 "components": [
-                    Agent(name=name, role=role).model_dump(),
+                    Agent(name=name, role=role).to_payload(),
                 ],
             },
         )

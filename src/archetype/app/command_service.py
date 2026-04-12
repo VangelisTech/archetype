@@ -95,15 +95,27 @@ class CommandService:
 
     @staticmethod
     def _hydrate_components(raw: list) -> list:
-        """Convert dicts in a component list back to Component instances."""
+        """Convert dicts in a component list back to typed Component instances.
+
+        Each dict entry must include a ``"type"`` key naming a concrete
+        Component subclass. Use ``Component.to_payload()`` to serialize an
+        instance to the expected form. Raw Component instances pass through.
+        """
         from archetype.core.component import Component
 
         result = []
         for item in raw:
-            if isinstance(item, dict):
-                result.append(Component.from_dict(dict(item)))  # copy to avoid mutating payload
-            else:
+            if isinstance(item, Component):
                 result.append(item)
+                continue
+            if isinstance(item, dict):
+                # copy to avoid mutating the caller's payload
+                result.append(Component.from_dict(dict(item)))
+                continue
+            raise TypeError(
+                f"Component payload entry must be a Component instance or dict "
+                f"with a 'type' key, got {type(item).__name__}"
+            )
         return result
 
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
