@@ -4,116 +4,29 @@
 
 This reference is auto-generated from the FastAPI application's OpenAPI schema. Start the server with `archetype serve` (default: `http://localhost:8000`).
 
-## Worlds
-
-### List Worlds
-
-```text
-GET /worlds
-```
-
----
-
-### Create World
-
-```text
-POST /worlds
-```
-
-**Request body:**
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | string \| null | No | — | Name |
-| `storage_uri` | string | No | `"./archetype_data"` | Storage Uri |
-| `namespace` | string | No | `"archetypes"` | Namespace |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
-
-**Error codes:** `422`
-
----
-
-### Get World
-
-```text
-GET /worlds/{world_id}
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
-
-**Error codes:** `422`
-
----
-
-### Remove World
-
-```text
-DELETE /worlds/{world_id}
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Error codes:** `422`
-
----
-
-### Fork World
-
-```text
-POST /worlds/{world_id}/fork
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Request body:**
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `name` | string \| null | No | — | Name |
-
-**Response** (`200`):
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
-
-**Error codes:** `422`
-
----
-
 ## Commands
+
+### Get Command History
+
+```text
+GET /worlds/{world_id}/commands
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `100` |  |
+
+**Error codes:** `422`
+
+---
 
 ### Submit Command
 
@@ -144,28 +57,6 @@ POST /worlds/{world_id}/commands
 | `type` | string | Yes | — | Type |
 | `tick` | integer | Yes | — | Tick |
 | `priority` | integer | Yes | — | Priority |
-
-**Error codes:** `422`
-
----
-
-### Get Command History
-
-```text
-GET /worlds/{world_id}/commands
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Query parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | `100` |  |
 
 **Error codes:** `422`
 
@@ -209,12 +100,22 @@ GET /worlds/{world_id}/commands/pending
 
 ---
 
-## Simulation
+## Other
 
-### Step World
+### Root
 
 ```text
-POST /worlds/{world_id}/step
+GET /
+```
+
+---
+
+## Query
+
+### Get Components
+
+```text
+GET /worlds/{world_id}/components
 ```
 
 **Path parameters:**
@@ -223,7 +124,96 @@ POST /worlds/{world_id}/step
 |-----------|------|-------------|
 | `world_id` | string |  |
 
-**Request body:**
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `types` | string | `""` |  |
+
+**Error codes:** `422`
+
+---
+
+### Get Entity
+
+```text
+GET /worlds/{world_id}/entities/{entity_id}
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `entity_id` | integer |  |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tick` | integer \| null | — |  |
+
+**Error codes:** `422`
+
+---
+
+### Get Command History
+
+```text
+GET /worlds/{world_id}/history
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `100` |  |
+
+**Error codes:** `422`
+
+---
+
+### Get World State
+
+```text
+GET /worlds/{world_id}/state
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `tick` | integer \| null | — |  |
+
+**Error codes:** `422`
+
+---
+
+## Simulation
+
+### List Processors
+
+```text
+GET /worlds/{world_id}/processors
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
 
 **Error codes:** `422`
 
@@ -262,10 +252,70 @@ POST /worlds/{world_id}/run
 
 ---
 
-### List Processors
+### Step World
 
 ```text
-GET /worlds/{world_id}/processors
+POST /worlds/{world_id}/step
+```
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `num_steps` | integer | No | `1` | Num Steps |
+| `debug` | boolean | No | `false` | Debug |
+
+**Error codes:** `422`
+
+---
+
+## Worlds
+
+### List Worlds
+
+```text
+GET /worlds
+```
+
+---
+
+### Create World
+
+```text
+POST /worlds
+```
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string \| null | No | — | Name |
+| `storage_uri` | string | No | `"./archetype_data"` | Storage Uri |
+| `namespace` | string | No | `"archetypes"` | Namespace |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `world_id` | string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `entity_count` | integer | No | `0` | Entity Count |
+
+**Error codes:** `422`
+
+---
+
+### Remove World
+
+```text
+DELETE /worlds/{world_id}
 ```
 
 **Path parameters:**
@@ -278,12 +328,10 @@ GET /worlds/{world_id}/processors
 
 ---
 
-## Query
-
-### Get World State
+### Get World
 
 ```text
-GET /worlds/{world_id}/state
+GET /worlds/{world_id}
 ```
 
 **Path parameters:**
@@ -292,43 +340,23 @@ GET /worlds/{world_id}/state
 |-----------|------|-------------|
 | `world_id` | string |  |
 
-**Query parameters:**
+**Response** (`200`):
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `tick` | string | — |  |
-
-**Error codes:** `422`
-
----
-
-### Get Entity
-
-```text
-GET /worlds/{world_id}/entities/{entity_id}
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-| `entity_id` | integer |  |
-
-**Query parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `tick` | string | — |  |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `world_id` | string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `entity_count` | integer | No | `0` | Entity Count |
 
 **Error codes:** `422`
 
 ---
 
-### Get Components
+### Fork World
 
 ```text
-GET /worlds/{world_id}/components
+POST /worlds/{world_id}/fork
 ```
 
 **Path parameters:**
@@ -337,44 +365,21 @@ GET /worlds/{world_id}/components
 |-----------|------|-------------|
 | `world_id` | string |  |
 
-**Query parameters:**
+**Request body:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `types` | string | `""` |  |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string \| null | No | — | Name |
 
-**Error codes:** `422`
+**Response** (`200`):
 
----
-
-### Get Command History
-
-```text
-GET /worlds/{world_id}/history
-```
-
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Query parameters:**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | integer | `100` |  |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `world_id` | string | Yes | — | World Id |
+| `name` | string \| null | No | — | Name |
+| `tick` | integer | No | `0` | Tick |
+| `entity_count` | integer | No | `0` | Entity Count |
 
 **Error codes:** `422`
-
----
-
-## Other
-
-### Root
-
-```text
-GET /
-```
 
 ---
