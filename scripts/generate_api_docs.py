@@ -40,6 +40,25 @@ def resolve_ref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
+def unwrap_nullable(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap top-level ``anyOf``/``oneOf`` schemas to their non-null variant.
+
+    Optional Pydantic models (``Foo | None``) serialize as
+    ``{"anyOf": [{"$ref": ...}, {"type": "null"}]}`` at the top level, which
+    ``schema_to_table`` cannot render directly. This helper picks the first
+    non-null option and resolves any ``$ref`` against the OpenAPI root.
+    """
+    for key in ("anyOf", "oneOf"):
+        options = schema.get(key)
+        if not options:
+            continue
+        for option in options:
+            if option.get("type") == "null":
+                continue
+            return resolve_ref(option, root)
+    return resolve_ref(schema, root)
+
+
 def schema_to_table(
     schema: dict[str, Any], root: dict[str, Any], indent: int = 0
 ) -> list[str]:
@@ -128,7 +147,7 @@ def render_operation(
         lines.append("|-----------|------|-------------|")
         for p in path_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root) if schema else "string"
             desc = p.get("description", "")
             lines.append(f"| `{p['name']}` | {typ} | {desc} |")
         lines.append("")
@@ -140,7 +159,7 @@ def render_operation(
         lines.append("|-----------|------|---------|-------------|")
         for p in query_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root) if schema else "string"
             default = schema.get("default", "—")
             if default != "—":
                 default = f"`{json.dumps(default)}`"
@@ -155,17 +174,22 @@ def render_operation(
         json_content = content.get("application/json", {})
         body_schema = json_content.get("schema", {})
         if body_schema:
-            resolved = resolve_ref(body_schema, root)
-            lines.append("**Request body:**")
-            lines.append("")
+            # Unwrap ``anyOf``/``oneOf`` nullables (e.g. ``StepRequest | None``)
+            # before rendering so the fields of the non-null option appear.
+            resolved = unwrap_nullable(body_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append("**Request body:**")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
     # Responses — prefer 200, else lowest numeric 2xx for deterministic output
     responses = operation.get("responses", {})
-    success_codes = sorted(c for c in responses if c.startswith("2"))
+    success_codes = sorted(
+        (c for c in responses if c.startswith("2") and c.isdigit()),
+        key=int,
+    )
     if success_codes:
         code = "200" if "200" in success_codes else success_codes[0]
         resp = responses[code]
@@ -173,11 +197,11 @@ def render_operation(
         json_resp = resp_content.get("application/json", {})
         resp_schema = json_resp.get("schema", {})
         if resp_schema:
-            resolved = resolve_ref(resp_schema, root)
-            lines.append(f"**Response** (`{code}`):")
-            lines.append("")
+            resolved = unwrap_nullable(resp_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append(f"**Response** (`{code}`):")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
@@ -217,7 +241,10 @@ def generate() -> str:
                 tag = tags[0] if tags else "Other"
                 tag_groups.setdefault(tag, []).append((method, path, operation))
 
-    for tag, operations in tag_groups.items():
+    # Sort explicitly for deterministic output: tags alphabetically, then
+    # operations by (path, method) within each tag.
+    for tag in sorted(tag_groups):
+        operations = sorted(tag_groups[tag], key=lambda op: (op[1], op[0]))
         lines.append(f"## {tag.title()}")
         lines.append("")
         for method, path, operation in operations:
