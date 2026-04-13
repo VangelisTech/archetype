@@ -18,7 +18,12 @@ from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
+from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+
+
+class _ListWorldsPos(Component):
+    x: int = 0
 
 
 @pytest.fixture(autouse=True)
@@ -422,5 +427,24 @@ class TestWorldService:
             world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
             found = container.world_service.get_world_by_name("alpha")
             assert found.world_id == world.world_id
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_list_worlds_reports_actual_entity_count(self, tmp_path):
+        """Regression: list_worlds used to return entity_count=0 for every world
+        because AsyncWorld has no ``entity_count`` attribute and
+        ``getattr(world, "entity_count", 0)`` always fell through to 0.
+        """
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="counted"), storage)
+            for i in range(5):
+                await world.create_entity([_ListWorldsPos(x=i)])
+
+            worlds = container.world_service.list_worlds()
+            assert len(worlds) == 1
+            assert worlds[0].entity_count == 5
         finally:
             await container.shutdown()
