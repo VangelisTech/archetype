@@ -10,9 +10,25 @@ Tests cover edge cases, ActorCtx RBAC, and additional functionality.
 import pytest
 from uuid_utils import uuid7
 
+from archetype.app.auth.guard import (
+    _daily_tokens,
+    _tick_counters,
+    reset_daily_tokens,
+    reset_tick_counters,
+)
 from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
+
+
+@pytest.fixture
+def _reset_quotas():
+    """Snapshot + restore guard counters so broker tests don't leak into auth tests."""
+    reset_tick_counters()
+    reset_daily_tokens()
+    yield
+    reset_tick_counters()
+    reset_daily_tokens()
 
 
 class TestBrokerEdgeCases:
@@ -198,6 +214,79 @@ class TestBrokerConcurrency:
         assert await broker.get_pending_count("world_0") == 0
         assert await broker.get_pending_count("world_1") == 1
         assert await broker.get_pending_count("world_2") == 1
+
+
+class TestEnqueueBulkQuotaAccounting:
+    """Regression tests for enqueue_bulk's all-or-nothing quota guarantee.
+
+    Prior to the fix, guardrail_allow mutated the per-tick counter and
+    daily token budget during the validation phase, so a bulk that failed
+    RBAC mid-loop would silently burn quota for the earlier commands even
+    though zero commands were enqueued.
+    """
+
+    @pytest.mark.asyncio
+    async def test_partial_rbac_failure_does_not_debit_quota(self, _reset_quotas):
+        broker = CommandBroker()
+        actor_id = uuid7()
+        # player role: can spawn/despawn/update/message/custom; CANNOT add_processor
+        ctx = ActorCtx(id=actor_id, roles={"player"})
+
+        bulk = [
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+            Command(type=CommandType.ADD_PROCESSOR, payload={}),  # forbidden
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+        ]
+
+        with pytest.raises(PermissionError, match="add_processor"):
+            await broker.enqueue_bulk("w1", bulk, ctx)
+
+        # All-or-nothing: no commands enqueued, so no quota debited.
+        assert _tick_counters.get(actor_id, 0) == 0
+        assert _daily_tokens.get(actor_id, 0) == 0
+        assert len(broker._queues.get("w1", [])) == 0
+        assert await broker.get_pending_count("w1") == 0
+
+    @pytest.mark.asyncio
+    async def test_successful_bulk_debits_exactly_once_per_command(self, _reset_quotas):
+        broker = CommandBroker()
+        actor_id = uuid7()
+        ctx = ActorCtx(id=actor_id, roles={"player"})
+
+        bulk = [
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+            Command(type=CommandType.SPAWN, payload={"components": []}),
+        ]
+        await broker.enqueue_bulk("w1", bulk, ctx)
+
+        # 3 SPAWNs × 10 tokens each = 30 tokens.
+        assert _tick_counters[actor_id] == 3
+        assert _daily_tokens[actor_id] == 30
+        assert len(broker._queues["w1"]) == 3
+
+    @pytest.mark.asyncio
+    async def test_bulk_detects_projected_tick_quota_before_mutating(self, _reset_quotas):
+        """A bulk that would overflow the per-tick quota fails up-front and
+        leaves the actor's counters untouched."""
+        from archetype.app.auth.guard import MAX_CMDS_PER_TICK
+
+        broker = CommandBroker()
+        actor_id = uuid7()
+        ctx = ActorCtx(id=actor_id, roles={"admin"})
+
+        # A bulk larger than the per-tick quota must be rejected atomically.
+        oversized = [
+            Command(type=CommandType.CUSTOM, payload={}) for _ in range(MAX_CMDS_PER_TICK + 1)
+        ]
+
+        with pytest.raises(PermissionError, match="per-tick quota"):
+            await broker.enqueue_bulk("w1", oversized, ctx)
+
+        assert _tick_counters.get(actor_id, 0) == 0
+        assert _daily_tokens.get(actor_id, 0) == 0
+        assert len(broker._queues.get("w1", [])) == 0
 
 
 class TestBrokerWithoutCtx:
