@@ -59,7 +59,7 @@ Fetch the raw DataFrame for a signature, world, and run:
 df = await querier.get_archetype(sig, world_id="abc", run_id="run-1")
 ```
 
-This is a thin wrapper around `store.get_archetype_df()` -- no filtering is applied.
+Delegates directly to `store.get_archetype_df()` without applying any filters.
 
 ### query_archetype
 

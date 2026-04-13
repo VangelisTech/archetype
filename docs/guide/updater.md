@@ -36,7 +36,7 @@ AsyncUpdateManager.update()
 AsyncStore.append()
 ```
 
-Every DataFrame that comes out of processor execution passes through the updater before being persisted.
+Every DataFrame returned by processor execution passes through the updater before being appended to the archetype table.
 
 ## What It Does
 

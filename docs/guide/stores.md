@@ -4,7 +4,7 @@
 
 ## How It Works
 
-The store never holds data in memory. It uses Daft's catalog and session system to reference tables lazily:
+The store delegates persistence to Daft's catalog and session system. All reads and writes go through lazy DataFrame references:
 
 - **Reads** return a lazy `DataFrame` -- no data is materialized until you collect
 - **Writes** append rows to the backing table via `Table.append()`

@@ -1,6 +1,6 @@
 # Overview
 
-Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
+Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is stored as columnar DataFrames. Every tick appends new rows to storage without overwriting previous state, which enables time-travel queries, world forking, and replay.
 
 ## Core Abstractions
 
@@ -89,7 +89,7 @@ The service layer mediates all access to worlds.
 
 ### ServiceContainer
 
-Wires everything together:
+Instantiates and exposes all service-layer subsystems:
 
 ```python
 from archetype.app.container import ServiceContainer
@@ -131,16 +131,11 @@ Quotas: 500 commands per tick, 200k token budget per day. See [Token Costs and Q
 
 The Architecture section covers each subsystem in detail:
 
-**Core Primitives** -- the building blocks of the ECS:
-
-- [Archetype](archetype.md) -- signatures, naming, schemas, and how entities are grouped
-- [Components](components.md) -- data-only value objects that define entity state
-- [Processors](processors.md) -- pure DataFrame transforms that run each tick
-- [Systems](system-execution.md) -- execution model, subset rule, priority ordering, parallelism
-
-**Infrastructure** -- the runtime machinery:
-
-- [Worlds](worlds.md) -- simulation coordinator, tick lifecycle, mutations, hooks, forking
-- [Stores](stores.md) -- storage backends, Daft catalogs, persistence
-- [Querier](querier.md) -- read path, filtering, projections
-- [Updater](updater.md) -- write path, housekeeping stamps, append operations
+- [Archetype](archetype.md) -- signatures, naming, schemas, entity-to-table mapping
+- [Components](components.md) -- Pydantic models with Arrow serialization, column prefixing, field types
+- [Processors](processors.md) -- DataFrame transforms, resource injection, LLM integration
+- [Systems](system-execution.md) -- subset rule, priority ordering, per-archetype parallelism
+- [Worlds](worlds.md) -- tick lifecycle, deferred mutations, hooks, forking
+- [Stores](stores.md) -- Daft catalog-backed persistence, append-only storage model
+- [Querier](querier.md) -- filtered reads by tick, entity, and component projection
+- [Updater](updater.md) -- metadata stamping before append

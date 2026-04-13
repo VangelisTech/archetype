@@ -48,7 +48,7 @@ entity_id = await world.create_entity([
 ])
 ```
 
-Entities are not materialized immediately. They go into a **spawn cache** and are materialized at the start of the next `step()`. This deferred mutation model ensures consistency within a single tick.
+Entities are not persisted immediately. They enter a **spawn cache** and are written to the archetype table at the start of the next `step()`. Deferring mutations to tick boundaries ensures that all processors within a single tick observe the same entity set.
 
 ### Removing Entities
 
@@ -86,7 +86,7 @@ Each call to `step()` executes one simulation tick:
 5. post_tick hooks fire
 ```
 
-The `_live` cache holds the most recent processed DataFrame per archetype. Subsequent ticks read from this cache rather than the store, keeping consecutive steps fast and correct across run boundaries.
+The `_live` cache holds the most recent processed DataFrame per archetype. Subsequent ticks read from this cache rather than the store, avoiding redundant disk reads and ensuring processors observe the most recent output across consecutive steps.
 
 ### Running Multiple Ticks
 
@@ -116,7 +116,7 @@ world.add_hook("post_tick", log_tick)
 | `on_spawn` | `world`, `entity_id`, `components` | When entity is created |
 | `on_despawn` | `world`, `entity_id` | When entity is removed |
 
-Hooks are fire-and-forget -- errors are logged but do not halt the tick.
+Hook errors are logged but do not halt the tick. Hooks execute asynchronously within the tick lifecycle and do not block processor execution.
 
 ## Querying State
 

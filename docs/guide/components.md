@@ -1,6 +1,6 @@
 # Components
 
-Components are data bags. They define what an entity *has*, not what it *does*. Processors do the doing.
+A `Component` is a Pydantic model backed by Arrow serialization. Components hold entity state as typed fields. Processors transform that state each tick.
 
 ```python
 class Component(LanceModel):
@@ -71,7 +71,7 @@ class Health(Component):
     max_hp: int = 100
 ```
 
-Components are Pydantic models backed by Arrow serialization. Every field needs a default value.
+Every field requires a default value so the Arrow schema can be inferred at class definition time.
 
 ## Column Prefixing
 
@@ -123,7 +123,7 @@ journal = json.loads(row["agent__journal"])
 
 ## Archetype Signatures
 
-Entities with the **same set of component types** are grouped into an *archetype*. An archetype is a single DataFrame table where rows are entities and columns are prefixed component fields plus metadata.
+Entities sharing the same set of component types belong to one archetype — a single DataFrame table whose rows are entities and whose columns are the base metadata fields plus each component's prefixed fields.
 
 ```text
 Archetype (Position, Velocity):

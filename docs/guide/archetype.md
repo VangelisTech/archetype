@@ -1,6 +1,9 @@
 # Archetype
 
-An archetype is the fundamental grouping mechanism in the ECS. Entities with the same set of component types share an archetype, and each archetype maps to a single DataFrame table. This columnar layout means bulk operations across thousands of entities are a single DataFrame transform.
+An archetype is the fundamental grouping mechanism in the ECS. 
+
+- Entities that share the same set of components share an archetype
+- Archetypes map directly to a table schema definitions.
 
 ```python
 class Archetype:
@@ -158,7 +161,7 @@ row = Archetype.to_row_dict(
 
 ## Entities
 
-An entity is just an integer ID (`entity_id`). It has no behavior -- it's a bag of components. The world tracks which signature each entity belongs to via an internal `_entity2sig` mapping.
+An entity is an integer ID (`entity_id`). It carries no logic — its state is the union of its component fields. The world tracks each entity's current archetype signature via an internal `_entity2sig` mapping.
 
 When you add or remove components from an entity, it migrates to a different archetype: the old row is marked inactive, and a new row is spawned in the target archetype's table with the updated component set.
 
