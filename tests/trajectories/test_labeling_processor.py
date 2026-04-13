@@ -132,8 +132,10 @@ def _make_df(trajectories, labels):
     return daft.from_pylist(rows)
 
 
-def _make_fake_prompt(response_by_technique: dict[str, str] | None = None,
-                     default: str = "VALUE: fake\nSCORE: 0.5\nRATIONALE: fake reason"):
+def _make_fake_prompt(
+    response_by_technique: dict[str, str] | None = None,
+    default: str = "VALUE: fake\nSCORE: 0.5\nRATIONALE: fake reason",
+):
     """Return a drop-in replacement for daft.functions.prompt that doesn't hit the network.
 
     Ignores the model/max_output_tokens kwargs and returns a string expression
@@ -205,9 +207,7 @@ async def test_labeling_only_sampled_rows_updated():
 async def test_labeling_all_unsampled_no_llm_calls():
     """When no rows are sampled, all labels stay untouched and the row count is preserved."""
     trajs = [
-        Trajectory.from_turns(
-            f"t-{i}", turns=[Turn(role="user", content="x")], source="test"
-        )
+        Trajectory.from_turns(f"t-{i}", turns=[Turn(role="user", content="x")], source="test")
         for i in range(3)
     ]
     labels = [
@@ -237,14 +237,10 @@ async def test_labeling_all_unsampled_no_llm_calls():
 async def test_labeling_all_sampled_all_updated():
     """When every row is sampled, every row gets fresh LLM-derived values."""
     trajs = [
-        Trajectory.from_turns(
-            f"t-{i}", turns=[Turn(role="user", content="x")], source="test"
-        )
+        Trajectory.from_turns(f"t-{i}", turns=[Turn(role="user", content="x")], source="test")
         for i in range(3)
     ]
-    labels = [
-        Label(technique="t", description="d", sampled=True) for _ in range(3)
-    ]
+    labels = [Label(technique="t", description="d", sampled=True) for _ in range(3)]
     df = _make_df(trajs, labels)
 
     fake = _make_fake_prompt(default="VALUE: v\nSCORE: 0.5\nRATIONALE: r")
