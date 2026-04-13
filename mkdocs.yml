@@ -49,7 +49,7 @@ nav:
       - CLI: reference/cli.md
       - Python API: reference/python-api.md
   - Contributing:
-      - Auto-Merge Policy: guide/auto-merge.md
+      - Guide: guide/contributing.md
 
 markdown_extensions:
   - admonition
