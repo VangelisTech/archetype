@@ -30,7 +30,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Archetype ECS",
         description="AI-Native Simulation Engine API",
-        version="0.1.0",
+        version="0.1.1",
         lifespan=lifespan,
     )
 
@@ -41,6 +41,6 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {"name": "archetype-ecs", "version": "0.1.0"}
+        return {"name": "archetype-ecs", "version": "0.1.1"}
 
     return app

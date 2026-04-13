@@ -142,8 +142,7 @@ Documentation quality checks (planned jobs):
 | `link-check` | lychee link validation (config: `lychee.toml`) | **Yes** (Tier 0) |
 | `mintlify-build` | `npx --yes mintlify build` in `docs/` | **Yes** (Tier 0) |
 
-Only triggers when docs-related files change. See
-[Auto-Merge Policy](docs/guide/auto-merge.md) for tier definitions.
+Only triggers when docs-related files change.
 
 ### `daily-security-audit.yml` — daily at 09:00 UTC + manual
 
@@ -241,9 +240,6 @@ chore:     Build process, CI, deps
 4. CI runs `ci` + `format` + `typecheck` (typecheck is non-blocking)
 5. PRs require `ci` and `format` to pass before merge
 
-For auto-merge tiers based on what files you changed, see
-[Auto-Merge Policy](docs/guide/auto-merge.md).
-
 ## Dependencies
 
 - Add runtime deps to `[project.dependencies]` in `pyproject.toml`
@@ -269,4 +265,3 @@ Config lives in `docs/mint.json`. Navigation is defined there.
 |----------|---------|
 | [CLAUDE.md](CLAUDE.md) | Hard constraints for AI agents — architectural rules |
 | [LEARNINGS.md](LEARNINGS.md) | Extended architectural knowledge — Daft patterns, ECS design |
-| [docs/guide/auto-merge.md](docs/guide/auto-merge.md) | Tiered auto-merge policy by change scope |

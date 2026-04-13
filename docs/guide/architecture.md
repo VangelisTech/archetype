@@ -1,171 +1,20 @@
-# Architecture
+# Overview
 
-Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is columnar DataFrames. Every tick is an append-only write to storage. This gives you time-travel, forking, and replay for free.
+Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is stored as columnar DataFrames. Every tick appends new rows to storage without overwriting previous state, which enables time-travel queries, world forking, and replay.
 
-## Core Abstractions
-
-```mermaid
-classDiagram
-    class Component {
-        +to_row_dict()
-        +get_prefix()
-    }
-    class AsyncWorld {
-        +world_id
-        +tick
-        +resources
-        +create_entity()
-        +add_components()
-        +remove_entity()
-        +step()
-        +run()
-    }
-    class AsyncProcessor {
-        +components
-        +priority
-        +process()
-    }
-    class AsyncSystem {
-        +add_processor()
-        +remove_processor()
-        +execute()
-    }
-    class Resources {
-        +insert()
-        +require()
-        +get()
-    }
-    class AsyncStore {
-        +get_archetype_df()
-        +append()
-        +shutdown()
-    }
-    class QueryManager {
-        +get_archetype()
-        +query_archetype()
-    }
-    class UpdateManager {
-        +update()
-    }
-    class CommandBroker {
-        +enqueue()
-        +dequeue_due()
-        +get_history()
-    }
-    class ServiceContainer {
-        +world_service
-        +command_service
-        +simulation_service
-        +query_service
-        +broker
-    }
-    AsyncWorld --> AsyncSystem
-    AsyncWorld --> Resources
-    AsyncWorld --> QueryManager : reads
-    AsyncWorld --> UpdateManager : writes
-    AsyncSystem --> AsyncProcessor
-    QueryManager --> AsyncStore
-    UpdateManager --> AsyncStore
-    ServiceContainer --> CommandBroker
-    ServiceContainer --> AsyncWorld
-    AsyncProcessor --> Component : requires
-```
+![Archetype architecture](../assets/archetype_diagram2.png)
 
 ## Layers
 
 ```text
 archetype.api / cli          External interface (REST + HTTP client)
-       │
+       |
 archetype.app                Services, RBAC, CommandBroker, WorldRegistry
-       │
+       |
 archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 ```
 
 The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.
-
-## Core ECS Concepts
-
-### Components
-
-Data-only value objects. A Component is a Pydantic model that defines the schema for one aspect of an entity.
-
-```python
-from archetype.core.component import Component
-
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
-
-class Health(Component):
-    current: int = 100
-    max_hp: int = 100
-```
-
-Components are stored as prefixed columns in Arrow tables: `position__x`, `position__y`, `health__current`, etc.
-
-### Entities
-
-An entity is just an integer ID (`entity_id`). It has no behavior — it's a bag of components. Entities with the same set of component types are grouped into **archetypes**.
-
-### Archetypes
-
-An archetype is a group of entities sharing the same component types. Each archetype is a single DataFrame where:
-
-- Rows are entities
-- Columns are prefixed component fields + metadata (`entity_id`, `tick`, `world_id`, `run_id`, `is_active`)
-
-This columnar layout means bulk operations across thousands of entities are a single DataFrame transform.
-
-### Processors
-
-Processors are pure DataFrame transforms that run each tick. They define which components they need, and the system routes the right archetypes to them.
-
-```python
-from daft import DataFrame, col
-from archetype.core.aio.async_processor import AsyncProcessor
-
-class MovementProcessor(AsyncProcessor):
-    components = (Position, Velocity)
-    priority = 10
-
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return (
-            df
-            .with_column("position__x", col("position__x") + col("velocity__vx"))
-            .with_column("position__y", col("position__y") + col("velocity__vy"))
-        )
-```
-
-Processors run in priority order (lower = earlier) and can access shared state via `Resources`.
-
-### Resources
-
-A type-safe dependency injection container scoped to each world. Processors use it to access shared configuration, brokers, or any object.
-
-```python
-world.resources.insert(SimConfig(gravity=9.8))
-
-# In a processor:
-config = resources.require(SimConfig)
-```
-
-## Tick Lifecycle
-
-Each tick executes these phases:
-
-```text
-1. pre_tick hooks fire
-2. For each archetype (in parallel):
-   a. Query previous state (DataFrame)
-   b. Materialize deferred mutations (spawns/despawns)
-   c. Execute matching processors in priority order
-   d. Persist updated DataFrame to storage
-3. Update in-memory live snapshots
-4. Increment tick counter
-5. post_tick hooks fire
-```
-
-Mutations (spawn, despawn, add/remove components) are **deferred** — they queue during a tick and apply at the start of the next tick. This ensures consistency within a single tick.
 
 ## Service Layer
 
@@ -173,34 +22,32 @@ The service layer mediates all access to worlds.
 
 ### ServiceContainer
 
-Wires everything together:
+Instantiates and exposes all service-layer subsystems:
 
 ```python
 from archetype.app.container import ServiceContainer
 
 container = ServiceContainer()
-# container.world_service     — world lifecycle
-# container.command_service   — command submission
-# container.simulation_service — tick stepping
-# container.query_service     — read path
-# container.broker            — command queue
-# container.storage_service   — storage backends
+# container.world_service     -- world lifecycle
+# container.command_service   -- command submission
+# container.simulation_service -- tick stepping
+# container.query_service     -- read path
+# container.broker            -- command queue
+# container.storage_service   -- storage backends
 ```
 
 ### Command Flow
 
 All mutations from external actors flow through the command pipeline:
 
-1. **CommandService.submit()** — accepts a `Command` with type, payload, tick, priority
-2. **CommandBroker.enqueue()** — validates RBAC via `ActorCtx`, enforces quotas, queues by priority
-3. **SimulationService.step()** — drains due commands, applies them to the world, steps processors
-4. **QueryService** — reads world state (current or historical)
+1. **CommandService.submit()** -- accepts a `Command` with type, payload, tick, priority
+2. **CommandBroker.enqueue()** -- validates RBAC via `ActorCtx`, enforces quotas, queues by priority
+3. **SimulationService.step()** -- drains due commands, applies them to the world, steps processors
+4. **QueryService** -- reads world state (current or historical)
 
 ### RBAC
 
 Every command submission requires an `ActorCtx` specifying the actor's roles:
-
-Roles are flat (not hierarchical) — an actor can have multiple roles:
 
 | Role | Permissions |
 |------|-------------|
@@ -211,47 +58,63 @@ Roles are flat (not hierarchical) — an actor can have multiple roles:
 | `maintainer` | spawn, despawn, components, processors, update |
 | `admin` | All commands (wildcard) |
 
-Quotas: 500 commands per tick, 200k token budget per day.
+Quotas: 500 commands per tick, 200k token budget per day. See [Token Costs and Quotas](token-quotas.md) for details.
 
-## Storage
+## Tick Lifecycle
 
-World state is persisted as Arrow tables to LanceDB (default) or Iceberg. Each tick is an append — nothing is overwritten. This gives you:
+Each `step()` call follows this sequence:
 
-- **Time-travel**: Query any tick's state
-- **Replay**: Re-run from any checkpoint
-- **Forking**: Branch a world to explore alternatives
-- **Audit**: Full command history
-
-Storage is configured via `StorageConfig`:
-
-```python
-from archetype.core.config import StorageConfig, StorageBackend
-
-config = StorageConfig(
-    uri="./my_data",
-    namespace="experiment_1",
-    backend=StorageBackend.LANCEDB,  # default
-)
+```text
+SimulationService.step(world_id, run_config)
+  |
+  1. drain_and_apply(world_id, tick)
+  |    CommandBroker.dequeue_due(world_id, tick)
+  |    CommandService.apply(world, cmd) for each command
+  |    → spawn/despawn/update mutations queue in world caches
+  |
+  2. reset_tick_counters()
+  |    Clear per-actor command counts for next tick
+  |
+  3. world.step(run_config)
+       |
+       a. For each archetype (concurrently via asyncio.gather):
+       |    i.   Query previous state from store (or _live cache)
+       |    ii.  Materialize spawn/despawn caches into the DataFrame
+       |    iii. Execute matching processors in priority order
+       |    iv.  Persist result via updater → store
+       |    v.   Update _live cache
+       |
+       b. Increment tick counter
+       c. Fire post_tick hooks
 ```
 
-## World Forking
+Commands applied in step 1 produce deferred mutations (spawn/despawn caches). Those mutations materialize in step 3a-ii of the same tick. Cross-archetype communication (messages, spawns targeting different archetypes) takes effect on the next tick.
 
-Create a new world from a snapshot of an existing one:
+For full details: [Worlds](worlds.md) covers the internal tick cycle, [Data Flow](data-flow.md) covers the command pipeline, [System Execution](system-execution.md) covers processor dispatch.
 
-```python
-from archetype.core.config import StorageConfig
+## Deep Dives
 
-new_world = await container.world_service.fork_world(
-    source_world_id=original.world_id,
-    name="branch-A",
-    storage_config=StorageConfig(),
-)
-```
+### Core
 
-The fork gets a system-generated `world_id` and an identical entity/component snapshot at the source's current tick. Source and fork then diverge independently.
+The simulation engine. No auth awareness, no multi-world management.
 
-**What's cloned:** tick, entity-to-signature mapping, entity counter, live archetype snapshots (re-stamped with the new `world_id`), processors, and non-broker resources.
+- [Archetype](archetype.md) -- signatures, naming, schemas, entity-to-table mapping
+- [Components](components.md) -- Pydantic models with Arrow serialization, column prefixing, field types
+- [Processors](processors.md) -- DataFrame transforms, resource injection, LLM integration
+- [Systems](system-execution.md) -- subset rule, priority ordering, per-archetype parallelism
+- [Worlds](worlds.md) -- tick lifecycle, deferred mutations, `_live` cache, hooks, forking
+- [Resources](resources.md) -- type-keyed dependency injection for world-level shared state
+- [Stores](stores.md) -- storage backends, append-only model, write-behind cache
+- [Querier](querier.md) -- filtered reads by tick, entity, and component projection
+- [Updater](updater.md) -- metadata stamping before append
+- [Configuration](run-config.md) -- RunConfig, WorldConfig, StorageConfig, CacheConfig
 
-**What's not cloned:** pending spawn/despawn caches (step first to materialize), lifecycle hooks, and the `CommandBroker` (re-injected by the service).
+### App
 
-Use this for MCTS, counterfactual reasoning, or A/B testing simulation strategies.
+The service layer. RBAC, command pipeline, multi-world orchestration.
+
+- [Overview](app-overview.md) -- how core connects through services to the API
+- [Services](services.md) -- ServiceContainer, dependency graph, each service's role
+- [Command Broker](broker.md) -- priority queue, RBAC guardrails, audit trail
+- [API Layer](api-layer.md) -- FastAPI routes, dependency injection, CLI
+- [Data Flow](data-flow.md) -- read/write split, command pipeline, RBAC boundary, drain cycle

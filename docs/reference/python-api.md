@@ -1,13 +1,11 @@
 # Python API Reference
 
-This reference is auto-generated from source docstrings using
+Auto-generated from source docstrings via
 [mkdocstrings](https://mkdocstrings.github.io/).
 
 ---
 
 ## Core
-
-### Component
 
 ::: archetype.core.component.Component
     options:
@@ -20,22 +18,16 @@ This reference is auto-generated from source docstrings using
         - get_prefixed_schema
         - to_row_dict
 
-### AsyncProcessor
-
 ::: archetype.core.aio.async_processor.AsyncProcessor
     options:
       members:
         - process
-
-### AsyncWorld
 
 ::: archetype.core.aio.async_world.AsyncWorld
     options:
       members:
         - add_hook
         - step
-
-### Resources
 
 ::: archetype.core.resources.Resources
     options:
@@ -49,15 +41,9 @@ This reference is auto-generated from source docstrings using
 
 ## Configuration
 
-### WorldConfig
-
 ::: archetype.core.config.WorldConfig
 
-### StorageConfig
-
 ::: archetype.core.config.StorageConfig
-
-### RunConfig
 
 ::: archetype.core.config.RunConfig
     options:
@@ -70,21 +56,13 @@ This reference is auto-generated from source docstrings using
 
 ## App
 
-### ServiceContainer
-
 ::: archetype.app.container.ServiceContainer
     options:
       members:
         - shutdown
 
-### Command
-
 ::: archetype.app.models.Command
 
-### CommandType
-
 ::: archetype.app.models.CommandType
-
-### ActorCtx
 
 ::: archetype.app.auth.models.ActorCtx

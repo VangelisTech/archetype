@@ -1,6 +1,15 @@
 # Writing Processors
 
-Processors are the simulation logic. They're pure DataFrame transforms that run each tick on entities matching their component requirements.
+A processor is an `AsyncProcessor` subclass that transforms a Daft DataFrame each tick. The system executes a processor on every archetype whose signature is a superset of the processor's declared `components` tuple.
+
+```python
+class AsyncProcessor(iAsyncProcessor):
+    components: tuple[type["Component"], ...] = ()
+    priority: int = 10
+
+    async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
+        return df
+```
 
 ## Basic Processor
 
@@ -72,7 +81,7 @@ await world.system.add_processor(PhysicsProcessor())
 
 ## LLM-Powered Processors
 
-The real power of Archetype: use `daft.functions.prompt` to call LLMs for every entity in parallel.
+`daft.functions.prompt` executes LLM calls across all rows in the DataFrame concurrently:
 
 ```python
 from daft.functions import prompt
@@ -99,7 +108,7 @@ class ThinkProcessor(AsyncProcessor):
         )
 ```
 
-Because Daft executes prompts across the entire DataFrame, all entities get LLM calls in parallel — no manual batching needed.
+Daft parallelizes prompt execution across the DataFrame. Batching is handled by the Daft execution engine.
 
 ### Structured LLM Outputs
 

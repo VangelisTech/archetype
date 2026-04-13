@@ -17,9 +17,18 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 700;
 }
 
+h1 {
+  margin-top: 1em !important;
+}
+
+h2 {
+  margin-top: 1em !important;
+}
+
 .font-semibold {
-  font-family: var(--font-sans);
-  font-weight: 600;
+  font-family: "DIN Alternate", "DIN", var(--font-sans);
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 /* ── Accent color (amber #F59E0B) ────────────────────────────── */
@@ -44,6 +53,28 @@ a:hover {
 nav a[aria-current="page"],
 nav a.active {
   color: #D4A843 !important;
+}
+
+/* ── Inline code — subtle gold tint ─────────────────────────── */
+
+code:not(pre code) {
+  background-color: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  border-radius: 4px;
+  padding: 0.15em 0.35em;
+}
+
+.dark code:not(pre code) {
+  background-color: rgba(212, 168, 67, 0.12);
+  border-color: rgba(212, 168, 67, 0.2);
+}
+
+/* code inside links — inherit link color, no gold background */
+a code:not(pre code) {
+  background-color: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
 }
 
 /* ── Code blocks — padding + margin ──────────────────────────── */
@@ -71,11 +102,6 @@ pre code {
 .dark .codehilite pre > code,
 .dark .highlight pre > code {
   background-color: #000000 !important;
-}
-
-.dark code:not(pre code) {
-  background-color: #0a0a0a;
-  border-color: #333333;
 }
 
 /* tokens — VS Code Dark+ HC palette */

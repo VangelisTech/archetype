@@ -21,6 +21,8 @@ exclude = [
     "^mailto:",
     # Anchors-only links
     "^#",
+    # Own repo blob links — files may exist on the PR branch but 404 on main until merged
+    "https://github\\.com/VangelisTech/archetype/blob/main/",
 ]
 
 # File globs are passed via CLI args, not here.

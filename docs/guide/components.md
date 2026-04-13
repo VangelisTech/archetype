@@ -1,8 +1,38 @@
 # Components
 
-Components are data bags. They define what an entity *has*, not what it *does*. Processors do the doing.
+`Component` is the typed state unit of the ECS. Every entity is stored as the union of its component fields, and every archetype table schema is derived from component types.
+
+The implementation lives in `src/archetype/core/component.py`.
+
+## Contract
+
+`Component` extends `lancedb.pydantic.LanceModel` and adds the small set of methods the rest of the runtime depends on:
+
+```python
+class Component(LanceModel):
+    @classmethod
+    def get_type_by_name(cls, name: str) -> type["Component"]: ...
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Component": ...
+    def to_payload(self) -> dict[str, Any]: ...
+    @classmethod
+    def get_prefix(cls) -> str: ...
+    @classmethod
+    def to_pyarrow_schema(cls) -> pa.Schema: ...
+    @classmethod
+    def get_prefixed_schema(cls) -> pa.Schema: ...
+    def to_row_dict(self) -> dict[str, Any]: ...
+```
+
+At runtime, components serve three roles:
+
+1. define typed entity fields,
+2. generate Arrow-compatible schema fragments,
+3. serialize themselves into command payloads and archetype rows.
 
 ## Defining a Component
+
+Define components as subclasses with typed model fields:
 
 ```python
 from archetype.core.component import Component
@@ -12,165 +42,111 @@ class Position(Component):
     y: float = 0.0
 
 class Velocity(Component):
-    vx: float = 0.0
-    vy: float = 0.0
-
-class Health(Component):
-    hp: int = 100
-    max_hp: int = 100
+    dx: float = 0.0
+    dy: float = 0.0
 ```
 
-Components are Pydantic models backed by Arrow serialization. Every field needs a default value.
+The runtime does not attach behavior to components. Behavior lives in processors; components are schema-bearing data models.
 
-## Column Prefixing
+## Column Model
 
-When components become DataFrame columns, each field is prefixed with the lowercase class name:
+Component fields are flattened into archetype table columns using a stable prefix:
 
 ```python
-pos = Position(x=5, y=10)
-pos.to_row_dict()
-# {"position__x": 5, "position__y": 10}
+Position.get_prefix()  # "position__"
+Position(x=1.0, y=2.0).to_row_dict()
+# {"position__x": 1.0, "position__y": 2.0}
 ```
 
-In a processor, you access these columns by their prefixed names:
+The prefix is always `lowercase_class_name + "__"`.
 
-```python
-df.with_column(
-    "position__x",
-    col("position__x") + col("velocity__vx"),
-)
-```
+This naming convention is part of the storage contract:
 
-## Supported Field Types
+- `Component.get_prefixed_schema()` renames every field in the component schema,
+- `Archetype.get_archetype_schema()` merges prefixed component schemas with base metadata columns,
+- processors read and write component state through those prefixed column names.
 
-| Python Type | Arrow-Compatible | Notes |
-|-------------|:---:|-------|
-| `str`, `int`, `float`, `bool` | Yes | Direct |
-| `list[str]`, `list[int]` | Yes | Direct |
-| `bytes` | Yes | Direct |
-| `dict` | No | JSON-encode to `str` |
-| `list[dict]` | No | JSON-encode to `str` |
-| Custom objects | No | JSON-encode to `str` |
-
-**Pattern for complex types** -- store as JSON strings:
-
-```python
-class Agent(Component):
-    name: str = ""
-    role: str = ""
-    journal: str = "[]"          # JSON list of thoughts
-    metadata: str = "{}"         # JSON dict
-    tags: str = "[]"             # JSON list of strings
-```
-
-Reading back:
-
-```python
-import json
-journal = json.loads(row["agent__journal"])
-```
-
-## Archetype Signatures
-
-Entities with the **same set of component types** are grouped into an *archetype*. An archetype is a single DataFrame table where rows are entities and columns are prefixed component fields plus metadata.
+Example archetype row shape:
 
 ```text
-Archetype (Position, Velocity):
-  entity_id | tick | position__x | position__y | velocity__vx | velocity__vy
-  1         | 0    | 5.0         | 10.0        | 0.5          | 1.0
-  2         | 0    | 15.0        | 20.0        | 2.0          | 3.0
-
-Archetype (Position):
-  entity_id | tick | position__x | position__y
-  3         | 0    | 25.0        | 30.0
+world_id | run_id | entity_id | tick | is_active | position__x | position__y
 ```
 
-Order doesn't matter -- `[Position, Velocity]` and `[Velocity, Position]` produce the same signature.
+## Serialization Paths
 
-## Adding and Removing Components
+### Command payloads
 
-When you add or remove a component from an entity, its archetype signature changes and it **moves to a different table**. The old row is soft-deleted (`is_active=False`), a new row is inserted in the target archetype. All existing state is preserved.
+`to_payload()` includes the concrete class name:
 
 ```python
-# Entity starts with (Position,)
-entity_id = await world.create_entity([Position(x=5, y=6)])
-await world.step(run_config)
-
-# Add Velocity — entity moves from (Position,) to (Position, Velocity)
-await world.add_components(entity_id, [Velocity(vx=1, vy=1)])
-await world.step(run_config)
-
-# Remove Velocity — entity moves back to (Position,)
-await world.remove_components(entity_id, [Velocity])
-await world.step(run_config)
+Position(x=1, y=2).to_payload()
+# {"type": "Position", "x": 1.0, "y": 2.0}
 ```
 
-The full history is preserved for time-travel queries.
-
-## Composition Patterns
-
-**Agent with capabilities:**
+`from_dict()` reverses that process:
 
 ```python
-class Identity(Component):
-    name: str = ""
-    role: str = ""
-
-class Memory(Component):
-    journal: str = "[]"
-
-class Spatial(Component):
-    x: float = 0.0
-    y: float = 0.0
-    zone: str = "spawn"
-
-# Basic agent
-await world.create_entity([Identity(name="Scout")])
-
-# Agent with memory
-await world.create_entity([Identity(name="Historian"), Memory()])
-
-# Agent with memory and position
-await world.create_entity([Identity(name="Explorer"), Memory(), Spatial()])
+Component.from_dict({"type": "Position", "x": 1, "y": 2})
+# Position(x=1.0, y=2.0)
 ```
 
-Each combination creates a different archetype. Processors declare which components they need and only run on matching archetypes:
+Two details matter:
+
+- `Component.from_dict(...)` requires a `"type"` key when called on the base class,
+- subclass resolution walks the full subclass tree, not only direct subclasses.
+
+That is the mechanism the command layer relies on when components cross API or broker boundaries.
+
+### Storage rows
+
+`to_row_dict()` emits only prefixed component fields. Archetype-level metadata is added by `Archetype.to_row_dict()` and later stamped by the updater/world pipeline.
+
+## Relationship to Archetypes
+
+An archetype is defined by the exact set of component types attached to an entity.
+
+The connection points are explicit in code:
+
+- `Archetype.sig_from_components()` converts component instances into a canonical signature,
+- `Archetype.get_archetype_schema()` combines `Component.get_prefixed_schema()` for every type in that signature,
+- `Archetype.to_row_dict()` merges base columns with each component's `model_dump()`.
+
+Because signatures are sorted by component type name, component order is not semantically meaningful:
 
 ```python
-class ThinkProcessor(AsyncProcessor):
-    components = (Identity, Memory)    # Only entities with both
-    priority = 10
-
-class MoveProcessor(AsyncProcessor):
-    components = (Identity, Spatial)   # Only entities with both
-    priority = 20
+[Position(), Velocity()]
+[Velocity(), Position()]
 ```
 
-The Scout gets neither processor. The Historian gets ThinkProcessor only. The Explorer gets both.
+Both produce the same archetype signature.
 
-## Real-World Example
+## Relationship to Worlds
 
-From the trajectory analysis pipeline:
+`AsyncWorld` and `SyncWorld` treat components as the unit of structural change:
 
-```python
-class Trajectory(Component):
-    trajectory_id: str = ""
-    source: str = ""
-    turns_json: str = "[]"       # JSON list of Turn dicts
-    total_turns: int = 0
-    total_tokens: int = 0
-    duration_seconds: float = 0.0
-    outcome: str = ""
-    tags_json: str = "[]"
-    metadata_json: str = "{}"
+- `create_entity([...])` assigns an entity to the signature implied by its components,
+- `add_components(...)` migrates the entity to a new archetype,
+- `remove_components(...)` migrates it again by removing schema columns associated with those types.
 
-class Label(Component):
-    technique: str = ""
-    description: str = ""
-    value: str = ""
-    score: float = 0.0
-    rationale: str = ""
-    sampled: bool = True
-```
+Component add/remove is not an in-place schema edit. It is an archetype transition.
 
-An entity spawned with `[Trajectory(...), Label(...)]` lives in the `(Label, Trajectory)` archetype and has columns like `trajectory__trajectory_id`, `label__score`, etc.
+## Practical Implications
+
+- Keep components focused on data shape, not behavior.
+- Treat the class name as part of the serialization contract because payload round-trips use it.
+- Treat prefixed field names as part of the storage and processor contract.
+- Expect component composition to determine which processors can run and which archetype table stores the entity.
+
+## Further Reading
+
+- [Archetypes](archetype.md) -- how component sets define signatures, schemas, and table names
+- [Processors](processors.md) -- how processors declare component requirements and transform DataFrames
+- [Worlds](worlds.md) -- entity creation, component add/remove, and archetype migration
+- [Data Flow](data-flow.md) -- the command pipeline for submitting component mutations externally
+
+## Source References
+
+- `src/archetype/core/component.py`
+- `src/archetype/core/archetype.py`
+- `src/archetype/core/interfaces.py`
+- `src/archetype/core/aio/async_world.py`

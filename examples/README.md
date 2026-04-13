@@ -1,13 +1,23 @@
 # Examples
 
-Runnable examples demonstrating Archetype's core features.
+Runnable examples demonstrating Archetype's core features. Each example is self-contained and numbered to match the recommended onboarding order.
 
 ```bash
 uv run python examples/<filename>.py
 ```
 
-| Example | Description | Requires |
-|---------|-------------|----------|
-| [`llm_agents.py`](llm_agents.py) | LLM-powered agents — each entity gets a parallel LLM call every tick via `daft.functions.prompt` | `OPENAI_API_KEY` |
-| [`messaging_example.py`](messaging_example.py) | Agent-to-agent messaging via the broker — resources, `MESSAGE` commands, and lifecycle hooks | None |
-| [`trajectories/run.py`](trajectories/run.py) | Trajectory analysis pipeline — ingest, label, and compare agent trajectories using world forking | Optional: `OPENAI_API_KEY` |
+| # | Example | Description | Requires |
+|---|---------|-------------|----------|
+| 1 | [`01_world_mutations.py`](01_world_mutations.py) | Every mutation type: spawn, despawn, add_processor, RBAC, fork, command history | None |
+| 2 | [`02_fork_counterfactual.py`](02_fork_counterfactual.py) | Fork a world three times with different parameters, run each branch, compare results | None |
+| 3 | [`03_time_travel.py`](03_time_travel.py) | Run 10 ticks, query any point in history — every tick is preserved | None |
+| 4 | [`04_messaging.py`](04_messaging.py) | Agent-to-agent messaging via the broker — resources, `MESSAGE` commands, lifecycle hooks | None |
+| 5 | [`05_llm_agents.py`](05_llm_agents.py) | LLM-powered agents — each entity gets a parallel LLM call every tick via `daft.functions.prompt` | `OPENAI_API_KEY` |
+| 6 | [`06_trajectory_analysis.py`](06_trajectory_analysis.py) | Trajectory analysis — ingest, label, and compare agent trajectories using world forking | Optional: `OPENAI_API_KEY` |
+
+### Supplementary
+
+| Example | Description |
+|---------|-------------|
+| [`pr_triage.py`](pr_triage.py) | PR triage agent that dogfoods Archetype |
+| [`simulation_script.py`](simulation_script.py) | Standalone simulation script for quick prototyping |

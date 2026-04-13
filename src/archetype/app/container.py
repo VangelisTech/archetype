@@ -52,4 +52,5 @@ class ServiceContainer:
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
-        await self.storage_service.shutdown()
+        await self.broker.clear()
+        await self.world_service.shutdown()

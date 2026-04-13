@@ -8,6 +8,7 @@ docs_dir: docs
 
 theme:
   name: shadcn
+  custom_dir: docs/overrides
   icon: assets/logo.png
   favicon: assets/logo.png
 
@@ -16,21 +17,38 @@ extra_css:
 
 nav:
   - Getting Started:
-      - Home: index.md
+      - archetype-ecs: index.md
       - Quickstart: guide/quickstart.md
-      - Architecture: guide/architecture.md
-  - Guides:
-      - Building Simulations: guide/building-simulations.md
+      - Specification: guide/specification.md
+      - Examples: guide/examples.md
+      - Contributing Guide: guide/contributing.md
+  - Core Architecture:
+      - Overview: guide/architecture.md
+      - Archetypes: guide/archetype.md
       - Components: guide/components.md
       - Processors: guide/processors.md
-      - System Execution: guide/system-execution.md
-      - Examples: guide/examples.md
+      - Systems: guide/system-execution.md
+      - Worlds: guide/worlds.md
+      - Resources: guide/resources.md
+      - Stores: guide/stores.md
+      - Querier: guide/querier.md
+      - Updater: guide/updater.md
+      - Configuration: guide/run-config.md
+  - App Architecture:
+      - Overview: guide/app-overview.md
+      - Data Flow: guide/data-flow.md
+      - Command Broker: guide/broker.md
+      - Services: guide/services.md
+      - API Layer: guide/api-layer.md
+  - Guides:
+      - Building Simulations: guide/building-simulations.md
+      - Custom Commands: guide/custom-commands.md
+      - Token Quotas: guide/token-quotas.md
+      - Trajectories: guide/trajectories.md
   - Reference:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
       - Python API: reference/python-api.md
-  - Contributing:
-      - Auto-Merge Policy: guide/auto-merge.md
 
 markdown_extensions:
   - admonition
@@ -46,6 +64,9 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid
 
+hooks:
+  - docs/hooks/copy_page.py
+
 plugins:
   - search
   - mermaid2
@@ -59,4 +80,6 @@ plugins:
             show_root_full_path: false
             heading_level: 3
             members_order: source
+            show_if_no_docstring: true
+            docstring_style: google
             docstring_style: google

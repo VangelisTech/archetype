@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
+from click.exceptions import Exit as ClickExit
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -20,7 +22,8 @@ from archetype.api.app import create_app
 from archetype.api.deps import set_container
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
-from archetype.cli.main import app
+from archetype.cli import main as cli_mod
+from archetype.cli.main import ENV_BASE_URL, _base_url, _check_server, _handle_response, app
 
 runner = CliRunner()
 
@@ -85,6 +88,88 @@ class TestCLI:
         result = runner.invoke(app, ["world", "create", "--help"])
         assert result.exit_code == 0
 
+    def test_base_url_uses_env_and_strips_trailing_slash(self, monkeypatch):
+        monkeypatch.setenv(ENV_BASE_URL, "http://example.com/api/")
+        assert _base_url() == "http://example.com/api"
+
+    def test_check_server_request_error_exits_cleanly(self, capsys):
+        class _Client:
+            def get(self, path):
+                raise httpx.RequestError("boom", request=httpx.Request("GET", "http://localhost"))
+
+        with pytest.raises(ClickExit):
+            _check_server(_Client())
+
+        captured = capsys.readouterr()
+        assert "Cannot reach Archetype server" in captured.err
+
+    def test_handle_response_falls_back_to_text_when_json_is_invalid(self):
+        request = httpx.Request("GET", "http://localhost/worlds")
+        response = httpx.Response(500, request=request, text="server exploded")
+
+        with pytest.raises(ClickExit):
+            _handle_response(response)
+
+    def test_handle_response_uses_error_detail_from_json(self):
+        request = httpx.Request("GET", "http://localhost/worlds")
+        response = httpx.Response(404, request=request, json={"detail": "missing world"})
+
+        with pytest.raises(ClickExit):
+            _handle_response(response)
+
+    def test_request_closes_client_after_success(self, monkeypatch):
+        response = httpx.Response(
+            200,
+            request=httpx.Request("GET", "http://localhost/worlds"),
+            json={"ok": True},
+        )
+
+        class _Client:
+            def __init__(self):
+                self.closed = False
+
+            def get(self, path, **kwargs):
+                assert path == "/worlds"
+                assert kwargs == {}
+                return response
+
+            def close(self):
+                self.closed = True
+
+        client = _Client()
+        monkeypatch.setattr(cli_mod, "_client", lambda: client)
+        monkeypatch.setattr(cli_mod, "_check_server", lambda _client: None)
+
+        assert cli_mod._request("get", "/worlds") == {"ok": True}
+        assert client.closed is True
+
+    def test_request_closes_client_after_error(self, monkeypatch):
+        response = httpx.Response(
+            500,
+            request=httpx.Request("GET", "http://localhost/worlds"),
+            json={"detail": "boom"},
+        )
+
+        class _Client:
+            def __init__(self):
+                self.closed = False
+
+            def get(self, path, **kwargs):
+                assert path == "/worlds"
+                return response
+
+            def close(self):
+                self.closed = True
+
+        client = _Client()
+        monkeypatch.setattr(cli_mod, "_client", lambda: client)
+        monkeypatch.setattr(cli_mod, "_check_server", lambda _client: None)
+
+        with pytest.raises(ClickExit):
+            cli_mod._request("get", "/worlds")
+
+        assert client.closed is True
+
 
 class TestCLIIntegration:
     """Integration tests that hit the real API routes via TestClient."""
@@ -94,6 +179,18 @@ class TestCLIIntegration:
         result = runner.invoke(app, ["status"])
         assert result.exit_code == 0
         assert "No worlds found" in result.output
+
+    @pytest.mark.usefixtures("_patch_request")
+    def test_status_lists_worlds(self, tmp_path):
+        uri = str(tmp_path / "store")
+
+        create = runner.invoke(app, ["world", "create", "status-test", "--uri", uri])
+        world_id = create.output.split("Created world: ")[1].split()[0]
+
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert world_id in result.output
+        assert "status-test" in result.output
 
     @pytest.mark.usefixtures("_patch_request")
     def test_world_create_then_list(self, tmp_path):
@@ -110,6 +207,24 @@ class TestCLIIntegration:
         listing = runner.invoke(app, ["world", "list"])
         assert listing.exit_code == 0, listing.output
         assert "my-sim" in listing.output
+
+    @pytest.mark.usefixtures("_patch_request")
+    def test_world_inspect_and_fork(self, tmp_path):
+        uri = str(tmp_path / "store")
+
+        create = runner.invoke(app, ["world", "create", "fork-src", "--uri", uri])
+        world_id = create.output.split("Created world: ")[1].split()[0]
+        runner.invoke(app, ["step", world_id])
+
+        inspect = runner.invoke(app, ["world", "inspect", world_id])
+        assert inspect.exit_code == 0, inspect.output
+        assert f"World ID: {world_id}" in inspect.output
+        assert "Name: fork-src" in inspect.output
+
+        fork = runner.invoke(app, ["world", "fork", world_id, "--name", "fork-child"])
+        assert fork.exit_code == 0, fork.output
+        assert "Forked:" in fork.output
+        assert f"(from {world_id})" in fork.output
 
     @pytest.mark.usefixtures("_patch_request")
     def test_run_and_step(self, tmp_path):
@@ -142,6 +257,28 @@ class TestCLIIntegration:
 
         result = runner.invoke(app, ["history", world_id])
         assert result.exit_code == 0, result.output
+
+    @pytest.mark.usefixtures("_patch_request")
+    def test_history_empty_message(self, tmp_path):
+        uri = str(tmp_path / "store")
+
+        create = runner.invoke(app, ["world", "create", "history-test", "--uri", uri])
+        world_id = create.output.split("Created world: ")[1].split()[0]
+
+        result = runner.invoke(app, ["history", world_id])
+        assert result.exit_code == 0, result.output
+        assert "No command history." in result.output
+
+    @pytest.mark.usefixtures("_patch_request")
+    def test_query_with_tick_flag(self, tmp_path):
+        uri = str(tmp_path / "store")
+
+        create = runner.invoke(app, ["world", "create", "qtick-test", "--uri", uri])
+        world_id = create.output.split("Created world: ")[1].split()[0]
+
+        result = runner.invoke(app, ["query", world_id, "--tick", "3"])
+        assert result.exit_code == 0, result.output
+        assert '"tick": 3' in result.output
 
     @pytest.mark.usefixtures("_patch_request")
     def test_world_remove(self, tmp_path):

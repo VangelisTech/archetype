@@ -59,6 +59,43 @@ async def test_submit_spawn_step_verify(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_path):
+    """submit_spawn reserves an entity ID that survives broker drain/apply."""
+    from archetype.core.component import Component
+
+    class Pos(Component):
+        x: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="reserved-spawn"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        entity_id = await container.command_service.submit_spawn(
+            world.world_id,
+            [Pos(x=7)],
+            ctx,
+        )
+
+        assert entity_id == 1
+        assert world._next_entity_id == 2
+
+        await container.simulation_service.step(world.world_id)
+
+        assert entity_id in world._entity2sig
+        df = await world.get_components([Pos], entity_ids=[entity_id])
+        rows = df.collect().to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == entity_id
+        assert rows[0]["pos__x"] == 7
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_spawn_preserves_typed_components_through_command_service(tmp_path):
     """SPAWN with ``to_payload()`` dicts must land in the typed archetype, not ``(Component,)``.
 

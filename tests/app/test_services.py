@@ -3,6 +3,8 @@
 
 """Tests for service container, command service, simulation service, query service."""
 
+from unittest.mock import AsyncMock, Mock
+
 import pytest
 from uuid_utils import uuid7
 
@@ -106,6 +108,133 @@ class TestSimulationService:
             assert result.world_id == world.world_id
         finally:
             await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_run_all_empty(self):
+        container = ServiceContainer()
+        try:
+            results = await container.simulation_service.run_all(RunConfig(num_steps=2))
+            assert results == []
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_run_all_multiple_worlds(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            w1 = await container.world_service.create_world(WorldConfig(name="w1"), storage)
+            w2 = await container.world_service.create_world(WorldConfig(name="w2"), storage)
+
+            results = await container.simulation_service.run_all(RunConfig(num_steps=2))
+
+            assert {result.world_id for result in results} == {w1.world_id, w2.world_id}
+            assert all(result.ticks_completed == 2 for result in results)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_step_uses_default_run_config_when_missing(self, tmp_path, monkeypatch):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            applied = [Command(type=CommandType.SPAWN, payload={})]
+            seen = {}
+
+            async def fake_step(run_config, **kwargs):
+                seen["run_config"] = run_config
+                seen["kwargs"] = kwargs
+
+            monkeypatch.setattr(
+                container.command_service, "drain_and_apply", AsyncMock(return_value=applied)
+            )
+            monkeypatch.setattr(world, "step", fake_step)
+
+            count = await container.simulation_service.step(world.world_id, bonus=3)
+
+            assert count == 1
+            assert seen["run_config"].num_steps == 1
+            assert seen["kwargs"] == {"bonus": 3}
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_run_accumulates_commands_from_each_tick(self):
+        world_id = uuid7()
+        world = Mock(tick=9)
+        world_service = Mock()
+        world_service.get_world.return_value = world
+        command_service = Mock()
+        sim = SimulationService(world_service=world_service, command_service=command_service)
+        sim.step = AsyncMock(side_effect=[1, 2, 3])  # type: ignore[method-assign]
+        rc = RunConfig(num_steps=3)
+
+        result = await sim.run(world_id, rc, bonus=7)
+
+        assert result.ticks_completed == 3
+        assert result.commands_applied == 6
+        assert result.final_tick == 9
+        assert sim.step.await_args_list[0].args[0] == world_id
+        assert sim.step.await_args_list[0].args[1].num_steps == 1
+        assert sim.step.await_args_list[0].kwargs == {"bonus": 7}
+
+    @pytest.mark.asyncio
+    async def test_step_skips_non_async_world_but_still_applies_commands(self):
+        world = Mock(tick=4)
+        world_service = Mock()
+        world_service.get_world.return_value = world
+        command_service = Mock()
+        command_service.drain_and_apply = AsyncMock(return_value=["a", "b"])
+        sim = SimulationService(world_service=world_service, command_service=command_service)
+
+        count = await sim.step(uuid7(), RunConfig(num_steps=2))
+
+        assert count == 2
+        world.step.assert_not_called()
+
+    def test_add_and_remove_processor_delegate_to_world(self):
+        world = Mock()
+        world_service = Mock()
+        world_service.get_world.return_value = world
+        sim = SimulationService(world_service=world_service, command_service=Mock())
+        proc = object()
+
+        sim.add_processor(uuid7(), proc)
+        sim.remove_processor(uuid7(), type(proc))
+
+        assert world.add_processor.call_count == 1
+        assert world.remove_processor.call_count == 1
+
+    def test_list_processors_returns_metadata(self):
+        class Position:
+            __name__ = "Position"
+
+        processor = Mock()
+        processor.priority = 10
+        processor.components = (Position,)
+        world = Mock()
+        world.system.processors = [processor]
+        sim = SimulationService.__new__(SimulationService)
+        sim._world_service = Mock()
+        sim._world_service.get_world.return_value = world
+
+        infos = sim.list_processors(uuid7())
+
+        assert len(infos) == 1
+        assert infos[0].name == "Mock"
+        assert infos[0].priority == 10
+        assert infos[0].components == ["Position"]
+
+    def test_list_processors_empty_when_world_has_no_system(self):
+        class _World:
+            pass
+
+        sim = SimulationService.__new__(SimulationService)
+        sim._world_service = Mock()
+        sim._world_service.get_world.return_value = _World()
+
+        assert sim.list_processors(uuid7()) == []
 
 
 class TestQueryService:

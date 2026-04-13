@@ -42,7 +42,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     # Core types
@@ -80,6 +80,12 @@ __all__ = [
     "CacheConfig",
     "RunConfig",
     "WorldConfig",
+    # Sugar runtime
+    "ArchetypeRuntime",
+    "RuntimeWorld",
+    "SyncArchetypeRuntime",
+    "SyncRuntimeWorld",
+    "run_sync",
     # App layer services
     "CommandBroker",
     "WorldService",
@@ -130,6 +136,12 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CacheConfig": ("archetype.core", "CacheConfig"),
     "RunConfig": ("archetype.core", "RunConfig"),
     "WorldConfig": ("archetype.core", "WorldConfig"),
+    # Sugar runtime
+    "ArchetypeRuntime": ("archetype.sugar", "ArchetypeRuntime"),
+    "RuntimeWorld": ("archetype.sugar", "RuntimeWorld"),
+    "SyncArchetypeRuntime": ("archetype.sugar", "SyncArchetypeRuntime"),
+    "SyncRuntimeWorld": ("archetype.sugar", "SyncRuntimeWorld"),
+    "run_sync": ("archetype.sugar", "run_sync"),
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),

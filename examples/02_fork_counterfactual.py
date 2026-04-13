@@ -11,7 +11,7 @@ run each fork, and compare the results.
 No external dependencies — runs entirely in-process.
 
 Usage:
-    uv run python examples/fork_counterfactual.py
+    uv run python examples/02_fork_counterfactual.py
 """
 
 import asyncio

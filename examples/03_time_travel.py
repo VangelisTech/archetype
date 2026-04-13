@@ -11,7 +11,7 @@ points in history. Every tick is preserved — nothing is overwritten.
 No external dependencies — runs entirely in-process.
 
 Usage:
-    uv run python examples/time_travel.py
+    uv run python examples/03_time_travel.py
 """
 
 import asyncio

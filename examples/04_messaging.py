@@ -7,7 +7,7 @@ Demonstrates the three new features:
 2. MESSAGE CommandType - Agent-to-agent communication via broker
 3. Hooks - Lifecycle callbacks for observability
 
-Run: uv run python examples/messaging_example.py
+Run: uv run python examples/04_messaging.py
 """
 
 import asyncio

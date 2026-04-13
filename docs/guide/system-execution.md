@@ -1,8 +1,41 @@
 # System Execution Model
 
-The execution model is the heart of Archetype's ECS. Two lines of code in `System.execute()` determine which processors run on which entities, provide zero-cost component queries, and guarantee schema correctness by construction.
+`System.execute()` iterates processors in priority order and runs each one on every archetype whose signature is a superset of the processor's declared components. This subset check eliminates per-entity component lookups and guarantees that every column a processor references exists in the DataFrame.
 
-This page walks through the mechanism from first principles.
+```python
+class AsyncSystem(iAsyncSystem):
+    def __init__(self):
+        self.processors: list[AsyncProcessor] = []
+
+    async def add_processor(self, proc: "AsyncProcessor"):
+        self.processors.append(proc)
+
+    async def remove_processor(self, proc_type: type["AsyncProcessor"]):
+        self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
+
+    async def execute(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        resources: Resources | None = None,
+        debug: bool = False,
+        **input_kwargs,
+    ) -> DataFrame:
+        if resources is not None:
+            input_kwargs["resources"] = resources
+
+        for proc_instance in sorted(self.processors, key=lambda x: x.priority):
+            if set(proc_instance.components).issubset(set(sig)):
+                sig_params = inspect.signature(proc_instance.process).parameters
+                filtered_input_kwargs = {
+                    k: v for k, v in input_kwargs.items() if k in sig_params
+                }
+                df = await proc_instance.process(df, **filtered_input_kwargs)
+
+        return df
+```
+
+The sections below detail each stage of the execution pipeline.
 
 ## Components to Signatures to Schemas
 
@@ -87,13 +120,13 @@ ObserverProcessor(components=())
 
 ### Why This Matters
 
-The subset rule gives you three guarantees for free:
+The subset rule provides three structural guarantees:
 
-**Zero-cost queries.** There is no runtime "does this entity have component X?" check. Partitioning is structural — entities are already grouped by their component types. If the subset check passes, every row in the DataFrame has the required columns.
+**No per-entity component lookups.** Entities are partitioned by component set at storage time. If the subset check passes, every row in the DataFrame contains the required columns — no runtime `has_component()` test is needed.
 
-**Schema guarantees.** If your processor runs, the columns exist. You never need defensive checks like `if "col" in df.columns`. The archetype schema was built from the same component types your processor declared.
+**Schema correctness.** If a processor executes, the columns it references are present. The archetype schema is constructed from the same component types the processor declares, so `if "col" in df.columns` guards are dead code.
 
-**Automatic parallelism.** Each archetype table is independent. Processors operating on one archetype can't affect another. This is why `AsyncWorld.step()` runs all archetypes concurrently via `asyncio.gather`.
+**Per-archetype parallelism.** Archetype tables are disjoint partitions. A processor operating on one archetype's DataFrame cannot observe or mutate another's. `AsyncWorld.step()` runs all archetypes concurrently via `asyncio.gather`.
 
 ### The `components=()` Pattern
 
