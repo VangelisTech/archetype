@@ -71,14 +71,28 @@ class SimulationService:
         """
         Execute run_config.num_steps ticks.
         Returns RunResult with run_id, ticks completed, final state.
+
+        The user's ``run_config`` is threaded into every per-tick step so that
+        ``run_id``, ``prefer_live_reads``, ``debug``, ``suite``, ``trial``,
+        ``metadata`` and other fields reach the world. Mirroring
+        ``AsyncWorld.run``, the world's ``run_id`` pointer is set once up-front
+        so default-run queries see the same identifier as ``RunResult.run_id``.
         """
+        world = self._world_service.get_world(world_id)
+
+        # Mirror AsyncWorld.run: pin the world's current run identifier so
+        # default-run queries resolve to the user's run_id.
+        if hasattr(world, "run_id"):
+            world.run_id = str(run_config.run_id)
+
         total_commands = 0
 
         for _ in range(run_config.num_steps):
-            cmds = await self.step(world_id, RunConfig(num_steps=1), **input_kwargs)
+            # Pass the user's run_config through unchanged so fields like
+            # prefer_live_reads, debug, run_id, suite, trial, metadata reach
+            # world.step. RunConfig is frozen, so sharing the instance is safe.
+            cmds = await self.step(world_id, run_config, **input_kwargs)
             total_commands += cmds
-
-        world = self._world_service.get_world(world_id)
 
         return RunResult(
             run_id=run_config.run_id,
