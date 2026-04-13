@@ -3,14 +3,19 @@
 
 """Tests for auth model: RBAC, quotas, token budgets."""
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from pydantic import ValidationError
 from uuid_utils import uuid7
 
+from archetype.app.auth import guard as _guard
 from archetype.app.auth.guard import (
     MAX_CMDS_PER_TICK,
+    MAX_TOKENS_PER_DAY,
     ROLE_PERMS,
     guardrail_allow,
+    maybe_reset_daily_tokens,
     reset_daily_tokens,
     reset_tick_counters,
 )
@@ -112,6 +117,63 @@ class TestQuotas:
 
         # ctx2 should still have quota
         guardrail_allow(Command(type=CommandType.CUSTOM, payload={}), ctx2)
+
+
+class TestDailyTokenReset:
+    """Regression tests for the ``daily-tokens-never-reset`` bug.
+
+    ``MAX_TOKENS_PER_DAY`` was historically enforced without any code
+    path calling ``reset_daily_tokens`` — so once an actor crossed the
+    budget they were locked out for the lifetime of the process.
+    ``guardrail_allow`` now calls :func:`maybe_reset_daily_tokens`
+    on every command, which rolls the budget forward at UTC midnight.
+    """
+
+    def test_maybe_reset_no_op_within_same_day(self):
+        ctx_id = uuid7()
+        _guard._daily_tokens[ctx_id] = 123
+        # Advance ``now`` within the same UTC day — must NOT clear.
+        same_day = datetime.combine(
+            _guard._last_reset_date, datetime.min.time(), tzinfo=UTC
+        ) + timedelta(hours=1)
+        did_reset = maybe_reset_daily_tokens(now=same_day)
+        assert did_reset is False
+        assert _guard._daily_tokens[ctx_id] == 123
+
+    def test_maybe_reset_clears_on_day_rollover(self):
+        ctx_id = uuid7()
+        _guard._daily_tokens[ctx_id] = MAX_TOKENS_PER_DAY + 1
+        # Advance to the next UTC day.
+        next_day = datetime.combine(
+            _guard._last_reset_date + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=UTC,
+        )
+        did_reset = maybe_reset_daily_tokens(now=next_day)
+        assert did_reset is True
+        assert _guard._daily_tokens == {}
+        assert _guard._last_reset_date == next_day.date()
+
+    def test_over_budget_actor_recovers_after_day_rollover(self):
+        """The core regression: an over-budget actor must regain access
+        once the UTC date advances, without any server restart."""
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        _guard._daily_tokens[ctx.id] = MAX_TOKENS_PER_DAY + 1
+
+        cmd = Command(type=CommandType.SPAWN, payload={})
+        with pytest.raises(PermissionError, match="daily token budget"):
+            guardrail_allow(cmd, ctx)
+
+        # Simulate the UTC date rolling over: rewind ``_last_reset_date``
+        # so the next ``guardrail_allow`` call sees a fresh day. In
+        # production, wall-clock time advances and this happens on its
+        # own.
+        _guard._last_reset_date = _guard._last_reset_date - timedelta(days=1)
+
+        # After the rollover the same actor can submit again; the lazy
+        # reset inside ``guardrail_allow`` clears the stale budget.
+        guardrail_allow(cmd, ctx)
+        assert _guard._daily_tokens[ctx.id] == _guard.estimate_token_cost(cmd)
 
 
 class TestActorCtx:
