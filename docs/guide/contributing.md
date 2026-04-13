@@ -31,7 +31,7 @@ These documents are the current orientation pack for contributors:
 | [`AGENTS.md`](https://github.com/VangelisTech/archetype/blob/main/AGENTS.md) | Repository conventions, architecture boundaries, testing expectations, and contribution norms |
 | [`CLAUDE.md`](https://github.com/VangelisTech/archetype/blob/main/CLAUDE.md) | Local development workflow and repo-specific guardrails for coding agents |
 | [Specification](specification.md) | Engine and application contracts from storage through app/runtime boundaries |
-| [`REQUIREMENTS.md`](https://github.com/VangelisTech/archetype/blob/main/REQUIREMENTS.md) | Enforced requirements for the sugar/runtime API: concurrency, lifetime, ceremony, and governance |
+| [Specification](specification.md) | System-wide contract document, including the sugar/runtime API requirements: concurrency, lifetime, ceremony, and governance |
 | [Architecture](architecture.md) | High-level ECS and service-layer design |
 | [Quickstart](quickstart.md) | Fastest way to get oriented with the current API surface |
 
@@ -71,8 +71,8 @@ These cover:
 
 ### Sugar and runtime contracts
 
-See
-[`REQUIREMENTS.md`](https://github.com/VangelisTech/archetype/blob/main/REQUIREMENTS.md).
+See [Specification](specification.md), especially the top-level runtime and
+sugar contracts section.
 
 These cover:
 

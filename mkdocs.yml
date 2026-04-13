@@ -21,6 +21,7 @@ nav:
       - Quickstart: guide/quickstart.md
       - Specification: guide/specification.md
       - Examples: guide/examples.md
+      - Contributing Guide: guide/contributing.md
   - Core Architecture:
       - Overview: guide/architecture.md
       - Archetypes: guide/archetype.md
@@ -48,8 +49,6 @@ nav:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
       - Python API: reference/python-api.md
-  - Contributing:
-      - Guide: guide/contributing.md
 
 markdown_extensions:
   - admonition

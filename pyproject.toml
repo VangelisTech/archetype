@@ -1,6 +1,6 @@
 [project]
 name = "archetype-ecs"
-version = "0.1.0"
+version = "0.1.1"
 description = "AI-native simulation engine: ECS as data (Daft) with time-travel storage (LanceDB)."
 readme = "README.md"
 requires-python = ">=3.12"
