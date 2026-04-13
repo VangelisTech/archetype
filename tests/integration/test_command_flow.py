@@ -69,7 +69,9 @@ async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_p
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await container.world_service.create_world(WorldConfig(name="reserved-spawn"), storage)
+        world = await container.world_service.create_world(
+            WorldConfig(name="reserved-spawn"), storage
+        )
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         entity_id = await container.command_service.submit_spawn(

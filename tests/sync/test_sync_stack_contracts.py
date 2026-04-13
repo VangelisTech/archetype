@@ -98,7 +98,9 @@ def test_sync_store_real_session_roundtrip_filters_world_and_run(tmp_path):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
 
     updater.update(
-        _df_from_rows(sig, [Archetype.to_row_dict(1, 0, [Position(x=1, y=2)], "ignored", "ignored")]),
+        _df_from_rows(
+            sig, [Archetype.to_row_dict(1, 0, [Position(x=1, y=2)], "ignored", "ignored")]
+        ),
         sig,
         tick=0,
         world_id="world-a",
@@ -283,14 +285,18 @@ def test_sync_query_manager_projects_requested_components():
             return rows
 
     querier = QueryManager(store=_Store())
-    projected = querier.query_archetype(
-        sig=sig,
-        world_id="w",
-        ticks=[1],
-        entity_ids=[2],
-        components=[Position(x=0, y=0)],
-        run_config=rc,
-    ).collect().to_pylist()
+    projected = (
+        querier.query_archetype(
+            sig=sig,
+            world_id="w",
+            ticks=[1],
+            entity_ids=[2],
+            components=[Position(x=0, y=0)],
+            run_config=rc,
+        )
+        .collect()
+        .to_pylist()
+    )
 
     assert projected == [
         {
@@ -489,7 +495,9 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
     querier = Mock()
     updater = Mock()
     system = SyncSystem()
-    world = SyncWorld(WorldConfig(name="query-forward"), querier=querier, updater=updater, system=system)
+    world = SyncWorld(
+        WorldConfig(name="query-forward"), querier=querier, updater=updater, system=system
+    )
     world.tick = 5
     rc = RunConfig(num_steps=1)
 
@@ -523,7 +531,9 @@ def test_sync_world_update_uses_world_tick_by_default():
     querier = Mock()
     updater = Mock(return_value=df)
     system = SyncSystem()
-    world = SyncWorld(WorldConfig(name="update-forward"), querier=querier, updater=updater, system=system)
+    world = SyncWorld(
+        WorldConfig(name="update-forward"), querier=querier, updater=updater, system=system
+    )
     world.tick = 11
     rc = RunConfig(num_steps=1)
 

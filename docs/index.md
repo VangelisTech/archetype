@@ -1,6 +1,6 @@
 # Archetype
 
-**A dataframe-first, append-only ECS runtime for simulations and AI agents**
+## A dataframe-first, append-only ECS runtime for simulations and AI agents
 
 Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows.
 

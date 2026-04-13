@@ -188,7 +188,9 @@ class CommandService:
         sig = Archetype.sig_from_components(components)
         world._entity2sig[entity_id] = sig
         world._next_entity_id = max(world._next_entity_id, entity_id + 1)
-        row_dict = Archetype.to_row_dict(entity_id, world.tick, components, world.world_id, run_id="")
+        row_dict = Archetype.to_row_dict(
+            entity_id, world.tick, components, world.world_id, run_id=""
+        )
         world._spawn_cache.setdefault(sig, []).append(row_dict)
 
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:

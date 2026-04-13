@@ -146,7 +146,9 @@ class TestSimulationService:
                 seen["run_config"] = run_config
                 seen["kwargs"] = kwargs
 
-            monkeypatch.setattr(container.command_service, "drain_and_apply", AsyncMock(return_value=applied))
+            monkeypatch.setattr(
+                container.command_service, "drain_and_apply", AsyncMock(return_value=applied)
+            )
             monkeypatch.setattr(world, "step", fake_step)
 
             count = await container.simulation_service.step(world.world_id, bonus=3)

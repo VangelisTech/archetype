@@ -205,7 +205,9 @@ async def test_runtime_world_single_flight_init_under_concurrent_spawns(tmp_path
         assert len(app._container.world_service.list_worlds()) == 1
 
         await world.step()
-        rows = sorted((await world.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"])
+        rows = sorted(
+            (await world.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"]
+        )
         assert [row["entity_id"] for row in rows] == [1, 2]
         assert [row["position__x"] for row in rows] == [1.0, 2.0]
 
@@ -445,7 +447,9 @@ async def test_runtime_shutdown_waits_for_in_flight_run(tmp_path):
     async with ArchetypeRuntime() as app:
         world = app.world(
             "shutdown-in-flight",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_shutdown_in_flight"),
+            storage=StorageConfig(
+                uri=str(tmp_path / "store"), namespace="runtime_shutdown_in_flight"
+            ),
             processors=[SlowPass()],
         )
 
@@ -495,8 +499,12 @@ async def test_multiple_runtimes_are_isolated_and_allow_same_world_name(tmp_path
         assert world1.world_id != world2.world_id
         assert rows1[0]["position__x"] == 1.0
         assert rows2[0]["position__x"] == 9.0
-        assert app1._container.world_service.get_world_by_name("same-name").world_id == world1.world_id
-        assert app2._container.world_service.get_world_by_name("same-name").world_id == world2.world_id
+        assert (
+            app1._container.world_service.get_world_by_name("same-name").world_id == world1.world_id
+        )
+        assert (
+            app2._container.world_service.get_world_by_name("same-name").world_id == world2.world_id
+        )
 
 
 @pytest.mark.asyncio
@@ -522,7 +530,9 @@ async def test_runtime_world_add_processor_applies_at_tick_boundary(tmp_path):
     async with ArchetypeRuntime() as app:
         world = app.world(
             "processor-boundary",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_processor_boundary"),
+            storage=StorageConfig(
+                uri=str(tmp_path / "store"), namespace="runtime_processor_boundary"
+            ),
         )
 
         entity_id = await world.spawn(Position(x=1.0, y=1.0), Velocity(vx=2.0, vy=0.0))
@@ -600,8 +610,13 @@ async def test_archetype_runtime_async_smoke(tmp_path):
         result = await world.run(steps=3)
         assert result.ticks_completed == 3
 
-        rows = sorted((await world.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"])
-        assert [(row["position__x"], row["position__y"]) for row in rows] == [(3.0, 6.0), (7.0, 3.0)]
+        rows = sorted(
+            (await world.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"]
+        )
+        assert [(row["position__x"], row["position__y"]) for row in rows] == [
+            (3.0, 6.0),
+            (7.0, 3.0),
+        ]
 
 
 def test_archetype_runtime_sync_smoke(tmp_path):

@@ -1,6 +1,6 @@
 # Archetype
 
-An archetype is the fundamental grouping mechanism in the ECS. 
+An archetype is the fundamental grouping mechanism in the ECS.
 
 - Entities that share the same set of components share an archetype
 - Archetypes map directly to a table schema definitions.
