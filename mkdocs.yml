@@ -21,16 +21,14 @@ nav:
       - Quickstart: guide/quickstart.md
   - Architecture:
       - Overview: guide/architecture.md
-      - Core Primitives:
-          - Archetype: guide/archetype.md
-          - Components: guide/components.md
-          - Processors: guide/processors.md
-          - Systems: guide/system-execution.md
-      - Infrastructure:
-          - Worlds: guide/worlds.md
-          - Stores: guide/stores.md
-          - Querier: guide/querier.md
-          - Updater: guide/updater.md
+      - Archetype: guide/archetype.md
+      - Components: guide/components.md
+      - Processors: guide/processors.md
+      - Systems: guide/system-execution.md
+      - Worlds: guide/worlds.md
+      - Stores: guide/stores.md
+      - Querier: guide/querier.md
+      - Updater: guide/updater.md
   - Guides:
       - Building Simulations: guide/building-simulations.md
       - Custom Commands: guide/custom-commands.md
