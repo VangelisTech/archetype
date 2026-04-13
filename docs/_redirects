@@ -1,0 +1,30 @@
+# ============================================================================
+# Cloudflare Pages redirects
+# https://developers.cloudflare.com/pages/configuration/redirects/
+#
+# Format:  /source  /destination  [status-code]
+# Default status is 302; use 301 for permanent redirects.
+# ============================================================================
+
+# --------------------------------------------------------------------------
+# Vanity URLs — short paths for frequently shared pages
+# --------------------------------------------------------------------------
+/api              /reference/rest-api/        301
+/cli              /reference/cli/             301
+/python           /reference/python-api/      301
+/quickstart       /guide/quickstart/          301
+/start            /guide/quickstart/          301
+/architecture     /guide/architecture/        301
+/examples         /guide/examples/            301
+/contributing     /guide/auto-merge/          301
+
+# --------------------------------------------------------------------------
+# GitHub convention — /docs often typed by contributors
+# --------------------------------------------------------------------------
+/docs             /                           301
+
+# --------------------------------------------------------------------------
+# Structural future-proofing
+# If pages move during a reorganization, add 301s here so old links survive.
+# --------------------------------------------------------------------------
+# /old/path       /new/path                   301

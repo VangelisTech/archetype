@@ -97,6 +97,16 @@ jobs:
       - name: Build MkDocs
         run: uv run --extra docs mkdocs build
 
+      - name: Verify Cloudflare Pages files
+        run: |
+          for f in _headers _redirects; do
+            if [ ! -f "site/$f" ]; then
+              echo "::error::site/$f missing — MkDocs did not copy docs/$f"
+              exit 1
+            fi
+          done
+          echo "Cloudflare Pages files present: _headers, _redirects"
+
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
         with:
