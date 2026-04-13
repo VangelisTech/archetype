@@ -11,11 +11,14 @@ then dispatches to the appropriate world mutation.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
 
+from archetype.app.auth.guard import guardrail_allow
 from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
@@ -39,6 +42,7 @@ class CommandService:
     def __init__(self, broker: CommandBroker, world_service: WorldService):
         self._broker = broker
         self._world_service = world_service
+        self._spawn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def submit(
         self,
@@ -63,6 +67,51 @@ class CommandService:
         """Submit multiple commands. All-or-nothing RBAC validation."""
         await self._broker.enqueue_bulk(world_id, cmds, ctx)
         return [cmd.id for cmd in cmds]
+
+    async def submit_spawn(
+        self,
+        world_id: str | UUID,
+        components: list,
+        ctx: ActorCtx,
+        *,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> int:
+        """
+        Reserve an entity ID for a spawn command and enqueue it.
+
+        The returned entity ID is stable across the full command lifecycle:
+        submit -> broker queue -> drain_and_apply. The entity is still
+        materialized at the broker drain boundary, preserving the service
+        layer's audit trail and ordering semantics.
+        """
+        world_key = str(world_id)
+        lock = self._spawn_locks[world_key]
+
+        async with lock:
+            world = self._world_service.get_world(UUID(world_key))
+            entity_id = self._reserve_entity_id(world)
+            cmd = Command(
+                type=CommandType.SPAWN,
+                tick=tick,
+                priority=priority,
+                payload={
+                    "entity_id": entity_id,
+                    # Keep live component instances through the in-process broker
+                    # so type identity is preserved even when different modules
+                    # define test-only components with the same class name.
+                    "components": list(components),
+                },
+            )
+
+            try:
+                guardrail_allow(cmd, ctx)
+                await self._broker.enqueue(world_id, cmd, None)
+            except Exception:
+                self._release_entity_id(world, entity_id)
+                raise
+
+            return entity_id
 
     async def drain_and_apply(
         self,
@@ -118,6 +167,30 @@ class CommandService:
             )
         return result
 
+    @staticmethod
+    def _reserve_entity_id(world: AsyncWorld) -> int:
+        entity_id = world._next_entity_id
+        world._next_entity_id += 1
+        return entity_id
+
+    @staticmethod
+    def _release_entity_id(world: AsyncWorld, entity_id: int) -> None:
+        if world._next_entity_id == entity_id + 1:
+            world._next_entity_id = entity_id
+
+    @staticmethod
+    def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
+        from archetype.core.archetype import Archetype
+
+        if entity_id in world._entity2sig:
+            raise ValueError(f"Entity {entity_id} already exists in world {world.world_id}")
+
+        sig = Archetype.sig_from_components(components)
+        world._entity2sig[entity_id] = sig
+        world._next_entity_id = max(world._next_entity_id, entity_id + 1)
+        row_dict = Archetype.to_row_dict(entity_id, world.tick, components, world.world_id, run_id="")
+        world._spawn_cache.setdefault(sig, []).append(row_dict)
+
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
         """Dispatch a world-level lifecycle command (create/destroy/fork).
 
@@ -165,7 +238,11 @@ class CommandService:
         match cmd.type:
             case CommandType.SPAWN:
                 components = self._hydrate_components(payload.get("components", []))
-                await world.create_entity(components)
+                entity_id = payload.get("entity_id")
+                if entity_id is None:
+                    await world.create_entity(components)
+                else:
+                    self._apply_reserved_spawn(world, int(entity_id), components)
 
             case CommandType.DESPAWN:
                 entity_id = payload["entity_id"]
@@ -183,11 +260,11 @@ class CommandService:
 
             case CommandType.ADD_PROCESSOR:
                 processor = payload["processor"]
-                world.add_processor(processor)
+                await world.add_processor(processor)
 
             case CommandType.REMOVE_PROCESSOR:
                 proc_type = payload["processor_type"]
-                world.remove_processor(proc_type)
+                await world.remove_processor(proc_type)
 
             case CommandType.CREATE_WORLD | CommandType.DESTROY_WORLD | CommandType.FORK_WORLD:
                 await self.apply_world_lifecycle(cmd)

@@ -72,6 +72,12 @@ Most code goes through the world:
 df = await world.update(df, sig, run_config)
 ```
 
+## Further Reading
+
+- [Data Flow](data-flow.md) -- how the updater fits into the write path and command pipeline
+- [Querier](querier.md) -- the read counterpart to the updater
+- [Stores](stores.md) -- the storage backends the updater appends to
+
 ## Source Reference
 
 The updater is defined in `src/archetype/core/aio/async_updater.py`.

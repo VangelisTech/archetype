@@ -12,7 +12,7 @@ the RBAC system that gates all of it.
 No external dependencies — runs entirely in-process.
 
 Usage:
-    uv run python examples/world_mutations.py
+    uv run python examples/01_world_mutations.py
 """
 
 import asyncio

@@ -163,7 +163,14 @@ row = Archetype.to_row_dict(
 
 An entity is an integer ID (`entity_id`). It carries no logic — its state is the union of its component fields. The world tracks each entity's current archetype signature via an internal `_entity2sig` mapping.
 
-When you add or remove components from an entity, it migrates to a different archetype: the old row is marked inactive, and a new row is spawned in the target archetype's table with the updated component set.
+When you add or remove components from an entity, it migrates to a different archetype: the old row is marked inactive, and a new row is spawned in the target archetype's table with the updated component set. See [Worlds -- Entity Migration](worlds.md#entity-migration) for the full algorithm.
+
+## Further Reading
+
+- [Components](components.md) -- field types, Arrow serialization, the column prefixing contract
+- [System Execution](system-execution.md) -- how signatures drive the subset rule for processor matching
+- [Worlds](worlds.md) -- tick lifecycle, spawn/despawn caches, entity migration
+- [Stores](stores.md) -- how archetype tables are persisted
 
 ## Source Reference
 

@@ -114,6 +114,12 @@ df = await world.get_components([Position, Health])
 
 `world.query_archetype()` automatically fills in `world_id` and `run_id` from the world's current state and defaults to the current tick if no ticks are specified.
 
+## Further Reading
+
+- [Data Flow](data-flow.md) -- how the querier fits into the read/write split and RBAC boundary
+- [Updater](updater.md) -- the write counterpart to the querier
+- [Stores](stores.md) -- the storage backends the querier reads from
+
 ## Source Reference
 
 The querier is defined in `src/archetype/core/aio/async_querier.py`.

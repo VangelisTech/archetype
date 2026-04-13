@@ -17,24 +17,33 @@ extra_css:
 
 nav:
   - Getting Started:
-      - Home: index.md
+      - archetype-ecs: index.md
       - Quickstart: guide/quickstart.md
-  - Architecture:
+      - Specification: guide/specification.md
+      - Examples: guide/examples.md
+  - Core Architecture:
       - Overview: guide/architecture.md
-      - Archetype: guide/archetype.md
+      - Archetypes: guide/archetype.md
       - Components: guide/components.md
       - Processors: guide/processors.md
       - Systems: guide/system-execution.md
       - Worlds: guide/worlds.md
+      - Resources: guide/resources.md
       - Stores: guide/stores.md
       - Querier: guide/querier.md
       - Updater: guide/updater.md
+      - Configuration: guide/run-config.md
+  - App Architecture:
+      - Overview: guide/app-overview.md
+      - Data Flow: guide/data-flow.md
+      - Command Broker: guide/broker.md
+      - Services: guide/services.md
+      - API Layer: guide/api-layer.md
   - Guides:
       - Building Simulations: guide/building-simulations.md
       - Custom Commands: guide/custom-commands.md
-      - Trajectories: guide/trajectories.md
       - Token Quotas: guide/token-quotas.md
-      - Examples: guide/examples.md
+      - Trajectories: guide/trajectories.md
   - Reference:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
@@ -72,4 +81,6 @@ plugins:
             show_root_full_path: false
             heading_level: 3
             members_order: source
+            show_if_no_docstring: true
+            docstring_style: google
             docstring_style: google

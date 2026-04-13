@@ -2,15 +2,15 @@
 
 Every example on this page runs end-to-end with a single command. Copy, paste, run.
 
-## World Mutations
+## 1. World Mutations
 
 Demonstrates every mutation type: spawn entities with components, inject processors at runtime, RBAC permission checks, fork a world, and query the full command audit trail.
 
 ```bash
-uv run python examples/world_mutations.py
+uv run python examples/01_world_mutations.py
 ```
 
-Source: [`examples/world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/world_mutations.py)
+Source: [`examples/01_world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/01_world_mutations.py)
 
 **What it demonstrates:**
 
@@ -66,15 +66,15 @@ Output:
 
 ---
 
-## Fork for Counterfactuals
+## 2. Fork for Counterfactuals
 
 Fork a world three times with different parameters, run each branch, compare results.
 
 ```bash
-uv run python examples/fork_counterfactual.py
+uv run python examples/02_fork_counterfactual.py
 ```
 
-Source: [`examples/fork_counterfactual.py`](https://github.com/VangelisTech/archetype/blob/main/examples/fork_counterfactual.py)
+Source: [`examples/02_fork_counterfactual.py`](https://github.com/VangelisTech/archetype/blob/main/examples/02_fork_counterfactual.py)
 
 ```python
 import asyncio
@@ -136,15 +136,15 @@ All three branches start from the same base state and diverge independently.
 
 ---
 
-## Time-Travel Queries
+## 3. Time-Travel Queries
 
 Run 10 ticks, then query any point in history. Every tick is preserved.
 
 ```bash
-uv run python examples/time_travel.py
+uv run python examples/03_time_travel.py
 ```
 
-Source: [`examples/time_travel.py`](https://github.com/VangelisTech/archetype/blob/main/examples/time_travel.py)
+Source: [`examples/03_time_travel.py`](https://github.com/VangelisTech/archetype/blob/main/examples/03_time_travel.py)
 
 ```python
 import asyncio
@@ -194,15 +194,15 @@ asyncio.run(main())
 
 ---
 
-## Agent Messaging
+## 4. Agent Messaging
 
 Three agents send greetings to each other via the CommandBroker. Messages are enqueued as `MESSAGE` commands and delivered at tick boundaries. Mood and energy update based on messages received.
 
 ```bash
-uv run python examples/messaging_example.py
+uv run python examples/04_messaging.py
 ```
 
-Source: [`examples/messaging_example.py`](https://github.com/VangelisTech/archetype/blob/main/examples/messaging_example.py)
+Source: [`examples/04_messaging.py`](https://github.com/VangelisTech/archetype/blob/main/examples/04_messaging.py)
 
 **What it demonstrates:**
 
@@ -228,16 +228,16 @@ Final State:
 
 ---
 
-## LLM-Powered Agents
+## 5. LLM-Powered Agents
 
 Three agents with different personalities, each calling an LLM every tick via `daft.functions.prompt`. The ECS handles batching automatically — all entities get LLM calls in parallel because world state is a DataFrame.
 
 ```bash
 export OPENAI_API_KEY=sk-...
-uv run python examples/llm_agents.py
+uv run python examples/05_llm_agents.py
 ```
 
-Source: [`examples/llm_agents.py`](https://github.com/VangelisTech/archetype/blob/main/examples/llm_agents.py)
+Source: [`examples/05_llm_agents.py`](https://github.com/VangelisTech/archetype/blob/main/examples/05_llm_agents.py)
 
 **What it demonstrates:**
 
@@ -249,19 +249,19 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
 ---
 
-## Trajectory Analysis
+## 6. Trajectory Analysis
 
-Ingest agent trajectories, label them with natural language descriptions, and compare techniques via world forking.
+Ingest agent trajectories, label them with LLM-based evaluation, and compare techniques via world forking. Demonstrates the full ECS pattern: components, processors, resources, and forking in a single script.
 
 ```bash
-uv run python examples/trajectories/run.py
+uv run python examples/06_trajectory_analysis.py
 ```
 
-Source: [`examples/trajectories/run.py`](https://github.com/VangelisTech/archetype/blob/main/examples/trajectories/run.py)
+Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/archetype/blob/main/examples/06_trajectory_analysis.py)
 
 **What it demonstrates:**
 
-- **TrajectoryPipeline**: High-level API for ingesting conversation turns
-- **Components**: `Trajectory`, `Turn`, `Label`
-- **Processors**: `SamplingProcessor`, `LabelingProcessor`, `ScoringProcessor`
-- **Fork-based comparison**: Run different labeling strategies on forked worlds and compare results
+- **Components**: `Trajectory` (JSON-encoded turns), `Label` (evaluation result)
+- **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
+- **Resources**: `SamplingConfig`, `LabelingConfig` injected via `world.resources`
+- **Fork-based comparison**: Clone a world with `fork_world()`, swap config, run independently

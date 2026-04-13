@@ -18,7 +18,7 @@ Requirements:
     # or configure any provider via daft.set_provider()
 
 Usage:
-    uv run python examples/llm_agents.py
+    uv run python examples/05_llm_agents.py
 """
 
 import asyncio

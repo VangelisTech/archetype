@@ -75,7 +75,7 @@ class QueryManager(iQueryManager):
 
         if components:
             a = Archetype(components)
-            df = df.select(*a.schema.names())
+            df = df.select(*a.schema.names)
 
         if run_config.debug:
             logger.info(f"Querying {Archetype.get_name(sig)} with {df.count_rows()} rows")

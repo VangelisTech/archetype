@@ -136,7 +136,8 @@ class SyncWorld(iWorld):
         """Get the union of all archetypes that need processing this tick."""
         active_sigs = set(self._entity2sig.values())
         spawned_sigs = set(self._spawn_cache.keys())
-        return active_sigs | spawned_sigs
+        despawn_sigs = set(self._despawn_cache.keys())
+        return active_sigs | spawned_sigs | despawn_sigs
 
     def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
         # Handle Despawns
@@ -169,12 +170,19 @@ class SyncWorld(iWorld):
             rows = self._spawn_cache[sig]
 
             # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
-            rows = list({row["entity_id"]: row for row in reversed(rows)}.values())
+            rows = list({row["entity_id"]: row for row in rows}.values())
 
             # Convert list of dicts to arrow table and eventually daft df
             pyarrow_schema = Archetype.get_archetype_schema(sig)
             arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
             spawns_df = daft.from_arrow(arrow_table)
+            target_schema = df.schema()
+            spawns_df = spawns_df.with_columns(
+                {
+                    "entity_id": col("entity_id").cast(target_schema["entity_id"].dtype),
+                    "tick": col("tick").cast(target_schema["tick"].dtype),
+                }
+            )
             df = df.concat(spawns_df)
 
         return df
@@ -192,19 +200,27 @@ class SyncWorld(iWorld):
         previous most-recent row in the OLD archetype.
         """
 
-        # 1) fetch *only* the single entity from old archetype
-        df = self.query_archetype(
-            old_sig,
-            ticks=[self.tick - 1],  # all ticks to snapshot
-            entity_ids=[entity_id],
-            components=None,
-        )  # grab full row
+        # 1) find the most recent row for the entity, preferring in-memory state
+        row_dict: dict[str, Any] | None = None
 
-        if df.collect().count()[0] == 0:
+        pending_rows = [
+            row for row in self._spawn_cache.get(old_sig, []) if row.get("entity_id") == entity_id
+        ]
+        if pending_rows:
+            row_dict = dict(pending_rows[-1])
+        elif old_sig in self._live:
+            rows = (
+                self._live[old_sig]
+                .where(col("entity_id") == entity_id)
+                .sort(col("tick"), desc=True)
+                .limit(1)
+                .to_pylist()
+            )
+            if rows:
+                row_dict = rows[0]
+
+        if row_dict is None:
             return {}  # entity vanished, caller decides
-
-        # 2) take latest tick row
-        row_dict = df.sort(col("tick"), desc=True).limit(1).to_pylist()[0]
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)
         for c in mutated_components:
@@ -215,7 +231,7 @@ class SyncWorld(iWorld):
             {
                 "entity_id": entity_id,
                 "tick": self.tick,
-                "world_id": self.world_id,
+                "world_id": str(self.world_id),
                 "run_id": self.run_id or "",  # Placeholder; updater stamps correct run_id
                 "is_active": True,
             }
@@ -258,7 +274,7 @@ class SyncWorld(iWorld):
             logger.warning(f"add_components: entity {entity_id} not found")
             return
 
-        new_sig = Archetype.add_components(old_sig, components)
+        new_sig = Archetype.add_components(old_sig, [type(c) for c in components])
         if new_sig == old_sig:
             logger.debug(f"add_components: components already in archetype for entity {entity_id}")
             return

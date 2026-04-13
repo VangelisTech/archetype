@@ -93,8 +93,8 @@ class SyncStore(iStore):
         Append a table with a new dataframe.
         Tick, world_id, run_id are stamped by the UpdateManager before calling this.
         """
-        table_name = Archetype.get_name(sig)
-        table = self.sess.get_table(table_name)
+        table = self._ensure_table(sig)
+        table_name = table.name
 
         if self.debug:
             df.collect()
