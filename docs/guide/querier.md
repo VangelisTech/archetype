@@ -2,6 +2,39 @@
 
 `AsyncQueryManager` is the read facade to the store. It provides filtered access to archetype tables by tick, entity ID, and component projections.
 
+```python
+class AsyncQueryManager(iAsyncQueryManager):
+    def __init__(self, store: iAsyncStore):
+        self._store = store
+
+    async def get_archetype(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
+        return await self._store.get_archetype_df(sig=sig, world_id=world_id, run_id=run_id)
+
+    async def query_archetype(
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        components: list["Component"] | None = None,
+        run_id: str = None,
+    ) -> DataFrame:
+        df = await self.get_archetype(sig=sig, world_id=world_id, run_id=run_id)
+        df = df.where(df["is_active"])
+
+        if ticks:
+            df = df.where(df["tick"].is_in(ticks))
+
+        if entity_ids:
+            df = df.where(df["entity_id"].is_in(entity_ids))
+
+        if components:
+            a = Archetype(components)
+            df = df.select(*a.schema.names)
+
+        return df
+```
+
 ## How It Works
 
 The querier sits between the world and the store:

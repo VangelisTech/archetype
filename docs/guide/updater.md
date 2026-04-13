@@ -2,6 +2,28 @@
 
 `AsyncUpdateManager` is the write facade to the store. It stamps housekeeping columns onto processed DataFrames and delegates the append to the store.
 
+```python
+class AsyncUpdateManager(iAsyncUpdateManager):
+    def __init__(self, store: iAsyncStore, validate_flag: bool = False):
+        self.store = store
+        self.validate_flag = validate_flag
+
+    async def update(
+        self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
+    ) -> DataFrame:
+        df = df.with_columns(
+            {
+                "tick": lit(tick).cast(daft.DataType.int32()),
+                "world_id": lit(str(world_id)),
+                "run_id": lit(str(run_id)),
+                "entity_id": col("entity_id").cast(daft.DataType.int32()),
+            }
+        )
+
+        await self.store.append(sig, df)
+        return df
+```
+
 ## How It Works
 
 The updater sits between the world and the store on the write path:

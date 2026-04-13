@@ -2,6 +2,55 @@
 
 An archetype is the fundamental grouping mechanism in the ECS. Entities with the same set of component types share an archetype, and each archetype maps to a single DataFrame table. This columnar layout means bulk operations across thousands of entities are a single DataFrame transform.
 
+```python
+class Archetype:
+    BASE_SCHEMA = pa.schema([
+        pa.field("world_id", pa.string(), nullable=False),
+        pa.field("run_id", pa.string(), nullable=False),
+        pa.field("entity_id", pa.int32(), nullable=False),
+        pa.field("tick", pa.int32(), nullable=False),
+        pa.field("is_active", pa.bool_(), nullable=False),
+    ])
+    PARTITION_KEYS = ["world_id", "run_id", "tick"]
+
+    def __init__(self, components: list["Component"]):
+        self.components = components
+        self.sig: ArchetypeSignature = self.sig_from_components(components)
+        self.name = self.get_name(self.sig)
+        self.schema = self.get_archetype_schema(self.sig)
+
+    @staticmethod
+    def sig_from_components(components: list["Component"]) -> ArchetypeSignature:
+        component_types = [type(c) for c in components]
+        return tuple(sorted(component_types, key=lambda t: t.__name__))
+
+    @staticmethod
+    def get_name(sig: ArchetypeSignature) -> str:
+        combined_schema = Archetype.get_archetype_schema(sig)
+        schema_hash = hashlib.sha256(str(combined_schema).encode()).hexdigest()[:16]
+        return f"a_{len(sig)}c_s{schema_hash}"
+
+    @staticmethod
+    def get_archetype_schema(sig: ArchetypeSignature) -> pa.Schema:
+        archetype_schema = Archetype.BASE_SCHEMA
+        for component_type in sig:
+            component_schema = component_type.get_prefixed_schema()
+            archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
+        return archetype_schema
+
+    @staticmethod
+    def to_row_dict(
+        entity_id: int, tick: int, components: list[Component], world_id: str, run_id: str
+    ) -> dict[str, Any]:
+        row_dict = {
+            "world_id": str(world_id), "run_id": str(run_id),
+            "entity_id": entity_id, "tick": tick, "is_active": True,
+        }
+        for c in components:
+            row_dict.update({c.get_prefix() + k: v for k, v in c.model_dump().items()})
+        return row_dict
+```
+
 ## Signatures
 
 An `ArchetypeSignature` is a tuple of component types, sorted alphabetically by class name:

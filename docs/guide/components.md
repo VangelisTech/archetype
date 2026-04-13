@@ -2,6 +2,57 @@
 
 Components are data bags. They define what an entity *has*, not what it *does*. Processors do the doing.
 
+```python
+class Component(LanceModel):
+    @classmethod
+    def get_type_by_name(cls, name: str) -> type["Component"]:
+        stack: list[type[Component]] = [cls]
+        seen: set[type[Component]] = set()
+        while stack:
+            current = stack.pop()
+            for subclass in current.__subclasses__():
+                if subclass in seen:
+                    continue
+                seen.add(subclass)
+                if subclass.__name__ == name:
+                    return subclass
+                stack.append(subclass)
+        raise ValueError(f"Component type '{name}' not found.")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Component":
+        component_type_name = data.pop("type", None)
+        if component_type_name:
+            return cls.get_type_by_name(component_type_name)(**data)
+        if cls is Component:
+            raise ValueError("Component.from_dict requires a 'type' key in the payload.")
+        return cls(**data)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {"type": type(self).__name__, **self.model_dump()}
+
+    @classmethod
+    def get_prefix(cls) -> str:
+        return cls.__name__.lower() + "__"
+
+    @classmethod
+    def to_pyarrow_schema(cls) -> pa.Schema:
+        return cls.to_arrow_schema()
+
+    @classmethod
+    def get_prefixed_schema(cls) -> pa.Schema:
+        component_schema = cls.to_pyarrow_schema()
+        prefix = cls.get_prefix()
+        for i, field_name in enumerate(component_schema.names):
+            field = component_schema.field(field_name)
+            component_schema = component_schema.set(i, field.with_name(prefix + field_name))
+        return component_schema
+
+    def to_row_dict(self):
+        prefix = self.get_prefix()
+        return {prefix + key: value for key, value in self.model_dump().items()}
+```
+
 ## Defining a Component
 
 ```python

@@ -2,6 +2,39 @@
 
 The execution model is the heart of Archetype's ECS. Two lines of code in `System.execute()` determine which processors run on which entities, provide zero-cost component queries, and guarantee schema correctness by construction.
 
+```python
+class AsyncSystem(iAsyncSystem):
+    def __init__(self):
+        self.processors: list[AsyncProcessor] = []
+
+    async def add_processor(self, proc: "AsyncProcessor"):
+        self.processors.append(proc)
+
+    async def remove_processor(self, proc_type: type["AsyncProcessor"]):
+        self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
+
+    async def execute(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        resources: Resources | None = None,
+        debug: bool = False,
+        **input_kwargs,
+    ) -> DataFrame:
+        if resources is not None:
+            input_kwargs["resources"] = resources
+
+        for proc_instance in sorted(self.processors, key=lambda x: x.priority):
+            if set(proc_instance.components).issubset(set(sig)):
+                sig_params = inspect.signature(proc_instance.process).parameters
+                filtered_input_kwargs = {
+                    k: v for k, v in input_kwargs.items() if k in sig_params
+                }
+                df = await proc_instance.process(df, **filtered_input_kwargs)
+
+        return df
+```
+
 This page walks through the mechanism from first principles.
 
 ## Components to Signatures to Schemas

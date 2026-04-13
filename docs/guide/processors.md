@@ -2,6 +2,15 @@
 
 Processors are the simulation logic. They're pure DataFrame transforms that run each tick on entities matching their component requirements.
 
+```python
+class AsyncProcessor(iAsyncProcessor):
+    components: tuple[type["Component"], ...] = ()
+    priority: int = 10
+
+    async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
+        return df
+```
+
 ## Basic Processor
 
 ```python
