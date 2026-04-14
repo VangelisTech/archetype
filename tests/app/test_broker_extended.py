@@ -191,6 +191,43 @@ class TestBrokerEdgeCases:
         count = await broker.get_pending_count("test")
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_remove_clears_command_from_queue_and_pending(self):
+        """``remove`` surgically extracts a single command from both
+        ``_queues`` and ``_pending`` while leaving siblings intact."""
+        broker = CommandBroker()
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+        keep_a = Command(type=CommandType.MESSAGE, payload={"i": 0})
+        target = Command(type=CommandType.MESSAGE, payload={"i": 1})
+        keep_b = Command(type=CommandType.MESSAGE, payload={"i": 2})
+        await broker.enqueue("w", keep_a, ctx)
+        await broker.enqueue("w", target, ctx)
+        await broker.enqueue("w", keep_b, ctx)
+
+        await broker.remove("w", target.id)
+
+        assert target.id not in broker._pending
+        remaining_ids = {c.id for c in broker._queues["w"]}
+        assert target.id not in remaining_ids
+        assert keep_a.id in remaining_ids
+        assert keep_b.id in remaining_ids
+        # Heap invariant preserved.
+        sorted_remaining = sorted(broker._queues["w"])
+        assert list(broker._queues["w"]) == sorted_remaining or len(remaining_ids) <= 1
+
+    @pytest.mark.asyncio
+    async def test_remove_is_idempotent_on_missing_command(self):
+        """``remove`` must not raise when the command isn't queued."""
+        broker = CommandBroker()
+        # Empty broker — no queue, no pending entry.
+        await broker.remove("nope", uuid7())
+        # Queue exists but command isn't in it.
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        await broker.enqueue("w", Command(type=CommandType.MESSAGE, payload={}), ctx)
+        await broker.remove("w", uuid7())
+        assert len(broker._queues["w"]) == 1
+
 
 class TestBrokerConcurrency:
     @pytest.mark.asyncio

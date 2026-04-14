@@ -186,6 +186,32 @@ class CommandBroker:
             for cid in cmd_ids:
                 self._pending.pop(cid, None)
 
+    async def remove(self, world_id: str | UUID, cmd_id: UUID) -> None:
+        """Surgically remove a single command from both the per-world queue
+        and the global pending dict.
+
+        Used by callers that bypass ``dequeue_due`` (e.g. world-lifecycle
+        commands that are applied immediately rather than tick-scheduled),
+        so the command does not leak forever in ``_pending`` and
+        ``_queues``. ``_history`` is preserved as the audit trail.
+        Idempotent: if the command is not present, this is a no-op.
+        """
+        async with self._lock:
+            self._pending.pop(cmd_id, None)
+            key = str(world_id)
+            queue = self._queues.get(key)
+            if not queue:
+                return
+            for idx, cmd in enumerate(queue):
+                if cmd.id == cmd_id:
+                    # Replace with last and re-heapify; cheaper than rebuilding
+                    # except for the trivial single-element case.
+                    last = queue.pop()
+                    if idx < len(queue):
+                        queue[idx] = last
+                        heapq.heapify(queue)
+                    return
+
     async def peek(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
         """Peek at commands without removing them."""
         max_items = min(max_items or self._max_dequeue, self._max_dequeue)
