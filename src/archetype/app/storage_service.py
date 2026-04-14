@@ -41,8 +41,15 @@ class StorageService:
     ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
         """
         Retrieves or creates a shared backend triplet for the given storage config.
+
+        The pool key includes ``uri``, ``namespace``, ``backend``, and the
+        effective ``cache_config``. Keying on ``(uri, namespace)`` alone would
+        silently hand a subsequent caller the first caller's wrapped triplet —
+        ignoring the subsequent caller's explicit ``backend`` or
+        ``cache_config`` choice (e.g. opting out of caching or switching
+        between Iceberg/LanceDB).
         """
-        key = f"{storage_config.uri}::{storage_config.namespace}"
+        key = self._pool_key(storage_config, cache_config)
 
         if key not in self._instances:
             if key not in self._locks:
@@ -53,6 +60,41 @@ class StorageService:
                     self._instances[key] = self._create_backend(storage_config, cache_config)
 
         return self._instances[key]
+
+    @staticmethod
+    def _pool_key(
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None,
+    ) -> str:
+        """Build a pool key that distinguishes every dimension the backend
+        triplet depends on.
+
+        Callers that share ``(uri, namespace)`` but disagree on ``backend`` or
+        ``cache_config`` must receive distinct (correctly-wrapped) triplets,
+        so those dimensions are part of the key.
+        """
+        # Normalize cache_config's bool-style shorthand the same way
+        # _create_backend does, so equivalent specs share a key.
+        if isinstance(cache_config, bool):
+            effective_cache = CacheConfig() if cache_config else None
+        else:
+            effective_cache = cache_config
+
+        cache_part = "none"
+        if effective_cache is not None:
+            cache_part = (
+                f"rows={effective_cache.flush_rows},"
+                f"mb={effective_cache.flush_mb},"
+                f"global={effective_cache.global_mb},"
+                f"idle={effective_cache.idle_sec}"
+            )
+
+        return (
+            f"{storage_config.uri}"
+            f"::{storage_config.namespace}"
+            f"::backend={storage_config.backend.value}"
+            f"::cache({cache_part})"
+        )
 
     def _create_backend(
         self,
