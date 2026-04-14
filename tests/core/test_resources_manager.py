@@ -63,6 +63,82 @@ async def test_backend_selection_between_default_and_lancedb(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_backend_pool_distinguishes_cache_config(tmp_path):
+    """Regression: two callers with the same (uri, namespace) but different
+    cache_config must get distinct (correctly-wrapped) backends. Previously
+    the pool key was (uri, namespace) only, so the second caller silently
+    inherited the first caller's cache wrapper."""
+    from archetype.core.aio import AsyncCachedStore
+
+    svc = StorageService()
+    try:
+        cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+        store_cached, _, _ = await svc.get_backend(cfg, cache_config=CacheConfig(idle_sec=999))
+        store_uncached, _, _ = await svc.get_backend(cfg, cache_config=None)
+
+        assert isinstance(store_cached, AsyncCachedStore), "first call should be cached"
+        assert not isinstance(store_uncached, AsyncCachedStore), (
+            f"cache_config=None caller got {type(store_uncached).__name__}"
+        )
+    finally:
+        await svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_backend_pool_distinguishes_backend_choice(tmp_path):
+    """Regression: two callers with the same (uri, namespace) but different
+    backend must get distinct backend instances."""
+    svc = StorageService()
+    try:
+        cfg_iceberg = StorageConfig(
+            uri=str(tmp_path / "store"),
+            namespace="ns",
+            backend=StorageBackend.ICEBERG,
+        )
+        cfg_lance = StorageConfig(
+            uri=str(tmp_path / "store"),
+            namespace="ns",
+            backend=StorageBackend.LANCEDB,
+        )
+
+        store_iceberg, _, _ = await svc.get_backend(cfg_iceberg)
+        store_lance, _, _ = await svc.get_backend(cfg_lance)
+
+        assert isinstance(store_iceberg, AsyncStore), (
+            f"iceberg caller got {type(store_iceberg).__name__}"
+        )
+        assert isinstance(store_lance, AsyncLancedbStore), (
+            f"lancedb caller got {type(store_lance).__name__}"
+        )
+        assert store_iceberg is not store_lance
+    finally:
+        await svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_backend_pool_shares_when_cache_config_matches(tmp_path):
+    """Two callers with identical (uri, namespace, backend, cache_config) must
+    still share the same triplet — the pool's core multiton behaviour."""
+    from archetype.core.aio import AsyncCachedStore
+
+    svc = StorageService()
+    try:
+        cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        cache = CacheConfig(idle_sec=123)
+
+        store_a, q_a, u_a = await svc.get_backend(cfg, cache_config=cache)
+        store_b, q_b, u_b = await svc.get_backend(cfg, cache_config=CacheConfig(idle_sec=123))
+
+        assert isinstance(store_a, AsyncCachedStore)
+        assert store_a is store_b
+        assert q_a is q_b
+        assert u_a is u_b
+    finally:
+        await svc.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_multiton_concurrent_calls_return_same_instances(tmp_path):
     """Concurrent get_backend calls for the same key must return identical object instances."""
     svc = StorageService()
