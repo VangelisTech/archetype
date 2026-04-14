@@ -21,7 +21,6 @@ from daft import col
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from evals.graders import exact_match, state_check
@@ -111,10 +110,7 @@ async def _task_storage_roundtrip() -> list[GraderResult]:
             await world.run(rc)
 
             # Read back
-            sig = Archetype.sig_from_components(
-                [Stats(hp=0, name=""), Flags(active=False, level=0)]
-            )
-            df = await world.query_archetype(sig, run_config=rc)
+            df = await world.get_components([Stats, Flags])
             rows = df.collect().to_pydict()
 
             # Grade: entity count
@@ -162,6 +158,7 @@ async def _task_simulation_correctness() -> list[GraderResult]:
             world = await orch.create_world(WorldConfig(name="sim-eval"), storage_cfg)
 
             spawned_ids = []
+            init_positions = {}
             for i in range(N_ENTITIES):
                 eid = await world.create_entity(
                     [
@@ -171,20 +168,14 @@ async def _task_simulation_correctness() -> list[GraderResult]:
                     ]
                 )
                 spawned_ids.append(eid)
+                init_positions[eid] = (i, i * 2)
 
             await world.add_processor(ApplyVelocity())
             rc = RunConfig.benchmark(steps=N_STEPS)
             await world.run(rc)
 
             # Query outcome
-            sig = Archetype.sig_from_components(
-                [
-                    Position(x=0, y=0),
-                    Velocity(dx=0, dy=0),
-                    Health(hp=0),
-                ]
-            )
-            df = await world.query_archetype(sig, run_config=rc)
+            df = await world.get_components([Position, Velocity, Health])
             rows = df.collect().to_pydict()
 
             entity_ids = rows.get("entity_id", [])
@@ -203,8 +194,12 @@ async def _task_simulation_correctness() -> list[GraderResult]:
             position_checks = {}
             for idx in range(entity_count):
                 eid = entity_ids[idx]
-                position_checks[f"eid_{eid}_x"] = rows["position__x"][idx] == eid + N_STEPS
-                position_checks[f"eid_{eid}_y"] = rows["position__y"][idx] == (eid * 2) - N_STEPS
+                x_init, y_init = init_positions.get(eid, (None, None))
+                if x_init is None:
+                    position_checks[f"eid_{eid}_found"] = False
+                    continue
+                position_checks[f"eid_{eid}_x"] = rows["position__x"][idx] == x_init + N_STEPS
+                position_checks[f"eid_{eid}_y"] = rows["position__y"][idx] == y_init - N_STEPS
 
             # Grader 3: Untouched data preserved (velocity, health unchanged)
             preservation_checks = {}
