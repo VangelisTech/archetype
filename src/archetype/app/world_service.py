@@ -69,6 +69,12 @@ class WorldService:
         if world_id in self._worlds:
             return self._worlds[world_id]
 
+        # Validate name uniqueness BEFORE allocating a storage backend or
+        # constructing a world. Otherwise, a duplicate-name attempt leaks a
+        # half-built world into _worlds while the validity check raises.
+        if config.name and config.name in self._world_names:
+            raise ValueError(f"World with name '{config.name}' already exists.")
+
         world = await self.factory.create_world(
             world_config=config,
             storage_config=storage_config,
@@ -83,8 +89,6 @@ class WorldService:
         self._worlds[world.world_id] = world
 
         if config.name:
-            if config.name in self._world_names:
-                raise ValueError(f"World with name '{config.name}' already exists.")
             self._world_names[config.name] = world.world_id
 
         self._persist_entry(world, storage_config)

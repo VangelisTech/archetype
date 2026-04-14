@@ -20,6 +20,50 @@ async def test_world_service_duplicate_name_raises(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tmp_path):
+    """Regression: a failed duplicate-name create_world must NOT leave a
+    half-built world in _worlds (previously inserted before the name check)."""
+    ws = WorldService(StorageService())
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
+        baseline_worlds = len(ws._worlds)
+        baseline_names = len(ws._world_names)
+
+        with pytest.raises(ValueError):
+            await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
+
+        assert len(ws._worlds) == baseline_worlds, (
+            f"create_world leaked an orphan world into _worlds: "
+            f"baseline={baseline_worlds}, after={len(ws._worlds)}"
+        )
+        assert len(ws._world_names) == baseline_names
+        # Every world in _worlds must be reachable via _world_names.
+        unreachable = [wid for wid in ws._worlds if wid not in ws._world_names.values()]
+        assert unreachable == [], f"orphaned worlds: {unreachable}"
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_world_service_repeated_duplicate_name_creates_do_not_grow_worlds(tmp_path):
+    """Regression: repeated failing duplicate-name create_world calls must
+    not accumulate worlds in the in-memory registry."""
+    ws = WorldService(StorageService())
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
+
+        for _ in range(10):
+            with pytest.raises(ValueError):
+                await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
+
+        assert len(ws._worlds) == 1, f"10 failed retries leaked {len(ws._worlds) - 1} orphan worlds"
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_world_service_getters_missing_keys_raise(tmp_path):
     """Accessing non-existent worlds by name and id should raise KeyError with a clear message."""
     ws = WorldService(StorageService())
