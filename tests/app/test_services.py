@@ -502,3 +502,79 @@ class TestWorldService:
             assert worlds[0].entity_count == 5
         finally:
             await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_create_world_with_explicit_none_world_id_generates_uuid(self, tmp_path):
+        """Regression: ``WorldConfig(world_id=None)`` used to produce a world
+        with ``world_id=None`` because pydantic's ``default_factory`` only
+        fires on omitted fields. ``create_world`` generated a fresh UUID
+        locally but passed the unmodified config (with ``world_id=None``) to
+        the factory, so ``AsyncWorld.world_id`` landed on ``None`` and
+        ``_worlds`` was keyed by ``None``.
+        """
+        ws = WorldService(StorageService())
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await ws.create_world(WorldConfig(name="t", world_id=None), storage)
+
+            assert world.world_id is not None, (
+                "WorldConfig(world_id=None) produced world_id=None — "
+                "create_world's local fresh uuid7 was dead code"
+            )
+            # Round-trip lookup by the returned UUID must succeed.
+            assert ws.get_world(world.world_id) is world
+            assert None not in ws._worlds
+        finally:
+            await ws.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_two_worlds_with_explicit_none_ids_do_not_collide(self, tmp_path):
+        """Regression: two ``WorldConfig(world_id=None)`` creates used to
+        collapse onto the same ``_worlds[None]`` entry, silently overwriting
+        the first world with the second.
+        """
+        ws = WorldService(StorageService())
+        try:
+            w1 = await ws.create_world(
+                WorldConfig(name="a", world_id=None),
+                StorageConfig(uri=str(tmp_path / "s1"), namespace="ns"),
+            )
+            w2 = await ws.create_world(
+                WorldConfig(name="b", world_id=None),
+                StorageConfig(uri=str(tmp_path / "s2"), namespace="ns"),
+            )
+
+            assert w1.world_id is not None
+            assert w2.world_id is not None
+            assert w1.world_id != w2.world_id, (
+                "two WorldConfig(world_id=None) calls collapsed to the same id"
+            )
+            assert len(ws._worlds) == 2, (
+                f"expected two distinct worlds, got {len(ws._worlds)} entries"
+            )
+            assert ws.get_world(w1.world_id) is w1
+            assert ws.get_world(w2.world_id) is w2
+        finally:
+            await ws.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_create_world_does_not_mutate_caller_config(self, tmp_path):
+        """``create_world`` must not mutate the caller's ``WorldConfig``.
+
+        The fix resolves ``world_id`` locally and threads it to the factory
+        via ``model_copy``, leaving the caller's config object untouched.
+        """
+        ws = WorldService(StorageService())
+        try:
+            original = WorldConfig(name="immutable", world_id=None)
+            assert original.world_id is None
+
+            await ws.create_world(
+                original,
+                StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+            )
+
+            # The caller's config must still reflect what they passed in.
+            assert original.world_id is None
+        finally:
+            await ws.shutdown()

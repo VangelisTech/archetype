@@ -92,7 +92,16 @@ class WorldService:
 
         _ensure_storage_uri_writable(storage_config)
 
+        # ``WorldConfig.world_id`` is typed ``UUID | None`` and has a
+        # ``default_factory=uuid7``. The factory only fires when the field is
+        # omitted; callers passing ``world_id=None`` explicitly produce a
+        # ``WorldConfig`` with ``world_id is None``. Resolve that here and
+        # thread the concrete UUID back into the config that the factory
+        # sees, so ``AsyncWorld.world_id`` (which reads from the config) is
+        # never ``None`` and ``_worlds`` is never keyed by ``None``.
         world_id = config.world_id or uuid7()
+        if config.world_id is None:
+            config = config.model_copy(update={"world_id": world_id})
 
         if world_id in self._worlds:
             return self._worlds[world_id]
