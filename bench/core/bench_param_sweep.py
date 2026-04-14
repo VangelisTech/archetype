@@ -210,22 +210,40 @@ async def run_case(
 ):
     world_id = "w"
     run_id = "r"
+    # Each phase gets its own storage directory to avoid data accumulation
+    # across phases (append → updater → query).
+    variant_tag = "cached" if use_cache else "plain"
+
+    append_uri = os.path.join(uri, f"{variant_tag}_append")
+    os.makedirs(append_uri, exist_ok=True)
     store, querier, updater = await make_store(
-        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        uri=append_uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
     )
     a = await bench_append_only(
         store, num_entities, batch_size, steps, world_id, run_id, include_flush
     )
 
+    updater_uri = os.path.join(uri, f"{variant_tag}_updater")
+    os.makedirs(updater_uri, exist_ok=True)
     store, querier, updater = await make_store(
-        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        uri=updater_uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
     )
     u = await bench_updater(
         updater, store, num_entities, batch_size, steps, world_id, run_id, include_flush
     )
 
+    # Query phase: seed data first, then benchmark reads in isolation.
+    query_uri = os.path.join(uri, f"{variant_tag}_query")
+    os.makedirs(query_uri, exist_ok=True)
     store, querier, updater = await make_store(
-        uri=uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        uri=query_uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
+    )
+    await bench_append_only(
+        store, num_entities, batch_size, steps, world_id, run_id, include_flush=False
+    )
+    await store.shutdown()
+    store, querier, updater = await make_store(
+        uri=query_uri, namespace=namespace, use_cache=use_cache, cache_cfg=cache_cfg
     )
     try:
         q = await bench_query(querier, world_id, run_id, ticks=list(range(steps)), iters=q_iters)

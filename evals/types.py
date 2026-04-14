@@ -65,15 +65,15 @@ class TaskResult:
 
     @property
     def pass_pow_k(self) -> float:
-        """Probability of ALL k trials succeeding.
+        """Did ALL k trials succeed?
 
-        pass^k = (per-trial success rate) ^ k.
-        For reliability-critical tasks.
+        Returns 1.0 if every trial passed, 0.0 otherwise.
+        For reliability-critical tasks where anything less than
+        100% consistency is a failure.
         """
         if not self.trials:
             return 0.0
-        p = sum(1 for t in self.trials if t.passed) / len(self.trials)
-        return p ** len(self.trials)
+        return 1.0 if all(t.passed for t in self.trials) else 0.0
 
     @property
     def avg_score(self) -> float:
@@ -84,7 +84,7 @@ class TaskResult:
 
     @property
     def all_passed(self) -> bool:
-        return all(t.passed for t in self.trials)
+        return bool(self.trials) and all(t.passed for t in self.trials)
 
     def to_dict(self) -> dict[str, Any]:
         return {

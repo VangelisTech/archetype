@@ -6,9 +6,9 @@
 Usage:
     python -m evals.run [--out results.json] [--suite regression|capability] [--trials 3]
 
-Reports pass@k (at least one trial passes) and pass^k (all trials pass)
-per task, grouped by suite.  Exit code 0 if all regression tasks pass
-and no capability tasks error out.
+Reports pass@k (at least one trial passes, binary) and pass^k (all k
+trials pass, binary) per task, grouped by suite.  Exit code 0 if all
+regression tasks pass and no capability tasks error out.
 """
 
 from __future__ import annotations

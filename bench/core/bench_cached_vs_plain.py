@@ -177,25 +177,44 @@ async def run_one(use_cache: bool, args) -> dict[str, Any]:
 
     results = {"variant": "async_cached" if use_cache else "async"}
     try:
-        # Fresh store per phase to avoid cache memtable schema mixing
+        # Each phase gets its own storage directory to avoid data accumulation.
+        # Without this, the updater phase queries append's rows too, and the
+        # query phase scans both — making later phases artificially slower.
+        variant_tag = "cached" if use_cache else "plain"
+
+        append_uri = os.path.join(uri, f"{variant_tag}_append")
+        os.makedirs(append_uri, exist_ok=True)
         store, querier, updater = await make_store(
-            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+            uri=append_uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
         )
         a = await bench_append_only(
             store, args.num_entities, args.batch_size, args.steps, world_id, run_id
         )
         await store.shutdown()
 
+        updater_uri = os.path.join(uri, f"{variant_tag}_updater")
+        os.makedirs(updater_uri, exist_ok=True)
         store, querier, updater = await make_store(
-            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+            uri=updater_uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
         )
         u = await bench_updater(
             updater, store, args.num_entities, args.batch_size, args.steps, world_id, run_id
         )
         await store.shutdown()
 
+        # Query phase: write data first, then benchmark reads in isolation.
+        query_uri = os.path.join(uri, f"{variant_tag}_query")
+        os.makedirs(query_uri, exist_ok=True)
         store, querier, updater = await make_store(
-            uri=uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+            uri=query_uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
+        )
+        # Seed data for querying
+        await bench_append_only(
+            store, args.num_entities, args.batch_size, args.steps, world_id, run_id
+        )
+        await store.shutdown()
+        store, querier, updater = await make_store(
+            uri=query_uri, namespace=args.namespace, use_cache=use_cache, cache_cfg=cache_cfg
         )
         q = await bench_query(
             querier,

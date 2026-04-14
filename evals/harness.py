@@ -29,6 +29,8 @@ class EvalHarness:
     """Evaluation harness that runs tasks across multiple trials."""
 
     def __init__(self, trials: int = 1):
+        if trials < 1:
+            raise ValueError(f"trials must be >= 1, got {trials}")
         self.trials = trials
         self._tasks: list[tuple[str, str, TaskFn, str]] = []  # (id, suite, fn, desc)
 
