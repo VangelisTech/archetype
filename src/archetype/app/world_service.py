@@ -9,6 +9,10 @@ Manages the lifecycle of multiple worlds. Renamed from WorldOrchestrator for v0.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
 from uuid_utils import UUID, uuid7
 
 from archetype.app.broker import CommandBroker
@@ -68,7 +72,7 @@ class WorldService:
     async def create_world(
         self,
         config: WorldConfig,
-        storage_config: StorageConfig,
+        storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> iWorld:
@@ -76,7 +80,18 @@ class WorldService:
         Creates or retrieves a world based on the provided configuration.
         Idempotent: if a world_id already exists, returns the existing instance.
         Injects CommandBroker into world resources if available.
+
+        If ``storage_config`` is omitted, a default :class:`StorageConfig` is
+        applied (LanceDB backend at ``./archetype_data``) so every world
+        created through the service layer is durable out of the box. If the
+        configured URI is a local path that cannot be created or written to,
+        a :class:`PermissionError` is raised with a clear message.
         """
+        if storage_config is None:
+            storage_config = StorageConfig()
+
+        _ensure_storage_uri_writable(storage_config)
+
         world_id = config.world_id or uuid7()
 
         if world_id in self._worlds:
@@ -328,3 +343,38 @@ class WorldService:
             registry.upsert(world_id, cached_entry)
 
         world.add_hook("post_tick", _sync_tick)
+
+
+def _ensure_storage_uri_writable(storage_config: StorageConfig) -> None:
+    """Validate that a local storage URI is writable before initializing a backend.
+
+    Remote URIs (``s3://``, ``gs://``, etc.) are skipped — credentials and
+    permissions for those are surfaced by the remote client at first I/O.
+    For local paths, this creates the directory if needed and verifies that
+    the current process can write to it. Raises :class:`PermissionError`
+    with a clear message otherwise.
+    """
+    uri = str(storage_config.uri)
+    scheme = urlparse(uri).scheme.lower()
+    if scheme not in ("", "file"):
+        return
+
+    # Strip a ``file://`` prefix if present.
+    path_str = uri[len("file://") :] if scheme == "file" else uri
+    base_path = Path(path_str)
+    if not base_path.is_absolute():
+        base_path = Path.cwd() / base_path
+
+    try:
+        base_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PermissionError(
+            f"Storage URI {base_path!s} is not writable: {exc}. "
+            "Configure a writable path via StorageConfig(uri=...)."
+        ) from exc
+
+    if not os.access(base_path, os.W_OK):
+        raise PermissionError(
+            f"Storage URI {base_path!s} exists but is not writable by the current user. "
+            "Configure a writable path via StorageConfig(uri=...)."
+        )

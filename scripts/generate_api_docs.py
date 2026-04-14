@@ -40,9 +40,25 @@ def resolve_ref(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
     return node
 
 
-def schema_to_table(
-    schema: dict[str, Any], root: dict[str, Any], indent: int = 0
-) -> list[str]:
+def _unwrap_optional(schema: dict[str, Any], root: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap a top-level ``anyOf``/``oneOf`` that only adds nullability.
+
+    Pydantic renders ``Foo | None`` as ``anyOf: [{$ref: Foo}, {type: "null"}]``.
+    Pick the first non-null option and resolve ``$ref`` so downstream code
+    sees the underlying object schema instead of a wrapper with no properties.
+    """
+    schema = resolve_ref(schema, root)
+    for key in ("anyOf", "oneOf"):
+        options = schema.get(key)
+        if not options:
+            continue
+        non_null = [o for o in options if o.get("type") != "null"]
+        if len(non_null) == 1:
+            return resolve_ref(non_null[0], root)
+    return schema
+
+
+def schema_to_table(schema: dict[str, Any], root: dict[str, Any], indent: int = 0) -> list[str]:
     """Render a JSON Schema object as a markdown table of fields."""
     schema = resolve_ref(schema, root)
     properties = schema.get("properties", {})
@@ -128,7 +144,7 @@ def render_operation(
         lines.append("|-----------|------|-------------|")
         for p in path_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root) if schema else "string"
             desc = p.get("description", "")
             lines.append(f"| `{p['name']}` | {typ} | {desc} |")
         lines.append("")
@@ -140,7 +156,7 @@ def render_operation(
         lines.append("|-----------|------|---------|-------------|")
         for p in query_params:
             schema = p.get("schema", {})
-            typ = schema.get("type", "string")
+            typ = _type_label(schema, root) if schema else "string"
             default = schema.get("default", "—")
             if default != "—":
                 default = f"`{json.dumps(default)}`"
@@ -155,29 +171,31 @@ def render_operation(
         json_content = content.get("application/json", {})
         body_schema = json_content.get("schema", {})
         if body_schema:
-            resolved = resolve_ref(body_schema, root)
-            lines.append("**Request body:**")
-            lines.append("")
+            resolved = _unwrap_optional(body_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append("**Request body:**")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
     # Responses — prefer 200, else lowest numeric 2xx for deterministic output
     responses = operation.get("responses", {})
-    success_codes = sorted(c for c in responses if c.startswith("2"))
-    if success_codes:
-        code = "200" if "200" in success_codes else success_codes[0]
+    numeric_success = sorted(
+        (int(c), c) for c in responses if len(c) == 3 and c.isdigit() and c.startswith("2")
+    )
+    if numeric_success:
+        code = "200" if any(c == "200" for _, c in numeric_success) else numeric_success[0][1]
         resp = responses[code]
         resp_content = resp.get("content", {})
         json_resp = resp_content.get("application/json", {})
         resp_schema = json_resp.get("schema", {})
         if resp_schema:
-            resolved = resolve_ref(resp_schema, root)
-            lines.append(f"**Response** (`{code}`):")
-            lines.append("")
+            resolved = _unwrap_optional(resp_schema, root)
             table = schema_to_table(resolved, root)
             if table:
+                lines.append(f"**Response** (`{code}`):")
+                lines.append("")
                 lines.extend(table)
                 lines.append("")
 
@@ -217,7 +235,8 @@ def generate() -> str:
                 tag = tags[0] if tags else "Other"
                 tag_groups.setdefault(tag, []).append((method, path, operation))
 
-    for tag, operations in tag_groups.items():
+    for tag in sorted(tag_groups, key=str.casefold):
+        operations = sorted(tag_groups[tag], key=lambda item: (item[1], item[0]))
         lines.append(f"## {tag.title()}")
         lines.append("")
         for method, path, operation in operations:
