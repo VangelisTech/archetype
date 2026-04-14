@@ -100,6 +100,11 @@ dev = [
     "pre-commit>=4.0",
 ]
 
+[tool.uv]
+# Only resolve packages released at least 7 days ago.
+# Updated by `make lock-refresh` or CI.
+exclude-newer = "2026-04-07T00:00:00Z"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

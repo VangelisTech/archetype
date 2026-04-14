@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import time
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from archetype.core.component import Component
@@ -38,7 +38,7 @@ from archetype.core.component import Component
 # ============================================================================
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
     """Allowed values for ``Run.status``.
 
     Run stores status as a plain string for Arrow compatibility — enums
