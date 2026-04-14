@@ -29,6 +29,13 @@ help:
 	@echo "  make test-all       Run all tests verbose"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo ""
+	@echo "Benchmarks & Evals:"
+	@echo "  make bench          Run ECS microbenchmarks (1 step)"
+	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
+	@echo "  make eval           Run all eval suites"
+	@echo "  make eval-reg       Run regression suite only"
+	@echo "  make eval-cap       Run capability suite only"
+	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
 	@echo "  make release-check  Full pre-release validation"
@@ -114,8 +121,34 @@ test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 .PHONY: ci
-ci: format-check lint lock-check test-cov
+ci: format-check lint lock-check test-cov eval-reg
 	@echo "CI gate passed"
+
+# ------------------------------------------------------------------------------
+# Benchmarks & Evals
+# ------------------------------------------------------------------------------
+
+.PHONY: bench
+bench:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 1 --out bench-results.json
+	@echo "Benchmark results written to bench-results.json"
+
+.PHONY: bench-full
+bench-full:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 3 --out bench-results.json
+	@echo "Benchmark results written to bench-results.json"
+
+.PHONY: eval
+eval:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --out eval-results.json
+
+.PHONY: eval-reg
+eval-reg:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite regression
+
+.PHONY: eval-cap
+eval-cap:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite capability
 
 # ------------------------------------------------------------------------------
 # Build & Release
