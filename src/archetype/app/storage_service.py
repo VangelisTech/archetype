@@ -85,7 +85,7 @@ class StorageService:
         dicts are always cleared. If any store's shutdown raised, an
         aggregate RuntimeError is raised after the cleanup completes.
         """
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
         for store, _, _ in self._instances.values():
             try:
                 if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
@@ -93,7 +93,7 @@ class StorageService:
                 elif hasattr(store, "shutdown"):
                     store.shutdown()
             except Exception as e:
-                logger.error("Failed to shut down store %r: %s", store, e)
+                logger.exception("Failed to shut down store %r", store)
                 errors.append(e)
 
         self._instances.clear()
@@ -103,4 +103,4 @@ class StorageService:
             raise RuntimeError(
                 f"StorageService.shutdown failed for {len(errors)} store(s); "
                 f"first error: {errors[0]!r}"
-            )
+            ) from errors[0]
