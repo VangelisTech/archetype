@@ -79,19 +79,26 @@ def estimate_token_cost(cmd: Command) -> int:
     return _TOKEN_COSTS.get(cmd.type.value, 10)
 
 
-def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
-    """
-    Check RBAC permissions and quotas. Raises PermissionError if denied.
+def guardrail_check(
+    cmd: Command,
+    ctx: ActorCtx,
+    projected_count: int = 0,
+    projected_tokens: int = 0,
+) -> int:
+    """Pure RBAC + quota check.
 
-    Checks:
-    1. Role permissions — does any of the actor's roles grant the command type?
-    2. Per-tick quota — has the actor exceeded MAX_CMDS_PER_TICK?
-    3. Daily token budget — has the actor exceeded MAX_TOKENS_PER_DAY?
+    Returns the token cost of ``cmd`` if allowed; raises ``PermissionError``
+    otherwise. Does NOT mutate ``_tick_counters`` or ``_daily_tokens`` — use
+    :func:`guardrail_commit` to apply the debit after the caller is certain
+    the command will actually be enqueued.
+
+    ``projected_count`` / ``projected_tokens`` let bulk callers stack
+    pre-check quota usage across a bulk without committing anything to the
+    global state until every command in the bulk passes.
 
     The daily-token budget is rolled over lazily: before running the quota
     check, :func:`maybe_reset_daily_tokens` clears ``_daily_tokens`` if the
-    UTC date has advanced since the last reset. This makes the "daily" in
-    ``MAX_TOKENS_PER_DAY`` real without relying on a background scheduler.
+    UTC date has advanced since the last reset.
     """
     # Roll the daily budget forward if the UTC date has changed. Without
     # this, ``_daily_tokens`` accumulates monotonically for the lifetime
@@ -113,20 +120,46 @@ def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
 
     # 2. Per-tick quota
     current_count = _tick_counters.get(ctx.id, 0)
-    if current_count >= MAX_CMDS_PER_TICK:
+    if current_count + projected_count >= MAX_CMDS_PER_TICK:
         raise PermissionError(
             f"Actor {ctx.id} exceeded per-tick quota ({MAX_CMDS_PER_TICK} commands)"
         )
-    _tick_counters[ctx.id] = current_count + 1
 
     # 3. Daily token budget
     cost = estimate_token_cost(cmd)
     current_tokens = _daily_tokens.get(ctx.id, 0)
-    if current_tokens + cost > MAX_TOKENS_PER_DAY:
+    if current_tokens + projected_tokens + cost > MAX_TOKENS_PER_DAY:
         raise PermissionError(
             f"Actor {ctx.id} exceeded daily token budget ({MAX_TOKENS_PER_DAY} tokens)"
         )
-    _daily_tokens[ctx.id] = current_tokens + cost
+
+    return cost
+
+
+def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
+    """Apply the quota debit computed by previous :func:`guardrail_check` calls.
+
+    Callers MUST only invoke this after they have ensured the associated
+    commands will actually be enqueued. Bulk callers should compute the
+    projected totals via :func:`guardrail_check` and commit once at the end,
+    so a partial validation failure leaves counters untouched.
+    """
+    if count:
+        _tick_counters[ctx.id] = _tick_counters.get(ctx.id, 0) + count
+    if tokens:
+        _daily_tokens[ctx.id] = _daily_tokens.get(ctx.id, 0) + tokens
+
+
+def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
+    """
+    Check RBAC permissions and quotas and debit the actor's counters.
+
+    Thin wrapper over :func:`guardrail_check` + :func:`guardrail_commit`
+    for single-command callers. Raises ``PermissionError`` if denied (in
+    which case no counters are mutated).
+    """
+    cost = guardrail_check(cmd, ctx)
+    guardrail_commit(ctx, count=1, tokens=cost)
 
 
 def reset_tick_counters() -> None:

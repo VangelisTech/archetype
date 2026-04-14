@@ -36,7 +36,7 @@ import heapq
 import logging
 from uuid import UUID
 
-from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.auth.models import ActorCtx
 from archetype.app.models import Command
 
@@ -94,11 +94,26 @@ class CommandBroker:
     ) -> None:
         """
         Enqueue multiple commands for a specific world.
-        All-or-nothing: validates all commands before enqueueing any.
+        All-or-nothing: validates all commands before enqueueing any, and
+        debits quota only once the entire bulk has passed validation. A
+        partial RBAC or quota failure leaves the actor's counters untouched.
         """
         if ctx is not None:
-            for cmd in cmds:
-                guardrail_allow(cmd, ctx)
+            # Pure validation pass: stacks projected debits across the bulk
+            # without mutating global counters so a mid-bulk failure does
+            # not burn quota on commands that never get enqueued.
+            projected_tokens = 0
+            for i, cmd in enumerate(cmds):
+                projected_tokens += guardrail_check(
+                    cmd,
+                    ctx,
+                    projected_count=i,
+                    projected_tokens=projected_tokens,
+                )
+            # All commands allowed — commit the debit before acquiring the
+            # queue lock so subsequent guardrail_check calls observe the
+            # updated counters.
+            guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
 
         async with self._lock:
             key = str(world_id)
