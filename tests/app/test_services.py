@@ -87,6 +87,122 @@ class TestCommandService:
         finally:
             await container.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_apply_world_lifecycle_does_not_leak_broker_state(self, tmp_path):
+        """Regression: lifecycle commands (CREATE/DESTROY/FORK_WORLD) are
+        applied immediately rather than tick-scheduled, so the broker's
+        ``drain_and_apply`` loop never sees them. ``apply_world_lifecycle``
+        must drain ``__global__`` itself or every lifecycle op leaks one
+        zombie command into ``broker._pending`` and ``broker._queues``
+        forever.
+        """
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            broker = container.broker
+            assert len(broker._pending) == 0
+            assert len(broker._queues.get("__global__", [])) == 0
+
+            create_cmd = Command(
+                type=CommandType.CREATE_WORLD,
+                tick=0,
+                payload={
+                    "config": {"name": "leak_check"},
+                    "storage_uri": str(tmp_path / "store"),
+                    "namespace": "archetypes",
+                },
+            )
+            await container.command_service.submit("__global__", create_cmd, ctx)
+            world = await container.command_service.apply_world_lifecycle(create_cmd)
+
+            assert len(broker._pending) == 0, (
+                f"CREATE_WORLD leaked into broker._pending ({len(broker._pending)} zombies)"
+            )
+            assert len(broker._queues.get("__global__", [])) == 0, (
+                f"CREATE_WORLD leaked into broker._queues['__global__'] "
+                f"({len(broker._queues['__global__'])} zombies)"
+            )
+
+            destroy_cmd = Command(
+                type=CommandType.DESTROY_WORLD,
+                tick=0,
+                payload={"world_id": str(world.world_id)},
+            )
+            await container.command_service.submit("__global__", destroy_cmd, ctx)
+            await container.command_service.apply_world_lifecycle(destroy_cmd)
+
+            assert len(broker._pending) == 0, (
+                f"DESTROY_WORLD leaked into broker._pending ({len(broker._pending)} zombies)"
+            )
+            assert len(broker._queues.get("__global__", [])) == 0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_round_trip_does_not_leak_at_volume(self, tmp_path):
+        """Regression: 50 CREATE/DESTROY pairs must leave zero zombies."""
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            broker = container.broker
+
+            for i in range(50):
+                create = Command(
+                    type=CommandType.CREATE_WORLD,
+                    tick=0,
+                    payload={
+                        "config": {"name": f"w{i}"},
+                        "storage_uri": str(tmp_path / "store"),
+                        "namespace": "archetypes",
+                    },
+                )
+                await container.command_service.submit("__global__", create, ctx)
+                world = await container.command_service.apply_world_lifecycle(create)
+
+                destroy = Command(
+                    type=CommandType.DESTROY_WORLD,
+                    tick=0,
+                    payload={"world_id": str(world.world_id)},
+                )
+                await container.command_service.submit("__global__", destroy, ctx)
+                await container.command_service.apply_world_lifecycle(destroy)
+
+            assert len(broker._pending) == 0, (
+                f"50 CREATE/DESTROY pairs leaked {len(broker._pending)} "
+                f"zombies into broker._pending"
+            )
+            assert len(broker._queues.get("__global__", [])) == 0
+            # History is the audit trail; it should still record everything.
+            history = await broker.get_history("__global__", limit=200)
+            assert len(history) == 100
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_apply_world_lifecycle_drains_on_failure(self, tmp_path):
+        """Regression: even if the side effect raises, the command must not
+        leak into the broker. The drain must happen in a finally block.
+        """
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            broker = container.broker
+
+            # Missing world_id triggers KeyError inside apply_world_lifecycle
+            bad_destroy = Command(
+                type=CommandType.DESTROY_WORLD,
+                tick=0,
+                payload={},  # missing "world_id"
+            )
+            await container.command_service.submit("__global__", bad_destroy, ctx)
+            with pytest.raises(KeyError):
+                await container.command_service.apply_world_lifecycle(bad_destroy)
+
+            assert len(broker._pending) == 0, "Failed lifecycle command leaked into broker._pending"
+            assert len(broker._queues.get("__global__", [])) == 0
+        finally:
+            await container.shutdown()
+
 
 class TestSimulationService:
     @pytest.mark.asyncio

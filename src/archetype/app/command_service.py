@@ -268,35 +268,46 @@ class CommandService:
         per-world ``apply()`` path.
 
         Returns the created/forked world for CREATE and FORK, None for DESTROY.
+
+        Lifecycle commands are not tick-scheduled, so the broker's
+        ``drain_and_apply`` loop never sees them. Drain the command from
+        ``__global__`` here (in a ``finally`` so failures don't leak either)
+        to keep ``broker._pending`` and ``broker._queues['__global__']`` from
+        growing without bound across the process lifetime.
         """
         payload = cmd.payload
 
-        match cmd.type:
-            case CommandType.CREATE_WORLD:
-                from archetype.core.config import StorageConfig, WorldConfig
+        try:
+            match cmd.type:
+                case CommandType.CREATE_WORLD:
+                    from archetype.core.config import StorageConfig, WorldConfig
 
-                cfg = payload.get("config", {})
-                world_config = WorldConfig(**cfg) if isinstance(cfg, dict) else cfg
-                storage_config = StorageConfig(
-                    uri=payload.get("storage_uri", "./archetype_data"),
-                    namespace=payload.get("namespace", "archetypes"),
-                )
-                return await self._world_service.create_world(world_config, storage_config)
+                    cfg = payload.get("config", {})
+                    world_config = WorldConfig(**cfg) if isinstance(cfg, dict) else cfg
+                    storage_config = StorageConfig(
+                        uri=payload.get("storage_uri", "./archetype_data"),
+                        namespace=payload.get("namespace", "archetypes"),
+                    )
+                    return await self._world_service.create_world(world_config, storage_config)
 
-            case CommandType.DESTROY_WORLD:
-                target_id = UUID(str(payload["world_id"]))
-                await self._world_service.remove_world(target_id)
-                return None
+                case CommandType.DESTROY_WORLD:
+                    target_id = UUID(str(payload["world_id"]))
+                    await self._world_service.remove_world(target_id)
+                    return None
 
-            case CommandType.FORK_WORLD:
-                from archetype.core.config import StorageConfig
+                case CommandType.FORK_WORLD:
+                    from archetype.core.config import StorageConfig
 
-                source_id = UUID(str(payload["source_world_id"]))
-                fork_name = payload.get("name") or payload.get("config", {}).get("name")
-                return await self._world_service.fork_world(source_id, fork_name, StorageConfig())
+                    source_id = UUID(str(payload["source_world_id"]))
+                    fork_name = payload.get("name") or payload.get("config", {}).get("name")
+                    return await self._world_service.fork_world(
+                        source_id, fork_name, StorageConfig()
+                    )
 
-            case _:
-                raise ValueError(f"apply_world_lifecycle does not handle {cmd.type.value}")
+                case _:
+                    raise ValueError(f"apply_world_lifecycle does not handle {cmd.type.value}")
+        finally:
+            await self._broker.remove("__global__", cmd.id)
 
     async def apply(self, world: AsyncWorld, cmd: Command) -> None:
         """
