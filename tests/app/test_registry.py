@@ -123,7 +123,7 @@ class TestCrossContainerDiscovery:
         try:
             world = await c1.world_service.create_world(WorldConfig(name="temp"), storage)
             wid = world.world_id
-            c1.world_service.remove_world(wid)
+            await c1.world_service.remove_world(wid)
         finally:
             await c1.shutdown()
 

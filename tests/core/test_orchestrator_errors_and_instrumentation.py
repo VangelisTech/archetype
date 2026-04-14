@@ -84,7 +84,7 @@ async def test_world_service_removal_clears_name_mapping_and_allows_reuse(tmp_pa
         storage = StorageConfig(uri=str(tmp_path / "store3"), namespace="ns")
         w = await ws.create_world(WorldConfig(name="cycle"), storage_config=storage)
         wid = w.world_id
-        ws.remove_world(wid)
+        await ws.remove_world(wid)
         with pytest.raises(KeyError):
             ws.get_world(wid)
         # name should be free again
@@ -99,7 +99,7 @@ async def test_world_service_remove_nonexistent_is_noop(tmp_path):
     """Removing a world that does not exist should be a no-op (no exception)."""
     ws = WorldService(StorageService())
     try:
-        ws.remove_world(uuid.uuid7())
+        await ws.remove_world(uuid.uuid7())
     finally:
         await ws.shutdown()
 

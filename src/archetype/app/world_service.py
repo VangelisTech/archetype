@@ -159,13 +159,23 @@ class WorldService:
             result.append(info)
         return result
 
-    def remove_world(self, world_id: UUID) -> None:
-        """Removes a world from management by its ID."""
+    async def remove_world(self, world_id: UUID) -> None:
+        """Removes a world from management by its ID.
+
+        Also evicts the world's broker state (pending queue, in-flight
+        command ids, and audit history) so destroying a world does not leak
+        broker bookkeeping for the lifetime of the process. Without this,
+        ``broker.get_pending_count()`` over-reports indefinitely and
+        ``broker.get_history(world_id)`` returns orphaned commands for a
+        world that no longer exists.
+        """
         if world_id in self._worlds:
             for name, uid in list(self._world_names.items()):
                 if uid == world_id:
                     del self._world_names[name]
             del self._worlds[world_id]
+        if self._broker is not None:
+            await self._broker.clear(world_id)
         if self._registry is not None:
             self._registry.delete(world_id)
 

@@ -357,7 +357,7 @@ class RuntimeWorld:
                 and (from_runtime or not self._runtime._closed)
             ):
                 await self._runtime._container.broker.clear(self._world.world_id)
-                self._runtime._container.world_service.remove_world(self._world.world_id)
+                await self._runtime._container.world_service.remove_world(self._world.world_id)
             self._closed = True
             self._world = None
             self._initialized = False
