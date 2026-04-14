@@ -324,6 +324,7 @@ class AsyncWorld(iAsyncWorld):
         # Placeholder run_id; updater will stamp correct run_id on update
         row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id="")
         self._spawn_cache.setdefault(sig, []).append(row_dict)
+        await self._fire_hooks("on_spawn", world=self, entity_id=entity_id, components=components)
         return entity_id
 
     async def remove_entity(self, entity_id: int):
@@ -342,9 +343,11 @@ class AsyncWorld(iAsyncWorld):
                     self._spawn_cache[sig] = remaining
                 else:
                     del self._spawn_cache[sig]
+                await self._fire_hooks("on_despawn", world=self, entity_id=entity_id)
                 return
 
         self._despawn_cache.setdefault(sig, []).append(entity_id)
+        await self._fire_hooks("on_despawn", world=self, entity_id=entity_id)
 
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
         old_sig = self._entity2sig.get(entity_id)

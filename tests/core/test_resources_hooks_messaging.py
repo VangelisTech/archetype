@@ -330,6 +330,52 @@ class TestHooks:
         await world.run(rc)
         assert world.tick == 1
 
+    @pytest.mark.asyncio
+    async def test_on_spawn_hook_fires_when_entity_created(self, world):
+        """on_spawn hook fires on create_entity with entity_id and components."""
+        events: list[dict] = []
+
+        async def on_spawn(**kwargs):
+            events.append(kwargs)
+
+        world.add_hook("on_spawn", on_spawn)
+        components = [Position(x=1, y=2)]
+        eid = await world.create_entity(components)
+
+        assert len(events) == 1
+        assert events[0]["entity_id"] == eid
+        assert events[0]["world"] is world
+        assert events[0]["components"] == components
+
+    @pytest.mark.asyncio
+    async def test_on_despawn_hook_fires_when_entity_removed(self, world):
+        """on_despawn hook fires on remove_entity with entity_id."""
+        events: list[dict] = []
+
+        async def on_despawn(**kwargs):
+            events.append(kwargs)
+
+        eid = await world.create_entity([Position(x=1, y=2)])
+        world.add_hook("on_despawn", on_despawn)
+        await world.remove_entity(eid)
+
+        assert len(events) == 1
+        assert events[0]["entity_id"] == eid
+        assert events[0]["world"] is world
+
+    @pytest.mark.asyncio
+    async def test_on_despawn_hook_skips_unknown_entity(self, world):
+        """on_despawn hook does not fire when remove_entity targets an unknown id."""
+        events: list[dict] = []
+
+        async def on_despawn(**kwargs):
+            events.append(kwargs)
+
+        world.add_hook("on_despawn", on_despawn)
+        await world.remove_entity(9999)
+
+        assert events == []
+
 
 # =============================================================================
 # Resources in Processor Tests
