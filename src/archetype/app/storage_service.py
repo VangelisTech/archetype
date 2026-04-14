@@ -11,12 +11,15 @@ Renamed from StorageBackendManager for v0.1 service layer.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from archetype.core.aio import AsyncCachedStore, AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore, iAsyncUpdateManager
 from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.storage import AsyncLancedbStore
+
+logger = logging.getLogger(__name__)
 
 
 class StorageService:
@@ -75,12 +78,29 @@ class StorageService:
         return (store, querier, updater)
 
     async def shutdown(self):
-        """Gracefully shuts down all managed storage backends."""
+        """Gracefully shuts down all managed storage backends.
+
+        Best-effort: a failure in one store's shutdown does not abort the
+        loop. Every store gets a chance to run its cleanup, and the pool
+        dicts are always cleared. If any store's shutdown raised, an
+        aggregate RuntimeError is raised after the cleanup completes.
+        """
+        errors: list[Exception] = []
         for store, _, _ in self._instances.values():
-            if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
-                await store.shutdown()
-            elif hasattr(store, "shutdown"):
-                store.shutdown()
+            try:
+                if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
+                    await store.shutdown()
+                elif hasattr(store, "shutdown"):
+                    store.shutdown()
+            except Exception as e:
+                logger.exception("Failed to shut down store %r", store)
+                errors.append(e)
 
         self._instances.clear()
         self._locks.clear()
+
+        if errors:
+            raise RuntimeError(
+                f"StorageService.shutdown failed for {len(errors)} store(s); "
+                f"first error: {errors[0]!r}"
+            ) from errors[0]
