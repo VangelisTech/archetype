@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -67,6 +68,10 @@ _TOKEN_COSTS: dict[str, int] = {
 _tick_counters: dict[UUID, int] = {}
 # Per-actor daily token usage: actor_id → tokens used today
 _daily_tokens: dict[UUID, int] = {}
+# UTC date of the most recent daily-tokens reset; used by
+# ``maybe_reset_daily_tokens`` to roll the budget over at midnight UTC
+# without a background scheduler.
+_last_reset_date: date = datetime.now(UTC).date()
 
 
 def estimate_token_cost(cmd: Command) -> int:
@@ -82,7 +87,18 @@ def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
     1. Role permissions — does any of the actor's roles grant the command type?
     2. Per-tick quota — has the actor exceeded MAX_CMDS_PER_TICK?
     3. Daily token budget — has the actor exceeded MAX_TOKENS_PER_DAY?
+
+    The daily-token budget is rolled over lazily: before running the quota
+    check, :func:`maybe_reset_daily_tokens` clears ``_daily_tokens`` if the
+    UTC date has advanced since the last reset. This makes the "daily" in
+    ``MAX_TOKENS_PER_DAY`` real without relying on a background scheduler.
     """
+    # Roll the daily budget forward if the UTC date has changed. Without
+    # this, ``_daily_tokens`` accumulates monotonically for the lifetime
+    # of the process and actors are permanently locked out once they
+    # cross ``MAX_TOKENS_PER_DAY``.
+    maybe_reset_daily_tokens()
+
     # 1. Permission check
     cmd_type = cmd.type.value
     allowed = False
@@ -119,5 +135,31 @@ def reset_tick_counters() -> None:
 
 
 def reset_daily_tokens() -> None:
-    """Reset daily token budgets. Called at day boundary."""
+    """Reset daily token budgets unconditionally.
+
+    Used by tests to clear state between cases, and by
+    :func:`maybe_reset_daily_tokens` once a UTC day boundary is crossed.
+    """
+    global _last_reset_date
     _daily_tokens.clear()
+    _last_reset_date = datetime.now(UTC).date()
+
+
+def maybe_reset_daily_tokens(now: datetime | None = None) -> bool:
+    """Clear daily token budgets iff the UTC date has advanced.
+
+    ``guardrail_allow`` calls this on every command so the "daily" in
+    ``MAX_TOKENS_PER_DAY`` actually rolls over at midnight UTC rather
+    than accumulating for the entire process lifetime. Tests can pass
+    an explicit ``now`` to exercise the rollover without touching the
+    wall clock.
+
+    Returns ``True`` if a reset was performed, ``False`` otherwise.
+    """
+    global _last_reset_date
+    current_date = (now or datetime.now(UTC)).date()
+    if current_date != _last_reset_date:
+        _daily_tokens.clear()
+        _last_reset_date = current_date
+        return True
+    return False
