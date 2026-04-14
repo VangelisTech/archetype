@@ -54,18 +54,23 @@ class Component(LanceModel):
         a ``"type"`` key raises ``ValueError`` rather than silently
         constructing a base Component with lost type information.
         """
-        component_type_name = data.pop("type", None)
+        component_type_name = data.get("type")
+        # Build kwargs without mutating the caller's dict. ``dict.pop`` would
+        # strip ``"type"`` from the input in-place, so a second call on the
+        # same dict silently falls through to the base ``Component`` branch
+        # and returns the wrong type.
+        fields = {k: v for k, v in data.items() if k != "type"}
         if component_type_name:
             ComponentType = cls.get_type_by_name(component_type_name)
-            return ComponentType(**data)
+            return ComponentType(**fields)
         if cls is Component:
             raise ValueError(
                 "Component.from_dict requires a 'type' key in the payload to "
                 "identify the concrete subclass. Use Component.to_payload() "
                 "to serialize, or include 'type' explicitly. Got keys: "
-                + ", ".join(sorted(data.keys()))
+                + ", ".join(sorted(fields.keys()))
             )
-        return cls(**data)
+        return cls(**fields)
 
     def to_payload(self) -> dict[str, Any]:
         """Serialize to a dict suitable for ``Command`` payloads.

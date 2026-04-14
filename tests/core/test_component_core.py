@@ -88,6 +88,34 @@ def test_to_payload_round_trips_through_from_dict():
     assert restored.a == 7
 
 
+def test_from_dict_does_not_mutate_input():
+    """Regression: Component.from_dict must not mutate the caller's dict.
+
+    Previously ``data.pop("type", None)`` removed the key in-place, so a
+    second call on the same dict returned a bare ``Component`` instead of
+    the intended subclass. This broke config-driven templates, retry loops,
+    and JSON round-trips. See
+    ``docs/reports/2026-04-11-bug-from-dict-mutates-input.md``.
+    """
+    template = {"type": "DemoUnique", "a": 1}
+    snapshot = dict(template)
+
+    first = Component.from_dict(template)
+    # Input dict must be untouched after the call.
+    assert template == snapshot
+    assert isinstance(first, DemoUnique)
+    assert first.a == 1
+
+    # A second call on the same dict must still yield the concrete subclass.
+    second = Component.from_dict(template)
+    assert isinstance(second, DemoUnique), (
+        f"from_dict mutated its input: second call returned "
+        f"{type(second).__name__}, expected DemoUnique"
+    )
+    assert second.a == 1
+    assert template == snapshot
+
+
 class Diverse(Component):
     an_int: int
     a_float: float
