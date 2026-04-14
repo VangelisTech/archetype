@@ -238,10 +238,7 @@ class CommandService:
             logger.warning("UPDATE: entity %s has no prior row to update", entity_id)
             return
 
-        # Mark the prior row for this entity inactive and append the overlaid
-        # row under the same signature. Mirrors the archetype-move bookkeeping
-        # in ``AsyncWorld.add_components`` so that queries latched onto "latest
-        # active row" return the updated values, not the original.
+        # Mark prior row inactive and append the updated row.
         world._despawn_cache.setdefault(old_sig, []).append(entity_id)
         world._spawn_cache.setdefault(new_sig, []).append(row)
 
@@ -268,12 +265,6 @@ class CommandService:
         per-world ``apply()`` path.
 
         Returns the created/forked world for CREATE and FORK, None for DESTROY.
-
-        Lifecycle commands are not tick-scheduled, so the broker's
-        ``drain_and_apply`` loop never sees them. Drain the command from
-        ``__global__`` here (in a ``finally`` so failures don't leak either)
-        to keep ``broker._pending`` and ``broker._queues['__global__']`` from
-        growing without bound across the process lifetime.
         """
         payload = cmd.payload
 

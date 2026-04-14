@@ -170,3 +170,114 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     await step_task
     # With two archetypes, processors should overlap at least once
     assert shared["peak"] >= 2
+
+
+# ---------------------------------------------------------------------------
+# Tests: kwargs forwarding and debug propagation through AsyncSystem.execute.
+# ---------------------------------------------------------------------------
+
+
+class CatchAllKwargsProbe(AsyncProcessor):
+    """Processor using the documented catch-all signature. Captures the full
+    kwargs dict it receives for assertions."""
+
+    components = (Position,)
+    priority = 5
+
+    def __init__(self):
+        self.received: list[dict] = []
+
+    async def process(self, df, **kwargs):
+        # Copy to snapshot what the system handed us, minus non-serializable
+        # values we don't care about (resources is a live container).
+        self.received.append({k: v for k, v in kwargs.items() if k != "resources"})
+        return df
+
+
+class DebugProbe(AsyncProcessor):
+    """Processor with named ``debug`` param to verify debug propagation."""
+
+    components = (Position,)
+    priority = 5
+
+    def __init__(self):
+        self.received_debug: list = []
+
+    async def process(self, df, debug=None, **kwargs):
+        self.received_debug.append(debug)
+        return df
+
+
+@pytest.mark.asyncio
+async def test_var_keyword_processor_receives_all_kwargs(store_backend):
+    """A processor declared as ``process(self, df, **kwargs)`` must actually
+    receive tick, debug, resources, etc. Previously the filter keyed on
+    named parameters only and handed var-keyword processors an empty dict."""
+    querier = AsyncQueryManager(store_backend)
+    updater = AsyncUpdateManager(store_backend)
+    system = AsyncSystem()
+    wcfg = WorldConfig(name="catchall")
+    w = AsyncWorld(wcfg, querier, updater, system)
+
+    probe = CatchAllKwargsProbe()
+    await w.add_processor(probe)
+    _ = await w.create_entity([Position(x=1, y=1)])
+    await w.run(RunConfig(num_steps=1, debug=True))
+
+    assert len(probe.received) == 1, f"processor ran {len(probe.received)} times"
+    kwargs = probe.received[0]
+    assert "tick" in kwargs, f"tick missing from **kwargs: {sorted(kwargs)}"
+    assert kwargs["tick"] == 0
+    assert kwargs.get("debug") is True, f"debug not propagated: {kwargs.get('debug')!r}"
+
+
+@pytest.mark.asyncio
+async def test_run_config_debug_propagates_to_processor(store_backend):
+    """RunConfig(debug=True) must reach processors. Previously ``debug`` bound
+    to AsyncSystem.execute's named param and was never re-injected into the
+    kwargs dict forwarded to processors."""
+    querier = AsyncQueryManager(store_backend)
+    updater = AsyncUpdateManager(store_backend)
+    system = AsyncSystem()
+    wcfg = WorldConfig(name="debugprobe")
+    w = AsyncWorld(wcfg, querier, updater, system)
+
+    probe = DebugProbe()
+    await w.add_processor(probe)
+    _ = await w.create_entity([Position(x=1, y=1)])
+    await w.run(RunConfig(num_steps=1, debug=True))
+
+    assert probe.received_debug == [True], (
+        f"debug=True from RunConfig was not forwarded: {probe.received_debug}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_closed_signature_processor_still_filters_unknown_kwargs(store_backend):
+    """A processor without ``**kwargs`` and without named ``tick``/``debug``
+    must still be called successfully — the filter should drop kwargs it
+    doesn't accept rather than raising ``TypeError``."""
+
+    class ClosedProc(AsyncProcessor):
+        components = (Position,)
+        priority = 5
+
+        def __init__(self):
+            self.calls = 0
+
+        async def process(self, df):  # no kwargs, no **kwargs
+            self.calls += 1
+            return df
+
+    querier = AsyncQueryManager(store_backend)
+    updater = AsyncUpdateManager(store_backend)
+    system = AsyncSystem()
+    wcfg = WorldConfig(name="closed")
+    w = AsyncWorld(wcfg, querier, updater, system)
+
+    proc = ClosedProc()
+    await w.add_processor(proc)
+    _ = await w.create_entity([Position(x=1, y=1)])
+    await w.run(RunConfig(num_steps=1, debug=True))
+
+    assert proc.calls == 1

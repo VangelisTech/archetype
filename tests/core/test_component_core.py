@@ -89,7 +89,7 @@ def test_to_payload_round_trips_through_from_dict():
 
 
 def test_from_dict_does_not_mutate_input():
-    """Regression: Component.from_dict must not mutate the caller's dict.
+    """from_dict does not mutate the caller's dict.
 
     Previously ``data.pop("type", None)`` removed the key in-place, so a
     second call on the same dict returned a bare ``Component`` instead of

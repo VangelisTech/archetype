@@ -53,7 +53,7 @@ class _CountingAsyncStore:
 
 @pytest.mark.asyncio
 async def test_storage_service_shutdown_continues_after_first_store_failure():
-    """Regression: a single failing store must not abort the shutdown loop.
+    """A failing store does not abort the shutdown loop.
 
     Before the fix, `StorageService.shutdown` iterated `_instances.values()`
     without exception handling — the first failing store aborted the loop,
@@ -83,7 +83,7 @@ async def test_storage_service_shutdown_continues_after_first_store_failure():
 
 @pytest.mark.asyncio
 async def test_storage_service_shutdown_failing_in_middle_drains_all():
-    """Regression: a failing store in the MIDDLE of the iteration order
+    """A failing store in the middle of iteration
     must not block stores that come after it."""
     svc = StorageService()
     try:

@@ -69,9 +69,10 @@ class AsyncSystem(iAsyncSystem):
             debug: Enable debug logging for processor execution
             **input_kwargs: Additional kwargs passed to processors
         """
-        # Include resources in kwargs for processors that want it
+        # Forward resources and debug to processors via kwargs.
         if resources is not None:
             input_kwargs["resources"] = resources
+        input_kwargs["debug"] = debug
 
         archetype_name = Archetype.get_name(sig) if debug else None
 
@@ -89,11 +90,17 @@ class AsyncSystem(iAsyncSystem):
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     assert isinstance(proc_instance, AsyncProcessor)
-                    # Filter input_kwargs to only what the processor accepts to avoid unexpected input_kwargs
+                    # Filter kwargs to what the processor accepts; pass all if it has **kwargs.
                     sig_params = inspect.signature(proc_instance.process).parameters
-                    filtered_input_kwargs = {
-                        k: v for k, v in input_kwargs.items() if k in sig_params
-                    }
+                    accepts_var_keyword = any(
+                        p.kind is inspect.Parameter.VAR_KEYWORD for p in sig_params.values()
+                    )
+                    if accepts_var_keyword:
+                        filtered_input_kwargs = dict(input_kwargs)
+                    else:
+                        filtered_input_kwargs = {
+                            k: v for k, v in input_kwargs.items() if k in sig_params
+                        }
                     df = await proc_instance.process(df, **filtered_input_kwargs)
 
                     if debug:

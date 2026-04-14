@@ -68,9 +68,7 @@ _TOKEN_COSTS: dict[str, int] = {
 _tick_counters: dict[UUID, int] = {}
 # Per-actor daily token usage: actor_id → tokens used today
 _daily_tokens: dict[UUID, int] = {}
-# UTC date of the most recent daily-tokens reset; used by
-# ``maybe_reset_daily_tokens`` to roll the budget over at midnight UTC
-# without a background scheduler.
+# UTC date of the last daily-token reset.
 _last_reset_date: date = datetime.now(UTC).date()
 
 
@@ -100,10 +98,7 @@ def guardrail_check(
     check, :func:`maybe_reset_daily_tokens` clears ``_daily_tokens`` if the
     UTC date has advanced since the last reset.
     """
-    # Roll the daily budget forward if the UTC date has changed. Without
-    # this, ``_daily_tokens`` accumulates monotonically for the lifetime
-    # of the process and actors are permanently locked out once they
-    # cross ``MAX_TOKENS_PER_DAY``.
+    # Roll the daily budget forward if the UTC date has changed.
     maybe_reset_daily_tokens()
 
     # 1. Permission check
