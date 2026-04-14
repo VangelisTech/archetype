@@ -16,7 +16,7 @@ from archetype.api.models import CreateWorldRequest, ForkWorldRequest, WorldResp
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import Command, CommandType
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldService, _world_entity_count
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
@@ -43,7 +43,7 @@ async def create_world(
         world_id=str(world.world_id),
         name=getattr(world, "name", None),
         tick=getattr(world, "tick", 0),
-        entity_count=getattr(world, "entity_count", 0),
+        entity_count=_world_entity_count(world),
     )
 
 
@@ -69,7 +69,7 @@ async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)
             world_id=str(world.world_id),
             name=getattr(world, "name", None),
             tick=getattr(world, "tick", 0),
-            entity_count=getattr(world, "entity_count", 0),
+            entity_count=_world_entity_count(world),
         )
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
@@ -118,5 +118,5 @@ async def fork_world(
         world_id=str(new_world.world_id),
         name=getattr(new_world, "name", None),
         tick=getattr(new_world, "tick", 0),
-        entity_count=getattr(new_world, "entity_count", 0),
+        entity_count=_world_entity_count(new_world),
     )

@@ -21,6 +21,19 @@ from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncSystem, iWorld
 
 
+def _world_entity_count(world: iWorld) -> int:
+    """Return the number of tracked entities on a world.
+
+    ``iWorld`` does not define ``entity_count`` directly, but both
+    ``AsyncWorld`` and ``SyncWorld`` track entities in ``_entity2sig``.
+    Falls back to ``0`` if neither attribute is present.
+    """
+    count = getattr(world, "entity_count", None)
+    if isinstance(count, int):
+        return count
+    return len(getattr(world, "_entity2sig", {}))
+
+
 class WorldService:
     """
     Manages the lifecycle of multiple worlds.
@@ -116,7 +129,7 @@ class WorldService:
                 world_id=wid,
                 name=getattr(world, "name", None),
                 tick=getattr(world, "tick", 0),
-                entity_count=getattr(world, "entity_count", 0),
+                entity_count=_world_entity_count(world),
                 archetype_signatures=[],
             )
             result.append(info)
