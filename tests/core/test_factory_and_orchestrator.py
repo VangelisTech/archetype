@@ -47,7 +47,7 @@ async def test_world_service_lifecycle_and_name_lookup(tmp_path):
         assert len(worlds) == 1
 
         # remove by ID
-        ws.remove_world(w1.world_id)
+        await ws.remove_world(w1.world_id)
         assert len(ws.list_worlds()) == 0
     finally:
         await ws.shutdown()

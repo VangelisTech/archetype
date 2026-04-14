@@ -468,7 +468,7 @@ class TestWorldService:
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = await container.world_service.create_world(WorldConfig(name="w1"), storage)
-            container.world_service.remove_world(world.world_id)
+            await container.world_service.remove_world(world.world_id)
             assert len(container.world_service.list_worlds()) == 0
         finally:
             await container.shutdown()
@@ -481,6 +481,81 @@ class TestWorldService:
             world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
             found = container.world_service.get_world_by_name("alpha")
             assert found.world_id == world.world_id
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_remove_world_clears_broker_state(self, tmp_path):
+        """Regression: remove_world used to delete the world from _worlds
+        but leave every pending command, in-flight command id, and audit
+        history entry behind in the broker — an unbounded memory leak on
+        every world destroy.
+        """
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="doomed"), storage)
+            wid = world.world_id
+            wid_str = str(wid)
+
+            # Enqueue a few commands so the broker has non-trivial state.
+            for i in range(3):
+                cmd = Command(
+                    type=CommandType.SPAWN,
+                    tick=0,
+                    payload={"components": [_ListWorldsPos(x=i).to_payload()]},
+                )
+                await container.command_service.submit(wid, cmd, ctx)
+
+            broker = container.broker
+            assert len(broker._queues.get(wid_str, [])) == 3
+            assert len(broker._history.get(wid_str, [])) == 3
+            assert await broker.get_pending_count() >= 3
+
+            await container.world_service.remove_world(wid)
+
+            assert broker._queues.get(wid_str, []) == []
+            assert broker._history.get(wid_str, []) == []
+            assert await broker.get_pending_count() == 0
+            assert all(cmd_id not in broker._pending for cmd_id in list(broker._pending))
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_world_command_clears_broker_state(self, tmp_path):
+        """Regression: DESTROY_WORLD via CommandService must also evict the
+        destroyed world's broker state, not just the WorldService entry.
+        """
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="ephemeral"), storage
+            )
+            wid = world.world_id
+            wid_str = str(wid)
+
+            spawn_cmd = Command(
+                type=CommandType.SPAWN,
+                tick=0,
+                payload={"components": [_ListWorldsPos(x=0).to_payload()]},
+            )
+            await container.command_service.submit(wid, spawn_cmd, ctx)
+
+            broker = container.broker
+            assert len(broker._queues.get(wid_str, [])) == 1
+
+            destroy_cmd = Command(
+                type=CommandType.DESTROY_WORLD,
+                tick=0,
+                payload={"world_id": str(wid)},
+            )
+            await container.command_service.apply_world_lifecycle(destroy_cmd)
+
+            assert broker._queues.get(wid_str, []) == []
+            assert broker._history.get(wid_str, []) == []
         finally:
             await container.shutdown()
 

@@ -285,7 +285,7 @@ class CommandService:
 
             case CommandType.DESTROY_WORLD:
                 target_id = UUID(str(payload["world_id"]))
-                self._world_service.remove_world(target_id)
+                await self._world_service.remove_world(target_id)
                 return None
 
             case CommandType.FORK_WORLD:
