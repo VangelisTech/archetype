@@ -89,13 +89,7 @@ class TestCommandService:
 
     @pytest.mark.asyncio
     async def test_apply_world_lifecycle_does_not_leak_broker_state(self, tmp_path):
-        """Regression: lifecycle commands (CREATE/DESTROY/FORK_WORLD) are
-        applied immediately rather than tick-scheduled, so the broker's
-        ``drain_and_apply`` loop never sees them. ``apply_world_lifecycle``
-        must drain ``__global__`` itself or every lifecycle op leaks one
-        zombie command into ``broker._pending`` and ``broker._queues``
-        forever.
-        """
+        """apply_world_lifecycle drains __global__ after each lifecycle op."""
         container = ServiceContainer()
         try:
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -140,7 +134,7 @@ class TestCommandService:
 
     @pytest.mark.asyncio
     async def test_lifecycle_round_trip_does_not_leak_at_volume(self, tmp_path):
-        """Regression: 50 CREATE/DESTROY pairs must leave zero zombies."""
+        """50 CREATE/DESTROY round-trips leave zero broker zombies."""
         container = ServiceContainer()
         try:
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -180,9 +174,7 @@ class TestCommandService:
 
     @pytest.mark.asyncio
     async def test_apply_world_lifecycle_drains_on_failure(self, tmp_path):
-        """Regression: even if the side effect raises, the command must not
-        leak into the broker. The drain must happen in a finally block.
-        """
+        """Failed lifecycle commands are still drained from the broker."""
         container = ServiceContainer()
         try:
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -602,11 +594,7 @@ class TestWorldService:
 
     @pytest.mark.asyncio
     async def test_remove_world_clears_broker_state(self, tmp_path):
-        """Regression: remove_world used to delete the world from _worlds
-        but leave every pending command, in-flight command id, and audit
-        history entry behind in the broker — an unbounded memory leak on
-        every world destroy.
-        """
+        """remove_world clears the world's broker state."""
         container = ServiceContainer()
         try:
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -640,9 +628,7 @@ class TestWorldService:
 
     @pytest.mark.asyncio
     async def test_destroy_world_command_clears_broker_state(self, tmp_path):
-        """Regression: DESTROY_WORLD via CommandService must also evict the
-        destroyed world's broker state, not just the WorldService entry.
-        """
+        """DESTROY_WORLD command clears broker state for the destroyed world."""
         container = ServiceContainer()
         try:
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
@@ -677,10 +663,7 @@ class TestWorldService:
 
     @pytest.mark.asyncio
     async def test_list_worlds_reports_actual_entity_count(self, tmp_path):
-        """Regression: list_worlds used to return entity_count=0 for every world
-        because AsyncWorld has no ``entity_count`` attribute and
-        ``getattr(world, "entity_count", 0)`` always fell through to 0.
-        """
+        """list_worlds reports the actual entity count, not zero."""
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -696,13 +679,7 @@ class TestWorldService:
 
     @pytest.mark.asyncio
     async def test_create_world_with_explicit_none_world_id_generates_uuid(self, tmp_path):
-        """Regression: ``WorldConfig(world_id=None)`` used to produce a world
-        with ``world_id=None`` because pydantic's ``default_factory`` only
-        fires on omitted fields. ``create_world`` generated a fresh UUID
-        locally but passed the unmodified config (with ``world_id=None``) to
-        the factory, so ``AsyncWorld.world_id`` landed on ``None`` and
-        ``_worlds`` was keyed by ``None``.
-        """
+        """create_world with explicit world_id=None produces a real UUID."""
         ws = WorldService(StorageService())
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -720,10 +697,7 @@ class TestWorldService:
 
     @pytest.mark.asyncio
     async def test_two_worlds_with_explicit_none_ids_do_not_collide(self, tmp_path):
-        """Regression: two ``WorldConfig(world_id=None)`` creates used to
-        collapse onto the same ``_worlds[None]`` entry, silently overwriting
-        the first world with the second.
-        """
+        """Two creates with world_id=None produce distinct worlds."""
         ws = WorldService(StorageService())
         try:
             w1 = await ws.create_world(

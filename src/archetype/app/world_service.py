@@ -92,13 +92,7 @@ class WorldService:
 
         _ensure_storage_uri_writable(storage_config)
 
-        # ``WorldConfig.world_id`` is typed ``UUID | None`` and has a
-        # ``default_factory=uuid7``. The factory only fires when the field is
-        # omitted; callers passing ``world_id=None`` explicitly produce a
-        # ``WorldConfig`` with ``world_id is None``. Resolve that here and
-        # thread the concrete UUID back into the config that the factory
-        # sees, so ``AsyncWorld.world_id`` (which reads from the config) is
-        # never ``None`` and ``_worlds`` is never keyed by ``None``.
+        # Ensure world_id is always a concrete UUID, even if caller passed None.
         world_id = config.world_id or uuid7()
         if config.world_id is None:
             config = config.model_copy(update={"world_id": world_id})
@@ -106,9 +100,7 @@ class WorldService:
         if world_id in self._worlds:
             return self._worlds[world_id]
 
-        # Validate name uniqueness BEFORE allocating a storage backend or
-        # constructing a world. Otherwise, a duplicate-name attempt leaks a
-        # half-built world into _worlds while the validity check raises.
+        # Validate name uniqueness before allocating resources.
         if config.name and config.name in self._world_names:
             raise ValueError(f"World with name '{config.name}' already exists.")
 
@@ -160,15 +152,7 @@ class WorldService:
         return result
 
     async def remove_world(self, world_id: UUID) -> None:
-        """Removes a world from management by its ID.
-
-        Also evicts the world's broker state (pending queue, in-flight
-        command ids, and audit history) so destroying a world does not leak
-        broker bookkeeping for the lifetime of the process. Without this,
-        ``broker.get_pending_count()`` over-reports indefinitely and
-        ``broker.get_history(world_id)`` returns orphaned commands for a
-        world that no longer exists.
-        """
+        """Removes a world and its broker state by ID."""
         if world_id in self._worlds:
             for name, uid in list(self._world_names.items()):
                 if uid == world_id:

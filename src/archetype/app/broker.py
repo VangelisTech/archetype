@@ -187,15 +187,7 @@ class CommandBroker:
                 self._pending.pop(cid, None)
 
     async def remove(self, world_id: str | UUID, cmd_id: UUID) -> None:
-        """Surgically remove a single command from both the per-world queue
-        and the global pending dict.
-
-        Used by callers that bypass ``dequeue_due`` (e.g. world-lifecycle
-        commands that are applied immediately rather than tick-scheduled),
-        so the command does not leak forever in ``_pending`` and
-        ``_queues``. ``_history`` is preserved as the audit trail.
-        Idempotent: if the command is not present, this is a no-op.
-        """
+        """Remove a command from the queue and pending dict. Preserves history. Idempotent."""
         async with self._lock:
             self._pending.pop(cmd_id, None)
             key = str(world_id)

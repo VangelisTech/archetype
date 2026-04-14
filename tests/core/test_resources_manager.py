@@ -64,10 +64,7 @@ async def test_backend_selection_between_default_and_lancedb(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_backend_pool_distinguishes_cache_config(tmp_path):
-    """Regression: two callers with the same (uri, namespace) but different
-    cache_config must get distinct (correctly-wrapped) backends. Previously
-    the pool key was (uri, namespace) only, so the second caller silently
-    inherited the first caller's cache wrapper."""
+    """Same (uri, namespace) but different cache_config yields distinct backends."""
     from archetype.core.aio import AsyncCachedStore
 
     svc = StorageService()
@@ -87,8 +84,7 @@ async def test_get_backend_pool_distinguishes_cache_config(tmp_path):
 
 @pytest.mark.asyncio
 async def test_get_backend_pool_distinguishes_backend_choice(tmp_path):
-    """Regression: two callers with the same (uri, namespace) but different
-    backend must get distinct backend instances."""
+    """Same (uri, namespace) but different backend yields distinct instances."""
     svc = StorageService()
     try:
         cfg_iceberg = StorageConfig(

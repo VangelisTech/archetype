@@ -21,7 +21,7 @@ async def test_world_service_duplicate_name_raises(tmp_path):
 
 @pytest.mark.asyncio
 async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tmp_path):
-    """Regression: a failed duplicate-name create_world must NOT leave a
+    """A failed duplicate-name create_world does not leave a
     half-built world in _worlds (previously inserted before the name check)."""
     ws = WorldService(StorageService())
     try:
@@ -47,7 +47,7 @@ async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tm
 
 @pytest.mark.asyncio
 async def test_world_service_repeated_duplicate_name_creates_do_not_grow_worlds(tmp_path):
-    """Regression: repeated failing duplicate-name create_world calls must
+    """Repeated failing duplicate-name create_world calls
     not accumulate worlds in the in-memory registry."""
     ws = WorldService(StorageService())
     try:

@@ -39,16 +39,7 @@ class StorageService:
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
-        """
-        Retrieves or creates a shared backend triplet for the given storage config.
-
-        The pool key includes ``uri``, ``namespace``, ``backend``, and the
-        effective ``cache_config``. Keying on ``(uri, namespace)`` alone would
-        silently hand a subsequent caller the first caller's wrapped triplet —
-        ignoring the subsequent caller's explicit ``backend`` or
-        ``cache_config`` choice (e.g. opting out of caching or switching
-        between Iceberg/LanceDB).
-        """
+        """Retrieves or creates a shared backend triplet for the given storage config."""
         key = self._pool_key(storage_config, cache_config)
 
         if key not in self._instances:
@@ -66,13 +57,7 @@ class StorageService:
         storage_config: StorageConfig,
         cache_config: CacheConfig | None,
     ) -> str:
-        """Build a pool key that distinguishes every dimension the backend
-        triplet depends on.
-
-        Callers that share ``(uri, namespace)`` but disagree on ``backend`` or
-        ``cache_config`` must receive distinct (correctly-wrapped) triplets,
-        so those dimensions are part of the key.
-        """
+        """Build a pool key covering uri, namespace, backend, and cache_config."""
         # Normalize cache_config's bool-style shorthand the same way
         # _create_backend does, so equivalent specs share a key.
         if isinstance(cache_config, bool):

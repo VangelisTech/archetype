@@ -173,10 +173,7 @@ async def test_archetypes_process_in_parallel(world, store_backend):
 
 
 # ---------------------------------------------------------------------------
-# Regression: AsyncSystem.execute must forward the full kwargs dict to
-# processors that catch ``**kwargs``, and must propagate ``debug`` from
-# RunConfig through to processors. See
-# docs/reports/2026-04-11-bug-system-execute-strips-var-keyword-kwargs.md.
+# Tests: kwargs forwarding and debug propagation through AsyncSystem.execute.
 # ---------------------------------------------------------------------------
 
 

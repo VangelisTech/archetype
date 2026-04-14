@@ -69,10 +69,7 @@ class AsyncSystem(iAsyncSystem):
             debug: Enable debug logging for processor execution
             **input_kwargs: Additional kwargs passed to processors
         """
-        # Include resources and debug in kwargs for processors that want them.
-        # ``debug`` binds to the named parameter on this method's signature, so
-        # it is NOT in ``input_kwargs`` at this point — re-inject it so
-        # processors that declare it (or catch ``**kwargs``) actually see it.
+        # Forward resources and debug to processors via kwargs.
         if resources is not None:
             input_kwargs["resources"] = resources
         input_kwargs["debug"] = debug
@@ -93,11 +90,7 @@ class AsyncSystem(iAsyncSystem):
                 # Dataframes are immutable so we are continuously returning an updated variant of the original.
                 try:
                     assert isinstance(proc_instance, AsyncProcessor)
-                    # Filter input_kwargs to only what the processor accepts to avoid
-                    # unexpected kwargs. A processor that catches ``**kwargs`` must
-                    # receive the full dict — ``k in sig_params`` alone misses this
-                    # because the VAR_KEYWORD parameter is named (e.g. ``kwargs``),
-                    # not the kwarg names it accepts.
+                    # Filter kwargs to what the processor accepts; pass all if it has **kwargs.
                     sig_params = inspect.signature(proc_instance.process).parameters
                     accepts_var_keyword = any(
                         p.kind is inspect.Parameter.VAR_KEYWORD for p in sig_params.values()
