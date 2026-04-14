@@ -206,6 +206,106 @@ async def test_spawn_with_bare_model_dump_raises(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_update_command_mutates_existing_component_values(tmp_path):
+    """UPDATE must change component values even when the entity already has
+    that component type (same archetype signature).
+
+    Regression for the ``update-command-silently-noops`` bug: the UPDATE and
+    ADD_COMPONENT dispatch arms in ``CommandService.apply`` both routed to
+    ``AsyncWorld.add_components``, which early-returns when the signature is
+    unchanged. The user's "update Position to (99, 99)" looked like it
+    succeeded end-to-end — the command acked, audit history recorded it — but
+    the entity values never moved.
+    """
+    from archetype.core.component import Component
+    from archetype.core.config import RunConfig
+
+    class UpdateRegressionPos(Component):
+        x: int = 0
+        y: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="update-regression"), storage
+        )
+
+        eid = await world.create_entity([UpdateRegressionPos(x=1, y=2)])
+        await world.run(RunConfig(num_steps=1))
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cmd = Command(
+            type=CommandType.UPDATE,
+            tick=0,
+            payload={
+                "entity_id": eid,
+                "components": [UpdateRegressionPos(x=99, y=99).to_payload()],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        df = await world.get_components([UpdateRegressionPos], entity_ids=[eid])
+        rows = df.collect().to_pylist()
+        assert rows, "UPDATE produced no rows for entity"
+        latest = max(rows, key=lambda r: r["tick"])
+        assert latest["updateregressionpos__x"] == 99 and latest["updateregressionpos__y"] == 99, (
+            f"UPDATE silently dropped — latest row is "
+            f"({latest['updateregressionpos__x']}, {latest['updateregressionpos__y']}), "
+            f"expected (99, 99)."
+        )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_update_command_widens_archetype_with_new_component(tmp_path):
+    """UPDATE that introduces a brand-new component type should behave like
+    ADD_COMPONENT — the entity moves to a wider archetype and picks up the
+    new values."""
+    from archetype.core.component import Component
+    from archetype.core.config import RunConfig
+
+    class UpdateWidenPos(Component):
+        x: int = 0
+
+    class UpdateWidenVel(Component):
+        vx: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="update-widen"), storage
+        )
+
+        eid = await world.create_entity([UpdateWidenPos(x=1)])
+        await world.run(RunConfig(num_steps=1))
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cmd = Command(
+            type=CommandType.UPDATE,
+            tick=0,
+            payload={
+                "entity_id": eid,
+                "components": [UpdateWidenVel(vx=7).to_payload()],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        df = await world.get_components([UpdateWidenPos, UpdateWidenVel], entity_ids=[eid])
+        rows = df.collect().to_pylist()
+        assert rows, "UPDATE-widen produced no rows in (UpdateWidenPos, UpdateWidenVel) archetype"
+        latest = max(rows, key=lambda r: r["tick"])
+        assert latest["updatewidenpos__x"] == 1
+        assert latest["updatewidenvel__vx"] == 7
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_rbac_denies_viewer_spawn(tmp_path):
     """A viewer should not be able to submit a SPAWN command."""
     container = ServiceContainer()

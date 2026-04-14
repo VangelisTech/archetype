@@ -179,6 +179,46 @@ class CommandService:
             world._next_entity_id = entity_id
 
     @staticmethod
+    async def _apply_update(world: AsyncWorld, entity_id: int, components: list) -> None:
+        """Apply an UPDATE: overlay component values on an existing entity.
+
+        Unlike ``ADD_COMPONENT``, UPDATE must mutate component values even when
+        the entity already has those component types (same archetype signature).
+        ``AsyncWorld.add_components`` early-returns in that case, which made
+        UPDATE a silent no-op for the natural use case. Here we detect the
+        same-signature path and push an overlaid row through the spawn cache
+        directly; type-widening updates still delegate to ``add_components``.
+        """
+        from archetype.core.archetype import Archetype
+
+        old_sig = world._entity2sig.get(entity_id)
+        if old_sig is None:
+            logger.warning("UPDATE: entity %s not found", entity_id)
+            return
+
+        if not components:
+            return
+
+        new_sig = Archetype.add_components(old_sig, [type(c) for c in components])
+        if new_sig != old_sig:
+            # New component types introduced — archetype move already handles
+            # overlaying the supplied values via _move_entity.
+            await world.add_components(entity_id, components)
+            return
+
+        row = await world._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning("UPDATE: entity %s has no prior row to update", entity_id)
+            return
+
+        # Mark the prior row for this entity inactive and append the overlaid
+        # row under the same signature. Mirrors the archetype-move bookkeeping
+        # in ``AsyncWorld.add_components`` so that queries latched onto "latest
+        # active row" return the updated values, not the original.
+        world._despawn_cache.setdefault(old_sig, []).append(entity_id)
+        world._spawn_cache.setdefault(new_sig, []).append(row)
+
+    @staticmethod
     def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
         from archetype.core.archetype import Archetype
 
@@ -250,7 +290,12 @@ class CommandService:
                 entity_id = payload["entity_id"]
                 await world.remove_entity(entity_id)
 
-            case CommandType.UPDATE | CommandType.ADD_COMPONENT:
+            case CommandType.UPDATE:
+                entity_id = payload["entity_id"]
+                components = self._hydrate_components(payload.get("components", []))
+                await self._apply_update(world, int(entity_id), components)
+
+            case CommandType.ADD_COMPONENT:
                 entity_id = payload["entity_id"]
                 components = self._hydrate_components(payload.get("components", []))
                 await world.add_components(entity_id, components)
