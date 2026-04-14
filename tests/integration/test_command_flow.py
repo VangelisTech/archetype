@@ -306,6 +306,123 @@ async def test_update_command_widens_archetype_with_new_component(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_remove_component_resolves_string_type_names(tmp_path):
+    """REMOVE_COMPONENT must resolve string type names to Component classes.
+
+    Regression for the ``remove-component-strings-noop`` bug:
+    ``CommandService.apply`` used to forward ``payload["component_types"]``
+    straight to ``world.remove_components`` without resolving wire-format
+    strings to ``Component`` subclasses. ``Archetype.remove_components``
+    then computed a set difference between class objects and strings,
+    producing ``new_sig == old_sig`` so the move was skipped — the entity
+    silently kept the component. Every REST/CLI/MCP caller hit this since
+    JSON cannot carry Python class objects.
+    """
+    from archetype.core.component import Component
+
+    class _RemovePosition(Component):
+        x: int = 0
+        y: int = 0
+
+    class _RemoveVelocity(Component):
+        vx: int = 0
+        vy: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="remove-strings"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        spawn_cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={
+                "components": [
+                    _RemovePosition(x=1, y=2).to_payload(),
+                    _RemoveVelocity(vx=3, vy=4).to_payload(),
+                ],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), spawn_cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        assert frozenset({_RemovePosition, _RemoveVelocity}) in {
+            frozenset(sig) for sig in world._live
+        }
+        entity_id = next(
+            eid
+            for eid, sig in world._entity2sig.items()
+            if frozenset(sig) == frozenset({_RemovePosition, _RemoveVelocity})
+        )
+
+        remove_cmd = Command(
+            type=CommandType.REMOVE_COMPONENT,
+            tick=1,
+            payload={
+                "entity_id": entity_id,
+                # Wire format: list of strings — what JSON callers send.
+                "component_types": ["_RemoveVelocity"],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), remove_cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id)
+
+        # Entity must now live in the (_RemovePosition,) archetype.
+        new_sig = world._entity2sig[entity_id]
+        assert frozenset(new_sig) == frozenset({_RemovePosition}), (
+            f"REMOVE_COMPONENT silently no-opped on string types: entity still at {new_sig}"
+        )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_component_unknown_string_type_raises(tmp_path):
+    """Unknown component type names must raise — not silently no-op."""
+    from archetype.core.component import Component
+
+    class Tag(Component):
+        label: str = ""
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="remove-unknown"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        spawn_cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [Tag(label="x").to_payload()]},
+        )
+        await container.command_service.submit(str(world.world_id), spawn_cmd, ctx)
+        await container.simulation_service.step(world.world_id)
+
+        entity_id = next(iter(world._entity2sig))
+        # Ask the service to apply directly so the ValueError surfaces (drain_and_apply
+        # swallows per-command exceptions to keep the tick alive).
+        bad_cmd = Command(
+            type=CommandType.REMOVE_COMPONENT,
+            tick=1,
+            payload={
+                "entity_id": entity_id,
+                "component_types": ["NoSuchComponent"],
+            },
+        )
+        async_world = container.world_service.get_world(world.world_id)
+        with pytest.raises(ValueError, match="NoSuchComponent"):
+            await container.command_service.apply(async_world, bad_cmd)
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_rbac_denies_viewer_spawn(tmp_path):
     """A viewer should not be able to submit a SPAWN command."""
     container = ServiceContainer()

@@ -168,6 +168,33 @@ class CommandService:
         return result
 
     @staticmethod
+    def _hydrate_component_types(raw: list) -> list:
+        """Resolve a payload's ``component_types`` list into Component classes.
+
+        REMOVE_COMPONENT payloads cross JSON boundaries (REST/CLI/MCP) so the
+        wire format is a list of strings naming Component subclasses. Pass
+        them straight to ``Archetype.remove_components`` and the set
+        difference compares strings against class objects, returns the full
+        signature unchanged, and the command silently no-ops. Resolve names
+        to concrete subclasses here so downstream comparisons work.
+        """
+        from archetype.core.component import Component
+
+        result: list[type[Component]] = []
+        for item in raw:
+            if isinstance(item, type) and issubclass(item, Component):
+                result.append(item)
+                continue
+            if isinstance(item, str):
+                result.append(Component.get_type_by_name(item))
+                continue
+            raise TypeError(
+                f"component_types entries must be a Component subclass or string "
+                f"naming one, got {type(item).__name__}"
+            )
+        return result
+
+    @staticmethod
     def _reserve_entity_id(world: AsyncWorld) -> int:
         entity_id = world._next_entity_id
         world._next_entity_id += 1
@@ -302,7 +329,7 @@ class CommandService:
 
             case CommandType.REMOVE_COMPONENT:
                 entity_id = payload["entity_id"]
-                component_types = payload.get("component_types", [])
+                component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await world.remove_components(entity_id, component_types)
 
             case CommandType.ADD_PROCESSOR:
