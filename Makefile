@@ -121,7 +121,7 @@ test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 .PHONY: ci
-ci: format-check lint lock-check test-cov
+ci: format-check lint lock-check test-cov eval-reg
 	@echo "CI gate passed"
 
 # ------------------------------------------------------------------------------
