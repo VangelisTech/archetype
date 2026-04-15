@@ -153,6 +153,105 @@ async def test_cached_store_idle_flush(inner_store):
 
 
 @pytest.mark.asyncio
+async def test_get_archetype_df_unions_memtable_with_disk(inner_store):
+    from archetype.core.config import CacheConfig
+
+    inner = inner_store
+    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+    cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
+    try:
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        world_id = "w_union"
+        run_id = "r_union"
+
+        _ = await inner.get_archetype_df(sig, world_id=world_id, run_id=run_id)
+
+        first = daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=1,
+                    tick=0,
+                    components=[Position(x=1, y=1)],
+                    world_id=world_id,
+                    run_id=run_id,
+                )
+            ]
+        ).collect()
+        await cached.append(sig, first)
+        await cached._background_flush_sig(sig)
+
+        second = daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=2,
+                    tick=1,
+                    components=[Position(x=2, y=2)],
+                    world_id=world_id,
+                    run_id=run_id,
+                )
+            ]
+        ).collect()
+        await cached.append(sig, second)
+
+        out = await cached.get_archetype_df(sig, world_id=world_id, run_id=run_id)
+        eids = sorted(r["entity_id"] for r in out.collect().to_pylist())
+        assert eids == [1, 2]
+    finally:
+        await cached.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_get_archetype_df_filters_memtable_by_run_id(inner_store):
+    from archetype.core.config import CacheConfig
+
+    inner = inner_store
+    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+    cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
+    try:
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        world_id = "w_filter"
+
+        _ = await inner.get_archetype_df(sig, world_id=world_id, run_id="r_a")
+
+        df_a = daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=10,
+                    tick=0,
+                    components=[Position(x=10, y=10)],
+                    world_id=world_id,
+                    run_id="r_a",
+                )
+            ]
+        ).collect()
+        await cached.append(sig, df_a)
+        await cached._background_flush_sig(sig)
+
+        df_b = daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=20,
+                    tick=0,
+                    components=[Position(x=20, y=20)],
+                    world_id=world_id,
+                    run_id="r_b",
+                )
+            ]
+        ).collect()
+        await cached.append(sig, df_b)
+
+        out_a = await cached.get_archetype_df(sig, world_id=world_id, run_id="r_a")
+        eids_a = sorted(r["entity_id"] for r in out_a.collect().to_pylist())
+        assert eids_a == [10]
+
+        out_b = await cached.get_archetype_df(sig, world_id=world_id, run_id="r_b")
+        eids_b = sorted(r["entity_id"] for r in out_b.collect().to_pylist())
+        assert eids_b == [20]
+    finally:
+        await cached.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_cached_store_concurrent_appends_are_safe(inner_store):
     from archetype.core.config import CacheConfig
 
