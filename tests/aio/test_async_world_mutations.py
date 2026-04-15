@@ -143,3 +143,63 @@ async def test_remove_components_moves_to_subset_signature(world, store_backend)
     assert len(old_rows2) >= 1
     latest_old = sorted(old_rows2, key=lambda r: r["tick"])[-1]
     assert latest_old["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_remove_entity_cancels_pending_same_tick_spawn(world):
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+
+    e1 = await world.create_entity([Position(x=1, y=2)])
+    await world.remove_entity(e1)
+
+    assert sig not in world._spawn_cache
+    assert e1 not in world._entity2sig
+    assert e1 not in world._despawn_cache.get(sig, [])
+
+
+@pytest.mark.asyncio
+async def test_remove_entity_schedules_despawn_after_spawn_materialized(world):
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    rc = RunConfig()
+
+    e1 = await world.create_entity([Position(x=1, y=2)])
+    await world.step(rc)
+
+    await world.remove_entity(e1)
+
+    assert sig in world._despawn_cache
+    assert e1 in world._despawn_cache[sig]
+
+
+@pytest.mark.asyncio
+async def test_step_after_same_tick_spawn_remove_leaves_no_active_row(world, store_backend):
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    rc = RunConfig()
+
+    eid = await world.create_entity([Position(x=1, y=2)])
+    await world.remove_entity(eid)
+    await world.step(rc)
+
+    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    rows = [r for r in df.collect().to_pylist() if r["entity_id"] == eid]
+    assert all(not r["is_active"] for r in rows), f"cancelled entity persisted as active: {rows}"
+
+    for s, live_df in world._live.items():
+        active_eids = [r["entity_id"] for r in live_df.collect().to_pylist() if r["is_active"]]
+        assert eid not in active_eids, f"_live[{s}] kept cancelled entity {eid}"
+
+
+@pytest.mark.asyncio
+async def test_step_after_same_tick_spawn_remove_preserves_sibling_entity(world, store_backend):
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    rc = RunConfig()
+
+    survivor = await world.create_entity([Position(x=10, y=20)])
+    cancelled = await world.create_entity([Position(x=1, y=2)])
+    await world.remove_entity(cancelled)
+    await world.step(rc)
+
+    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    rows = df.collect().to_pylist()
+    active_ids = sorted(r["entity_id"] for r in rows if r["is_active"])
+    assert active_ids == [survivor], f"expected only survivor {survivor} active, got {active_ids}"
