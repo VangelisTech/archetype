@@ -129,6 +129,16 @@ def test_sync_store_shutdown_is_noop(tmp_path):
     assert store.shutdown() is None
 
 
+def test_sync_store_does_not_declare_uninitialized_cache_attr(tmp_path):
+    store, _querier, _updater, _system, _world = _make_sync_stack(tmp_path, "store_cache_attr")
+    assert not hasattr(store, "_cache"), (
+        "SyncStore declared an uninitialized _cache annotation; any caller "
+        "that touched store._cache raised AttributeError. The field should "
+        "be removed or initialized in __init__."
+    )
+    assert "_cache" not in SyncStore.__annotations__
+
+
 def test_sync_update_manager_appends_stamped_rows_to_store():
     class RecordingStore:
         def __init__(self):

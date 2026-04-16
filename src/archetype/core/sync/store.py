@@ -15,8 +15,6 @@
 # Standard Python Libraries
 from logging import getLogger
 
-import pyarrow as pa
-
 # Technologies
 from daft import DataFrame, Schema
 from daft.catalog import Table
@@ -54,8 +52,6 @@ class SyncStore(iStore):
         self.uri = uri
         self.debug = debug
         self.sess = session
-
-        self._cache: dict[ArchetypeSignature, pa.Table]  # Omniscient, Multi-World
         self.flush_interval = None
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
