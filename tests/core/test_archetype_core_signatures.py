@@ -1,3 +1,5 @@
+import pytest
+
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 
@@ -8,6 +10,14 @@ class A(Component):
 
 class B(Component):
     y: int
+
+
+class PrefixCollisionA(Component):
+    value: int = 0
+
+
+class prefixcollisiona(Component):  # noqa: N801 — intentional name collision
+    value: int = 0
 
 
 def test_sig_from_components_is_sorted_by_type_name():
@@ -58,3 +68,47 @@ def test_get_name_is_order_invariant_and_hash_suffixed():
     n2 = Archetype.get_name(sig2)
     assert n1 == n2
     assert n1.startswith("a_2c_s")
+
+
+def test_get_archetype_schema_raises_on_prefix_collision():
+    """Two distinct components with the same lowercased class name must not be
+    silently merged into a single set of fields — the schema builder must raise
+    a clear ValueError instead of corrupting the row layout."""
+    assert PrefixCollisionA.get_prefix() == prefixcollisiona.get_prefix()
+    with pytest.raises(ValueError, match="prefix collision"):
+        Archetype.get_archetype_schema((PrefixCollisionA, prefixcollisiona))
+
+
+def test_to_row_dict_raises_on_prefix_collision_between_distinct_classes():
+    """Combining two same-prefix components on one entity must raise instead of
+    letting the second silently overwrite the first under the shared key."""
+    with pytest.raises(ValueError, match="prefix collision"):
+        Archetype.to_row_dict(
+            entity_id=1,
+            tick=0,
+            components=[PrefixCollisionA(value=1), prefixcollisiona(value=99)],
+            world_id="w",
+            run_id="r",
+        )
+
+
+def test_to_row_dict_allows_duplicate_instances_of_same_class():
+    """The collision check must only fire for *distinct* classes that share a
+    prefix; passing two instances of the same class is the existing
+    "last-write-wins" dedupe path and must continue to work."""
+    row = Archetype.to_row_dict(
+        entity_id=1,
+        tick=0,
+        components=[PrefixCollisionA(value=1), PrefixCollisionA(value=2)],
+        world_id="w",
+        run_id="r",
+    )
+    assert row["prefixcollisiona__value"] == 2
+
+
+def test_get_archetype_schema_allows_repeated_same_type_in_sig():
+    """A signature that lists the same component class more than once must not
+    trigger the collision check — only distinct classes with colliding prefixes
+    should fail."""
+    schema = Archetype.get_archetype_schema((PrefixCollisionA,))
+    assert "prefixcollisiona__value" in set(schema.names)

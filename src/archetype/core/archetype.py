@@ -93,6 +93,20 @@ class Archetype:
         Get the schema for an archetype from a list of component types.
         Combines the base archetype schema with prefixed component schemas.
         """
+        seen: dict[str, type[Component]] = {}
+        for component_type in sig:
+            prefix = component_type.get_prefix()
+            existing = seen.get(prefix)
+            if existing is not None and existing is not component_type:
+                raise ValueError(
+                    f"Archetype prefix collision: "
+                    f"{existing.__module__}.{existing.__qualname__} and "
+                    f"{component_type.__module__}.{component_type.__qualname__} "
+                    f"both produce prefix {prefix!r}. Rename one of the classes "
+                    f"so their field prefixes do not collide."
+                )
+            seen[prefix] = component_type
+
         archetype_schema = Archetype.BASE_SCHEMA
         for component_type in sig:
             component_schema = component_type.get_prefixed_schema()
@@ -125,8 +139,20 @@ class Archetype:
             "is_active": True,
         }
 
+        seen_prefixes: dict[str, type[Component]] = {}
         for c in components:
+            component_type = type(c)
             prefix = c.get_prefix()
+            existing = seen_prefixes.get(prefix)
+            if existing is not None and existing is not component_type:
+                raise ValueError(
+                    f"Component prefix collision in to_row_dict: "
+                    f"{existing.__module__}.{existing.__qualname__} and "
+                    f"{component_type.__module__}.{component_type.__qualname__} "
+                    f"both produce prefix {prefix!r}. Rename one of the classes "
+                    f"so their field prefixes do not collide."
+                )
+            seen_prefixes[prefix] = component_type
             row_dict.update({prefix + key: value for key, value in c.model_dump().items()})
 
         return row_dict
