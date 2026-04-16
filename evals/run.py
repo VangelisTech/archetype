@@ -22,6 +22,14 @@ from evals.suites import capability, poison_command, regression
 from evals.types import TaskResult
 
 
+def _positive_int(value: str) -> int:
+    """Argparse type that rejects non-positive integers."""
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"trials must be >= 1, got {n}")
+    return n
+
+
 def build_harness(trials: int = 1) -> EvalHarness:
     harness = EvalHarness(trials=trials)
     regression.register(harness)
@@ -39,6 +47,11 @@ def print_report(results: list[TaskResult]) -> None:
     print("\n" + "=" * 72)
     print("EVAL RESULTS")
     print("=" * 72)
+
+    if not results:
+        print("\n  ** NO TASKS WERE EXECUTED **")
+        print("=" * 72)
+        return
 
     for suite_name in ["regression", "capability"]:
         tasks = suites.get(suite_name, [])
@@ -83,7 +96,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run archetype evals")
     parser.add_argument("--out", default=None, help="Write JSON results to file")
     parser.add_argument("--suite", choices=["regression", "capability"], default=None)
-    parser.add_argument("--trials", type=int, default=1, help="Trials per task (for pass@k)")
+    parser.add_argument("--trials", type=_positive_int, default=1, help="Trials per task (>= 1)")
     args = parser.parse_args()
 
     harness = build_harness(trials=args.trials)
@@ -99,7 +112,11 @@ def main() -> int:
             json.dump([r.to_dict() for r in results], f, indent=2)
         print(f"\nResults written to {args.out}")
 
-    # Exit code: regression tasks must all pass, capability tasks must not error
+    # Exit code: at least one task must have run, regression tasks must all
+    # pass, and capability tasks must not error.
+    if not results:
+        return 1
+
     reg_ok = all(t.all_passed for t in results if t.suite == "regression")
     cap_no_errors = all(
         not any(trial.error for trial in t.trials) for t in results if t.suite == "capability"
