@@ -243,7 +243,7 @@ class CommandService:
         world._spawn_cache.setdefault(new_sig, []).append(row)
 
     @staticmethod
-    def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
+    async def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
         from archetype.core.archetype import Archetype
 
         if entity_id in world._entity2sig:
@@ -256,6 +256,7 @@ class CommandService:
             entity_id, world.tick, components, world.world_id, run_id=""
         )
         world._spawn_cache.setdefault(sig, []).append(row_dict)
+        await world._fire_hooks("on_spawn", world=world, entity_id=entity_id, components=components)
 
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
         """Dispatch a world-level lifecycle command (create/destroy/fork).
@@ -313,7 +314,7 @@ class CommandService:
                 if entity_id is None:
                     await world.create_entity(components)
                 else:
-                    self._apply_reserved_spawn(world, int(entity_id), components)
+                    await self._apply_reserved_spawn(world, int(entity_id), components)
 
             case CommandType.DESPAWN:
                 entity_id = payload["entity_id"]

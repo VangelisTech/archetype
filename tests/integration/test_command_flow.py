@@ -98,6 +98,42 @@ async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_reserved_spawn_fires_on_spawn_hook(tmp_path):
+    """submit_spawn takes the reserved-id path (_apply_reserved_spawn), which
+    bypasses AsyncWorld.create_entity. The on_spawn hook must still fire so
+    consumers see the same lifecycle events regardless of which spawn API the
+    caller used."""
+    from archetype.core.component import Component
+
+    class Pos(Component):
+        x: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="reserved-hook"), storage
+        )
+
+        events: list[dict] = []
+
+        async def on_spawn(**kwargs):
+            events.append(kwargs)
+
+        world.add_hook("on_spawn", on_spawn)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        entity_id = await container.command_service.submit_spawn(world.world_id, [Pos(x=7)], ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        assert len(events) == 1
+        assert events[0]["entity_id"] == entity_id
+        assert events[0]["world"] is world
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_spawn_preserves_typed_components_through_command_service(tmp_path):
     """SPAWN with ``to_payload()`` dicts must land in the typed archetype, not ``(Component,)``.
 
