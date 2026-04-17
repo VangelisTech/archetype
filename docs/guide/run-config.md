@@ -13,6 +13,12 @@ config = RunConfig(num_steps=10, debug=True)
 await world.run(config)
 ```
 
+### Contract
+
+- A `RunConfig` identifies a run — one `run_id` shared by every tick in the run.
+- `SimulationService.step()` and `world.step()` **require** an explicit `RunConfig`. They MUST NOT mint one per call. Callers driving a multi-tick run reuse the same `RunConfig` across every step so persisted rows stay addressable by `run_id`.
+- `SimulationService.run()` and `world.run()` thread the caller's `RunConfig` into every internal `step()` call.
+
 ### Fields
 
 | Field | Type | Default | Description |

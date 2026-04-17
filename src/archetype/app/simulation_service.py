@@ -37,25 +37,15 @@ class SimulationService:
     async def step(
         self,
         world_id: UUID,
-        run_config: RunConfig | None = None,
+        run_config: RunConfig,
         **input_kwargs,
     ) -> int:
-        """
-        One tick:
-        1. drain_and_apply(world_id, world.tick)
-        2. reset_tick_counters()
-        3. world.step(run_config, **input_kwargs)
-
-        Returns number of commands applied.
-        """
+        """Drain queued commands, advance the world one tick. Returns applied count."""
         world = self._world_service.get_world(world_id)
         tick = getattr(world, "tick", 0)
 
         applied = await self._command_service.drain_and_apply(world_id, tick)
         reset_tick_counters()
-
-        if run_config is None:
-            run_config = RunConfig(num_steps=1)
 
         if isinstance(world, AsyncWorld):
             await world.step(run_config, **input_kwargs)
@@ -68,12 +58,7 @@ class SimulationService:
         run_config: RunConfig,
         **input_kwargs,
     ) -> RunResult:
-        """
-        Execute run_config.num_steps ticks.
-        Returns RunResult with run_id, ticks completed, final state.
-
-        Threads ``run_config`` into every step and pins ``world.run_id`` up-front.
-        """
+        """Execute ``run_config.num_steps`` ticks and return the RunResult."""
         world = self._world_service.get_world(world_id)
 
         if hasattr(world, "run_id"):

@@ -401,14 +401,12 @@ CURRENT GAPS:
 
 - `step()` is the authoritative world execution boundary.
 - `step()` MUST apply due commands before world execution.
-- `run()` MUST preserve one logical `run_id` across all steps in the run.
+- `step()` MUST receive an explicit `RunConfig` from the caller; the service
+  MUST NOT mint a fresh `RunConfig` per call. Callers drive a multi-tick run
+  by reusing the same `RunConfig` across every step so the `run_id` is stable.
+- `run()` MUST preserve one logical `run_id` across all steps in the run by
+  threading the caller's `RunConfig` into every `step()` call.
 - `run_all()` MAY execute multiple worlds concurrently.
-
-CURRENT GAP:
-
-- `run()` currently loops through fresh one-step `RunConfig` instances, which
-  appears inconsistent with the `RunConfig` contract of a single run-scoped
-  `run_id`.
 
 ### QueryService
 
@@ -740,17 +738,16 @@ The following items should be treated as implementation requirements for a
 coherent engine contract:
 
 1. Make updater durability failures explicit instead of log-only.
-2. Preserve one `run_id` across `SimulationService.run()`.
-3. Define and implement world-lifecycle command ack semantics so API create,
+2. Define and implement world-lifecycle command ack semantics so API create,
    destroy, and fork are not left in ambiguous broker state.
-4. Decide whether command submission to an unknown world is allowed; if not,
+3. Decide whether command submission to an unknown world is allowed; if not,
    reject at submit time.
-5. Fix `WorldService.create_world()` duplicate-name failure ordering so failed
+4. Fix `WorldService.create_world()` duplicate-name failure ordering so failed
    creation does not cache a hidden world.
-6. Align hook documentation and implementation for spawn/despawn lifecycle
+5. Align hook documentation and implementation for spawn/despawn lifecycle
    events.
-7. Give `QueryService` a real read contract or clearly mark it as provisional.
-8. Define world-local teardown semantics that do not leak broker or shared
+6. Give `QueryService` a real read contract or clearly mark it as provisional.
+7. Define world-local teardown semantics that do not leak broker or shared
    runtime state.
 
 ## Acceptance Criteria

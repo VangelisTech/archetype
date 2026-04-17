@@ -101,9 +101,6 @@ class SyncWorld(iWorld):
         """
         Process a single archetype through the full pipeline.
         """
-        # 1. Fetch previous state for all entities and their components.
-        # See AsyncWorld._run_archetype: ``_live`` is authoritative when
-        # populated, so always prefer it over the store on tick > 0.
         if self.tick > 0 and sig in self._live:
             df = self._live[sig]
         else:

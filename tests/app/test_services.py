@@ -204,7 +204,7 @@ class TestSimulationService:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
-            cmds_applied = await container.simulation_service.step(world.world_id)
+            cmds_applied = await container.simulation_service.step(world.world_id, RunConfig())
             assert cmds_applied == 0  # no commands queued
         finally:
             await container.shutdown()
@@ -247,7 +247,19 @@ class TestSimulationService:
             await container.shutdown()
 
     @pytest.mark.asyncio
-    async def test_step_uses_default_run_config_when_missing(self, tmp_path, monkeypatch):
+    async def test_step_requires_run_config(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            with pytest.raises(TypeError):
+                await container.simulation_service.step(world.world_id)  # type: ignore[call-arg]
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_step_forwards_caller_run_config(self, tmp_path, monkeypatch):
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -264,10 +276,11 @@ class TestSimulationService:
             )
             monkeypatch.setattr(world, "step", fake_step)
 
-            count = await container.simulation_service.step(world.world_id, bonus=3)
+            rc = RunConfig()
+            count = await container.simulation_service.step(world.world_id, rc, bonus=3)
 
             assert count == 1
-            assert seen["run_config"].num_steps == 1
+            assert seen["run_config"] is rc
             assert seen["kwargs"] == {"bonus": 3}
         finally:
             await container.shutdown()

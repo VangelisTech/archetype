@@ -29,7 +29,7 @@ from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
@@ -266,7 +266,8 @@ async def _task_command_pipeline() -> list[GraderResult]:
             pending = await container.broker.get_pending_count(wid)
 
             # Step → drains
-            applied = await container.simulation_service.step(world.world_id)
+            rc = RunConfig()
+            applied = await container.simulation_service.step(world.world_id, rc)
             pending_after = await container.broker.get_pending_count(wid)
 
             # History
