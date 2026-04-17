@@ -162,14 +162,6 @@ version:
 lock-check:
 	@uv lock --check
 
-# Recompute exclude-newer to 7 days ago and re-lock.
-.PHONY: lock-refresh
-lock-refresh:
-	@CUTOFF=$$(python3 -c "from datetime import datetime,timedelta,timezone;print((datetime.now(timezone.utc)-timedelta(days=7)).strftime('%Y-%m-%dT00:00:00Z'))"); \
-	sed -i '' "s|^exclude-newer = .*|exclude-newer = \"$$CUTOFF\"|" pyproject.toml; \
-	echo "exclude-newer set to $$CUTOFF"; \
-	uv lock
-
 .PHONY: build
 build: clean
 	@echo "Building archetype v$(VERSION)..."

@@ -101,9 +101,9 @@ dev = [
 ]
 
 [tool.uv]
-# Only resolve packages released at least 7 days ago.
-# Updated by `make lock-refresh` or CI.
-exclude-newer = "2026-04-07T00:00:00Z"
+# Supply-chain guard: refuse packages released in the last 7 days.
+# Bump this date (today minus 7 days) when refreshing the lock.
+exclude-newer = "2026-04-09T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
