@@ -298,7 +298,7 @@ class TestEnqueueBulkQuotaAccounting:
         ]
         await broker.enqueue_bulk("w1", bulk, ctx)
 
-        # 3 SPAWNs × 10 tokens each = 30 tokens.
+        # 3 spawn commands × 10 tokens each = 30 tokens.
         assert _tick_counters[actor_id] == 3
         assert _daily_tokens[actor_id] == 30
         assert len(broker._queues["w1"]) == 3
