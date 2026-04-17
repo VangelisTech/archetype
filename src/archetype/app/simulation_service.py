@@ -105,15 +105,15 @@ class SimulationService:
             return list(await asyncio.gather(*tasks))
         return []
 
-    def add_processor(self, world_id: UUID, processor) -> None:
+    async def add_processor(self, world_id: UUID, processor) -> None:
         """Add a processor to a world's system."""
         world = self._world_service.get_world(world_id)
-        world.add_processor(processor)
+        await world.add_processor(processor)
 
-    def remove_processor(self, world_id: UUID, proc_type) -> None:
+    async def remove_processor(self, world_id: UUID, proc_type) -> None:
         """Remove a processor from a world."""
         world = self._world_service.get_world(world_id)
-        world.remove_processor(proc_type)
+        await world.remove_processor(proc_type)
 
     def list_processors(self, world_id: UUID) -> list[ProcessorInfo]:
         """List processors in a world."""

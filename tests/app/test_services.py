@@ -360,18 +360,67 @@ class TestSimulationService:
         assert count == 2
         world.step.assert_not_called()
 
-    def test_add_and_remove_processor_delegate_to_world(self):
-        world = Mock()
+    @pytest.mark.asyncio
+    async def test_add_and_remove_processor_delegate_to_world(self):
+        world = AsyncMock()
         world_service = Mock()
         world_service.get_world.return_value = world
         sim = SimulationService(world_service=world_service, command_service=Mock())
         proc = object()
 
-        sim.add_processor(uuid7(), proc)
-        sim.remove_processor(uuid7(), type(proc))
+        await sim.add_processor(uuid7(), proc)
+        await sim.remove_processor(uuid7(), type(proc))
 
         assert world.add_processor.call_count == 1
         assert world.remove_processor.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_add_processor_appends_to_world_system(self, tmp_path):
+        from archetype.core.aio.async_processor import AsyncProcessor
+
+        class _Marker(AsyncProcessor):
+            components = (_ListWorldsPos,)
+            priority = 99
+
+            async def process(self, df, **kwargs):
+                return df
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="add_proc_test"), storage
+            )
+            await container.simulation_service.add_processor(world.world_id, _Marker())
+            names = [type(p).__name__ for p in world.system.processors]
+            assert "_Marker" in names
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_remove_processor_deletes_from_world_system(self, tmp_path):
+        from archetype.core.aio.async_processor import AsyncProcessor
+
+        class _Removable(AsyncProcessor):
+            components = (_ListWorldsPos,)
+            priority = 99
+
+            async def process(self, df, **kwargs):
+                return df
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="rm_proc_test"), storage
+            )
+            await world.add_processor(_Removable())
+            assert any(type(p).__name__ == "_Removable" for p in world.system.processors)
+
+            await container.simulation_service.remove_processor(world.world_id, _Removable)
+            assert all(type(p).__name__ != "_Removable" for p in world.system.processors)
+        finally:
+            await container.shutdown()
 
     def test_list_processors_returns_metadata(self):
         class Position:
