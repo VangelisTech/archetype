@@ -24,6 +24,7 @@ import psutil
 import pyarrow as pa
 from daft import DataFrame
 
+from archetype.core.archetype import Archetype
 from archetype.core.config import CacheConfig
 
 # Internals
@@ -141,18 +142,24 @@ class AsyncCachedStore(iAsyncStore):
     ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
+
+        Reads are a union of already-flushed rows on disk and unflushed rows
+        still in the memtable so that callers always see a coherent view of
+        the sig's full history regardless of flush state.
         """
-        # Get the memtable
+        disk_df = await self._inner.get_archetype_df(sig, world_id, run_id)
+
         mt = self._mem.get(sig)
+        if not (mt and mt.rows):
+            return disk_df
 
-        # Read the Archetype Table from Memtable or Disk
-        if mt and mt.rows:
-            df = daft.from_arrow(mt.to_table())
-
-            return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
-
-        # If no data in cache, grab from storage
-        return await self._inner.get_archetype_df(sig, world_id, run_id)
+        target_schema = Archetype.get_archetype_schema(sig)
+        mem_table = mt.to_table().select(target_schema.names).cast(target_schema)
+        mem_df = daft.from_arrow(mem_table)
+        mem_df = mem_df.where(mem_df["world_id"] == str(world_id)).where(
+            mem_df["run_id"] == str(run_id)
+        )
+        return disk_df.concat(mem_df)
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
