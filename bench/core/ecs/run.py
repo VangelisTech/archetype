@@ -6,11 +6,19 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict
 
-from archetype.app.world_service import WorldService
-from archetype.app.storage_service import StorageService
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 
 from . import add_remove, entity_cycle, fragmented_iteration, packed_iteration, simple_iteration
+
+
+def _storage_for_bench(storage: StorageConfig | None, bench_name: str) -> StorageConfig | None:
+    """Give each bench its own namespace so sibling benches cannot see one
+    another's tables when they happen to share component class names."""
+    if storage is None:
+        return None
+    suffix = bench_name.replace("-", "_")
+    namespace = f"{storage.namespace}__{suffix}" if storage.namespace else suffix
+    return storage.model_copy(update={"namespace": namespace})
 
 
 async def run_all(
@@ -29,21 +37,17 @@ async def run_all(
         ("add_remove", add_remove.run),
     ]
 
-    orch = WorldService(StorageService())
-    try:
-        for name, fn in benches:
-            res, ids = await fn(
-                steps=steps,
-                orchestrator=orch,
-                storage=storage,
-                cache_config=cache,
-                instrumented=instrumented,
-            )
-            rec = asdict(res)
-            rec.update({"world_id": str(ids[0]), "run_id": str(ids[1])})
-            results.append(rec)
-    finally:
-        await orch.shutdown()
+    for name, fn in benches:
+        res, ids = await fn(
+            steps=steps,
+            orchestrator=None,
+            storage=_storage_for_bench(storage, name),
+            cache_config=cache,
+            instrumented=instrumented,
+        )
+        rec = asdict(res)
+        rec.update({"world_id": str(ids[0]), "run_id": str(ids[1]), "bench_name": name})
+        results.append(rec)
 
     return results
 
