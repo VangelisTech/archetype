@@ -360,18 +360,69 @@ class TestSimulationService:
         assert count == 2
         world.step.assert_not_called()
 
-    def test_add_and_remove_processor_delegate_to_world(self):
-        world = Mock()
+    @pytest.mark.asyncio
+    async def test_add_and_remove_processor_delegate_to_world(self):
+        world = AsyncMock()
         world_service = Mock()
         world_service.get_world.return_value = world
         sim = SimulationService(world_service=world_service, command_service=Mock())
         proc = object()
 
-        sim.add_processor(uuid7(), proc)
-        sim.remove_processor(uuid7(), type(proc))
+        await sim.add_processor(uuid7(), proc)
+        await sim.remove_processor(uuid7(), type(proc))
 
         assert world.add_processor.call_count == 1
         assert world.remove_processor.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_add_processor_appends_to_world_system(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            from archetype.core.aio.async_processor import AsyncProcessor
+
+            class Marker(AsyncProcessor):
+                components = ()
+                priority = 99
+
+                async def process(self, df, **kwargs):
+                    return df
+
+            await container.simulation_service.add_processor(world.world_id, Marker())
+
+            proc_types = [type(p).__name__ for p in world.system.processors]
+            assert "Marker" in proc_types
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_remove_processor_deletes_from_world_system(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+
+            from archetype.core.aio.async_processor import AsyncProcessor
+
+            class Ephemeral(AsyncProcessor):
+                components = ()
+                priority = 50
+
+                async def process(self, df, **kwargs):
+                    return df
+
+            await world.add_processor(Ephemeral())
+            proc_types = [type(p).__name__ for p in world.system.processors]
+            assert "Ephemeral" in proc_types
+
+            await container.simulation_service.remove_processor(world.world_id, Ephemeral)
+
+            proc_types = [type(p).__name__ for p in world.system.processors]
+            assert "Ephemeral" not in proc_types
+        finally:
+            await container.shutdown()
 
     def test_list_processors_returns_metadata(self):
         class Position:
