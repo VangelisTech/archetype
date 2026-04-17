@@ -195,6 +195,56 @@ class TestCommandService:
         finally:
             await container.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_apply_world_lifecycle_fork_uses_payload_storage_config(self, tmp_path):
+        """FORK_WORLD reads storage_uri and namespace from the command payload.
+
+        Without the fix, apply_world_lifecycle passed StorageConfig() (defaults)
+        to WorldService.fork_world, silently ignoring what the caller specified.
+        """
+        container = ServiceContainer()
+        try:
+            source_storage = StorageConfig(uri=str(tmp_path / "source"), namespace="ns")
+            source = await container.world_service.create_world(
+                WorldConfig(name="src"), source_storage
+            )
+
+            captured_configs: list[StorageConfig] = []
+            original_fork = container.world_service.fork_world
+
+            async def spy_fork(source_id, name, storage_config, **kw):
+                captured_configs.append(storage_config)
+                return await original_fork(source_id, name, storage_config, **kw)
+
+            container.world_service.fork_world = spy_fork  # type: ignore[method-assign]
+
+            fork_uri = str(tmp_path / "custom_fork_storage")
+            fork_ns = "custom_ns"
+            fork_cmd = Command(
+                type=CommandType.FORK_WORLD,
+                tick=0,
+                payload={
+                    "source_world_id": str(source.world_id),
+                    "config": {"name": "forked"},
+                    "storage_uri": fork_uri,
+                    "namespace": fork_ns,
+                },
+            )
+            forked = await container.command_service.apply_world_lifecycle(fork_cmd)
+
+            assert forked is not None
+            assert len(captured_configs) == 1
+            assert captured_configs[0].uri == fork_uri, (
+                f"FORK_WORLD used uri={captured_configs[0].uri!r} instead of "
+                f"payload storage_uri={fork_uri!r}"
+            )
+            assert captured_configs[0].namespace == fork_ns, (
+                f"FORK_WORLD used namespace={captured_configs[0].namespace!r} instead of "
+                f"payload namespace={fork_ns!r}"
+            )
+        finally:
+            await container.shutdown()
+
 
 class TestSimulationService:
     @pytest.mark.asyncio
