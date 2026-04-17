@@ -173,6 +173,48 @@ class TestCommandService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_apply_world_lifecycle_fork_uses_payload_storage_config(self, tmp_path):
+        """FORK_WORLD reads storage_uri and namespace from the command payload."""
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            source_storage = StorageConfig(uri=str(tmp_path / "source"), namespace="ns")
+            source = await container.world_service.create_world(
+                WorldConfig(name="src"), source_storage
+            )
+            from archetype.core.aio.async_world import AsyncWorld
+
+            assert isinstance(source, AsyncWorld)
+            await source.run(RunConfig(num_steps=1))
+
+            fork_uri = str(tmp_path / "fork_store")
+            fork_ns = "fork_ns"
+            fork_cmd = Command(
+                type=CommandType.FORK_WORLD,
+                tick=0,
+                payload={
+                    "source_world_id": str(source.world_id),
+                    "name": "forked",
+                    "storage_uri": fork_uri,
+                    "namespace": fork_ns,
+                },
+            )
+            await container.command_service.submit("__global__", fork_cmd, ctx)
+            forked = await container.command_service.apply_world_lifecycle(fork_cmd)
+
+            assert forked is not None
+            assert forked.world_id != source.world_id
+
+            from pathlib import Path
+
+            assert Path(fork_uri).exists(), (
+                "FORK_WORLD ignored payload storage_uri — "
+                "fork landed in default location instead of the requested path"
+            )
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_apply_world_lifecycle_drains_on_failure(self, tmp_path):
         """Failed lifecycle commands are still drained from the broker."""
         container = ServiceContainer()

@@ -292,8 +292,12 @@ class CommandService:
 
                     source_id = UUID(str(payload["source_world_id"]))
                     fork_name = payload.get("name") or payload.get("config", {}).get("name")
+                    storage_config = StorageConfig(
+                        uri=payload.get("storage_uri", "./archetype_data"),
+                        namespace=payload.get("namespace", "archetypes"),
+                    )
                     return await self._world_service.fork_world(
-                        source_id, fork_name, StorageConfig()
+                        source_id, fork_name, storage_config
                     )
 
                 case _:
