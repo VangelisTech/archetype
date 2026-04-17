@@ -121,26 +121,37 @@ class CommandService:
         """
         Dequeue all commands due for this world at this tick,
         apply them to the target world, ack on success.
-        Returns applied commands for audit.
+        Returns only successfully applied commands for audit.
         """
         commands = await self._broker.dequeue_due(world_id, tick)
         if not commands:
             return []
 
         world = self._world_service.get_world(UUID(str(world_id)))
-        applied_ids = []
+        applied: list[Command] = []
+        failed_ids: list[UUID] = []
 
         for cmd in commands:
             try:
                 await self.apply(world, cmd)
-                applied_ids.append(cmd.id)
+                applied.append(cmd)
             except Exception:
                 logger.exception(f"Failed to apply command {cmd.id} ({cmd.type.value})")
+                failed_ids.append(cmd.id)
 
-        if applied_ids:
-            await self._broker.ack(applied_ids)
+        all_ids = [cmd.id for cmd in commands]
+        await self._broker.ack(all_ids)
 
-        return commands
+        if failed_ids:
+            logger.warning(
+                "Tick %d: %d/%d commands failed to apply: %s",
+                tick,
+                len(failed_ids),
+                len(commands),
+                failed_ids,
+            )
+
+        return applied
 
     @staticmethod
     def _hydrate_components(raw: list) -> list:

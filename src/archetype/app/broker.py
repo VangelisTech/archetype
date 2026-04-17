@@ -141,7 +141,6 @@ class CommandBroker:
                 if queue:
                     cmd = heapq.heappop(queue)
                     commands.append(cmd)
-                    self._pending.pop(cmd.id, None)
 
             if self._debug and commands:
                 logger.debug(
@@ -174,7 +173,6 @@ class CommandBroker:
                 if queue[0].tick <= tick:
                     cmd = heapq.heappop(queue)
                     commands.append(cmd)
-                    self._pending.pop(cmd.id, None)
                 else:
                     break
 
