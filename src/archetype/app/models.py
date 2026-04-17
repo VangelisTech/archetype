@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import json
-from enum import Enum
+from enum import StrEnum
 from itertools import count
 from typing import Any
 
@@ -26,7 +26,7 @@ from uuid_utils import UUID
 _SEQ = count()
 
 
-class CommandType(str, Enum):
+class CommandType(StrEnum):
     """
     Command types for the command broker.
 
