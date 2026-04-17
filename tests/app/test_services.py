@@ -360,15 +360,16 @@ class TestSimulationService:
         assert count == 2
         world.step.assert_not_called()
 
-    def test_add_and_remove_processor_delegate_to_world(self):
-        world = Mock()
+    @pytest.mark.asyncio
+    async def test_add_and_remove_processor_delegate_to_world(self):
+        world = AsyncMock()
         world_service = Mock()
         world_service.get_world.return_value = world
         sim = SimulationService(world_service=world_service, command_service=Mock())
         proc = object()
 
-        sim.add_processor(uuid7(), proc)
-        sim.remove_processor(uuid7(), type(proc))
+        await sim.add_processor(uuid7(), proc)
+        await sim.remove_processor(uuid7(), type(proc))
 
         assert world.add_processor.call_count == 1
         assert world.remove_processor.call_count == 1
@@ -402,6 +403,69 @@ class TestSimulationService:
         sim._world_service.get_world.return_value = _World()
 
         assert sim.list_processors(uuid7()) == []
+
+
+class _SimProcPosition(Component):
+    x: int = 0
+
+
+class TestSimulationServiceProcessorIntegration:
+    """Integration tests for add/remove processor via SimulationService.
+
+    These use a real AsyncWorld to verify the processor list is actually
+    mutated, not just that a method was called.
+    """
+
+    @pytest.mark.asyncio
+    async def test_add_processor_appends_to_world_system(self, tmp_path):
+        from archetype.core.aio import AsyncProcessor
+
+        class MarkerProc(AsyncProcessor):
+            components = (_SimProcPosition,)
+            priority = 5
+
+            async def process(self, df, **kwargs):
+                return df
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="t"), storage)
+            assert not any(isinstance(p, MarkerProc) for p in world.system.processors)
+
+            await container.simulation_service.add_processor(world.world_id, MarkerProc())
+
+            assert any(isinstance(p, MarkerProc) for p in world.system.processors), (
+                "add_processor did not add the processor to the world"
+            )
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_remove_processor_deletes_from_world_system(self, tmp_path):
+        from archetype.core.aio import AsyncProcessor
+
+        class EphemeralProc(AsyncProcessor):
+            components = (_SimProcPosition,)
+            priority = 5
+
+            async def process(self, df, **kwargs):
+                return df
+
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(WorldConfig(name="t"), storage)
+            await world.add_processor(EphemeralProc())
+            assert any(isinstance(p, EphemeralProc) for p in world.system.processors)
+
+            await container.simulation_service.remove_processor(world.world_id, EphemeralProc)
+
+            assert not any(isinstance(p, EphemeralProc) for p in world.system.processors), (
+                "remove_processor did not remove the processor from the world"
+            )
+        finally:
+            await container.shutdown()
 
 
 class TestQueryService:
