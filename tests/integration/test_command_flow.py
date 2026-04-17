@@ -123,10 +123,8 @@ async def test_reserved_spawn_fires_on_spawn_hook(tmp_path):
         world.add_hook("on_spawn", on_spawn)
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        entity_id = await container.command_service.submit_spawn(
-            world.world_id, [Pos(x=7)], ctx
-        )
-        await container.simulation_service.step(world.world_id)
+        entity_id = await container.command_service.submit_spawn(world.world_id, [Pos(x=7)], ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
 
         assert len(events) == 1
         assert events[0]["entity_id"] == entity_id

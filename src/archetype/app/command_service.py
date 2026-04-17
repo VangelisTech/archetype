@@ -243,9 +243,7 @@ class CommandService:
         world._spawn_cache.setdefault(new_sig, []).append(row)
 
     @staticmethod
-    async def _apply_reserved_spawn(
-        world: AsyncWorld, entity_id: int, components: list
-    ) -> None:
+    async def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
         from archetype.core.archetype import Archetype
 
         if entity_id in world._entity2sig:
