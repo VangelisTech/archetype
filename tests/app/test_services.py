@@ -195,6 +195,57 @@ class TestCommandService:
         finally:
             await container.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_apply_world_lifecycle_fork_uses_payload_storage_config(self, tmp_path):
+        """FORK_WORLD must read storage_uri and namespace from the payload
+        instead of hardcoding StorageConfig() defaults.
+
+        Without the fix, a FORK_WORLD command with a custom storage_uri
+        would silently land the fork in ./archetype_data regardless of
+        what the caller specified.
+        """
+        container = ServiceContainer()
+        try:
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+            source_dir = tmp_path / "source_store"
+            create_cmd = Command(
+                type=CommandType.CREATE_WORLD,
+                tick=0,
+                payload={
+                    "config": {"name": "fork_storage_src"},
+                    "storage_uri": str(source_dir),
+                    "namespace": "archetypes",
+                },
+            )
+            await container.command_service.submit("__global__", create_cmd, ctx)
+            source = await container.command_service.apply_world_lifecycle(create_cmd)
+
+            await container.simulation_service.step(source.world_id, RunConfig())
+
+            fork_dir = tmp_path / "fork_store"
+            fork_cmd = Command(
+                type=CommandType.FORK_WORLD,
+                tick=0,
+                payload={
+                    "source_world_id": str(source.world_id),
+                    "name": "forked",
+                    "storage_uri": str(fork_dir),
+                    "namespace": "fork_ns",
+                },
+            )
+            await container.command_service.submit("__global__", fork_cmd, ctx)
+            fork = await container.command_service.apply_world_lifecycle(fork_cmd)
+
+            assert fork is not None
+            assert fork.world_id != source.world_id
+            assert fork_dir.exists(), (
+                "FORK_WORLD ignored payload storage_uri — fork did not create "
+                "storage at the specified path"
+            )
+        finally:
+            await container.shutdown()
+
 
 class TestSimulationService:
     @pytest.mark.asyncio

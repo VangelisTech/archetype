@@ -106,6 +106,8 @@ async def fork_world(
         payload={
             "source_world_id": world_id,
             "config": {"name": req.name},
+            "storage_uri": req.storage_uri,
+            "namespace": req.namespace,
         },
     )
     await cs.submit("__global__", cmd, ctx)

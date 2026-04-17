@@ -16,6 +16,8 @@ class CreateWorldRequest(BaseModel):
 
 class ForkWorldRequest(BaseModel):
     name: str | None = None
+    storage_uri: str = "./archetype_data"
+    namespace: str = "archetypes"
 
 
 class SubmitCommandRequest(BaseModel):

@@ -146,9 +146,11 @@ def world_inspect(world_id: str = typer.Argument(..., help="World ID")):
 def world_fork(
     world_id: str = typer.Argument(..., help="Source world ID"),
     name: str = typer.Option(None, "--name", "-n", help="Name for the fork"),
+    uri: str = typer.Option("./archetype_data", help="Storage URI"),
+    namespace: str = typer.Option("archetypes", help="Storage namespace"),
 ):
     """Fork a world (branch from current state)."""
-    body: dict = {}
+    body: dict = {"storage_uri": uri, "namespace": namespace}
     if name:
         body["name"] = name
     data = _request("post", f"/worlds/{world_id}/fork", json=body)

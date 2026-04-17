@@ -118,6 +118,41 @@ class TestWorldRouteErrors:
         assert data["name"] == "fork_child"
         assert data["world_id"] != world_id
 
+    def test_fork_world_accepts_storage_uri_and_namespace(self, client, tmp_path):
+        """POST /worlds/{id}/fork must accept and pass storage_uri and namespace
+        so forked worlds can be stored at a caller-specified location.
+
+        Without the fix, ForkWorldRequest lacked these fields and the fork
+        route omitted them from the command payload, causing all forks to
+        land in the default ./archetype_data regardless of what was requested.
+        """
+        create_resp = client.post(
+            "/worlds",
+            json={
+                "name": "fork_storage_src",
+                "storage_uri": str(tmp_path / "src_store"),
+            },
+        )
+        world_id = create_resp.json()["world_id"]
+        client.post(f"/worlds/{world_id}/step", json={})
+
+        fork_dir = tmp_path / "fork_store"
+        resp = client.post(
+            f"/worlds/{world_id}/fork",
+            json={
+                "name": "fork_with_storage",
+                "storage_uri": str(fork_dir),
+                "namespace": "custom_ns",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "fork_with_storage"
+        assert data["world_id"] != world_id
+        assert fork_dir.exists(), (
+            "Fork route ignored storage_uri — fork did not create storage at the specified path"
+        )
+
     def test_fork_nonexistent_world(self, client):
         resp = client.post(
             "/worlds/00000000-0000-0000-0000-000000000000/fork",
