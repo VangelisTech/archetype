@@ -75,6 +75,7 @@ async def main():
         WorldConfig(name="mutations-demo"), StorageConfig(),
     )
     wid = world.world_id
+    rc = RunConfig()
     print(f"Created world: {wid}\n")
 
     # ── 1. SPAWN: create entities with components ───────────────────────
@@ -106,7 +107,7 @@ async def main():
     await container.command_service.submit(wid, cmd, admin)
 
     # Step to materialize
-    await container.simulation_service.step(wid)
+    await container.simulation_service.step(wid, rc)
     print(f"   Spawned 2 entities (tick={world.tick})")
 
     # ── 2. ADD_PROCESSOR: inject behavior at runtime ────────────────────
@@ -164,7 +165,7 @@ async def main():
     print("\n5. FORK — branch the world")
 
     # Step to materialize any pending commands first
-    await container.simulation_service.step(wid)
+    await container.simulation_service.step(wid, rc)
 
     fork = await container.world_service.fork_world(
         source_world_id=wid,

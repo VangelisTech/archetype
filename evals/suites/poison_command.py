@@ -21,7 +21,7 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
-from archetype.core.config import StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
@@ -66,6 +66,7 @@ async def _task_poison_in_batch() -> list[GraderResult]:
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
+            rc = RunConfig()
 
             # Valid SPAWN
             await container.command_service.submit(
@@ -100,7 +101,7 @@ async def _task_poison_in_batch() -> list[GraderResult]:
                 ctx,
             )
 
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             entity_count = len(world._entity2sig)
             signatures = {frozenset(sig) for sig in world._live}
@@ -142,6 +143,7 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
+            rc = RunConfig()
 
             # DESPAWN with no entity_id
             await container.command_service.submit(
@@ -168,7 +170,7 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
                 ctx,
             )
 
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             return [
                 state_check(
@@ -206,6 +208,7 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
+            rc = RunConfig()
 
             # Spawn an entity with two components
             await container.command_service.submit(
@@ -222,7 +225,7 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                 ),
                 ctx,
             )
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             entity_id = next(iter(world._entity2sig))
             original_sig = frozenset(world._entity2sig[entity_id])
@@ -242,7 +245,7 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                 ),
                 ctx,
             )
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             current_sig = frozenset(world._entity2sig[entity_id])
 
@@ -282,6 +285,7 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
+            rc = RunConfig()
 
             # Spawn a real entity
             await container.command_service.submit(
@@ -293,7 +297,7 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
                 ),
                 ctx,
             )
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             entity_count_before = len(world._entity2sig)
 
@@ -309,7 +313,7 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
                 ),
                 ctx,
             )
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             return [
                 state_check(
@@ -349,6 +353,7 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
             )
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
             wid = str(world.world_id)
+            rc = RunConfig()
 
             for cmd_type in (CommandType.MESSAGE, CommandType.QUERY_WORLD, CommandType.CUSTOM):
                 await container.command_service.submit(
@@ -357,7 +362,7 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                     ctx,
                 )
 
-            await container.simulation_service.step(world.world_id)
+            await container.simulation_service.step(world.world_id, rc)
 
             pending = await container.broker.get_pending_count(wid)
 

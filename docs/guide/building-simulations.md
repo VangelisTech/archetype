@@ -159,7 +159,7 @@ await container.command_service.submit(wid, spawn_cmd, ctx)
 await container.command_service.submit(wid, spawn_cmd, ctx)
 
 # Now they materialize
-await container.simulation_service.step(wid)
+await container.simulation_service.step(wid, rc)
 ```
 
 ### Fork to Compare Strategies

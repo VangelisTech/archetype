@@ -10,7 +10,7 @@ from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
-from archetype.core.config import StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,8 @@ async def test_submit_spawn_step_verify(tmp_path):
         assert pending == 1
 
         # Step the simulation — should drain and apply the command
-        cmds_applied = await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        cmds_applied = await container.simulation_service.step(world.world_id, rc)
         assert cmds_applied == 1
 
         # Command should no longer be pending
@@ -83,7 +84,8 @@ async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_p
         assert entity_id == 1
         assert world._next_entity_id == 2
 
-        await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        await container.simulation_service.step(world.world_id, rc)
 
         assert entity_id in world._entity2sig
         df = await world.get_components([Pos], entity_ids=[entity_id])
@@ -131,7 +133,8 @@ async def test_spawn_preserves_typed_components_through_command_service(tmp_path
             },
         )
         await container.command_service.submit(str(world.world_id), cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        await container.simulation_service.step(world.world_id, rc)
 
         # Entity should live in the (Pose, Tag) archetype — not (Component,).
         signatures = {frozenset(sig) for sig in world._live}
@@ -162,7 +165,8 @@ async def test_spawn_with_component_instances_passes_through(tmp_path):
             payload={"components": [Foo(value=42)]},
         )
         await container.command_service.submit(str(world.world_id), cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        await container.simulation_service.step(world.world_id, rc)
 
         assert frozenset({Foo}) in {frozenset(sig) for sig in world._live}
     finally:
@@ -197,7 +201,8 @@ async def test_spawn_with_bare_model_dump_raises(tmp_path):
         # drain_and_apply catches per-command exceptions and logs them, so we
         # assert that the command was dequeued but no entity materialized in
         # any typed archetype.
-        await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        await container.simulation_service.step(world.world_id, rc)
 
         signatures = {frozenset(sig) for sig in world._live}
         assert frozenset({Bar}) not in signatures
@@ -218,7 +223,6 @@ async def test_update_command_mutates_existing_component_values(tmp_path):
     the entity values never moved.
     """
     from archetype.core.component import Component
-    from archetype.core.config import RunConfig
 
     class UpdateRegressionPos(Component):
         x: int = 0
@@ -231,8 +235,9 @@ async def test_update_command_mutates_existing_component_values(tmp_path):
             WorldConfig(name="update-regression"), storage
         )
 
+        rc = RunConfig()
         eid = await world.create_entity([UpdateRegressionPos(x=1, y=2)])
-        await world.run(RunConfig(num_steps=1))
+        await world.run(rc)
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         cmd = Command(
@@ -244,7 +249,7 @@ async def test_update_command_mutates_existing_component_values(tmp_path):
             },
         )
         await container.command_service.submit(str(world.world_id), cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id, rc)
 
         df = await world.get_components([UpdateRegressionPos], entity_ids=[eid])
         rows = df.collect().to_pylist()
@@ -265,7 +270,6 @@ async def test_update_command_widens_archetype_with_new_component(tmp_path):
     ADD_COMPONENT — the entity moves to a wider archetype and picks up the
     new values."""
     from archetype.core.component import Component
-    from archetype.core.config import RunConfig
 
     class UpdateWidenPos(Component):
         x: int = 0
@@ -280,8 +284,9 @@ async def test_update_command_widens_archetype_with_new_component(tmp_path):
             WorldConfig(name="update-widen"), storage
         )
 
+        rc = RunConfig()
         eid = await world.create_entity([UpdateWidenPos(x=1)])
-        await world.run(RunConfig(num_steps=1))
+        await world.run(rc)
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         cmd = Command(
@@ -293,7 +298,7 @@ async def test_update_command_widens_archetype_with_new_component(tmp_path):
             },
         )
         await container.command_service.submit(str(world.world_id), cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id, rc)
 
         df = await world.get_components([UpdateWidenPos, UpdateWidenVel], entity_ids=[eid])
         rows = df.collect().to_pylist()
@@ -335,6 +340,7 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
             WorldConfig(name="remove-strings"), storage
         )
 
+        rc = RunConfig()
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         spawn_cmd = Command(
             type=CommandType.SPAWN,
@@ -347,7 +353,7 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
             },
         )
         await container.command_service.submit(str(world.world_id), spawn_cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id, rc)
 
         assert frozenset({_RemovePosition, _RemoveVelocity}) in {
             frozenset(sig) for sig in world._live
@@ -368,8 +374,8 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
             },
         )
         await container.command_service.submit(str(world.world_id), remove_cmd, ctx)
-        await container.simulation_service.step(world.world_id)
-        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id, rc)
+        await container.simulation_service.step(world.world_id, rc)
 
         # Entity must now live in the (_RemovePosition,) archetype.
         new_sig = world._entity2sig[entity_id]
@@ -395,6 +401,7 @@ async def test_remove_component_unknown_string_type_raises(tmp_path):
             WorldConfig(name="remove-unknown"), storage
         )
 
+        rc = RunConfig()
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         spawn_cmd = Command(
             type=CommandType.SPAWN,
@@ -402,7 +409,7 @@ async def test_remove_component_unknown_string_type_raises(tmp_path):
             payload={"components": [Tag(label="x").to_payload()]},
         )
         await container.command_service.submit(str(world.world_id), spawn_cmd, ctx)
-        await container.simulation_service.step(world.world_id)
+        await container.simulation_service.step(world.world_id, rc)
 
         entity_id = next(iter(world._entity2sig))
         # Ask the service to apply directly so the ValueError surfaces (drain_and_apply
@@ -545,7 +552,8 @@ async def test_step_reports_accurate_applied_count(tmp_path):
         await container.command_service.submit(str(world.world_id), good, ctx)
         await container.command_service.submit(str(world.world_id), bad, ctx)
 
-        count = await container.simulation_service.step(world.world_id)
+        rc = RunConfig()
+        count = await container.simulation_service.step(world.world_id, rc)
 
         assert count == 1
     finally:
