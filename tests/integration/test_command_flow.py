@@ -459,3 +459,94 @@ async def test_player_can_spawn_but_not_add_processor(tmp_path):
             await container.command_service.submit(str(world.world_id), proc_cmd, player_ctx)
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_drain_and_apply_returns_only_applied_commands(tmp_path):
+    """drain_and_apply must return only successfully applied commands.
+
+    When a command fails during apply, it should be excluded from the
+    returned list so callers (e.g. SimulationService.step) report an
+    accurate count and audit trail.
+    """
+    from archetype.core.component import Component
+
+    class GoodComp(Component):
+        value: int = 0
+
+    class BadComp(Component):
+        count: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="drain-filter"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+        valid_cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [GoodComp(value=42)]},
+        )
+        invalid_cmd = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [BadComp(count=1).model_dump()]},
+        )
+        await container.command_service.submit(str(world.world_id), valid_cmd, ctx)
+        await container.command_service.submit(str(world.world_id), invalid_cmd, ctx)
+
+        pending = await container.broker.get_pending_count(str(world.world_id))
+        assert pending == 2
+
+        applied = await container.command_service.drain_and_apply(str(world.world_id), tick=0)
+
+        assert len(applied) == 1
+        assert applied[0].id == valid_cmd.id
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_step_reports_accurate_applied_count(tmp_path):
+    """SimulationService.step must report only successfully applied commands.
+
+    When one of several queued commands fails, the step count should
+    reflect successful applications, not total dequeued commands.
+    """
+    from archetype.core.component import Component
+
+    class StepGood(Component):
+        v: int = 0
+
+    class StepBad(Component):
+        v: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="step-count"), storage)
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+        good = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [StepGood(v=1)]},
+        )
+        bad = Command(
+            type=CommandType.SPAWN,
+            tick=0,
+            payload={"components": [StepBad(v=1).model_dump()]},
+        )
+        await container.command_service.submit(str(world.world_id), good, ctx)
+        await container.command_service.submit(str(world.world_id), bad, ctx)
+
+        count = await container.simulation_service.step(world.world_id)
+
+        assert count == 1
+    finally:
+        await container.shutdown()
