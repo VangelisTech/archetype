@@ -128,19 +128,19 @@ class CommandService:
             return []
 
         world = self._world_service.get_world(UUID(str(world_id)))
-        applied_ids = []
+        applied: list[Command] = []
 
         for cmd in commands:
             try:
                 await self.apply(world, cmd)
-                applied_ids.append(cmd.id)
+                applied.append(cmd)
             except Exception:
                 logger.exception(f"Failed to apply command {cmd.id} ({cmd.type.value})")
 
-        if applied_ids:
-            await self._broker.ack(applied_ids)
+        if applied:
+            await self._broker.ack([cmd.id for cmd in applied])
 
-        return commands
+        return applied
 
     @staticmethod
     def _hydrate_components(raw: list) -> list:
