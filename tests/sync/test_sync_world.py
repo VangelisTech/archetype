@@ -155,7 +155,10 @@ class TestSyncSystem:
 
 
 def _make_sync_world(tmp_path, name="test"):
-    """Helper to construct a SyncWorld with in-memory Daft session."""
+    """Helper to construct a SyncWorld with an in-memory Daft session.
+
+    Used by the lightweight tests that never call ``world.step``.
+    """
     session = Session()
     uri = str(tmp_path / "sync_store")
     store = SyncStore(uri=uri, session=session)
@@ -164,6 +167,23 @@ def _make_sync_world(tmp_path, name="test"):
     system = SyncSystem()
     config = WorldConfig(name=name)
     return SyncWorld(world_config=config, querier=querier, updater=updater, system=system)
+
+
+def _make_sync_world_with_catalog(tmp_path, name="test"):
+    """Helper to construct a SyncWorld backed by a real catalog so
+    ``world.step`` can actually persist rows."""
+    from archetype.core.config import StorageConfig
+    from archetype.core.runtime.storage import StorageContextFactory
+
+    cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
+    ctx = StorageContextFactory.build(cfg)
+    store = SyncStore(uri=ctx.uri, session=ctx.session)
+    querier = QueryManager(store=store)
+    updater = UpdateManager(store=store)
+    system = SyncSystem()
+    return SyncWorld(
+        world_config=WorldConfig(name=name), querier=querier, updater=updater, system=system
+    )
 
 
 class TestSyncWorld:
@@ -189,14 +209,30 @@ class TestSyncWorld:
         assert sig in world._spawn_cache
         assert len(world._spawn_cache[sig]) == 1
 
-    def test_remove_entity_populates_despawn_cache(self, tmp_path):
-        world = _make_sync_world(tmp_path)
+    def test_remove_entity_cancels_pending_spawn_in_same_tick(self, tmp_path):
         from archetype.core.archetype import Archetype
 
+        world = _make_sync_world(tmp_path)
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
         e1 = world.create_entity([Position(x=1, y=2)])
 
         world.remove_entity(e1)
+
+        assert sig not in world._spawn_cache
+        assert e1 not in world._entity2sig
+        assert e1 not in world._despawn_cache.get(sig, [])
+
+    def test_remove_entity_schedules_despawn_after_spawn_materialized(self, tmp_path):
+        from archetype.core.archetype import Archetype
+        from archetype.core.config import RunConfig
+
+        world = _make_sync_world_with_catalog(tmp_path, "despawn_after_step")
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        e1 = world.create_entity([Position(x=1, y=2)])
+        world.step(RunConfig(num_steps=1))
+
+        world.remove_entity(e1)
+
         assert sig in world._despawn_cache
         assert e1 in world._despawn_cache[sig]
 
@@ -239,3 +275,59 @@ class TestSyncWorld:
         world.create_entity([Position(x=1, y=2)])
         world.create_entity([Position(x=3, y=4)])
         assert world._next_entity_id == 3
+
+    def test_step_after_same_tick_spawn_remove_leaves_no_active_row(self, tmp_path):
+        from archetype.core.archetype import Archetype
+        from archetype.core.config import RunConfig
+
+        world = _make_sync_world_with_catalog(tmp_path, "cancel_active")
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        rc = RunConfig(num_steps=1)
+
+        eid = world.create_entity([Position(x=1, y=2)])
+        world.remove_entity(eid)
+        world.step(rc)
+
+        df = world.querier.query_archetype(
+            sig=sig,
+            run_config=rc,
+            ticks=None,
+            entity_ids=[eid],
+            components=None,
+            world_id=str(world.world_id),
+        )
+        rows = df.to_pylist()
+        assert all(not r["is_active"] for r in rows), (
+            f"cancelled entity persisted as active: {rows}"
+        )
+
+        for s, live_df in world._live.items():
+            active_eids = [r["entity_id"] for r in live_df.to_pylist() if r["is_active"]]
+            assert eid not in active_eids, f"_live[{s}] kept cancelled entity {eid}"
+
+    def test_step_after_same_tick_spawn_remove_preserves_sibling_entity(self, tmp_path):
+        from archetype.core.archetype import Archetype
+        from archetype.core.config import RunConfig
+
+        world = _make_sync_world_with_catalog(tmp_path, "cancel_sibling")
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        rc = RunConfig(num_steps=1)
+
+        survivor = world.create_entity([Position(x=10, y=20)])
+        cancelled = world.create_entity([Position(x=1, y=2)])
+        world.remove_entity(cancelled)
+        world.step(rc)
+
+        df = world.querier.query_archetype(
+            sig=sig,
+            run_config=rc,
+            ticks=None,
+            entity_ids=None,
+            components=None,
+            world_id=str(world.world_id),
+        )
+        rows = df.to_pylist()
+        active_ids = sorted(r["entity_id"] for r in rows if r["is_active"])
+        assert active_ids == [survivor], (
+            f"expected only survivor {survivor} active, got {active_ids}"
+        )

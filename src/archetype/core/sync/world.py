@@ -261,12 +261,23 @@ class SyncWorld(iWorld):
 
     def remove_entity(self, entity_id: int):
         sig = self._entity2sig.pop(entity_id, None)
-        if sig:
-            self._despawn_cache.setdefault(sig, []).append(entity_id)
-        else:
+        if sig is None:
             logger.warning(
                 f"World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}"
             )
+            return
+
+        pending = self._spawn_cache.get(sig)
+        if pending:
+            remaining = [row for row in pending if row["entity_id"] != entity_id]
+            if len(remaining) != len(pending):
+                if remaining:
+                    self._spawn_cache[sig] = remaining
+                else:
+                    del self._spawn_cache[sig]
+                return
+
+        self._despawn_cache.setdefault(sig, []).append(entity_id)
 
     def add_components(self, entity_id: int, components: list[Component]) -> None:
         old_sig = self._entity2sig.get(entity_id)
