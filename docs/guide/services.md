@@ -134,6 +134,8 @@ Each `step()` call:
 2. `broker.reset_tick_counters()` -- clear per-actor command counts
 3. `world.step(run_config)` -- execute processors via the core tick lifecycle
 
+`run_config` is **required**. `step()` MUST NOT mint a `RunConfig` internally: every tick in a multi-tick run shares the caller's `RunConfig` so the `run_id` stays stable across ticks. `run()` threads the caller's `RunConfig` into every internal `step()` call.
+
 ## QueryService
 
 Read-only access to world state. No `ActorCtx` required, no RBAC checks, no broker involvement.
