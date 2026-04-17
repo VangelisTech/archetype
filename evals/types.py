@@ -53,15 +53,14 @@ class TaskResult:
 
     @property
     def pass_at_k(self) -> float:
-        """Probability of at least one success in k trials.
+        """Fraction of the k trials that passed (empirical pass rate).
 
-        If any trial passed, pass@k = 1.0.  This is the simplified
-        version for small k; for large k with estimated p, use the
-        unbiased estimator.
+        For mixed outcomes this is ``passed / k``; for uniformly passing
+        or failing tasks it collapses to 1.0 or 0.0.
         """
         if not self.trials:
             return 0.0
-        return 1.0 if any(t.passed for t in self.trials) else 0.0
+        return sum(1 for t in self.trials if t.passed) / len(self.trials)
 
     @property
     def pass_pow_k(self) -> float:
@@ -92,7 +91,7 @@ class TaskResult:
             "suite": self.suite,
             "desc": self.desc,
             "k": self.k,
-            "pass_at_k": self.pass_at_k,
+            "pass_at_k": round(self.pass_at_k, 4),
             "pass_pow_k": round(self.pass_pow_k, 4),
             "avg_score": round(self.avg_score, 4),
             "all_passed": self.all_passed,

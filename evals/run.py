@@ -6,9 +6,10 @@
 Usage:
     python -m evals.run [--out results.json] [--suite regression|capability] [--trials 3]
 
-Reports pass@k (at least one trial passes, binary) and pass^k (all k
-trials pass, binary) per task, grouped by suite.  Exit code 0 if all
-regression tasks pass and no capability tasks error out.
+Reports pass@k (fraction of k trials that passed) and pass^k (1.0 only
+when every one of the k trials passed, 0.0 otherwise) per task, grouped
+by suite.  Exit code 0 only when at least one task ran, all regression
+tasks pass, and no capability tasks error out.
 """
 
 from __future__ import annotations
@@ -20,6 +21,17 @@ import sys
 from evals.harness import EvalHarness
 from evals.suites import capability, poison_command, regression
 from evals.types import TaskResult
+
+
+def _positive_int(value: str) -> int:
+    """Argparse type that accepts only strictly positive integers."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {parsed}")
+    return parsed
 
 
 def build_harness(trials: int = 1) -> EvalHarness:
@@ -83,7 +95,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run archetype evals")
     parser.add_argument("--out", default=None, help="Write JSON results to file")
     parser.add_argument("--suite", choices=["regression", "capability"], default=None)
-    parser.add_argument("--trials", type=int, default=1, help="Trials per task (for pass@k)")
+    parser.add_argument(
+        "--trials",
+        type=_positive_int,
+        default=1,
+        help="Trials per task (for pass@k); must be >= 1",
+    )
     args = parser.parse_args()
 
     harness = build_harness(trials=args.trials)
@@ -99,11 +116,23 @@ def main() -> int:
             json.dump([r.to_dict() for r in results], f, indent=2)
         print(f"\nResults written to {args.out}")
 
-    # Exit code: regression tasks must all pass, capability tasks must not error
-    reg_ok = all(t.all_passed for t in results if t.suite == "regression")
-    cap_no_errors = all(
-        not any(trial.error for trial in t.trials) for t in results if t.suite == "capability"
-    )
+    if not results:
+        print("\nNo eval tasks executed; refusing to report success.")
+        return 1
+
+    reg_results = [t for t in results if t.suite == "regression"]
+    cap_results = [t for t in results if t.suite == "capability"]
+    reg_ok = all(t.all_passed for t in reg_results)
+    cap_no_errors = all(not any(trial.error for trial in t.trials) for t in cap_results)
+
+    suite_required = args.suite or "regression"
+    if suite_required == "regression" and not reg_results:
+        print("\nNo regression tasks executed; refusing to report success.")
+        return 1
+    if suite_required == "capability" and not cap_results:
+        print("\nNo capability tasks executed; refusing to report success.")
+        return 1
+
     return 0 if reg_ok and cap_no_errors else 1
 
 
