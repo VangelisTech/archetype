@@ -78,6 +78,23 @@ class TestWorldRouteErrors:
         assert resp.status_code == 422
         assert "Invalid UUID" in resp.json()["detail"]
 
+    def test_delete_world_invalid_uuid_returns_422(self, client):
+        resp = client.delete("/worlds/not-a-uuid")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_create_world_duplicate_name_returns_409(self, client, tmp_path):
+        client.post(
+            "/worlds",
+            json={"name": "dup_name", "storage_uri": str(tmp_path / "store")},
+        )
+        resp = client.post(
+            "/worlds",
+            json={"name": "dup_name", "storage_uri": str(tmp_path / "store2")},
+        )
+        assert resp.status_code == 409
+        assert "already exists" in resp.json()["detail"]
+
     def test_delete_world_not_found(self, client):
         resp = client.delete("/worlds/00000000-0000-0000-0000-000000000000")
         # delete goes through CommandService → remove_world; non-existent is a no-op

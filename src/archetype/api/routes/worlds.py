@@ -37,8 +37,12 @@ async def create_world(
         },
     )
     await cs.submit("__global__", cmd, ctx)
-    # Apply immediately — world lifecycle commands are not tick-scheduled.
-    world = await cs.apply_world_lifecycle(cmd)
+    try:
+        world = await cs.apply_world_lifecycle(cmd)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from None
+    except PermissionError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from None
     return WorldResponse(
         world_id=str(world.world_id),
         name=getattr(world, "name", None),
@@ -83,6 +87,11 @@ async def remove_world(
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
+    try:
+        UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+
     cmd = Command(
         type=CommandType.DESTROY_WORLD,
         tick=0,
