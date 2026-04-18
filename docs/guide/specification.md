@@ -410,18 +410,146 @@ CURRENT GAPS:
 
 ### QueryService
 
-- `QueryService` is the intended read facade for external callers.
-- Read behavior SHOULD be consistent with the underlying core world and querier
-  contracts.
-- Query methods SHOULD either validate world existence consistently or
-  intentionally document which routes are world-agnostic.
+`QueryService` is the read facade for external callers. It sits directly
+over `AsyncWorld` and its querier. It MUST NOT reimplement union, projection,
+or filtering logic that belongs in the core layer.
+
+#### Q1. Public read surface
+
+The public read surface is exactly four methods:
+
+- `get_world_state(world_id, tick=None) -> WorldSnapshot`
+- `get_entity(world_id, entity_id, tick=None) -> dict`
+- `get_components(world_id, component_types, entity_ids=None, tick=None, ...) -> dict`
+- `get_command_history(world_id, limit=100) -> list[Command]`
+
+Any additional read method requires a spec revision.
+
+#### Q2. World existence
+
+Every read method MUST raise `KeyError` when the target world is unknown.
+The API layer translates `KeyError` to HTTP 404. `get_command_history()`
+MUST follow the same rule as the other three — returning an empty list on
+an unknown world is forbidden.
+
+#### Q3. Entity existence
+
+`get_entity` MUST raise `KeyError` when the entity is not present in the
+requested state (current or historical). Returning a success payload with
+empty component data is forbidden, because it prevents the API layer from
+distinguishing "entity missing" from "entity has no components."
+
+#### Q4. Component type resolution
+
+`component_types: list[str]` MUST resolve via `Component.get_type_by_name`.
+Unknown names MUST raise `ValueError`, which the API layer translates to
+HTTP 400. Silently dropping unknown names and returning partial results is
+forbidden.
+
+#### Q5. Response encoding
+
+Component payloads in response dicts MUST key by the component class name
+(e.g. `"Position"`, not `"position"`). Field names within a component MUST
+be unprefixed using `comp_type.get_prefix()`. Splitting column names on
+`"__"` is forbidden — component field names MAY legitimately contain
+double underscores.
+
+#### Q6. Base-column hiding
+
+The base persisted columns (`world_id`, `run_id`, `entity_id`, `tick`,
+`is_active`) MUST NOT appear inside component payloads. `entity_id` and
+`tick` MAY appear as top-level fields of the response. The other three
+MUST be stripped.
+
+#### Q7. Live vs store routing
+
+The effective tick is:
+
+- `world.tick - 1` if `tick is None` (the latest completed tick)
+- the caller-supplied `tick` otherwise
+
+If the effective tick equals `world.tick - 1`, reads MUST go through
+`AsyncWorld.get_components()` or `AsyncWorld._live` directly. Otherwise
+reads MUST route through `AsyncWorld.query_archetype(sig, ticks=[tick])`.
+
+`QueryService` MUST NOT reconstruct union or projection logic across
+archetype signatures. That is owned by `AsyncWorld.get_components`. If a
+historical multi-archetype read is needed, `AsyncWorld.get_components`
+MUST grow an optional `tick` parameter — it is not duplicated in the
+service.
+
+#### Q8. Counting
+
+Row counts MUST use `DataFrame.count_rows()`. `df.collect().to_pylist()`
+followed by `len(...)` is forbidden. Counting MUST not materialize a
+Python list the caller does not see.
+
+#### Q9. Materialization boundary
+
+The REST-facing methods MUST collect to Python dicts exactly once, at the
+service boundary. An internal variant (`as_dataframe=True`, or a sibling
+method) MAY return a lazy `daft.DataFrame` unchanged, so in-process
+consumers — processors, client-side query code, sugar runtime — stay in
+Daft's execution engine. This is the data-centric principle (`LEARNINGS.md`)
+applied to the read path.
+
+#### Q10. Filter expressions
+
+If `get_components` accepts a filter, the filter MUST be expressed as a
+`daft.Expression` object built from real column references. A string DSL
+over columns (e.g. `"position__x > 0.5"`) is forbidden. For the REST
+surface, a SQL fragment passed through `daft.sql_expr` is acceptable; a
+custom parser is not.
+
+#### Q11. Limits and projections
+
+`limit` and `count_only` options are orthogonal. `count_only=True` MUST
+skip materialization and return only the row count via `count_rows()`.
+`limit=N` MUST apply before materialization. Combining `count_only=True`
+with `limit` is forbidden and MUST raise `ValueError`.
+
+#### Q12. Compilable client surface
+
+A typed Python entry point MUST be provided that accepts `Component`
+*classes* (not strings) and returns a lazy `daft.DataFrame`:
+
+```python
+df = await world.query(Position, Velocity)
+df = df.where(q(Position).x > 0.5).limit(10)
+rows = df.collect().to_pylist()  # explicit materialization
+```
+
+Required properties:
+
+- The Component arguments MUST be real imported classes, so static type
+  checkers and editor tooling see them.
+- `q(Component).field` MUST return a `daft.Expression` equivalent to
+  `col(Component.get_prefix() + "field")`.
+- The returned object MUST be a lazy `DataFrame`, not a pre-materialized
+  list. Callers materialize explicitly.
+- The string-based REST path (`types=Position,Velocity`) is the wire
+  format for HTTP clients. It MUST NOT be the primary API for
+  in-process consumers.
 
 CURRENT GAP:
 
-- Most read methods are currently stubs that echo metadata rather than querying
-  actual world state.
-- `get_command_history()` behaves differently from the other read methods on
-  unknown worlds.
+- Most read methods are currently stubs that echo metadata rather than
+  querying actual world state. (Tracked in #75.)
+- `_entity2sig` is current-state only. Historical tick queries resolve
+  the entity's *current* archetype signature, which is incorrect for
+  entities that have migrated archetypes. Either `AsyncWorld` MUST grow
+  tick-indexed signature resolution, or historical reads MUST document
+  and reject cross-tick signature changes explicitly.
+- `AsyncWorld.get_components()` does not yet accept a `tick` parameter.
+  Until it does, Q7's "historical multi-archetype read" contract cannot
+  be satisfied without duplicating logic in the service — which Q7
+  itself forbids. This is a core-layer prerequisite for full
+  `QueryService` implementation.
+- `Component.get_type_by_name` walks `__subclasses__()`. For Q4 to be
+  reliable across dynamically imported Component packages, the lookup
+  must be resilient to import order.
+- `get_command_history()` behaves differently from the other read
+  methods on unknown worlds.
 
 ### ServiceContainer and runtime lifetime
 
