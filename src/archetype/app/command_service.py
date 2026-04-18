@@ -317,7 +317,7 @@ class CommandService:
                     await self._apply_reserved_spawn(world, int(entity_id), components)
 
             case CommandType.DESPAWN:
-                entity_id = payload["entity_id"]
+                entity_id = int(payload["entity_id"])
                 await world.remove_entity(entity_id)
 
             case CommandType.UPDATE:
@@ -326,12 +326,12 @@ class CommandService:
                 await self._apply_update(world, int(entity_id), components)
 
             case CommandType.ADD_COMPONENT:
-                entity_id = payload["entity_id"]
+                entity_id = int(payload["entity_id"])
                 components = self._hydrate_components(payload.get("components", []))
                 await world.add_components(entity_id, components)
 
             case CommandType.REMOVE_COMPONENT:
-                entity_id = payload["entity_id"]
+                entity_id = int(payload["entity_id"])
                 component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await world.remove_components(entity_id, component_types)
 

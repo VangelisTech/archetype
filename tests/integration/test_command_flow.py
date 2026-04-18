@@ -594,3 +594,136 @@ async def test_step_reports_accurate_applied_count(tmp_path):
         assert count == 1
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_despawn_converts_string_entity_id_to_int(tmp_path):
+    """DESPAWN must convert entity_id from payload to int.
+
+    When commands arrive via the REST API, JSON-parsed payloads may
+    contain entity_id as a string. SPAWN and UPDATE already call int(),
+    but DESPAWN was missing the conversion.
+    """
+    from archetype.core.component import Component
+
+    class Marker(Component):
+        tag: str = ""
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="despawn-str-id"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        entity_id = await container.command_service.submit_spawn(
+            world.world_id, [Marker(tag="x")], ctx
+        )
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        assert entity_id in world._entity2sig
+
+        despawn_cmd = Command(
+            type=CommandType.DESPAWN,
+            tick=0,
+            payload={"entity_id": str(entity_id)},
+        )
+        await container.command_service.submit(str(world.world_id), despawn_cmd, ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        assert entity_id not in world._entity2sig
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_component_converts_string_entity_id_to_int(tmp_path):
+    """ADD_COMPONENT must convert entity_id from payload to int.
+
+    Same root cause as DESPAWN: payload values from JSON may be strings.
+    """
+    from archetype.core.component import Component
+
+    class Base(Component):
+        v: int = 0
+
+    class Extra(Component):
+        label: str = ""
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="add-comp-str-id"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        entity_id = await container.command_service.submit_spawn(world.world_id, [Base(v=1)], ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        add_cmd = Command(
+            type=CommandType.ADD_COMPONENT,
+            tick=0,
+            payload={
+                "entity_id": str(entity_id),
+                "components": [Extra(label="added")],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), add_cmd, ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        sig = world._entity2sig.get(entity_id)
+        assert sig is not None
+        assert Extra in sig
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_component_converts_string_entity_id_to_int(tmp_path):
+    """REMOVE_COMPONENT must convert entity_id from payload to int.
+
+    Same root cause as DESPAWN: payload values from JSON may be strings.
+    """
+    from archetype.core.component import Component
+
+    class Alpha(Component):
+        a: int = 0
+
+    class Beta(Component):
+        b: int = 0
+
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(
+            WorldConfig(name="rm-comp-str-id"), storage
+        )
+
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        entity_id = await container.command_service.submit_spawn(
+            world.world_id, [Alpha(a=1), Beta(b=2)], ctx
+        )
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        sig = world._entity2sig.get(entity_id)
+        assert Alpha in sig and Beta in sig
+
+        rm_cmd = Command(
+            type=CommandType.REMOVE_COMPONENT,
+            tick=0,
+            payload={
+                "entity_id": str(entity_id),
+                "component_types": [Beta],
+            },
+        )
+        await container.command_service.submit(str(world.world_id), rm_cmd, ctx)
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        sig = world._entity2sig.get(entity_id)
+        assert sig is not None
+        assert Alpha in sig
+        assert Beta not in sig
+    finally:
+        await container.shutdown()
