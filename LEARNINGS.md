@@ -12,7 +12,7 @@ Archetype has a recursive purpose:
 
 > **Use Archetype to build the harness that evaluates and improves Archetype.**
 
-The `spawn_world()` primitive enables:
+World forking (via `WorldService.fork_world`) enables:
 
 1. **Benchmarking** — Thousands of simulation scenarios in parallel
 2. **Evaluation** — Compare behavioral outcomes across configurations
@@ -530,62 +530,6 @@ for entry in history:
 
 ---
 
-## Agent DSL: Ergonomic Layer (Jan 2026)
-
-The `archetype.dsl` module provides agent-centric ergonomics on top of the DataFrame engine:
-
-```python
-from archetype.dsl import World, behavior, spawn_world, Inbox
-
-@behavior
-class Debater:
-    requires = [Perspective, DebateState, Inbox]
-    priority = 10
-    runs_on = "every_tick"  # or "final_tick", "first_tick", tick number
-    filter = lambda agent: agent.perspective.type == "special"  # optional
-    
-    async def act(self, agent, world, tick):
-        # Agent-centric access (not col("perspective__name"))
-        name = agent.perspective.name
-        
-        # Direct mutation (auto-serializes lists/dicts)
-        agent.debate_state.history.append({"round": tick})
-        
-        # LLM call
-        response = await world.prompt("Your prompt", model="gpt-4o-mini")
-        
-        # Broadcast to all other agents
-        await world.broadcast(response, sender=agent, exclude=[agent])
-
-async with World("my_sim", storage="./data") as world:
-    world.add_behavior(Debater)
-    await world.spawn(Perspective(...), DebateState(), Inbox())
-    await world.run(ticks=3)
-    
-    for agent in world.agents:
-        print(agent.perspective.name)
-```
-
-### spawn_world() for Inner Simulations / MCTS
-
-```python
-async with spawn_world("scenario_1", parent=world, fork_state=True) as inner:
-    inner.add_behavior(ScenarioBehavior)
-    await inner.spawn(...)
-    await inner.run(ticks=5)
-    
-    # Analyze results
-    score = calculate_consensus(inner.agents)
-```
-
-Use cases:
-
-- **MCTS**: Explore action sequences
-- **Counterfactual reasoning**: "What if agent X said Y?"
-- **Mental simulation**: Agent imagines consequences
-
----
-
 ## Summary
 
 1. **DataFrames are batched by nature** — use expressions first
@@ -600,8 +544,6 @@ Use cases:
 10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
-13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
-14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
 
 ---
 
