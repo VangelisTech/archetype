@@ -97,7 +97,7 @@ class SyncStore(iStore):
         table = self.sess.get_table(table_name)
 
         if self.debug:
-            df.collect()
+            df.collect()  # justified .collect(): debug path materializes to print row counts before backend append
             logger.debug("Appending %s rows to table %s", df.count_rows(), table_name)
             df.show()
 

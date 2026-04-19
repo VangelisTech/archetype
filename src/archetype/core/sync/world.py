@@ -199,10 +199,12 @@ class SyncWorld(iWorld):
             components=None,
         )  # grab full row
 
+        # justified .collect(): need materialized row count to detect vanished entity before snapshot
         if df.collect().count()[0] == 0:
             return {}  # entity vanished, caller decides
 
         # 2) take latest tick row
+        # justified .to_pylist(): snapshot reconstructs a single entity row as a Python dict for overlay
         row_dict = df.sort(col("tick"), desc=True).limit(1).to_pylist()[0]
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)

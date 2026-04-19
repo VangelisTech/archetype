@@ -285,12 +285,13 @@ class AsyncWorld(iAsyncWorld):
         )
         df = df.where(col("entity_id") == entity_id) if df is not None else df
 
-        # Materialize and check for emptiness using count_rows to avoid expression truthiness
+        # justified .collect(): need materialized row count to detect vanished entity before snapshot
         df_mat = df.collect()
         if df_mat.count_rows() == 0:
             return {}  # entity vanished, caller decides
 
         # 2) take latest tick row
+        # justified .to_pylist(): snapshot reconstructs a single entity row as a Python dict for overlay
         row_dict = df_mat.sort(col("tick"), desc=True).limit(1).to_pylist()[0]
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)

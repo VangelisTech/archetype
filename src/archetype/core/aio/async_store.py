@@ -81,7 +81,7 @@ class AsyncStore(iAsyncStore):
         """
         # Defensive: skip zero-row or empty-schema appends to protect backends
         try:
-            df.collect()
+            df.collect()  # justified .collect(): must materialize before storage write to probe row count and catch schema errors early
             if df.count_rows() == 0 or not df.column_names:
                 logger.info(
                     f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"

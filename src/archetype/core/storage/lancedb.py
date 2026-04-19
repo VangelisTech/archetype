@@ -148,7 +148,7 @@ class AsyncLancedbStore(iAsyncStore):
         """
         # Defensive no-op for empty frames to avoid Lance casting errors
         try:
-            df.collect()
+            df.collect()  # justified .collect(): must materialize before Lance write to probe row count and surface schema cast errors before backend
             if df.count_rows() == 0 or not df.column_names:
                 logger.info(
                     f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
