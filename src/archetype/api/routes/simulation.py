@@ -23,8 +23,12 @@ async def step_world(
     if req is None:
         req = StepRequest()
     try:
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
         run_config = RunConfig(num_steps=1, debug=req.debug)
-        commands_applied = await sim.step(UUID(world_id), run_config)
+        commands_applied = await sim.step(wid, run_config)
         return {"world_id": world_id, "commands_applied": commands_applied}
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
@@ -37,8 +41,12 @@ async def run_world(
     sim: SimulationService = Depends(get_simulation_service),
 ):
     try:
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
         run_config = RunConfig(num_steps=req.num_steps, debug=req.debug)
-        result = await sim.run(UUID(world_id), run_config)
+        result = await sim.run(wid, run_config)
         return RunResultResponse(
             run_id=str(result.run_id),
             world_id=str(result.world_id),
@@ -56,7 +64,11 @@ async def list_processors(
     sim: SimulationService = Depends(get_simulation_service),
 ):
     try:
-        procs = sim.list_processors(UUID(world_id))
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
+        procs = sim.list_processors(wid)
         return [p.model_dump() for p in procs]
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None

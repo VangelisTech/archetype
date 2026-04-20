@@ -242,6 +242,45 @@ class TestCommandRoutes:
         assert resp.json()["pending_count"] == 1
 
 
+class TestSimulationRouteErrors:
+    def test_step_invalid_uuid_returns_422(self, client):
+        resp = client.post("/worlds/not-a-uuid/step", json={})
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_run_invalid_uuid_returns_422(self, client):
+        resp = client.post("/worlds/not-a-uuid/run", json={"num_steps": 1})
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_list_processors_invalid_uuid_returns_422(self, client):
+        resp = client.get("/worlds/not-a-uuid/processors")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+
+class TestQueryRouteErrors:
+    def test_get_state_invalid_uuid_returns_422(self, client):
+        resp = client.get("/worlds/not-a-uuid/state")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_get_entity_invalid_uuid_returns_422(self, client):
+        resp = client.get("/worlds/not-a-uuid/entities/1")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_get_components_invalid_uuid_returns_422(self, client):
+        resp = client.get("/worlds/not-a-uuid/components")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+    def test_get_history_invalid_uuid_returns_422(self, client):
+        resp = client.get("/worlds/not-a-uuid/history")
+        assert resp.status_code == 422
+        assert "Invalid UUID" in resp.json()["detail"]
+
+
 class TestSimulationRoutes:
     def test_step(self, client, tmp_path):
         create_resp = client.post(

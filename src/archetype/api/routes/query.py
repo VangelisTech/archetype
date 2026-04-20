@@ -19,7 +19,11 @@ async def get_world_state(
     qs: QueryService = Depends(get_query_service),
 ):
     try:
-        snapshot = await qs.get_world_state(UUID(world_id), tick)
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
+        snapshot = await qs.get_world_state(wid, tick)
         data = snapshot.model_dump()
         data["world_id"] = str(data["world_id"])
         return data
@@ -35,7 +39,11 @@ async def get_entity(
     qs: QueryService = Depends(get_query_service),
 ):
     try:
-        entity = await qs.get_entity(UUID(world_id), entity_id, tick)
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
+        entity = await qs.get_entity(wid, entity_id, tick)
         return entity
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
@@ -48,8 +56,12 @@ async def get_components(
     qs: QueryService = Depends(get_query_service),
 ):
     try:
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
         component_types = [t.strip() for t in types.split(",") if t.strip()]
-        result = await qs.get_components(UUID(world_id), component_types)
+        result = await qs.get_components(wid, component_types)
         return result
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
@@ -62,7 +74,11 @@ async def get_command_history(
     qs: QueryService = Depends(get_query_service),
 ):
     try:
-        history = await qs.get_command_history(UUID(world_id), limit)
+        wid = UUID(world_id)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
+    try:
+        history = await qs.get_command_history(wid, limit)
         return [cmd.model_dump(mode="json") for cmd in history]
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
