@@ -13,7 +13,7 @@
 # limitations under the License.
 
 """
-Archetype - AI-Native Simulation Engine
+Archetype — dataframe-first, append-only ECS runtime for simulations and AI agents.
 
 A data-centric Entity-Component-System (ECS) runtime for agent simulations.
 

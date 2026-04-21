@@ -22,6 +22,12 @@ nav:
       - Specification: guide/specification.md
       - Examples: guide/examples.md
       - Contributing Guide: guide/contributing.md
+  - Guides:
+      - Building Simulations: guide/building-simulations.md
+      - Custom Commands: guide/custom-commands.md
+      - Token Quotas: guide/token-quotas.md
+      - Trajectories: guide/trajectories.md
+      - AutoResearch: guide/autoresearch.md
   - Core Architecture:
       - Overview: guide/architecture.md
       - Archetypes: guide/archetype.md
@@ -40,11 +46,6 @@ nav:
       - Command Broker: guide/broker.md
       - Services: guide/services.md
       - API Layer: guide/api-layer.md
-  - Guides:
-      - Building Simulations: guide/building-simulations.md
-      - Custom Commands: guide/custom-commands.md
-      - Token Quotas: guide/token-quotas.md
-      - Trajectories: guide/trajectories.md
   - Reference:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md

@@ -263,5 +263,5 @@ Config lives in `docs/mint.json`. Navigation is defined there.
 
 | Document | Purpose |
 |----------|---------|
-| [CLAUDE.md](CLAUDE.md) | Hard constraints for AI agents — architectural rules |
+| [CLAUDE.md](CLAUDE.md) | Repo-specific coding rules and architectural constraints |
 | [LEARNINGS.md](LEARNINGS.md) | Extended architectural knowledge — Daft patterns, ECS design |

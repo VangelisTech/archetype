@@ -2,7 +2,8 @@
 
 Read these before doing anything:
 
-- `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory.**
+- `docs/guide/specification.md` — Normative contracts. Takes precedence over everything else. **Mandatory.**
+- `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory before writing a processor.**
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions, dev workflow.
 
 Skills in `.claude/skills/` enforce framework rules automatically. They fire based on file paths — you don't need to invoke them manually.
@@ -19,9 +20,9 @@ Skills in `.claude/skills/` enforce framework rules automatically. They fire bas
 
 | Layer | Access |
 |-------|--------|
-| `src/archetype/core/` | **Read-only.** Do not modify without explicit permission. |
-| `src/archetype/app/` | Extend carefully. |
-| Everything else | Write freely. |
+| `src/archetype/core/` | Modify only after discussion. Holds the hard invariants. |
+| `src/archetype/app/` | Extend carefully. Service contracts live in the specification. |
+| Everything else | Write freely, subject to the contracts they wrap. |
 
 ## Commands
 

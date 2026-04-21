@@ -29,7 +29,7 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="Archetype ECS",
-        description="AI-Native Simulation Engine API",
+        description="Dataframe-first ECS runtime for simulations and AI agents.",
         version="0.1.1",
         lifespan=lifespan,
     )

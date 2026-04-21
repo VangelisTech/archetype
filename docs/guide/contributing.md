@@ -1,11 +1,6 @@
 # Contributing
 
-Archetype is an AI-native repository. Humans are absolutely welcome to
-contribute, but the preferred workflow is to turn proposed work into a clear
-issue and then have an agent implement it in a branch with a PR.
-
-That keeps the work explicit, reviewable, and grounded in the contracts this
-repo is trying to preserve.
+Most changes to this repo are written as issues first and implemented in a branch with a PR. The intent is to keep work explicit, reviewable, and grounded in the contracts the repo is trying to preserve. Direct commits are fine for typo fixes and small docs edits.
 
 ## Recommended Workflow
 
@@ -30,8 +25,7 @@ These documents are the current orientation pack for contributors:
 | [`LEARNINGS.md`](https://github.com/VangelisTech/archetype/blob/main/LEARNINGS.md) | Hard-won architecture and Daft/runtime patterns. Read this before proposing structural changes. |
 | [`AGENTS.md`](https://github.com/VangelisTech/archetype/blob/main/AGENTS.md) | Repository conventions, architecture boundaries, testing expectations, and contribution norms |
 | [`CLAUDE.md`](https://github.com/VangelisTech/archetype/blob/main/CLAUDE.md) | Local development workflow and repo-specific guardrails for coding agents |
-| [Specification](specification.md) | Engine and application contracts from storage through app/runtime boundaries |
-| [Specification](specification.md) | System-wide contract document, including the sugar/runtime API requirements: concurrency, lifetime, ceremony, and governance |
+| [Specification](specification.md) | Engine, application, and sugar/runtime contracts — normative behavior across the stack |
 | [Architecture](architecture.md) | High-level ECS and service-layer design |
 | [Quickstart](quickstart.md) | Fastest way to get oriented with the current API surface |
 

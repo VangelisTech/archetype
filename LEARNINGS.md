@@ -1,28 +1,6 @@
 # Learnings: Daft 0.7.x & Archetype Patterns
 
-Documented from sessions with Everett, December 2024 – January 2026
-
-> **For AI Agents:** This document contains hard-won architectural knowledge. Read it before proposing changes to core patterns.
-
----
-
-## The Meta-Goal (Jan 2026)
-
-Archetype has a recursive purpose:
-
-> **Use Archetype to build the harness that evaluates and improves Archetype.**
-
-The `spawn_world()` primitive enables:
-
-1. **Benchmarking** — Thousands of simulation scenarios in parallel
-2. **Evaluation** — Compare behavioral outcomes across configurations
-3. **Self-improvement** — Agents proposing and testing architectural changes
-
-The `core/` module is human-curated, but everything else is fair game for agent contribution. The plan:
-
-- **Now:** Python core, optimized for iteration
-- **Next:** Rust rewrite for production performance
-- **Future:** Agents continuously improving the system
+Architectural notes and Daft patterns accumulated while building Archetype. Read before proposing changes to processor or UDF code. For normative contracts, see `docs/guide/specification.md`.
 
 ---
 
@@ -305,8 +283,6 @@ Hooks are async, errors are logged but don't crash the world.
 
 ## The Data-Centric Principle (Mar 2026)
 
-> **For AI Agents:** This is the most important section. Read it before writing any processor.
-
 Archetype is **data-centric**. The DataFrame is the source of truth. Processors are pure functions `DataFrame → DataFrame`. So long as the data looks right at the end of a tick, nothing else matters — not how the LLM was called, not whether it was async or sync, not how long it took.
 
 This means:
@@ -530,62 +506,6 @@ for entry in history:
 
 ---
 
-## Agent DSL: Ergonomic Layer (Jan 2026)
-
-The `archetype.dsl` module provides agent-centric ergonomics on top of the DataFrame engine:
-
-```python
-from archetype.dsl import World, behavior, spawn_world, Inbox
-
-@behavior
-class Debater:
-    requires = [Perspective, DebateState, Inbox]
-    priority = 10
-    runs_on = "every_tick"  # or "final_tick", "first_tick", tick number
-    filter = lambda agent: agent.perspective.type == "special"  # optional
-    
-    async def act(self, agent, world, tick):
-        # Agent-centric access (not col("perspective__name"))
-        name = agent.perspective.name
-        
-        # Direct mutation (auto-serializes lists/dicts)
-        agent.debate_state.history.append({"round": tick})
-        
-        # LLM call
-        response = await world.prompt("Your prompt", model="gpt-4o-mini")
-        
-        # Broadcast to all other agents
-        await world.broadcast(response, sender=agent, exclude=[agent])
-
-async with World("my_sim", storage="./data") as world:
-    world.add_behavior(Debater)
-    await world.spawn(Perspective(...), DebateState(), Inbox())
-    await world.run(ticks=3)
-    
-    for agent in world.agents:
-        print(agent.perspective.name)
-```
-
-### spawn_world() for Inner Simulations / MCTS
-
-```python
-async with spawn_world("scenario_1", parent=world, fork_state=True) as inner:
-    inner.add_behavior(ScenarioBehavior)
-    await inner.spawn(...)
-    await inner.run(ticks=5)
-    
-    # Analyze results
-    score = calculate_consensus(inner.agents)
-```
-
-Use cases:
-
-- **MCTS**: Explore action sequences
-- **Counterfactual reasoning**: "What if agent X said Y?"
-- **Mental simulation**: Agent imagines consequences
-
----
-
 ## Summary
 
 1. **DataFrames are batched by nature** — use expressions first
@@ -600,16 +520,12 @@ Use cases:
 10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
-13. **Agent DSL** for ergonomic agent-centric code that compiles to DataFrames
-14. **spawn_world()** for inner simulations, MCTS, counterfactual reasoning
 
 ---
 
 ## Single Process, Single Event Loop (Apr 2026)
 
-> **For AI Agents:** This is a hard architectural constraint. Do not design for multi-process or multi-server deployments.
-
-Archetype runs as **one `archetype serve` process**. Daft owns the cores — it manages thread pools, memory, and parallelism internally. `SimulationService.run_all` drives all worlds concurrently via `asyncio.gather` in a single event loop. `AsyncWorld.step` parallelizes across archetypes the same way.
+Archetype runs as **one `archetype serve` process**. This is a hard architectural constraint — do not design for multi-process or multi-server deployments. Daft owns the cores — it manages thread pools, memory, and parallelism internally. `SimulationService.run_all` drives all worlds concurrently via `asyncio.gather` in a single event loop. `AsyncWorld.step` parallelizes across archetypes the same way.
 
 **Consequences:**
 
