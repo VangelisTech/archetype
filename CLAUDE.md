@@ -10,11 +10,20 @@ Skills in `.claude/skills/` enforce framework rules automatically. They fire bas
 
 ## Skills index
 
-| Skill | What it enforces |
-|-------|-----------------|
-| `daft-patterns` | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
-| `archetype-components` | Component definitions, Arrow serialization, field conventions |
-| `archetype-processors` | AsyncProcessor patterns, priority ordering, resource access |
+| Skill | How it fires | What it enforces |
+|-------|--------------|------------------|
+| `daft-patterns` | auto (Python files) | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
+| `archetype-components` | auto (Python files) | Component definitions, Arrow serialization, field conventions |
+| `archetype-processors` | auto (Python files) | AsyncProcessor patterns, priority ordering, resource access |
+| `footgun-detector` | `/footgun` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
+
+## Agents
+
+Agents in `.claude/agents/` are invoked autonomously — by CI, by other agents, or when their `description` matches the task.
+
+| Agent | When to use |
+|-------|-------------|
+| `footgun-detector` | Review a PR diff for runtime bugs. Use when the user asks to review a PR for footguns, or invoke from CI on pull requests. |
 
 ## Layers
 
