@@ -102,8 +102,9 @@ dev = [
 ]
 
 [tool.uv]
-# Supply-chain guard: refuse packages released in the last 7 days.
-exclude-newer = "7 days"
+# Supply-chain guard: refuse packages released after this date (7-day quarantine).
+# Bump this manually as needed; uv 0.8.x doesn't support relative durations.
+exclude-newer = "2026-04-15T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
