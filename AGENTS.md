@@ -141,24 +141,24 @@ Roles (flat, not hierarchical):
 
 ## Conventions
 
-**Components**
+### Components
 
 - Use `_json` suffix for non-primitive types that must serialize through Arrow: `history_json: str = "[]"`
 - Keep components small and single-purpose.
 
-**Processors**
+### Processors
 
 - One processor, one concern.
 - Lower `priority` runs first.
 - Return a new DataFrame; never mutate in place.
 - `daft.functions.prompt` for LLM calls.
 
-**Testing**
+### Testing
 
 - Integration tests in `tests/integration/`.
 - Use the `tmp_path` fixture for storage isolation.
 
-**Commits**
+### Commits
 
 - Conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`.
 - Atomic commits; reference issues when applicable.
