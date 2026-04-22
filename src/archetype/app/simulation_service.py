@@ -44,6 +44,9 @@ class SimulationService:
         world = self._world_service.get_world(world_id)
         tick = getattr(world, "tick", 0)
 
+        if hasattr(world, "run_id"):
+            world.run_id = str(run_config.run_id)
+
         applied = await self._command_service.drain_and_apply(world_id, tick)
         reset_tick_counters()
 

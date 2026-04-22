@@ -25,7 +25,11 @@ async def step_world(
     try:
         run_config = RunConfig(num_steps=1, debug=req.debug)
         commands_applied = await sim.step(UUID(world_id), run_config)
-        return {"world_id": world_id, "commands_applied": commands_applied}
+        return {
+            "world_id": world_id,
+            "commands_applied": commands_applied,
+            "run_id": str(run_config.run_id),
+        }
     except KeyError:
         raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
 

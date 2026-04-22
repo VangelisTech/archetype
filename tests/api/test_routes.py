@@ -254,6 +254,21 @@ class TestSimulationRoutes:
         assert resp.status_code == 200
         assert "commands_applied" in resp.json()
 
+    def test_step_response_includes_run_id(self, client, tmp_path):
+        """Regression: the step response must include the run_id under which
+        the tick's data was persisted so callers can query it back."""
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "step_run_id", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(f"/worlds/{world_id}/step", json={})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "run_id" in data, "step response must include run_id"
+        assert data["run_id"], "run_id must be non-empty"
+
     def test_step_not_found(self, client):
         resp = client.post(
             "/worlds/00000000-0000-0000-0000-000000000000/step",

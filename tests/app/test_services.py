@@ -465,6 +465,47 @@ class TestSimulationService:
 
         assert sim.list_processors(uuid7()) == []
 
+    @pytest.mark.asyncio
+    async def test_step_sets_world_run_id(self, tmp_path):
+        """Regression: SimulationService.step must set world.run_id to the
+        RunConfig's run_id, matching the pattern already used by run()."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="step_run_id"), storage
+            )
+            assert world.run_id is None
+
+            rc = RunConfig(num_steps=1)
+            await container.simulation_service.step(world.world_id, rc)
+
+            assert str(world.run_id) == str(rc.run_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_step_consecutive_calls_update_world_run_id(self, tmp_path):
+        """Each step call should update world.run_id to match that call's
+        RunConfig so default-run queries always reflect the latest step."""
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="step_consec"), storage
+            )
+
+            rc1 = RunConfig(num_steps=1)
+            await container.simulation_service.step(world.world_id, rc1)
+            assert str(world.run_id) == str(rc1.run_id)
+
+            rc2 = RunConfig(num_steps=1)
+            await container.simulation_service.step(world.world_id, rc2)
+            assert str(world.run_id) == str(rc2.run_id)
+            assert rc1.run_id != rc2.run_id
+        finally:
+            await container.shutdown()
+
 
 class TestQueryService:
     @pytest.mark.asyncio
