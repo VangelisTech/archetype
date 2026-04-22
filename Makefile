@@ -160,7 +160,17 @@ version:
 
 .PHONY: lock-check
 lock-check:
-	@uv lock --check
+	@bash scripts/check_uv_lock.sh
+
+# Bump tool.uv.exclude-newer to today minus 7 days and regenerate the lock.
+# Use this to advance the supply-chain quarantine cutoff over time.
+.PHONY: refresh-quarantine
+refresh-quarantine:
+	@CUTOFF=$$(python3 -c 'from datetime import datetime, timedelta, timezone; print((datetime.now(timezone.utc)-timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z"))'); \
+	 echo "→ exclude-newer = $$CUTOFF"; \
+	 sed -i.bak "s|^exclude-newer = .*|exclude-newer = \"$$CUTOFF\"|" pyproject.toml; \
+	 rm -f pyproject.toml.bak; \
+	 uv lock
 
 .PHONY: build
 build: clean

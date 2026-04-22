@@ -20,7 +20,10 @@ import typer
 DEFAULT_BASE_URL = "http://localhost:8000"
 ENV_BASE_URL = "ARCHETYPE_URL"
 
-app = typer.Typer(name="archetype", help="Archetype ECS — AI-Native Simulation Engine")
+app = typer.Typer(
+    name="archetype",
+    help="Archetype ECS — dataframe-first ECS runtime for simulations and AI agents",
+)
 world_app = typer.Typer(help="World management commands")
 app.add_typer(world_app, name="world")
 chronicle_app = typer.Typer(help="Chronicle — personal archive (local, no server required)")

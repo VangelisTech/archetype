@@ -1,7 +1,7 @@
 [project]
 name = "archetype-ecs"
 version = "0.1.1"
-description = "AI-native simulation engine: ECS as data (Daft) with time-travel storage (LanceDB)."
+description = "Dataframe-first, append-only ECS runtime for simulations and AI agents. Built on Daft with LanceDB time-travel storage."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
@@ -102,8 +102,9 @@ dev = [
 ]
 
 [tool.uv]
-# Supply-chain guard: refuse packages released in the last 7 days.
-exclude-newer = "7 days"
+# Supply-chain guard: refuse packages released after this date (7-day quarantine).
+# Bump this manually as needed; uv 0.8.x doesn't support relative durations.
+exclude-newer = "2026-04-15T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"

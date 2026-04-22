@@ -11,8 +11,8 @@ repos:
   - repo: local
     hooks:
       - id: uv-lock-check
-        name: Ensure uv.lock is in sync
-        entry: uv lock --check
+        name: Ensure uv.lock is in sync (and pyproject [tool.uv] parses)
+        entry: bash scripts/check_uv_lock.sh
         language: system
         pass_filenames: false
 

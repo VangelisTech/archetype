@@ -2,9 +2,7 @@
 
 ## A dataframe-first, append-only ECS runtime for simulations and AI agents
 
-Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows.
-
-That single design choice is the key to the project:
+Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows. Consequences of that storage model:
 
 - entities are grouped by exact component sets
 - processors run over whole archetype DataFrames
@@ -29,9 +27,9 @@ The runtime model is:
 4. processors transform matching archetype DataFrames
 5. updated rows are appended to storage
 
-## Why It Exists
+## Use Cases
 
-Archetype is built for simulations where history matters:
+Simulations where tick-by-tick history is part of the model:
 
 - multi-agent worlds
 - counterfactual branches and forks
@@ -265,15 +263,13 @@ A fork:
 
 Source and fork diverge independently after that point.
 
-## Project Status
+## Status
 
-The core runtime and write path are the strongest parts of the project today.
+Current state worth knowing before using it:
 
-Current codebase realities worth knowing:
-
+- the core runtime and append-only write path are the most mature parts
 - the Python service layer is richer than the REST read models
-- the FastAPI layer currently uses a default admin `ActorCtx`, so it is not multi-tenant auth yet
-- the project is explicitly optimized for iteration and architectural exploration
+- the FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet
 
 ## Where to Start
 
