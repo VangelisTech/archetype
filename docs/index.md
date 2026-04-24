@@ -11,12 +11,13 @@ Archetype stores world state as columnar archetype tables, executes behavior as 
 
 ## What It Is
 
-Archetype is split into three layers:
+Archetype is split into layers:
 
 | Layer | Purpose |
 |---|---|
+| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
 | `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer: `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
+| `src/archetype/app` | Service layer (lower-level): `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
 | `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
 
 The runtime model is:
@@ -52,20 +53,14 @@ cd archetype
 uv sync --group dev
 ```
 
-The most complete interface today is the in-process Python API:
+The recommended entry point for scripts is `ArchetypeRuntime`:
 
 ```python
 import asyncio
 
 from daft import DataFrame, col
-from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 class Position(Component):
@@ -92,41 +87,23 @@ class MovementProcessor(AsyncProcessor):
 
 
 async def main():
-    container = ServiceContainer()
-    world = await container.world_service.create_world(
-        WorldConfig(name="demo"),
-        StorageConfig(),
-    )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("demo", processors=[MovementProcessor()])
 
-    await world.system.add_processor(MovementProcessor())
+        await world.spawn(Position(x=0, y=0), Velocity(dx=1, dy=2))
+        await world.run(steps=3)
 
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    cmd = Command(
-        type=CommandType.SPAWN,
-        payload={
-            "components": [
-                Position(x=0, y=0).to_payload(),
-                Velocity(dx=1, dy=2).to_payload(),
-            ]
-        },
-    )
-    await container.command_service.submit(world.world_id, cmd, ctx)
-
-    await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
-
-    df = await world.get_components([Position])
-    print(df.collect().to_pylist())
-
-    await container.shutdown()
+        df = await world.query(Position)
+        print(df.collect().to_pylist())
 
 
 asyncio.run(main())
 ```
 
-Two important details from the code:
+Two important details:
 
-- use `Component.to_payload()` when sending components through `CommandService`
 - processor columns are always prefixed as `componentname__field`
+- `ArchetypeRuntime` is the script boundary; use `world.as_actor(...)` for explicit roles and drop to `ServiceContainer` only for custom command routing or lower-level lifecycle control
 
 See [Quickstart](guide/quickstart.md) for more.
 
@@ -273,6 +250,6 @@ Current state worth knowing before using it:
 
 ## Where to Start
 
-- **New to Archetype?** Start with the [Quickstart](guide/quickstart.md) to get a simulation running, then read the [Architecture](guide/architecture.md) overview
+- **New to Archetype?** Start with the [Quickstart](guide/quickstart.md), which leads with `ArchetypeRuntime`, then read the [Architecture](guide/architecture.md) overview
 - **Building a simulation?** See [Building Simulations](guide/building-simulations.md) for the full workflow
 - **Integrating with the API?** See [App Overview](guide/app-overview.md) for how core connects through services to the HTTP layer

@@ -46,6 +46,11 @@ class Velocity(Component):
     vy: float = 0.0
 
 
+class Health(Component):
+    hp: int = 100
+    max_hp: int = 100
+
+
 class Move(AsyncProcessor):
     components = (Position, Velocity)
     priority = 10
@@ -126,6 +131,40 @@ async def test_runtime_world_construction_is_pure(tmp_path, monkeypatch):
         )
 
         assert isinstance(world, RuntimeWorld)
+        assert create_calls == 0
+        assert backend_calls == 0
+        assert app._container.world_service.list_worlds() == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_as_actor_is_pure_before_activation(tmp_path, monkeypatch):
+    async with ArchetypeRuntime() as app:
+        create_calls = 0
+        backend_calls = 0
+
+        original_create_world = app._container.world_service.create_world
+        original_get_backend = app._container.storage_service.get_backend
+
+        async def tracked_create_world(*args, **kwargs):
+            nonlocal create_calls
+            create_calls += 1
+            return await original_create_world(*args, **kwargs)
+
+        async def tracked_get_backend(*args, **kwargs):
+            nonlocal backend_calls
+            backend_calls += 1
+            return await original_get_backend(*args, **kwargs)
+
+        monkeypatch.setattr(app._container.world_service, "create_world", tracked_create_world)
+        monkeypatch.setattr(app._container.storage_service, "get_backend", tracked_get_backend)
+
+        world = app.world(
+            "alias-pure",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_alias_pure"),
+        )
+        viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
+
+        assert isinstance(viewer, RuntimeWorld)
         assert create_calls == 0
         assert backend_calls == 0
         assert app._container.world_service.list_worlds() == []
@@ -236,6 +275,38 @@ async def test_runtime_world_single_flight_across_query_and_run(tmp_path, monkey
         assert create_calls == 1
         assert df.collect().to_pylist() == []
         assert result.ticks_completed == 1
+        assert len(app._container.world_service.list_worlds()) == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_actor_aliases_share_single_flight_activation_and_world_id(
+    tmp_path, monkeypatch
+):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "actor-aliases",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_actor_aliases"),
+        )
+        player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        maintainer = world.as_actor(ActorCtx(id=uuid7(), roles={"maintainer"}))
+
+        create_calls = 0
+        original_create_world = app._container.world_service.create_world
+
+        async def tracked_create_world(*args, **kwargs):
+            nonlocal create_calls
+            create_calls += 1
+            await asyncio.sleep(0.05)
+            return await original_create_world(*args, **kwargs)
+
+        monkeypatch.setattr(app._container.world_service, "create_world", tracked_create_world)
+
+        entity_id, df = await asyncio.gather(player.spawn(Position(x=1.0)), maintainer.query(Position))
+
+        assert create_calls == 1
+        assert entity_id == 1
+        assert df.collect().to_pylist() == []
+        assert world.world_id == player.world_id == maintainer.world_id
         assert len(app._container.world_service.list_worlds()) == 1
 
 
@@ -526,6 +597,89 @@ async def test_runtime_world_spawn_not_query_visible_until_step(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_runtime_world_update_is_not_query_visible_until_step(tmp_path):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "update-boundary",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_update_boundary"),
+        )
+
+        entity_id = await world.spawn(Position(x=1.0, y=2.0))
+        await world.step()
+
+        await world.update(entity_id, Position(x=9.0, y=4.0))
+        before = (await world.query(Position, entity_ids=[entity_id])).collect().to_pylist()
+        assert before[0]["position__x"] == 1.0
+        assert before[0]["position__y"] == 2.0
+
+        await world.step()
+        after = (await world.query(Position, entity_ids=[entity_id])).collect().to_pylist()
+        assert after[0]["position__x"] == 9.0
+        assert after[0]["position__y"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_add_components_migrates_at_tick_boundary(tmp_path):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "add-components-boundary",
+            storage=StorageConfig(
+                uri=str(tmp_path / "store"), namespace="runtime_add_components_boundary"
+            ),
+        )
+
+        entity_id = await world.spawn(Position(x=4.0, y=5.0))
+        await world.step()
+
+        await world.add_components(entity_id, Velocity(vx=2.0, vy=3.0))
+
+        before = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        assert before == []
+
+        await world.step()
+        after = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        assert len(after) == 1
+        assert after[0]["position__x"] == 4.0
+        assert after[0]["velocity__vx"] == 2.0
+        assert after[0]["velocity__vy"] == 3.0
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_remove_components_applies_at_tick_boundary_and_preserves_remaining_data(
+    tmp_path,
+):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "remove-components-boundary",
+            storage=StorageConfig(
+                uri=str(tmp_path / "store"), namespace="runtime_remove_components_boundary"
+            ),
+        )
+
+        entity_id = await world.spawn(
+            Position(x=7.0, y=8.0),
+            Velocity(vx=1.0, vy=2.0),
+            Health(hp=80, max_hp=100),
+        )
+        await world.step()
+
+        await world.remove_components(entity_id, Velocity)
+
+        before = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        assert len(before) == 1
+
+        await world.step()
+        after = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        assert after == []
+
+        remaining = (await world.query(Position, Health, entity_ids=[entity_id])).collect().to_pylist()
+        assert len(remaining) == 1
+        assert remaining[0]["position__x"] == 7.0
+        assert remaining[0]["position__y"] == 8.0
+        assert remaining[0]["health__hp"] == 80
+
+
+@pytest.mark.asyncio
 async def test_runtime_world_add_processor_applies_at_tick_boundary(tmp_path):
     async with ArchetypeRuntime() as app:
         world = app.world(
@@ -562,8 +716,31 @@ async def test_runtime_world_commands_are_audited_in_broker_history_in_order(tmp
         await world.step()
         await world.despawn(entity_id)
 
-        history = await app._container.broker.get_history(world.world_id)
+        history = await world.command_history()
         assert [cmd.type.value for cmd in history] == ["spawn", "add_processor", "despawn"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_component_mutations_are_audited_in_broker_history_in_order(tmp_path):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "component-audit",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_component_audit"),
+        )
+
+        entity_id = await world.spawn(Position(x=1.0, y=1.0))
+        await world.step()
+        await world.update(entity_id, Position(x=5.0, y=6.0))
+        await world.add_components(entity_id, Health(hp=90, max_hp=100))
+        await world.remove_components(entity_id, Health)
+
+        history = await world.command_history()
+        assert [cmd.type.value for cmd in history] == [
+            "spawn",
+            "update",
+            "add_component",
+            "remove_component",
+        ]
 
 
 @pytest.mark.asyncio
@@ -587,12 +764,127 @@ async def test_runtime_world_resource_mutation_does_not_generate_broker_history(
         )
 
         await world.query(Position)
-        before = await app._container.broker.get_history(world.world_id)
+        before = await world.command_history()
         world.resources.insert(Delta(2.0))
-        after = await app._container.broker.get_history(world.world_id)
+        after = await world.command_history()
 
         assert before == []
         assert after == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_hook_mutation_does_not_generate_broker_history(tmp_path):
+    hook_ticks: list[int] = []
+
+    async def on_post_tick(*, tick, **kwargs):
+        hook_ticks.append(tick)
+
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "hooks",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_hooks"),
+        )
+
+        await world.query(Position)
+        before = await world.command_history()
+        world.add_hook("post_tick", on_post_tick)
+        world.remove_hook("post_tick", on_post_tick)
+        after = await world.command_history()
+
+        assert before == []
+        assert after == []
+        assert hook_ticks == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_actor_aliases_enforce_rbac_by_role(tmp_path):
+    async with ArchetypeRuntime() as app:
+        world = app.world(
+            "rbac-aliases",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_rbac_aliases"),
+        )
+        viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
+        player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        coder = world.as_actor(ActorCtx(id=uuid7(), roles={"coder"}))
+        maintainer = world.as_actor(ActorCtx(id=uuid7(), roles={"maintainer"}))
+        admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+
+        with pytest.raises(PermissionError):
+            await viewer.spawn(Position(x=0.0))
+
+        entity_id = await player.spawn(Position(x=1.0, y=2.0))
+        await admin.step()
+
+        await player.update(entity_id, Position(x=4.0, y=5.0))
+        await admin.step()
+
+        with pytest.raises(PermissionError):
+            await player.add_components(entity_id, Velocity(vx=1.0, vy=0.0))
+
+        await coder.add_components(entity_id, Velocity(vx=1.0, vy=0.0))
+        await admin.step()
+
+        with pytest.raises(PermissionError):
+            await coder.add_processor(Noop())
+
+        await maintainer.add_processor(Noop())
+        await admin.remove_processor(Noop)
+
+        rows = (await admin.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["position__x"] == 4.0
+        assert rows[0]["velocity__vx"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_world_shutdown_from_actor_alias_invalidates_all_aliases_but_not_siblings(tmp_path):
+    async with ArchetypeRuntime() as app:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_alias_shutdown")
+        left = app.world("left", storage=storage)
+        right = app.world("right", storage=storage)
+        player = left.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        admin = left.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+
+        await player.spawn(Position(x=1.0))
+        await admin.step()
+        await right.spawn(Position(x=9.0))
+        await right.step()
+
+        await player.shutdown()
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await left.query(Position)
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await admin.query(Position)
+
+        rows = (await right.query(Position)).collect().to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["position__x"] == 9.0
+
+
+@pytest.mark.asyncio
+async def test_runtime_world_fork_from_actor_alias_preserves_actor_binding(tmp_path):
+    async with ArchetypeRuntime() as app:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_actor_fork")
+        world = app.world("source", storage=storage)
+        player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+
+        await player.spawn(Position(x=2.0))
+        await admin.step()
+
+        fork = await player.fork("branch", storage=storage)
+
+        await fork.spawn(Position(x=3.0))
+        with pytest.raises(PermissionError):
+            await fork.add_processor(Noop())
+
+        await admin.step()
+        await fork.step()
+
+        rows = sorted((await fork.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"])
+        assert [row["position__x"] for row in rows] == [2.0, 3.0]
 
 
 @pytest.mark.asyncio
@@ -656,6 +948,45 @@ def test_sync_runtime_preserves_state_across_multiple_calls(tmp_path):
         world.run(steps=2)
         rows = world.query(Position, entity_ids=[entity_id]).collect().to_pylist()
         assert rows[0]["position__x"] == 3.0
+
+
+def test_sync_runtime_world_supports_mutation_parity_and_actor_aliases(tmp_path):
+    with ArchetypeRuntime.sync() as app:
+        world = app.world(
+            "sync-parity",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_sync_parity"),
+        )
+        viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
+        player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        coder = world.as_actor(ActorCtx(id=uuid7(), roles={"coder"}))
+
+        with pytest.raises(PermissionError):
+            viewer.spawn(Position(x=0.0))
+
+        entity_id = player.spawn(Position(x=1.0, y=2.0))
+        world.step()
+
+        player.update(entity_id, Position(x=4.0, y=6.0))
+        world.step()
+
+        coder.add_components(entity_id, Velocity(vx=2.0, vy=1.0))
+        world.step()
+
+        coder.remove_components(entity_id, Velocity)
+        world.step()
+
+        rows = world.query(Position, entity_ids=[entity_id]).collect().to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["position__x"] == 4.0
+        assert rows[0]["position__y"] == 6.0
+
+        history = world.command_history()
+        assert [cmd.type.value for cmd in history] == [
+            "spawn",
+            "update",
+            "add_component",
+            "remove_component",
+        ]
 
 
 def test_sync_world_rejects_use_after_runtime_context_exit(tmp_path):

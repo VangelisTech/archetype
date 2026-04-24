@@ -5,9 +5,9 @@
 World Mutations
 ================
 
-Demonstrates every mutation type: spawn, despawn, update,
-add/remove components, add/remove processors, fork, and
-the RBAC system that gates all of it.
+Demonstrates the brokered runtime mutation surface: spawn, despawn, update,
+add/remove components, add/remove processors, fork, actor-bound handles, and
+broker audit history.
 
 No external dependencies — runs entirely in-process.
 
@@ -20,15 +20,11 @@ import asyncio
 from daft import DataFrame, col
 from uuid_utils import uuid7
 
+from archetype import ArchetypeRuntime
 from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-
-
-# ── Components ──────────────────────────────────────────────────────────────
+from archetype.core.config import StorageConfig
 
 
 class Position(Component):
@@ -46,12 +42,7 @@ class Health(Component):
     max_hp: int = 100
 
 
-# ── Processors ──────────────────────────────────────────────────────────────
-
-
 class MovementProcessor(AsyncProcessor):
-    """Move entities by their velocity each tick."""
-
     components = (Position, Velocity)
     priority = 10
 
@@ -64,131 +55,96 @@ class MovementProcessor(AsyncProcessor):
         )
 
 
-# ── Main ────────────────────────────────────────────────────────────────────
-
-
 async def main():
-    container = ServiceContainer()
-    admin = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri="./archetype_data", namespace="world_mutations")
 
-    world = await container.world_service.create_world(
-        WorldConfig(name="mutations-demo"), StorageConfig(),
-    )
-    wid = world.world_id
-    rc = RunConfig()
-    print(f"Created world: {wid}\n")
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("mutations-demo", storage=storage)
+        viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
+        player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
+        admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
 
-    # ── 1. SPAWN: create entities with components ───────────────────────
-    print("1. SPAWN — create entities with components")
+        print("1. SPAWN + RBAC")
+        scout = await player.spawn(Position(x=0.0, y=0.0))
+        dummy = await player.spawn(Position(x=10.0, y=10.0))
+        try:
+            await viewer.spawn(Position(x=99.0, y=99.0))
+            print("   viewer: SPAWN allowed (unexpected)")
+        except PermissionError:
+            print("   viewer: SPAWN denied (correct)")
+        await admin.step()
+        print(f"   Created world: {world.world_id}")
+        print(f"   player: spawned scout={scout}, dummy={dummy}")
 
-    # Entity with Position + Velocity
-    # NOTE: use Component.to_payload() (not model_dump) so CommandService can
-    # reconstruct the concrete subclass on the other side. See Archetype #90.
-    cmd = Command(
-        type=CommandType.SPAWN,
-        payload={
-            "components": [
-                Position(x=0, y=0).to_payload(),
-                Velocity(vx=1, vy=2).to_payload(),
-            ],
-        },
-    )
-    await container.command_service.submit(wid, cmd, admin)
+        print("\n2. UPDATE + COMPONENT MUTATIONS")
+        await player.update(scout, Position(x=2.0, y=1.0))
+        await admin.step()
+        await admin.add_components(
+            scout,
+            Velocity(vx=1.5, vy=0.5),
+            Health(hp=80, max_hp=100),
+        )
+        await admin.step()
 
-    # Entity with just Position
-    cmd = Command(
-        type=CommandType.SPAWN,
-        payload={
-            "components": [
-                Position(x=10, y=10).to_payload(),
-            ],
-        },
-    )
-    await container.command_service.submit(wid, cmd, admin)
+        enriched = (await admin.query(Position, Velocity, Health, entity_ids=[scout])).collect().to_pylist()[0]
+        print(
+            "   scout after update/add_components:"
+            f" pos=({enriched['position__x']}, {enriched['position__y']})"
+            f", vel=({enriched['velocity__vx']}, {enriched['velocity__vy']})"
+            f", hp={enriched['health__hp']}"
+        )
 
-    # Step to materialize
-    await container.simulation_service.step(wid, rc)
-    print(f"   Spawned 2 entities (tick={world.tick})")
+        await admin.remove_components(scout, Health)
+        await player.despawn(dummy)
+        await admin.step()
 
-    # ── 2. ADD_PROCESSOR: inject behavior at runtime ────────────────────
-    print("\n2. ADD_PROCESSOR — inject behavior at runtime")
+        narrowed = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        removed = (await admin.query(Position, entity_ids=[dummy])).collect().to_pylist()
+        print(
+            "   scout after remove_components:"
+            f" pos=({narrowed['position__x']}, {narrowed['position__y']})"
+            f", vel=({narrowed['velocity__vx']}, {narrowed['velocity__vy']})"
+        )
+        print(f"   dummy present after despawn: {bool(removed)}")
 
-    await world.system.add_processor(MovementProcessor())
-    print("   Added MovementProcessor (priority=10)")
+        print("\n3. PROCESSOR MUTATIONS")
+        try:
+            await player.add_processor(MovementProcessor())
+            print("   player: ADD_PROCESSOR allowed (unexpected)")
+        except PermissionError:
+            print("   player: ADD_PROCESSOR denied (correct)")
 
-    # Run 3 ticks — entities with both Position+Velocity will move
-    await container.simulation_service.run(wid, RunConfig(num_steps=3))
-    print(f"   Ran 3 ticks (tick={world.tick})")
+        await admin.add_processor(MovementProcessor())
+        await admin.step()
+        moved = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        print(
+            "   scout after MovementProcessor:"
+            f" pos=({moved['position__x']}, {moved['position__y']})"
+        )
+        await admin.remove_processor(MovementProcessor)
 
-    # ── 3. ADD_COMPONENT: add components to existing entity ─────────────
-    print("\n3. ADD_COMPONENT — add components to existing entity")
+        print("\n4. FORK")
+        branch = await player.fork("branch-a", storage=storage)
+        branch_seed = await branch.spawn(Position(x=-5.0, y=0.0), Velocity(vx=0.5, vy=0.0))
+        await branch.step()
 
-    # Find the entity that only has Position (no Velocity)
-    for sig, df in world._live.items():
-        component_names = [c.__name__ for c in sig]
-        rows = df.collect().to_pylist()
-        for row in rows:
-            eid = row["entity_id"]
-            print(f"   Entity {eid}: {component_names}")
+        source_state = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        branch_state = (await branch.query(Position, Velocity, entity_ids=[branch_seed])).collect().to_pylist()[0]
+        print(f"   source tick={world.tick}, branch tick={branch.tick}")
+        print(
+            "   source scout:"
+            f" pos=({source_state['position__x']}, {source_state['position__y']})"
+        )
+        print(
+            "   branch new entity:"
+            f" pos=({branch_state['position__x']}, {branch_state['position__y']})"
+        )
 
-    # ── 4. RBAC: who can do what ────────────────────────────────────────
-    print("\n4. RBAC — permission checks")
-
-    viewer = ActorCtx(id=uuid7(), roles={"viewer"})
-    player = ActorCtx(id=uuid7(), roles={"player"})
-
-    # Viewer cannot spawn
-    try:
-        cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(wid, cmd, viewer)
-        print("   viewer: SPAWN allowed (unexpected)")
-    except PermissionError:
-        print("   viewer: SPAWN denied (correct)")
-
-    # Player can spawn
-    try:
-        cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(wid, cmd, player)
-        print("   player: SPAWN allowed (correct)")
-    except PermissionError:
-        print("   player: SPAWN denied (unexpected)")
-
-    # Player cannot add processors
-    try:
-        cmd = Command(type=CommandType.ADD_PROCESSOR, payload={})
-        await container.command_service.submit(wid, cmd, player)
-        print("   player: ADD_PROCESSOR allowed (unexpected)")
-    except PermissionError:
-        print("   player: ADD_PROCESSOR denied (correct)")
-
-    # ── 5. FORK: branch the world ───────────────────────────────────────
-    print("\n5. FORK — branch the world")
-
-    # Step to materialize any pending commands first
-    await container.simulation_service.step(wid, rc)
-
-    fork = await container.world_service.fork_world(
-        source_world_id=wid,
-        name="branch-A",
-        storage_config=StorageConfig(),
-    )
-    print(f"   Forked: {fork.world_id}")
-    print(f"   Fork tick={fork.tick} (matches source tick={world.tick})")
-
-    # Run fork independently
-    await container.simulation_service.run(fork.world_id, RunConfig(num_steps=5))
-    print(f"   Fork after 5 more ticks: tick={fork.tick}")
-    print(f"   Source unchanged: tick={world.tick}")
-
-    # ── 6. Command history ──────────────────────────────────────────────
-    print("\n6. COMMAND HISTORY — full audit trail")
-
-    history = await container.query_service.get_command_history(wid)
-    for cmd in history:
-        print(f"   tick={cmd.tick}: {cmd.type.value}")
-
-    await container.shutdown()
-    print("\nDone.")
+        print("\n5. COMMAND HISTORY")
+        for cmd in await admin.command_history():
+            print(f"   source tick={cmd.tick}: {cmd.type.value}")
+        for cmd in await branch.command_history():
+            print(f"   branch tick={cmd.tick}: {cmd.type.value}")
 
 
 if __name__ == "__main__":

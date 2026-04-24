@@ -1,19 +1,60 @@
 # Worlds
 
-`AsyncWorld` is the central simulation coordinator. It orchestrates entity-archetype mappings, mutation caches, the parallel tick cycle, and lifecycle hooks. Each world is an independent simulation with its own entity space, tick counter, and resources.
+`AsyncWorld` is the central simulation coordinator in Archetype's core layer,
+but beginner-facing scripts should usually interact with a `RuntimeWorld`
+handle from `ArchetypeRuntime`. `RuntimeWorld` is the governed script API;
+`AsyncWorld` is the underlying engine object that owns entity-archetype
+mappings, mutation caches, the parallel tick cycle, and lifecycle hooks.
 
 ## Creating a World
 
-Worlds are typically created through the service layer:
+Recommended for scripts:
 
 ```python
+from archetype import ArchetypeRuntime
+
+async with ArchetypeRuntime() as runtime:
+    world = runtime.world("my-sim")
+```
+
+## RuntimeWorld vs AsyncWorld
+
+`ArchetypeRuntime.world(...)` returns `RuntimeWorld`, not a raw `AsyncWorld`.
+That distinction is intentional:
+
+- `RuntimeWorld` is the public script surface. Its entity and processor
+  mutations (`spawn`, `despawn`, `update`, `add_components`,
+  `remove_components`, `add_processor`, `remove_processor`) route through
+  `CommandService` and `CommandBroker`, so they honor RBAC and appear in broker
+  history. `RuntimeWorld.command_history()` reads that audit trail back through
+  the read path.
+- `RuntimeWorld.as_actor(ctx)` returns another handle to the same logical
+  world, bound to a different `ActorCtx`, without creating a new world or
+  storage backend.
+- `AsyncWorld` remains the direct engine API. Calling it directly may bypass
+  broker semantics, which is appropriate for engine and service-layer code.
+
+The runtime intentionally keeps a few script-scaffolding operations immediate
+instead of brokered:
+
+- `runtime.world(...)` / `world.as_actor(...)`
+- `world.resources.insert(...)` / `world.resources.remove(...)`
+- `world.add_hook(...)` / `world.remove_hook(...)`
+
+The rest of this page describes the engine-level `AsyncWorld` behavior that
+those runtime calls ultimately drive.
+
+Lower-level via the service layer:
+
+```python
+from archetype.core.config import WorldConfig
 from archetype.app.container import ServiceContainer
 
 container = ServiceContainer()
-world = await container.world_service.create_world(name="my-sim")
+world = await container.world_service.create_world(WorldConfig(name="my-sim"))
 ```
 
-Directly:
+Direct construction is core-internal / advanced:
 
 ```python
 from archetype.core.aio.async_world import AsyncWorld
@@ -38,6 +79,11 @@ world = AsyncWorld(
 | `run_id` | `str` | Current run identifier (set by `run()`) |
 
 ## Entity Management
+
+On `RuntimeWorld`, the corresponding public verbs are `spawn`, `despawn`,
+`update`, `add_components`, and `remove_components`. Those calls still
+materialize at tick boundaries; the sections below describe the underlying
+`AsyncWorld` mechanics.
 
 ### Creating Entities
 

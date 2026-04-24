@@ -9,6 +9,8 @@ Archetype is a data-centric Entity-Component-System (ECS) simulation engine. Wor
 ```text
 archetype.api / cli          External interface (REST + HTTP client)
        |
+archetype.sugar             ArchetypeRuntime, RuntimeWorld (recommended scripts)
+       |
 archetype.app                Services, RBAC, CommandBroker, WorldRegistry
        |
 archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
@@ -16,13 +18,43 @@ archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 
 The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.
 
+## Runtime Layer
+
+`ArchetypeRuntime` is the recommended script entry point. It owns the shared
+service container, gives you lazy world handles, keeps process lifetime
+separate from world lifetime, and exposes the brokered mutation surface on
+`RuntimeWorld`:
+
+```python
+from uuid_utils import uuid7
+
+from archetype import ArchetypeRuntime, Component
+from archetype.app.auth.models import ActorCtx
+
+
+class Position(Component):
+    x: float = 0.0
+    y: float = 0.0
+
+async with ArchetypeRuntime() as runtime:
+    world = runtime.world("demo")
+    entity_id = await world.spawn(Position(x=0, y=0))
+    admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+    await admin.update(entity_id, Position(x=1, y=0))
+    await world.run(steps=10)
+```
+
+Drop to the service layer only when you need custom command routing,
+non-script hosting, or lower-level read-path / lifecycle control.
+
 ## Service Layer
 
 The service layer mediates all access to worlds.
 
 ### ServiceContainer
 
-Instantiates and exposes all service-layer subsystems:
+Lower-level composition root that instantiates and exposes all service-layer
+subsystems:
 
 ```python
 from archetype.app.container import ServiceContainer

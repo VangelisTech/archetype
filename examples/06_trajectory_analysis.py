@@ -6,10 +6,10 @@ Trajectory Analysis
 ===================
 
 Ingest agent trajectories, label them with natural language descriptions,
-and compare techniques via world forking — all using the raw ECS pattern.
+and compare techniques via world forking using the runtime-level script API.
 
 Components define the schema. Processors define the pipeline stages.
-The world runs them. Fork to compare.
+The runtime owns the process boundary. Worlds stay lazy until first use.
 
 Usage:
     uv run python examples/06_trajectory_analysis.py
@@ -22,21 +22,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 import daft
 from daft import DataFrame, col
-from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
+from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.resources import Resources
-
 
 # ── Data Types ──────────────────────────────────────────────────────
 
@@ -427,68 +424,49 @@ async def main():
     trajectories = make_trajectories()
     print(f"Created {len(trajectories)} synthetic trajectories\n")
 
-    # ── Setup: world + processors + resources ──
+    storage = StorageConfig(uri="./trajectory_data", namespace="trajectories")
+    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
 
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"operator"})
-
-    world = await container.world_service.create_world(
-        WorldConfig(name="trajectory-eval"),
-        StorageConfig(uri="./trajectory_data", namespace="trajectories"),
-    )
-
-    await world.system.add_processor(SamplingProcessor())
-    await world.system.add_processor(LabelingProcessor())
-    await world.system.add_processor(ScoringProcessor())
-
-    world.resources.insert(SamplingConfig(min_turns=3))
-    world.resources.insert(LabelingConfig(model="gpt-5-mini"))
-
-    # ── Ingest: one entity per (trajectory, technique) pair ──
-
-    label_specs = [
-        ("efficiency", "Rate how directly the agent reached the solution without unnecessary "
-         "backtracking or wasted steps. A perfect score means the agent identified the "
-         "correct approach immediately."),
-        ("correctness", "Did the agent produce the correct final result? Score 1.0 for fully "
-         "correct, 0.5 for partially correct, 0.0 for incorrect or unresolved."),
-    ]
-
-    print("Ingesting trajectories...")
-    for trajectory in trajectories:
-        for technique, description in label_specs:
-            label = Label(technique=technique, description=description)
-            cmd = Command(
-                type=CommandType.SPAWN,
-                payload={
-                    "components": [
-                        {"type": "Trajectory", **trajectory.model_dump()},
-                        {"type": "Label", **label.model_dump()},
-                    ],
-                },
-            )
-            await container.command_service.submit(world.world_id, cmd, ctx)
-
-    total = len(trajectories) * len(label_specs)
-    print(f"  -> {len(trajectories)} trajectories x {len(label_specs)} techniques = {total} entities\n")
-
-    # ── Run: one tick = sample -> label -> score ──
-
-    print("Running pipeline (sample -> label -> score)...")
-    try:
-        await container.simulation_service.step(
-            world.world_id, RunConfig(num_steps=1, prefer_live_reads=True),
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world(
+            "trajectory-eval",
+            storage=storage,
+            processors=[
+                SamplingProcessor(),
+                *([LabelingProcessor()] if has_openai_key else []),
+                ScoringProcessor(),
+            ],
+            resources=[SamplingConfig(min_turns=3), LabelingConfig(model="gpt-5-mini")],
         )
+
+        label_specs = [
+            ("efficiency", "Rate how directly the agent reached the solution without unnecessary "
+             "backtracking or wasted steps. A perfect score means the agent identified the "
+             "correct approach immediately."),
+            ("correctness", "Did the agent produce the correct final result? Score 1.0 for fully "
+             "correct, 0.5 for partially correct, 0.0 for incorrect or unresolved."),
+        ]
+
+        print("Ingesting trajectories...")
+        for trajectory in trajectories:
+            for technique, description in label_specs:
+                label = Label(technique=technique, description=description)
+                await world.spawn(trajectory, label)
+
+        total = len(trajectories) * len(label_specs)
+        print(
+            f"  -> {len(trajectories)} trajectories x {len(label_specs)} techniques = {total} entities\n"
+        )
+
+        if not has_openai_key:
+            print("OPENAI_API_KEY not set; running sampling/score pipeline without LLM labeling.\n")
+
+        print("Running pipeline (sample -> label -> score)...")
+        await world.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
         print("  -> Pipeline completed\n")
-    except Exception as e:
-        print(f"  -> Pipeline errored (expected without API key): {e}\n")
 
-    # ── Results ──
-
-    print("Results:")
-    df = await world.get_components([Trajectory, Label])
-    if df is not None:
-        rows = df.collect().to_pylist()
+        print("Results:")
+        rows = (await world.query(Trajectory, Label)).collect().to_pylist()
         for row in rows:
             if not row.get("is_active", True):
                 continue
@@ -500,24 +478,12 @@ async def main():
             print(f"  [{tech}] {tid}: score={score:.2f} value={value!r}")
             if rationale:
                 print(f"    rationale: {rationale}")
-    print()
+        print()
 
-    # ── Fork: compare a stricter labeling technique ──
-
-    print("Forking world to compare a stricter correctness definition...")
-    fork = await container.world_service.fork_world(
-        source_world_id=world.world_id,
-        name="strict-eval",
-        storage_config=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
-    )
-    await fork.system.add_processor(SamplingProcessor())
-    await fork.system.add_processor(LabelingProcessor())
-    await fork.system.add_processor(ScoringProcessor())
-    fork.resources.insert(SamplingConfig(min_turns=3))
-    fork.resources.insert(LabelingConfig(model="gpt-5-mini"))
-    print(f"  -> Forked at tick {fork.tick}, both worlds coexist in storage\n")
-
-    await container.shutdown()
+        print("Forking world to compare a stricter sampling threshold...")
+        fork = await world.fork("strict-eval", storage=storage)
+        fork.resources.insert(SamplingConfig(min_turns=8))
+        print(f"  -> Forked at tick {fork.tick}, both worlds coexist in storage\n")
 
 
 if __name__ == "__main__":

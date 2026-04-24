@@ -20,14 +20,8 @@ Define components, write a processor, spawn entities, run:
 import asyncio
 
 from daft import DataFrame, col
-from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 # 1. Define components — typed data models that become table columns
@@ -53,44 +47,22 @@ class MovementProcessor(AsyncProcessor):
 
 
 async def main():
-    container = ServiceContainer()
+    async with ArchetypeRuntime() as runtime:
+        # 3. Create a lazy world handle and stage the processor
+        world = runtime.world("quickstart", processors=[MovementProcessor()])
 
-    # 3. Create a world
-    world = await container.world_service.create_world(
-        WorldConfig(name="quickstart"),
-        StorageConfig(),
-    )
+        # 4. Spawn entities
+        for dx, dy in [(1, 2), (-1, 0.5)]:
+            await world.spawn(Position(x=0, y=0), Velocity(dx=dx, dy=dy))
 
-    # 4. Register the processor
-    await world.system.add_processor(MovementProcessor())
+        # 5. Run 5 ticks
+        result = await world.run(steps=5)
+        print(f"Done: {result.ticks_completed} ticks, {result.commands_applied} commands")
 
-    # 5. Spawn entities with components via the command pipeline
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    for dx, dy in [(1, 2), (-1, 0.5)]:
-        cmd = Command(
-            type=CommandType.SPAWN,
-            payload={
-                "components": [
-                    Position(x=0, y=0).to_payload(),
-                    Velocity(dx=dx, dy=dy).to_payload(),
-                ]
-            },
-        )
-        await container.command_service.submit(world.world_id, cmd, ctx)
-
-    # 6. Run 5 ticks — each tick: drain commands, materialize, process, persist
-    result = await container.simulation_service.run(
-        world.world_id,
-        RunConfig(num_steps=5),
-    )
-    print(f"Done: {result.ticks_completed} ticks, {result.commands_applied} commands")
-
-    # 7. Query state
-    df = await world.get_components([Position])
-    for row in df.collect().to_pylist():
-        print(f"  entity {row['entity_id']}: x={row['position__x']}, y={row['position__y']}")
-
-    await container.shutdown()
+        # 6. Query state
+        df = await world.query(Position)
+        for row in df.collect().to_pylist():
+            print(f"  entity {row['entity_id']}: x={row['position__x']}, y={row['position__y']}")
 
 asyncio.run(main())
 ```
@@ -98,9 +70,8 @@ asyncio.run(main())
 Key patterns in this example:
 
 - Components are `LanceModel` subclasses — their fields become prefixed columns (`position__x`)
-- `to_payload()` serializes components for the command pipeline
 - Processors declare their component requirements via `components = (...)` — the engine routes matching entities automatically
-- All external mutations go through `CommandService.submit()` with an `ActorCtx`
+- `ArchetypeRuntime` is the recommended script boundary; use `world.as_actor(...)` for explicit roles and `ServiceContainer` only for custom routing or lower-level orchestration
 
 ## Option B: HTTP API (curl)
 

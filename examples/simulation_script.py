@@ -17,13 +17,12 @@ Usage:
 
 import asyncio
 
-from daft import DataFrame, col
+from daft import DataFrame, col, lit
 
-from archetype.app.container import ServiceContainer
+from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-
+from archetype.core.config import StorageConfig
 
 # ── Step 1: Define components ───────────────────────────────────────────────
 
@@ -68,32 +67,38 @@ class RatingProcessor(AsyncProcessor):
 # ── Step 3-5: Create world, spawn entities, run ────────────────────────────
 
 
+async def collect_agent_snapshot(world) -> DataFrame:
+    return (await world.query(Agent)).with_column("history_tick", lit(world.tick))
+
+
 async def main():
-    container = ServiceContainer()
+    storage = StorageConfig(uri="./archetype_data", namespace="simulation_script")
 
-    world = await container.world_service.create_world(
-        WorldConfig(name="skill-sim"), StorageConfig(),
-    )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world(
+            "skill-sim",
+            storage=storage,
+            processors=[ExperienceProcessor(), RatingProcessor()],
+        )
+        print("Processors: Experience (priority=10), Rating (priority=50)")
 
-    # Register processors
-    await world.system.add_processor(ExperienceProcessor())
-    await world.system.add_processor(RatingProcessor())
-    print("Processors: Experience (priority=10), Rating (priority=50)")
+        await world.spawn(Agent(name="Alice", role="engineer", skill=3.0))
+        await world.spawn(Agent(name="Bob", role="designer", skill=2.0))
+        await world.spawn(Agent(name="Charlie", role="manager", skill=1.5))
+        print("Spawned: Alice (skill=3.0), Bob (skill=2.0), Charlie (skill=1.5)\n")
 
-    # Spawn agents with different starting skills
-    await world.create_entity([Agent(name="Alice", role="engineer", skill=3.0)])
-    await world.create_entity([Agent(name="Bob", role="designer", skill=2.0)])
-    await world.create_entity([Agent(name="Charlie", role="manager", skill=1.5)])
-    print("Spawned: Alice (skill=3.0), Bob (skill=2.0), Charlie (skill=1.5)\n")
+        history_frames: list[DataFrame] = []
+        for _ in range(10):
+            await world.step()
+            history_frames.append(await collect_agent_snapshot(world))
 
-    # Run 10 ticks
-    await world.run(RunConfig(num_steps=10))
-    print(f"Ran 10 ticks (final tick={world.tick})\n")
+        print(f"Ran {len(history_frames)} ticks (final tick={world.tick})\n")
 
-    # Print final state
-    print("Final state:")
-    for _sig, df in world._live.items():
-        rows = df.collect().to_pylist()
+        print("Final state:")
+        rows = sorted(
+            (await world.query(Agent)).collect().to_pylist(),
+            key=lambda row: row["entity_id"],
+        )
         for row in rows:
             name = row.get("agent__name", "?")
             exp = row.get("agent__experience", 0)
@@ -101,7 +106,20 @@ async def main():
             skill = row.get("agent__skill", 0)
             print(f"  {name}: skill={skill:.1f}, experience={exp:.0f}, rating={rating:.1f}")
 
-    await container.shutdown()
+        history_df = history_frames[0]
+        for frame in history_frames[1:]:
+            history_df = history_df.concat(frame)
+
+        print("\nState history (DataFrame):")
+        history_row_count = len(history_frames) * len(rows)
+        history_df.select(
+            "history_tick",
+            "entity_id",
+            "agent__name",
+            "agent__skill",
+            "agent__experience",
+            "agent__rating",
+        ).collect().sort([col("history_tick"), col("entity_id")]).show(history_row_count)
 
 
 if __name__ == "__main__":

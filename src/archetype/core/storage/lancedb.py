@@ -81,7 +81,7 @@ class AsyncLancedbStore(iAsyncStore):
                 os.path.join(self.uri, self.namespace, subdir)
             )
 
-        if table_name in await self.lancedb.table_names():
+        if table_name in await self._list_table_names():
             try:
                 async_table = await self.lancedb.open_table(table_name)
             except Exception as e:
@@ -113,6 +113,16 @@ class AsyncLancedbStore(iAsyncStore):
                 raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
 
         return async_table
+
+    async def _list_table_names(self) -> list[str]:
+        """List table names using the modern LanceDB API when available."""
+        assert self.lancedb is not None
+
+        list_tables = getattr(self.lancedb, "list_tables", None)
+        if list_tables is not None:
+            return list(await list_tables())
+
+        return list(await self.lancedb.table_names())
 
     # ---------------------------------------------------------------------
     # Querying
@@ -192,7 +202,10 @@ class AsyncLancedbStore(iAsyncStore):
         """
         Optimize all tables in the LanceDB catalog.
         """
-        for table_name in await self.lancedb.table_names():
+        if self.lancedb is None:
+            return
+
+        for table_name in await self._list_table_names():
             try:
                 async_table = await self.lancedb.open_table(table_name)
                 await async_table.optimize(retrain=False)
