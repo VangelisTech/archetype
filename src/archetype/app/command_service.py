@@ -242,22 +242,6 @@ class CommandService:
         world._despawn_cache.setdefault(old_sig, []).append(entity_id)
         world._spawn_cache.setdefault(new_sig, []).append(row)
 
-    @staticmethod
-    async def _apply_reserved_spawn(world: AsyncWorld, entity_id: int, components: list) -> None:
-        from archetype.core.archetype import Archetype
-
-        if entity_id in world._entity2sig:
-            raise ValueError(f"Entity {entity_id} already exists in world {world.world_id}")
-
-        sig = Archetype.sig_from_components(components)
-        world._entity2sig[entity_id] = sig
-        world._next_entity_id = max(world._next_entity_id, entity_id + 1)
-        row_dict = Archetype.to_row_dict(
-            entity_id, world.tick, components, world.world_id, run_id=""
-        )
-        world._spawn_cache.setdefault(sig, []).append(row_dict)
-        await world._fire_hooks("on_spawn", world=world, entity_id=entity_id, components=components)
-
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
         """Dispatch a world-level lifecycle command (create/destroy/fork).
 
@@ -314,7 +298,7 @@ class CommandService:
                 if entity_id is None:
                     await world.create_entity(components)
                 else:
-                    await self._apply_reserved_spawn(world, int(entity_id), components)
+                    await world.spawn_reserved(int(entity_id), components)
 
             case CommandType.DESPAWN:
                 entity_id = payload["entity_id"]

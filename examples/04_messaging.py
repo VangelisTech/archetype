@@ -23,6 +23,7 @@ from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.core.hooks import PostTick, PreTick
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -32,6 +33,7 @@ from archetype.core.resources import Resources
 
 class AgentState(Component):
     """Agent's internal state."""
+
     name: str = "unnamed"
     mood: str = "neutral"
     energy: float = 100.0
@@ -39,11 +41,13 @@ class AgentState(Component):
 
 class Inbox(Component):
     """Messages received by this agent (JSON-encoded strings)."""
+
     messages: list[str] = []
 
 
 class Outbox(Component):
     """Messages to be sent by this agent (JSON-encoded strings)."""
+
     messages: list[str] = []
 
 
@@ -55,6 +59,7 @@ class Outbox(Component):
 @dataclass
 class SimConfig:
     """Environment parameters - available via resources."""
+
     greeting_boost: float = 10.0  # Energy boost when receiving a greeting
     max_messages_per_tick: int = 5
 
@@ -76,6 +81,7 @@ class GreetingProcessor(AsyncProcessor):
     Agents send greetings to each other via the MESSAGE command.
     Demonstrates Resources access for broker and config.
     """
+
     components = (AgentState, Outbox)
     priority = 10
 
@@ -93,7 +99,7 @@ class GreetingProcessor(AsyncProcessor):
 
         # Collect entities to process
         rows = df.select("entity_id", "agentstate__name").collect().to_pylist()
-        
+
         # Each agent sends a greeting to all others
         for sender in rows:
             for receiver in rows:
@@ -109,7 +115,7 @@ class GreetingProcessor(AsyncProcessor):
                         },
                     )
                     await broker.enqueue(channel, cmd)
-        
+
         return df
 
 
@@ -118,6 +124,7 @@ class MessageRealizationProcessor(AsyncProcessor):
     Realizes MESSAGE commands from the broker into agent Inboxes.
     This runs early (low priority) to populate inboxes before other processors.
     """
+
     components = (Inbox,)
     priority = -100  # Run early
 
@@ -136,34 +143,37 @@ class MessageRealizationProcessor(AsyncProcessor):
         # Dequeue all pending MESSAGE commands
         cmds = await broker.dequeue(channel, max_items=1000)
         message_cmds = [c for c in cmds if c.type == CommandType.MESSAGE]
-        
+
         if not message_cmds:
             return df
-        
+
         # Group messages by receiver (as JSON strings)
         messages_by_receiver: dict[int, list[str]] = {}
         for cmd in message_cmds:
             receiver_id = cmd.payload["receiver_id"]
-            msg = json.dumps({
-                "sender_id": cmd.payload["sender_id"],
-                "content": cmd.payload["content"],
-                "tick": tick,
-            })
+            msg = json.dumps(
+                {
+                    "sender_id": cmd.payload["sender_id"],
+                    "content": cmd.payload["content"],
+                    "tick": tick,
+                }
+            )
             messages_by_receiver.setdefault(receiver_id, []).append(msg)
-        
+
         # Update inboxes via batch UDF
         @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
         def update_inbox(entity_ids: daft.Series, current_inboxes: daft.Series) -> list:
             results = []
-            for eid, inbox in zip(entity_ids.to_pylist(), current_inboxes.to_pylist(), strict=False):
+            for eid, inbox in zip(
+                entity_ids.to_pylist(), current_inboxes.to_pylist(), strict=False
+            ):
                 inbox = list(inbox) if inbox else []
                 new_msgs = messages_by_receiver.get(eid, [])
                 results.append(inbox + new_msgs)
             return results
-        
+
         return df.with_column(
-            "inbox__messages",
-            update_inbox(col("entity_id"), col("inbox__messages"))
+            "inbox__messages", update_inbox(col("entity_id"), col("inbox__messages"))
         )
 
 
@@ -171,6 +181,7 @@ class MoodProcessor(AsyncProcessor):
     """
     Updates agent mood and energy based on received messages.
     """
+
     components = (AgentState, Inbox)
     priority = 20
 
@@ -182,7 +193,7 @@ class MoodProcessor(AsyncProcessor):
     ) -> DataFrame:
         """Process inbox messages and update mood."""
         config = resources.require(SimConfig)
-        
+
         @daft.func.batch(return_dtype=daft.DataType.float64())
         def calculate_energy_boost(inboxes: daft.Series) -> list:
             results = []
@@ -192,7 +203,7 @@ class MoodProcessor(AsyncProcessor):
                 boost = len(inbox) * config.greeting_boost
                 results.append(boost)
             return results
-        
+
         @daft.func.batch(return_dtype=daft.DataType.string())
         def calculate_mood(inboxes: daft.Series) -> list:
             results = []
@@ -205,10 +216,9 @@ class MoodProcessor(AsyncProcessor):
                 else:
                     results.append("lonely")
             return results
-        
+
         return (
-            df
-            .with_column("_boost", calculate_energy_boost(col("inbox__messages")))
+            df.with_column("_boost", calculate_energy_boost(col("inbox__messages")))
             .with_column("agentstate__energy", col("agentstate__energy") + col("_boost"))
             .with_column("agentstate__mood", calculate_mood(col("inbox__messages")))
             .exclude("_boost")
@@ -240,18 +250,18 @@ async def main():
             ],
         )
 
-        async def on_pre_tick(world, tick, **kwargs):
-            print(f"\n→ Pre-tick {tick}: Starting processing...")
+        async def on_pre_tick(event: PreTick) -> None:
+            print(f"\n-> Pre-tick {event.tick}: Starting processing...")
 
-        async def on_post_tick(world, tick, **kwargs):
-            print(f"← Post-tick {tick}: Completed!")
+        async def on_post_tick(event: PostTick) -> None:
+            print(f"<- Post-tick {event.tick}: Completed!")
             broker = world.resources.require(CommandBroker)
             channel = world.resources.require(BrokerChannel).key
             pending = await broker.get_pending_count(channel)
             print(f"   Messages pending in broker: {pending}")
 
-        world.add_hook("pre_tick", on_pre_tick)
-        world.add_hook("post_tick", on_post_tick)
+        world.add_hook(PreTick, on_pre_tick)
+        world.add_hook(PostTick, on_post_tick)
 
         print("\n✓ Runtime world staged with resources, hooks, and processors")
 
@@ -277,11 +287,15 @@ async def main():
             "agentstate__energy",
         ).show()
 
-        rows = final_df.select(
-            "entity_id",
-            "agentstate__name",
-            "inbox__messages",
-        ).collect().to_pylist()
+        rows = (
+            final_df.select(
+                "entity_id",
+                "agentstate__name",
+                "inbox__messages",
+            )
+            .collect()
+            .to_pylist()
+        )
         print("\nMessage counts:")
         for row in rows:
             msgs = row.get("inbox__messages") or []
@@ -300,7 +314,7 @@ async def main():
                     content = content[:25] + "..."
                 print(
                     f"  tick={cmd.tick}: agent {cmd.payload['sender_id']} "
-                    f"→ agent {cmd.payload['receiver_id']}: {content}"
+                    f"-> agent {cmd.payload['receiver_id']}: {content}"
                 )
 
 

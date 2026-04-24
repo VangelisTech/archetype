@@ -202,10 +202,12 @@ async def test_runtime_world_activation_applies_staged_processors_resources_and_
             resources=[Delta(3.0)],
         )
 
-        async def on_post_tick(*, tick, **kwargs):
-            hook_ticks.append(tick)
+        from archetype.core.hooks import PostTick
 
-        world.add_hook("post_tick", on_post_tick)
+        async def on_post_tick(event: PostTick) -> None:
+            hook_ticks.append(event.tick)
+
+        world.add_hook(PostTick, on_post_tick)
 
         entity_id = await world.spawn(Position(x=2.0, y=0.0))
         await world.step()

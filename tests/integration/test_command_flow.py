@@ -99,10 +99,10 @@ async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_p
 
 @pytest.mark.asyncio
 async def test_reserved_spawn_fires_on_spawn_hook(tmp_path):
-    """submit_spawn takes the reserved-id path (_apply_reserved_spawn), which
-    bypasses AsyncWorld.create_entity. The on_spawn hook must still fire so
-    consumers see the same lifecycle events regardless of which spawn API the
-    caller used."""
+    """submit_spawn takes the reserved-id path (``AsyncWorld.spawn_reserved``),
+    which bypasses ``AsyncWorld.create_entity``. The ``OnSpawn`` hook must
+    still fire so consumers see the same lifecycle events regardless of
+    which spawn API the caller used."""
     from archetype.core.component import Component
 
     class Pos(Component):
@@ -115,20 +115,22 @@ async def test_reserved_spawn_fires_on_spawn_hook(tmp_path):
             WorldConfig(name="reserved-hook"), storage
         )
 
-        events: list[dict] = []
+        from archetype.core.hooks import OnSpawn
 
-        async def on_spawn(**kwargs):
-            events.append(kwargs)
+        events: list[OnSpawn] = []
 
-        world.add_hook("on_spawn", on_spawn)
+        async def on_spawn(event: OnSpawn) -> None:
+            events.append(event)
+
+        world.add_hook(OnSpawn, on_spawn)
 
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         entity_id = await container.command_service.submit_spawn(world.world_id, [Pos(x=7)], ctx)
         await container.simulation_service.step(world.world_id, RunConfig())
 
         assert len(events) == 1
-        assert events[0]["entity_id"] == entity_id
-        assert events[0]["world"] is world
+        assert events[0].entity_id == entity_id
+        assert events[0].world_id == world.world_id
     finally:
         await container.shutdown()
 

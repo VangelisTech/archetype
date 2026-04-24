@@ -257,27 +257,42 @@ class MyProcessor(AsyncProcessor):
 
 ---
 
-## Hooks: Lifecycle Callbacks (Jan 2026)
+## Hooks: Typed Lifecycle Events (Apr 2026)
 
-For observability and debugging without coupling to processor logic:
+Hooks are registered against typed dataclass events from
+`archetype.core.aio.hooks`. `world.add_hook` returns a `HookHandle`; pass it
+back to `remove_hook` to unregister.
 
 ```python
-async def on_pre_tick(world, tick, **kwargs):
-    print(f"Starting tick {tick}")
+from archetype.core.hooks import OnSpawn, PostTick, PreTick
 
-async def on_post_tick(world, tick, results, **kwargs):
-    print(f"Finished tick {tick}, processed {len(results)} archetypes")
+async def on_pre_tick(event: PreTick) -> None:
+    print(f"Starting tick {event.tick}")
 
-world.add_hook("pre_tick", on_pre_tick)
-world.add_hook("post_tick", on_post_tick)
+async def on_post_tick(event: PostTick) -> None:
+    print(f"Finished tick {event.tick}, processed {len(event.results)} archetypes")
+
+handle = world.add_hook(PreTick, on_pre_tick)
+world.add_hook(PostTick, on_post_tick)
+world.remove_hook(handle)
 ```
 
-**Events:**
+**Events** (all payloads carry `world_id: UUID`, never the world itself):
 
-- `pre_tick` — Before any processing (tick=N)
-- `post_tick` — After all processing (tick=N+1, results=list of DataFrames)
+- `PreTick(tick)` — before any archetype runs
+- `PostTick(tick, results)` — after `_live` has been refreshed; `tick` is the just-completed tick
+- `OnSpawn(entity_id, components)` — fires from every spawn path (`create_entity`, `spawn_reserved`)
+- `OnDespawn(entity_id)` — fires from `remove_entity` when the entity existed
+- `OnComponentAdded(entity_id, components)` — fires when `add_components` changes the archetype signature
+- `OnComponentRemoved(entity_id, component_types)` — fires when `remove_components` changes the archetype signature
 
-Hooks are async, errors are logged but don't crash the world.
+Pass `mode="spawn"` to `AsyncWorld.add_hook` to run the handler detached from
+the tick (via `asyncio.create_task`) for observability sinks that must not
+block. Handler errors are logged at WARNING and never abort the tick.
+
+**Sync parity:** `SyncWorld.add_hook` uses the same event dataclasses and
+`HookHandle` type, but takes a plain (non-async) callable and has no
+`"spawn"` mode — there is no event loop to defer to.
 
 ---
 

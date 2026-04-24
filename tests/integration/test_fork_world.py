@@ -146,10 +146,12 @@ async def test_fork_inherits_processors_not_hooks_or_broker(tmp_path):
         source.system.processors.append(fake)  # type: ignore[arg-type]
 
         # Add a hook that should NOT carry over.
-        async def _hook(**kwargs):
+        from archetype.core.hooks import PostTick
+
+        async def _hook(event: PostTick) -> None:
             pass
 
-        source.add_hook("post_tick", _hook)
+        source.add_hook(PostTick, _hook)
 
         fork = await container.world_service.fork_world(source.world_id, "fork-d", storage)
         assert isinstance(fork, AsyncWorld)
@@ -162,7 +164,7 @@ async def test_fork_inherits_processors_not_hooks_or_broker(tmp_path):
         assert len(fork.system.processors) == 1
 
         # Hooks not inherited.
-        assert fork._hooks.get("post_tick", []) == []
+        assert fork._hooks._by_type.get(PostTick, []) == []
 
         # Broker re-injected by create_world (not copied from source).
         assert CommandBroker in fork.resources

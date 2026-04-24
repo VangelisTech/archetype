@@ -20,7 +20,7 @@ from archetype.app.factory import WorldFactory
 from archetype.app.models import WorldInfo
 from archetype.app.registry import WorldRegistry
 from archetype.app.storage_service import StorageService
-from archetype.core.aio import AsyncSystem, AsyncWorld
+from archetype.core.aio import AsyncSystem, AsyncWorld, PostTick
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncSystem, iWorld
 
@@ -342,11 +342,11 @@ class WorldService:
         cached_entry.setdefault("world_id", str(world_id))
         cached_entry.setdefault("name", getattr(world, "name", None))
 
-        async def _sync_tick(world, tick, **_kw):  # noqa: ARG001 — hook signature
-            cached_entry["tick"] = int(tick)
+        async def _sync_tick(event: PostTick) -> None:
+            cached_entry["tick"] = int(event.tick)
             registry.upsert(world_id, cached_entry)
 
-        world.add_hook("post_tick", _sync_tick)
+        world.add_hook(PostTick, _sync_tick)
 
 
 def _ensure_storage_uri_writable(storage_config: StorageConfig) -> None:

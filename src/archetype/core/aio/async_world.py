@@ -13,10 +13,8 @@
 # limitations under the License.
 
 import asyncio
-from collections import defaultdict
-from collections.abc import Awaitable, Callable
 from logging import getLogger
-from typing import Any
+from typing import Any, TypeVar
 
 import daft
 import pyarrow as pa
@@ -28,6 +26,19 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.hooks import (
+    FireMode,
+    HookEvent,
+    HookHandle,
+    HookHandler,
+    HookRegistry,
+    OnComponentAdded,
+    OnComponentRemoved,
+    OnDespawn,
+    OnSpawn,
+    PostTick,
+    PreTick,
+)
 from archetype.core.interfaces import (
     ArchetypeSignature,
     iAsyncQueryManager,
@@ -37,10 +48,9 @@ from archetype.core.interfaces import (
 )
 from archetype.core.resources import Resources
 
-# Type alias for hook functions
-HookFn = Callable[..., Awaitable[None]]
-
 logger = getLogger(__name__)
+
+_HookEventT = TypeVar("_HookEventT", bound=HookEvent)
 
 
 class AsyncWorld(iAsyncWorld):
@@ -66,8 +76,9 @@ class AsyncWorld(iAsyncWorld):
         # Resources: type-safe DI container for shared state
         self.resources = Resources()
 
-        # Hooks: lifecycle callbacks for observability
-        self._hooks: dict[str, list[HookFn]] = defaultdict(list)
+        # Hooks: typed lifecycle callbacks for observability. See
+        # archetype.core.aio.hooks for the event catalogue.
+        self._hooks = HookRegistry()
 
         # Internal State
         self.tick = 0
@@ -78,35 +89,48 @@ class AsyncWorld(iAsyncWorld):
         self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
 
     # -------------------------------------------------------------------------
-    # Hooks: Lifecycle callbacks for observability
+    # Hooks: Typed lifecycle callbacks for observability
     # -------------------------------------------------------------------------
 
-    def add_hook(self, event: str, fn: HookFn) -> None:
-        """
-        Register a hook for lifecycle events.
+    def add_hook(
+        self,
+        event_type: type[_HookEventT],
+        fn: HookHandler[_HookEventT],
+        *,
+        mode: FireMode = "blocking",
+    ) -> HookHandle:
+        """Register a handler for lifecycle events.
 
-        Supported events:
-            - "pre_tick": Before any processing (world, tick)
-            - "post_tick": After all processing (world, tick, results)
-            - "on_spawn": When entity created (world, entity_id, components)
-            - "on_despawn": When entity removed (world, entity_id)
+        Args:
+            event_type: One of the dataclasses in ``archetype.core.aio.hooks``
+                (``PreTick``, ``PostTick``, ``OnSpawn``, ``OnDespawn``,
+                ``OnComponentAdded``, ``OnComponentRemoved``).
+            fn: An async callable taking a single ``event`` argument of the
+                matching type.
+            mode: ``"blocking"`` (default) awaits the handler inline, so the
+                tick waits on it. ``"spawn"`` runs the handler detached via
+                ``asyncio.create_task`` — use for observability sinks that
+                must not block the tick path.
+
+        Returns:
+            A ``HookHandle`` to pass back to ``remove_hook`` when the
+            handler should be unregistered.
 
         Example:
-            world.add_hook("post_tick", lambda world, tick, **kw: print(f"Tick {tick} done"))
+            from archetype.core.hooks import PostTick
+
+            async def log_tick(event: PostTick) -> None:
+                print(f"tick {event.tick} done, {len(event.results)} archetypes")
+
+            handle = world.add_hook(PostTick, log_tick)
+            # ... later ...
+            world.remove_hook(handle)
         """
-        self._hooks[event].append(fn)
+        return self._hooks.add(event_type, fn, mode=mode)
 
-    def remove_hook(self, event: str, fn: HookFn) -> None:
-        """Unregister a hook."""
-        self._hooks[event] = [h for h in self._hooks[event] if h != fn]
-
-    async def _fire_hooks(self, event: str, **kwargs) -> None:
-        """Fire all hooks for an event, logging but not raising on errors."""
-        for hook in self._hooks[event]:
-            try:
-                await hook(**kwargs)
-            except Exception as e:
-                logger.warning(f"Hook {getattr(hook, '__name__', hook)} failed on {event}: {e}")
+    def remove_hook(self, handle: HookHandle) -> None:
+        """Unregister a hook by its handle. Idempotent."""
+        self._hooks.remove(handle)
 
     async def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
@@ -153,7 +177,7 @@ class AsyncWorld(iAsyncWorld):
             )
 
         # Fire pre-tick hooks
-        await self._fire_hooks("pre_tick", world=self, tick=self.tick)
+        await self._hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
         sigs = sorted(self.active_signatures, key=Archetype.get_name)
 
@@ -177,7 +201,9 @@ class AsyncWorld(iAsyncWorld):
             self._debug_log("tick_end", tick=self.tick, archetypes_processed=len(sigs))
 
         # Fire post-tick hooks
-        await self._fire_hooks("post_tick", world=self, tick=self.tick, results=results)
+        await self._hooks.fire(
+            PostTick(world_id=self.world_id, tick=self.tick, results=dict(self._live))
+        )
 
     def _debug_log(self, event: str, **data) -> None:
         """Emit structured debug event."""
@@ -317,22 +343,47 @@ class AsyncWorld(iAsyncWorld):
     # ---------------------------------------------------------------------
 
     async def create_entity(self, components: list[Component]) -> int:
+        """Spawn a new entity with an auto-assigned id. Fires ``OnSpawn``."""
         entity_id = self._next_entity_id
         self._next_entity_id += 1
-        sig = Archetype.sig_from_components(components)
-        self._entity2sig[entity_id] = sig
-
-        # Placeholder run_id; updater will stamp correct run_id on update
-        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id="")
-        self._spawn_cache.setdefault(sig, []).append(row_dict)
-        await self._fire_hooks("on_spawn", world=self, entity_id=entity_id, components=components)
+        await self._register_entity(entity_id, components)
         return entity_id
 
-    async def remove_entity(self, entity_id: int):
+    async def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
+        """Spawn with a pre-reserved entity id, as used by the service-layer
+        ``CommandService.submit_spawn`` flow. Fires ``OnSpawn``.
+
+        Raises ``ValueError`` if the id is already live.
+        """
+        if entity_id in self._entity2sig:
+            raise ValueError(f"Entity {entity_id} already exists in world {self.world_id}")
+        self._next_entity_id = max(self._next_entity_id, entity_id + 1)
+        await self._register_entity(entity_id, components)
+
+    async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
+        """Single source of truth for entity spawn. Every path that makes a
+        new entity observable to the world MUST go through this method so
+        ``OnSpawn`` is always fired exactly once with the correct payload."""
+        sig = Archetype.sig_from_components(components)
+        self._entity2sig[entity_id] = sig
+        # Placeholder run_id; updater stamps correct run_id during persist.
+        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id="")
+        self._spawn_cache.setdefault(sig, []).append(row_dict)
+        await self._hooks.fire(
+            OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))
+        )
+
+    async def remove_entity(self, entity_id: int) -> None:
+        """Despawn an entity. Cancels a pending same-tick spawn if present,
+        otherwise queues a despawn row for the current tick. Fires
+        ``OnDespawn`` iff the entity existed."""
         sig = self._entity2sig.pop(entity_id, None)
         if sig is None:
             logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}"
+                "World %s (%s): Entity Removal Failed: No entity: %s",
+                self.name,
+                self.world_id,
+                entity_id,
             )
             return
 
@@ -344,13 +395,15 @@ class AsyncWorld(iAsyncWorld):
                     self._spawn_cache[sig] = remaining
                 else:
                     del self._spawn_cache[sig]
-                await self._fire_hooks("on_despawn", world=self, entity_id=entity_id)
+                await self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
                 return
 
         self._despawn_cache.setdefault(sig, []).append(entity_id)
-        await self._fire_hooks("on_despawn", world=self, entity_id=entity_id)
+        await self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
 
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
+        """Attach additional components to an existing entity. Fires
+        ``OnComponentAdded`` iff the signature actually changes."""
         old_sig = self._entity2sig.get(entity_id)
         if not old_sig:
             logger.warning("add_components: entity %s not found", entity_id)
@@ -372,9 +425,19 @@ class AsyncWorld(iAsyncWorld):
         # 3) update bookkeeping – atomically
         self._entity2sig[entity_id] = new_sig
 
+        await self._hooks.fire(
+            OnComponentAdded(
+                world_id=self.world_id,
+                entity_id=entity_id,
+                components=list(components),
+            )
+        )
+
     async def remove_components(
         self, entity_id: int, component_types: list[type[Component]]
     ) -> None:
+        """Detach components from an existing entity. Fires
+        ``OnComponentRemoved`` iff the signature actually changes."""
         old_sig = self._entity2sig.get(entity_id)
         if old_sig is None:
             return
@@ -390,6 +453,14 @@ class AsyncWorld(iAsyncWorld):
         self._despawn_cache.setdefault(old_sig, []).append(entity_id)
         self._spawn_cache.setdefault(new_sig, []).append(row)
         self._entity2sig[entity_id] = new_sig
+
+        await self._hooks.fire(
+            OnComponentRemoved(
+                world_id=self.world_id,
+                entity_id=entity_id,
+                component_types=list(component_types),
+            )
+        )
 
     async def add_processor(self, processor: "AsyncProcessor"):
         await self.system.add_processor(processor)
