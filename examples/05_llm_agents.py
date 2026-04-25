@@ -26,14 +26,11 @@ import json
 
 from daft import DataFrame, col
 from daft.functions import prompt
-from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
+from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import StorageConfig
 
 # ── Components ──
 
@@ -105,45 +102,27 @@ class ThinkProcessor(AsyncProcessor):
 
 
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    # Create world
-    world = await container.world_service.create_world(
-        WorldConfig(name="llm-agents"),
-        StorageConfig(),
-    )
-    wid = world.world_id
-
-    # Add the think processor
-    await world.system.add_processor(ThinkProcessor())
-
-    # Spawn three agents with different personalities
     agents = [
         ("Ada", "You are a curious scientist who loves discovering patterns."),
         ("Rex", "You are a bold explorer who takes risks and seeks adventure."),
         ("Iris", "You are a thoughtful philosopher who questions everything."),
     ]
+    storage = StorageConfig(uri="./archetype_data", namespace="llm_agents")
 
-    for name, role in agents:
-        cmd = Command(
-            type=CommandType.SPAWN,
-            payload={
-                "components": [
-                    Agent(name=name, role=role).to_payload(),
-                ],
-            },
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("llm-agents", storage=storage, processors=[ThinkProcessor()])
+
+        for name, role in agents:
+            await world.spawn(Agent(name=name, role=role))
+
+        print(f"Running 5 ticks with {len(agents)} LLM-powered agents...\n")
+        result = await world.run(steps=5)
+        print(f"Completed {result.ticks_completed} ticks\n")
+
+        rows = sorted(
+            (await world.query(Agent)).collect().to_pylist(),
+            key=lambda row: row.get("agent__name", ""),
         )
-        await container.command_service.submit(wid, cmd, ctx)
-
-    # Run 5 ticks — each tick calls the LLM for all agents
-    print(f"Running 5 ticks with {len(agents)} LLM-powered agents...\n")
-    result = await container.simulation_service.run(wid, RunConfig(num_steps=5))
-    print(f"Completed {result.ticks_completed} ticks\n")
-
-    # Print journals
-    for _sig, df in world._live.items():
-        rows = df.collect().to_pylist()
         for row in rows:
             name = row.get("agent__name", "?")
             journal_str = row.get("agent__journal", "[]")
@@ -155,8 +134,6 @@ async def main():
             for i, thought in enumerate(thoughts):
                 print(f"  tick {i}: {thought}")
             print()
-
-    await container.shutdown()
 
 
 if __name__ == "__main__":

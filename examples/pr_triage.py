@@ -17,54 +17,15 @@ import asyncio
 import json
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import daft
 from daft import DataFrame, col
 
+from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.aio.async_system import AsyncSystem
-from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
-
-# ── In-memory infrastructure (no persistence needed) ─────────────────────────
-
-import pyarrow as pa
-from archetype.core.archetype import Archetype
-
-
-class InMemoryQuerier:
-    def __init__(self):
-        self._store: dict[tuple, DataFrame] = {}
-
-    async def query_archetype(self, **kwargs):
-        sig = kwargs["sig"]
-        ticks = kwargs.get("ticks", [0])
-        key = (sig, ticks[0] if ticks else 0)
-        if key in self._store:
-            return self._store[key]
-        schema = Archetype.get_archetype_schema(sig)
-        return daft.from_arrow(pa.Table.from_batches([], schema=schema))
-
-    def store(self, sig, tick, df):
-        self._store[(sig, tick)] = df
-
-
-class InMemoryUpdater:
-    def __init__(self, querier: InMemoryQuerier):
-        self._querier = querier
-
-    async def update(self, df, sig, tick, world_id, run_id):
-        df = (
-            df.with_column("tick", daft.lit(tick))
-            .with_column("world_id", daft.lit(str(world_id)))
-            .with_column("run_id", daft.lit(str(run_id)))
-        )
-        df_mat = df.collect()
-        self._querier.store(sig, tick, df_mat)
-        return df_mat
-
+from archetype.core.config import StorageConfig
 
 # ── Components ───────────────────────────────────────────────────────────────
 
@@ -126,7 +87,7 @@ class StalenessProcessor(AsyncProcessor):
     priority = 20
 
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         @daft.func
         def age_days(created_at: str) -> float:
@@ -249,40 +210,33 @@ async def main():
         print("No PRs found.")
         return
 
-    querier = InMemoryQuerier()
-    updater = InMemoryUpdater(querier)
-    system = AsyncSystem()
-    world = AsyncWorld(
-        world_config=WorldConfig(name="pr-triage"),
-        querier=querier,
-        updater=updater,
-        system=system,
-    )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world(
+            "pr-triage",
+            storage=StorageConfig(uri="./archetype_data", namespace="pr_triage"),
+            processors=[
+                CategoryProcessor(),
+                StalenessProcessor(),
+                RiskProcessor(),
+                TriageProcessor(),
+            ],
+        )
 
-    await system.add_processor(CategoryProcessor())
-    await system.add_processor(StalenessProcessor())
-    await system.add_processor(RiskProcessor())
-    await system.add_processor(TriageProcessor())
+        for pr in prs:
+            await world.spawn(
+                PullRequest(
+                    number=pr["number"],
+                    title=pr["title"],
+                    state=pr.get("state", ""),
+                    author=pr.get("author", {}).get("login", ""),
+                    created_at=pr.get("createdAt", ""),
+                    url=pr.get("url", ""),
+                ),
+                Triage(),
+            )
 
-    for pr in prs:
-        await world.create_entity([
-            PullRequest(
-                number=pr["number"],
-                title=pr["title"],
-                state=pr.get("state", ""),
-                author=pr.get("author", {}).get("login", ""),
-                created_at=pr.get("createdAt", ""),
-                url=pr.get("url", ""),
-            ),
-            Triage(),
-        ])
-
-    await world.run(RunConfig(num_steps=1))
-
-    # Collect results
-    rows = []
-    for _sig, df in world._live.items():
-        rows.extend(df.collect().to_pylist())
+        await world.run(steps=1)
+        rows = (await world.query(PullRequest, Triage)).collect().to_pylist()
 
     rows.sort(key=lambda r: r.get("triage__priority_rank", 99))
 

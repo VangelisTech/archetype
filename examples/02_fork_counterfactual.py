@@ -17,12 +17,9 @@ Usage:
 import asyncio
 from dataclasses import dataclass
 
-from uuid_utils import uuid7
-
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype import ArchetypeRuntime
+from archetype.core.component import Component
+from archetype.core.config import StorageConfig
 
 
 @dataclass
@@ -31,50 +28,33 @@ class PhysicsConfig:
     drag: float = 0.1
 
 
+class Probe(Component):
+    label: str = ""
+
+
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri="./archetype_data", namespace="counterfactuals")
 
-    # Create the base world
-    base = await container.world_service.create_world(
-        WorldConfig(name="base"), StorageConfig(),
-    )
-    wid = base.world_id
+    async with ArchetypeRuntime() as runtime:
+        base = runtime.world("base", storage=storage)
 
-    # Spawn an entity so there's state to fork
-    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_service.submit(wid, cmd, ctx)
+        await base.spawn(Probe(label="seed"))
+        await base.run(steps=1)
 
-    # Step once to materialize the entity
-    await container.simulation_service.run(wid, RunConfig(num_steps=1))
+        print(f"Base world: {base.world_id}")
+        print(f"Base state: tick={base.tick}\n")
 
-    print(f"Base world: {wid}")
-    print(f"Base state: tick={base.tick}\n")
+        branches_run = 0
+        for gravity in [1.0, 9.8, 25.0]:
+            fork = await base.fork(f"gravity-{gravity}", storage=storage)
+            fork.resources.insert(PhysicsConfig(gravity=gravity))
 
-    # Fork with different gravity values and run each
-    results = {}
-    for gravity in [1.0, 9.8, 25.0]:
-        fork = await container.world_service.fork_world(
-            source_world_id=wid,
-            name=f"gravity-{gravity}",
-            storage_config=StorageConfig(),
-        )
-        fork.resources.insert(PhysicsConfig(gravity=gravity))
+            result = await fork.run(steps=10)
+            rows = (await fork.query(Probe)).collect().to_pylist()
+            branches_run += 1
+            print(f"gravity={gravity:>5.1f}: tick={result.final_tick}, entities={len(rows)}")
 
-        await container.simulation_service.run(
-            fork.world_id, RunConfig(num_steps=10),
-        )
-
-        state = await container.query_service.get_world_state(fork.world_id)
-        results[gravity] = {
-            "world_id": str(fork.world_id),
-            "final_tick": state.tick,
-            "entity_count": len(state.entities),
-        }
-        print(f"gravity={gravity:>5.1f}: tick={state.tick}, entities={len(state.entities)}")
-
-    print(f"\nRan {len(results)} counterfactual branches from the same base state.")
-    await container.shutdown()
+        print(f"\nRan {branches_run} counterfactual branches from the same base state.")
 
 
 if __name__ == "__main__":

@@ -560,6 +560,30 @@ Required behavior:
   brokered mutation contract unless that method is explicitly documented as a
   lower-level escape hatch
 
+#### C7. Same-tick composition must be defined
+
+Deferred materialization at the tick boundary must not make ordered command
+semantics ambiguous.
+
+Required behavior:
+
+- If multiple commands targeting the same entity are drained in one tick, the
+  implementation MUST define whether later commands observe earlier staged
+  mutations from that same drain cycle
+- If the public contract claims ordered broker semantics for runtime mutation
+  verbs, later commands SHOULD observe earlier same-tick mutations for the same
+  entity even though none of them become query-visible until `step()` completes
+- If the implementation does not provide that composition guarantee, the
+  weaker behavior MUST be documented explicitly in user-facing runtime docs and
+  examples
+
+CURRENT GAP:
+
+- `UPDATE` followed by `ADD_COMPONENT` for the same entity in one drain cycle
+  does not currently compose intuitively. The second command reads from `_live`
+  rather than from the staged update row, so broker history order and final
+  materialized state can diverge.
+
 ### Multi-World Lifetime Contract
 
 #### L1. Separate runtime lifetime from world lifetime
@@ -625,6 +649,23 @@ Required behavior:
 - Global singletons, if used at all, must have an explicit reset or opt-out
   path for tests
 - Test suites must be able to exercise multiple runtimes in one process
+
+#### L6. Actor-bound aliases share one world lifecycle
+
+Sugar may expose multiple actor-bound handles to one logical world, but those
+handles must not become independent world lifecycles by accident.
+
+Required behavior:
+
+- `world.as_actor(ctx)` MUST be pure before activation
+- Actor-bound aliases MUST resolve to the same backing world identity after
+  activation
+- First activation MUST remain single-flight across all aliases of the same
+  logical world
+- Shutting down one alias MUST invalidate all aliases of that world, but MUST
+  NOT invalidate sibling worlds in the same runtime
+- `fork()` from an actor-bound alias SHOULD preserve the caller's actor binding
+  on the returned fork handle
 
 ### Script Ceremony Contract
 
@@ -692,6 +733,36 @@ Required behavior:
   naming and documentation
 - Direct resource mutation must not be described as governed by the broker
 
+#### S6. Recommended runtime APIs should be mutation-complete
+
+If a runtime wrapper is presented as the recommended script boundary, it should
+cover the common governed mutation verbs without forcing the user to drop to
+the service layer.
+
+Required behavior:
+
+- The recommended runtime world handle SHOULD expose brokered entity mutation
+  verbs for `spawn`, `despawn`, `update`, `add_components`, and
+  `remove_components`
+- The recommended runtime world handle SHOULD expose brokered processor
+  mutation verbs for `add_processor` and `remove_processor`
+- Runtime audit access such as command history SHOULD remain available without
+  requiring direct container access
+
+#### S7. Non-brokered scaffolding must remain explicit
+
+Some runtime operations are world-local scaffolding rather than governed
+simulation mutations. That distinction must be explicit.
+
+Required behavior:
+
+- World-handle construction and actor rebinding may be immediate runtime
+  operations rather than brokered commands
+- Hook registration and direct resource mutation may remain immediate runtime
+  operations rather than brokered commands
+- Documentation MUST distinguish these immediate scaffolding operations from
+  brokered simulation mutations
+
 ### Sugar Runtime Acceptance Criteria
 
 No sugar API may be considered ready for implementation until the design can
@@ -699,9 +770,15 @@ show how it satisfies all of the following:
 
 - Concurrent first-use of the same wrapper creates exactly one world
 - `spawn()` return semantics are correct and tested
+- Actor-bound aliases are pure before activation and share one world identity
 - One world's shutdown does not break a sibling world in the same runtime
 - Runtime teardown is explicit and distinct from world teardown
 - Forked worlds remain valid after the source world is shut down
+- Recommended runtime mutation verbs cover entity, component, and processor
+  mutations without dropping to the service layer
+- Non-brokered scaffolding boundaries are documented and tested
+- Same-entity same-tick mutation composition is either guaranteed and tested or
+  explicitly documented as weaker
 - Async and sync script entry points have a clear resource ownership model
 - Existing public imports remain compatible, or the change is explicitly marked
   as breaking and tested accordingly
@@ -724,8 +801,10 @@ the constraints that any acceptable design must satisfy.
 | `CommandService.submit_spawn()` | Returns one reserved `entity_id` per successful call; repeated calls create new entities unless the caller reuses an explicit reservation |
 | `AsyncWorld.create_entity()` | Not idempotent; each call allocates a new world-local entity ID |
 | `AsyncWorld.remove_entity(missing)` | Safe no-op with observability |
+| `RuntimeWorld.as_actor(ctx)` | Idempotent as handle binding only; creates another alias, not another world |
 | Duplicate despawn in one tick | Idempotent collapse by entity ID |
 | Duplicate spawn for same entity in one tick | Deterministic last-write-wins |
+| `RuntimeWorld.command_history()` | Idempotent for fixed broker history |
 | `add_components()` with no signature change | Idempotent no-op |
 | `remove_components()` with no signature change | Idempotent no-op |
 | `world.step()` | Not idempotent; advances tick and appends new rows |
@@ -749,6 +828,8 @@ coherent engine contract:
 6. Give `QueryService` a real read contract or clearly mark it as provisional.
 7. Define world-local teardown semantics that do not leak broker or shared
    runtime state.
+8. Resolve or explicitly codify same-entity same-tick mutation composition so
+   broker command order and final materialized state cannot diverge silently.
 
 ## Acceptance Criteria
 
@@ -764,3 +845,93 @@ all of the following:
 - explicit multi-world isolation and fork divergence
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
+
+## Contracts Before Sugar (Apr 2026)
+
+The top-level runtime sugar looked directionally right, but the first proposal
+was unsafe because it collapsed three separate concerns into one API shape:
+
+1. **Concurrency** — first-use initialization races
+2. **Multi-world lifetime** — world shutdown vs process/runtime shutdown
+3. **Script ceremony** — making simple scripts ergonomic without hiding real
+   lifecycle boundaries
+
+The fix was to make the contract explicit before changing the API.
+
+**Key lesson:** the safe top-level abstraction is `ArchetypeRuntime`, not a
+world-scoped context manager. Process lifetime and world lifetime are different
+concerns. A `World` handle can be lazy, but the shared runtime/container needs
+an explicit boundary.
+
+### Runtime / sugar contracts we chose to enforce
+
+- `spawn()` must reserve and return a real `entity_id` all the way through the
+  chain. Returning a command ID is a contract violation.
+- World-handle construction must be pure: no I/O, no registration, no backend
+  allocation.
+- First activation must be single-flight. Concurrent first calls must produce
+  exactly one backing world.
+- A world must never expose partially initialized state.
+- Shutdown, fork, and activation must have defined race behavior.
+- World shutdown must be world-local.
+- Runtime shutdown must be process-scoped and explicit.
+- Forked worlds share a runtime, but not world identity or lifecycle.
+- The recommended script boundary is `async with ArchetypeRuntime()` or
+  `with ArchetypeRuntime.sync()`, not implicit per-call global setup/teardown.
+- Top-level `World` and `Processor` exports should remain stable unless there
+  is an intentional versioned breaking change. Add sugar additively first.
+
+### Testing lesson
+
+These contracts should not live only in docs. They need executable tests.
+
+The highest-value tests from this session were not generic coverage tests.
+They were contract tests for:
+
+- concurrent first-use activation
+- shutdown vs init and fork vs init races
+- multi-world lifetime isolation
+- spawn materialization timing
+- async/sync smoke paths
+- example script smoke execution
+
+Once those existed, several real bugs surfaced immediately.
+
+### Sync-core bugs contract tests exposed
+
+Contract-focused tests found real correctness issues that happy-path tests had
+missed:
+
+- store append/read paths were inconsistent about table lookup and namespace
+  context
+- query projection used the wrong schema API
+- duplicate spawns were not true last-write-wins
+- component migration used instances where signature expansion required types
+- moving an entity from a missing source archetype crashed instead of returning
+  empty
+- final despawns could be skipped because despawn-only signatures were not
+  materialized
+
+**Lesson:** if a contract test feels "too specific," that usually means it is
+finally testing the real semantic boundary.
+
+### Docs and examples are part of the contract
+
+The recommended public API now lives at the runtime layer, so beginner docs
+and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
+container. Low-level docs can still document `ServiceContainer`,
+`CommandService`, broker semantics, and raw ECS flows, but they should be
+explicit that they are lower-level interfaces.
+
+Examples also need to be executed in CI. An example that "looks right" but is
+never run is not documentation; it is an unverified claim.
+
+This mattered especially for LLM-backed examples: they need explicit
+credential gating or graceful degraded behavior when keys are missing.
+
+### Specification lesson
+
+A temporary `REQUIREMENTS.md` was useful as a forcing function, but the clean
+end state is one canonical specification document. Normative contracts should
+converge into `Specification`, with tests enforcing them and contributor docs
+pointing back to that single source of truth.

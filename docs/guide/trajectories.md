@@ -3,7 +3,9 @@ title: Trajectory Analysis
 description: Evaluate and compare agent trajectories using LLM-based labeling
 ---
 
-Trajectory analysis uses the standard ECS pattern: define components for the data, processors for the pipeline stages, and run it all through a world. Fork the world to compare different evaluation criteria.
+Trajectory analysis uses the recommended runtime script pattern: define
+components for the data, stage processors and resources on a runtime world,
+run the pipeline, then fork to compare evaluation criteria.
 
 The full runnable example is in [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/archetype/blob/main/examples/06_trajectory_analysis.py).
 
@@ -119,49 +121,32 @@ Clamps `label__score` to [0, 1].
 
 ## Wiring It Up
 
-Standard ECS setup — no framework abstraction:
+Recommended runtime setup:
 
 ```python
-container = ServiceContainer()
-ctx = ActorCtx(id=uuid7(), roles={"operator"})
+from archetype import ArchetypeRuntime
+from archetype.core.config import RunConfig, StorageConfig
 
-world = await container.world_service.create_world(
-    WorldConfig(name="trajectory-eval"),
-    StorageConfig(uri="./trajectory_data", namespace="trajectories"),
-)
+async with ArchetypeRuntime() as runtime:
+    world = runtime.world(
+        "trajectory-eval",
+        storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
+        processors=[SamplingProcessor(), LabelingProcessor(), ScoringProcessor()],
+        resources=[
+            SamplingConfig(min_turns=3),
+            LabelingConfig(model="gpt-5-mini"),
+        ],
+    )
 
-# Add processors
-await world.system.add_processor(SamplingProcessor())
-await world.system.add_processor(LabelingProcessor())
-await world.system.add_processor(ScoringProcessor())
+    for trajectory in trajectories:
+        for technique, description in label_specs:
+            label = Label(technique=technique, description=description)
+            await world.spawn(trajectory, label)
 
-# Inject config
-world.resources.insert(SamplingConfig(min_turns=3))
-world.resources.insert(LabelingConfig(model="gpt-5-mini"))
+    await world.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
 
-# Spawn one entity per (trajectory, technique) pair
-for trajectory in trajectories:
-    for technique, description in label_specs:
-        label = Label(technique=technique, description=description)
-        cmd = Command(
-            type=CommandType.SPAWN,
-            payload={
-                "components": [
-                    {"type": "Trajectory", **trajectory.model_dump()},
-                    {"type": "Label", **label.model_dump()},
-                ],
-            },
-        )
-        await container.command_service.submit(world.world_id, cmd, ctx)
-
-# Run: one tick = sample -> label -> score
-await container.simulation_service.step(
-    world.world_id, RunConfig(num_steps=1, prefer_live_reads=True),
-)
-
-# Collect results
-df = await world.get_components([Trajectory, Label])
-rows = df.collect().to_pylist()
+    df = await world.query(Trajectory, Label)
+    rows = df.collect().to_pylist()
 ```
 
 ## Fork-Based Comparison
@@ -169,24 +154,12 @@ rows = df.collect().to_pylist()
 Clone the world, swap config, run independently:
 
 ```python
-fork = await container.world_service.fork_world(
-    source_world_id=world.world_id,
-    name="strict-eval",
-    storage_config=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
+fork = await world.fork(
+    "strict-eval",
+    storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
 )
-
-# Re-add processors (not cloned)
-await fork.system.add_processor(SamplingProcessor())
-await fork.system.add_processor(LabelingProcessor())
-await fork.system.add_processor(ScoringProcessor())
-
-# Different config
-fork.resources.insert(SamplingConfig(min_turns=3))
-fork.resources.insert(LabelingConfig(model="gpt-5-mini"))
-
-await container.simulation_service.step(
-    fork.world_id, RunConfig(num_steps=1, prefer_live_reads=True),
-)
+fork.resources.insert(SamplingConfig(min_turns=8))
+await fork.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
 ```
 
 Both worlds persist to the same storage. Query either one at any tick.
@@ -196,7 +169,7 @@ Both worlds persist to the same storage. Query either one at any tick.
 | Scenario | Trajectory analysis? |
 |----------|---------------------|
 | Evaluating recorded agent sessions | Yes |
-| Comparing labeling criteria (A/B) | Yes, with `fork_world()` |
+| Comparing labeling criteria (A/B) | Yes, with `world.fork()` |
 | Benchmarking prompt variations | Yes |
 | Real-time agent processing per tick | No, use regular processors |
 | Simple data transforms | No, use DataFrame expressions |

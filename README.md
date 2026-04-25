@@ -19,12 +19,13 @@ Archetype stores world state as columnar archetype tables, executes behavior as 
 
 ## What It Is
 
-Archetype is split into three layers:
+Archetype is split into layers:
 
 | Layer | Purpose |
 |---|---|
+| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
 | `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer: `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
+| `src/archetype/app` | Service layer (lower-level): `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
 | `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
 
 The runtime model is:
@@ -62,20 +63,14 @@ uv sync --group dev
 
 ## Quickstart
 
-The most complete interface today is the in-process Python API.
+`ArchetypeRuntime` is the recommended entry point. It owns the shared container, activates a world lazily on first use, and returns a real `entity_id` from `spawn()`.
 
 ```python
 import asyncio
 
 from daft import DataFrame, col
-from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 class Position(Component):
@@ -102,41 +97,25 @@ class MovementProcessor(AsyncProcessor):
 
 
 async def main():
-    container = ServiceContainer()
-    world = await container.world_service.create_world(
-        WorldConfig(name="demo"),
-        StorageConfig(),
-    )
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("demo", processors=[MovementProcessor()])
 
-    await world.system.add_processor(MovementProcessor())
+        await world.spawn(Position(x=0, y=0), Velocity(dx=1, dy=2))
+        await world.run(steps=3)
 
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    cmd = Command(
-        type=CommandType.SPAWN,
-        payload={
-            "components": [
-                Position(x=0, y=0).to_payload(),
-                Velocity(dx=1, dy=2).to_payload(),
-            ]
-        },
-    )
-    await container.command_service.submit(world.world_id, cmd, ctx)
-
-    await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
-
-    df = await world.get_components([Position])
-    print(df.collect().to_pylist())
-
-    await container.shutdown()
+        df = await world.query(Position)
+        print(df.collect().to_pylist())
 
 
 asyncio.run(main())
 ```
 
-Two important details from the code:
+For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop the `await`s.
 
-- use `Component.to_payload()` when sending components through `CommandService`
-- processor columns are always prefixed as `componentname__field`
+Two things to know:
+
+- processor columns are prefixed `componentname__field` (e.g., `position__x`)
+- `ArchetypeRuntime` is the script boundary — process lifetime and world lifetime are separate concerns. See `docs/guide/specification.md` § "Contracts Before Sugar" for the full contract set (single-flight activation, honest `spawn()`, fork isolation, world-local shutdown). Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
 
 ## CLI
 
@@ -284,14 +263,15 @@ Current state worth knowing before using it:
 - the Python service layer is richer than the REST read models
 - the FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet
 
-Start with `src/archetype/core` and `src/archetype/app` to understand the system.
+Start with `src/archetype/sugar.py` (`ArchetypeRuntime`) to use the system. Read `src/archetype/core` and `src/archetype/app` to understand how it works underneath.
 
 ## Repository Map
 
 ```text
 archetype/
+├── src/archetype/sugar.py   # ArchetypeRuntime — recommended top-level API
 ├── src/archetype/core/      # ECS runtime and storage contracts
-├── src/archetype/app/       # Brokered service layer
+├── src/archetype/app/       # Brokered service layer (lower-level)
 ├── src/archetype/api/       # FastAPI server
 ├── src/archetype/cli/       # Typer CLI
 ├── examples/                # Runnable examples

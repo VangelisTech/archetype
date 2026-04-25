@@ -1,6 +1,9 @@
 # Examples
 
-Every example on this page runs end-to-end with a single command. Copy, paste, run.
+Every example on this page runs end-to-end with a single command. The
+recommended pattern is `ArchetypeRuntime` for scripts. A small number of
+examples intentionally drop lower when the read path is still below the
+runtime API, most notably the time-travel example.
 
 ## 1. World Mutations
 
@@ -12,38 +15,31 @@ uv run python examples/01_world_mutations.py
 
 Source: [`examples/01_world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/01_world_mutations.py)
 
+This example uses `ArchetypeRuntime` plus `world.as_actor(...)` to show
+multiple `ActorCtx` roles on one logical world without dropping to the
+service layer.
+
 **What it demonstrates:**
 
-- **SPAWN** with typed components (`Position`, `Velocity`, `Health`)
+- **SPAWN / DESPAWN / UPDATE** through the brokered runtime surface
+- **ADD_COMPONENT / REMOVE_COMPONENT** with archetype migration at tick boundaries
 - **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
-- **RBAC** checks: viewer denied spawn, player allowed spawn, player denied add_processor
-- **FORK** a world and run source and fork independently
-- **Command history** as a full audit trail
+- **RBAC** checks through actor-bound handles: viewer denied spawn, player denied add_processor
+- **FORK** from an actor-bound handle while keeping the same actor binding on the branch
+- **Command history** through `world.command_history()`
 
 Output:
 
 ```text
-1. SPAWN — create entities with components
-   Spawned 2 entities (tick=1)
-
-2. ADD_PROCESSOR — inject behavior at runtime
-   Added MovementProcessor (priority=10)
-   Ran 3 ticks (tick=4)
-
-4. RBAC — permission checks
+1. SPAWN + RBAC
    viewer: SPAWN denied (correct)
-   player: SPAWN allowed (correct)
+   player: spawned scout=1, dummy=2
+
+2. UPDATE + COMPONENT MUTATIONS
+   scout after update/add_components: pos=(2.0, 1.0), vel=(1.5, 0.5), hp=80
+
+3. PROCESSOR MUTATIONS
    player: ADD_PROCESSOR denied (correct)
-
-5. FORK — branch the world
-   Fork tick=5 (matches source tick=5)
-   Fork after 5 more ticks: tick=10
-   Source unchanged: tick=5
-
-6. COMMAND HISTORY — full audit trail
-   tick=0: spawn
-   tick=0: spawn
-   tick=0: spawn
 ```
 
 **Command types** (15 total, including `run_rollout` and `run_episode` for MCTS):
@@ -80,12 +76,7 @@ Source: [`examples/02_fork_counterfactual.py`](https://github.com/VangelisTech/a
 import asyncio
 from dataclasses import dataclass
 
-from uuid_utils import uuid7
-
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype import ArchetypeRuntime, Component, StorageConfig
 
 
 @dataclass
@@ -94,32 +85,25 @@ class PhysicsConfig:
     drag: float = 0.1
 
 
+class Probe(Component):
+    label: str = ""
+
+
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri="./archetype_data", namespace="counterfactuals")
 
-    # Create the base world and spawn an entity
-    base = await container.world_service.create_world(
-        WorldConfig(name="base"), StorageConfig(),
-    )
-    cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_service.submit(base.world_id, cmd, ctx)
-    await container.simulation_service.run(base.world_id, RunConfig(num_steps=1))
+    async with ArchetypeRuntime() as runtime:
+        base = runtime.world("base", storage=storage)
+        await base.spawn(Probe(label="seed"))
+        await base.run(steps=1)
 
-    # Fork with different gravity values and run each
-    for gravity in [1.0, 9.8, 25.0]:
-        fork = await container.world_service.fork_world(
-            source_world_id=base.world_id,
-            name=f"gravity-{gravity}",
-            storage_config=StorageConfig(),
-        )
-        fork.resources.insert(PhysicsConfig(gravity=gravity))
-        await container.simulation_service.run(fork.world_id, RunConfig(num_steps=10))
+        for gravity in [1.0, 9.8, 25.0]:
+            fork = await base.fork(f"gravity-{gravity}", storage=storage)
+            fork.resources.insert(PhysicsConfig(gravity=gravity))
 
-        state = await container.query_service.get_world_state(fork.world_id)
-        print(f"gravity={gravity:>5.1f}: tick={state.tick}")
-
-    await container.shutdown()
+            result = await fork.run(steps=10)
+            rows = (await fork.query(Probe)).collect().to_pylist()
+            print(f"gravity={gravity:>5.1f}: tick={result.final_tick}, entities={len(rows)}")
 
 asyncio.run(main())
 ```
@@ -145,6 +129,11 @@ uv run python examples/03_time_travel.py
 ```
 
 Source: [`examples/03_time_travel.py`](https://github.com/VangelisTech/archetype/blob/main/examples/03_time_travel.py)
+
+This example intentionally uses the lower-level `QueryService` because
+historical snapshot reads are part of the read path rather than the current
+top-level runtime sugar. Current-state runtime mutation helpers exist; history
+snapshot helpers do not yet.
 
 ```python
 import asyncio
@@ -243,7 +232,7 @@ Source: [`examples/05_llm_agents.py`](https://github.com/VangelisTech/archetype/
 
 - **Component**: `Agent` with name, role, and a JSON journal of thoughts
 - **Processor**: `ThinkProcessor` uses `daft.functions.prompt` to call an LLM for every agent entity in a single DataFrame operation
-- **Pattern**: Thoughts accumulate in a journal column across ticks
+- **Pattern**: `ArchetypeRuntime` keeps the script surface to `world.spawn(...)`, `world.run(...)`, and `world.query(...)`
 
 Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
@@ -263,5 +252,5 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 
 - **Components**: `Trajectory` (JSON-encoded turns), `Label` (evaluation result)
 - **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
-- **Resources**: `SamplingConfig`, `LabelingConfig` injected via `world.resources`
-- **Fork-based comparison**: Clone a world with `fork_world()`, swap config, run independently
+- **Resources**: `SamplingConfig`, `LabelingConfig` staged on `runtime.world(..., resources=[...])`
+- **Fork-based comparison**: Clone a world with `world.fork(...)`, swap config, run independently

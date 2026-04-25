@@ -83,7 +83,7 @@ class ArchetypeRuntime:
         resources: list[Any] | None = None,
     ) -> RuntimeWorld:
         self._ensure_open()
-        handle = RuntimeWorld(
+        state = _RuntimeWorldState(
             runtime=self,
             name=name,
             storage=storage,
@@ -91,8 +91,7 @@ class ArchetypeRuntime:
             processors=processors,
             resources=resources,
         )
-        self._register_handle(handle)
-        return handle
+        return state.bind(self._actor_ctx)
 
     async def shutdown(self) -> None:
         if self._closed:
@@ -113,8 +112,8 @@ class ArchetypeRuntime:
         self._handles.discard(handle)
 
 
-class RuntimeWorld:
-    """Lazy world handle bound to an ``ArchetypeRuntime``."""
+class _RuntimeWorldState:
+    """Shared lifecycle state for actor-bound aliases of one logical world."""
 
     def __init__(
         self,
@@ -127,62 +126,115 @@ class RuntimeWorld:
         resources: list[Any] | None = None,
         existing_world: AsyncWorld | None = None,
     ) -> None:
-        self._runtime = runtime
-        self._name = name
-        self._storage_config = _coerce_storage_config(storage)
-        self._cache_config = cache
-        self._init_processors = list(processors or [])
-        self._init_resources = list(resources or [])
-        self._pending_hooks: list[tuple[str, HookFn]] = []
-        self._world = existing_world
-        self._initialized = existing_world is not None
-        self._init_lock = asyncio.Lock()
-        self._op_lock = asyncio.Lock()
-        self._closed = False
+        self.runtime = runtime
+        self.name = name
+        self.storage_config = _coerce_storage_config(storage)
+        self.cache_config = cache
+        self.init_processors = list(processors or [])
+        self.init_resources = list(resources or [])
+        self.pending_hooks: list[tuple[str, HookFn]] = []
+        self.world = existing_world
+        self.initialized = existing_world is not None
+        self.init_lock = asyncio.Lock()
+        self.op_lock = asyncio.Lock()
+        self.closed = False
+        self.aliases: WeakSet[RuntimeWorld] = WeakSet()
 
-    async def _ensure_init(self) -> AsyncWorld:
-        self._ensure_usable()
-        if self._initialized:
-            assert self._world is not None
-            return self._world
+    def bind(self, actor_ctx: ActorCtx) -> RuntimeWorld:
+        handle = RuntimeWorld(state=self, actor_ctx=actor_ctx)
+        self.aliases.add(handle)
+        self.runtime._register_handle(handle)
+        return handle
 
-        async with self._init_lock:
-            self._ensure_usable()
-            if self._initialized:
-                assert self._world is not None
-                return self._world
+    def ensure_usable(self) -> None:
+        self.runtime._ensure_open()
+        if self.closed:
+            raise RuntimeError("World handle is closed")
 
-            world = await self._runtime._container.world_service.create_world(
-                WorldConfig(name=self._name),
-                self._storage_config,
-                self._cache_config,
+    async def ensure_init(self) -> AsyncWorld:
+        self.ensure_usable()
+        if self.initialized:
+            assert self.world is not None
+            return self.world
+
+        async with self.init_lock:
+            self.ensure_usable()
+            if self.initialized:
+                assert self.world is not None
+                return self.world
+
+            world = await self.runtime._container.world_service.create_world(
+                WorldConfig(name=self.name),
+                self.storage_config,
+                self.cache_config,
             )
             if not isinstance(world, AsyncWorld):
                 raise TypeError("ArchetypeRuntime only supports AsyncWorld instances")
 
-            for proc in self._init_processors:
+            for proc in self.init_processors:
                 await world.add_processor(proc)
-            for resource in self._init_resources:
+            for resource in self.init_resources:
                 world.resources.insert(resource)
-            for event, fn in self._pending_hooks:
+            for event, fn in self.pending_hooks:
                 world.add_hook(event, fn)
 
-            self._world = world
-            self._initialized = True
+            self.world = world
+            self.initialized = True
+            self.name = world.name or self.name
 
-        assert self._world is not None
-        return self._world
+        assert self.world is not None
+        return self.world
+
+    def require_initialized_world(self) -> AsyncWorld:
+        self.ensure_usable()
+        if not self.initialized or self.world is None:
+            raise RuntimeError("World has not been activated yet")
+        return self.world
+
+    async def shutdown(self, *, from_runtime: bool) -> None:
+        async with self.op_lock:
+            if self.closed:
+                return
+            if (
+                self.initialized
+                and self.world is not None
+                and (from_runtime or not self.runtime._closed)
+            ):
+                await self.runtime._container.broker.clear(self.world.world_id)
+                await self.runtime._container.world_service.remove_world(self.world.world_id)
+            self.closed = True
+            self.world = None
+            self.initialized = False
+            for alias in list(self.aliases):
+                self.runtime._unregister_handle(alias)
+
+
+class RuntimeWorld:
+    """Lazy world handle bound to an ``ArchetypeRuntime``."""
+
+    def __init__(
+        self,
+        *,
+        state: _RuntimeWorldState,
+        actor_ctx: ActorCtx,
+    ) -> None:
+        self._state = state
+        self._actor_ctx = actor_ctx
 
     def _ensure_usable(self) -> None:
-        self._runtime._ensure_open()
-        if self._closed:
-            raise RuntimeError("World handle is closed")
+        self._state.ensure_usable()
 
     def _require_initialized_world(self) -> AsyncWorld:
-        self._ensure_usable()
-        if not self._initialized or self._world is None:
-            raise RuntimeError("World has not been activated yet")
-        return self._world
+        return self._state.require_initialized_world()
+
+    async def _submit(self, cmd: Command) -> UUID:
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            return await self._state.runtime._container.command_service.submit(
+                world.world_id,
+                cmd,
+                self._actor_ctx,
+            )
 
     async def spawn(
         self,
@@ -190,30 +242,73 @@ class RuntimeWorld:
         tick: int = 0,
         priority: int = 0,
     ) -> int:
-        async with self._op_lock:
-            world = await self._ensure_init()
-            return await self._runtime._container.command_service.submit_spawn(
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            return await self._state.runtime._container.command_service.submit_spawn(
                 world.world_id,
                 list(components),
-                self._runtime._actor_ctx,
+                self._actor_ctx,
                 tick=tick,
                 priority=priority,
             )
 
     async def despawn(self, entity_id: int, *, tick: int = 0, priority: int = 0) -> UUID:
-        async with self._op_lock:
-            world = await self._ensure_init()
-            cmd = Command(
+        return await self._submit(
+            Command(
                 type=CommandType.DESPAWN,
                 tick=tick,
                 priority=priority,
                 payload={"entity_id": entity_id},
             )
-            return await self._runtime._container.command_service.submit(
-                world.world_id,
-                cmd,
-                self._runtime._actor_ctx,
+        )
+
+    async def update(
+        self,
+        entity_id: int,
+        *components: Component,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return await self._submit(
+            Command(
+                type=CommandType.UPDATE,
+                tick=tick,
+                priority=priority,
+                payload={"entity_id": entity_id, "components": list(components)},
             )
+        )
+
+    async def add_components(
+        self,
+        entity_id: int,
+        *components: Component,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return await self._submit(
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                tick=tick,
+                priority=priority,
+                payload={"entity_id": entity_id, "components": list(components)},
+            )
+        )
+
+    async def remove_components(
+        self,
+        entity_id: int,
+        *component_types: type[Component],
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return await self._submit(
+            Command(
+                type=CommandType.REMOVE_COMPONENT,
+                tick=tick,
+                priority=priority,
+                payload={"entity_id": entity_id, "component_types": list(component_types)},
+            )
+        )
 
     async def add_processor(
         self,
@@ -222,19 +317,14 @@ class RuntimeWorld:
         tick: int = 0,
         priority: int = 0,
     ) -> UUID:
-        async with self._op_lock:
-            world = await self._ensure_init()
-            cmd = Command(
+        return await self._submit(
+            Command(
                 type=CommandType.ADD_PROCESSOR,
                 tick=tick,
                 priority=priority,
                 payload={"processor": processor},
             )
-            return await self._runtime._container.command_service.submit(
-                world.world_id,
-                cmd,
-                self._runtime._actor_ctx,
-            )
+        )
 
     async def remove_processor(
         self,
@@ -243,19 +333,14 @@ class RuntimeWorld:
         tick: int = 0,
         priority: int = 0,
     ) -> UUID:
-        async with self._op_lock:
-            world = await self._ensure_init()
-            cmd = Command(
+        return await self._submit(
+            Command(
                 type=CommandType.REMOVE_PROCESSOR,
                 tick=tick,
                 priority=priority,
                 payload={"processor_type": processor_type},
             )
-            return await self._runtime._container.command_service.submit(
-                world.world_id,
-                cmd,
-                self._runtime._actor_ctx,
-            )
+        )
 
     async def step(
         self,
@@ -264,10 +349,10 @@ class RuntimeWorld:
         config: RunConfig | None = None,
         **input_kwargs: Any,
     ) -> int:
-        async with self._op_lock:
-            world = await self._ensure_init()
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
             run_config = config or RunConfig(num_steps=1, debug=debug)
-            return await self._runtime._container.simulation_service.step(
+            return await self._state.runtime._container.simulation_service.step(
                 world.world_id,
                 run_config,
                 **input_kwargs,
@@ -281,10 +366,10 @@ class RuntimeWorld:
         config: RunConfig | None = None,
         **input_kwargs: Any,
     ) -> RunResult:
-        async with self._op_lock:
-            world = await self._ensure_init()
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
             run_config = config or RunConfig(num_steps=steps, debug=debug)
-            return await self._runtime._container.simulation_service.run(
+            return await self._state.runtime._container.simulation_service.run(
                 world.world_id,
                 run_config,
                 **input_kwargs,
@@ -295,9 +380,17 @@ class RuntimeWorld:
         *component_types: type[Component],
         entity_ids: list[int] | None = None,
     ):
-        async with self._op_lock:
-            world = await self._ensure_init()
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
             return await world.get_components(list(component_types), entity_ids=entity_ids)
+
+    async def command_history(self, *, limit: int = 100) -> list[Command]:
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            return await self._state.runtime._container.query_service.get_command_history(
+                world.world_id,
+                limit=limit,
+            )
 
     async def fork(
         self,
@@ -306,9 +399,9 @@ class RuntimeWorld:
         storage: str | Path | StorageConfig | None = None,
         cache: CacheConfig | None = None,
     ) -> RuntimeWorld:
-        async with self._op_lock:
-            world = await self._ensure_init()
-            forked = await self._runtime._container.world_service.fork_world(
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            forked = await self._state.runtime._container.world_service.fork_world(
                 world.world_id,
                 name,
                 _coerce_storage_config(storage),
@@ -316,31 +409,36 @@ class RuntimeWorld:
             )
             if not isinstance(forked, AsyncWorld):
                 raise TypeError("ArchetypeRuntime only supports AsyncWorld forks")
-            handle = RuntimeWorld(
-                runtime=self._runtime,
+            state = _RuntimeWorldState(
+                runtime=self._state.runtime,
                 name=name or forked.name or "fork",
                 storage=storage,
                 cache=cache,
                 existing_world=forked,
             )
-            self._runtime._register_handle(handle)
-            return handle
+            return state.bind(self._actor_ctx)
+
+    def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
+        self._ensure_usable()
+        return self._state.bind(actor_ctx)
 
     def add_hook(self, event: str, fn: HookFn) -> None:
-        world = self._world
-        if self._initialized and world is not None:
+        self._ensure_usable()
+        world = self._state.world
+        if self._state.initialized and world is not None:
             world.add_hook(event, fn)
             return
-        self._pending_hooks.append((event, fn))
+        self._state.pending_hooks.append((event, fn))
 
     def remove_hook(self, event: str, fn: HookFn) -> None:
-        world = self._world
-        if self._initialized and world is not None:
+        self._ensure_usable()
+        world = self._state.world
+        if self._state.initialized and world is not None:
             world.remove_hook(event, fn)
             return
-        self._pending_hooks = [
+        self._state.pending_hooks = [
             (pending_event, pending_fn)
-            for pending_event, pending_fn in self._pending_hooks
+            for pending_event, pending_fn in self._state.pending_hooks
             if pending_event != event or pending_fn is not fn
         ]
 
@@ -348,20 +446,7 @@ class RuntimeWorld:
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        async with self._op_lock:
-            if self._closed:
-                return
-            if (
-                self._initialized
-                and self._world is not None
-                and (from_runtime or not self._runtime._closed)
-            ):
-                await self._runtime._container.broker.clear(self._world.world_id)
-                await self._runtime._container.world_service.remove_world(self._world.world_id)
-            self._closed = True
-            self._world = None
-            self._initialized = False
-            self._runtime._unregister_handle(self)
+        await self._state.shutdown(from_runtime=from_runtime)
 
     @property
     def world_id(self) -> UUID:
@@ -373,9 +458,9 @@ class RuntimeWorld:
 
     @property
     def name(self) -> str | None:
-        if self._initialized and self._world is not None:
-            return self._world.name
-        return self._name
+        if self._state.initialized and self._state.world is not None:
+            return self._state.world.name
+        return self._state.name
 
     @property
     def resources(self) -> Resources:
@@ -453,6 +538,44 @@ class SyncRuntimeWorld:
     def despawn(self, entity_id: int, *, tick: int = 0, priority: int = 0) -> UUID:
         return self._run(lambda: self._world.despawn(entity_id, tick=tick, priority=priority))
 
+    def update(
+        self,
+        entity_id: int,
+        *components: Component,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return self._run(
+            lambda: self._world.update(entity_id, *components, tick=tick, priority=priority)
+        )
+
+    def add_components(
+        self,
+        entity_id: int,
+        *components: Component,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return self._run(
+            lambda: self._world.add_components(entity_id, *components, tick=tick, priority=priority)
+        )
+
+    def remove_components(
+        self,
+        entity_id: int,
+        *component_types: type[Component],
+        tick: int = 0,
+        priority: int = 0,
+    ) -> UUID:
+        return self._run(
+            lambda: self._world.remove_components(
+                entity_id,
+                *component_types,
+                tick=tick,
+                priority=priority,
+            )
+        )
+
     def add_processor(
         self,
         processor: AsyncProcessor,
@@ -489,6 +612,9 @@ class SyncRuntimeWorld:
     def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
         return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
 
+    def command_history(self, *, limit: int = 100) -> list[Command]:
+        return self._run(lambda: self._world.command_history(limit=limit))
+
     def fork(
         self,
         name: str | None = None,
@@ -500,6 +626,9 @@ class SyncRuntimeWorld:
             self._run(lambda: self._world.fork(name, storage=storage, cache=cache)),
             self._runtime,
         )
+
+    def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
+        return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
 
     def add_hook(self, event: str, fn: HookFn) -> None:
         self._world.add_hook(event, fn)

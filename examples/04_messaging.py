@@ -17,13 +17,12 @@ from dataclasses import dataclass
 import daft
 from daft import DataFrame, col
 
+from archetype import ArchetypeRuntime
 from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.aio.async_system import AsyncSystem
-from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import StorageConfig
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -60,6 +59,13 @@ class SimConfig:
     max_messages_per_tick: int = 5
 
 
+@dataclass
+class BrokerChannel:
+    """Shared broker queue key for the demo."""
+
+    key: str = "messaging-demo"
+
+
 # =============================================================================
 # Processors
 # =============================================================================
@@ -82,6 +88,7 @@ class GreetingProcessor(AsyncProcessor):
     ) -> DataFrame:
         """Generate greeting messages and enqueue via broker."""
         broker = resources.require(CommandBroker)
+        channel = resources.require(BrokerChannel).key
         resources.require(SimConfig)  # validate config exists
 
         # Collect entities to process
@@ -101,7 +108,7 @@ class GreetingProcessor(AsyncProcessor):
                             "content": f"Hello from {sender['agentstate__name']}!",
                         },
                     )
-                    await broker.enqueue("demo_world", cmd)
+                    await broker.enqueue(channel, cmd)
         
         return df
 
@@ -123,10 +130,11 @@ class MessageRealizationProcessor(AsyncProcessor):
     ) -> DataFrame:
         """Drain MESSAGE commands from broker and populate inboxes."""
         broker = resources.require(CommandBroker)
+        channel = resources.require(BrokerChannel).key
         resources.require(SimConfig)  # validate config exists
 
         # Dequeue all pending MESSAGE commands
-        cmds = await broker.dequeue("demo_world", max_items=1000)
+        cmds = await broker.dequeue(channel, max_items=1000)
         message_cmds = [c for c in cmds if c.type == CommandType.MESSAGE]
         
         if not message_cmds:
@@ -208,60 +216,6 @@ class MoodProcessor(AsyncProcessor):
 
 
 # =============================================================================
-# Minimal Async Infrastructure (no persistence for this demo)
-# =============================================================================
-
-
-class InMemoryQuerier:
-    """Minimal querier that returns empty DataFrames for tick 0, or stored data."""
-    
-    def __init__(self):
-        self._store: dict[tuple, DataFrame] = {}
-    
-    async def query_archetype(self, **kwargs):
-        import pyarrow as pa
-
-        from archetype.core.archetype import Archetype
-        sig = kwargs["sig"]
-        ticks = kwargs.get("ticks", [0])
-        
-        # Return stored data if available
-        key = (sig, ticks[0] if ticks else 0)
-        if key in self._store:
-            return self._store[key]
-        
-        # Return empty DataFrame with correct schema
-        schema = Archetype.get_archetype_schema(sig)
-        return daft.from_arrow(pa.Table.from_batches([], schema=schema))
-    
-    def store(self, sig, tick, df):
-        """Store a snapshot for later queries."""
-        self._store[(sig, tick)] = df
-
-
-class InMemoryUpdater:
-    """Minimal updater that stamps tick and returns the DataFrame."""
-    
-    def __init__(self, querier: InMemoryQuerier):
-        self._querier = querier
-    
-    async def update(self, df, sig, tick, world_id, run_id):
-        # Stamp metadata
-        df = (
-            df
-            .with_column("tick", daft.lit(tick))
-            .with_column("world_id", daft.lit(str(world_id)))
-            .with_column("run_id", daft.lit(str(run_id)))
-        )
-        df_mat = df.collect()
-        
-        # Store for next tick's queries
-        self._querier.store(sig, tick, df_mat)
-        
-        return df_mat
-
-
-# =============================================================================
 # Main Demo
 # =============================================================================
 
@@ -270,101 +224,84 @@ async def main():
     print("=" * 60)
     print("Archetype Messaging Demo: Resources + MESSAGE + Hooks")
     print("=" * 60)
-    
-    # Create world
-    world_config = WorldConfig(name="demo")
-    querier = InMemoryQuerier()
-    updater = InMemoryUpdater(querier)
-    system = AsyncSystem()
-    
-    world = AsyncWorld(
-        world_config=world_config,
-        querier=querier,
-        updater=updater,
-        system=system,
-    )
-    
-    # Setup Resources
-    broker = CommandBroker()
-    config = SimConfig(greeting_boost=15.0)
-    
-    world.resources.insert(broker)
-    world.resources.insert(config)
-    
-    print(f"\n✓ Resources registered: {world.resources}")
-    
-    # Setup Hooks
-    async def on_pre_tick(world, tick, **kwargs):
-        print(f"\n→ Pre-tick {tick}: Starting processing...")
-    
-    async def on_post_tick(world, tick, **kwargs):
-        print(f"← Post-tick {tick}: Completed!")
-        # Show pending message count
-        pending = await broker.get_pending_count("demo_world")
-        print(f"   Messages pending in broker: {pending}")
-    
-    world.add_hook("pre_tick", on_pre_tick)
-    world.add_hook("post_tick", on_post_tick)
-    
-    print("✓ Hooks registered: pre_tick, post_tick")
-    
-    # Register Processors
-    await system.add_processor(MessageRealizationProcessor())
-    await system.add_processor(GreetingProcessor())
-    await system.add_processor(MoodProcessor())
-    
-    print("✓ Processors registered: MessageRealization, Greeting, Mood")
-    
-    # Create Agents
-    agents = [
-        [AgentState(name="Alice", mood="neutral", energy=100.0), Inbox(), Outbox()],
-        [AgentState(name="Bob", mood="neutral", energy=100.0), Inbox(), Outbox()],
-        [AgentState(name="Charlie", mood="neutral", energy=100.0), Inbox(), Outbox()],
-    ]
-    
-    for components in agents:
-        await world.create_entity(components)
-    
-    print(f"✓ Created {len(agents)} agents: Alice, Bob, Charlie")
-    
-    # Run simulation
-    print("\n" + "-" * 60)
-    print("Running 3 ticks...")
-    print("-" * 60)
-    
-    run_config = RunConfig(num_steps=3)
-    await world.run(run_config)
-    
-    # Show final state
-    print("\n" + "=" * 60)
-    print("Final State")
-    print("=" * 60)
-    
-    for sig, df in world._live.items():
-        print(f"\nArchetype: {[c.__name__ for c in sig]}")
-        df.select(
+
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world(
+            "demo",
+            storage=StorageConfig(uri="./archetype_data", namespace="messaging_demo"),
+            processors=[
+                MessageRealizationProcessor(),
+                GreetingProcessor(),
+                MoodProcessor(),
+            ],
+            resources=[
+                SimConfig(greeting_boost=15.0),
+                BrokerChannel(),
+            ],
+        )
+
+        async def on_pre_tick(world, tick, **kwargs):
+            print(f"\n→ Pre-tick {tick}: Starting processing...")
+
+        async def on_post_tick(world, tick, **kwargs):
+            print(f"← Post-tick {tick}: Completed!")
+            broker = world.resources.require(CommandBroker)
+            channel = world.resources.require(BrokerChannel).key
+            pending = await broker.get_pending_count(channel)
+            print(f"   Messages pending in broker: {pending}")
+
+        world.add_hook("pre_tick", on_pre_tick)
+        world.add_hook("post_tick", on_post_tick)
+
+        print("\n✓ Runtime world staged with resources, hooks, and processors")
+
+        for name in ("Alice", "Bob", "Charlie"):
+            await world.spawn(AgentState(name=name), Inbox(), Outbox())
+
+        print("✓ Created 3 agents: Alice, Bob, Charlie")
+
+        print("\n" + "-" * 60)
+        print("Running 3 ticks...")
+        print("-" * 60)
+        await world.run(steps=3)
+
+        print("\n" + "=" * 60)
+        print("Final State")
+        print("=" * 60)
+
+        final_df = await world.query(AgentState, Inbox)
+        final_df.select(
             "entity_id",
             "agentstate__name",
             "agentstate__mood",
             "agentstate__energy",
         ).show()
-        
-        # Show message counts
-        rows = df.select("entity_id", "agentstate__name", "inbox__messages").collect().to_pylist()
-        print("\n  Message counts:")
+
+        rows = final_df.select(
+            "entity_id",
+            "agentstate__name",
+            "inbox__messages",
+        ).collect().to_pylist()
+        print("\nMessage counts:")
         for row in rows:
             msgs = row.get("inbox__messages") or []
-            print(f"    {row['agentstate__name']}: {len(msgs)} messages received")
-    
-    # Show message history
-    print("\n" + "-" * 60)
-    print("Broker Message History (last 10)")
-    print("-" * 60)
-    history = await broker.get_history("demo_world", limit=10)
-    for cmd in history[-10:]:
-        if cmd.type == CommandType.MESSAGE:
-            content = cmd.payload['content'][:25] + "..." if len(cmd.payload['content']) > 25 else cmd.payload['content']
-            print(f"  tick={cmd.tick}: agent {cmd.payload['sender_id']} → agent {cmd.payload['receiver_id']}: {content}")
+            print(f"  {row['agentstate__name']}: {len(msgs)} messages received")
+
+        print("\n" + "-" * 60)
+        print("Broker Message History (last 10)")
+        print("-" * 60)
+        broker = world.resources.require(CommandBroker)
+        channel = world.resources.require(BrokerChannel).key
+        history = await broker.get_history(channel, limit=10)
+        for cmd in history[-10:]:
+            if cmd.type == CommandType.MESSAGE:
+                content = cmd.payload["content"]
+                if len(content) > 25:
+                    content = content[:25] + "..."
+                print(
+                    f"  tick={cmd.tick}: agent {cmd.payload['sender_id']} "
+                    f"→ agent {cmd.payload['receiver_id']}: {content}"
+                )
 
 
 if __name__ == "__main__":
