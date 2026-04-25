@@ -49,6 +49,9 @@ world.remove_hook(handle)
 be removed later. Handles are registry-scoped, so a handle minted by one world
 cannot unregister a same-shaped hook in another world.
 
+For a complete runnable example, see
+[`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/main/examples/07_hooks.py).
+
 ## Event Catalogue
 
 | Event | Payload fields | Fires when |

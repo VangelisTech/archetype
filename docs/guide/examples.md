@@ -254,3 +254,22 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 - **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
 - **Resources**: `SamplingConfig`, `LabelingConfig` staged on `runtime.world(..., resources=[...])`
 - **Fork-based comparison**: Clone a world with `world.fork(...)`, swap config, run independently
+
+---
+
+## 7. Lifecycle Hooks
+
+Record lifecycle audit events, measure tick duration, and publish per-tick metrics without putting side effects inside processors.
+
+```bash
+uv run python examples/07_hooks.py
+```
+
+Source: [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/main/examples/07_hooks.py)
+
+**What it demonstrates:**
+
+- **Mutation audit**: `OnSpawn`, `OnDespawn`, `OnComponentAdded`, and `OnComponentRemoved`
+- **Tick telemetry**: `PreTick` starts a timer and `PostTick` computes metrics from `event.results`
+- **Hook handles**: unregister a temporary debug hook with `world.remove_hook(handle)`
+- **Boundary discipline**: hooks emit side effects; processors keep the simulation state deterministic
