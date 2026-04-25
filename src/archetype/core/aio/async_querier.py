@@ -28,7 +28,9 @@ class AsyncQueryManager(iAsyncQueryManager):
         """
         Get all archetypes that contain all of the specified component types for provided world_id and run_id.
         """
-        return await self._store.get_archetype_df(sig=sig, world_id=world_id, run_id=run_id)
+        return await self._store.get_archetype_df(
+            sig=sig, world_id=world_id, run_id=run_id, active_only=True
+        )
 
     async def query_archetype(
         self,
@@ -43,15 +45,14 @@ class AsyncQueryManager(iAsyncQueryManager):
         Queries all active entities for the provided archetype signature, world_id, run_id.
         Filters for ticks, entities, and components are provided.
         """
-        df = await self.get_archetype(sig=sig, world_id=world_id, run_id=run_id)
-        df = df.where(df["is_active"])
-
-        # Filter to active entities with ticks
-        if ticks:
-            df = df.where(df["tick"].is_in(ticks))
-
-        if entity_ids:
-            df = df.where(df["entity_id"].is_in(entity_ids))
+        df = await self._store.get_archetype_df(
+            sig=sig,
+            world_id=world_id,
+            run_id=run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            active_only=True,
+        )
 
         if components:
             a = Archetype(components)
@@ -59,6 +60,10 @@ class AsyncQueryManager(iAsyncQueryManager):
             df = df.select(*a.schema.names)
 
         return df
+
+    async def list_signatures(self) -> list[ArchetypeSignature]:
+        """Delegate to the underlying store's signature registry."""
+        return await self._store.list_signatures()
 
     async def _validate(self, sig: ArchetypeSignature, df: DataFrame):
         # No-op in baseline; validation lives in instrumentation layer

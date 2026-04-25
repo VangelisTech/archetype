@@ -138,7 +138,14 @@ class AsyncCachedStore(iAsyncStore):
     # ---------------------------------------------------
 
     async def get_archetype_df(
-        self, sig: ArchetypeSignature, world_id: str, run_id: str
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
     ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
@@ -147,7 +154,14 @@ class AsyncCachedStore(iAsyncStore):
         still in the memtable so that callers always see a coherent view of
         the sig's full history regardless of flush state.
         """
-        disk_df = await self._inner.get_archetype_df(sig, world_id, run_id)
+        disk_df = await self._inner.get_archetype_df(
+            sig,
+            world_id,
+            run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            active_only=active_only,
+        )
 
         mt = self._mem.get(sig)
         if not (mt and mt.rows):
@@ -159,7 +173,21 @@ class AsyncCachedStore(iAsyncStore):
         mem_df = mem_df.where(mem_df["world_id"] == str(world_id)).where(
             mem_df["run_id"] == str(run_id)
         )
+
+        if active_only:
+            mem_df = mem_df.where(mem_df["is_active"])
+
+        if ticks is not None:
+            mem_df = mem_df.where(mem_df["tick"].is_in(ticks))
+
+        if entity_ids is not None:
+            mem_df = mem_df.where(mem_df["entity_id"].is_in(entity_ids))
+
         return disk_df.concat(mem_df)
+
+    async def list_signatures(self) -> list[ArchetypeSignature]:
+        """Delegate to inner store."""
+        return await self._inner.list_signatures()
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """

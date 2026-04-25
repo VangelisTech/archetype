@@ -47,6 +47,7 @@ class AsyncStore(iAsyncStore):
         self.io_config = context.io_config
         self.catalog = context.catalog
         self.session = context.session
+        self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -61,10 +62,18 @@ class AsyncStore(iAsyncStore):
         except Exception as e:
             raise RuntimeError(f"Error creating table {hash_val}: {e}") from e
 
+        self._known_sigs[hash_val] = sig
         return table
 
     async def get_archetype_df(
-        self, sig: ArchetypeSignature, world_id: str, run_id: str
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
     ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
@@ -73,7 +82,24 @@ class AsyncStore(iAsyncStore):
         df: DataFrame = table.read()  # Cheap, Lazy
 
         # stored as strings; ensure filter values are strings
-        return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
+        df = df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
+
+        if active_only:
+            df = df.where(df["is_active"])
+
+        if ticks is not None:
+            df = df.where(df["tick"].is_in(ticks))
+
+        if entity_ids is not None:
+            df = df.where(df["entity_id"].is_in(entity_ids))
+
+        return df
+
+    async def list_signatures(self) -> list[ArchetypeSignature]:
+        """
+        List all archetype signatures that have been registered via _ensure_table.
+        """
+        return list(self._known_sigs.values())
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """

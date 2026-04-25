@@ -239,14 +239,6 @@ class WorldService:
         new_world._entity2sig = dict(source._entity2sig)
         new_world._next_entity_id = source._next_entity_id
 
-        # Re-stamp live snapshots with the new world_id so they stay consistent
-        # with the fork's identity (used by prefer_live_reads).
-        new_world_id_str = str(new_world.world_id)
-        new_live: dict = {}
-        for sig, df in source._live.items():
-            new_live[sig] = df.with_column("world_id", lit(new_world_id_str))
-        new_world._live = new_live
-
         # --- Copy non-broker resources (selective policy) ---
         # The broker is world-scoped governance; create_world already injected
         # the service's broker into new_world.resources.
@@ -257,14 +249,23 @@ class WorldService:
                 continue
             new_world.resources.insert(resource)
 
-        # --- Persist snapshot under the new world_id ---
-        # After step(), source.tick is the NEXT tick to process and _live holds
-        # rows stamped with (source.tick - 1). Replaying that under the new
-        # world_id lets the default store-backed reads find the forked state.
-        if source.tick > 0 and new_live:
+        # --- Replicate source's most recent committed snapshot under the new world_id ---
+        # After step(), source.tick is the NEXT tick to process and the previous
+        # tick's rows are durably in the store. Re-stamp them with the fork's
+        # world_id so default store-backed reads find the forked state.
+        if source.tick > 0:
+            new_world_id_str = str(new_world.world_id)
             persist_tick = source.tick - 1
             persist_run_id = new_world.run_id or ""
-            for sig, df in new_live.items():
+            sigs = await source.querier.list_signatures()
+            for sig in sigs:
+                df = await source.querier.query_archetype(
+                    sig=sig,
+                    world_id=source.world_id,
+                    run_id=source.run_id,
+                    ticks=[persist_tick],
+                )
+                df = df.with_column("world_id", lit(new_world_id_str))
                 await new_world.updater.update(
                     df, sig, persist_tick, new_world.world_id, persist_run_id
                 )

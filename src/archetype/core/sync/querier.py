@@ -42,28 +42,18 @@ class QueryManager(iQueryManager):
         entity_ids: list[int] | None = None,
         components: list["Component"] | None = None,
         run_config: RunConfig = None,
+        run_id: str | None = None,
     ) -> DataFrame:
         """
         Queries all active entities for the provided archetype signature, world_id, run_id.
         Filters for ticks, entities, and components are provided.
 
-        Supports traditional ecs queries like:
-        - get_archetype_for_entity
-        - get_archetype_for_tick
-        - get_archetype_for_component
-        - get_archetype_for_component_type
-        - get_archetype_for_component_type_and_tick
-        - get_archetype_for_component_type_and_tick_and_entity_id
-        - get_archetype_for_component_type_and_tick_and_entity_id_and_component_type
-        - get_component_for_entity
-        - get_component_for_tick
-        - get_component_for_component_type
-        - get_component_for_component_type_and_tick
-        - get_component_for_component_type_and_tick_and_entity_id
-        - get_component_for_component_type_and_tick_and_entity_id_and_component_type
-
+        ``run_id`` takes precedence over ``run_config.run_id`` when both are provided,
+        so callers that pin a stable run_id at the world layer can pass it through
+        without rebuilding a frozen RunConfig.
         """
-        df = self.get_archetype(sig, world_id, run_config.run_id)
+        effective_run_id = run_id if run_id is not None else run_config.run_id
+        df = self.get_archetype(sig, world_id, effective_run_id)
         df = df.where(df["is_active"])
 
         # Filter to active entities with ticks
@@ -77,9 +67,13 @@ class QueryManager(iQueryManager):
             a = Archetype(components)
             df = df.select(*a.schema.names)
 
-        if run_config.debug:
+        if run_config and run_config.debug:
             logger.info(f"Querying {Archetype.get_name(sig)} with {df.count_rows()} rows")
             df.explain()
             df.show()
 
         return df
+
+    def list_signatures(self) -> list[ArchetypeSignature]:
+        """Delegate to the underlying store's signature registry."""
+        return self._store.list_signatures()

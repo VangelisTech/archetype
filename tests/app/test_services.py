@@ -302,7 +302,7 @@ class TestSimulationService:
         assert result.commands_applied == 6
         assert result.final_tick == 9
         # Each per-tick step must receive the user's RunConfig unchanged so
-        # run_id / prefer_live_reads / debug / metadata reach world.step.
+        # run_id / debug / metadata reach world.step.
         assert sim.step.await_args_list[0].args[0] == world_id
         assert sim.step.await_args_list[0].args[1] is rc
         assert sim.step.await_args_list[0].kwargs == {"bonus": 7}
@@ -314,10 +314,10 @@ class TestSimulationService:
         """Regression for bug-simulation-service-run-discards-runconfig.
 
         ``SimulationService.run`` used to construct ``RunConfig(num_steps=1)``
-        inside its loop, dropping the user's run_id, prefer_live_reads, debug,
-        suite, trial, metadata, etc. Every per-tick step must now receive the
-        same RunConfig the caller passed in, and the world's run_id pointer
-        must be set to the user's run_id.
+        inside its loop, dropping the user's run_id, debug, suite, trial,
+        metadata, etc. Every per-tick step must now receive the same RunConfig
+        the caller passed in, and the world's run_id pointer must be set to
+        the user's run_id.
         """
         container = ServiceContainer()
         try:
@@ -334,7 +334,6 @@ class TestSimulationService:
 
             user_rc = RunConfig(
                 num_steps=3,
-                prefer_live_reads=True,
                 debug=True,
                 suite="regression",
                 trial=7,
@@ -349,7 +348,6 @@ class TestSimulationService:
             for rc in seen:
                 assert rc is user_rc
                 assert rc.run_id == user_rc.run_id
-                assert rc.prefer_live_reads is True
                 assert rc.debug is True
                 assert rc.suite == "regression"
                 assert rc.trial == 7

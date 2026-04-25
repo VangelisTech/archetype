@@ -301,9 +301,15 @@ class TestSyncWorld:
             f"cancelled entity persisted as active: {rows}"
         )
 
-        for s, live_df in world._live.items():
-            active_eids = [r["entity_id"] for r in live_df.to_pylist() if r["is_active"]]
-            assert eid not in active_eids, f"_live[{s}] kept cancelled entity {eid}"
+        for s in set(world._entity2sig.values()):
+            sig_df = world.querier.query_archetype(
+                sig=s,
+                world_id=str(world.world_id),
+                ticks=[world.tick - 1],
+                run_id=world.run_id,
+            )
+            active_eids = [r["entity_id"] for r in sig_df.collect().to_pylist()]
+            assert eid not in active_eids, f"sig {s} kept cancelled entity {eid}"
 
     def test_step_after_same_tick_spawn_remove_preserves_sibling_entity(self, tmp_path):
         from archetype.core.archetype import Archetype

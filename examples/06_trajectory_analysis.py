@@ -462,7 +462,7 @@ async def main():
             print("OPENAI_API_KEY not set; running sampling/score pipeline without LLM labeling.\n")
 
         print("Running pipeline (sample -> label -> score)...")
-        await world.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
+        await world.step(config=RunConfig(num_steps=1))
         print("  -> Pipeline completed\n")
 
         print("Results:")

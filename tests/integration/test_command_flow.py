@@ -173,7 +173,7 @@ async def test_spawn_preserves_typed_components_through_command_service(tmp_path
         await container.simulation_service.step(world.world_id, rc)
 
         # Entity should live in the (Pose, Tag) archetype — not (Component,).
-        signatures = {frozenset(sig) for sig in world._live}
+        signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
         assert frozenset({Pose, Tag}) in signatures, (
             f"SPAWN lost component type info; world archetypes = {signatures}"
         )
@@ -204,7 +204,7 @@ async def test_spawn_with_component_instances_passes_through(tmp_path):
         rc = RunConfig()
         await container.simulation_service.step(world.world_id, rc)
 
-        assert frozenset({Foo}) in {frozenset(sig) for sig in world._live}
+        assert frozenset({Foo}) in {frozenset(sig) for sig in set(world._entity2sig.values())}
     finally:
         await container.shutdown()
 
@@ -240,7 +240,7 @@ async def test_spawn_with_bare_model_dump_raises(tmp_path):
         rc = RunConfig()
         await container.simulation_service.step(world.world_id, rc)
 
-        signatures = {frozenset(sig) for sig in world._live}
+        signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
         assert frozenset({Bar}) not in signatures
     finally:
         await container.shutdown()
@@ -392,7 +392,7 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
         await container.simulation_service.step(world.world_id, rc)
 
         assert frozenset({_RemovePosition, _RemoveVelocity}) in {
-            frozenset(sig) for sig in world._live
+            frozenset(sig) for sig in set(world._entity2sig.values())
         }
         entity_id = next(
             eid

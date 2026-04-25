@@ -104,7 +104,7 @@ async def _task_poison_in_batch() -> list[GraderResult]:
             await container.simulation_service.step(world.world_id, rc)
 
             entity_count = len(world._entity2sig)
-            signatures = {frozenset(sig) for sig in world._live}
+            signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
 
             return [
                 exact_match(entity_count, 2, name="valid_commands_applied"),
@@ -176,7 +176,7 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
                 state_check(
                     {
                         "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._live) == 0,
+                        "no_archetypes": len(world._entity2sig) == 0,
                     },
                     name="world_unchanged",
                 ),
@@ -371,7 +371,7 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
                     {
                         "all_dequeued": pending == 0,
                         "no_entities_created": len(world._entity2sig) == 0,
-                        "no_archetypes": len(world._live) == 0,
+                        "no_archetypes": len(world._entity2sig) == 0,
                     },
                     name="clean_noop",
                 ),

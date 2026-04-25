@@ -415,8 +415,13 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # Verify - x should be 0 + 100 = 100
-        live_df = world._live
-        for _sig, df in live_df.items():
+        for sig in set(world._entity2sig.values()):
+            df = await world.querier.query_archetype(
+                sig=sig,
+                world_id=world.world_id,
+                run_id=world.run_id,
+                ticks=[world.tick - 1],
+            )
             rows = df.collect().to_pylist()
             assert len(rows) == 1
             assert rows[0]["position__x"] == 100
@@ -433,8 +438,13 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # x should be unchanged since no config
-        live_df = world._live
-        for _sig, df in live_df.items():
+        for sig in set(world._entity2sig.values()):
+            df = await world.querier.query_archetype(
+                sig=sig,
+                world_id=world.world_id,
+                run_id=world.run_id,
+                ticks=[world.tick - 1],
+            )
             rows = df.collect().to_pylist()
             assert len(rows) == 1
             assert rows[0]["position__x"] == 5

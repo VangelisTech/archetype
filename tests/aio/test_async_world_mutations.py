@@ -184,9 +184,15 @@ async def test_step_after_same_tick_spawn_remove_leaves_no_active_row(world, sto
     rows = [r for r in df.collect().to_pylist() if r["entity_id"] == eid]
     assert all(not r["is_active"] for r in rows), f"cancelled entity persisted as active: {rows}"
 
-    for s, live_df in world._live.items():
-        active_eids = [r["entity_id"] for r in live_df.collect().to_pylist() if r["is_active"]]
-        assert eid not in active_eids, f"_live[{s}] kept cancelled entity {eid}"
+    for s in set(world._entity2sig.values()):
+        live_df = await world.querier.query_archetype(
+            sig=s,
+            world_id=world.world_id,
+            run_id=world.run_id,
+            ticks=[world.tick - 1],
+        )
+        active_eids = [r["entity_id"] for r in live_df.collect().to_pylist()]
+        assert eid not in active_eids, f"sig {s} kept cancelled entity {eid}"
 
 
 @pytest.mark.asyncio

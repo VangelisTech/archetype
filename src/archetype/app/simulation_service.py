@@ -61,7 +61,7 @@ class SimulationService:
         """Execute ``run_config.num_steps`` ticks and return the RunResult."""
         world = self._world_service.get_world(world_id)
 
-        if hasattr(world, "run_id"):
+        if hasattr(world, "run_id") and world.run_id is None:
             world.run_id = str(run_config.run_id)
 
         total_commands = 0
