@@ -12,13 +12,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
+from urllib.parse import urlparse
+
+from daft.catalog import Catalog
+from daft.session import Session
 
 from archetype.core.aio import AsyncCachedStore, AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore, iAsyncUpdateManager
 from archetype.core.storage import AsyncLancedbStore
-
-from .storage_factory import StorageFactory
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,76 @@ class StorageService:
     def __init__(self):
         self._instances: dict[str, tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def _resolve_storage_uri(uri: str) -> tuple[str, bool]:
+        """Resolve local storage paths while preserving remote object-store URIs."""
+        scheme = urlparse(uri).scheme.lower()
+        is_remote = scheme not in ("", "file")
+
+        if is_remote:
+            return uri, True
+
+        base_path = pathlib.Path(uri)
+        if not base_path.is_absolute():
+            base_path = pathlib.Path.cwd() / base_path
+        base_path.mkdir(parents=True, exist_ok=True)
+        return str(base_path), False
+
+    @classmethod
+    def build_session(cls, config: StorageConfig) -> Session:
+        """Build the Daft session for the default catalog-backed path."""
+        _, _, session = cls.build_session_with_metadata(config)
+        return session
+
+    @classmethod
+    def build_session_with_metadata(
+        cls,
+        config: StorageConfig,
+    ) -> tuple[str, str, Session]:
+        """
+        Build Daft catalog/session resources from a storage config.
+
+        The default implementation uses Iceberg with a SQLite catalog for local
+        storage, or remote object stores (S3, GCS, etc.) with local SQLite
+        metadata.
+        """
+        from pyiceberg.catalog.sql import SqlCatalog
+
+        resolved_uri, is_remote = cls._resolve_storage_uri(str(config.uri))
+
+        if is_remote:
+            local_meta_dir = pathlib.Path(".archetype_meta")
+            local_meta_dir.mkdir(parents=True, exist_ok=True)
+            sqlite_db_path = local_meta_dir / "catalog.db"
+            warehouse_uri = str(config.uri)
+        else:
+            base_path = pathlib.Path(resolved_uri)
+            sqlite_db_path = base_path / "catalog.db"
+            warehouse_uri = f"file://{base_path}"
+
+        catalog = getattr(config, "catalog", None) or Catalog.from_iceberg(
+            SqlCatalog(
+                "archetype_iceberg_sql_catalog",
+                **{
+                    "uri": f"sqlite:///{sqlite_db_path}",
+                    "warehouse": warehouse_uri,
+                },
+            )
+        )
+
+        session = Session()
+        session.attach_catalog(catalog)
+        session.create_namespace_if_not_exists(config.namespace)
+        session.set_namespace(config.namespace)
+
+        return resolved_uri, config.namespace, session
+
+    @classmethod
+    def resolve_location(cls, config: StorageConfig) -> tuple[str, str]:
+        """Resolve storage URI and namespace without constructing a Daft session."""
+        resolved_uri, _ = cls._resolve_storage_uri(str(config.uri))
+        return resolved_uri, config.namespace
 
     async def get_backend(
         self,
@@ -89,10 +162,10 @@ class StorageService:
     ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
         store: iAsyncStore
         if storage_config.use_lancedb:
-            uri, namespace = StorageFactory.resolve_location(storage_config)
+            uri, namespace = self.resolve_location(storage_config)
             store = AsyncLancedbStore(uri, namespace)
         else:
-            store = AsyncStore(StorageFactory.build(storage_config))
+            store = AsyncStore(self.build_session(storage_config))
 
         if isinstance(cache_config, bool):
             cache_config = CacheConfig() if cache_config else None

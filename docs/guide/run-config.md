@@ -110,7 +110,7 @@ config = StorageConfig(
 | `uri` | `str \| Path` | `"./archetype_data"` | Storage location (local path or cloud URI) |
 | `namespace` | `str` | `"archetypes"` | Catalog namespace for table isolation |
 | `backend` | `StorageBackend` | `LANCEDB` | Backend engine: `LANCEDB` or `ICEBERG` |
-| `io_config` | `IOConfig?` | `None` | Legacy compatibility field; the default `StorageFactory` does not pass this separately from the Daft session/catalog context |
+| `io_config` | `IOConfig?` | `None` | Legacy compatibility field; the default `StorageService` storage builders do not pass this separately from the Daft session/catalog context |
 
 `Path` values are coerced to `str` via a field validator. See [Stores](stores.md) for backend-specific behavior.
 

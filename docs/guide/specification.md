@@ -340,7 +340,7 @@ CURRENT GAP:
 - Core stores MUST receive backend-native inputs rather than a generic runtime
   storage context.
 - The default catalog-backed path MAY construct a Daft `Session` and Daft
-  `Catalog` through `StorageFactory`.
+  `Catalog` through `StorageService`.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.

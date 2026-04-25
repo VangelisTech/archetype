@@ -20,17 +20,17 @@ backend-native core store inputs. The core stores do not interpret
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.app.storage_factory import StorageFactory
+from archetype.app.storage_service import StorageService
 
 config = StorageConfig(
     uri="./my_data",
     namespace="experiment_1",
     backend=StorageBackend.ICEBERG,
 )
-session = StorageFactory.build(config)
+session = StorageService.build_session(config)
 ```
 
-`StorageFactory.build()` is the default convenience path for catalog-backed
+`StorageService.build_session()` is the default convenience path for catalog-backed
 storage. It initializes:
 
 1. An **Iceberg SqlCatalog** backed by SQLite for metadata
@@ -126,9 +126,9 @@ The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed 
 ```text
 StorageService._create_backend(config, cache_config)
     |
-    +-- config.use_lancedb? --> StorageFactory.resolve_location(config)
+    +-- config.use_lancedb? --> StorageService.resolve_location(config)
     |                         --> AsyncLancedbStore(uri, namespace)
-    +-- else                --> StorageFactory.build(config)
+    +-- else                --> StorageService.build_session(config)
                               --> AsyncStore(session)
     |
     +-- cache_config?     --> AsyncCachedStore(store, cache_config)
@@ -176,6 +176,6 @@ Pass `CacheConfig` to `StorageService.get_backend()` or `WorldService.create_wor
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
 - Store (LanceDB): `src/archetype/core/storage/lancedb.py`
-- Storage factories: `src/archetype/app/storage_factory.py`
+- Storage service/builders: `src/archetype/app/storage_service.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
 - Storage service: `src/archetype/app/storage_service.py`

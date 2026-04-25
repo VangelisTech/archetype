@@ -121,7 +121,7 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
         raise AssertionError("LanceDB backend should not construct Daft/Iceberg storage")
 
     monkeypatch.setattr(
-        "archetype.app.storage_service.StorageFactory.build",
+        "archetype.app.storage_service.StorageService.build_session",
         fail_if_called,
     )
 
