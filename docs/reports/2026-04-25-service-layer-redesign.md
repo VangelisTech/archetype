@@ -153,7 +153,7 @@ The world knows its `_entity2sig`, `_next_entity_id`, run_id, etc. It owns the d
 
 ### Class diagram
 
-```
+```text
                            ┌──────────────────┐
                            │ ServiceContainer │  composition root — wires all
                            └────────┬─────────┘
@@ -314,7 +314,7 @@ Two reasonable shapes — pick one when the redesign lands.
 
 **Option A: flat (~13 files).** Easiest to navigate; matches today.
 
-```
+```text
 app/
 ├── interfaces.py            # all Protocols
 ├── container.py             # composition root
@@ -334,7 +334,7 @@ app/
 
 **Option B: grouped by concept.** Better when it grows past ~15 files.
 
-```
+```text
 app/
 ├── interfaces.py
 ├── container.py
