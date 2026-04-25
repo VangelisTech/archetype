@@ -121,7 +121,7 @@ Component mutations trigger **archetype migration**: the entity's row is marked 
 Each call to `step()` executes one simulation tick:
 
 ```text
-1. pre_tick hooks fire
+1. `PreTick` hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (from _live cache or store)
    b. Materialize deferred mutations (spawns/despawns)
@@ -129,7 +129,7 @@ Each call to `step()` executes one simulation tick:
    d. Persist updated DataFrame to store
 3. Update _live snapshots
 4. Increment tick counter
-5. post_tick hooks fire
+5. `PostTick` hooks fire
 ```
 
 ### Running Multiple Ticks
@@ -213,28 +213,36 @@ After `_move_entity` returns the new row:
 
 ## Lifecycle Hooks
 
-Register callbacks for observability or side effects:
+Worlds expose typed lifecycle hooks for observability and integration glue. The
+canonical hook API and event catalogue are documented in
+[Lifecycle Hooks](hooks.md).
+
+Hooks are registered against dataclass event types from `archetype.core.hooks`.
+`add_hook` returns an opaque `HookHandle` for removal, and handlers take a
+single `event` argument:
 
 ```python
-async def log_tick(world, tick, **kwargs):
-    print(f"Tick {tick} complete")
+from archetype.core.hooks import PostTick
 
-world.add_hook("post_tick", log_tick)
+async def log_tick(event: PostTick) -> None:
+    print(f"Tick {event.tick} complete")
+
+handle = world.add_hook(PostTick, log_tick)
+# ...later...
+world.remove_hook(handle)
 ```
 
-| Event | Arguments | When |
-|-------|-----------|------|
-| `pre_tick` | `world`, `tick` | Before any processing |
-| `post_tick` | `world`, `tick`, `results` | After all archetypes processed and `_live` updated |
-| `on_spawn` | `world`, `entity_id`, `components` | Defined but not currently fired |
-| `on_despawn` | `world`, `entity_id` | Defined but not currently fired |
+| Event | Payload fields | When |
+|-------|---------------|------|
+| `PreTick` | `world_id`, `tick` | Before any archetype runs in `step()` |
+| `PostTick` | `world_id`, `tick`, `results` | After all archetypes processed, `_live` refreshed, tick incremented |
+| `OnSpawn` | `world_id`, `entity_id`, `components` | After `create_entity` / `spawn_reserved` registers the entity |
+| `OnDespawn` | `world_id`, `entity_id` | After `remove_entity` cancels a pending spawn or queues a despawn row |
+| `OnComponentAdded` | `world_id`, `entity_id`, `components` | After `add_components` moves the entity to a new archetype |
+| `OnComponentRemoved` | `world_id`, `entity_id`, `component_types` | After `remove_components` moves the entity to a new archetype |
 
-**Notes:**
-
-- Hook errors are logged but do not halt the tick.
-- `post_tick` fires after `_live` is updated and the tick counter is incremented. The `tick` argument is the new (incremented) value.
-- `on_spawn` and `on_despawn` hooks are registered in the hook infrastructure but are not fired by `create_entity()` or `remove_entity()`. Spawns and despawns are deferred to materialization, which operates on batch DataFrames rather than individual entities.
-- The `WorldService` attaches a `post_tick` hook for registry sync when a `WorldRegistry` is configured. This hook writes the updated tick to the registry after each step.
+Payloads carry `world_id: UUID`, not the `AsyncWorld` instance itself. Handler
+exceptions are logged at warning level and do not halt the tick.
 
 ## Querying State
 

@@ -1,4 +1,6 @@
 import asyncio
+import json
+import logging
 
 import pytest
 import pytest_asyncio
@@ -250,6 +252,41 @@ async def test_run_config_debug_propagates_to_processor(store_backend):
     assert probe.received_debug == [True], (
         f"debug=True from RunConfig was not forwarded: {probe.received_debug}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_config_debug_logs_step_lifecycle_via_hooks(store_backend, caplog):
+    querier = AsyncQueryManager(store_backend)
+    updater = AsyncUpdateManager(store_backend)
+    system = AsyncSystem()
+    wcfg = WorldConfig(name="debughooks")
+    w = AsyncWorld(wcfg, querier, updater, system)
+
+    await w.add_processor(DebugProbe())
+    _ = await w.create_entity([Position(x=1, y=1)])
+
+    caplog.set_level(logging.DEBUG, logger="archetype.core.aio.async_world")
+    await w.run(RunConfig(num_steps=1, debug=True))
+    await w.run(RunConfig(num_steps=1, debug=False))
+
+    payloads = [
+        json.loads(record.message.removeprefix("[archetype] "))
+        for record in caplog.records
+        if record.name == "archetype.core.aio.async_world"
+        and record.message.startswith("[archetype] ")
+    ]
+
+    assert [payload["event"] for payload in payloads] == [
+        "tick_start",
+        "archetypes_processing",
+        "tick_end",
+    ]
+    assert payloads[0]["tick"] == 0
+    assert payloads[0]["active_entities"] == 1
+    assert payloads[0]["spawn_pending"] == 1
+    assert payloads[1]["count"] == 1
+    assert payloads[2]["tick"] == 1
+    assert payloads[2]["live_entities"] == 1
 
 
 @pytest.mark.asyncio

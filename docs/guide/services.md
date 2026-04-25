@@ -55,7 +55,7 @@ container = ServiceContainer(registry_path="./worlds.json")
 
 `WorldRegistry` stores a JSON array of world entries (world_id, name, storage_uri, namespace, tick). On startup, `WorldService.discover_worlds()` rehydrates each entry through `create_world()`, restoring tick counters from the registry.
 
-A `post_tick` hook is automatically attached to each world to keep the registry tick in sync. The hook captures the entry in a closure so each tick writes without read-modify-write races.
+A typed `PostTick` hook is automatically attached to each world to keep the registry tick in sync. The hook captures the entry in a closure so each tick writes without read-modify-write races. See [Lifecycle Hooks](hooks.md) for hook semantics.
 
 ## StorageService
 
@@ -90,7 +90,7 @@ Idempotent -- if a world with the given `world_id` already exists, returns the e
 2. Injects the `CommandBroker` into `world.resources` so processors can submit commands
 3. Registers the world by ID and name
 4. Persists the entry to the registry (if configured)
-5. Attaches a `post_tick` hook for registry sync
+5. Attaches a `PostTick` hook for registry sync
 
 ### fork_world
 

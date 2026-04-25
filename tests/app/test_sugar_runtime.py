@@ -202,10 +202,12 @@ async def test_runtime_world_activation_applies_staged_processors_resources_and_
             resources=[Delta(3.0)],
         )
 
-        async def on_post_tick(*, tick, **kwargs):
-            hook_ticks.append(tick)
+        from archetype.core.hooks import PostTick
 
-        world.add_hook("post_tick", on_post_tick)
+        async def on_post_tick(event: PostTick) -> None:
+            hook_ticks.append(event.tick)
+
+        world.add_hook(PostTick, on_post_tick)
 
         entity_id = await world.spawn(Position(x=2.0, y=0.0))
         await world.step()
@@ -786,10 +788,12 @@ async def test_runtime_world_resource_mutation_does_not_generate_broker_history(
 
 @pytest.mark.asyncio
 async def test_runtime_world_hook_mutation_does_not_generate_broker_history(tmp_path):
+    from archetype.core.hooks import PostTick
+
     hook_ticks: list[int] = []
 
-    async def on_post_tick(*, tick, **kwargs):
-        hook_ticks.append(tick)
+    async def on_post_tick(event: PostTick) -> None:
+        hook_ticks.append(event.tick)
 
     async with ArchetypeRuntime() as app:
         world = app.world(
@@ -799,8 +803,8 @@ async def test_runtime_world_hook_mutation_does_not_generate_broker_history(tmp_
 
         await world.query(Position)
         before = await world.command_history()
-        world.add_hook("post_tick", on_post_tick)
-        world.remove_hook("post_tick", on_post_tick)
+        handle = world.add_hook(PostTick, on_post_tick)
+        world.remove_hook(handle)
         after = await world.command_history()
 
         assert before == []

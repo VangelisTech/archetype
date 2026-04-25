@@ -35,6 +35,7 @@ nav:
       - Processors: guide/processors.md
       - Systems: guide/system-execution.md
       - Worlds: guide/worlds.md
+      - Lifecycle Hooks: guide/hooks.md
       - Resources: guide/resources.md
       - Stores: guide/stores.md
       - Querier: guide/querier.md

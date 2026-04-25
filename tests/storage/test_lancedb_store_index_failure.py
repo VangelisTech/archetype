@@ -24,6 +24,9 @@ class IndexFailClient:
     def __init__(self):
         self._tables = {}
 
+    async def list_tables(self):
+        return []
+
     async def table_names(self):
         return []
 

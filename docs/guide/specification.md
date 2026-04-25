@@ -239,7 +239,7 @@ A world owns:
 
 One tick MUST follow this order:
 
-1. fire `pre_tick` hooks
+1. fire `PreTick` hooks
 2. determine active signatures from live state plus staged mutations
 3. for each signature:
    - load previous state
@@ -248,7 +248,7 @@ One tick MUST follow this order:
    - persist through the updater
 4. replace the live snapshot with active rows only
 5. increment the world tick
-6. fire `post_tick` hooks
+6. fire `PostTick` hooks
 
 ### Previous-state reads
 
@@ -316,17 +316,14 @@ CURRENT GAP:
 
 ## Lifecycle Hook Contracts
 
-- `pre_tick` and `post_tick` are observability hooks, not transactional
+- `PreTick` and `PostTick` are observability hooks, not transactional
   mutation hooks.
 - Hook execution order relative to the tick lifecycle MUST remain stable.
 - Hook failures SHOULD be logged and suppressed unless a future opt-in
   fail-fast mode is added.
 - Hook removal SHOULD be idempotent.
-
-CURRENT GAP:
-
-- Documentation mentions `on_spawn` and `on_despawn`, but the async world does
-  not currently fire them. The docs and implementation should be aligned.
+- Spawn, despawn, and component migration hooks SHOULD fire from every public
+  mutation path that queues the corresponding mutation.
 
 ## Application Layer Contracts
 

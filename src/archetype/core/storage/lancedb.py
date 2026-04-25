@@ -119,11 +119,15 @@ class AsyncLancedbStore(iAsyncStore):
 
     async def _list_table_names(self) -> list[str]:
         """List table names using the modern LanceDB API when available."""
-        assert self.lancedb is not None
+        if self.lancedb is None:
+            return []
 
         list_tables = getattr(self.lancedb, "list_tables", None)
         if list_tables is not None:
-            return list(await list_tables())
+            response = await list_tables()
+            if hasattr(response, "tables"):
+                return list(response.tables)
+            return list(response)
 
         return list(await self.lancedb.table_names())
 

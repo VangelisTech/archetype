@@ -25,6 +25,7 @@ from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.hooks import HookEvent, OnDespawn, OnSpawn, PostTick, PreTick
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -219,75 +220,85 @@ class TestResources:
 
 
 class TestHooks:
-    """Tests for lifecycle hooks."""
+    """Tests for typed lifecycle hooks."""
+
+    def test_hook_events_share_nominal_base_type(self, world):
+        """Concrete events inherit from HookEvent rather than a union alias."""
+        event = PreTick(world_id=world.world_id, tick=0)
+
+        assert isinstance(event, HookEvent)
+        assert issubclass(PreTick, HookEvent)
 
     @pytest.mark.asyncio
     async def test_pre_tick_hook_fires(self, world):
-        """pre_tick hook fires before processing."""
-        events = []
+        """PreTick fires before processing with the current tick."""
+        events: list[PreTick] = []
 
-        async def on_pre_tick(world, tick, **kwargs):
-            events.append(("pre_tick", tick))
+        async def on_pre_tick(event: PreTick) -> None:
+            events.append(event)
 
-        world.add_hook("pre_tick", on_pre_tick)
+        world.add_hook(PreTick, on_pre_tick)
         await world.create_entity([Position(x=1, y=2)])
 
         rc = RunConfig(num_steps=1)
         await world.run(rc)
 
-        assert ("pre_tick", 0) in events
+        assert len(events) == 1
+        assert events[0].tick == 0
+        assert events[0].world_id == world.world_id
 
     @pytest.mark.asyncio
     async def test_post_tick_hook_fires(self, world):
-        """post_tick hook fires after processing."""
-        events = []
+        """PostTick fires with the incremented tick and the live results."""
+        events: list[PostTick] = []
 
-        async def on_post_tick(world, tick, **kwargs):
-            events.append(("post_tick", tick))
+        async def on_post_tick(event: PostTick) -> None:
+            events.append(event)
 
-        world.add_hook("post_tick", on_post_tick)
+        world.add_hook(PostTick, on_post_tick)
         await world.create_entity([Position(x=1, y=2)])
 
         rc = RunConfig(num_steps=1)
         await world.run(rc)
 
-        # post_tick fires with tick=1 (after increment)
-        assert ("post_tick", 1) in events
+        assert len(events) == 1
+        assert events[0].tick == 1
+        assert events[0].world_id == world.world_id
+        assert isinstance(events[0].results, dict)
 
     @pytest.mark.asyncio
     async def test_hook_ordering(self, world):
         """Hooks fire in correct order relative to processing."""
-        events = []
+        events: list[str] = []
 
-        async def on_pre(world, tick, **kwargs):
-            events.append(f"pre:{tick}")
+        async def on_pre(event: PreTick) -> None:
+            events.append(f"pre:{event.tick}")
 
-        async def on_post(world, tick, **kwargs):
-            events.append(f"post:{tick}")
+        async def on_post(event: PostTick) -> None:
+            events.append(f"post:{event.tick}")
 
-        world.add_hook("pre_tick", on_pre)
-        world.add_hook("post_tick", on_post)
+        world.add_hook(PreTick, on_pre)
+        world.add_hook(PostTick, on_post)
         await world.create_entity([Position(x=0, y=0)])
 
         rc = RunConfig(num_steps=2)
         await world.run(rc)
 
-        # Verify interleaved order
         assert events == ["pre:0", "post:1", "pre:1", "post:2"]
 
     @pytest.mark.asyncio
     async def test_multiple_hooks_same_event(self, world):
-        """Multiple hooks for same event all fire."""
+        """Multiple hooks for the same event type all fire."""
         counts = {"a": 0, "b": 0}
 
-        async def hook_a(**kwargs):
+        async def hook_a(event: PreTick) -> None:
             counts["a"] += 1
 
-        async def hook_b(**kwargs):
+        async def hook_b(event: PreTick) -> None:
             counts["b"] += 1
 
-        world.add_hook("pre_tick", hook_a)
-        world.add_hook("pre_tick", hook_b)
+        world.add_hook(PreTick, hook_a)
+        world.add_hook(PreTick, hook_b)
         await world.create_entity([Position()])
 
         rc = RunConfig(num_steps=1)
@@ -298,80 +309,136 @@ class TestHooks:
 
     @pytest.mark.asyncio
     async def test_remove_hook(self, world):
-        """Hooks can be removed."""
+        """Hooks can be removed via their handle."""
         count = [0]
 
-        async def counter(**kwargs):
+        async def counter(event: PreTick) -> None:
             count[0] += 1
 
-        world.add_hook("pre_tick", counter)
+        handle = world.add_hook(PreTick, counter)
         await world.create_entity([Position()])
 
         rc = RunConfig(num_steps=1)
         await world.run(rc)
         assert count[0] == 1
 
-        world.remove_hook("pre_tick", counter)
+        world.remove_hook(handle)
         await world.run(rc)
         assert count[0] == 1  # Unchanged
 
     @pytest.mark.asyncio
-    async def test_hook_error_logged_not_raised(self, world):
-        """Hook errors are logged but don't crash the world."""
+    async def test_remove_hook_is_idempotent(self, world):
+        """Removing the same handle twice does not raise."""
 
-        async def bad_hook(**kwargs):
+        async def noop(event: PreTick) -> None:
+            pass
+
+        handle = world.add_hook(PreTick, noop)
+        world.remove_hook(handle)
+        world.remove_hook(handle)  # no-op second call
+
+    @pytest.mark.asyncio
+    async def test_remove_hook_handle_is_world_local(self, world):
+        """A handle from one world must not unregister a matching hook in another."""
+
+        other_querier = InMemoryQuerier()
+        other_updater = InMemoryUpdater(other_querier)
+        other = AsyncWorld(
+            WorldConfig(name="other_world"), other_querier, other_updater, AsyncSystem()
+        )
+
+        counts = {"one": 0, "two": 0}
+
+        async def first(event: PreTick) -> None:
+            counts["one"] += 1
+
+        async def second(event: PreTick) -> None:
+            counts["two"] += 1
+
+        first_handle = world.add_hook(PreTick, first)
+        second_handle = other.add_hook(PreTick, second)
+
+        assert first_handle != second_handle
+
+        other.remove_hook(first_handle)
+        await world.create_entity([Position()])
+        await other.create_entity([Position()])
+        await world.run(RunConfig(num_steps=1))
+        await other.run(RunConfig(num_steps=1))
+
+        assert counts == {"one": 1, "two": 1}
+
+    @pytest.mark.asyncio
+    async def test_hook_error_logged_not_raised(self, world):
+        """Hook errors are logged but don't crash the tick."""
+
+        async def bad_hook(event: PreTick) -> None:
             raise ValueError("intentional error")
 
-        world.add_hook("pre_tick", bad_hook)
+        world.add_hook(PreTick, bad_hook)
         await world.create_entity([Position()])
 
         rc = RunConfig(num_steps=1)
-        # Should not raise
-        await world.run(rc)
+        await world.run(rc)  # should not raise
         assert world.tick == 1
 
     @pytest.mark.asyncio
     async def test_on_spawn_hook_fires_when_entity_created(self, world):
-        """on_spawn hook fires on create_entity with entity_id and components."""
-        events: list[dict] = []
+        """OnSpawn fires from create_entity with entity_id and components."""
+        events: list[OnSpawn] = []
 
-        async def on_spawn(**kwargs):
-            events.append(kwargs)
+        async def on_spawn(event: OnSpawn) -> None:
+            events.append(event)
 
-        world.add_hook("on_spawn", on_spawn)
+        world.add_hook(OnSpawn, on_spawn)
         components = [Position(x=1, y=2)]
         eid = await world.create_entity(components)
 
         assert len(events) == 1
-        assert events[0]["entity_id"] == eid
-        assert events[0]["world"] is world
-        assert events[0]["components"] == components
+        assert events[0].entity_id == eid
+        assert events[0].world_id == world.world_id
+        assert events[0].components == components
+
+    @pytest.mark.asyncio
+    async def test_on_spawn_hook_fires_from_spawn_reserved(self, world):
+        """OnSpawn also fires from the reserved-id spawn path used by CommandService."""
+        events: list[OnSpawn] = []
+
+        async def on_spawn(event: OnSpawn) -> None:
+            events.append(event)
+
+        world.add_hook(OnSpawn, on_spawn)
+        await world.spawn_reserved(42, [Position(x=3, y=4)])
+
+        assert len(events) == 1
+        assert events[0].entity_id == 42
+        assert events[0].components[0].x == 3
 
     @pytest.mark.asyncio
     async def test_on_despawn_hook_fires_when_entity_removed(self, world):
-        """on_despawn hook fires on remove_entity with entity_id."""
-        events: list[dict] = []
+        """OnDespawn fires from remove_entity with entity_id."""
+        events: list[OnDespawn] = []
 
-        async def on_despawn(**kwargs):
-            events.append(kwargs)
+        async def on_despawn(event: OnDespawn) -> None:
+            events.append(event)
 
         eid = await world.create_entity([Position(x=1, y=2)])
-        world.add_hook("on_despawn", on_despawn)
+        world.add_hook(OnDespawn, on_despawn)
         await world.remove_entity(eid)
 
         assert len(events) == 1
-        assert events[0]["entity_id"] == eid
-        assert events[0]["world"] is world
+        assert events[0].entity_id == eid
+        assert events[0].world_id == world.world_id
 
     @pytest.mark.asyncio
     async def test_on_despawn_hook_skips_unknown_entity(self, world):
-        """on_despawn hook does not fire when remove_entity targets an unknown id."""
-        events: list[dict] = []
+        """OnDespawn does not fire when remove_entity targets an unknown id."""
+        events: list[OnDespawn] = []
 
-        async def on_despawn(**kwargs):
-            events.append(kwargs)
+        async def on_despawn(event: OnDespawn) -> None:
+            events.append(event)
 
-        world.add_hook("on_despawn", on_despawn)
+        world.add_hook(OnDespawn, on_despawn)
         await world.remove_entity(9999)
 
         assert events == []
@@ -582,11 +649,11 @@ class TestIntegration:
         # Track hook invocations
         hook_data = []
 
-        async def track_post_tick(world, tick, **kwargs):
+        async def track_post_tick(event: PostTick) -> None:
             pending = await broker.get_pending_count("integration_world")
-            hook_data.append({"tick": tick, "pending": pending})
+            hook_data.append({"tick": event.tick, "pending": pending})
 
-        world.add_hook("post_tick", track_post_tick)
+        world.add_hook(PostTick, track_post_tick)
         await system.add_processor(MessageSenderProcessor())
         await world.create_entity([Position(x=0, y=0)])
 

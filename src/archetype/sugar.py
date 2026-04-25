@@ -11,9 +11,10 @@ changing the existing top-level ``World`` and ``Processor`` exports.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeVar
 from weakref import WeakSet
 
 from uuid_utils import UUID, uuid7
@@ -24,9 +25,11 @@ from archetype.app.models import Command, CommandType, RunResult
 from archetype.core.aio import AsyncProcessor, AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import AsyncHookHandler, HookEvent, HookHandle
 from archetype.core.resources import Resources
 
-HookFn = Callable[..., Awaitable[None]]
+_HookEventT = TypeVar("_HookEventT", bound=HookEvent)
+_FireMode = Literal["blocking", "spawn"]
 
 
 def _default_actor_ctx() -> ActorCtx:
@@ -132,7 +135,15 @@ class _RuntimeWorldState:
         self.cache_config = cache
         self.init_processors = list(processors or [])
         self.init_resources = list(resources or [])
-        self.pending_hooks: list[tuple[str, HookFn]] = []
+        # Hooks added before the world materializes are tracked locally; a
+        # sugar-scoped handle is minted immediately so callers can remove_hook()
+        # even pre-init. Once materialized, handles map to real world handles.
+        self.pending_hooks: list[
+            tuple[HookHandle, type[HookEvent], AsyncHookHandler, _FireMode]
+        ] = []
+        self.handle_map: dict[HookHandle, HookHandle] = {}
+        self.sugar_hook_ids = itertools.count(1)
+        self.sugar_hook_token = object()
         self.world = existing_world
         self.initialized = existing_world is not None
         self.init_lock = asyncio.Lock()
@@ -175,8 +186,9 @@ class _RuntimeWorldState:
                 await world.add_processor(proc)
             for resource in self.init_resources:
                 world.resources.insert(resource)
-            for event, fn in self.pending_hooks:
-                world.add_hook(event, fn)
+            for sugar_handle, event_type, fn, mode in self.pending_hooks:
+                self.handle_map[sugar_handle] = world.add_hook(event_type, fn, mode=mode)
+            self.pending_hooks.clear()
 
             self.world = world
             self.initialized = True
@@ -422,25 +434,33 @@ class RuntimeWorld:
         self._ensure_usable()
         return self._state.bind(actor_ctx)
 
-    def add_hook(self, event: str, fn: HookFn) -> None:
+    def add_hook(
+        self,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
+        *,
+        mode: _FireMode = "blocking",
+    ) -> HookHandle:
         self._ensure_usable()
         world = self._state.world
         if self._state.initialized and world is not None:
-            world.add_hook(event, fn)
-            return
-        self._state.pending_hooks.append((event, fn))
+            return world.add_hook(event_type, fn, mode=mode)
+        sugar_handle = HookHandle(
+            _id=next(self._state.sugar_hook_ids),
+            _event_type=event_type,
+            _registry_token=self._state.sugar_hook_token,
+        )
+        self._state.pending_hooks.append((sugar_handle, event_type, fn, mode))
+        return sugar_handle
 
-    def remove_hook(self, event: str, fn: HookFn) -> None:
+    def remove_hook(self, handle: HookHandle) -> None:
         self._ensure_usable()
         world = self._state.world
         if self._state.initialized and world is not None:
-            world.remove_hook(event, fn)
+            world_handle = self._state.handle_map.pop(handle, handle)
+            world.remove_hook(world_handle)
             return
-        self._state.pending_hooks = [
-            (pending_event, pending_fn)
-            for pending_event, pending_fn in self._state.pending_hooks
-            if pending_event != event or pending_fn is not fn
-        ]
+        self._state.pending_hooks = [row for row in self._state.pending_hooks if row[0] != handle]
 
     async def shutdown(self) -> None:
         await self._shutdown_internal(from_runtime=False)
@@ -630,11 +650,17 @@ class SyncRuntimeWorld:
     def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
         return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
 
-    def add_hook(self, event: str, fn: HookFn) -> None:
-        self._world.add_hook(event, fn)
+    def add_hook(
+        self,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
+        *,
+        mode: _FireMode = "blocking",
+    ) -> HookHandle:
+        return self._world.add_hook(event_type, fn, mode=mode)
 
-    def remove_hook(self, event: str, fn: HookFn) -> None:
-        self._world.remove_hook(event, fn)
+    def remove_hook(self, handle: HookHandle) -> None:
+        self._world.remove_hook(handle)
 
     def shutdown(self) -> None:
         self._run(lambda: self._world.shutdown())

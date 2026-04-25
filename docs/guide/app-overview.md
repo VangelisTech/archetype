@@ -133,7 +133,7 @@ To see how the layers connect, trace `archetype world create my-sim` from the CL
 6. WorldService post-creation
    → world.resources.insert(broker)    ← inject broker for processor access
    → registry.upsert(world_id, {...}) ← persist metadata
-   → world.add_hook("post_tick", _sync_tick)  ← registry sync
+   → world.add_hook(PostTick, _sync_tick)     ← registry sync
 
 7. Response
    → WorldResponse(world_id, name, tick=0)
