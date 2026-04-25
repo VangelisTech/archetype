@@ -339,8 +339,8 @@ CURRENT GAP:
   composition concerns.
 - Core stores MUST receive backend-native inputs rather than a generic runtime
   storage context.
-- The default Iceberg path MAY construct a Daft `Session` and Daft `Catalog`
-  through `DaftIcebergSessionFactory`.
+- The default catalog-backed path MAY construct a Daft `Session` and Daft
+  `Catalog` through `StorageFactory`.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.

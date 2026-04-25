@@ -18,18 +18,16 @@ def test_storage_context_remote_uri_uses_meta_dir(tmp_path, monkeypatch):
     ctx = StorageContextFactory.build(cfg)
     # Local meta dir created
     assert pathlib.Path(".archetype_meta").exists()
-    # Session/catalog initialized; namespace set
+    # Session initialized; namespace set
     assert ctx.namespace == "ns"
 
 
-def test_storage_context_unity_catalog_path(monkeypatch):
-    """When IOConfig.unity is set and extras are available, building a context should succeed. If not available, it should raise. We accept either outcome here by not asserting specific exception types."""
+def test_storage_context_accepts_legacy_io_config(monkeypatch):
+    """StorageConfig still accepts legacy io_config, but StorageContext no longer carries it separately."""
     from daft.io import IOConfig, UnityConfig
 
     io = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
     cfg = StorageConfig(uri="s3://bucket/prefix", namespace="ns", io_config=io)
-    try:
-        StorageContextFactory.build(cfg)
-    except Exception:
-        # Accept failure in environments without UC extras
-        pass
+    ctx = StorageContextFactory.build(cfg)
+    assert ctx.namespace == "ns"
+    assert not hasattr(ctx, "io_config")

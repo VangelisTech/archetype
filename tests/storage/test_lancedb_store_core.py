@@ -2,7 +2,7 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_factory import LanceDbStorageFactory
+from archetype.app.storage_factory import StorageFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -76,10 +76,10 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
 
-    uri, namespace, io_config = LanceDbStorageFactory.build(
+    uri, namespace = StorageFactory.resolve_location(
         StorageConfig(uri=str(tmp_path / "warehouse"), namespace="ns")
     )
-    store = AsyncLancedbStore(uri, namespace, io_config)
+    store = AsyncLancedbStore(uri, namespace)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
 

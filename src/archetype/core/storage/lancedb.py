@@ -19,8 +19,6 @@ from logging import getLogger
 import daft
 import lancedb
 from daft import DataFrame
-from daft.io import IOConfig
-from daft.io.object_store_options import io_config_to_storage_options
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.aio.async_querier import AsyncQueryManager
@@ -48,24 +46,18 @@ class AsyncLancedbStore(iAsyncStore):
         self,
         uri: str | object,
         namespace: str | None = None,
-        io_config: IOConfig | None = None,
     ):
-        """Initialize LanceDB storage from URI, namespace, and optional IO config."""
+        """Initialize LanceDB storage from URI and namespace."""
         if namespace is None and not isinstance(uri, str):
             legacy_storage = uri
             uri = legacy_storage.uri
             namespace = legacy_storage.namespace
-            io_config = getattr(legacy_storage, "io_config", io_config)
 
         if namespace is None:
             raise TypeError("AsyncLancedbStore requires a namespace")
 
         self.uri = uri
         self.namespace = namespace
-        self.io_config = io_config
-        self.storage_options = (
-            io_config_to_storage_options(self.io_config) if self.io_config else None
-        )
         self.lancedb = None  # Initialize lancedb connection
         self._known_sigs: dict[str, ArchetypeSignature] = {}
 
@@ -101,9 +93,6 @@ class AsyncLancedbStore(iAsyncStore):
                 async_table = await self.lancedb.create_table(
                     name=table_name,
                     schema=pyarrow_schema,
-                    storage_options=io_config_to_storage_options(self.io_config)
-                    if self.io_config
-                    else None,
                     exist_ok=True,
                 )
                 # Optional eager index creation controlled by env flags (default on)

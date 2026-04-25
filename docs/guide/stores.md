@@ -20,26 +20,26 @@ backend-native core store inputs. The core stores do not interpret
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.app.storage_factory import DaftIcebergSessionFactory
+from archetype.app.storage_factory import StorageFactory
 
 config = StorageConfig(
     uri="./my_data",
     namespace="experiment_1",
     backend=StorageBackend.ICEBERG,
 )
-session = DaftIcebergSessionFactory.build(config)
+session = StorageFactory.build(config)
 ```
 
-`DaftIcebergSessionFactory.build()` is the default convenience path for Iceberg
+`StorageFactory.build()` is the default convenience path for catalog-backed
 storage. It initializes:
 
 1. An **Iceberg SqlCatalog** backed by SQLite for metadata
 2. A **Daft Session** attached to the catalog
 3. The **namespace** (created if it doesn't exist)
 
-For LanceDB, `StorageService` passes the resolved storage URI, namespace, and
-optional `IOConfig` directly to `AsyncLancedbStore`. It does not build a Daft
-session/catalog for the LanceDB backend.
+For LanceDB, `StorageService` passes the resolved storage URI and namespace
+directly to `AsyncLancedbStore`. It does not build a Daft session/catalog for
+the LanceDB backend.
 
 ### Local vs Remote Storage
 
@@ -55,7 +55,7 @@ Remote warehouses store data in the cloud but keep catalog metadata locally in a
 | Store | Input |
 |-------|-------|
 | `AsyncStore` | Daft `Session` |
-| `AsyncLancedbStore` | resolved `uri`, `namespace`, optional `IOConfig` |
+| `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
 Legacy imports from `archetype.core.runtime.storage` remain available as
 compatibility shims for the old `StorageContext` name. New code should use the
@@ -115,7 +115,7 @@ LanceDB stores data in Lance format on the local filesystem. It is the default b
 
 The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed PyIceberg SQL catalog. It writes Parquet files and supports:
 
-- Cloud object stores (S3, GCS) via `StorageConfig.io_config`
+- Cloud object stores (S3, GCS) via the Daft session/catalog path
 - Catalog-level namespace isolation
 - Compatibility with the broader Iceberg ecosystem
 
@@ -126,9 +126,9 @@ The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed 
 ```text
 StorageService._create_backend(config, cache_config)
     |
-    +-- config.use_lancedb? --> LanceDbStorageFactory.build(config)
-    |                         --> AsyncLancedbStore(uri, namespace, io_config)
-    +-- else                --> DaftIcebergSessionFactory.build(config)
+    +-- config.use_lancedb? --> StorageFactory.resolve_location(config)
+    |                         --> AsyncLancedbStore(uri, namespace)
+    +-- else                --> StorageFactory.build(config)
                               --> AsyncStore(session)
     |
     +-- cache_config?     --> AsyncCachedStore(store, cache_config)

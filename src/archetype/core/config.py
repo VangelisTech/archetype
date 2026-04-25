@@ -40,7 +40,7 @@ class StorageConfig(BaseModel):
     Includes:
         - uri: str  - The URI location for the storage backend
         - namespace: str - The desired namespace for the catalog
-        - io_config: IOConfig - The access credentials for native I/O layers
+        - io_config: IOConfig - Legacy compatibility field for native I/O configuration
     """
 
     uri: str | Path = Field(
@@ -54,7 +54,7 @@ class StorageConfig(BaseModel):
     )
     io_config: IOConfig | None = Field(
         default=None,
-        description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.",
+        description="Legacy compatibility field for native I/O configuration.",
     )
     model_config = dict(arbitrary_types_allowed=True)
 

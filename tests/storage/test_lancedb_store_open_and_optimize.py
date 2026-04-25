@@ -2,7 +2,7 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_factory import LanceDbStorageFactory
+from archetype.app.storage_factory import StorageFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -67,10 +67,10 @@ class OpenPathClient:
 @pytest.mark.asyncio
 async def test_lancedb_open_path_no_create_called(monkeypatch, tmp_path):
     """When table exists, store should open table and avoid create/index calls."""
-    uri, namespace, io_config = LanceDbStorageFactory.build(
+    uri, namespace = StorageFactory.resolve_location(
         StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     )
-    store = AsyncLancedbStore(uri, namespace, io_config)
+    store = AsyncLancedbStore(uri, namespace)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
     schema = Archetype.get_archetype_schema(sig)
@@ -137,10 +137,10 @@ async def test_lancedb_optimize_multiple_tables(monkeypatch, tmp_path):
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
 
-    uri, namespace, io_config = LanceDbStorageFactory.build(
+    uri, namespace = StorageFactory.resolve_location(
         StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
     )
-    store = AsyncLancedbStore(uri, namespace, io_config)
+    store = AsyncLancedbStore(uri, namespace)
 
     # trigger connection init by a read OR create a table if needed
     # Create a dummy signature that will exercise _ensure_table create path with our client

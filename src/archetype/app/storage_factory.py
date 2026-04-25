@@ -14,7 +14,6 @@ import pathlib
 from urllib.parse import urlparse
 
 from daft.catalog import Catalog
-from daft.io import IOConfig
 from daft.session import Session
 
 from archetype.core.config import StorageConfig
@@ -35,24 +34,25 @@ def _resolve_storage_uri(uri: str) -> tuple[str, bool]:
     return str(base_path), False
 
 
-class DaftIcebergSessionFactory:
-    """Build the default Daft Session backed by a PyIceberg SQL catalog."""
+class StorageFactory:
+    """Build default storage runtime inputs from StorageConfig."""
 
     @staticmethod
     def build(config: StorageConfig) -> Session:
-        """Build the Daft session for the default Iceberg-backed path."""
-        _, _, session, _, _ = DaftIcebergSessionFactory.build_with_metadata(config)
+        """Build the Daft session for the default catalog-backed path."""
+        _, _, session = StorageFactory.build_with_metadata(config)
         return session
 
     @staticmethod
     def build_with_metadata(
         config: StorageConfig,
-    ) -> tuple[str, str, Session, Catalog, IOConfig | None]:
+    ) -> tuple[str, str, Session]:
         """
         Build Daft catalog/session resources from a storage config.
 
-        Uses Iceberg with a SQLite catalog for local storage, or remote object
-        stores (S3, GCS, etc.) with local SQLite metadata.
+        The default implementation uses Iceberg with a SQLite catalog for local
+        storage, or remote object stores (S3, GCS, etc.) with local SQLite
+        metadata.
         """
         from pyiceberg.catalog.sql import SqlCatalog
 
@@ -83,13 +83,10 @@ class DaftIcebergSessionFactory:
         session.create_namespace_if_not_exists(config.namespace)
         session.set_namespace(config.namespace)
 
-        return resolved_uri, config.namespace, session, catalog, config.io_config
-
-
-class LanceDbStorageFactory:
-    """Resolve LanceDB connection inputs from storage config without Daft setup."""
+        return resolved_uri, config.namespace, session
 
     @staticmethod
-    def build(config: StorageConfig) -> tuple[str, str, IOConfig | None]:
+    def resolve_location(config: StorageConfig) -> tuple[str, str]:
+        """Resolve storage URI and namespace without constructing a Daft session."""
         resolved_uri, _ = _resolve_storage_uri(str(config.uri))
-        return resolved_uri, config.namespace, config.io_config
+        return resolved_uri, config.namespace

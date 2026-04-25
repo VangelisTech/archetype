@@ -7,11 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from daft.catalog import Catalog
-from daft.io import IOConfig
 from daft.session import Session
 
-from archetype.app.storage_factory import DaftIcebergSessionFactory
+from archetype.app.storage_factory import StorageFactory
 from archetype.core.config import StorageConfig
 
 
@@ -19,35 +17,28 @@ from archetype.core.config import StorageConfig
 class StorageContext:
     """Legacy Daft/Iceberg storage context.
 
-    New code should use DaftIcebergSessionFactory to create a native Daft
-    Session for AsyncStore.
+    New code should use StorageFactory to create a native Daft Session for
+    AsyncStore.
     """
 
     uri: str
     namespace: str
     session: Session
-    catalog: Catalog
-    io_config: IOConfig | None = None
 
 
 class StorageContextFactory:
-    """Compatibility alias for DaftIcebergSessionFactory.
+    """Compatibility alias for StorageFactory.
 
-    New code should import `DaftIcebergSessionFactory` from
-    `archetype.app.storage_factory`.
+    New code should import `StorageFactory` from `archetype.app.storage_factory`.
     """
 
     @staticmethod
     def build(config: StorageConfig) -> StorageContext:
-        uri, namespace, session, catalog, io_config = DaftIcebergSessionFactory.build_with_metadata(
-            config
-        )
+        uri, namespace, session = StorageFactory.build_with_metadata(config)
         return StorageContext(
             uri=uri,
             namespace=namespace,
             session=session,
-            catalog=catalog,
-            io_config=io_config,
         )
 
 
