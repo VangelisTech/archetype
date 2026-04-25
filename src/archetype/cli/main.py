@@ -26,8 +26,6 @@ app = typer.Typer(
 )
 world_app = typer.Typer(help="World management commands")
 app.add_typer(world_app, name="world")
-chronicle_app = typer.Typer(help="Chronicle — personal archive (local, no server required)")
-app.add_typer(chronicle_app, name="chronicle")
 
 
 def _base_url() -> str:
@@ -216,78 +214,6 @@ def history(
         return
     for cmd in data:
         typer.echo(f"  [{cmd['tick']}] {cmd['type']} (priority={cmd['priority']})")
-
-
-# ── Chronicle commands (local, no server needed) ──
-
-
-@chronicle_app.command("ingest")
-def chronicle_ingest(
-    world_name: str = typer.Option("chronicle", help="World name for the chronicle"),
-    storage_uri: str = typer.Option("./archetype_data", help="Storage URI"),
-    namespace: str = typer.Option("chronicle", help="Storage namespace"),
-    claude_code_dir: str | None = typer.Option(
-        None, help="Claude Code projects dir (default: ~/.claude/projects)"
-    ),
-    claude_ai_export: str | None = typer.Option(
-        None, help="Path to claude.ai data export (dir or conversations.json)"
-    ),
-    chatgpt_export: str | None = typer.Option(
-        None, help="Path to ChatGPT data export (dir or conversations.json)"
-    ),
-    apple_photos: bool = typer.Option(
-        False, help="Ingest Apple Photos library (requires osxphotos + FDA)"
-    ),
-    apple_photos_dir: str | None = typer.Option(
-        None, help="Path to exported photos/videos folder (fallback)"
-    ),
-):
-    """Ingest chat histories, photos, and videos into a chronicle world.
-
-    Runs locally — does NOT require ``archetype serve``.
-    Each source is attempted independently; missing sources are skipped.
-    """
-    import asyncio
-
-    async def _run():
-        from archetype.app.container import ServiceContainer
-        from archetype.chronicle.loaders import ingest_all
-        from archetype.core.config import StorageConfig, WorldConfig
-
-        container = ServiceContainer()
-        try:
-            world = await container.world_service.create_world(
-                WorldConfig(name=world_name),
-                StorageConfig(uri=storage_uri, namespace=namespace),
-            )
-
-            counts = await ingest_all(
-                world,
-                claude_code_dir=claude_code_dir,
-                claude_ai_export=claude_ai_export,
-                chatgpt_export=chatgpt_export,
-                apple_photos_library=str(apple_photos_dir or "") if apple_photos else None,
-                apple_photos_dir=apple_photos_dir if not apple_photos else None,
-            )
-
-            # Materialize to storage
-            if any(counts.values()):
-                from archetype.core.config import RunConfig
-
-                await container.simulation_service.step(
-                    world.world_id,
-                    RunConfig(num_steps=1),
-                )
-
-            total = sum(counts.values())
-            typer.echo(f"\nChronicle ingest complete: {total} items")
-            for source, count in sorted(counts.items()):
-                typer.echo(f"  {source}: {count}")
-            typer.echo(f"\nWorld: {world.world_id} (name={world_name})")
-        finally:
-            await container.shutdown()
-
-    asyncio.run(_run())
 
 
 if __name__ == "__main__":

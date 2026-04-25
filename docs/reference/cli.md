@@ -116,37 +116,6 @@ archetype step <WORLD_ID>
 |------|------|----------|-------------|
 | `WORLD_ID` | text | Yes | World ID |
 
----
-
-## `archetype chronicle`
-
-Chronicle — personal archive (local, no server required)
-
-### `archetype chronicle ingest`
-
-Ingest chat histories, photos, and videos into a chronicle world.
-
-Runs locally — does NOT require ``archetype serve``.
-Each source is attempted independently; missing sources are skipped.
-
-```bash
-archetype chronicle ingest [OPTIONS]
-```
-
-**Options:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--world-name` | text | `chronicle` | World name for the chronicle |
-| `--storage-uri` | text | `./archetype_data` | Storage URI |
-| `--namespace` | text | `chronicle` | Storage namespace |
-| `--claude-code-dir` | text | — | Claude Code projects dir (default: ~/.claude/projects) |
-| `--claude-ai-export` | text | — | Path to claude.ai data export (dir or conversations.json) |
-| `--chatgpt-export` | text | — | Path to ChatGPT data export (dir or conversations.json) |
-| `--apple-photos` / `--no-apple-photos` | boolean | `False` | Ingest Apple Photos library (requires osxphotos + FDA) |
-| `--apple-photos-dir` | text | — | Path to exported photos/videos folder (fallback) |
-
----
 
 ## `archetype world`
 
