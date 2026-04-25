@@ -15,6 +15,7 @@ import logging
 import pathlib
 from urllib.parse import urlparse
 
+import daft
 from daft.catalog import Catalog
 from daft.session import Session
 
@@ -94,6 +95,9 @@ class StorageService:
                 },
             )
         )
+
+        if config.io_config is not None:
+            daft.set_planning_config(default_io_config=config.io_config)
 
         session = Session()
         session.attach_catalog(catalog)

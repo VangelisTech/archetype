@@ -22,12 +22,24 @@ def test_storage_context_remote_uri_uses_meta_dir(tmp_path, monkeypatch):
     assert ctx.namespace == "ns"
 
 
-def test_storage_context_accepts_legacy_io_config(monkeypatch):
-    """StorageConfig still accepts legacy io_config, but StorageContext no longer carries it separately."""
+def test_storage_context_applies_io_config_to_daft_planning(monkeypatch):
+    """StorageConfig.io_config is applied through Daft planning config, not carried on StorageContext."""
     from daft.io import IOConfig, UnityConfig
 
     io = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
+    seen: dict[str, IOConfig] = {}
+
+    def fake_set_planning_config(*, default_io_config=None, **kwargs):
+        seen["default_io_config"] = default_io_config
+        return None
+
+    monkeypatch.setattr(
+        "archetype.app.storage_service.daft.set_planning_config",
+        fake_set_planning_config,
+    )
+
     cfg = StorageConfig(uri="s3://bucket/prefix", namespace="ns", io_config=io)
     ctx = StorageContextFactory.build(cfg)
     assert ctx.namespace == "ns"
     assert not hasattr(ctx, "io_config")
+    assert seen["default_io_config"] is io

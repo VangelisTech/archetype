@@ -115,7 +115,7 @@ LanceDB stores data in Lance format on the local filesystem. It is the default b
 
 The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed PyIceberg SQL catalog. It writes Parquet files and supports:
 
-- Cloud object stores (S3, GCS) via the Daft session/catalog path
+- Cloud object stores (S3, GCS) via `StorageConfig.io_config`, applied as Daft's default planning `IOConfig`
 - Catalog-level namespace isolation
 - Compatibility with the broader Iceberg ecosystem
 
