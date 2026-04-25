@@ -53,6 +53,7 @@ class SyncStore(iStore):
         self.debug = debug
         self.sess = session
         self.flush_interval = None
+        self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -67,7 +68,12 @@ class SyncStore(iStore):
         except Exception as e:
             raise RuntimeError(f"Error creating table {hash_val}: {e}") from e
 
+        self._known_sigs[hash_val] = sig
         return table
+
+    def list_signatures(self) -> list[ArchetypeSignature]:
+        """List archetype signatures registered via _ensure_table."""
+        return list(self._known_sigs.values())
 
     def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """

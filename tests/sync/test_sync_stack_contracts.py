@@ -51,6 +51,17 @@ def _df_from_rows(sig, rows: list[dict]) -> DataFrame:
     return daft.from_arrow(pa.Table.from_pylist(rows, schema=schema))
 
 
+def _committed_rows(world, sig) -> list[dict]:
+    """Read the previous-tick committed rows for a signature from the store."""
+    df = world.querier.query_archetype(
+        sig=sig,
+        world_id=str(world.world_id),
+        ticks=[world.tick - 1],
+        run_id=world.run_id,
+    )
+    return df.collect().to_pylist()
+
+
 def test_sync_store_append_and_filters_world_and_run():
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     source_df = _df_from_rows(
@@ -401,12 +412,12 @@ def test_sync_world_run_materializes_spawns_and_sets_run_id(tmp_path):
 
     assert world.tick == 2
     assert world.run_id == str(rc.run_id)
-    rows = world._live[sig].collect().to_pylist()
+    rows = _committed_rows(world, sig)
     assert rows[0]["entity_id"] == entity_id
     assert rows[0]["position__x"] == 1
 
 
-def test_sync_world_prefers_live_snapshot_after_first_tick(tmp_path, monkeypatch):
+def test_sync_world_reads_previous_tick_from_store(tmp_path):
     class IncX(SyncProcessor):
         components = (Position,)
         priority = 1
@@ -414,21 +425,16 @@ def test_sync_world_prefers_live_snapshot_after_first_tick(tmp_path, monkeypatch
         def process(self, df: DataFrame, **kwargs) -> DataFrame:
             return df.with_columns({"position__x": col("position__x") + 1})
 
-    _store, querier, _updater, system, world = _make_sync_stack(tmp_path, "world_live")
+    _store, _querier, _updater, system, world = _make_sync_stack(tmp_path, "world_live")
     system.add_processor(IncX())
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     world.create_entity([Position(x=0, y=0)])
     rc = RunConfig(num_steps=1)
 
     world.step(rc)
-
-    def should_not_query(*args, **kwargs):
-        raise AssertionError("expected SyncWorld to use _live snapshot on tick > 0")
-
-    monkeypatch.setattr(querier, "query_archetype", should_not_query)
     world.step(rc)
 
-    rows = world._live[sig].collect().to_pylist()
+    rows = _committed_rows(world, sig)
     assert rows[0]["position__x"] == 2
 
 
@@ -441,14 +447,14 @@ def test_sync_world_add_and_remove_components_migrate_entity(tmp_path):
     world.add_components(entity_id, [Velocity(vx=5, vy=6)])
     world.step(rc)
     sig_with_velocity = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
-    rows = world._live[sig_with_velocity].collect().to_pylist()
+    rows = _committed_rows(world, sig_with_velocity)
     assert world._entity2sig[entity_id] == sig_with_velocity
     assert rows[0]["velocity__vx"] == 5
 
     world.remove_components(entity_id, [Velocity])
     world.step(rc)
     sig_position = Archetype.sig_from_components([Position(x=0, y=0)])
-    rows = world._live[sig_position].collect().to_pylist()
+    rows = _committed_rows(world, sig_position)
     assert world._entity2sig[entity_id] == sig_position
     assert rows[0]["position__x"] == 1
 
@@ -461,7 +467,7 @@ def test_sync_world_add_components_before_first_step_uses_pending_spawn_row(tmp_
     world.step(RunConfig(num_steps=1))
 
     sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
-    rows = world._live[sig].collect().to_pylist()
+    rows = _committed_rows(world, sig)
 
     assert len(rows) == 1
     assert rows[0]["entity_id"] == entity_id
@@ -486,7 +492,7 @@ def test_sync_world_execute_passes_resources_and_kwargs(tmp_path):
 
     world.step(RunConfig(num_steps=1), bonus=2)
 
-    rows = world._live[sig].collect().to_pylist()
+    rows = _committed_rows(world, sig)
     assert rows[0]["position__x"] == 6
 
 
@@ -510,6 +516,7 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
         entity_ids=None,
         components=None,
         run_config=rc,
+        run_id=world.run_id,
     )
 
 
@@ -535,12 +542,13 @@ def test_sync_world_update_uses_world_tick_by_default():
         WorldConfig(name="update-forward"), querier=querier, updater=updater, system=system
     )
     world.tick = 11
+    world.run_id = "pinned-run-id"
     rc = RunConfig(num_steps=1)
 
     result = world.update(df, sig, rc)
 
     assert result is updater.update.return_value
-    updater.update.assert_called_once_with(df, sig, 11, str(world.world_id), str(rc.run_id))
+    updater.update.assert_called_once_with(df, sig, 11, str(world.world_id), "pinned-run-id")
 
 
 def test_sync_world_add_processor_and_remove_processor_delegate(tmp_path):
@@ -564,4 +572,4 @@ def test_sync_world_despawn_of_last_entity_materializes_removal(tmp_path):
     world.remove_entity(entity_id)
     world.step(rc)
 
-    assert world._live[sig].collect().to_pylist() == []
+    assert _committed_rows(world, sig) == []

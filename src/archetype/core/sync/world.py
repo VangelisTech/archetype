@@ -67,14 +67,14 @@ class SyncWorld(iWorld):
         self._spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] = {}
         self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
 
-        # Live snapshot of the most recent processed DataFrame per signature (current tick)
-        self._live: dict[ArchetypeSignature, DataFrame] = {}
-
     def run(self, run_config: RunConfig, **input_kwargs):
         """
         Runs the world for the given run configuration.
         """
-        self.run_id = str(run_config.run_id)
+        # Pin run_id on first invocation; subsequent calls keep the existing
+        # run_id so cross-step reads/writes remain continuous.
+        if self.run_id is None:
+            self.run_id = str(run_config.run_id)
         for _ in range(run_config.num_steps):
             self.step(run_config, **input_kwargs)
 
@@ -101,16 +101,13 @@ class SyncWorld(iWorld):
         """
         Process a single archetype through the full pipeline.
         """
-        if self.tick > 0 and sig in self._live:
-            df = self._live[sig]
-        else:
-            df = self.query_archetype(
-                sig=sig,
-                run_config=run_config,
-                ticks=[self.tick - 1],
-                entity_ids=None,
-                components=None,
-            )
+        df = self.query_archetype(
+            sig=sig,
+            run_config=run_config,
+            ticks=[self.tick - 1],
+            entity_ids=None,
+            components=None,
+        )
 
         # 2. Materialize Mutations (Spawns/Despawns)
         df = self._materialize_mutations(df, sig, run_config)
@@ -119,10 +116,7 @@ class SyncWorld(iWorld):
         df = self.execute(df, sig, run_config, **input_kwargs)
 
         # 4. Update
-        df_mat = self.update(df, sig, run_config, self.tick)
-
-        # Save live snapshot of active entities
-        self._live[sig] = df_mat.where(col("is_active"))
+        self.update(df, sig, run_config, self.tick)
 
     # ---------------------------------------------------------------------
     #  Step Planning
@@ -197,7 +191,10 @@ class SyncWorld(iWorld):
         previous most-recent row in the OLD archetype.
         """
 
-        # 1) find the most recent row for the entity, preferring in-memory state
+        # 1) find the most recent row for the entity. Pending spawn rows take
+        # priority because they represent same-tick mutations that haven't yet
+        # been committed to the store; otherwise read the previous-tick row
+        # from durable storage.
         row_dict: dict[str, Any] | None = None
 
         pending_rows = [
@@ -205,15 +202,22 @@ class SyncWorld(iWorld):
         ]
         if pending_rows:
             row_dict = dict(pending_rows[-1])
-        elif old_sig in self._live:
-            rows = (
-                self._live[old_sig]
-                .where(col("entity_id") == entity_id)
-                .sort(col("tick"), desc=True)
-                .limit(1)
-                .to_pylist()
+        else:
+            df = self.query_archetype(
+                sig=old_sig,
+                run_config=None,
+                ticks=[self.tick - 1],
+                entity_ids=[entity_id],
+                components=None,
             )
-            if rows:
+            rows = df.to_pylist()
+            if len(rows) == 1:
+                row_dict = rows[0]
+            elif len(rows) > 1:
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration ambiguous: "
+                    f"{len(rows)} rows for entity {entity_id} at tick {self.tick - 1}"
+                )
                 row_dict = rows[0]
 
         if row_dict is None:
@@ -326,7 +330,7 @@ class SyncWorld(iWorld):
     def query_archetype(
         self,
         sig: ArchetypeSignature,
-        run_config: RunConfig,
+        run_config: RunConfig | None = None,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         components: list[Component] | None = None,
@@ -339,6 +343,7 @@ class SyncWorld(iWorld):
             entity_ids=entity_ids,
             components=components,
             run_config=run_config,
+            run_id=self.run_id,
         )
 
     def execute(
@@ -361,6 +366,4 @@ class SyncWorld(iWorld):
         tick: int | None = None,
     ) -> DataFrame:
         """Update the store with the given archetypes. Returns the stamped DataFrame."""
-        return self.updater.update(
-            df, sig, tick or self.tick, str(self.world_id), str(run_config.run_id)
-        )
+        return self.updater.update(df, sig, tick or self.tick, str(self.world_id), self.run_id)

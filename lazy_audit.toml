@@ -15,37 +15,31 @@
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 84
+line = 110
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 286
-method = "collect"
-reason = "Cross-archetype entity migration: collect a single-entity slice so the subsequent emptiness probe and row-overlay run against materialised state; migration is inherently row-oriented at the boundary."
-
-[[entries]]
-path = "src/archetype/core/aio/async_world.py"
-line = 291
+line = 278
 method = "to_pylist"
-reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
+reason = "Cross-archetype entity migration: extract the single previous-tick row as a Python dict for component overlay before re-insertion into the new archetype; row-oriented by construction (entity_ids=[id] + ticks=[T-1] yields exactly one row)."
 
 [[entries]]
 path = "src/archetype/core/storage/lancedb.py"
-line = 161
+line = 191
 method = "collect"
 reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
-line = 96
+line = 102
 method = "collect"
 reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 214
+line = 213
 method = "to_pylist"
-reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
+reason = "Cross-archetype entity migration (sync mirror of async_world): extract the previous-tick row from the store as a Python dict for component overlay before re-insertion into the new archetype."
 

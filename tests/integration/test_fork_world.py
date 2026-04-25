@@ -257,9 +257,6 @@ async def test_fork_step_both_and_verify_divergence(tmp_path):
         # Ticks advanced independently
         assert fork.tick == source_tick_before_fork + 1
         assert source.tick == source_tick_before_fork + 1
-
-        # Their live snapshots are distinct objects
-        assert fork._live is not source._live
     finally:
         await container.shutdown()
 

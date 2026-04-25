@@ -88,6 +88,10 @@ class iStore(Protocol):
         """Get the full DataFrame for an archetype signature."""
         ...
 
+    def list_signatures(self) -> list[ArchetypeSignature]:
+        """List archetype signatures registered in the catalog."""
+        ...
+
     def append(
         self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str
     ) -> None:
@@ -122,6 +126,10 @@ class iQueryManager(Protocol):
         components: list[Component] | None = None,
     ) -> DataFrame:
         """Query archetype data with optional filters."""
+        ...
+
+    def list_signatures(self) -> list[ArchetypeSignature]:
+        """List archetype signatures known to the underlying store."""
         ...
 
 
@@ -249,8 +257,16 @@ class iAsyncSystem(Protocol):
 
 class iAsyncStore(Protocol):
     async def get_archetype_df(
-        self, sig: ArchetypeSignature, world_id: str, run_id: str
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
     ) -> DataFrame: ...
+    async def list_signatures(self) -> list[ArchetypeSignature]: ...
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None: ...
     async def shutdown(self) -> None: ...
 
@@ -268,6 +284,7 @@ class iAsyncQueryManager(Protocol):
         entity_ids: list[int] | None = None,
         components: list[Component] | None = None,
     ) -> DataFrame: ...
+    async def list_signatures(self) -> list[ArchetypeSignature]: ...
 
 
 class iAsyncUpdateManager(Protocol):

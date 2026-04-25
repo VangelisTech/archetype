@@ -145,9 +145,7 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
             )
             await container.command_service.submit(str(world.world_id), cmd, ctx)
 
-        await container.simulation_service.step(
-            world.world_id, RunConfig(num_steps=1, prefer_live_reads=True)
-        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
         assert df is not None
@@ -192,9 +190,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
         )
         await container.command_service.submit(str(world.world_id), cmd, ctx)
 
-        await container.simulation_service.step(
-            world.world_id, RunConfig(num_steps=1, prefer_live_reads=True)
-        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
         assert df is not None
@@ -239,9 +235,7 @@ async def test_full_pipeline_without_llm(tmp_path):
             )
             await container.command_service.submit(str(world.world_id), cmd, ctx)
 
-        await container.simulation_service.step(
-            world.world_id, RunConfig(num_steps=1, prefer_live_reads=True)
-        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
         assert df is not None

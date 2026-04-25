@@ -110,7 +110,7 @@ class RunConfig(BaseModel):
       - debug: bool - Whether or not to enable debug mode
       - validate: bool - Whether or not to enable validation mode
 
-    TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True, prefer_live_reads=True)
+    TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True)
           and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity.
     """
 
@@ -132,10 +132,6 @@ class RunConfig(BaseModel):
     explain: bool = Field(
         default=False, description="Whether to render DataFrame logical plans in debug panels"
     )
-    prefer_live_reads: bool = Field(
-        default=False,
-        description="When True, step uses in-memory live snapshot for previous-state reads instead of querying the store",
-    )
     suite: str | None = Field(
         default=None,
         description="Optional suite/experiment label for grouping runs (e.g., benchmarks, ensembles)",
@@ -155,7 +151,6 @@ class RunConfig(BaseModel):
         cls,
         *,
         steps: int = 1,
-        prefer_live_reads: bool = True,
         debug: bool = True,
         explain: bool = False,
         show_rows: int = 5,
@@ -163,7 +158,6 @@ class RunConfig(BaseModel):
     ) -> "RunConfig":
         return cls(
             num_steps=steps,
-            prefer_live_reads=prefer_live_reads,
             debug=debug,
             explain=explain,
             show_rows=show_rows,
@@ -177,7 +171,6 @@ class RunConfig(BaseModel):
         steps: int,
         explain: bool = False,
         debug: bool = False,
-        prefer_live_reads: bool = False,
         show_rows: int = 0,
         suite: str | None = "benchmark",
         trial: int | None = None,
@@ -187,7 +180,6 @@ class RunConfig(BaseModel):
             num_steps=steps,
             explain=explain,
             debug=debug,
-            prefer_live_reads=prefer_live_reads,
             show_rows=show_rows,
             suite=suite,
             trial=trial,
@@ -201,14 +193,12 @@ class RunConfig(BaseModel):
         steps: int = 1,
         enable_validation: bool = True,
         debug: bool = True,
-        prefer_live_reads: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> "RunConfig":
         return cls(
             num_steps=steps,
             enable_validation=enable_validation,
             debug=debug,
-            prefer_live_reads=prefer_live_reads,
             metadata=metadata,
             suite="validate",
         )
