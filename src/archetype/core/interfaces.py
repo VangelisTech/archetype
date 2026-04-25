@@ -24,6 +24,13 @@ from .config import RunConfig
 
 if TYPE_CHECKING:
     from archetype.core.component import Component
+    from archetype.core.hooks import (
+        AsyncHookHandler,
+        FireMode,
+        HookEvent,
+        HookHandle,
+        SyncHookHandler,
+    )
 
 ArchetypeSignature = tuple[type["Component"], ...]
 
@@ -191,6 +198,10 @@ class iWorld(Protocol):
         """Create a new entity with the given components."""
         ...
 
+    def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
+        """Create a new entity using a pre-reserved identifier."""
+        ...
+
     def remove_entity(self, entity_id: int) -> None:
         """Mark an entity for removal."""
         ...
@@ -209,6 +220,16 @@ class iWorld(Protocol):
 
     def remove_processor(self, proc_type: type[iProcessor]) -> None:
         """Remove a processor from this world's system."""
+        ...
+
+    def add_hook(
+        self, event_type: type[HookEvent], fn: SyncHookHandler, /, *args, **kwargs
+    ) -> HookHandle:
+        """Register a lifecycle hook."""
+        ...
+
+    def remove_hook(self, handle: HookHandle) -> None:
+        """Unregister a lifecycle hook."""
         ...
 
     def query_archetype(
@@ -303,6 +324,7 @@ class iAsyncWorld(Protocol):
     @property
     def active_signatures(self) -> tuple[type[Component], ...]: ...
     async def create_entity(self, components: list[Component]) -> int: ...
+    async def spawn_reserved(self, entity_id: int, components: list[Component]) -> None: ...
     async def remove_entity(self, entity_id: int) -> None: ...
     async def add_components(self, entity_id: int, components: list[Component]) -> None: ...
     async def remove_components(
@@ -327,3 +349,11 @@ class iAsyncWorld(Protocol):
     async def update(
         self, df: DataFrame, sig: ArchetypeSignature, tick: int | None = None
     ) -> None: ...
+    def add_hook(
+        self,
+        event_type: type[HookEvent],
+        fn: AsyncHookHandler,
+        *,
+        mode: FireMode = "blocking",
+    ) -> HookHandle: ...
+    def remove_hook(self, handle: HookHandle) -> None: ...

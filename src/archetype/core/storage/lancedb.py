@@ -62,11 +62,25 @@ class AsyncLancedbStore(iAsyncStore):
             io_config_to_storage_options(self.io_config) if self.io_config else None
         )
         self.lancedb = None  # Initialize lancedb connection
-        self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     # --------------------------------------------------------------------------
     # Helper methods
     # --------------------------------------------------------------------------
+    async def _list_table_names(self) -> list[str]:
+        """Return catalog table names without using LanceDB's deprecated API."""
+        if self.lancedb is None:
+            return []
+
+        list_tables = getattr(self.lancedb, "list_tables", None)
+        if list_tables is not None:
+            response = await list_tables()
+            if hasattr(response, "tables"):
+                return list(response.tables)
+            return list(response)
+
+        # Backward compatibility for older LanceDB clients.
+        return list(await self.lancedb.table_names())
+
     async def _ensure_table(self, sig: ArchetypeSignature) -> lancedb.AsyncTable:
         """
         Ensure that the table for the given archetype signature exists in the Daft session.
@@ -88,7 +102,6 @@ class AsyncLancedbStore(iAsyncStore):
             except Exception as e:
                 raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
 
-            self._known_sigs[table_name] = sig
             return async_table
 
         else:
@@ -114,58 +127,26 @@ class AsyncLancedbStore(iAsyncStore):
                 logger.error(f"Error creating LanceDB table {table_name}: {e}")
                 raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
 
-        self._known_sigs[table_name] = sig
         return async_table
-
-    async def _list_table_names(self) -> list[str]:
-        """List table names using the modern LanceDB API when available."""
-        assert self.lancedb is not None
-
-        list_tables = getattr(self.lancedb, "list_tables", None)
-        if list_tables is not None:
-            return list(await list_tables())
-
-        return list(await self.lancedb.table_names())
 
     # ---------------------------------------------------------------------
     # Querying
     # ---------------------------------------------------------------------
     async def get_archetype_df(
-        self,
-        sig: ArchetypeSignature,
-        world_id: str,
-        run_id: str,
-        *,
-        ticks: list[int] | None = None,
-        entity_ids: list[int] | None = None,
-        active_only: bool = False,
+        self, sig: ArchetypeSignature, world_id: str, run_id: str
     ) -> DataFrame:
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
 
         try:
-            # Build filter predicate with pushdown for LanceDB indexes
-            safe_world = str(world_id).replace("'", "''")
-            safe_run = str(run_id).replace("'", "''")
-            clauses = [
-                f"world_id = '{safe_world}'",
-                f"run_id = '{safe_run}'",
-            ]
-
-            if active_only:
-                clauses.append("is_active = true")
-
-            if ticks is not None:
-                tick_list = ", ".join(str(int(t)) for t in ticks)
-                clauses.append(f"tick IN ({tick_list})")
-
-            if entity_ids is not None:
-                id_list = ", ".join(str(int(eid)) for eid in entity_ids)
-                clauses.append(f"entity_id IN ({id_list})")
-
-            where_str = " AND ".join(clauses)
-
-            filtered_arrow = await async_table.query().where(where_str).to_arrow()
+            # Query LanceDB directly; new/empty tables will simply yield empty results
+            filtered_arrow = await (
+                async_table.query()
+                .where(
+                    f"world_id = '{str(world_id)}' AND run_id = '{str(run_id)}' AND is_active = true"
+                )
+                .to_arrow()
+            )
 
             # Convert to Daft DataFrame
             df = daft.from_arrow(filtered_arrow)
@@ -175,12 +156,6 @@ class AsyncLancedbStore(iAsyncStore):
             raise e
 
         return df
-
-    async def list_signatures(self) -> list[ArchetypeSignature]:
-        """
-        List all archetype signatures that have been registered via _ensure_table.
-        """
-        return list(self._known_sigs.values())
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """

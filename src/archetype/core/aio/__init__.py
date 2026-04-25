@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from archetype.core.hooks import (
+    AsyncHookHandler,
     HookEvent,
     HookHandle,
-    HookHandler,
     OnComponentAdded,
     OnComponentRemoved,
     OnDespawn,
@@ -40,9 +40,9 @@ __all__ = [
     "AsyncSystem",
     "AsyncUpdateManager",
     "AsyncWorld",
+    "AsyncHookHandler",
     "HookEvent",
     "HookHandle",
-    "HookHandler",
     "OnComponentAdded",
     "OnComponentRemoved",
     "OnDespawn",

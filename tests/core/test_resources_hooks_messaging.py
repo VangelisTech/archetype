@@ -25,7 +25,7 @@ from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
-from archetype.core.hooks import OnDespawn, OnSpawn, PostTick, PreTick
+from archetype.core.hooks import HookEvent, OnDespawn, OnSpawn, PostTick, PreTick
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -222,6 +222,13 @@ class TestResources:
 class TestHooks:
     """Tests for typed lifecycle hooks."""
 
+    def test_hook_events_share_nominal_base_type(self, world):
+        """Concrete events inherit from HookEvent rather than a union alias."""
+        event = PreTick(world_id=world.world_id, tick=0)
+
+        assert isinstance(event, HookEvent)
+        assert issubclass(PreTick, HookEvent)
+
     @pytest.mark.asyncio
     async def test_pre_tick_hook_fires(self, world):
         """PreTick fires before processing with the current tick."""
@@ -329,6 +336,37 @@ class TestHooks:
         handle = world.add_hook(PreTick, noop)
         world.remove_hook(handle)
         world.remove_hook(handle)  # no-op second call
+
+    @pytest.mark.asyncio
+    async def test_remove_hook_handle_is_world_local(self, world):
+        """A handle from one world must not unregister a matching hook in another."""
+
+        other_querier = InMemoryQuerier()
+        other_updater = InMemoryUpdater(other_querier)
+        other = AsyncWorld(
+            WorldConfig(name="other_world"), other_querier, other_updater, AsyncSystem()
+        )
+
+        counts = {"one": 0, "two": 0}
+
+        async def first(event: PreTick) -> None:
+            counts["one"] += 1
+
+        async def second(event: PreTick) -> None:
+            counts["two"] += 1
+
+        first_handle = world.add_hook(PreTick, first)
+        second_handle = other.add_hook(PreTick, second)
+
+        assert first_handle != second_handle
+
+        other.remove_hook(first_handle)
+        await world.create_entity([Position()])
+        await other.create_entity([Position()])
+        await world.run(RunConfig(num_steps=1))
+        await other.run(RunConfig(num_steps=1))
+
+        assert counts == {"one": 1, "two": 1}
 
     @pytest.mark.asyncio
     async def test_hook_error_logged_not_raised(self, world):

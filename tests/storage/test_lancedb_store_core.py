@@ -48,6 +48,9 @@ class FakeClient:
     def __init__(self):
         self._tables = {}
 
+    async def list_tables(self):
+        return list(self._tables.keys())
+
     async def table_names(self):
         return list(self._tables.keys())
 

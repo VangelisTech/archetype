@@ -511,6 +511,31 @@ class TestSyncHooks:
         world.create_entity([Position(x=3, y=4)])
         assert len(events) == 1  # unchanged
 
+    def test_remove_hook_handle_is_world_local(self, tmp_path):
+        from archetype.core.config import RunConfig
+        from archetype.core.hooks import PreTick
+
+        world_one = _make_sync_world_with_catalog(tmp_path, "sync_world_one")
+        world_two = _make_sync_world_with_catalog(tmp_path, "sync_world_two")
+        counts = {"one": 0, "two": 0}
+
+        handle_one = world_one.add_hook(
+            PreTick, lambda e: counts.__setitem__("one", counts["one"] + 1)
+        )
+        handle_two = world_two.add_hook(
+            PreTick, lambda e: counts.__setitem__("two", counts["two"] + 1)
+        )
+
+        assert handle_one != handle_two
+
+        world_two.remove_hook(handle_one)
+        world_one.create_entity([Position(x=1, y=2)])
+        world_two.create_entity([Position(x=3, y=4)])
+        world_one.step(RunConfig(num_steps=1))
+        world_two.step(RunConfig(num_steps=1))
+
+        assert counts == {"one": 1, "two": 1}
+
     def test_hook_error_is_logged_not_raised(self, tmp_path):
         from archetype.core.config import RunConfig
         from archetype.core.hooks import PreTick

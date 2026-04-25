@@ -260,8 +260,9 @@ class MyProcessor(AsyncProcessor):
 ## Hooks: Typed Lifecycle Events (Apr 2026)
 
 Hooks are registered against typed dataclass events from
-`archetype.core.aio.hooks`. `world.add_hook` returns a `HookHandle`; pass it
-back to `remove_hook` to unregister.
+`archetype.core.hooks`. `world.add_hook` returns a `HookHandle`; pass it back
+to `remove_hook` to unregister. See `docs/guide/hooks.md` for the canonical
+architecture notes.
 
 ```python
 from archetype.core.hooks import OnSpawn, PostTick, PreTick
@@ -277,7 +278,8 @@ world.add_hook(PostTick, on_post_tick)
 world.remove_hook(handle)
 ```
 
-**Events** (all payloads carry `world_id: UUID`, never the world itself):
+**Events** (all payloads inherit from `HookEvent` and carry `world_id: UUID`,
+never the world itself):
 
 - `PreTick(tick)` — before any archetype runs
 - `PostTick(tick, results)` — after `_live` has been refreshed; `tick` is the just-completed tick
@@ -290,9 +292,10 @@ Pass `mode="spawn"` to `AsyncWorld.add_hook` to run the handler detached from
 the tick (via `asyncio.create_task`) for observability sinks that must not
 block. Handler errors are logged at WARNING and never abort the tick.
 
-**Sync parity:** `SyncWorld.add_hook` uses the same event dataclasses and
-`HookHandle` type, but takes a plain (non-async) callable and has no
-`"spawn"` mode — there is no event loop to defer to.
+**Handler types:** `AsyncWorld.add_hook` takes an `AsyncHookHandler`;
+`SyncWorld.add_hook` takes a `SyncHookHandler`. Both use the same event
+dataclasses and `HookHandle` type, but sync hooks have no `"spawn"` mode
+because there is no event loop to defer to.
 
 ---
 
@@ -402,7 +405,7 @@ context = graph.active_path()  # root → cursor, for LLM context windows
 
 ```text
 Tick N:
-  1. pre_tick hook fires (tick=N)
+  1. PreTick hook fires (tick=N)
   2. For each archetype (parallel):
      a. Query previous state (tick N-1)
      b. Materialize mutations (spawn/despawn)
@@ -410,7 +413,7 @@ Tick N:
      d. Persist to store (tick=N)
   3. Update _live snapshots
   4. Increment tick → N+1
-  5. post_tick hook fires (tick=N+1)
+  5. PostTick hook fires (tick=N+1)
 ```
 
 ---

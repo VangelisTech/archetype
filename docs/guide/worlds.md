@@ -121,7 +121,7 @@ Component mutations trigger **archetype migration**: the entity's row is marked 
 Each call to `step()` executes one simulation tick:
 
 ```text
-1. pre_tick hooks fire
+1. `PreTick` hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (from _live cache or store)
    b. Materialize deferred mutations (spawns/despawns)
@@ -129,7 +129,7 @@ Each call to `step()` executes one simulation tick:
    d. Persist updated DataFrame to store
 3. Update _live snapshots
 4. Increment tick counter
-5. post_tick hooks fire
+5. `PostTick` hooks fire
 ```
 
 ### Running Multiple Ticks
@@ -213,9 +213,13 @@ After `_move_entity` returns the new row:
 
 ## Lifecycle Hooks
 
-Hooks are registered against typed dataclass events from
-`archetype.core.aio.hooks`. `add_hook` returns an opaque `HookHandle` for
-removal, and handlers take a single `event` argument:
+Worlds expose typed lifecycle hooks for observability and integration glue. The
+canonical hook API and event catalogue are documented in
+[Lifecycle Hooks](hooks.md).
+
+Hooks are registered against dataclass event types from `archetype.core.hooks`.
+`add_hook` returns an opaque `HookHandle` for removal, and handlers take a
+single `event` argument:
 
 ```python
 from archetype.core.hooks import PostTick
@@ -237,13 +241,8 @@ world.remove_hook(handle)
 | `OnComponentAdded` | `world_id`, `entity_id`, `components` | After `add_components` moves the entity to a new archetype |
 | `OnComponentRemoved` | `world_id`, `entity_id`, `component_types` | After `remove_components` moves the entity to a new archetype |
 
-**Notes:**
-
-- Payloads carry `world_id: UUID`, not the `AsyncWorld` instance itself — handlers close over the world at registration time if they need it.
-- Handler exceptions are logged at WARNING and do not halt the tick.
-- `PostTick.tick` is the newly-incremented value (the tick that just completed is `tick - 1`).
-- Pass `mode="spawn"` to `add_hook` to run the handler detached via `asyncio.create_task` — use for observability sinks that must not block the tick.
-- The `WorldService` attaches a `PostTick` hook for registry sync when a `WorldRegistry` is configured.
+Payloads carry `world_id: UUID`, not the `AsyncWorld` instance itself. Handler
+exceptions are logged at warning level and do not halt the tick.
 
 ## Querying State
 

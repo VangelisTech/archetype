@@ -17,6 +17,9 @@ class FailingOpenClient:
     def __init__(self):
         self._tables = {"t": object()}
 
+    async def list_tables(self):
+        return ["t"]
+
     async def table_names(self):
         return ["t"]
 
@@ -42,6 +45,9 @@ class FailingAddTable:
 class FailingAddClient:
     def __init__(self):
         self._tables = {}
+
+    async def list_tables(self):
+        return []
 
     async def table_names(self):
         return []

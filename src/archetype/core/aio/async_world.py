@@ -27,10 +27,10 @@ from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.hooks import (
+    AsyncHookHandler,
     FireMode,
     HookEvent,
     HookHandle,
-    HookHandler,
     HookRegistry,
     OnComponentAdded,
     OnComponentRemoved,
@@ -77,7 +77,7 @@ class AsyncWorld(iAsyncWorld):
         self.resources = Resources()
 
         # Hooks: typed lifecycle callbacks for observability. See
-        # archetype.core.aio.hooks for the event catalogue.
+        # archetype.core.hooks for the event catalogue.
         self._hooks = HookRegistry()
 
         # Internal State
@@ -95,14 +95,14 @@ class AsyncWorld(iAsyncWorld):
     def add_hook(
         self,
         event_type: type[_HookEventT],
-        fn: HookHandler[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
         *,
         mode: FireMode = "blocking",
     ) -> HookHandle:
         """Register a handler for lifecycle events.
 
         Args:
-            event_type: One of the dataclasses in ``archetype.core.aio.hooks``
+            event_type: One of the dataclasses in ``archetype.core.hooks``
                 (``PreTick``, ``PostTick``, ``OnSpawn``, ``OnDespawn``,
                 ``OnComponentAdded``, ``OnComponentRemoved``).
             fn: An async callable taking a single ``event`` argument of the

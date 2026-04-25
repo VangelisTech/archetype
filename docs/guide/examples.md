@@ -198,7 +198,7 @@ Source: [`examples/04_messaging.py`](https://github.com/VangelisTech/archetype/b
 - **Components**: `AgentState` (name, mood, energy), `Inbox`, `Outbox`
 - **Resources**: `SimConfig` for shared parameters, `CommandBroker` for message routing
 - **Processors**: `GreetingProcessor` (sends messages), `MessageRealizationProcessor` (drains broker into inboxes), `MoodProcessor` (updates mood based on inbox)
-- **Hooks**: `pre_tick` and `post_tick` lifecycle callbacks
+- **Hooks**: `PreTick` and `PostTick` lifecycle callbacks
 
 Output:
 

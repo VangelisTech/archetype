@@ -48,6 +48,9 @@ class OpenPathClient:
     def __init__(self, name_to_table):
         self._tables = name_to_table
 
+    async def list_tables(self):
+        return list(self._tables.keys())
+
     async def table_names(self):
         return list(self._tables.keys())
 
@@ -103,6 +106,9 @@ class MultiTableClient:
             "t1": OpenOnlyTable("t1", pa.schema([pa.field("id", pa.int32())])),
             "t2": OpenOnlyTable("t2", pa.schema([pa.field("id", pa.int32())])),
         }
+
+    async def list_tables(self):
+        return list(self._tables.keys())
 
     async def table_names(self):
         return list(self._tables.keys())

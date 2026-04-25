@@ -117,12 +117,12 @@ SimulationService.step(world_id, run_config)
        |    v.   Update _live cache
        |
        b. Increment tick counter
-       c. Fire post_tick hooks
+       c. Fire `PostTick` hooks
 ```
 
 Commands applied in step 1 produce deferred mutations (spawn/despawn caches). Those mutations materialize in step 3a-ii of the same tick. Cross-archetype communication (messages, spawns targeting different archetypes) takes effect on the next tick.
 
-For full details: [Worlds](worlds.md) covers the internal tick cycle, [Data Flow](data-flow.md) covers the command pipeline, [System Execution](system-execution.md) covers processor dispatch.
+For full details: [Worlds](worlds.md) covers the internal tick cycle, [Lifecycle Hooks](hooks.md) covers typed observability events, [Data Flow](data-flow.md) covers the command pipeline, [System Execution](system-execution.md) covers processor dispatch.
 
 ## Deep Dives
 
@@ -134,7 +134,8 @@ The simulation engine. No auth awareness, no multi-world management.
 - [Components](components.md) -- Pydantic models with Arrow serialization, column prefixing, field types
 - [Processors](processors.md) -- DataFrame transforms, resource injection, LLM integration
 - [Systems](system-execution.md) -- subset rule, priority ordering, per-archetype parallelism
-- [Worlds](worlds.md) -- tick lifecycle, deferred mutations, `_live` cache, hooks, forking
+- [Worlds](worlds.md) -- tick lifecycle, deferred mutations, `_live` cache, forking
+- [Lifecycle Hooks](hooks.md) -- typed world events, async/sync handlers, hook failure policy
 - [Resources](resources.md) -- type-keyed dependency injection for world-level shared state
 - [Stores](stores.md) -- storage backends, append-only model, write-behind cache
 - [Querier](querier.md) -- filtered reads by tick, entity, and component projection
