@@ -1,0 +1,51 @@
+# Lazy-evaluation audit allowlist.
+#
+# Each entry documents an exception to Archetype's lazy execution
+# contract. .collect() and .to_pylist() force a Daft DataFrame through
+# Python memory and defeat query planning. Adding an entry here is
+# auditable: PR reviewers will challenge any new entry whose reason
+# does not name a specific technical boundary (storage write, single-row
+# migration extract, debug logging).
+#
+# Generic reasons ("needed", "for the test", "convenience") are
+# rejected automatically by scripts/check_lazy_audit.py.
+#
+# Scope: src/ only. Tests are exempt — terminal materialization at the
+# assertion boundary is expected and not part of the audited contract.
+
+[[entries]]
+path = "src/archetype/core/aio/async_store.py"
+line = 84
+method = "collect"
+reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
+
+[[entries]]
+path = "src/archetype/core/aio/async_world.py"
+line = 286
+method = "collect"
+reason = "Cross-archetype entity migration: collect a single-entity slice so the subsequent emptiness probe and row-overlay run against materialised state; migration is inherently row-oriented at the boundary."
+
+[[entries]]
+path = "src/archetype/core/aio/async_world.py"
+line = 291
+method = "to_pylist"
+reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
+
+[[entries]]
+path = "src/archetype/core/storage/lancedb.py"
+line = 161
+method = "collect"
+reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
+
+[[entries]]
+path = "src/archetype/core/sync/store.py"
+line = 96
+method = "collect"
+reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
+
+[[entries]]
+path = "src/archetype/core/sync/world.py"
+line = 214
+method = "to_pylist"
+reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
+

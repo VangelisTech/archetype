@@ -74,7 +74,7 @@ format:
 	@uv run ruff format src tests
 
 .PHONY: lint
-lint:
+lint: lazy-audit
 	@uv run ruff check src tests
 
 .PHONY: lint-fix
@@ -87,6 +87,13 @@ format-check:
 
 .PHONY: check
 check: format lint
+
+# Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
+# lazy_audit.toml. Every premature materialization is a contract exception
+# and must be justified in writing. See scripts/check_lazy_audit.py.
+.PHONY: lazy-audit
+lazy-audit:
+	@uv run python scripts/check_lazy_audit.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
