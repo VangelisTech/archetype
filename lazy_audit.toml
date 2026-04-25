@@ -15,7 +15,7 @@
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 110
+line = 106
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
@@ -27,7 +27,7 @@ reason = "Cross-archetype entity migration: extract the latest tick row as a Pyt
 
 [[entries]]
 path = "src/archetype/core/storage/lancedb.py"
-line = 195
+line = 200
 method = "collect"
 reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
 
