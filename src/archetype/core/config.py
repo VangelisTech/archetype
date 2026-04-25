@@ -40,7 +40,7 @@ class StorageConfig(BaseModel):
     Includes:
         - uri: str  - The URI location for the storage backend
         - namespace: str - The desired namespace for the catalog
-        - io_config: IOConfig - Default Daft I/O configuration for planning
+        - io_config: IOConfig - Native Daft I/O configuration for storage reads/writes
     """
 
     uri: str | Path = Field(
@@ -54,7 +54,7 @@ class StorageConfig(BaseModel):
     )
     io_config: IOConfig | None = Field(
         default=None,
-        description="Default Daft I/O configuration applied through daft.set_planning_config().",
+        description="Native Daft I/O configuration passed to Iceberg storage read/write operations.",
     )
     model_config = dict(arbitrary_types_allowed=True)
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from daft.io import IOConfig
 from daft.session import Session
 
 from archetype.app.storage_service import StorageService
@@ -24,6 +25,7 @@ class StorageContext:
     uri: str
     namespace: str
     session: Session
+    io_config: IOConfig | None = None
 
 
 class StorageContextFactory:
@@ -39,6 +41,7 @@ class StorageContextFactory:
             uri=uri,
             namespace=namespace,
             session=session,
+            io_config=config.io_config,
         )
 
 

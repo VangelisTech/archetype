@@ -341,9 +341,11 @@ CURRENT GAP:
   storage context.
 - The default catalog-backed path MAY construct a Daft `Session` and Daft
   `Catalog` through `StorageService`.
-- When `StorageConfig.io_config` is provided for catalog-backed storage,
-  `StorageService` MUST install it through
-  `daft.set_planning_config(default_io_config=...)`.
+- When `StorageConfig.io_config` is provided for catalog-backed storage, it
+  MUST be bound to the store and passed explicitly to Daft Iceberg
+  read/write operations.
+- Per-store credentials MUST NOT rely solely on process-global Daft planning
+  config.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.

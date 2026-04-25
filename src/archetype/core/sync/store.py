@@ -16,8 +16,9 @@
 from logging import getLogger
 
 # Technologies
-from daft import DataFrame, Schema
+from daft import DataFrame, Schema, read_iceberg
 from daft.catalog import Table
+from daft.io import IOConfig
 from daft.session import Session
 
 from archetype.core.archetype import Archetype
@@ -48,10 +49,12 @@ class SyncStore(iStore):
         uri: str,
         session: Session,
         debug: bool = False,
+        io_config: IOConfig | None = None,
     ):
         self.uri = uri
         self.debug = debug
         self.sess = session
+        self.io_config = io_config
         self.flush_interval = None
         self._known_sigs: dict[str, ArchetypeSignature] = {}
 
@@ -75,13 +78,38 @@ class SyncStore(iStore):
         """List archetype signatures registered via _ensure_table."""
         return list(self._known_sigs.values())
 
+    def _read_table(self, table: Table) -> DataFrame:
+        if self.io_config is None:
+            return table.read()
+
+        # Daft's Iceberg Table wrapper does not currently expose io_config
+        # through Table.read(...), so use the native Iceberg API when needed.
+        inner_table = getattr(table, "_inner", None)
+        if inner_table is None:
+            return table.read()
+
+        return read_iceberg(inner_table, io_config=self.io_config)
+
+    def _append_table(self, table: Table, df: DataFrame) -> None:
+        if self.io_config is None:
+            table.append(df)
+            return
+
+        # See _read_table: explicit io_config requires the native Iceberg path.
+        inner_table = getattr(table, "_inner", None)
+        if inner_table is None:
+            table.append(df)
+            return
+
+        df.write_iceberg(inner_table, mode="append", io_config=self.io_config)
+
     def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
         """
         Get all archetypes for a given world_id and run_id.
         Filtering by tick/is_active is done by the QueryManager.
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = table.read()  # Cheap, Lazy
+        df: DataFrame = self._read_table(table)  # Cheap, Lazy
 
         if self.debug:
             logger.debug("Reading table %s", table.name)
@@ -103,7 +131,7 @@ class SyncStore(iStore):
             logger.debug("Appending %s rows to table %s", df.count_rows(), table_name)
             df.show()
 
-        table.append(df)
+        self._append_table(table, df)
 
     def shutdown(self) -> None:
         """

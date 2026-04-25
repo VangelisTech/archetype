@@ -15,7 +15,6 @@ import logging
 import pathlib
 from urllib.parse import urlparse
 
-import daft
 from daft.catalog import Catalog
 from daft.session import Session
 
@@ -96,9 +95,6 @@ class StorageService:
             )
         )
 
-        if config.io_config is not None:
-            daft.set_planning_config(default_io_config=config.io_config)
-
         session = Session()
         session.attach_catalog(catalog)
         session.create_namespace_if_not_exists(config.namespace)
@@ -169,7 +165,9 @@ class StorageService:
             uri, namespace = self.resolve_location(storage_config)
             store = AsyncLancedbStore(uri, namespace)
         else:
-            store = AsyncStore(self.build_session(storage_config))
+            store = AsyncStore(
+                self.build_session(storage_config), io_config=storage_config.io_config
+            )
 
         if isinstance(cache_config, bool):
             cache_config = CacheConfig() if cache_config else None

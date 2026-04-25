@@ -7,7 +7,7 @@
 The store delegates persistence to Daft's catalog and session system. All reads and writes go through lazy DataFrame references:
 
 - **Reads** return a lazy `DataFrame` -- no data is materialized until you collect
-- **Writes** append rows to the backing table via `Table.append()`
+- **Writes** append rows to the backing table, passing `StorageConfig.io_config` explicitly for Iceberg-backed stores when configured
 - **Tables** are created on demand when an archetype is first accessed
 
 Each archetype signature maps to a single table, named by the archetype's deterministic hash (see [Archetype](archetype.md)).
@@ -54,7 +54,7 @@ Remote warehouses store data in the cloud but keep catalog metadata locally in a
 
 | Store | Input |
 |-------|-------|
-| `AsyncStore` | Daft `Session` |
+| `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
 | `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
 Legacy imports from `archetype.core.runtime.storage` remain available as
@@ -115,7 +115,7 @@ LanceDB stores data in Lance format on the local filesystem. It is the default b
 
 The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed PyIceberg SQL catalog. It writes Parquet files and supports:
 
-- Cloud object stores (S3, GCS) via `StorageConfig.io_config`, applied as Daft's default planning `IOConfig`
+- Cloud object stores (S3, GCS) via `StorageConfig.io_config`, passed explicitly to Daft Iceberg reads/writes
 - Catalog-level namespace isolation
 - Compatibility with the broader Iceberg ecosystem
 

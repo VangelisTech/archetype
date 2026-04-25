@@ -24,4 +24,4 @@ def test_storage_context_builds_local_and_creates_dirs(tmp_path):
     # sanity: reading back set namespace via session should succeed
     assert ctx.session is not None
     assert not hasattr(ctx, "catalog")
-    assert not hasattr(ctx, "io_config")
+    assert ctx.io_config is None

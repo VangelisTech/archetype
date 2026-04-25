@@ -16,8 +16,9 @@
 from logging import getLogger
 
 # Technologies
-from daft import DataFrame, Schema
+from daft import DataFrame, Schema, read_iceberg
 from daft.catalog import Table
+from daft.io import IOConfig
 from daft.session import Session
 
 # Internals
@@ -41,8 +42,9 @@ class AsyncStore(iAsyncStore):
 
     """
 
-    def __init__(self, session: Session | object):
+    def __init__(self, session: Session | object, io_config: IOConfig | None = None):
         self.session = getattr(session, "session", session)
+        self.io_config = io_config if io_config is not None else getattr(session, "io_config", None)
         self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
@@ -61,6 +63,31 @@ class AsyncStore(iAsyncStore):
         self._known_sigs[hash_val] = sig
         return table
 
+    def _read_table(self, table: Table) -> DataFrame:
+        if self.io_config is None:
+            return table.read()
+
+        # Daft's Iceberg Table wrapper does not currently expose io_config
+        # through Table.read(...), so use the native Iceberg API when needed.
+        inner_table = getattr(table, "_inner", None)
+        if inner_table is None:
+            return table.read()
+
+        return read_iceberg(inner_table, io_config=self.io_config)
+
+    def _append_table(self, table: Table, df: DataFrame) -> None:
+        if self.io_config is None:
+            table.append(df)
+            return
+
+        # See _read_table: explicit io_config requires the native Iceberg path.
+        inner_table = getattr(table, "_inner", None)
+        if inner_table is None:
+            table.append(df)
+            return
+
+        df.write_iceberg(inner_table, mode="append", io_config=self.io_config)
+
     async def get_archetype_df(
         self,
         sig: ArchetypeSignature,
@@ -75,7 +102,7 @@ class AsyncStore(iAsyncStore):
         Get all archetypes that contain all of the specified component types.
         """
         table: Table = self._ensure_table(sig)
-        df: DataFrame = table.read()  # Cheap, Lazy
+        df: DataFrame = self._read_table(table)  # Cheap, Lazy
 
         # stored as strings; ensure filter values are strings
         df = df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
@@ -116,7 +143,7 @@ class AsyncStore(iAsyncStore):
         table = self._ensure_table(sig)
 
         # Daft's Table.append is synchronous; do not await
-        table.append(df)
+        self._append_table(table, df)
 
     async def shutdown(self) -> None:
         """

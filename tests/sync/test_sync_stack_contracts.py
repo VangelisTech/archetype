@@ -38,7 +38,7 @@ class Velocity(Component):
 def _make_sync_stack(tmp_path, name: str = "sync"):
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
     ctx = StorageContextFactory.build(cfg)
-    store = SyncStore(uri=ctx.uri, session=ctx.session)
+    store = SyncStore(uri=ctx.uri, session=ctx.session, io_config=ctx.io_config)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
@@ -102,6 +102,64 @@ def test_sync_store_append_and_filters_world_and_run():
     assert len(rows) == 1
     assert rows[0]["entity_id"] == 1
     assert rows[0]["position__x"] == 1
+
+
+def test_sync_store_passes_io_config_to_iceberg_paths(monkeypatch):
+    from daft.io import IOConfig
+
+    class _IcebergTable:
+        name = "positions"
+
+        def __init__(self):
+            self._inner = object()
+
+        def read(self):
+            raise AssertionError("explicit IOConfig reads should use daft.read_iceberg")
+
+        def append(self, df):
+            raise AssertionError("explicit IOConfig writes should use DataFrame.write_iceberg")
+
+    class _Session:
+        def __init__(self, table):
+            self.table = table
+
+        def create_table_if_not_exists(self, *args, **kwargs):
+            return self.table
+
+    class _Frame:
+        def __init__(self):
+            self.column_names = ["world_id"]
+
+        def write_iceberg(self, inner_table, *, mode, io_config=None):
+            seen["write_inner"] = inner_table
+            seen["write_mode"] = mode
+            seen["write_io_config"] = io_config
+
+    table = _IcebergTable()
+    io_config = IOConfig()
+    seen = {}
+
+    def fake_read_iceberg(inner_table, *, snapshot_id=None, io_config=None):
+        seen["read_inner"] = inner_table
+        seen["read_snapshot_id"] = snapshot_id
+        seen["read_io_config"] = io_config
+        return daft.from_pylist([{"world_id": "w", "run_id": "r"}])
+
+    monkeypatch.setattr("archetype.core.sync.store.read_iceberg", fake_read_iceberg)
+
+    store = SyncStore(uri="unused", session=_Session(table), io_config=io_config)
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+
+    rows = store.get_archetype_df(sig, "w", "r").collect().to_pylist()
+    store.append(sig, _Frame())
+
+    assert len(rows) == 1
+    assert seen["read_inner"] is table._inner
+    assert seen["read_snapshot_id"] is None
+    assert seen["read_io_config"] is io_config
+    assert seen["write_inner"] is table._inner
+    assert seen["write_mode"] == "append"
+    assert seen["write_io_config"] is io_config
 
 
 def test_sync_store_real_session_roundtrip_filters_world_and_run(tmp_path):

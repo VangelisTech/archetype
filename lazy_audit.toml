@@ -15,7 +15,7 @@
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 106
+line = 133
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
@@ -33,7 +33,7 @@ reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance cas
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
-line = 102
+line = 130
 method = "collect"
 reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
 

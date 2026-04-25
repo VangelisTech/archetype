@@ -139,6 +139,39 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
         await svc.shutdown()
 
 
+def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
+    from daft.io import IOConfig
+
+    io_config = IOConfig()
+    session = object()
+    seen = {}
+
+    class FakeStore:
+        def __init__(self, session_arg, io_config=None):
+            seen["session"] = session_arg
+            seen["io_config"] = io_config
+
+    monkeypatch.setattr("archetype.app.storage_service.AsyncStore", FakeStore)
+    monkeypatch.setattr(
+        StorageService,
+        "build_session",
+        classmethod(lambda cls, config: session),
+    )
+
+    cfg = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="ns",
+        backend=StorageBackend.ICEBERG,
+        io_config=io_config,
+    )
+
+    store, _, _ = StorageService()._create_backend(cfg, cache_config=None)
+
+    assert isinstance(store, FakeStore)
+    assert seen["session"] is session
+    assert seen["io_config"] is io_config
+
+
 @pytest.mark.asyncio
 async def test_get_backend_pool_shares_when_cache_config_matches(tmp_path):
     """Two callers with identical (uri, namespace, backend, cache_config) must
