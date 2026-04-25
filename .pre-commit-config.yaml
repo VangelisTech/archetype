@@ -23,6 +23,13 @@ repos:
         files: '^src/.*\.py$'
         pass_filenames: true
 
+      - id: lazy-audit
+        name: Lazy-evaluation audit (.collect / .to_pylist gating)
+        entry: uv run python scripts/check_lazy_audit.py
+        language: system
+        files: '^src/.*\.py$|^lazy_audit\.toml$'
+        pass_filenames: false
+
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.4.0
     hooks:
