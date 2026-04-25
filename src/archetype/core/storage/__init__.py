@@ -8,8 +8,11 @@ Core Storage Layer
 Low-level storage primitives for ECS persistence.
 """
 
+from .handles import DaftCatalogStorage, LanceDbStorage
 from .lancedb import AsyncLancedbStore
 
 __all__ = [
     "AsyncLancedbStore",
+    "DaftCatalogStorage",
+    "LanceDbStorage",
 ]

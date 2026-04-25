@@ -239,7 +239,7 @@ Archetype supports two async storage backends behind the same contracts:
 - `AsyncLancedbStore` for LanceDB-backed archetype tables
 - `AsyncStore` for the Daft catalog-backed path
 
-`StorageService` shares backend instances across worlds with the same `(uri, namespace)`.
+`StorageService` shares backend instances across worlds with the same effective storage pool key: `(uri, namespace, backend, cache config)`.
 
 ## World Forking
 

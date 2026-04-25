@@ -15,13 +15,12 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Storage Module
-==============
+"""Backward-compatible storage context exports."""
 
-Re-exports storage context from core.runtime for backwards compatibility.
-"""
+from archetype.app.storage_factory import DaftIcebergSessionFactory
+from archetype.core.storage.handles import DaftCatalogStorage
 
-from archetype.core.runtime.storage import StorageContext, StorageContextFactory
+StorageContext = DaftCatalogStorage
+StorageContextFactory = DaftIcebergSessionFactory
 
 __all__ = ["StorageContext", "StorageContextFactory"]

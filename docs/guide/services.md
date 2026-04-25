@@ -6,7 +6,7 @@ The service layer mediates all external access to worlds. It enforces RBAC, mana
 archetype.app
   ServiceContainer          Wires everything; single construction point
     |
-    +-- StorageService       Multiton (uri, namespace) -> (store, querier, updater)
+    +-- StorageService       Multiton storage pool -> (store, querier, updater)
     +-- CommandBroker        Priority queue with RBAC guard
     +-- WorldRegistry?       Optional persistent JSON discovery
     |
@@ -59,7 +59,7 @@ A typed `PostTick` hook is automatically attached to each world to keep the regi
 
 ## StorageService
 
-Manages shared storage backends using a multiton pattern. For any `(uri, namespace)` pair, only one `(store, querier, updater)` triplet is created and reused.
+Manages shared storage backends using a multiton pattern. For each effective storage pool key `(uri, namespace, backend, cache config)`, only one `(store, querier, updater)` triplet is created and reused.
 
 ```python
 store, querier, updater = await container.storage_service.get_backend(

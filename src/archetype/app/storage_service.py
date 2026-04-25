@@ -16,8 +16,9 @@ import logging
 from archetype.core.aio import AsyncCachedStore, AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore, iAsyncUpdateManager
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.storage import AsyncLancedbStore
+
+from .storage_factory import DaftIcebergSessionFactory, LanceDbStorageFactory
 
 logger = logging.getLogger(__name__)
 
@@ -86,12 +87,11 @@ class StorageService:
         storage_config: StorageConfig,
         cache_config: CacheConfig | None,
     ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
-        context = StorageContextFactory.build(storage_config)
         store: iAsyncStore
         if storage_config.use_lancedb:
-            store = AsyncLancedbStore(context)
+            store = AsyncLancedbStore(LanceDbStorageFactory.build(storage_config))
         else:
-            store = AsyncStore(context)
+            store = AsyncStore(DaftIcebergSessionFactory.build(storage_config))
 
         if isinstance(cache_config, bool):
             cache_config = CacheConfig() if cache_config else None

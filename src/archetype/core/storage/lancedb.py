@@ -25,7 +25,7 @@ from lancedb.index import Bitmap, BTree
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.archetype import Archetype
 from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
-from archetype.core.runtime.storage import StorageContext
+from archetype.core.storage.handles import LanceDbStorage
 
 logger = getLogger(__name__)
 
@@ -44,20 +44,11 @@ class AsyncLancedbStore(iAsyncStore):
 
     """
 
-    def __init__(self, context_or_config):
-        """Initialize with a StorageContext (preferred) or a legacy config with get_session()."""
-        if hasattr(context_or_config, "get_session"):
-            cfg = context_or_config
-            self.uri = cfg.uri
-            self.namespace = cfg.namespace
-            self.session = cfg.get_session()
-            self.io_config = getattr(cfg, "io_config", None)
-        else:
-            context: StorageContext = context_or_config
-            self.uri = context.uri
-            self.namespace = context.namespace
-            self.session = context.session
-            self.io_config = context.io_config
+    def __init__(self, storage: LanceDbStorage):
+        """Initialize LanceDB storage from backend-specific connection inputs."""
+        self.uri = storage.uri
+        self.namespace = storage.namespace
+        self.io_config = storage.io_config
         self.storage_options = (
             io_config_to_storage_options(self.io_config) if self.io_config else None
         )

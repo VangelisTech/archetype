@@ -35,12 +35,12 @@ class StorageBackend(Enum):
 
 class StorageConfig(BaseModel):
     """
-    Storage Backend Context for configuring local or cloud storage access
+    Storage backend configuration for app/runtime storage resolution.
 
     Includes:
         - uri: str  - The URI location for the storage backend
         - namespace: str - The desired namespace for the catalog
-        - io_config: IOConfig - The access credentials or the daft session/catalog
+        - io_config: IOConfig - The access credentials for native I/O layers
     """
 
     uri: str | Path = Field(

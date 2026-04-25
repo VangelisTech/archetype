@@ -331,10 +331,17 @@ CURRENT GAP:
 
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
-- Worlds sharing the same `(uri, namespace)` MUST reuse the same backend
-  triplet.
+- Worlds sharing the same effective storage pool key `(uri, namespace, backend,
+  cache config)` MUST reuse the same backend triplet.
 - Concurrent backend acquisition for the same key MUST single-flight so only
   one backend is built.
+- Backend selection and storage-resource construction are app/runtime
+  composition concerns.
+- Core stores MUST receive backend-specific handles rather than a generic
+  runtime storage context.
+- The default Iceberg path MAY construct a Daft `Session` and Daft `Catalog`
+  through `DaftIcebergSessionFactory`.
+- The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
 
@@ -789,7 +796,7 @@ the constraints that any acceptable design must satisfy.
 
 | Operation | Expected contract |
 |---|---|
-| `StorageService.get_backend(key)` | Idempotent per `(uri, namespace)` within one service instance |
+| `StorageService.get_backend(key)` | Idempotent per `(uri, namespace, backend, cache config)` within one service instance |
 | `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
 | `WorldService.remove_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |

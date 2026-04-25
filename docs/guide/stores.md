@@ -12,26 +12,34 @@ The store delegates persistence to Daft's catalog and session system. All reads 
 
 Each archetype signature maps to a single table, named by the archetype's deterministic hash (see [Archetype](archetype.md)).
 
-## StorageContext
+## Storage Construction
 
-Before creating a store, you need a `StorageContext` -- the initialized runtime resources:
+`StorageService` owns the conversion from user-facing `StorageConfig` into
+backend-specific core store inputs. The core stores do not interpret
+`StorageConfig` themselves.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.app.storage_factory import DaftIcebergSessionFactory
 
 config = StorageConfig(
     uri="./my_data",
     namespace="experiment_1",
+    backend=StorageBackend.ICEBERG,
 )
-context = StorageContextFactory.build(config)
+storage = DaftIcebergSessionFactory.build(config)
 ```
 
-`StorageContextFactory.build()` initializes:
+`DaftIcebergSessionFactory.build()` is the default convenience path for Iceberg
+storage. It initializes:
 
 1. An **Iceberg SqlCatalog** backed by SQLite for metadata
 2. A **Daft Session** attached to the catalog
 3. The **namespace** (created if it doesn't exist)
+
+For LanceDB, `StorageService` uses a LanceDB-specific storage handle instead of
+building a Daft session/catalog. LanceDB needs only the resolved storage URI,
+namespace, and optional `IOConfig`.
 
 ### Local vs Remote Storage
 
@@ -42,15 +50,16 @@ context = StorageContextFactory.build(config)
 
 Remote warehouses store data in the cloud but keep catalog metadata locally in a `.archetype_meta/` directory.
 
-### StorageContext Fields
+### Backend-Specific Handles
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `uri` | `str` | Resolved storage URI |
-| `namespace` | `str` | Daft namespace for table isolation |
-| `session` | `Session` | Daft session with catalog attached |
-| `catalog` | `Catalog` | Iceberg catalog (via Daft) |
-| `io_config` | `IOConfig` | Daft I/O configuration |
+| Handle | Consumer | Fields |
+|--------|----------|--------|
+| `DaftCatalogStorage` | `AsyncStore` | resolved `uri`, `namespace`, Daft `Session`, Daft `Catalog`, optional `IOConfig` |
+| `LanceDbStorage` | `AsyncLancedbStore` | resolved `uri`, `namespace`, optional `IOConfig` |
+
+Legacy imports from `archetype.core.runtime.storage` remain available as
+compatibility shims for the old `StorageContext` name. New code should use the
+backend-specific handles and app-level factories.
 
 ## Store API
 
@@ -117,8 +126,10 @@ The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed 
 ```text
 StorageService._create_backend(config, cache_config)
     |
-    +-- config.use_lancedb? --> AsyncLancedbStore(context)
-    +-- else              --> AsyncStore(context)
+    +-- config.use_lancedb? --> LanceDbStorageFactory.build(config)
+    |                         --> AsyncLancedbStore(lancedb_storage)
+    +-- else                --> DaftIcebergSessionFactory.build(config)
+                              --> AsyncStore(daft_storage)
     |
     +-- cache_config?     --> AsyncCachedStore(store, cache_config)
     |
@@ -164,7 +175,8 @@ Pass `CacheConfig` to `StorageService.get_backend()` or `WorldService.create_wor
 ## Source Reference
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
-- Store (LanceDB): `src/archetype/core/storage.py`
+- Store (LanceDB): `src/archetype/core/storage/lancedb.py`
+- Storage handles: `src/archetype/core/storage/handles.py`
+- Storage factories: `src/archetype/app/storage_factory.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
-- Storage context: `src/archetype/core/runtime/storage.py`
 - Storage service: `src/archetype/app/storage_service.py`

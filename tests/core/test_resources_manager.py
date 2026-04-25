@@ -113,6 +113,33 @@ async def test_get_backend_pool_distinguishes_backend_choice(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path, monkeypatch):
+    """LanceDB storage uses its own storage handle instead of the Daft/Iceberg factory."""
+    svc = StorageService()
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("LanceDB backend should not construct Daft/Iceberg storage")
+
+    monkeypatch.setattr(
+        "archetype.app.storage_service.DaftIcebergSessionFactory.build",
+        fail_if_called,
+    )
+
+    try:
+        cfg = StorageConfig(
+            uri=str(tmp_path / "store"),
+            namespace="ns",
+            backend=StorageBackend.LANCEDB,
+        )
+        store, _, _ = await svc.get_backend(cfg)
+
+        assert isinstance(store, AsyncLancedbStore)
+        assert not hasattr(store, "session")
+    finally:
+        await svc.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_get_backend_pool_shares_when_cache_config_matches(tmp_path):
     """Two callers with identical (uri, namespace, backend, cache_config) must
     still share the same triplet — the pool's core multiton behaviour."""

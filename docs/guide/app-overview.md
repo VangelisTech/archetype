@@ -79,7 +79,7 @@ After the factory creates a world, the service layer wraps it with governance an
 
 **[QueryService](services.md#queryservice)** provides read-only access. No `ActorCtx` required, no RBAC checks. Reads go straight through the world to the querier. See [Data Flow](data-flow.md) for why the read path has no auth overhead.
 
-**[StorageService](services.md#storageservice)** manages shared backends. For any `(uri, namespace)` pair, one `(store, querier, updater)` triplet is created and reused across worlds.
+**[StorageService](services.md#storageservice)** manages shared backends. For each effective storage pool key `(uri, namespace, backend, cache config)`, one `(store, querier, updater)` triplet is created and reused across worlds.
 
 ## How the API Exposes Services
 
@@ -124,8 +124,8 @@ To see how the layers connect, trace `archetype world create my-sim` from the CL
 
 5. WorldFactory (the integration seam)
    → StorageService.get_backend(storage_config)
-   → StorageContextFactory.build(config)       ← core runtime
-   → AsyncLancedbStore(context)                ← core store
+   → backend-specific storage factory          ← app/runtime composition
+   → AsyncLancedbStore(...) or AsyncStore(...) ← core store
    → AsyncQueryManager(store)                  ← core read facade
    → AsyncUpdateManager(store)                 ← core write facade
    → AsyncWorld(querier, updater, system)      ← core world
