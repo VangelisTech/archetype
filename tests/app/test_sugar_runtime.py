@@ -301,7 +301,9 @@ async def test_runtime_world_actor_aliases_share_single_flight_activation_and_wo
 
         monkeypatch.setattr(app._container.world_service, "create_world", tracked_create_world)
 
-        entity_id, df = await asyncio.gather(player.spawn(Position(x=1.0)), maintainer.query(Position))
+        entity_id, df = await asyncio.gather(
+            player.spawn(Position(x=1.0)), maintainer.query(Position)
+        )
 
         assert create_calls == 1
         assert entity_id == 1
@@ -633,11 +635,15 @@ async def test_runtime_world_add_components_migrates_at_tick_boundary(tmp_path):
 
         await world.add_components(entity_id, Velocity(vx=2.0, vy=3.0))
 
-        before = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        before = (
+            (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        )
         assert before == []
 
         await world.step()
-        after = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        after = (
+            (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        )
         assert len(after) == 1
         assert after[0]["position__x"] == 4.0
         assert after[0]["velocity__vx"] == 2.0
@@ -665,14 +671,20 @@ async def test_runtime_world_remove_components_applies_at_tick_boundary_and_pres
 
         await world.remove_components(entity_id, Velocity)
 
-        before = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        before = (
+            (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        )
         assert len(before) == 1
 
         await world.step()
-        after = (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        after = (
+            (await world.query(Position, Velocity, entity_ids=[entity_id])).collect().to_pylist()
+        )
         assert after == []
 
-        remaining = (await world.query(Position, Health, entity_ids=[entity_id])).collect().to_pylist()
+        remaining = (
+            (await world.query(Position, Health, entity_ids=[entity_id])).collect().to_pylist()
+        )
         assert len(remaining) == 1
         assert remaining[0]["position__x"] == 7.0
         assert remaining[0]["position__y"] == 8.0
@@ -883,7 +895,9 @@ async def test_runtime_world_fork_from_actor_alias_preserves_actor_binding(tmp_p
         await admin.step()
         await fork.step()
 
-        rows = sorted((await fork.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"])
+        rows = sorted(
+            (await fork.query(Position)).collect().to_pylist(), key=lambda row: row["entity_id"]
+        )
         assert [row["position__x"] for row in rows] == [2.0, 3.0]
 
 
