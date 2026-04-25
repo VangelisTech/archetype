@@ -31,11 +31,12 @@ node_modules/
 .cursorignore
 .worktrees/
 *.lance
-# Ignore claude user state, but track project config, hooks, and skills
+# Ignore claude user state, but track project config, hooks, skills, and agents
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
 !.claude/skills/
+!.claude/agents/
 data/
 
 .venv/

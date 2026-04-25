@@ -1,0 +1,50 @@
+name: Footgun Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: footgun-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  footgun:
+    # Skip PRs from forks — they don't get access to ANTHROPIC_API_KEY.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run footgun-detector
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          prompt: |
+            You are running in CI on PR #${{ github.event.pull_request.number }}.
+
+            Invoke the `footgun-detector` subagent (defined in
+            `.claude/agents/footgun-detector.md`) via the Task tool to review
+            this PR's diff. Pass the PR number so it fetches the diff with
+            `gh pr diff ${{ github.event.pull_request.number }}`.
+
+            After the subagent returns, always post exactly one PR comment
+            via `gh pr comment ${{ github.event.pull_request.number }} --body-file <path>`:
+            - If it reports one or more footguns, post its full output. The
+              agent's format already includes a concrete `**Fix:**` per
+              finding — preserve it verbatim, do not summarize. Prefix the
+              comment with `## Footgun review` and a blank line.
+            - If it reports "No footguns detected in this diff.", post a
+              single short comment: `## Footgun review\n\nNo notes.`
+
+            Do not edit any files. Do not run tests. Do not push commits.
+            This job is advisory and must not fail the build, so report
+            cleanly and exit.
