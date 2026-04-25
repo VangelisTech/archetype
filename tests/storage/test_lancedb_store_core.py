@@ -76,10 +76,10 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
 
-    storage = LanceDbStorageFactory.build(
+    uri, namespace, io_config = LanceDbStorageFactory.build(
         StorageConfig(uri=str(tmp_path / "warehouse"), namespace="ns")
     )
-    store = AsyncLancedbStore(storage)
+    store = AsyncLancedbStore(uri, namespace, io_config)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
 

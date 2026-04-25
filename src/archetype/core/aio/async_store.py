@@ -18,11 +18,11 @@ from logging import getLogger
 # Technologies
 from daft import DataFrame, Schema
 from daft.catalog import Table
+from daft.session import Session
 
 # Internals
 from archetype.core.archetype import Archetype
 from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
-from archetype.core.storage.handles import DaftCatalogStorage
 
 # Logger
 logger = getLogger(__name__)
@@ -41,12 +41,8 @@ class AsyncStore(iAsyncStore):
 
     """
 
-    def __init__(self, storage: DaftCatalogStorage):
-        self.uri = storage.uri
-        self.namespace = storage.namespace
-        self.io_config = storage.io_config
-        self.catalog = storage.catalog
-        self.session = storage.session
+    def __init__(self, session: Session | object):
+        self.session = getattr(session, "session", session)
         self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:

@@ -19,13 +19,13 @@ from logging import getLogger
 import daft
 import lancedb
 from daft import DataFrame
+from daft.io import IOConfig
 from daft.io.object_store_options import io_config_to_storage_options
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.archetype import Archetype
 from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
-from archetype.core.storage.handles import LanceDbStorage
 
 logger = getLogger(__name__)
 
@@ -44,11 +44,25 @@ class AsyncLancedbStore(iAsyncStore):
 
     """
 
-    def __init__(self, storage: LanceDbStorage):
-        """Initialize LanceDB storage from backend-specific connection inputs."""
-        self.uri = storage.uri
-        self.namespace = storage.namespace
-        self.io_config = storage.io_config
+    def __init__(
+        self,
+        uri: str | object,
+        namespace: str | None = None,
+        io_config: IOConfig | None = None,
+    ):
+        """Initialize LanceDB storage from URI, namespace, and optional IO config."""
+        if namespace is None and not isinstance(uri, str):
+            legacy_storage = uri
+            uri = legacy_storage.uri
+            namespace = legacy_storage.namespace
+            io_config = getattr(legacy_storage, "io_config", io_config)
+
+        if namespace is None:
+            raise TypeError("AsyncLancedbStore requires a namespace")
+
+        self.uri = uri
+        self.namespace = namespace
+        self.io_config = io_config
         self.storage_options = (
             io_config_to_storage_options(self.io_config) if self.io_config else None
         )

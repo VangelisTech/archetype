@@ -17,10 +17,6 @@
 
 """Backward-compatible storage context exports."""
 
-from archetype.app.storage_factory import DaftIcebergSessionFactory
-from archetype.core.storage.handles import DaftCatalogStorage
-
-StorageContext = DaftCatalogStorage
-StorageContextFactory = DaftIcebergSessionFactory
+from archetype.core.runtime.storage import StorageContext, StorageContextFactory
 
 __all__ = ["StorageContext", "StorageContextFactory"]

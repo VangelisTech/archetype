@@ -67,8 +67,10 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
         return client
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
-    storage = LanceDbStorageFactory.build(StorageConfig(uri=str(tmp_path / "wh"), namespace="ns"))
-    store = AsyncLancedbStore(storage)
+    uri, namespace, io_config = LanceDbStorageFactory.build(
+        StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
+    )
+    store = AsyncLancedbStore(uri, namespace, io_config)
 
     # Craft sig that maps to existing table name to hit open path
     class T(Component):
@@ -90,8 +92,10 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
         return client
 
     monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
-    storage = LanceDbStorageFactory.build(StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns"))
-    store = AsyncLancedbStore(storage)
+    uri, namespace, io_config = LanceDbStorageFactory.build(
+        StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
+    )
+    store = AsyncLancedbStore(uri, namespace, io_config)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
     schema = Archetype.get_archetype_schema(sig)

@@ -337,8 +337,8 @@ CURRENT GAP:
   one backend is built.
 - Backend selection and storage-resource construction are app/runtime
   composition concerns.
-- Core stores MUST receive backend-specific handles rather than a generic
-  runtime storage context.
+- Core stores MUST receive backend-native inputs rather than a generic runtime
+  storage context.
 - The default Iceberg path MAY construct a Daft `Session` and Daft `Catalog`
   through `DaftIcebergSessionFactory`.
 - The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.

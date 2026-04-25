@@ -89,7 +89,8 @@ class StorageService:
     ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
         store: iAsyncStore
         if storage_config.use_lancedb:
-            store = AsyncLancedbStore(LanceDbStorageFactory.build(storage_config))
+            uri, namespace, io_config = LanceDbStorageFactory.build(storage_config)
+            store = AsyncLancedbStore(uri, namespace, io_config)
         else:
             store = AsyncStore(DaftIcebergSessionFactory.build(storage_config))
 
