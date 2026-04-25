@@ -22,6 +22,7 @@ help:
 	@echo "  make lint           Lint code (ruff)"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
+	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
 	@echo ""
 	@echo "Tests:"
 	@echo "  make test           Run tests (fast)"
@@ -86,6 +87,21 @@ format-check:
 
 .PHONY: check
 check: format lint
+
+# Cyclomatic complexity + maintainability report.
+# Uses uvx so radon stays out of the project lock file.
+# CC ranks: A (1-5) B (6-10) C (11-20) D (21-30) E (31-40) F (41+).
+# Surfaces rank C+ for CC and rank B+ for MI — the "review me" set.
+.PHONY: complexity
+complexity:
+	@echo "=== Cyclomatic complexity (functions ranked C or worse) ==="
+	@uvx radon cc src -n C -s -a --total-average || true
+	@echo ""
+	@echo "=== Maintainability index (files ranked B or worse) ==="
+	@uvx radon mi src -n B -s || true
+	@echo ""
+	@echo "=== Raw line counts ==="
+	@uvx radon raw src -s
 
 # ------------------------------------------------------------------------------
 # Tests
