@@ -31,7 +31,13 @@ if TYPE_CHECKING:
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import ArchetypeSignature, iAsyncStore, iAsyncSystem, iWorld
 
-    from archetype.app.models import RunResult
+    from archetype.app.models import (
+        EpisodeConfig,
+        EpisodeResult,
+        RolloutConfig,
+        RolloutResult,
+        RunResult,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -121,10 +127,13 @@ class iMutationService(Protocol):
 
 
 class iSimulationService(Protocol):
-    """Execution engine. Drives world stepping via RunConfig.
+    """Execution engine. Drives world stepping, episodes, and rollouts.
+
+    Owns execution semantics including run_episode and run_rollout.
+    Internal forks inside run_rollout go through iWorldService directly.
 
     Depends on:
-      - ``iWorldService`` for world lookup
+      - ``iWorldService`` for world lookup and forking
     """
 
     def __init__(self, world_service: iWorldService) -> None: ...
@@ -136,6 +145,14 @@ class iSimulationService(Protocol):
     async def run(
         self, world_id: str | UUID, run_config: RunConfig, **input_kwargs
     ) -> RunResult: ...
+
+    async def run_episode(
+        self, world_id: str | UUID, config: EpisodeConfig, **input_kwargs
+    ) -> EpisodeResult: ...
+
+    async def run_rollout(
+        self, world_id: str | UUID, config: RolloutConfig, **input_kwargs
+    ) -> RolloutResult: ...
 
 
 class iQueryService(Protocol):

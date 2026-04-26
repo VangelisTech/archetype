@@ -22,6 +22,8 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
+from archetype.core.config import RunConfig
+
 # Global sequence counter for command ordering
 _SEQ = count()
 
@@ -147,6 +149,50 @@ class RunResult(BaseModel):
     ticks_completed: int = 0
     commands_applied: int = 0
     final_tick: int = 0
+
+
+class EpisodeConfig(BaseModel):
+    """Configuration for a single episode (bounded simulation run)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    episode_id: UUID = Field(default_factory=uuid.uuid7)
+    run_config: RunConfig = Field(default_factory=RunConfig)
+    max_steps: int = 1000
+    terminal_component: Any | None = None
+    termination: Any | None = None  # Callable[[iWorld], bool] | None
+
+
+class RolloutConfig(BaseModel):
+    """Configuration for a rollout (N episodes forked from a base world)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    rollout_id: UUID = Field(default_factory=uuid.uuid7)
+    episode_config: EpisodeConfig = Field(default_factory=EpisodeConfig)
+    num_episodes: int = 1
+    parallel: bool = False
+    name_prefix: str = "ep"
+    destroy_forks_on_complete: bool = False
+
+
+class EpisodeResult(BaseModel):
+    """Result of a single episode."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    episode_id: UUID
+    world_id: str | UUID
+    final_tick: int = 0
+    terminated: bool = False
+    duration_steps: int = 0
+
+
+class RolloutResult(BaseModel):
+    """Result of a rollout (N episodes)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    rollout_id: UUID
+    base_world_id: str | UUID
+    episodes: list[EpisodeResult] = Field(default_factory=list)
+    num_episodes: int = 0
 
 
 class ProcessorInfo(BaseModel):
