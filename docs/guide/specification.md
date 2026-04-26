@@ -4,8 +4,7 @@ This page is the entry point for Archetype's contract documents.
 
 It does two things:
 
-1. names the current sources of truth for the contracts we established in this
-   session
+1. names the current sources of truth for Archetype contracts
 2. defines the broader engine and application contracts that every runtime,
    adapter, and orchestration layer must preserve
 
@@ -28,9 +27,9 @@ The current contract set is split across design docs and executable tests.
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
 | [`tests/cli/test_cli.py`](https://github.com/VangelisTech/archetype/blob/main/tests/cli/test_cli.py) | CLI adapter contracts | Covers base URL handling, client lifecycle, error formatting, and server-backed command behavior. |
 
-## Session-Hardened Contracts
+## Contract Families
 
-The work in this session surfaced and hardened the following contract families:
+The current specification set covers the following contract families:
 
 - Top-level runtime contracts:
   pure construction, single-flight activation, honest `spawn()` return values,
@@ -859,24 +858,21 @@ all of the following:
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
 
-## Contracts Before Runtime (Apr 2026)
+## Runtime Boundary
 
-The top-level runtime looked directionally right, but the first proposal
-was unsafe because it collapsed three separate concerns into one API shape:
+The runtime boundary separates process lifetime from world lifetime. This
+prevents the user-facing API from collapsing three separate concerns:
 
 1. **Concurrency** — first-use initialization races
 2. **Multi-world lifetime** — world shutdown vs process/runtime shutdown
 3. **Script ceremony** — making simple scripts ergonomic without hiding real
    lifecycle boundaries
 
-The fix was to make the contract explicit before changing the API.
+The safe top-level abstraction is `ArchetypeRuntime`, not a world-scoped
+context manager. A world handle can be lazy, but the shared runtime/container
+needs an explicit boundary.
 
-**Key lesson:** the safe top-level abstraction is `ArchetypeRuntime`, not a
-world-scoped context manager. Process lifetime and world lifetime are different
-concerns. A `World` handle can be lazy, but the shared runtime/container needs
-an explicit boundary.
-
-### Runtime contracts we chose to enforce
+### Runtime Contracts
 
 - `spawn()` must reserve and return a real `entity_id` all the way through the
   chain. Returning a command ID is a contract violation.
@@ -894,12 +890,11 @@ an explicit boundary.
 - Top-level `World` and `Processor` exports should remain stable unless there
   is an intentional versioned breaking change. Add runtime ergonomics additively first.
 
-### Testing lesson
+### Contract Tests
 
 These contracts should not live only in docs. They need executable tests.
 
-The highest-value tests from this session were not generic coverage tests.
-They were contract tests for:
+High-value contract tests include:
 
 - concurrent first-use activation
 - shutdown vs init and fork vs init races
@@ -908,25 +903,20 @@ They were contract tests for:
 - async/sync smoke paths
 - example script smoke execution
 
-Once those existed, several real bugs surfaced immediately.
+### Sync-Core Coverage
 
-### Sync-core bugs contract tests exposed
+Contract-focused tests should cover correctness issues that happy-path tests
+often miss:
 
-Contract-focused tests found real correctness issues that happy-path tests had
-missed:
+- store append/read consistency across table lookup and namespace context
+- query projection schema selection
+- duplicate spawn last-write-wins behavior
+- component migration between signatures
+- moving an entity from a missing source archetype
+- despawn-only signature materialization
 
-- store append/read paths were inconsistent about table lookup and namespace
-  context
-- query projection used the wrong schema API
-- duplicate spawns were not true last-write-wins
-- component migration used instances where signature expansion required types
-- moving an entity from a missing source archetype crashed instead of returning
-  empty
-- final despawns could be skipped because despawn-only signatures were not
-  materialized
-
-**Lesson:** if a contract test feels "too specific," that usually means it is
-finally testing the real semantic boundary.
+If a contract test feels "too specific," it may be testing a real semantic
+boundary.
 
 ### Docs and examples are part of the contract
 
@@ -939,10 +929,10 @@ explicit that they are lower-level interfaces.
 Examples also need to be executed in CI. An example that "looks right" but is
 never run is not documentation; it is an unverified claim.
 
-This mattered especially for LLM-backed examples: they need explicit
-credential gating or graceful degraded behavior when keys are missing.
+LLM-backed examples need explicit credential gating or graceful degraded
+behavior when keys are missing.
 
-### Specification lesson
+### Specification Ownership
 
 Focused specification pages are now the source of truth for their areas, with
 this page serving as the umbrella entry point. Tests enforce the contracts and
