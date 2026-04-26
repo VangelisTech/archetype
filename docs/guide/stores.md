@@ -170,7 +170,7 @@ from archetype.core.config import CacheConfig
 cache = CacheConfig(flush_rows=500_000, idle_sec=15.0)
 ```
 
-Pass `CacheConfig` to `StorageService.get_backend()` or `WorldService.create_world()` to enable caching. See [Configuration](run-config.md#cacheconfig) for all fields.
+Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_create_store()` to enable caching. See [Configuration](run-config.md#cacheconfig) for all fields.
 
 ## Source Reference
 

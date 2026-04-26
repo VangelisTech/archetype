@@ -2,7 +2,7 @@
 
 Read these before doing anything:
 
-- `docs/guide/specification.md` — Normative contracts. Takes precedence over everything else. **Mandatory.**
+- `docs/guide/specification.md` plus the focused specification pages — Normative contracts. **Mandatory.**
 - `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory before writing a processor.**
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions, dev workflow.
 
@@ -31,12 +31,12 @@ Agents in `.claude/agents/` are invoked autonomously — by CI, by other agents,
 |-------|--------|
 | `src/archetype/core/` | Modify only after discussion. Holds the hard invariants. |
 | `src/archetype/app/` | Extend carefully. Service contracts live in the specification. Lower-level interface. |
-| `src/archetype/sugar.py` | Recommended top-level API (`ArchetypeRuntime`). Add sugar additively; keep `World`/`Processor` exports stable. |
+| `src/archetype/runtime/` | Recommended top-level API (`ArchetypeRuntime`). Add runtime ergonomics additively; keep public exports stable. |
 | Everything else | Write freely, subject to the contracts they wrap. |
 
 ## Top-level API
 
-`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. `ServiceContainer` / `CommandService` / broker semantics are lower-level interfaces — document them as such. Script boundary is `async with ArchetypeRuntime()` or `with ArchetypeRuntime.sync()`; process lifetime and world lifetime are separate concerns. See `docs/guide/specification.md` § "Contracts Before Sugar" for the full rationale.
+`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. `ServiceContainer` / `CommandService` / broker semantics are lower-level interfaces — document them as such. Script boundary is `async with ArchetypeRuntime()` or `with ArchetypeRuntime.sync()`; process lifetime and world lifetime are separate concerns. See `docs/guide/runtime.md` for the full contract.
 
 Examples must run in CI. LLM-backed examples need explicit credential gating or graceful degradation when keys are missing.
 

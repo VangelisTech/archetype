@@ -31,7 +31,7 @@ That distinction is intentional:
   world, bound to a different `ActorCtx`, without creating a new world or
   storage backend.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
-  broker semantics, which is appropriate for engine and service-layer code.
+  command-gate semantics, which is appropriate for engine and service-layer code.
 
 The runtime keeps handle construction and actor rebinding declarative:
 

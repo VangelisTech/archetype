@@ -10,7 +10,7 @@ The CLI is a thin HTTP client — every command (except `serve`) delegates to a 
 
 ### `archetype history`
 
-Show command history for a world.
+Show audit history for a world.
 
 ```bash
 archetype history <WORLD_ID> [OPTIONS]
@@ -26,7 +26,7 @@ archetype history <WORLD_ID> [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--limit` / `-n` | integer | `50` | Max commands to show |
+| `--limit` / `-n` | integer | `50` | Max audit rows to show |
 
 ---
 
@@ -192,12 +192,12 @@ archetype world list
 
 ---
 
-### `archetype world remove`
+### `archetype world destroy`
 
-Remove a world.
+Destroy a live world. Persisted storage and audit rows remain.
 
 ```bash
-archetype world remove <WORLD_ID>
+archetype world destroy <WORLD_ID>
 ```
 
 **Arguments:**

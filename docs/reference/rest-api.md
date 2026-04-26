@@ -312,7 +312,7 @@ POST /worlds
 
 ---
 
-### Remove World
+### Destroy World
 
 ```text
 DELETE /worlds/{world_id}
