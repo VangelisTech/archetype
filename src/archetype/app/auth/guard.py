@@ -1,7 +1,11 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""RBAC guardrails, per-tick quotas, and token budget enforcement."""
+"""RBAC guardrails, per-tick quotas, and token budget enforcement.
+
+The four-role model (viewer, player, operator, admin) is defined in
+``permissions.py``. This module enforces it.
+"""
 
 from __future__ import annotations
 
@@ -9,43 +13,11 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from archetype.app.auth.permissions import COMMANDS_BY_ROLE
+
 if TYPE_CHECKING:
     from archetype.app.auth.models import ActorCtx
     from archetype.app.models import Command
-
-# ── Role → permitted command types ──
-
-ROLE_PERMS: dict[str, set[str]] = {
-    "viewer": {"get_state", "get_world", "get_run", "query_world"},
-    "coder": {"add_component", "remove_component", "update"},
-    "operator": {
-        "spawn",
-        "despawn",
-        "update",
-        "get_state",
-        "get_world",
-        "get_run",
-        "query_world",
-        "run_rollout",
-        "run_episode",
-    },
-    "maintainer": {
-        "spawn",
-        "despawn",
-        "add_component",
-        "remove_component",
-        "add_processor",
-        "remove_processor",
-        "update",
-        "create_world",
-        "destroy_world",
-        "fork_world",
-        "run_rollout",
-        "run_episode",
-    },
-    "admin": {"*"},
-    "player": {"spawn", "despawn", "update", "message", "custom"},
-}
 
 # ── Quotas ──
 
@@ -66,7 +38,18 @@ _TOKEN_COSTS: dict[str, int] = {
     "fork_world": 100,
     "run_rollout": 200,
     "run_episode": 500,
+    "run": 50,
+    "step": 10,
     "query_world": 5,
+    "get_world_info": 2,
+    "get_audit_history": 5,
+    "list_signatures": 2,
+    "list_processors": 2,
+    "list_hooks": 2,
+    "list_resources": 2,
+    "add_resource": 10,
+    "add_hook": 10,
+    "remove_hook": 5,
     "message": 3,
     "custom": 10,
 }
@@ -93,32 +76,17 @@ def guardrail_check(
     """Pure RBAC + quota check.
 
     Returns the token cost of ``cmd`` if allowed; raises ``PermissionError``
-    otherwise. Does NOT mutate ``_tick_counters`` or ``_daily_tokens`` — use
-    :func:`guardrail_commit` to apply the debit after the caller is certain
-    the command will actually be enqueued.
-
-    ``projected_count`` / ``projected_tokens`` let bulk callers stack
-    pre-check quota usage across a bulk without committing anything to the
-    global state until every command in the bulk passes.
-
-    The daily-token budget is rolled over lazily: before running the quota
-    check, :func:`maybe_reset_daily_tokens` clears ``_daily_tokens`` if the
-    UTC date has advanced since the last reset.
+    otherwise. Does NOT mutate counters.
     """
-    # Roll the daily budget forward if the UTC date has changed.
     maybe_reset_daily_tokens()
 
-    # 1. Permission check
-    cmd_type = cmd.type.value
-    allowed = False
-    for role in ctx.roles:
-        perms = ROLE_PERMS.get(role, set())
-        if "*" in perms or cmd_type in perms:
-            allowed = True
-            break
+    # 1. Permission check via the four-role matrix
+    allowed = any(cmd.type in COMMANDS_BY_ROLE.get(r, frozenset()) for r in ctx.roles)
 
     if not allowed:
-        raise PermissionError(f"Actor {ctx.id} with roles {ctx.roles} cannot execute '{cmd_type}'")
+        raise PermissionError(
+            f"Actor {ctx.id} with roles {sorted(ctx.roles)} cannot execute '{cmd.type.value}'"
+        )
 
     # 2. Per-tick quota
     current_count = _tick_counters.get(ctx.id, 0)
@@ -139,13 +107,7 @@ def guardrail_check(
 
 
 def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
-    """Apply the quota debit computed by previous :func:`guardrail_check` calls.
-
-    Callers MUST only invoke this after they have ensured the associated
-    commands will actually be enqueued. Bulk callers should compute the
-    projected totals via :func:`guardrail_check` and commit once at the end,
-    so a partial validation failure leaves counters untouched.
-    """
+    """Apply the quota debit after commands are confirmed enqueued."""
     if count:
         _tick_counters[ctx.id] = _tick_counters.get(ctx.id, 0) + count
     if tokens:
@@ -153,13 +115,7 @@ def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
 
 
 def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
-    """
-    Check RBAC permissions and quotas and debit the actor's counters.
-
-    Thin wrapper over :func:`guardrail_check` + :func:`guardrail_commit`
-    for single-command callers. Raises ``PermissionError`` if denied (in
-    which case no counters are mutated).
-    """
+    """Check RBAC + quotas and debit counters. Raises PermissionError if denied."""
     cost = guardrail_check(cmd, ctx)
     guardrail_commit(ctx, count=1, tokens=cost)
 
@@ -170,27 +126,14 @@ def reset_tick_counters() -> None:
 
 
 def reset_daily_tokens() -> None:
-    """Reset daily token budgets unconditionally.
-
-    Used by tests to clear state between cases, and by
-    :func:`maybe_reset_daily_tokens` once a UTC day boundary is crossed.
-    """
+    """Reset daily token budgets unconditionally."""
     global _last_reset_date
     _daily_tokens.clear()
     _last_reset_date = datetime.now(UTC).date()
 
 
 def maybe_reset_daily_tokens(now: datetime | None = None) -> bool:
-    """Clear daily token budgets iff the UTC date has advanced.
-
-    ``guardrail_allow`` calls this on every command so the "daily" in
-    ``MAX_TOKENS_PER_DAY`` actually rolls over at midnight UTC rather
-    than accumulating for the entire process lifetime. Tests can pass
-    an explicit ``now`` to exercise the rollover without touching the
-    wall clock.
-
-    Returns ``True`` if a reset was performed, ``False`` otherwise.
-    """
+    """Clear daily token budgets iff the UTC date has advanced."""
     global _last_reset_date
     current_date = (now or datetime.now(UTC)).date()
     if current_date != _last_reset_date:

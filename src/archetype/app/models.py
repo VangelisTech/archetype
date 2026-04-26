@@ -54,13 +54,28 @@ class CommandType(StrEnum):
     DESTROY_WORLD = "destroy_world"  # Cleanup child simulation
     FORK_WORLD = "fork_world"  # Clone current state to explore alternatives
 
-    # Rollout/Episode commands (for mental simulation / MCTS)
-    RUN_ROLLOUT = "run_rollout"  # Run N steps in a world
-    RUN_EPISODE = "run_episode"  # Full episode with sampled ICs
-    QUERY_WORLD = "query_world"  # Get state/results from a world
+    # Simulation control
+    STEP = "step"
+    RUN = "run"
+    RUN_ROLLOUT = "run_rollout"
+    RUN_EPISODE = "run_episode"
+
+    # Reads / introspection
+    QUERY_WORLD = "query_world"
+    GET_WORLD_INFO = "get_world_info"
+    GET_AUDIT_HISTORY = "get_audit_history"
+    LIST_SIGNATURES = "list_signatures"
+    LIST_PROCESSORS = "list_processors"
+    LIST_HOOKS = "list_hooks"
+    LIST_RESOURCES = "list_resources"
+
+    # Resource management
+    ADD_RESOURCE = "add_resource"
+    ADD_HOOK = "add_hook"
+    REMOVE_HOOK = "remove_hook"
 
     # Agent-to-agent messaging (realized at tick boundary)
-    MESSAGE = "message"  # payload: {sender_id, receiver_id, channel?, content}
+    MESSAGE = "message"
 
     # Extensible
     CUSTOM = "custom"
