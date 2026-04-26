@@ -20,8 +20,16 @@ The container is a `dict[type, object]` -- each resource is keyed by its concret
 
 Every `AsyncWorld` owns a `.resources` instance. During tick execution, `AsyncSystem.execute()` passes it into each processor's `process()` method as a keyword argument.
 
+Runtime users usually stage resources when creating a handle:
+
+```python
+world = runtime.world("sim", resources=[SimConfig(gravity=9.8)])
+```
+
+Post-activation resource attachment is a gated operator/admin action through `iCommandService.add_resource(...)`.
+
 ```text
-world.resources.insert(SimConfig(...))
+runtime.world(..., resources=[SimConfig(...)])
        |
 AsyncSystem.execute(resources=world.resources)
        |
@@ -32,11 +40,10 @@ processor.process(df, resources=resources, tick=tick)
 
 ### insert
 
-Store a resource, keyed by its type:
+Store a resource, keyed by its type. This is the core `AsyncWorld` API; runtime/API callers should use staged resources or gated resource attachment.
 
 ```python
 world.resources.insert(SimConfig(gravity=9.8))
-world.resources.insert(broker)
 ```
 
 Calling `insert()` with a second instance of the same type replaces the first.
@@ -109,7 +116,7 @@ class PhysicsProcessor(AsyncProcessor):
 
 ### Submitting Commands from Processors
 
-Processors can access the `CommandBroker` through resources to submit commands (spawn entities, send messages) from within the simulation loop:
+Processors are trusted internal code once registered. If a processor needs delayed scheduling, it may use a sanctioned broker resource or another internal path. External user actions should still go through `iCommandService`.
 
 ```python
 class SpawnerProcessor(AsyncProcessor):
@@ -130,14 +137,14 @@ class SpawnerProcessor(AsyncProcessor):
 
 ## World Forking
 
-When a world is forked, resources are copied to the new world. This lets you override parameters per-fork for counterfactual experiments:
+When a world is forked, resources are shared by default. The source and fork point at the same `Resources` instance, so mutations to a stateful resource are visible to both worlds.
 
 ```python
 fork = await world.fork()
-fork.resources.insert(PhysicsConfig(gravity=0.0))  # zero-G variant
+# fork uses the same resource instances as the source by default
 ```
 
-The fork runs with its own resource set while the original world is unaffected.
+For isolated resources, create a fork through a workflow that explicitly attaches replacement resource instances after fork. That API is outside the v1 lifecycle contract.
 
 ## Source Reference
 

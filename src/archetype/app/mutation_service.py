@@ -57,10 +57,17 @@ class MutationService:
 
     # ── Components ────────────────────────────────────────────────────────
 
+    async def update_entity(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None:
+        """Overlay component values on an existing entity (same archetype)."""
+        world = self._get_async_world(world_id)
+        await world.update_entity(entity_id, components)
+
     async def add_components(
         self, world_id: str | UUID, entity_id: int, components: list[Component]
     ) -> None:
-        """Add components to an existing entity."""
+        """Add components to an existing entity (extends archetype)."""
         world = self._get_async_world(world_id)
         await world.add_components(entity_id, components)
 

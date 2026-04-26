@@ -331,6 +331,27 @@ class AsyncWorld(iAsyncWorld):
         self.despawn_cache.setdefault(sig, []).append(entity_id)
         await self.hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
 
+    async def update_entity(self, entity_id: int, components: list[Component]) -> None:
+        """Overlay component values on an existing entity without changing its archetype.
+
+        The entity keeps its current signature. Only the supplied component
+        fields are overwritten. Used for value mutations (e.g., Position.x += 1)
+        as distinct from add_components which extends the signature.
+        """
+        sig = self.entity2sig.get(entity_id)
+        if sig is None:
+            logger.warning("update_entity: entity %s not found", entity_id)
+            return
+
+        row = await self._move_entity(entity_id, sig, sig, components)
+        if not row:
+            logger.warning("update_entity: entity %s has no prior row", entity_id)
+            return
+
+        # Mark prior row inactive, insert updated row under same sig
+        self.despawn_cache.setdefault(sig, []).append(entity_id)
+        self.spawn_cache.setdefault(sig, []).append(row)
+
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""

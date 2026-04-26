@@ -92,6 +92,17 @@ class CommandService:
         self._gate(Command(type=CommandType.DESPAWN), ctx)
         await self._mutations.remove_entity(world_id, entity_id)
 
+    async def update_entity(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        components: list[Component],
+    ) -> None:
+        """Overlay values on existing components (same archetype)."""
+        self._gate(Command(type=CommandType.UPDATE), ctx)
+        await self._mutations.update_entity(world_id, entity_id, components)
+
     async def add_components(
         self,
         ctx: ActorCtx,

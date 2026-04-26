@@ -172,10 +172,10 @@ class RuntimeWorld:
             await self._gate.remove_entity(self._ctx, wid, entity_id)
 
     async def update(self, entity_id: int, *components: Component) -> None:
-        """Overlay values on existing components."""
+        """Overlay values on existing components (same archetype)."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.add_components(self._ctx, wid, entity_id, list(components))
+            await self._gate.update_entity(self._ctx, wid, entity_id, list(components))
 
     async def add_components(self, entity_id: int, *components: Component) -> None:
         """Extend entity's archetype with new component types."""

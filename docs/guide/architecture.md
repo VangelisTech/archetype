@@ -1,153 +1,146 @@
 # Overview
 
-Archetype is a data-centric Entity-Component-System (ECS) simulation engine. World state is stored as columnar DataFrames. Every tick appends new rows to storage without overwriting previous state, which enables time-travel queries, world forking, and replay.
+Archetype is a data-centric Entity-Component-System simulation engine. World state is stored as columnar DataFrames, and each tick appends new rows instead of overwriting previous state. That storage model supports time-travel queries, forking, replay, and audit.
 
 ![Archetype architecture](../assets/archetype_diagram2.png)
 
 ## Layers
 
 ```text
-archetype.api / cli          External interface (REST + HTTP client)
+archetype.api / cli          REST API and thin HTTP client
        |
-archetype.sugar             ArchetypeRuntime, RuntimeWorld (recommended scripts)
+archetype.runtime            ArchetypeRuntime, RuntimeWorld
        |
-archetype.app                Services, RBAC, CommandBroker, WorldRegistry
+archetype.app                ServiceContainer, iCommandService, audit, broker
        |
 archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
 ```
 
-The system runs as a single `archetype serve` process. The CLI is a thin HTTP client.
-
-## Runtime Layer
-
-`ArchetypeRuntime` is the recommended script entry point. It owns the shared
-service container, gives you lazy world handles, keeps process lifetime
-separate from world lifetime, and exposes the brokered mutation surface on
-`RuntimeWorld`:
+`ArchetypeRuntime` is the recommended script boundary. It owns a `ServiceContainer`, returns lazy world handles, binds each handle to an `ActorCtx`, and forwards every operation through `iCommandService`.
 
 ```python
-from uuid_utils import uuid7
-
 from archetype import ArchetypeRuntime, Component
-from archetype.app.auth.models import ActorCtx
 
 
 class Position(Component):
     x: float = 0.0
     y: float = 0.0
 
+
 async with ArchetypeRuntime() as runtime:
     world = runtime.world("demo")
     entity_id = await world.spawn(Position(x=0, y=0))
-    admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
-    await admin.update(entity_id, Position(x=1, y=0))
     await world.run(steps=10)
 ```
 
-Drop to the service layer only when you need custom command routing,
-non-script hosting, or lower-level read-path / lifecycle control.
+Drop to `ServiceContainer` for lower-level hosting, explicit command routing, or tests that need direct service access.
 
-## Service Layer
+## Command Gate
 
-The service layer mediates all access to worlds.
+All external operations flow through `iCommandService`, the policy enforcement point.
 
-### ServiceContainer
-
-Lower-level composition root that instantiates and exposes all service-layer
-subsystems:
-
-```python
-from archetype.app.container import ServiceContainer
-
-container = ServiceContainer()
-# container.world_service     -- world lifecycle
-# container.command_service   -- command submission
-# container.simulation_service -- tick stepping
-# container.query_service     -- read path
-# container.broker            -- command queue
-# container.storage_service   -- storage backends
+```text
+Runtime / API / caller
+  -> iCommandService
+  -> guardrail_allow
+  -> delegate to one service
+  -> iAuditLog.record
+  -> return result
 ```
 
-### Command Flow
+The broker is only the queue for tick-deferred commands. It is not the authorization boundary and it is not the audit log.
 
-All mutations from external actors flow through the command pipeline:
+## Roles
 
-1. **CommandService.submit()** -- accepts a `Command` with type, payload, tick, priority
-2. **CommandBroker.enqueue()** -- validates RBAC via `ActorCtx`, enforces quotas, queues by priority
-3. **SimulationService.step()** -- drains due commands, applies them to the world, steps processors
-4. **QueryService** -- reads world state (current or historical)
+Roles are flat:
 
-### RBAC
+| Role | Intent |
+|---|---|
+| `viewer` | Read-only operations |
+| `player` | Entity participation: spawn, despawn, update, message, custom |
+| `operator` | Schema, processors, hooks, resources, simulation control, fork, destroy |
+| `admin` | All commands, including world creation |
 
-Every command submission requires an `ActorCtx` specifying the actor's roles:
+To combine capabilities, give an actor multiple roles. `operator` is not implicitly `viewer` unless both roles are present in the actor context.
 
-| Role | Permissions |
-|------|-------------|
-| `viewer` | Read-only (query, get state, get world) |
-| `player` | spawn, despawn, update, message, custom |
-| `coder` | add/remove components, update |
-| `operator` | trajectory ingestion and labeling |
-| `maintainer` | spawn, despawn, components, processors, update |
-| `admin` | All commands (wildcard) |
+See [Command Gate](command-gate.md).
 
-Quotas: 500 commands per tick, 200k token budget per day. See [Token Costs and Quotas](token-quotas.md) for details.
+## Execution
+
+The simulation hierarchy is:
+
+```text
+step     one tick
+run      N steps, no termination, no fork
+episode  step until termination/cap on the supplied world
+rollout  N forked episodes from a base world
+```
+
+See [Execution Hierarchy](execution-hierarchy.md).
 
 ## Tick Lifecycle
 
-Each `step()` call follows this sequence:
+A tick has two service-level phases:
 
 ```text
 SimulationService.step(world_id, run_config)
   |
-  1. drain_and_apply(world_id, tick)
+  1. CommandService.drain_and_apply(world_id, tick)
   |    CommandBroker.dequeue_due(world_id, tick)
-  |    CommandService.apply(world, cmd) for each command
-  |    → spawn/despawn/update mutations queue in world caches
+  |    MutationService / WorldService applies due commands
   |
-  2. reset_tick_counters()
-  |    Clear per-actor command counts for next tick
-  |
-  3. world.step(run_config)
+  2. AsyncWorld.step(run_config)
        |
-       a. For each archetype (concurrently via asyncio.gather):
-       |    i.   Query previous state from store (or _live cache)
-       |    ii.  Materialize spawn/despawn caches into the DataFrame
-       |    iii. Execute matching processors in priority order
-       |    iv.  Persist result via updater → store
-       |    v.   Update _live cache
-       |
-       b. Increment tick counter
-       c. Fire `PostTick` hooks
+       a. Query previous state
+       b. Materialize pending structural mutations
+       c. Execute matching processors
+       d. Persist appended rows
+       e. Refresh live state and hooks
 ```
 
-Commands applied in step 1 produce deferred mutations (spawn/despawn caches). Those mutations materialize in step 3a-ii of the same tick. Cross-archetype communication (messages, spawns targeting different archetypes) takes effect on the next tick.
+Processors are trusted internal code once registered. External callers do not bypass the gate.
 
-For full details: [Worlds](worlds.md) covers the internal tick cycle, [Lifecycle Hooks](hooks.md) covers typed observability events, [Data Flow](data-flow.md) covers the command pipeline, [System Execution](system-execution.md) covers processor dispatch.
+## World Lifecycle
+
+World lifecycle has three operations:
+
+- `create_world`: admin-only identity creation.
+- `fork_world`: create a new world from the source snapshot.
+- `destroy_world`: remove the live in-memory world; storage and audit rows remain.
+
+Forks receive a new `world_id`, a new `run_id`, the source tick, copied pending mutation caches, copied hook registrations, and shared processor/resource instances by default.
+
+See [World Lifecycle](world-lifecycle.md).
 
 ## Deep Dives
 
+### Specifications
+
+- [Runtime](runtime.md)
+- [Service Protocols](service-protocols.md)
+- [Command Gate](command-gate.md)
+- [Execution Hierarchy](execution-hierarchy.md)
+- [World Lifecycle](world-lifecycle.md)
+- [Audit Log](audit-log.md)
+
 ### Core
 
-The simulation engine. No auth awareness, no multi-world management.
-
-- [Archetype](archetype.md) -- signatures, naming, schemas, entity-to-table mapping
-- [Components](components.md) -- Pydantic models with Arrow serialization, column prefixing, field types
-- [Processors](processors.md) -- DataFrame transforms, resource injection, LLM integration
-- [Systems](system-execution.md) -- subset rule, priority ordering, per-archetype parallelism
-- [Worlds](worlds.md) -- tick lifecycle, deferred mutations, `_live` cache, forking
-- [Lifecycle Hooks](hooks.md) -- typed world events, async/sync handlers, hook failure policy
-- [Resources](resources.md) -- type-keyed dependency injection for world-level shared state
-- [Stores](stores.md) -- storage backends, append-only model, write-behind cache
-- [Querier](querier.md) -- filtered reads by tick, entity, and component projection
-- [Updater](updater.md) -- metadata stamping before append
-- [Configuration](run-config.md) -- RunConfig, WorldConfig, StorageConfig, CacheConfig
+- [Archetype](archetype.md)
+- [Components](components.md)
+- [Processors](processors.md)
+- [Systems](system-execution.md)
+- [Worlds](worlds.md)
+- [Lifecycle Hooks](hooks.md)
+- [Resources](resources.md)
+- [Stores](stores.md)
+- [Querier](querier.md)
+- [Updater](updater.md)
+- [Configuration](run-config.md)
 
 ### App
 
-The service layer. RBAC, command pipeline, multi-world orchestration.
-
-- [Overview](app-overview.md) -- how core connects through services to the API
-- [Services](services.md) -- ServiceContainer, dependency graph, each service's role
-- [Command Broker](broker.md) -- priority queue, RBAC guardrails, audit trail
-- [API Layer](api-layer.md) -- FastAPI routes, dependency injection, CLI
-- [Data Flow](data-flow.md) -- read/write split, command pipeline, RBAC boundary, drain cycle
+- [App Overview](app-overview.md)
+- [Services](services.md)
+- [Command Broker](broker.md)
+- [API Layer](api-layer.md)
+- [Data Flow](data-flow.md)
