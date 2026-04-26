@@ -130,7 +130,6 @@ class _RuntimeWorldState:
                 and self.world is not None
                 and (from_runtime or not self.runtime._closed)
             ):
-                await self.runtime._container.broker.clear(self.world.world_id)
                 await self.runtime._container.world_service.remove_world(self.world.world_id)
             self.closed = True
             self.world = None
@@ -158,50 +157,58 @@ class RuntimeWorld:
         return self._state.require_initialized_world()
 
     @property
-    def _mutations(self):
-        return self._state.runtime._container.mutation_service
+    def _gate(self):
+        return self._state.runtime._container.command_service
 
     async def spawn(self, *components: Component) -> int:
         """Create an entity. Returns the entity ID immediately."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            return await self._mutations.create_entity(world.world_id, list(components))
+            return await self._gate.create_entity(
+                self._actor_ctx, world.world_id, list(components)
+            )
 
     async def despawn(self, entity_id: int) -> None:
         """Remove an entity."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.remove_entity(world.world_id, entity_id)
+            await self._gate.remove_entity(self._actor_ctx, world.world_id, entity_id)
 
     async def update(self, entity_id: int, *components: Component) -> None:
         """Update components on an existing entity (add/overwrite)."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.add_components(world.world_id, entity_id, list(components))
+            await self._gate.add_components(
+                self._actor_ctx, world.world_id, entity_id, list(components)
+            )
 
     async def add_components(self, entity_id: int, *components: Component) -> None:
         """Add components to an existing entity."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.add_components(world.world_id, entity_id, list(components))
+            await self._gate.add_components(
+                self._actor_ctx, world.world_id, entity_id, list(components)
+            )
 
     async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
         """Remove components from an existing entity."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.remove_components(world.world_id, entity_id, list(component_types))
+            await self._gate.remove_components(
+                self._actor_ctx, world.world_id, entity_id, list(component_types)
+            )
 
     async def add_processor(self, processor: AsyncProcessor) -> None:
         """Add a processor to this world's system."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.add_processor(world.world_id, processor)
+            await self._gate.add_processor(self._actor_ctx, world.world_id, processor)
 
     async def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
         """Remove a processor from this world's system."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            await self._mutations.remove_processor(world.world_id, processor_type)
+            await self._gate.remove_processor(self._actor_ctx, world.world_id, processor_type)
 
     async def step(
         self,
@@ -209,14 +216,12 @@ class RuntimeWorld:
         debug: bool = False,
         config: RunConfig | None = None,
         **input_kwargs: Any,
-    ) -> int:
+    ) -> None:
         async with self._state.op_lock:
             world = await self._state.ensure_init()
             run_config = config or RunConfig(num_steps=1, debug=debug)
-            return await self._state.runtime._container.simulation_service.step(
-                world.world_id,
-                run_config,
-                **input_kwargs,
+            await self._gate.step(
+                self._actor_ctx, world.world_id, run_config, **input_kwargs
             )
 
     async def run(
@@ -230,10 +235,8 @@ class RuntimeWorld:
         async with self._state.op_lock:
             world = await self._state.ensure_init()
             run_config = config or RunConfig(num_steps=steps, debug=debug)
-            return await self._state.runtime._container.simulation_service.run(
-                world.world_id,
-                run_config,
-                **input_kwargs,
+            return await self._gate.run(
+                self._actor_ctx, world.world_id, run_config, **input_kwargs
             )
 
     async def query(
@@ -384,8 +387,8 @@ class SyncRuntimeWorld:
     def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
         self._run(lambda: self._world.remove_processor(processor_type))
 
-    def step(self, *, debug: bool = False, config: RunConfig | None = None, **kwargs: Any) -> int:
-        return self._run(lambda: self._world.step(debug=debug, config=config, **kwargs))
+    def step(self, *, debug: bool = False, config: RunConfig | None = None, **kwargs: Any) -> None:
+        self._run(lambda: self._world.step(debug=debug, config=config, **kwargs))
 
     def run(
         self,
