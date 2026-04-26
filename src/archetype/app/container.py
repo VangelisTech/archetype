@@ -14,10 +14,9 @@ from pathlib import Path
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.query_service import QueryService
-from archetype.app.registry import WorldRegistry
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldRegistry, WorldService
 
 
 class ServiceContainer:

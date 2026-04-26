@@ -5,8 +5,8 @@
 
 import pytest
 
-from archetype.app.factory import WorldFactory
 from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldFactory
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 

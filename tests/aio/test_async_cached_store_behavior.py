@@ -4,11 +4,11 @@ import daft
 import pytest
 import pytest_asyncio
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):

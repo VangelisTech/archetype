@@ -1,8 +1,7 @@
 import pytest
 
-from archetype.app.factory import WorldFactory
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldFactory, WorldService
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 

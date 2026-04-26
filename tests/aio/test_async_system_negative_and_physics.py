@@ -4,6 +4,7 @@ import pytest
 import pytest_asyncio
 from daft import col, lit
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio import (
     AsyncQueryManager,
     AsyncStore,
@@ -14,7 +15,6 @@ from archetype.core.aio import (
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):

@@ -15,7 +15,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from daft import DataFrame  # type: ignore[import-not-found]
 
@@ -33,6 +35,64 @@ if TYPE_CHECKING:
     )
 
 ArchetypeSignature = tuple[type["Component"], ...]
+T = TypeVar("T")
+_HookEventT = TypeVar("_HookEventT", bound="HookEvent")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WORLD DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class iResourceContainer(Protocol):
+    def insert(self, resource: T) -> None: ...
+    def get(self, resource_type: type[T]) -> T | None: ...
+    def require(self, resource_type: type[T]) -> T: ...
+    def remove(self, resource_type: type[T]) -> T | None: ...
+    def contains(self, resource_type: type[T]) -> bool: ...
+    def items(self) -> Iterable[tuple[type, object]]: ...
+
+
+class iAsyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
+        *,
+        mode: FireMode = "blocking",
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    async def fire(self, event: HookEvent) -> None: ...
+
+
+class iSyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: SyncHookHandler[_HookEventT],
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    def fire(self, event: HookEvent) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class AsyncWorldDescriptor:
+    querier: iAsyncQueryManager
+    updater: iAsyncUpdateManager
+    system: iAsyncSystem
+    resources: iResourceContainer
+    hooks: iAsyncHookBus
+
+
+@dataclass(frozen=True, slots=True)
+class SyncWorldDescriptor:
+    querier: iQueryManager
+    updater: iUpdateManager
+    system: iSystem
+    resources: iResourceContainer
+    hooks: iSyncHookBus
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

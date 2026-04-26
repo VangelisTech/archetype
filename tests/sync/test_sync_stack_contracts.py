@@ -11,10 +11,10 @@ import pyarrow as pa
 import pytest
 from daft import DataFrame, col
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
 from archetype.core.sync import (
     QueryManager,
     SyncProcessor,

@@ -122,7 +122,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "SyncStore": ("archetype.core", "SyncStore"),
     "AsyncStore": ("archetype.core", "AsyncStore"),
     "AsyncCachedStore": ("archetype.core", "AsyncCachedStore"),
-    "AsyncLancedbStore": ("archetype.core", "AsyncLancedbStore"),
+    "AsyncLancedbStore": ("archetype.app", "AsyncLancedbStore"),
     "Store": ("archetype.core", "SyncStore"),
     # Query/update managers (and aliases)
     "QueryManager": ("archetype.core", "QueryManager"),

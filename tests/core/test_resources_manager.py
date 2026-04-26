@@ -1,9 +1,8 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageService
 from archetype.core.aio import AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
-from archetype.core.storage import AsyncLancedbStore
 
 
 @pytest.mark.asyncio

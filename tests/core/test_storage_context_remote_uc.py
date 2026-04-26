@@ -1,8 +1,8 @@
 import pathlib
 import shutil
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 def test_storage_context_remote_uri_uses_meta_dir(tmp_path):

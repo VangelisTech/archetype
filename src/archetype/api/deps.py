@@ -12,9 +12,8 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.query_service import QueryService
-from archetype.app.registry import default_registry_path
 from archetype.app.simulation_service import SimulationService
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldService, default_registry_path
 
 # Singleton container — initialized once at app startup
 _container: ServiceContainer | None = None

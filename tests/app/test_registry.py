@@ -10,7 +10,7 @@ import json
 import pytest
 
 from archetype.app.container import ServiceContainer
-from archetype.app.registry import (
+from archetype.app.world_service import (
     REGISTRY_ENV_VAR,
     WorldRegistry,
     default_registry_path,

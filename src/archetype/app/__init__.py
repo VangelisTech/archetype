@@ -19,7 +19,6 @@ Services:
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.factory import WorldFactory
 from archetype.app.models import (
     Command,
     CommandType,
@@ -29,10 +28,23 @@ from archetype.app.models import (
     WorldSnapshot,
 )
 from archetype.app.query_service import QueryService
-from archetype.app.registry import WorldRegistry
 from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.storage_service import (
+    AsyncLancedbStore,
+    AsyncStorageFactory,
+    StorageContext,
+    StorageContextFactory,
+    StorageService,
+    SyncStorageFactory,
+)
+from archetype.app.world_service import (
+    AsyncWorldFactory,
+    SyncWorldFactory,
+    WorldFactory,
+    WorldOrchestrator,
+    WorldRegistry,
+    WorldService,
+)
 
 # Core config (re-export for convenience)
 from archetype.core import CacheConfig, RunConfig, StorageConfig, WorldConfig
@@ -46,8 +58,16 @@ __all__ = [
     "StorageService",
     "ServiceContainer",
     # Infrastructure
+    "AsyncStorageFactory",
+    "SyncStorageFactory",
+    "StorageContext",
+    "StorageContextFactory",
+    "AsyncLancedbStore",
+    "AsyncWorldFactory",
+    "SyncWorldFactory",
     "CommandBroker",
     "WorldFactory",
+    "WorldOrchestrator",
     "WorldRegistry",
     # Models
     "Command",

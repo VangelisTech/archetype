@@ -19,7 +19,7 @@ class FailingStore(AsyncStore):
 
 def build_context(tmp_path):
     # Minimal StorageContext with dummy catalog/session via factory path
-    from archetype.core.runtime.storage import StorageContextFactory
+    from archetype.app.storage_service import StorageContextFactory
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
     return StorageContextFactory.build(cfg)

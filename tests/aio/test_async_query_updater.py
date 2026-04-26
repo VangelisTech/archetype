@@ -2,6 +2,7 @@ import daft
 import pytest
 import pytest_asyncio
 
+from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_store import AsyncStore
@@ -9,8 +10,6 @@ from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Position(Component):

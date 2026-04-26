@@ -1,11 +1,11 @@
 import daft
 import pytest
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):

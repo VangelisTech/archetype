@@ -2,11 +2,10 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_service import StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageService
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.core.storage.lancedb import AsyncLancedbStore
 
 
 class Demo(Component):
@@ -66,7 +65,7 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
     uri, namespace = StorageService.resolve_location(
         StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     )
@@ -78,7 +77,7 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
 
     sig = (T,)
     # Monkeypatch Archetype.get_name to return 't'
-    monkeypatch.setattr("archetype.core.storage.lancedb.Archetype.get_name", lambda s: "t")
+    monkeypatch.setattr("archetype.app.storage_service.Archetype.get_name", lambda s: "t")
 
     with pytest.raises(RuntimeError, match="open failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
@@ -91,7 +90,7 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.core.storage.lancedb.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
     uri, namespace = StorageService.resolve_location(
         StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
     )

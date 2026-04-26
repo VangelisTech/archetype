@@ -9,20 +9,229 @@ Manages the lifecycle of multiple worlds. Renamed from WorldOrchestrator for v0.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from uuid_utils import UUID, uuid7
 
 from archetype.app.broker import CommandBroker
-from archetype.app.factory import WorldFactory
 from archetype.app.models import WorldInfo
-from archetype.app.registry import WorldRegistry
 from archetype.app.storage_service import StorageService
-from archetype.core.aio import AsyncSystem, AsyncWorld, PostTick
+from archetype.core.aio import (
+    AsyncQueryManager,
+    AsyncSystem,
+    AsyncUpdateManager,
+    AsyncWorld,
+    PostTick,
+)
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
-from archetype.core.interfaces import iAsyncSystem, iWorld
+from archetype.core.hooks import HookRegistry, SyncHookRegistry
+from archetype.core.interfaces import (
+    AsyncWorldDescriptor,
+    SyncWorldDescriptor,
+    iAsyncHookBus,
+    iAsyncSystem,
+    iResourceContainer,
+    iSyncHookBus,
+    iSystem,
+    iWorld,
+)
+from archetype.core.resources import Resources
+from archetype.core.sync import QueryManager, SyncSystem, SyncWorld, UpdateManager
+
+DEFAULT_REGISTRY_PATH = "./archetype_data/archetype_registry.json"
+REGISTRY_ENV_VAR = "ARCHETYPE_REGISTRY_PATH"
+
+
+def default_registry_path() -> Path:
+    return Path(os.environ.get(REGISTRY_ENV_VAR, DEFAULT_REGISTRY_PATH))
+
+
+class WorldRegistry:
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+
+    def load(self) -> dict[str, dict[str, Any]]:
+        if not self.path.exists():
+            return {}
+        try:
+            with self.path.open("r") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return data
+
+    def save(self, data: dict[str, dict[str, Any]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with tmp.open("w") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        tmp.replace(self.path)
+
+    def upsert(self, world_id: UUID | str, entry: dict[str, Any]) -> None:
+        data = self.load()
+        data[str(world_id)] = entry
+        self.save(data)
+
+    def delete(self, world_id: UUID | str) -> None:
+        data = self.load()
+        if data.pop(str(world_id), None) is not None:
+            self.save(data)
+
+    def list_entries(self) -> list[dict[str, Any]]:
+        return list(self.load().values())
+
+    def get(self, world_id: UUID | str) -> dict[str, Any] | None:
+        return self.load().get(str(world_id))
+
+
+class AsyncWorldFactory:
+    def __init__(self, storage_service: StorageService):
+        self._storage_service = storage_service
+
+    async def build_world_descriptor(
+        self,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None = None,
+        *,
+        system: iAsyncSystem | None = None,
+        resources: iResourceContainer | None = None,
+        hooks: iAsyncHookBus | None = None,
+    ) -> AsyncWorldDescriptor:
+        store = await self._storage_service.create_store(storage_config, cache_config)
+        return AsyncWorldDescriptor(
+            querier=AsyncQueryManager(store=store),
+            updater=AsyncUpdateManager(store=store),
+            system=system or AsyncSystem(),
+            resources=resources or Resources(),
+            hooks=hooks or HookRegistry(),
+        )
+
+    async def create_world(
+        self,
+        world_config: WorldConfig,
+        descriptor: AsyncWorldDescriptor,
+    ) -> iWorld:
+        world = AsyncWorld(
+            world_config=world_config,
+            querier=descriptor.querier,
+            updater=descriptor.updater,
+            system=descriptor.system,
+        )
+        world.resources = descriptor.resources
+        world._hooks = descriptor.hooks
+        return world
+
+
+class SyncWorldFactory:
+    def __init__(self, storage_service: StorageService):
+        self._storage_service = storage_service
+
+    def build_world_descriptor(
+        self,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None = None,
+        *,
+        system: iSystem | None = None,
+        resources: iResourceContainer | None = None,
+        hooks: iSyncHookBus | None = None,
+    ) -> SyncWorldDescriptor:
+        uri, _, session = self._storage_service.build_session_with_metadata(storage_config)
+        from archetype.core.sync import SyncStore
+
+        store = SyncStore(uri, session, io_config=storage_config.io_config)
+        return SyncWorldDescriptor(
+            querier=QueryManager(store=store),
+            updater=UpdateManager(store=store),
+            system=system or SyncSystem(),
+            resources=resources or Resources(),
+            hooks=hooks or SyncHookRegistry(),
+        )
+
+    def create_sync_world(
+        self,
+        world_config: WorldConfig,
+        descriptor: SyncWorldDescriptor,
+    ) -> iWorld:
+        world = SyncWorld(
+            world_config=world_config,
+            querier=descriptor.querier,
+            updater=descriptor.updater,
+            system=descriptor.system,
+        )
+        world.resources = descriptor.resources
+        world._hooks = descriptor.hooks
+        return world
+
+
+class WorldFactory:
+    def __init__(self, storage_service: StorageService):
+        self.async_factory = AsyncWorldFactory(storage_service)
+        self.sync_factory = SyncWorldFactory(storage_service)
+
+    async def build_world_descriptor(
+        self,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None = None,
+        *,
+        system: iAsyncSystem | None = None,
+        resources: iResourceContainer | None = None,
+        hooks: iAsyncHookBus | None = None,
+    ) -> AsyncWorldDescriptor:
+        return await self.async_factory.build_world_descriptor(
+            storage_config,
+            cache_config,
+            system=system,
+            resources=resources,
+            hooks=hooks,
+        )
+
+    async def create_world(
+        self,
+        world_config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        system: iAsyncSystem | None = None,
+        descriptor: AsyncWorldDescriptor | None = None,
+    ) -> iWorld:
+        if descriptor is None:
+            if storage_config is None:
+                storage_config = StorageConfig()
+            descriptor = await self.build_world_descriptor(
+                storage_config,
+                cache_config,
+                system=system,
+            )
+        return await self.async_factory.create_world(world_config, descriptor)
+
+    def build_sync_world_descriptor(
+        self,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None = None,
+        *,
+        system: iSystem | None = None,
+        resources: iResourceContainer | None = None,
+        hooks: iSyncHookBus | None = None,
+    ) -> SyncWorldDescriptor:
+        return self.sync_factory.build_world_descriptor(
+            storage_config,
+            cache_config,
+            system=system,
+            resources=resources,
+            hooks=hooks,
+        )
+
+    def create_sync_world(
+        self,
+        world_config: WorldConfig,
+        descriptor: SyncWorldDescriptor,
+    ) -> iWorld:
+        return self.sync_factory.create_sync_world(world_config, descriptor)
 
 
 def _world_entity_count(world: iWorld) -> int:
@@ -38,7 +247,7 @@ def _world_entity_count(world: iWorld) -> int:
     return len(getattr(world, "_entity2sig", {}))
 
 
-class WorldService:
+class WorldOrchestrator:
     """
     Manages the lifecycle of multiple worlds.
 
@@ -347,6 +556,10 @@ class WorldService:
             registry.upsert(world_id, cached_entry)
 
         world.add_hook(PostTick, _sync_tick)
+
+
+class WorldService(WorldOrchestrator):
+    pass
 
 
 def _ensure_storage_uri_writable(storage_config: StorageConfig) -> None:

@@ -172,8 +172,8 @@ def _make_sync_world(tmp_path, name="test"):
 def _make_sync_world_with_catalog(tmp_path, name="test"):
     """Helper to construct a SyncWorld backed by a real catalog so
     ``world.step`` can actually persist rows."""
+    from archetype.app.storage_service import StorageContextFactory
     from archetype.core.config import StorageConfig
-    from archetype.core.runtime.storage import StorageContextFactory
 
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
     ctx = StorageContextFactory.build(cfg)

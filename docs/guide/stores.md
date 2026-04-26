@@ -57,7 +57,7 @@ Remote warehouses store data in the cloud but keep catalog metadata locally in a
 | `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
 | `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
-Legacy imports from `archetype.core.runtime.storage` remain available as
+Storage context helpers live in `archetype.app.storage_service` as
 compatibility shims for the old `StorageContext` name. New code should use the
 Daft-native session and app-level factories.
 

@@ -5,9 +5,9 @@ import uuid_utils as uuid
 from daft import DataFrame
 
 from archetype import StorageConfig
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core import Archetype, Component
 from archetype.core.aio import AsyncCachedStore, AsyncStore
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 class Position(Component):

@@ -28,7 +28,7 @@ class TestDefaultStorageDurable:
     @pytest.mark.asyncio
     async def test_default_create_world_uses_lancedb(self, tmp_path, monkeypatch):
         """Without an explicit StorageConfig, the factory wires LanceDB."""
-        from archetype.core.storage import AsyncLancedbStore
+        from archetype.app.storage_service import AsyncLancedbStore
 
         monkeypatch.chdir(tmp_path)
 

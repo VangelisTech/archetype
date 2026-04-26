@@ -1,7 +1,7 @@
 import pathlib
 
+from archetype.app.storage_service import StorageContextFactory
 from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
 
 
 def test_storage_context_requires_absolute_path_for_local(tmp_path):
