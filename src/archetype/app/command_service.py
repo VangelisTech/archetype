@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow
-from archetype.app.models import Command, CommandType
+from archetype.app.models import Command, CommandType, WorldInfo
 
 if TYPE_CHECKING:
     from daft import DataFrame
@@ -35,7 +35,14 @@ if TYPE_CHECKING:
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import ArchetypeSignature, iWorld
 
-    from archetype.app.models import RunResult
+    from archetype.app.models import (
+        EpisodeConfig,
+        EpisodeResult,
+        RolloutConfig,
+        RolloutResult,
+        RunResult,
+        WorldInfo,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -131,9 +138,35 @@ class CommandService:
         config: WorldConfig,
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
-    ) -> iWorld:
+    ) -> WorldInfo:
         self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
-        return await self._worlds.create_world(config, storage_config, cache_config)
+        world = await self._worlds.create_world(config, storage_config, cache_config)
+        return WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
+
+    async def fork_world(
+        self,
+        ctx: ActorCtx,
+        source_world_id: str | UUID,
+        name: str | None = None,
+        *,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> WorldInfo:
+        self._gate(Command(type=CommandType.FORK_WORLD), ctx)
+        world = await self._worlds.fork_world(
+            source_world_id, name, storage_config, cache_config
+        )
+        return WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
 
     async def destroy_world(
         self,
@@ -141,7 +174,22 @@ class CommandService:
         world_id: str | UUID,
     ) -> None:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
+        await self._broker.clear(world_id)
         await self._worlds.destroy_world(world_id)
+
+    async def get_world_info(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> WorldInfo:
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        world = self._worlds.get_world(UUID(str(world_id)))
+        return WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
@@ -164,6 +212,32 @@ class CommandService:
     ) -> RunResult:
         self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
         return await self._simulation.run(world_id, run_config, **input_kwargs)
+
+    async def run_episode(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        config: EpisodeConfig,
+        **input_kwargs,
+    ) -> EpisodeResult:
+        """Gate, then delegate to SimulationService.run_episode."""
+        self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
+        return await self._simulation.run_episode(world_id, config, **input_kwargs)
+
+    async def run_rollout(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        config: RolloutConfig,
+        **input_kwargs,
+    ) -> RolloutResult:
+        """Gate, then delegate to SimulationService.run_rollout.
+
+        Emits ONE rollout-level audit row, not one per fork.
+        Internal forks are SimulationService's mechanics.
+        """
+        self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
+        return await self._simulation.run_rollout(world_id, config, **input_kwargs)
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
 
