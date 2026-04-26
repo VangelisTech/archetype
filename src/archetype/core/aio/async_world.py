@@ -165,23 +165,27 @@ class AsyncWorld(iAsyncWorld):
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
     ) -> DataFrame:
         "Atomic sequence of a world step with a dedicated execution and materialization helper for future remote operators."
+        import logfire
 
-        df = await self.query_archetype(
-            sig=sig,
-            run_id=self.run_id,
-            ticks=[self.tick - 1],
-            entity_ids=None,
-            components=None,
-        )
+        sig_name = Archetype.get_name(sig)
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self.materialize_mutations(df, sig)
+        with logfire.span("world.query", sig=sig_name, tick=self.tick):
+            df = await self.query_archetype(
+                sig=sig,
+                run_id=self.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=None,
+                components=None,
+            )
 
-        # 3. Execute Processors for this archetype via system
-        df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+        with logfire.span("world.materialize", sig=sig_name, tick=self.tick):
+            df = self.materialize_mutations(df, sig)
 
-        # 4. Update (returns materialized df with tick/world/run/entity_id set)
-        df_mat = await self.update(df, sig, run_config)
+        with logfire.span("world.execute", sig=sig_name, tick=self.tick):
+            df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+
+        with logfire.span("world.update", sig=sig_name, tick=self.tick):
+            df_mat = await self.update(df, sig, run_config)
 
         return df_mat
 
