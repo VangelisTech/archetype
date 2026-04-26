@@ -27,6 +27,10 @@ class ArchetypeRuntime:
     """Process-level runtime. Owns the container and default identity."""
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None) -> None:
+        import logfire
+
+        logfire.configure(service_name="archetype-runtime")
+
         self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or default_actor_ctx()
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
