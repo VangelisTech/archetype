@@ -310,12 +310,13 @@ class iCommandService(Protocol):
     ) -> WorldInfo: ...
     async def destroy_world(self, ctx: ActorCtx, world_id: str | UUID) -> None: ...
     async def get_world_info(self, ctx: ActorCtx, world_id: str | UUID) -> WorldInfo: ...
+    async def list_worlds(self, ctx: ActorCtx) -> list[WorldInfo]: ...
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
     async def step(
         self, ctx: ActorCtx, world_id: str | UUID, run_config: RunConfig, **input_kwargs
-    ) -> None: ...
+    ) -> int: ...
     async def run(
         self, ctx: ActorCtx, world_id: str | UUID, run_config: RunConfig, **input_kwargs
     ) -> RunResult: ...
@@ -364,6 +365,17 @@ class iCommandService(Protocol):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         components: list[type[Component]] | None = None,
+    ) -> DataFrame: ...
+    async def query_components(
+        self,
+        ctx: ActorCtx,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
     ) -> DataFrame: ...
     async def list_signatures(
         self, ctx: ActorCtx, storage_config: StorageConfig | None = None

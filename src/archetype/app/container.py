@@ -41,8 +41,8 @@ class ServiceContainer:
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
-        self.query_service = QueryService(self.storage_service)
         self.audit_log = AuditLog(self.storage_service)
+        self.query_service = QueryService(self.storage_service, self.audit_log)
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -57,6 +57,7 @@ class ServiceContainer:
             broker=self.broker,
             audit=self.audit_log,
         )
+        self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

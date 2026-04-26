@@ -3,12 +3,12 @@ import pytest
 import pytest_asyncio
 
 from archetype.core.aio.async_cached_store import AsyncCachedStore
+from archetype.core.aio.async_lancedb_store import AsyncLancedbStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.aio.async_lancedb_store import AsyncLancedbStore
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.runtime.session import configure_session
 

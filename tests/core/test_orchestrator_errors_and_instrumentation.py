@@ -1,8 +1,8 @@
 import pytest
 import uuid_utils as uuid
 
-from tests.conftest import make_world_service
 from archetype.core.config import StorageConfig, WorldConfig
+from tests.conftest import make_world_service
 
 
 @pytest.mark.asyncio

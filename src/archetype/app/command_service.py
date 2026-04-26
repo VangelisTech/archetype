@@ -35,14 +35,6 @@ if TYPE_CHECKING:
     from archetype.app.audit_log import AuditLog
     from archetype.app.auth.models import ActorCtx
     from archetype.app.broker import CommandBroker
-    from archetype.app.mutation_service import MutationService
-    from archetype.app.query_service import QueryService
-    from archetype.app.simulation_service import SimulationService
-    from archetype.app.world_service import WorldService
-    from archetype.core.component import Component
-    from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-    from archetype.core.interfaces import ArchetypeSignature
-
     from archetype.app.models import (
         EpisodeConfig,
         EpisodeResult,
@@ -51,6 +43,13 @@ if TYPE_CHECKING:
         RunResult,
         WorldInfo,
     )
+    from archetype.app.mutation_service import MutationService
+    from archetype.app.query_service import QueryService
+    from archetype.app.simulation_service import SimulationService
+    from archetype.app.world_service import WorldService
+    from archetype.core.component import Component
+    from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+    from archetype.core.interfaces import ArchetypeSignature
 
 logger = logging.getLogger(__name__)
 
@@ -182,12 +181,14 @@ class CommandService:
     ) -> WorldInfo:
         self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
         world = await self._worlds.create_world(config, storage_config, cache_config)
-        return WorldInfo(
+        info = WorldInfo(
             world_id=world.world_id,
             name=world.name,
             tick=getattr(world, "tick", 0),
             run_id=getattr(world, "run_id", None),
         )
+        await self._emit(ctx, "create_world", info.world_id)
+        return info
 
     async def fork_world(
         self,
@@ -200,12 +201,14 @@ class CommandService:
     ) -> WorldInfo:
         self._gate(Command(type=CommandType.FORK_WORLD), ctx)
         world = await self._worlds.fork_world(source_world_id, name, storage_config, cache_config)
-        return WorldInfo(
+        info = WorldInfo(
             world_id=world.world_id,
             name=world.name,
             tick=getattr(world, "tick", 0),
             run_id=getattr(world, "run_id", None),
         )
+        await self._emit(ctx, "fork_world", info.world_id)
+        return info
 
     async def destroy_world(
         self,
@@ -224,14 +227,30 @@ class CommandService:
         ctx: ActorCtx,
         world_id: str | UUID,
     ) -> WorldInfo:
-        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
         world = self._worlds.get_world(UUID(str(world_id)))
-        return WorldInfo(
+        info = WorldInfo(
             world_id=world.world_id,
             name=world.name,
             tick=getattr(world, "tick", 0),
             run_id=getattr(world, "run_id", None),
         )
+        await self._emit(ctx, "get_world_info", world_id)
+        return info
+
+    async def list_worlds(self, ctx: ActorCtx) -> list[WorldInfo]:
+        self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
+        worlds = [
+            WorldInfo(
+                world_id=world.world_id,
+                name=world.name,
+                tick=getattr(world, "tick", 0),
+                run_id=getattr(world, "run_id", None),
+            )
+            for world in self._worlds.list_worlds()
+        ]
+        await self._emit(ctx, "list_worlds")
+        return worlds
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
@@ -241,10 +260,11 @@ class CommandService:
         world_id: str | UUID,
         run_config: RunConfig,
         **input_kwargs,
-    ) -> None:
+    ) -> int:
         self._gate(Command(type=CommandType.STEP), ctx)
-        await self._simulation.step(world_id, run_config, **input_kwargs)
+        commands_applied = await self._simulation.step(world_id, run_config, **input_kwargs)
         await self._emit(ctx, "step", world_id)
+        return commands_applied
 
     async def run(
         self,
@@ -454,6 +474,17 @@ class CommandService:
 
     # ── Tick-deferred path (queued) ───────────────────────────────────────
 
+    @staticmethod
+    def _normalize_submit_args(ctx, world_id, command_or_commands):
+        """Accept canonical and pre-refactor positional submit ordering."""
+        from archetype.app.auth.models import ActorCtx
+
+        if isinstance(ctx, ActorCtx):
+            return ctx, world_id, command_or_commands
+        if isinstance(command_or_commands, ActorCtx):
+            return command_or_commands, ctx, world_id
+        raise TypeError("submit expects (ctx, world_id, command) or (world_id, command, ctx)")
+
     async def submit(
         self,
         ctx: ActorCtx,
@@ -461,8 +492,10 @@ class CommandService:
         cmd: Command,
     ) -> UUID:
         """Gate, then enqueue for application at cmd.tick."""
+        ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
         self._gate(cmd, ctx)
         await self._broker.enqueue(world_id, cmd)
+        await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
         return cmd.id
 
     async def submit_batch(
@@ -472,9 +505,12 @@ class CommandService:
         cmds: list[Command],
     ) -> list[UUID]:
         """Gate all-or-nothing, then enqueue atomically."""
+        ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
         for cmd in cmds:
             self._gate(cmd, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)
+        for cmd in cmds:
+            await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
         return [cmd.id for cmd in cmds]
 
     async def submit_spawn(
@@ -506,6 +542,7 @@ class CommandService:
         try:
             self._gate(cmd, ctx)
             await self._broker.enqueue(world_id, cmd)
+            await self._emit(ctx, "spawn", world_id, command_id=cmd.id, status="queued")
         except Exception:
             # Roll back the reserved id
             if world.next_entity_id == entity_id + 1:
@@ -540,13 +577,33 @@ class CommandService:
 
         return applied
 
+    @staticmethod
+    def _hydrate_components(payload_components) -> list[Component]:
+        from archetype.core.component import Component
+
+        return [
+            component if isinstance(component, Component) else Component.from_dict(component)
+            for component in payload_components
+        ]
+
+    @staticmethod
+    def _hydrate_component_types(payload_types) -> list[type[Component]]:
+        from archetype.core.component import Component
+
+        return [
+            component_type
+            if isinstance(component_type, type) and issubclass(component_type, Component)
+            else Component.get_type_by_name(str(component_type))
+            for component_type in payload_types
+        ]
+
     async def _apply(self, world_id: str | UUID, cmd: Command) -> None:
         """Dispatch a single command to the appropriate mutation."""
         payload = cmd.payload
 
         match cmd.type:
             case CommandType.SPAWN:
-                components = payload.get("components", [])
+                components = self._hydrate_components(payload.get("components", []))
                 entity_id = payload.get("entity_id")
                 if entity_id is not None:
                     # Deferred spawn with reserved id — use create_entity
@@ -559,11 +616,11 @@ class CommandService:
                 await self._mutations.remove_entity(world_id, payload["entity_id"])
 
             case CommandType.ADD_COMPONENT:
-                components = payload.get("components", [])
+                components = self._hydrate_components(payload.get("components", []))
                 await self._mutations.add_components(world_id, payload["entity_id"], components)
 
             case CommandType.REMOVE_COMPONENT:
-                component_types = payload.get("component_types", [])
+                component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await self._mutations.remove_components(
                     world_id, payload["entity_id"], component_types
                 )

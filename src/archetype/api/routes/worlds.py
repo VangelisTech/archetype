@@ -1,121 +1,90 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""World routes.
+"""World lifecycle routes."""
 
-Mutations (create, remove, fork) flow through the CommandBroker via
-CommandService so they get RBAC validation, audit history, and the
-broker's asyncio.Lock serialization for free.
-"""
+from fastapi import APIRouter, Depends, Response, status
 
-from fastapi import APIRouter, Depends, HTTPException
-from uuid_utils import UUID
-
-from archetype.api.deps import get_actor_ctx, get_command_service, get_world_service
-from archetype.api.models import CreateWorldRequest, ForkWorldRequest, WorldResponse
+from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.errors import raise_api_error
+from archetype.api.models import CreateWorldRequest, ForkWorldRequest
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
-from archetype.app.models import Command, CommandType
-from archetype.app.world_service import WorldService
+from archetype.app.models import WorldInfo
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
 
-@router.post("", response_model=WorldResponse)
+@router.post("", response_model=WorldInfo, status_code=status.HTTP_201_CREATED)
 async def create_world(
     req: CreateWorldRequest,
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    cmd = Command(
-        type=CommandType.CREATE_WORLD,
-        tick=0,
-        payload={
-            "config": {"name": req.name},
-            "storage_uri": req.storage_uri,
-            "namespace": req.namespace,
-        },
-    )
-    await cs.submit("__global__", cmd, ctx)
-    world = await cs.apply_world_lifecycle(cmd)
-    return WorldResponse(
-        world_id=str(world.world_id),
-        name=getattr(world, "name", None),
-        tick=getattr(world, "tick", 0),
-        entity_count=len(getattr(world, "entity2sig", {})),
-    )
-
-
-@router.get("")
-async def list_worlds(ws: WorldService = Depends(get_world_service)):
-    worlds = ws.list_worlds()
-    return [
-        WorldResponse(
-            world_id=str(w.world_id),
-            name=w.name,
-            tick=w.tick,
-            entity_count=len(getattr(w, "entity2sig", {})),
-        )
-        for w in worlds
-    ]
-
-
-@router.get("/{world_id}", response_model=WorldResponse)
-async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)):
+    """Create a world. Requires admin."""
     try:
-        world = ws.get_world(UUID(world_id))
-        return WorldResponse(
-            world_id=str(world.world_id),
-            name=getattr(world, "name", None),
-            tick=getattr(world, "tick", 0),
-            entity_count=len(getattr(world, "entity2sig", {})),
-        )
-    except ValueError:
-        raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"World {world_id} not found") from None
+        return await cs.create_world(ctx, req.world_config(), req.storage(), req.cache_config)
+    except Exception as exc:
+        raise_api_error(exc, conflict=True)
 
 
-@router.delete("/{world_id}")
-async def remove_world(
+@router.get("", response_model=list[WorldInfo])
+async def list_worlds(
+    cs: CommandService = Depends(get_command_service),
+    ctx: ActorCtx = Depends(get_actor_ctx),
+):
+    """List live worlds. Requires admin."""
+    try:
+        return await cs.list_worlds(ctx)
+    except Exception as exc:
+        raise_api_error(exc)
+
+
+@router.get("/{world_id}", response_model=WorldInfo)
+async def get_world(
     world_id: str,
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    cmd = Command(
-        type=CommandType.DESTROY_WORLD,
-        tick=0,
-        payload={"world_id": world_id},
-    )
-    await cs.submit("__global__", cmd, ctx)
-    await cs.apply_world_lifecycle(cmd)
-    return {"status": "removed", "world_id": world_id}
+    """Get world metadata. Requires viewer, player, operator, or admin."""
+    try:
+        return await cs.get_world_info(ctx, world_id)
+    except Exception as exc:
+        raise_api_error(exc)
 
 
-@router.post("/{world_id}/fork", response_model=WorldResponse)
+@router.delete("/{world_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def destroy_world(
+    world_id: str,
+    cs: CommandService = Depends(get_command_service),
+    ctx: ActorCtx = Depends(get_actor_ctx),
+):
+    """Drop the in-memory world instance. Persisted storage and audit rows are retained.
+
+    Requires operator or admin. Destroying an unknown world is a no-op.
+    """
+    try:
+        await cs.destroy_world(ctx, world_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except Exception as exc:
+        raise_api_error(exc)
+
+
+@router.post("/{world_id}/fork", response_model=WorldInfo, status_code=status.HTTP_201_CREATED)
 async def fork_world(
     world_id: str,
     req: ForkWorldRequest,
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    cmd = Command(
-        type=CommandType.FORK_WORLD,
-        tick=0,
-        payload={
-            "source_world_id": world_id,
-            "config": {"name": req.name},
-        },
-    )
-    await cs.submit("__global__", cmd, ctx)
+    """Fork a world. Requires operator or admin."""
     try:
-        new_world = await cs.apply_world_lifecycle(cmd)
-    except (KeyError, TypeError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e)) from None
-
-    return WorldResponse(
-        world_id=str(new_world.world_id),
-        name=getattr(new_world, "name", None),
-        tick=getattr(new_world, "tick", 0),
-        entity_count=len(getattr(new_world, "entity2sig", {})),
-    )
+        return await cs.fork_world(
+            ctx,
+            world_id,
+            req.name,
+            storage_config=req.storage_config,
+            cache_config=req.cache_config,
+        )
+    except Exception as exc:
+        raise_api_error(exc)

@@ -18,9 +18,8 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
-
 from archetype.runtime._actor import default_actor_ctx
-from archetype.runtime._config import coerce_storage, coerce_cache
+from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
 
 

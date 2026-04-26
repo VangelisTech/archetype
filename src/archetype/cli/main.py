@@ -53,6 +53,8 @@ def _check_server(client: httpx.Client) -> None:
 def _handle_response(resp: httpx.Response) -> dict | list:
     """Return JSON on success, print error and exit on failure."""
     if resp.is_success:
+        if resp.status_code == 204 or not resp.content:
+            return {}
         return resp.json()
     try:
         detail = resp.json().get("detail", resp.text)

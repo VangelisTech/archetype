@@ -15,7 +15,6 @@ from archetype.app.storage_service import _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
-from archetype.runtime.session import configure_session
 from archetype.core.hooks import SyncHookRegistry
 from archetype.core.resources import Resources
 from archetype.core.sync import (
@@ -26,6 +25,7 @@ from archetype.core.sync import (
     SyncWorld,
     UpdateManager,
 )
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):

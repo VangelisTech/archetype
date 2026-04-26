@@ -11,6 +11,7 @@ Internal forks go through WorldService directly — not gated.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
@@ -34,17 +35,29 @@ class SimulationService:
 
     def __init__(self, world_service: WorldService) -> None:
         self._world_service = world_service
+        self._drain_commands: Callable[[str | UUID, int], Awaitable[object]] | None = None
+
+    def set_command_drain(
+        self,
+        drain_commands: Callable[[str | UUID, int], Awaitable[object]],
+    ) -> None:
+        self._drain_commands = drain_commands
 
     async def step(
         self,
         world_id: str | UUID,
         run_config: RunConfig,
         **input_kwargs,
-    ) -> None:
+    ) -> int:
         """Advance a world by one tick."""
         world = self._world_service.get_world(UUID(str(world_id)))
+        commands_applied = 0
+        if self._drain_commands is not None:
+            applied = await self._drain_commands(world_id, getattr(world, "tick", 0))
+            commands_applied = len(applied) if hasattr(applied, "__len__") else 0
         if isinstance(world, AsyncWorld):
             await world.step(run_config, **input_kwargs)
+        return commands_applied
 
     async def run(
         self,
@@ -58,14 +71,15 @@ class SimulationService:
         if isinstance(world, AsyncWorld) and world.run_id is None:
             world.run_id = str(run_config.run_id)
 
+        commands_applied = 0
         for _ in range(run_config.num_steps):
-            await self.step(world_id, run_config, **input_kwargs)
+            commands_applied += await self.step(world_id, run_config, **input_kwargs)
 
         return RunResult(
             run_id=run_config.run_id,
             world_id=world_id,
             ticks_completed=run_config.num_steps,
-            commands_applied=0,
+            commands_applied=commands_applied,
             final_tick=getattr(world, "tick", 0),
         )
 

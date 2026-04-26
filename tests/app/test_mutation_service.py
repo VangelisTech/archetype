@@ -144,8 +144,9 @@ async def test_remove_components_narrows_archetype(tmp_path):
 @pytest.mark.asyncio
 async def test_add_and_remove_processor(tmp_path):
     """add_processor and remove_processor modify the world's system."""
-    from archetype.core.aio.async_processor import AsyncProcessor
     from daft import DataFrame
+
+    from archetype.core.aio.async_processor import AsyncProcessor
 
     class NoopProcessor(AsyncProcessor):
         components = (Position,)

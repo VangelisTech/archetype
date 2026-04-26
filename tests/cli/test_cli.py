@@ -55,9 +55,8 @@ def _patch_request(api_client):
 
     def _fake_request(method: str, path: str, **kwargs):
         resp = getattr(api_client, method)(path, **kwargs)
-        if resp.is_success:
-            return resp.json()
-        # Let failures propagate the same way the real _request does
+        # Let success and failure propagate the same way the real _request does,
+        # including 204 No Content responses.
         from archetype.cli import main as cli_mod
 
         return cli_mod._handle_response(resp)

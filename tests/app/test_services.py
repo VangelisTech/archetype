@@ -14,8 +14,8 @@ from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 from archetype.core.component import Component
-from tests.conftest import make_world_service
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from tests.conftest import make_world_service
 
 
 class _ListWorldsPos(Component):
@@ -56,7 +56,7 @@ class TestSimulationService:
             world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
             result = await container.simulation_service.step(world.world_id, RunConfig())
-            assert result is None  # step returns None
+            assert result == 0
         finally:
             await container.shutdown()
 

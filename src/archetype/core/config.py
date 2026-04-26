@@ -14,14 +14,24 @@
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import uuid_utils as uuid
 from daft.catalog import Catalog  # noqa: F401
 from daft.io import IOConfig
 from daft.session import Session  # noqa: F401
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PlainSerializer, WithJsonSchema, field_validator
 from uuid_utils import UUID
+
+JsonUUID = Annotated[
+    UUID,
+    PlainSerializer(lambda value: str(value), return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "format": "uuid"}),
+]
+JsonIOConfig = Annotated[
+    IOConfig,
+    WithJsonSchema({"type": "object", "additionalProperties": True}),
+]
 
 
 class StorageBackend(Enum):
@@ -52,7 +62,7 @@ class StorageConfig(BaseModel):
         default=StorageBackend.LANCEDB,
         description="Storage backend engine: 'iceberg' or 'lancedb (default)'",
     )
-    io_config: IOConfig | None = Field(
+    io_config: JsonIOConfig | None = Field(
         default=None,
         description="Native Daft I/O configuration passed to Iceberg storage read/write operations.",
     )
@@ -105,7 +115,7 @@ class RunConfig(BaseModel):
           and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity.
     """
 
-    run_id: UUID = Field(
+    run_id: str | JsonUUID = Field(
         default_factory=uuid.uuid7,
         description="The unique identifier for the run sequence, a uuid7",
     )
@@ -166,7 +176,7 @@ class WorldConfig(BaseModel):
     constructor so all state is explicit and serializable.
     """
 
-    world_id: str | UUID | None = Field(
+    world_id: str | JsonUUID | None = Field(
         default_factory=uuid.uuid7,
         description="Unique identifier for the world. Auto-generated if omitted.",
     )

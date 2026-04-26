@@ -94,6 +94,11 @@ class AsyncWorld(iAsyncWorld):
         self.spawn_cache = spawn_cache if spawn_cache is not None else {}
         self.despawn_cache = despawn_cache if despawn_cache is not None else {}
 
+    @property
+    def _entity2sig(self):
+        """Compatibility alias for pre-refactor evals and diagnostics."""
+        return self.entity2sig
+
     async def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Runs the world for the given run configuration.

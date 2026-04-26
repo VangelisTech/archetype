@@ -53,7 +53,9 @@ def create_async_store(
         uri = _resolve_uri(str(config.uri))
         store = AsyncLancedbStore(uri, config.namespace)
     else:
-        sess = session or Session()
+        from archetype.runtime.session import configure_session
+
+        sess = configure_session(config, session or Session())
         store = AsyncStore(sess, io_config=config.io_config)
 
     if isinstance(cache_config, bool):
@@ -71,7 +73,12 @@ def create_sync_store(
 ) -> SyncStore:
     """Create a sync store from a StorageConfig."""
     uri = _resolve_uri(str(config.uri))
-    sess = session or Session()
+    if config.backend == StorageBackend.ICEBERG:
+        from archetype.runtime.session import configure_session
+
+        sess = configure_session(config, session or Session())
+    else:
+        sess = session or Session()
     return SyncStore(uri, sess, io_config=config.io_config)
 
 

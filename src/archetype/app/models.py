@@ -22,7 +22,7 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
-from archetype.core.config import RunConfig
+from archetype.core.config import JsonUUID, RunConfig
 
 # Global sequence counter for command ordering
 _SEQ = count()
@@ -65,6 +65,7 @@ class CommandType(StrEnum):
     GET_WORLD_INFO = "get_world_info"
     GET_AUDIT_HISTORY = "get_audit_history"
     LIST_SIGNATURES = "list_signatures"
+    LIST_WORLDS = "list_worlds"
     LIST_PROCESSORS = "list_processors"
     LIST_HOOKS = "list_hooks"
     LIST_RESOURCES = "list_resources"
@@ -152,16 +153,16 @@ class WorldInfo(BaseModel):
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
     # str | UUID: worlds store str internally; gate accepts both
-    world_id: str | UUID
+    world_id: str | JsonUUID
     name: str | None = None
     tick: int = 0
-    run_id: str | UUID | None = None
+    run_id: str | JsonUUID | None = None
 
 
 class RunResult(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
-    run_id: UUID
-    world_id: str | UUID
+    run_id: str | JsonUUID
+    world_id: str | JsonUUID
     ticks_completed: int = 0
     commands_applied: int = 0
     final_tick: int = 0
@@ -171,7 +172,7 @@ class EpisodeConfig(BaseModel):
     """Configuration for a single episode (bounded simulation run)."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    episode_id: UUID = Field(default_factory=uuid.uuid7)
+    episode_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
     run_config: RunConfig = Field(default_factory=RunConfig)
     max_steps: int = 1000
     terminal_component: Any | None = None
@@ -182,7 +183,7 @@ class RolloutConfig(BaseModel):
     """Configuration for a rollout (N episodes forked from a base world)."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    rollout_id: UUID = Field(default_factory=uuid.uuid7)
+    rollout_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
     episode_config: EpisodeConfig = Field(default_factory=EpisodeConfig)
     num_episodes: int = 1
     parallel: bool = False
@@ -194,8 +195,8 @@ class EpisodeResult(BaseModel):
     """Result of a single episode."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    episode_id: UUID
-    world_id: str | UUID
+    episode_id: str | JsonUUID
+    world_id: str | JsonUUID
     final_tick: int = 0
     terminated: bool = False
     duration_steps: int = 0
@@ -205,8 +206,8 @@ class RolloutResult(BaseModel):
     """Result of a rollout (N episodes)."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    rollout_id: UUID
-    base_world_id: str | UUID
+    rollout_id: str | JsonUUID
+    base_world_id: str | JsonUUID
     episodes: list[EpisodeResult] = Field(default_factory=list)
     num_episodes: int = 0
     total_duration_steps: int = 0

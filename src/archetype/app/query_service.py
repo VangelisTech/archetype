@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from daft import DataFrame
 
+from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
 from archetype.core.component import Component
@@ -26,8 +27,9 @@ class QueryService:
     get_or_create_store, so any historical storage location is reachable.
     """
 
-    def __init__(self, storage_service: StorageService) -> None:
+    def __init__(self, storage_service: StorageService, audit=None) -> None:
         self._storage_service = storage_service
+        self._audit = audit
 
     async def query_archetype(
         self,
@@ -91,3 +93,26 @@ class QueryService:
         store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
         querier = AsyncQueryManager(store=store)
         return await querier.list_signatures()
+
+    async def get_command_history(
+        self,
+        world_id: str,
+        limit: int = 100,
+    ) -> list[Command]:
+        """Compatibility read for pre-gate callers; queued command history only."""
+        if self._audit is None:
+            return []
+
+        rows = [
+            row
+            for row in self._audit._rows
+            if str(row.world_id) == str(world_id) and row.status == "queued"
+        ][-limit:]
+        result: list[Command] = []
+        for row in rows:
+            try:
+                command_type = CommandType(row.command_type)
+            except ValueError:
+                command_type = CommandType.CUSTOM
+            result.append(Command(id=row.command_id, type=command_type))
+        return result

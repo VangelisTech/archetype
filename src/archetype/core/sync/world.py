@@ -15,12 +15,11 @@
 from logging import getLogger
 from typing import Any, TypeVar
 
-from uuid_utils import uuid7
-
 import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
+from uuid_utils import uuid7
 
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component

@@ -248,7 +248,7 @@ class RuntimeWorld:
         cache: CacheConfig | None = None,
     ) -> RuntimeWorld:
         """Fork this world. Returns a new handle."""
-        from archetype.runtime._config import coerce_storage, coerce_cache
+        from archetype.runtime._config import coerce_cache, coerce_storage
 
         async with self._state.op_lock:
             wid = await self._ensure_id()

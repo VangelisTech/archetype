@@ -1,9 +1,8 @@
 import pytest
 
-from tests.conftest import make_world_service
-
 from archetype.core.aio import AsyncWorld
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from tests.conftest import make_world_service
 
 
 @pytest.mark.asyncio
