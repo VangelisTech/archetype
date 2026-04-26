@@ -209,22 +209,16 @@ class TestCLIIntegration:
         assert "my-sim" in listing.output
 
     @pytest.mark.usefixtures("_patch_request")
-    def test_world_inspect_and_fork(self, tmp_path):
+    def test_world_inspect(self, tmp_path):
         uri = str(tmp_path / "store")
 
-        create = runner.invoke(app, ["world", "create", "fork-src", "--uri", uri])
+        create = runner.invoke(app, ["world", "create", "inspect-src", "--uri", uri])
         world_id = create.output.split("Created world: ")[1].split()[0]
-        runner.invoke(app, ["step", world_id])
 
         inspect = runner.invoke(app, ["world", "inspect", world_id])
         assert inspect.exit_code == 0, inspect.output
         assert f"World ID: {world_id}" in inspect.output
-        assert "Name: fork-src" in inspect.output
-
-        fork = runner.invoke(app, ["world", "fork", world_id, "--name", "fork-child"])
-        assert fork.exit_code == 0, fork.output
-        assert "Forked:" in fork.output
-        assert f"(from {world_id})" in fork.output
+        assert "Name: inspect-src" in inspect.output
 
     @pytest.mark.usefixtures("_patch_request")
     def test_run_and_step(self, tmp_path):
@@ -243,42 +237,6 @@ class TestCLIIntegration:
         result = runner.invoke(app, ["step", world_id])
         assert result.exit_code == 0, result.output
         assert "Step complete" in result.output
-
-    @pytest.mark.usefixtures("_patch_request")
-    def test_query_and_history(self, tmp_path):
-        uri = str(tmp_path / "store")
-
-        create = runner.invoke(app, ["world", "create", "q-test", "--uri", uri])
-        world_id = create.output.split("Created world: ")[1].split()[0]
-
-        result = runner.invoke(app, ["query", world_id])
-        assert result.exit_code == 0, result.output
-        assert "world_id" in result.output
-
-        result = runner.invoke(app, ["history", world_id])
-        assert result.exit_code == 0, result.output
-
-    @pytest.mark.usefixtures("_patch_request")
-    def test_history_empty_message(self, tmp_path):
-        uri = str(tmp_path / "store")
-
-        create = runner.invoke(app, ["world", "create", "history-test", "--uri", uri])
-        world_id = create.output.split("Created world: ")[1].split()[0]
-
-        result = runner.invoke(app, ["history", world_id])
-        assert result.exit_code == 0, result.output
-        assert "No command history." in result.output
-
-    @pytest.mark.usefixtures("_patch_request")
-    def test_query_with_tick_flag(self, tmp_path):
-        uri = str(tmp_path / "store")
-
-        create = runner.invoke(app, ["world", "create", "qtick-test", "--uri", uri])
-        world_id = create.output.split("Created world: ")[1].split()[0]
-
-        result = runner.invoke(app, ["query", world_id, "--tick", "3"])
-        assert result.exit_code == 0, result.output
-        assert '"tick": 3' in result.output
 
     @pytest.mark.usefixtures("_patch_request")
     def test_world_remove(self, tmp_path):

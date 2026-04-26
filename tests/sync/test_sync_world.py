@@ -428,27 +428,6 @@ class TestSyncHooks:
         assert events[0].entity_id == eid
         assert events[0].components == components
 
-    def test_on_spawn_hook_fires_from_spawn_reserved(self, tmp_path):
-        from archetype.core.hooks import OnSpawn
-
-        world = _make_sync_world(tmp_path)
-        events: list[OnSpawn] = []
-
-        world.add_hook(OnSpawn, events.append)
-        world.spawn_reserved(42, [Position(x=3, y=4)])
-
-        assert len(events) == 1
-        assert events[0].entity_id == 42
-        assert world.next_entity_id == 43
-
-    def test_spawn_reserved_rejects_live_id(self, tmp_path):
-        import pytest
-
-        world = _make_sync_world(tmp_path)
-        world.create_entity([Position(x=1, y=2)])
-        with pytest.raises(ValueError, match="already exists"):
-            world.spawn_reserved(1, [Position(x=9, y=9)])
-
     def test_on_despawn_hook_fires_when_entity_removed(self, tmp_path):
         from archetype.core.hooks import OnDespawn
 

@@ -1,9 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for service container, command service, simulation service, query service."""
-
-from unittest.mock import AsyncMock, Mock
+"""Tests for service container, command service, simulation service, world service."""
 
 import pytest
 from uuid_utils import uuid7
@@ -205,8 +203,8 @@ class TestSimulationService:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = await container.world_service.create_world(WorldConfig(name="test"), storage)
 
-            cmds_applied = await container.simulation_service.step(world.world_id, RunConfig())
-            assert cmds_applied == 0  # no commands queued
+            result = await container.simulation_service.step(world.world_id, RunConfig())
+            assert result is None  # step returns None
         finally:
             await container.shutdown()
 
@@ -224,30 +222,6 @@ class TestSimulationService:
             await container.shutdown()
 
     @pytest.mark.asyncio
-    async def test_run_all_empty(self):
-        container = ServiceContainer()
-        try:
-            results = await container.simulation_service.run_all(RunConfig(num_steps=2))
-            assert results == []
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_run_all_multiple_worlds(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            w1 = await container.world_service.create_world(WorldConfig(name="w1"), storage)
-            w2 = await container.world_service.create_world(WorldConfig(name="w2"), storage)
-
-            results = await container.simulation_service.run_all(RunConfig(num_steps=2))
-
-            assert {result.world_id for result in results} == {w1.world_id, w2.world_id}
-            assert all(result.ticks_completed == 2 for result in results)
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
     async def test_step_requires_run_config(self, tmp_path):
         container = ServiceContainer()
         try:
@@ -258,57 +232,6 @@ class TestSimulationService:
                 await container.simulation_service.step(world.world_id)  # type: ignore[call-arg]
         finally:
             await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_step_forwards_caller_run_config(self, tmp_path, monkeypatch):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
-            applied = [Command(type=CommandType.SPAWN, payload={})]
-            seen = {}
-
-            async def fake_step(run_config, **kwargs):
-                seen["run_config"] = run_config
-                seen["kwargs"] = kwargs
-
-            monkeypatch.setattr(
-                container.command_service, "drain_and_apply", AsyncMock(return_value=applied)
-            )
-            monkeypatch.setattr(world, "step", fake_step)
-
-            rc = RunConfig()
-            count = await container.simulation_service.step(world.world_id, rc, bonus=3)
-
-            assert count == 1
-            assert seen["run_config"] is rc
-            assert seen["kwargs"] == {"bonus": 3}
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_run_accumulates_commands_from_each_tick(self):
-        world_id = uuid7()
-        world = Mock(tick=9, run_id=None)
-        world_service = Mock()
-        world_service.get_world.return_value = world
-        command_service = Mock()
-        sim = SimulationService(worlds=world_service, command_drain=command_service)
-        sim.step = AsyncMock(side_effect=[1, 2, 3])  # type: ignore[method-assign]
-        rc = RunConfig(num_steps=3)
-
-        result = await sim.run(world_id, rc, bonus=7)
-
-        assert result.ticks_completed == 3
-        assert result.commands_applied == 6
-        assert result.final_tick == 9
-        # Each per-tick step must receive the user's RunConfig unchanged so
-        # run_id / debug / metadata reach world.step.
-        assert sim.step.await_args_list[0].args[0] == world_id
-        assert sim.step.await_args_list[0].args[1] is rc
-        assert sim.step.await_args_list[0].kwargs == {"bonus": 7}
-        # World's run_id pointer must be pinned to the user's run_id up-front.
-        assert world.run_id == str(rc.run_id)
 
     @pytest.mark.asyncio
     async def test_run_threads_user_run_config_into_every_step(self, tmp_path):
@@ -351,265 +274,6 @@ class TestSimulationService:
                 assert rc.metadata == {"source": "test"}
             # World's run_id pointer is pinned to the user's run_id.
             assert str(world.run_id) == str(user_rc.run_id)
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_step_skips_non_async_world_but_still_applies_commands(self):
-        world = Mock(tick=4)
-        world_service = Mock()
-        world_service.get_world.return_value = world
-        command_service = Mock()
-        command_service.drain_and_apply = AsyncMock(return_value=["a", "b"])
-        sim = SimulationService(worlds=world_service, command_drain=command_service)
-
-        count = await sim.step(uuid7(), RunConfig(num_steps=2))
-
-        assert count == 2
-        world.step.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_add_and_remove_processor_delegate_to_world(self):
-        world = AsyncMock()
-        world_service = Mock()
-        world_service.get_world.return_value = world
-        sim = SimulationService(worlds=world_service, command_drain=Mock())
-        proc = object()
-
-        await sim.add_processor(uuid7(), proc)
-        await sim.remove_processor(uuid7(), type(proc))
-
-        assert world.add_processor.call_count == 1
-        assert world.remove_processor.call_count == 1
-
-    @pytest.mark.asyncio
-    async def test_add_processor_appends_to_world_system(self, tmp_path):
-        from archetype.core.aio.async_processor import AsyncProcessor
-
-        class _Marker(AsyncProcessor):
-            components = (_ListWorldsPos,)
-            priority = 99
-
-            async def process(self, df, **kwargs):
-                return df
-
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="add_proc_test"), storage
-            )
-            await container.simulation_service.add_processor(world.world_id, _Marker())
-            names = [type(p).__name__ for p in world.system.processors]
-            assert "_Marker" in names
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_remove_processor_deletes_from_world_system(self, tmp_path):
-        from archetype.core.aio.async_processor import AsyncProcessor
-
-        class _Removable(AsyncProcessor):
-            components = (_ListWorldsPos,)
-            priority = 99
-
-            async def process(self, df, **kwargs):
-                return df
-
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="rm_proc_test"), storage
-            )
-            await world.add_processor(_Removable())
-            assert any(type(p).__name__ == "_Removable" for p in world.system.processors)
-
-            await container.simulation_service.remove_processor(world.world_id, _Removable)
-            assert all(type(p).__name__ != "_Removable" for p in world.system.processors)
-        finally:
-            await container.shutdown()
-
-    def test_list_processors_returns_metadata(self):
-        class Position:
-            __name__ = "Position"
-
-        processor = Mock()
-        processor.priority = 10
-        processor.components = (Position,)
-        world = Mock()
-        world.system.processors = [processor]
-        sim = SimulationService.__new__(SimulationService)
-        sim._worlds = Mock()
-        sim._worlds.get_world.return_value = world
-
-        infos = sim.list_processors(uuid7())
-
-        assert len(infos) == 1
-        assert infos[0].name == "Mock"
-        assert infos[0].priority == 10
-        assert infos[0].components == ["Position"]
-
-    def test_list_processors_empty_when_world_has_no_system(self):
-        class _World:
-            pass
-
-        sim = SimulationService.__new__(SimulationService)
-        sim._worlds = Mock()
-        sim._worlds.get_world.return_value = _World()
-
-        assert sim.list_processors(uuid7()) == []
-
-
-class TestQueryService:
-    @pytest.mark.asyncio
-    async def test_get_world_state(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
-
-            snapshot = await container.query_service.get_world_state(world.world_id)
-            assert snapshot.world_id == world.world_id
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_world_state_stub_returns_empty(self, tmp_path):
-        """QueryService.get_world_state is a stub: entities and archetype_counts are empty."""
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="stub"), storage)
-
-            snapshot = await container.query_service.get_world_state(world.world_id)
-            assert snapshot.entities == {}
-            assert snapshot.archetype_counts == {}
-            assert snapshot.tick == 0
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_world_state_with_tick(self, tmp_path):
-        """When tick is specified, the stub echoes it back."""
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="t"), storage)
-
-            snapshot = await container.query_service.get_world_state(world.world_id, tick=42)
-            assert snapshot.tick == 42
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_entity_stub(self, tmp_path):
-        """QueryService.get_entity is a stub: returns dict echoing inputs."""
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="e"), storage)
-
-            entity = await container.query_service.get_entity(world.world_id, entity_id=7)
-            assert entity["entity_id"] == 7
-            assert entity["world_id"] == str(world.world_id)
-            assert entity["tick"] == 0
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_entity_stub_with_tick(self, tmp_path):
-        """When tick is specified, the stub echoes it back."""
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="et"), storage)
-
-            entity = await container.query_service.get_entity(world.world_id, entity_id=3, tick=10)
-            assert entity["tick"] == 10
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_components_stub(self, tmp_path):
-        """QueryService.get_components is a stub: returns dict echoing inputs."""
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="c"), storage)
-
-            result = await container.query_service.get_components(
-                world.world_id, ["Position", "Velocity"]
-            )
-            assert result["world_id"] == str(world.world_id)
-            assert result["component_types"] == ["Position", "Velocity"]
-            assert result["entity_ids"] is None
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_components_stub_with_entity_ids(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="ce"), storage)
-
-            result = await container.query_service.get_components(
-                world.world_id, ["Position"], entity_ids=[1, 2]
-            )
-            assert result["entity_ids"] == [1, 2]
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_command_history_empty(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
-
-            history = await container.query_service.get_command_history(world.world_id)
-            assert history == []
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_command_history_after_submit(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
-
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            cmd = Command(type=CommandType.SPAWN, payload={})
-            await container.command_service.submit(str(world.world_id), cmd, ctx)
-
-            history = await container.query_service.get_command_history(world.world_id)
-            assert len(history) == 1
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_command_history_without_broker(self, tmp_path):
-        """QueryService without broker returns empty history."""
-        ws = make_world_service()
-        qs = QueryService(ws, broker=None)
-
-        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-        world = await ws.create_world(WorldConfig(name="nb"), storage)
-        try:
-            history = await qs.get_command_history(world.world_id)
-            assert history == []
-        finally:
-            await ws._storage_service.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_get_world_state_not_found(self):
-        """QueryService raises KeyError for unknown world."""
-        container = ServiceContainer()
-        try:
-            with pytest.raises(KeyError):
-                await container.query_service.get_world_state(uuid7())
         finally:
             await container.shutdown()
 

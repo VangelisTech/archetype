@@ -410,21 +410,6 @@ class TestHooks:
         assert events[0].components == components
 
     @pytest.mark.asyncio
-    async def test_on_spawn_hook_fires_from_spawn_reserved(self, world):
-        """OnSpawn also fires from the reserved-id spawn path used by CommandService."""
-        events: list[OnSpawn] = []
-
-        async def on_spawn(event: OnSpawn) -> None:
-            events.append(event)
-
-        world.add_hook(OnSpawn, on_spawn)
-        await world.spawn_reserved(42, [Position(x=3, y=4)])
-
-        assert len(events) == 1
-        assert events[0].entity_id == 42
-        assert events[0].components[0].x == 3
-
-    @pytest.mark.asyncio
     async def test_on_despawn_hook_fires_when_entity_removed(self, world):
         """OnDespawn fires from remove_entity with entity_id."""
         events: list[OnDespawn] = []

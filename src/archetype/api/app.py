@@ -15,9 +15,6 @@ from archetype.api.routes import commands, query, simulation, worlds
 async def lifespan(app: FastAPI):
     """Application lifespan: initialize and shutdown ServiceContainer."""
     container = get_container()
-    # Rehydrate any worlds recorded by previous CLI/API invocations so
-    # state is shared across processes.
-    await container.world_service.discover_worlds()
     try:
         yield
     finally:

@@ -714,46 +714,6 @@ async def test_runtime_world_add_processor_applies_at_tick_boundary(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runtime_world_commands_are_audited_in_broker_history_in_order(tmp_path):
-    async with ArchetypeRuntime() as app:
-        world = app.world(
-            "audit",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_audit"),
-        )
-
-        entity_id = await world.spawn(Position(x=1.0))
-        await world.add_processor(Noop())
-        await world.step()
-        await world.despawn(entity_id)
-
-        history = await world.command_history()
-        assert [cmd.type.value for cmd in history] == ["spawn", "add_processor", "despawn"]
-
-
-@pytest.mark.asyncio
-async def test_runtime_world_component_mutations_are_audited_in_broker_history_in_order(tmp_path):
-    async with ArchetypeRuntime() as app:
-        world = app.world(
-            "component-audit",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_component_audit"),
-        )
-
-        entity_id = await world.spawn(Position(x=1.0, y=1.0))
-        await world.step()
-        await world.update(entity_id, Position(x=5.0, y=6.0))
-        await world.add_components(entity_id, Health(hp=90, max_hp=100))
-        await world.remove_components(entity_id, Health)
-
-        history = await world.command_history()
-        assert [cmd.type.value for cmd in history] == [
-            "spawn",
-            "update",
-            "add_component",
-            "remove_component",
-        ]
-
-
-@pytest.mark.asyncio
 async def test_runtime_world_spawn_respects_actor_permissions(tmp_path):
     async with ArchetypeRuntime(actor_ctx=ActorCtx(id=uuid7(), roles={"viewer"})) as app:
         world = app.world(
@@ -763,49 +723,6 @@ async def test_runtime_world_spawn_respects_actor_permissions(tmp_path):
 
         with pytest.raises(PermissionError):
             await world.spawn(Position(x=1.0))
-
-
-@pytest.mark.asyncio
-async def test_runtime_world_resource_mutation_does_not_generate_broker_history(tmp_path):
-    async with ArchetypeRuntime() as app:
-        world = app.world(
-            "resources",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_resources"),
-        )
-
-        await world.query(Position)
-        before = await world.command_history()
-        world.resources.insert(Delta(2.0))
-        after = await world.command_history()
-
-        assert before == []
-        assert after == []
-
-
-@pytest.mark.asyncio
-async def test_runtime_world_hook_mutation_does_not_generate_broker_history(tmp_path):
-    from archetype.core.hooks import PostTick
-
-    hook_ticks: list[int] = []
-
-    async def on_post_tick(event: PostTick) -> None:
-        hook_ticks.append(event.tick)
-
-    async with ArchetypeRuntime() as app:
-        world = app.world(
-            "hooks",
-            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_hooks"),
-        )
-
-        await world.query(Position)
-        before = await world.command_history()
-        handle = world.add_hook(PostTick, on_post_tick)
-        world.remove_hook(handle)
-        after = await world.command_history()
-
-        assert before == []
-        assert after == []
-        assert hook_ticks == []
 
 
 @pytest.mark.asyncio
@@ -993,14 +910,6 @@ def test_sync_runtime_world_supports_mutation_parity_and_actor_aliases(tmp_path)
         assert len(rows) == 1
         assert rows[0]["position__x"] == 4.0
         assert rows[0]["position__y"] == 6.0
-
-        history = world.command_history()
-        assert [cmd.type.value for cmd in history] == [
-            "spawn",
-            "update",
-            "add_component",
-            "remove_component",
-        ]
 
 
 def test_sync_world_rejects_use_after_runtime_context_exit(tmp_path):

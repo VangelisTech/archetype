@@ -13,7 +13,7 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
-from archetype.app.models import Command, CommandType, RunResult
+from archetype.app.models import Command, RunResult
 from archetype.core.aio import AsyncProcessor, AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
@@ -157,120 +157,51 @@ class RuntimeWorld:
     def _require_initialized_world(self) -> AsyncWorld:
         return self._state.require_initialized_world()
 
-    async def _submit(self, cmd: Command) -> UUID:
+    @property
+    def _mutations(self):
+        return self._state.runtime._container.mutation_service
+
+    async def spawn(self, *components: Component) -> int:
+        """Create an entity. Returns the entity ID immediately."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            return await self._state.runtime._container.command_service.submit(
-                world.world_id,
-                cmd,
-                self._actor_ctx,
-            )
+            return await self._mutations.create_entity(world.world_id, list(components))
 
-    async def spawn(
-        self,
-        *components: Component,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> int:
+    async def despawn(self, entity_id: int) -> None:
+        """Remove an entity."""
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            return await self._state.runtime._container.command_service.submit_spawn(
-                world.world_id,
-                list(components),
-                self._actor_ctx,
-                tick=tick,
-                priority=priority,
-            )
+            await self._mutations.remove_entity(world.world_id, entity_id)
 
-    async def despawn(self, entity_id: int, *, tick: int = 0, priority: int = 0) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.DESPAWN,
-                tick=tick,
-                priority=priority,
-                payload={"entity_id": entity_id},
-            )
-        )
+    async def update(self, entity_id: int, *components: Component) -> None:
+        """Update components on an existing entity (add/overwrite)."""
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            await self._mutations.add_components(world.world_id, entity_id, list(components))
 
-    async def update(
-        self,
-        entity_id: int,
-        *components: Component,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.UPDATE,
-                tick=tick,
-                priority=priority,
-                payload={"entity_id": entity_id, "components": list(components)},
-            )
-        )
+    async def add_components(self, entity_id: int, *components: Component) -> None:
+        """Add components to an existing entity."""
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            await self._mutations.add_components(world.world_id, entity_id, list(components))
 
-    async def add_components(
-        self,
-        entity_id: int,
-        *components: Component,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.ADD_COMPONENT,
-                tick=tick,
-                priority=priority,
-                payload={"entity_id": entity_id, "components": list(components)},
-            )
-        )
+    async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
+        """Remove components from an existing entity."""
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            await self._mutations.remove_components(world.world_id, entity_id, list(component_types))
 
-    async def remove_components(
-        self,
-        entity_id: int,
-        *component_types: type[Component],
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.REMOVE_COMPONENT,
-                tick=tick,
-                priority=priority,
-                payload={"entity_id": entity_id, "component_types": list(component_types)},
-            )
-        )
+    async def add_processor(self, processor: AsyncProcessor) -> None:
+        """Add a processor to this world's system."""
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            await self._mutations.add_processor(world.world_id, processor)
 
-    async def add_processor(
-        self,
-        processor: AsyncProcessor,
-        *,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.ADD_PROCESSOR,
-                tick=tick,
-                priority=priority,
-                payload={"processor": processor},
-            )
-        )
-
-    async def remove_processor(
-        self,
-        processor_type: type[AsyncProcessor],
-        *,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return await self._submit(
-            Command(
-                type=CommandType.REMOVE_PROCESSOR,
-                tick=tick,
-                priority=priority,
-                payload={"processor_type": processor_type},
-            )
-        )
+    async def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
+        """Remove a processor from this world's system."""
+        async with self._state.op_lock:
+            world = await self._state.ensure_init()
+            await self._mutations.remove_processor(world.world_id, processor_type)
 
     async def step(
         self,
@@ -432,69 +363,26 @@ class SyncRuntimeWorld:
         runner = self._runtime._require_runner()
         return runner.run(factory())
 
-    def spawn(self, *components: Component, tick: int = 0, priority: int = 0) -> int:
-        return self._run(lambda: self._world.spawn(*components, tick=tick, priority=priority))
+    def spawn(self, *components: Component) -> int:
+        return self._run(lambda: self._world.spawn(*components))
 
-    def despawn(self, entity_id: int, *, tick: int = 0, priority: int = 0) -> UUID:
-        return self._run(lambda: self._world.despawn(entity_id, tick=tick, priority=priority))
+    def despawn(self, entity_id: int) -> None:
+        self._run(lambda: self._world.despawn(entity_id))
 
-    def update(
-        self,
-        entity_id: int,
-        *components: Component,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return self._run(
-            lambda: self._world.update(entity_id, *components, tick=tick, priority=priority)
-        )
+    def update(self, entity_id: int, *components: Component) -> None:
+        self._run(lambda: self._world.update(entity_id, *components))
 
-    def add_components(
-        self,
-        entity_id: int,
-        *components: Component,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return self._run(
-            lambda: self._world.add_components(entity_id, *components, tick=tick, priority=priority)
-        )
+    def add_components(self, entity_id: int, *components: Component) -> None:
+        self._run(lambda: self._world.add_components(entity_id, *components))
 
-    def remove_components(
-        self,
-        entity_id: int,
-        *component_types: type[Component],
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return self._run(
-            lambda: self._world.remove_components(
-                entity_id,
-                *component_types,
-                tick=tick,
-                priority=priority,
-            )
-        )
+    def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
+        self._run(lambda: self._world.remove_components(entity_id, *component_types))
 
-    def add_processor(
-        self,
-        processor: AsyncProcessor,
-        *,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return self._run(lambda: self._world.add_processor(processor, tick=tick, priority=priority))
+    def add_processor(self, processor: AsyncProcessor) -> None:
+        self._run(lambda: self._world.add_processor(processor))
 
-    def remove_processor(
-        self,
-        processor_type: type[AsyncProcessor],
-        *,
-        tick: int = 0,
-        priority: int = 0,
-    ) -> UUID:
-        return self._run(
-            lambda: self._world.remove_processor(processor_type, tick=tick, priority=priority)
-        )
+    def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
+        self._run(lambda: self._world.remove_processor(processor_type))
 
     def step(self, *, debug: bool = False, config: RunConfig | None = None, **kwargs: Any) -> int:
         return self._run(lambda: self._world.step(debug=debug, config=config, **kwargs))
