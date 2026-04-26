@@ -319,9 +319,30 @@ uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
 uv run python examples/05_llm_agents.py
 uv run python examples/06_trajectory_analysis.py
+uv run python examples/07_hooks.py
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py` require `OPENAI_API_KEY`.
+
+## Observability
+
+Archetype ships with [Logfire](https://pydantic.dev/logfire) integration at three levels:
+
+**Gate spans** — every `CommandService` method is instrumented with `@logfire.instrument`. You see operation type, world_id, actor_id, and duration for every gated call.
+
+**Step phases** — inside each tick, four spans cover query/materialize/execute/update. This tells you whether time is in store I/O or processor compute.
+
+**Simulation hooks** — opt-in per-tick and per-entity event tracing:
+
+```python
+from archetype.contrib.logfire_observer import logfire_hooks
+
+world = runtime.world("demo", processors=[...], hooks=logfire_hooks())
+```
+
+The runtime calls `logfire.configure()` automatically. Python stdlib logging is bridged into Logfire via `LogfireLoggingHandler`, so all `logger.*` calls throughout the codebase appear as Logfire events.
+
+For the FastAPI server, `logfire.instrument_fastapi` auto-traces every route.
 
 ## Development
 
