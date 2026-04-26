@@ -1,24 +1,28 @@
 # Services
 
-The service layer mediates all external access to worlds. It enforces RBAC, manages storage lifecycles, and drives the simulation loop. The core layer has no knowledge of auth, commands, or multi-world management -- all of that lives here.
+The service layer wraps the core ECS engine with multi-world management, command governance, audit history, and storage lifecycle. The core layer has no knowledge of actors, roles, commands, or process-level orchestration.
+
+For normative signatures, see [Service Protocols](service-protocols.md).
 
 ```text
 archetype.app
-  ServiceContainer          Wires everything; single construction point
+  ServiceContainer          Wires everything
     |
-    +-- StorageService       Multiton (uri, namespace) -> (store, querier, updater)
-    +-- CommandBroker        Priority queue with RBAC guard
-    +-- WorldRegistry?       Optional persistent JSON discovery
+    +-- StorageService       Multiton storage pool
+    +-- CommandBroker        Pure priority queue
+    +-- AuditLog             Append-only audit rows
     |
-    +-- WorldService         World lifecycle, forking, name lookup
-    +-- CommandService       Submit, drain, apply commands
-    +-- SimulationService    Tick stepping (drain -> reset -> step)
-    +-- QueryService         Read-only access, no ActorCtx
+    +-- WorldService         World lifecycle, lookup, fork, destroy
+    +-- MutationService      Entity, component, and processor mutations
+    +-- SimulationService    Step, run, episode, rollout
+    +-- QueryService         Internal storage-backed reads
+    |
+    +-- CommandService       The gate: auth, audit, delegation
 ```
 
 ## ServiceContainer
 
-`ServiceContainer` is the single point of construction. It wires services in dependency order:
+`ServiceContainer` is the lower-level composition root. Script users usually start with `ArchetypeRuntime`; host processes and tests use `ServiceContainer` when they need explicit service wiring.
 
 ```python
 from archetype.app.container import ServiceContainer
@@ -26,143 +30,144 @@ from archetype.app.container import ServiceContainer
 container = ServiceContainer()
 ```
 
-### Dependency Chain
+Construction is synchronous. Storage backends are opened lazily on first use.
 
-Construction order matters because each service depends on the ones above it:
+## Dependency Graph
+
+Services depend only on lower tiers:
 
 ```text
-StorageService                    (no dependencies)
-CommandBroker                     (no dependencies)
-WorldRegistry?                    (optional, from registry_path)
-    |
-WorldService(StorageService, CommandBroker, WorldRegistry?)
-    |
-CommandService(CommandBroker, WorldService)
-    |
-SimulationService(WorldService, CommandService)
-QueryService(WorldService, CommandBroker)
+iStorageService
+    ↑             ↑                              ↑
+iWorldService     iQueryService           iAuditLog
+    ↑               ↑                              ↑
+iMutationService    iSimulationService            |
+    ↑               ↑              ↑              ↑
+    └───────────────┴──────────────┴──────────────┘
+                          ↑
+                   iCommandBroker
+                          ↑
+                   iCommandService
 ```
 
-`ServiceContainer.__init__` builds the full graph synchronously. No async initialization is required -- storage backends are created lazily on first use.
-
-### Registry
-
-Pass `registry_path` to enable persistent world discovery across server restarts:
-
-```python
-container = ServiceContainer(registry_path="./worlds.json")
-```
-
-`WorldRegistry` stores a JSON array of world entries (world_id, name, storage_uri, namespace, tick). On startup, `WorldService.discover_worlds()` rehydrates each entry through `create_world()`, restoring tick counters from the registry.
-
-A typed `PostTick` hook is automatically attached to each world to keep the registry tick in sync. The hook captures the entry in a closure so each tick writes without read-modify-write races. See [Lifecycle Hooks](hooks.md) for hook semantics.
+`iCommandService` is the only `ActorCtx`-aware service. It is also the only service the runtime calls.
 
 ## StorageService
 
-Manages shared storage backends using a multiton pattern. For any `(uri, namespace)` pair, only one `(store, querier, updater)` triplet is created and reused.
+`StorageService` creates and pools async stores. It is a multiton keyed by effective storage configuration.
 
 ```python
-store, querier, updater = await container.storage_service.get_backend(
-    storage_config, cache_config
+store = await container.storage_service.get_or_create_store(
+    storage_config,
+    cache_config,
 )
 ```
 
-Backend selection:
-
-| `storage_config.backend` | Store class |
-|--------------------------|-------------|
-| `StorageBackend.LANCEDB` (default) | `AsyncLancedbStore` |
-| `StorageBackend.ICEBERG` | `AsyncStore` (Iceberg via Daft catalog) |
-
-If a `CacheConfig` is provided, the store is wrapped in `AsyncCachedStore` for write-behind caching. See [Stores](stores.md) for backend details.
-
-Creation is guarded by per-key `asyncio.Lock` to prevent duplicate instantiation under concurrent access.
+See [Stores](stores.md) for backend behavior.
 
 ## WorldService
 
-Manages the lifecycle of multiple worlds: creation, lookup, forking, and shutdown.
+`WorldService` manages live world instances:
 
-### create_world
+- `create_world` establishes a new world identity.
+- `fork_world` snapshots a source world into a new world identity.
+- `destroy_world` removes the live in-memory world from the registry.
+- lookup methods return live `iWorld` objects for internal service callers.
 
-Idempotent -- if a world with the given `world_id` already exists, returns the existing instance. Otherwise:
+External callers do not receive live `iWorld` objects. `iCommandService` downgrades lifecycle returns to `WorldInfo`.
 
-1. Delegates to `WorldFactory` to build an `AsyncWorld` with the correct storage triplet (see [App Overview -- The Integration Seam](app-overview.md#the-integration-seam-worldfactory))
-2. Injects the `CommandBroker` into `world.resources` so processors can submit commands
-3. Registers the world by ID and name
-4. Persists the entry to the registry (if configured)
-5. Attaches a `PostTick` hook for registry sync
+World lifecycle details are normative in [World Lifecycle](world-lifecycle.md).
 
-### fork_world
+## MutationService
 
-Creates a new world from a snapshot of an existing one. See [Worlds -- Forking Internals](worlds.md#forking-internals) for the cloning algorithm.
+`MutationService` mutates world contents after the gate has authorized the operation:
 
-### Lookup
+- create and remove entities
+- update existing components
+- add and remove component types
+- add and remove processors
 
-```python
-world = container.world_service.get_world(world_id)
-world = container.world_service.get_world_by_name("my-sim")
-worlds = container.world_service.list_worlds()
-```
-
-## CommandService
-
-Owns the submit-drain-apply pipeline for all external mutations. See [Command Broker](broker.md) for the queue internals and RBAC details.
-
-### submit
-
-Accepts a `Command` with type, payload, tick, and priority. Requires an `ActorCtx`. The broker's `guardrail_allow()` enforces RBAC, per-tick quota (500 commands), and daily token budget (200k tokens) before enqueueing.
-
-### drain_and_apply
-
-Called by `SimulationService.step()`. Dequeues all commands where `cmd.tick <= current_tick`, applies each to the target world, and acknowledges on success.
-
-### apply
-
-Pattern-matches on `CommandType` and calls the corresponding `AsyncWorld` mutation. See [Data Flow -- Command Dispatch](data-flow.md#command-dispatch) for the full dispatch table.
+It has no `ActorCtx` parameter. Authorization belongs to `iCommandService`.
 
 ## SimulationService
 
-Drives the per-tick simulation loop:
+`SimulationService` owns the execution hierarchy:
 
-```python
-await container.simulation_service.step(world_id, run_config)
-```
+- `step`: one tick
+- `run`: N steps, no termination, no fork
+- `run_episode`: step until termination or cap on the supplied world
+- `run_rollout`: fork N worlds and run one episode in each
 
-Each `step()` call:
+Rollout-internal forks use `iWorldService` directly. The gated `run_rollout` call is the audit unit, not each internal fork.
 
-1. `command_service.drain_and_apply(world_id, tick)` -- apply due commands
-2. `broker.reset_tick_counters()` -- clear per-actor command counts
-3. `world.step(run_config)` -- execute processors via the core tick lifecycle
-
-`run_config` is **required**. `step()` MUST NOT mint a `RunConfig` internally: every tick in a multi-tick run shares the caller's `RunConfig` so the `run_id` stays stable across ticks. `run()` threads the caller's `RunConfig` into every internal `step()` call.
+See [Execution Hierarchy](execution-hierarchy.md).
 
 ## QueryService
 
-Read-only access to world state. No `ActorCtx` required, no RBAC checks, no broker involvement.
+`QueryService` is the internal storage-backed read path. It has no `ActorCtx` argument because it sits below the gate.
 
-```python
-state = await container.query_service.get_world_state(world_id, tick=5)
-entity = await container.query_service.get_entity(world_id, entity_id)
-components = await container.query_service.get_components(world_id, [Position, Health])
-history = await container.query_service.get_command_history(world_id)
+External reads go through `iCommandService`:
+
+- `query_archetype`
+- `list_signatures`
+- `get_world_info`
+- `get_audit_history`
+- `list_processors`
+- `list_hooks`
+- `list_resources`
+
+The `viewer` role is meaningful at the gate. See [Command Gate](command-gate.md).
+
+## CommandBroker
+
+`CommandBroker` is a pure queue for tick-deferred commands. It stores, orders, dequeues, acknowledges, and clears commands.
+
+It does not own RBAC, quota checks, or user-facing audit history. Those belong to `iCommandService` and `iAuditLog`.
+
+See [Command Broker](broker.md).
+
+## AuditLog
+
+`AuditLog` is append-only. It records accepted-and-applied gated operations and backs `world.history(...)` through `iCommandService.get_audit_history(...)`.
+
+Broker history is queue introspection; audit history is the durable record.
+
+See [Audit Log](audit-log.md).
+
+## CommandService
+
+`CommandService` is the policy enforcement point. Every external mutation, lifecycle operation, simulation control call, and read flows through it.
+
+Each gated method follows the same shape:
+
+```text
+guardrail_allow(command, ctx)
+delegate to one underlying service
+audit.record(row)
+return downgraded/user-safe result
 ```
 
-Reads are unconditionally allowed because they have no side effects on world state. See [Data Flow -- Read Path](data-flow.md#read-path) for the full read architecture.
+There are two paths through the gate:
+
+- Direct calls apply now and return a result, such as `create_world`, `create_entity`, `run`, and `query_archetype`.
+- Tick-deferred calls use `submit`, `submit_batch`, and `submit_spawn`; `SimulationService.step` later calls `drain_and_apply`.
+
+Live objects do not escape the gate. `create_world`, `fork_world`, and `get_world_info` return `WorldInfo`; list methods return `ProcessorInfo`, `HookInfo`, and `ResourceInfo`.
 
 ## How Services Connect to the API
 
-The [API Layer](api-layer.md) exposes these services over HTTP via FastAPI's `Depends()` injection. Each route handler receives a service instance and delegates to it. The [CLI](api-layer.md#cli) is a thin httpx client that calls the same endpoints.
+The [API Layer](api-layer.md) exposes the gate and selected queue/introspection endpoints through FastAPI. Route handlers translate HTTP into typed service calls and pass an `ActorCtx` from auth middleware.
 
-For the full integration story -- how core interfaces get wired through services to the API -- see [App Overview](app-overview.md).
+The CLI is a thin HTTP client.
 
 ## Source Reference
 
 - Service container: `src/archetype/app/container.py`
-- Storage service: `src/archetype/app/storage_service.py`
-- World service: `src/archetype/app/world_service.py`
+- Service protocols: `src/archetype/app/interfaces.py`
 - Command service: `src/archetype/app/command_service.py`
+- Command broker: `src/archetype/app/broker.py`
+- World service: `src/archetype/app/world_service.py`
+- Mutation service: `src/archetype/app/mutation_service.py`
 - Simulation service: `src/archetype/app/simulation_service.py`
 - Query service: `src/archetype/app/query_service.py`
-- World registry: `src/archetype/app/registry.py`
-- World factory: `src/archetype/app/factory.py`
-- Command broker: `src/archetype/app/broker.py`
+- Storage service: `src/archetype/app/storage_service.py`

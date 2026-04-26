@@ -123,6 +123,8 @@ def render_group(
         lines.append("")
 
     for cmd_name, cmd in sorted(group.commands.items()):
+        if getattr(cmd, "hidden", False):
+            continue
         if isinstance(cmd, click.Group):
             lines.extend(render_group(cmd_name, cmd, prefix=full_name))
         else:
@@ -156,6 +158,8 @@ def generate() -> str:
     subgroups: list[tuple[str, click.Group]] = []
 
     for cmd_name, cmd in sorted(app.commands.items()):
+        if getattr(cmd, "hidden", False):
+            continue
         if isinstance(cmd, click.Group):
             subgroups.append((cmd_name, cmd))
         else:

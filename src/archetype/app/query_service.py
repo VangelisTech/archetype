@@ -4,80 +4,115 @@
 """
 Query Service
 
-The read path. Time-travel queries, entity state, command history.
-All external reads go through here.
+Direct read path to the store. Queries any world, any run, any tick —
+including worlds that no longer exist in memory.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from daft import DataFrame
 
-from uuid_utils import UUID
-
-from archetype.app.models import Command, WorldSnapshot
-
-if TYPE_CHECKING:
-    from archetype.app.broker import CommandBroker
-    from archetype.app.world_service import WorldService
+from archetype.app.models import Command, CommandType
+from archetype.app.storage_service import StorageService
+from archetype.core.aio import AsyncQueryManager
+from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.core.interfaces import ArchetypeSignature
 
 
 class QueryService:
-    """
-    Read path facade. Time-travel queries, entity state, cross-world reads.
+    """Direct read path to storage.
+
+    Depends only on StorageService. Resolves a store per query via
+    get_or_create_store, so any historical storage location is reachable.
     """
 
-    def __init__(self, world_service: WorldService, broker: CommandBroker | None = None):
-        self._world_service = world_service
-        self._broker = broker
+    def __init__(self, storage_service: StorageService, audit=None) -> None:
+        self._storage_service = storage_service
+        self._audit = audit
 
-    async def get_world_state(
+    async def query_archetype(
         self,
-        world_id: UUID,
-        tick: int | None = None,
-    ) -> WorldSnapshot:
-        """Get the current (or historical) world state snapshot."""
-        world = self._world_service.get_world(world_id)
-        return WorldSnapshot(
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        components: list[type[Component]] | None = None,
+    ) -> DataFrame:
+        """Query an archetype table by signature, world, and run.
+
+        Reads directly from the store. Works for any historical world/run,
+        not just worlds that are currently live. The store is resolved via
+        get_or_create_store, so repeated calls with the same config reuse
+        the cached instance.
+        """
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        querier = AsyncQueryManager(store=store)
+        return await querier.query_archetype(
+            sig=sig,
             world_id=world_id,
-            tick=tick if tick is not None else getattr(world, "tick", 0),
-            entities={},
-            archetype_counts={},
+            run_id=run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            components=components,
         )
 
-    async def get_entity(
+    async def query_components(
         self,
-        world_id: UUID,
-        entity_id: int,
-        tick: int | None = None,
-    ) -> dict:
-        """Get entity state, optionally at a specific tick."""
-        world = self._world_service.get_world(world_id)
-        return {
-            "world_id": str(world_id),
-            "entity_id": entity_id,
-            "tick": tick if tick is not None else getattr(world, "tick", 0),
-        }
-
-    async def get_components(
-        self,
-        world_id: UUID,
-        component_types: list[str],
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> dict:
-        """Query specific component types across entities."""
-        self._world_service.get_world(world_id)  # validate world exists
-        return {
-            "world_id": str(world_id),
-            "component_types": component_types,
-            "entity_ids": entity_ids,
-        }
+    ) -> DataFrame:
+        """Query all entities that contain the requested component types.
+
+        Subset matching: finds all archetype signatures that contain the
+        requested types, queries each, projects to requested columns, unions.
+        """
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        querier = AsyncQueryManager(store=store)
+        return await querier.query_components(
+            components=components,
+            world_id=world_id,
+            run_id=run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+        )
+
+    async def list_signatures(
+        self,
+        storage_config: StorageConfig | None = None,
+    ) -> list[ArchetypeSignature]:
+        """List all archetype signatures in a store."""
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        querier = AsyncQueryManager(store=store)
+        return await querier.list_signatures()
 
     async def get_command_history(
         self,
-        world_id: UUID,
+        world_id: str,
         limit: int = 100,
     ) -> list[Command]:
-        """Get command history for a world."""
-        if self._broker:
-            return await self._broker.get_history(str(world_id), limit)
-        return []
+        """Compatibility read for pre-gate callers; queued command history only."""
+        if self._audit is None:
+            return []
+
+        rows = [
+            row
+            for row in self._audit._rows
+            if str(row.world_id) == str(world_id) and row.status == "queued"
+        ][-limit:]
+        result: list[Command] = []
+        for row in rows:
+            try:
+                command_type = CommandType(row.command_type)
+            except ValueError:
+                command_type = CommandType.CUSTOM
+            result.append(Command(id=row.command_id, type=command_type))
+        return result

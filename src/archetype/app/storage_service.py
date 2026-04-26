@@ -4,53 +4,95 @@
 """
 Storage Service
 
-Manages the lifecycle of shared storage backend resources using a multiton pattern.
-Renamed from StorageBackendManager for v0.1 service layer.
+Resolves StorageConfig → concrete store. Pools instances by config key.
+Session configuration is handled at the runtime level (see runtime/session.py).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import pathlib
+from urllib.parse import urlparse
 
-from archetype.core.aio import AsyncCachedStore, AsyncQueryManager, AsyncStore, AsyncUpdateManager
-from archetype.core.config import CacheConfig, StorageConfig
-from archetype.core.interfaces import iAsyncQueryManager, iAsyncStore, iAsyncUpdateManager
-from archetype.core.runtime.storage import StorageContextFactory
-from archetype.core.storage import AsyncLancedbStore
+from daft.session import Session
+
+from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
+from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
+from archetype.core.interfaces import iAsyncStore
+from archetype.core.sync import SyncStore
 
 logger = logging.getLogger(__name__)
 
 
+def _resolve_uri(uri: str) -> str:
+    """Resolve local storage paths to absolute. Remote URIs pass through."""
+    scheme = urlparse(uri).scheme.lower()
+    if scheme not in ("", "file"):
+        return uri
+
+    base_path = pathlib.Path(uri)
+    if not base_path.is_absolute():
+        base_path = pathlib.Path.cwd() / base_path
+    base_path.mkdir(parents=True, exist_ok=True)
+    return str(base_path)
+
+
+def create_async_store(
+    config: StorageConfig,
+    session: Session | None = None,
+    cache_config: CacheConfig | None = None,
+) -> iAsyncStore:
+    """Create an async store from a StorageConfig.
+
+    For LanceDB: uses resolved uri + namespace directly.
+    For Iceberg: uses the Daft session (global if not provided).
+    """
+    store: iAsyncStore
+    if config.backend == StorageBackend.LANCEDB:
+        uri = _resolve_uri(str(config.uri))
+        store = AsyncLancedbStore(uri, config.namespace)
+    else:
+        from archetype.runtime.session import configure_session
+
+        sess = configure_session(config, session or Session())
+        store = AsyncStore(sess, io_config=config.io_config)
+
+    if isinstance(cache_config, bool):
+        cache_config = CacheConfig() if cache_config else None
+
+    if cache_config:
+        store = AsyncCachedStore(async_store=store, cache_config=cache_config)
+
+    return store
+
+
+def create_sync_store(
+    config: StorageConfig,
+    session: Session | None = None,
+) -> SyncStore:
+    """Create a sync store from a StorageConfig."""
+    uri = _resolve_uri(str(config.uri))
+    if config.backend == StorageBackend.ICEBERG:
+        from archetype.runtime.session import configure_session
+
+        sess = configure_session(config, session or Session())
+    else:
+        sess = session or Session()
+    return SyncStore(uri, sess, io_config=config.io_config)
+
+
 class StorageService:
-    """
-    Manages shared storage backend resources.
+    """Creates and pools async stores. Manages storage lifecycle.
 
-    Implements a multiton pattern: for any (uri, namespace) pair, only one
-    (Store, Querier, Updater) triplet is created and reused.
+    Multiton semantics: for any (uri, namespace, backend, cache) tuple,
+    only one store instance is created and reused.
     """
 
-    def __init__(self):
-        self._instances: dict[str, tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]] = {}
+    def __init__(self, session: Session | None = None) -> None:
+        self._session = session
+        self._instances: dict[str, iAsyncStore] = {}
         self._locks: dict[str, asyncio.Lock] = {}
-
-    async def get_backend(
-        self,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-    ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
-        """Retrieves or creates a shared backend triplet for the given storage config."""
-        key = self._pool_key(storage_config, cache_config)
-
-        if key not in self._instances:
-            if key not in self._locks:
-                self._locks[key] = asyncio.Lock()
-
-            async with self._locks[key]:
-                if key not in self._instances:
-                    self._instances[key] = self._create_backend(storage_config, cache_config)
-
-        return self._instances[key]
 
     @staticmethod
     def _pool_key(
@@ -58,8 +100,6 @@ class StorageService:
         cache_config: CacheConfig | None,
     ) -> str:
         """Build a pool key covering uri, namespace, backend, and cache_config."""
-        # Normalize cache_config's bool-style shorthand the same way
-        # _create_backend does, so equivalent specs share a key.
         if isinstance(cache_config, bool):
             effective_cache = CacheConfig() if cache_config else None
         else:
@@ -81,39 +121,34 @@ class StorageService:
             f"::cache({cache_part})"
         )
 
-    def _create_backend(
+    async def get_or_create_store(
         self,
         storage_config: StorageConfig,
-        cache_config: CacheConfig | None,
-    ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]:
-        context = StorageContextFactory.build(storage_config)
-        store: iAsyncStore
-        if storage_config.use_lancedb:
-            store = AsyncLancedbStore(context)
-        else:
-            store = AsyncStore(context)
+        cache_config: CacheConfig | None = None,
+    ) -> iAsyncStore:
+        """Return the pooled async store for a storage/cache configuration.
 
-        if isinstance(cache_config, bool):
-            cache_config = CacheConfig() if cache_config else None
+        Creates the store on first call for a given config key.
+        Subsequent calls with the same config return the cached instance.
+        """
+        key = self._pool_key(storage_config, cache_config)
 
-        if cache_config:
-            store = AsyncCachedStore(async_store=store, cache_config=cache_config)
+        if key not in self._instances:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
 
-        querier = AsyncQueryManager(store=store)
-        updater = AsyncUpdateManager(store=store)
+            async with self._locks[key]:
+                if key not in self._instances:
+                    self._instances[key] = create_async_store(
+                        storage_config, self._session, cache_config
+                    )
 
-        return (store, querier, updater)
+        return self._instances[key]
 
     async def shutdown(self):
-        """Gracefully shuts down all managed storage backends.
-
-        Best-effort: a failure in one store's shutdown does not abort the
-        loop. Every store gets a chance to run its cleanup, and the pool
-        dicts are always cleared. If any store's shutdown raised, an
-        aggregate RuntimeError is raised after the cleanup completes.
-        """
+        """Gracefully shuts down all managed storage backends."""
         errors: list[Exception] = []
-        for store, _, _ in self._instances.values():
+        for store in self._instances.values():
             try:
                 if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
                     await store.shutdown()

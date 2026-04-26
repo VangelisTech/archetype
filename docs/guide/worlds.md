@@ -25,21 +25,20 @@ That distinction is intentional:
 - `RuntimeWorld` is the public script surface. Its entity and processor
   mutations (`spawn`, `despawn`, `update`, `add_components`,
   `remove_components`, `add_processor`, `remove_processor`) route through
-  `CommandService` and `CommandBroker`, so they honor RBAC and appear in broker
-  history. `RuntimeWorld.command_history()` reads that audit trail back through
-  the read path.
+  `iCommandService`, so they honor RBAC and emit audit rows. `RuntimeWorld.history()`
+  reads that audit trail back through the gate.
 - `RuntimeWorld.as_actor(ctx)` returns another handle to the same logical
   world, bound to a different `ActorCtx`, without creating a new world or
   storage backend.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
-  broker semantics, which is appropriate for engine and service-layer code.
+  command-gate semantics, which is appropriate for engine and service-layer code.
 
-The runtime intentionally keeps a few script-scaffolding operations immediate
-instead of brokered:
+The runtime keeps handle construction and actor rebinding declarative:
 
 - `runtime.world(...)` / `world.as_actor(...)`
-- `world.resources.insert(...)` / `world.resources.remove(...)`
-- `world.add_hook(...)` / `world.remove_hook(...)`
+
+World activation, resource attachment, hook registration, mutations, reads,
+simulation, fork, and destroy all go through gated service methods.
 
 The rest of this page describes the engine-level `AsyncWorld` behavior that
 those runtime calls ultimately drive.
@@ -271,54 +270,45 @@ See [Processors](processors.md) and [Systems](system-execution.md) for how proce
 
 `WorldService.fork_world()` creates a new world from a snapshot of an existing one.
 
-### Guard Clause
-
-Forking rejects worlds with pending mutations (un-materialized spawn/despawn caches). Call `step()` first so `_live` reflects the intended snapshot:
-
-```python
-if has_pending_spawns or has_pending_despawns:
-    raise ValueError("Cannot fork a world with pending mutations. ...")
-```
+The runtime surface is `await world.fork(name="branch-A")`, which calls the
+gated `iCommandService.fork_world(...)` and returns a new handle bound to the
+same `ActorCtx`.
 
 ### What's Cloned
 
-The fork receives a fresh `world_id` (system-generated, not caller-controlled). State copying:
+The fork receives fresh identity and an independent snapshot of world-local
+bookkeeping:
 
 | State | Copied | Notes |
 |-------|:------:|-------|
-| `tick`, `run_id` | Yes | Fork continues from the same tick |
+| `world_id` | Fresh | New `uuid7()` |
+| `run_id` | Fresh | Fork starts a new run lineage |
+| `tick` | Yes | Fork continues from the same tick |
 | `_entity2sig` | Yes | Deep copy of entity-to-signature mapping |
 | `_next_entity_id` | Yes | Entity ID counter |
-| `_live` snapshots | Yes | Re-stamped with new `world_id` |
-| Processors | Yes | Shared instances (stateless transforms) |
-| Non-broker resources | Yes | Selective copy, skipping `CommandBroker` |
-| `CommandBroker` | No | Re-injected by `WorldService.create_world()` |
-| Spawn/despawn caches | No | Guarded -- must be empty |
-| Lifecycle hooks | No | Fork-specific; source hooks are not inherited |
+| Spawn/despawn caches | Yes | Pending mutations transfer to the fork |
+| Lifecycle hooks | Yes | Registrations at fork time copy; later registrations do not propagate |
+| Processors | Shared | Same processor instances |
+| Resources | Shared | Same `Resources` instance |
+
+Pending mutation transfer is intentional. If a user spawns an entity and forks before the next tick, both source and fork materialize the entity on their next tick and diverge from there.
 
 ### Persistence
 
-The live snapshots are persisted to the store under the new `world_id` at tick `source.tick - 1`. This ensures store-backed reads (which query the previous tick) find the forked state on the fork's first step:
+The fork writes to the same physical store by default, partitioned by its new `world_id`. A fork may be created with a different storage config through the gated service/runtime call.
 
-```python
-if source.tick > 0 and new_live:
-    persist_tick = source.tick - 1
-    for sig, df in new_live.items():
-        await new_world.updater.update(df, sig, persist_tick, ...)
-```
+Destroying a fork later removes only the live world object. Storage and audit rows remain queryable.
 
 ### Usage
 
 ```python
-fork = await container.world_service.fork_world(
-    source_world_id=world.world_id,
-    name="branch-A",
-    storage_config=storage_config,
-)
-fork.resources.insert(PhysicsConfig(gravity=0.0))  # override per fork
+fork = await world.fork(name="branch-A")
+await fork.run(steps=10)
 ```
 
 Use forking for MCTS, counterfactual reasoning, or A/B testing simulation strategies.
+
+For normative lifecycle semantics, see [World Lifecycle](world-lifecycle.md).
 
 ## Source Reference
 

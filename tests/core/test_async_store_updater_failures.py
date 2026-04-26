@@ -17,19 +17,19 @@ class FailingStore(AsyncStore):
         raise RuntimeError("append failed")
 
 
-def build_context(tmp_path):
-    # Minimal StorageContext with dummy catalog/session via factory path
-    from archetype.core.runtime.storage import StorageContextFactory
+def _build_session_and_config(tmp_path):
+    from archetype.runtime.session import configure_session
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
-    return StorageContextFactory.build(cfg)
+    session = configure_session(cfg)
+    return session, cfg
 
 
 @pytest.mark.asyncio
 async def test_async_store_append_skips_on_empty_df(tmp_path):
     """AsyncStore.append should no-op for empty dataframes without raising errors."""
-    ctx = build_context(tmp_path)
-    store = AsyncStore(ctx)
+    session, cfg = _build_session_and_config(tmp_path)
+    store = AsyncStore(session, io_config=cfg.io_config)
     sig = Archetype.sig_from_components([Demo(v=1)])
     # empty df for schema
     a = Archetype.get_archetype_schema(sig)
@@ -40,8 +40,8 @@ async def test_async_store_append_skips_on_empty_df(tmp_path):
 @pytest.mark.asyncio
 async def test_async_store_append_handles_collect_failure(tmp_path, caplog):
     """AsyncStore.append should catch collect() failures and return without raising."""
-    ctx = build_context(tmp_path)
-    store = AsyncStore(ctx)
+    session, cfg = _build_session_and_config(tmp_path)
+    store = AsyncStore(session, io_config=cfg.io_config)
     sig = Archetype.sig_from_components([Demo(v=1)])
 
     class BadDf:
@@ -56,8 +56,8 @@ async def test_async_store_append_handles_collect_failure(tmp_path, caplog):
 @pytest.mark.asyncio
 async def test_async_store_append_bad_schema_raises_and_is_caught(tmp_path, caplog):
     """AsyncStore.get_archetype_df/_ensure_table should create schema, but appending with incompatible schema should be handled by update path. Here we simulate a mismatch by passing wrong columns and verify updater logs error."""
-    ctx = build_context(tmp_path)
-    store = AsyncStore(ctx)
+    session, cfg = _build_session_and_config(tmp_path)
+    store = AsyncStore(session, io_config=cfg.io_config)
     updater = AsyncUpdateManager(store)
     sig = Archetype.sig_from_components([Demo(v=1)])
 
@@ -75,8 +75,8 @@ async def test_async_store_append_bad_schema_raises_and_is_caught(tmp_path, capl
 @pytest.mark.asyncio
 async def test_async_updater_logs_error_on_store_failure(tmp_path, caplog):
     """AsyncUpdateManager should catch store.append exceptions and log them, returning the original df."""
-    ctx = build_context(tmp_path)
-    store = FailingStore(ctx)
+    session, cfg = _build_session_and_config(tmp_path)
+    store = FailingStore(session, io_config=cfg.io_config)
     updater = AsyncUpdateManager(store)
     sig = Archetype.sig_from_components([Demo(v=1)])
     schema = Archetype.get_archetype_schema(sig)

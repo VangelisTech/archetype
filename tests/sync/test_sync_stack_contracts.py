@@ -11,10 +11,12 @@ import pyarrow as pa
 import pytest
 from daft import DataFrame, col
 
+from archetype.app.storage_service import _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.config import RunConfig, StorageConfig
+from archetype.core.hooks import SyncHookRegistry
+from archetype.core.resources import Resources
 from archetype.core.sync import (
     QueryManager,
     SyncProcessor,
@@ -23,6 +25,7 @@ from archetype.core.sync import (
     SyncWorld,
     UpdateManager,
 )
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -37,12 +40,20 @@ class Velocity(Component):
 
 def _make_sync_stack(tmp_path, name: str = "sync"):
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
-    ctx = StorageContextFactory.build(cfg)
-    store = SyncStore(uri=ctx.uri, session=ctx.session)
+    session = configure_session(cfg)
+    store = SyncStore(uri=_resolve_uri(str(cfg.uri)), session=session, io_config=cfg.io_config)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
-    world = SyncWorld(WorldConfig(name=name), querier=querier, updater=updater, system=system)
+    world = SyncWorld(
+        world_id="test",
+        name=name,
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
+    )
     return store, querier, updater, system, world
 
 
@@ -102,6 +113,64 @@ def test_sync_store_append_and_filters_world_and_run():
     assert len(rows) == 1
     assert rows[0]["entity_id"] == 1
     assert rows[0]["position__x"] == 1
+
+
+def test_sync_store_passes_io_config_to_iceberg_paths(monkeypatch):
+    from daft.io import IOConfig
+
+    class _IcebergTable:
+        name = "positions"
+
+        def __init__(self):
+            self._inner = object()
+
+        def read(self):
+            raise AssertionError("explicit IOConfig reads should use daft.read_iceberg")
+
+        def append(self, df):
+            raise AssertionError("explicit IOConfig writes should use DataFrame.write_iceberg")
+
+    class _Session:
+        def __init__(self, table):
+            self.table = table
+
+        def create_table_if_not_exists(self, *args, **kwargs):
+            return self.table
+
+    class _Frame:
+        def __init__(self):
+            self.column_names = ["world_id"]
+
+        def write_iceberg(self, inner_table, *, mode, io_config=None):
+            seen["write_inner"] = inner_table
+            seen["write_mode"] = mode
+            seen["write_io_config"] = io_config
+
+    table = _IcebergTable()
+    io_config = IOConfig()
+    seen = {}
+
+    def fake_read_iceberg(inner_table, *, snapshot_id=None, io_config=None):
+        seen["read_inner"] = inner_table
+        seen["read_snapshot_id"] = snapshot_id
+        seen["read_io_config"] = io_config
+        return daft.from_pylist([{"world_id": "w", "run_id": "r"}])
+
+    monkeypatch.setattr("archetype.core.sync.store.read_iceberg", fake_read_iceberg)
+
+    store = SyncStore(uri="unused", session=_Session(table), io_config=io_config)
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+
+    rows = store.get_archetype_df(sig, "w", "r").collect().to_pylist()
+    store.append(sig, _Frame())
+
+    assert len(rows) == 1
+    assert seen["read_inner"] is table._inner
+    assert seen["read_snapshot_id"] is None
+    assert seen["read_io_config"] is io_config
+    assert seen["write_inner"] is table._inner
+    assert seen["write_mode"] == "append"
+    assert seen["write_io_config"] is io_config
 
 
 def test_sync_store_real_session_roundtrip_filters_world_and_run(tmp_path):
@@ -347,7 +416,7 @@ def test_sync_world_materialize_mutations_prefers_latest_spawn_for_same_entity(t
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_spawn_dedupe")
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     base_df = _df_from_rows(sig, [])
-    world._spawn_cache[sig] = [
+    world.spawn_cache[sig] = [
         Archetype.to_row_dict(7, 0, [Position(x=1, y=1)], str(world.world_id), "run-a"),
         Archetype.to_row_dict(7, 0, [Position(x=9, y=9)], str(world.world_id), "run-a"),
     ]
@@ -385,7 +454,7 @@ def test_sync_world_materialize_mutations_marks_despawned_entities_inactive(tmp_
             }
         ],
     )
-    world._despawn_cache[sig] = [4, 4]
+    world.despawn_cache[sig] = [4, 4]
 
     rows = world._materialize_mutations(base_df, sig, RunConfig(num_steps=1)).collect().to_pylist()
 
@@ -411,7 +480,7 @@ def test_sync_world_run_materializes_spawns_and_sets_run_id(tmp_path):
     world.run(rc)
 
     assert world.tick == 2
-    assert world.run_id == str(rc.run_id)
+    assert world.run_id is not None  # auto-generated at construction
     rows = _committed_rows(world, sig)
     assert rows[0]["entity_id"] == entity_id
     assert rows[0]["position__x"] == 1
@@ -448,14 +517,14 @@ def test_sync_world_add_and_remove_components_migrate_entity(tmp_path):
     world.step(rc)
     sig_with_velocity = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
     rows = _committed_rows(world, sig_with_velocity)
-    assert world._entity2sig[entity_id] == sig_with_velocity
+    assert world.entity2sig[entity_id] == sig_with_velocity
     assert rows[0]["velocity__vx"] == 5
 
     world.remove_components(entity_id, [Velocity])
     world.step(rc)
     sig_position = Archetype.sig_from_components([Position(x=0, y=0)])
     rows = _committed_rows(world, sig_position)
-    assert world._entity2sig[entity_id] == sig_position
+    assert world.entity2sig[entity_id] == sig_position
     assert rows[0]["position__x"] == 1
 
 
@@ -502,7 +571,13 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
     updater = Mock()
     system = SyncSystem()
     world = SyncWorld(
-        WorldConfig(name="query-forward"), querier=querier, updater=updater, system=system
+        world_id="test",
+        name="query-forward",
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
     )
     world.tick = 5
     rc = RunConfig(num_steps=1)
@@ -524,7 +599,7 @@ def test_sync_world_move_entity_returns_empty_when_source_row_missing(tmp_path):
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_missing_move")
     old_sig = Archetype.sig_from_components([Position(x=0, y=0)])
     new_sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
-    world._entity2sig[42] = old_sig
+    world.entity2sig[42] = old_sig
 
     world.query_archetype = lambda *args, **kwargs: _df_from_rows(old_sig, [])
     row = world._move_entity(42, old_sig, new_sig, [Velocity(vx=1, vy=1)])
@@ -539,7 +614,13 @@ def test_sync_world_update_uses_world_tick_by_default():
     updater = Mock(return_value=df)
     system = SyncSystem()
     world = SyncWorld(
-        WorldConfig(name="update-forward"), querier=querier, updater=updater, system=system
+        world_id="test",
+        name="update-forward",
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
     )
     world.tick = 11
     world.run_id = "pinned-run-id"

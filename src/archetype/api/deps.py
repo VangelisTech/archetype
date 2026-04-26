@@ -5,28 +5,22 @@
 
 from __future__ import annotations
 
+from fastapi import Header, HTTPException, Request
 from uuid_utils import uuid7
 
 from archetype.app.auth.models import ActorCtx
-from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.query_service import QueryService
-from archetype.app.registry import default_registry_path
-from archetype.app.simulation_service import SimulationService
-from archetype.app.world_service import WorldService
 
-# Singleton container — initialized once at app startup
+# Test/development override. The lifespan handler attaches the resolved
+# container to app.state; request dependencies read from app.state.
 _container: ServiceContainer | None = None
-
-# Default admin context for API requests (v0.1 — no real auth yet)
-_default_ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
 
 def get_container() -> ServiceContainer:
     global _container
     if _container is None:
-        _container = ServiceContainer(registry_path=default_registry_path())
+        _container = ServiceContainer()
     return _container
 
 
@@ -35,25 +29,26 @@ def set_container(container: ServiceContainer) -> None:
     _container = container
 
 
-def get_world_service() -> WorldService:
-    return get_container().world_service
+async def get_command_service(request: Request) -> CommandService:
+    return request.app.state.container.command_service
 
 
-def get_command_service() -> CommandService:
-    return get_container().command_service
+async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
+    """Build the request actor context.
 
+    v1 developer mode:
+    - no Authorization header means default single-tenant admin
+    - "Bearer <role>" accepts admin/operator/player/viewer
+    """
+    if authorization is None:
+        return ActorCtx(id=uuid7(), roles={"admin"})
 
-def get_simulation_service() -> SimulationService:
-    return get_container().simulation_service
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Invalid Authorization header")
 
+    role = token.strip().lower()
+    if role not in {"admin", "operator", "player", "viewer"}:
+        raise HTTPException(status_code=401, detail="Unknown bearer role")
 
-def get_query_service() -> QueryService:
-    return get_container().query_service
-
-
-def get_broker() -> CommandBroker:
-    return get_container().broker
-
-
-def get_actor_ctx() -> ActorCtx:
-    return _default_ctx
+    return ActorCtx(id=uuid7(), roles={role})

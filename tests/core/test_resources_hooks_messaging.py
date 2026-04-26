@@ -24,8 +24,8 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
-from archetype.core.hooks import HookEvent, OnDespawn, OnSpawn, PostTick, PreTick
+from archetype.core.config import RunConfig
+from archetype.core.hooks import HookEvent, HookRegistry, OnDespawn, OnSpawn, PostTick, PreTick
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -119,9 +119,15 @@ async def world():
     """Create a minimal async world for testing."""
     querier = InMemoryQuerier()
     updater = InMemoryUpdater(querier)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="test_world")
-    return AsyncWorld(wcfg, querier, updater, system)
+    return AsyncWorld(
+        world_id="test",
+        name="test_world",
+        querier=querier,
+        updater=updater,
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
 
 # =============================================================================
@@ -344,7 +350,13 @@ class TestHooks:
         other_querier = InMemoryQuerier()
         other_updater = InMemoryUpdater(other_querier)
         other = AsyncWorld(
-            WorldConfig(name="other_world"), other_querier, other_updater, AsyncSystem()
+            world_id="test",
+            name="other_world",
+            querier=other_querier,
+            updater=other_updater,
+            system=AsyncSystem(),
+            resources=Resources(),
+            hooks=HookRegistry(),
         )
 
         counts = {"one": 0, "two": 0}
@@ -398,21 +410,6 @@ class TestHooks:
         assert events[0].entity_id == eid
         assert events[0].world_id == world.world_id
         assert events[0].components == components
-
-    @pytest.mark.asyncio
-    async def test_on_spawn_hook_fires_from_spawn_reserved(self, world):
-        """OnSpawn also fires from the reserved-id spawn path used by CommandService."""
-        events: list[OnSpawn] = []
-
-        async def on_spawn(event: OnSpawn) -> None:
-            events.append(event)
-
-        world.add_hook(OnSpawn, on_spawn)
-        await world.spawn_reserved(42, [Position(x=3, y=4)])
-
-        assert len(events) == 1
-        assert events[0].entity_id == 42
-        assert events[0].components[0].x == 3
 
     @pytest.mark.asyncio
     async def test_on_despawn_hook_fires_when_entity_removed(self, world):
@@ -482,7 +479,7 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # Verify - x should be 0 + 100 = 100
-        for sig in set(world._entity2sig.values()):
+        for sig in set(world.entity2sig.values()):
             df = await world.querier.query_archetype(
                 sig=sig,
                 world_id=world.world_id,
@@ -505,7 +502,7 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # x should be unchanged since no config
-        for sig in set(world._entity2sig.values()):
+        for sig in set(world.entity2sig.values()):
             df = await world.querier.query_archetype(
                 sig=sig,
                 world_id=world.world_id,
@@ -640,8 +637,15 @@ class TestIntegration:
         querier = InMemoryQuerier()
         updater = InMemoryUpdater(querier)
         system = AsyncSystem()
-        wcfg = WorldConfig(name="integration_world")
-        world = AsyncWorld(wcfg, querier, updater, system)
+        world = AsyncWorld(
+            world_id="test",
+            name="integration_world",
+            querier=querier,
+            updater=updater,
+            system=system,
+            resources=Resources(),
+            hooks=HookRegistry(),
+        )
 
         broker = CommandBroker()
         world.resources.insert(broker)

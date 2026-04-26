@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,7 +33,7 @@ from daft import DataFrame, col
 from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig
+from archetype.core.config import StorageConfig
 from archetype.core.resources import Resources
 
 # ── Data Types ──────────────────────────────────────────────────────
@@ -231,14 +232,10 @@ class SamplingProcessor(AsyncProcessor):
             sampled = sampled & matcher(col("trajectory__outcome"))
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & _tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & _tags_contain(col("trajectory__tags_json"), daft.lit(tag))
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~_tags_contain(
-                    col("trajectory__tags_json"), daft.lit(tag)
-                )
+                sampled = sampled & ~_tags_contain(col("trajectory__tags_json"), daft.lit(tag))
 
         df = df.with_columns({"label__sampled": sampled})
 
@@ -341,14 +338,35 @@ def make_trajectories() -> list[Trajectory]:
         metadata={"repo": "acme/api", "model": "claude-sonnet-4-6"},
         turns=[
             Turn(role="user", content="Add a /health endpoint to the API", tokens=12),
-            Turn(role="assistant", content="I'll add a health endpoint to the FastAPI app.", tokens=8),
-            Turn(role="tool_call", content="Reading app/main.py", tool_name="Read",
-                 tool_input='{"path": "app/main.py"}', tokens=5, duration_ms=120),
-            Turn(role="tool_result", content="from fastapi import FastAPI\napp = FastAPI()\n...", tokens=50),
-            Turn(role="tool_call", content="Editing app/main.py", tool_name="Edit",
-                 tool_input='{"path": "app/main.py", "new": "@app.get(\\"/health\\")..."}',
-                 tokens=30, duration_ms=85),
-            Turn(role="assistant", content='Added the /health endpoint. It returns {"status": "ok"}.', tokens=15),
+            Turn(
+                role="assistant", content="I'll add a health endpoint to the FastAPI app.", tokens=8
+            ),
+            Turn(
+                role="tool_call",
+                content="Reading app/main.py",
+                tool_name="Read",
+                tool_input='{"path": "app/main.py"}',
+                tokens=5,
+                duration_ms=120,
+            ),
+            Turn(
+                role="tool_result",
+                content="from fastapi import FastAPI\napp = FastAPI()\n...",
+                tokens=50,
+            ),
+            Turn(
+                role="tool_call",
+                content="Editing app/main.py",
+                tool_name="Edit",
+                tool_input='{"path": "app/main.py", "new": "@app.get(\\"/health\\")..."}',
+                tokens=30,
+                duration_ms=85,
+            ),
+            Turn(
+                role="assistant",
+                content='Added the /health endpoint. It returns {"status": "ok"}.',
+                tokens=15,
+            ),
         ],
     )
 
@@ -360,33 +378,88 @@ def make_trajectories() -> list[Trajectory]:
         metadata={"repo": "acme/api", "model": "claude-sonnet-4-6"},
         turns=[
             Turn(role="user", content="Fix the 500 error on POST /users", tokens=10),
-            Turn(role="assistant", content="Let me investigate the error in the users endpoint.", tokens=12),
-            Turn(role="tool_call", content="Reading app/routes/users.py", tool_name="Read",
-                 tool_input='{"path": "app/routes/users.py"}', tokens=5, duration_ms=100),
+            Turn(
+                role="assistant",
+                content="Let me investigate the error in the users endpoint.",
+                tokens=12,
+            ),
+            Turn(
+                role="tool_call",
+                content="Reading app/routes/users.py",
+                tool_name="Read",
+                tool_input='{"path": "app/routes/users.py"}',
+                tokens=5,
+                duration_ms=100,
+            ),
             Turn(role="tool_result", content="async def create_user(...):\n    ...", tokens=80),
-            Turn(role="assistant", content="I think the issue is the missing validation. Let me add it.", tokens=20),
-            Turn(role="tool_call", content="Editing users.py — adding validation", tool_name="Edit",
-                 tool_input='{"path": "app/routes/users.py", "new": "...validation..."}',
-                 tokens=25, duration_ms=90),
-            Turn(role="tool_call", content="Running tests", tool_name="Bash",
-                 tool_input='{"command": "pytest tests/"}', tokens=5, duration_ms=3000),
-            Turn(role="tool_result", content="FAILED tests/test_users.py::test_create - TypeError",
-                 tokens=30, error="Tests failed"),
-            Turn(role="assistant", content="That wasn't it. Let me look at the database model instead.", tokens=15),
-            Turn(role="tool_call", content="Reading app/models/user.py", tool_name="Read",
-                 tool_input='{"path": "app/models/user.py"}', tokens=5, duration_ms=80),
+            Turn(
+                role="assistant",
+                content="I think the issue is the missing validation. Let me add it.",
+                tokens=20,
+            ),
+            Turn(
+                role="tool_call",
+                content="Editing users.py — adding validation",
+                tool_name="Edit",
+                tool_input='{"path": "app/routes/users.py", "new": "...validation..."}',
+                tokens=25,
+                duration_ms=90,
+            ),
+            Turn(
+                role="tool_call",
+                content="Running tests",
+                tool_name="Bash",
+                tool_input='{"command": "pytest tests/"}',
+                tokens=5,
+                duration_ms=3000,
+            ),
+            Turn(
+                role="tool_result",
+                content="FAILED tests/test_users.py::test_create - TypeError",
+                tokens=30,
+                error="Tests failed",
+            ),
+            Turn(
+                role="assistant",
+                content="That wasn't it. Let me look at the database model instead.",
+                tokens=15,
+            ),
+            Turn(
+                role="tool_call",
+                content="Reading app/models/user.py",
+                tool_name="Read",
+                tool_input='{"path": "app/models/user.py"}',
+                tokens=5,
+                duration_ms=80,
+            ),
             Turn(role="tool_result", content="class User(Base):\n    ...", tokens=60),
-            Turn(role="assistant",
-                 content="Found it — the email column is NOT NULL but the schema allows None.", tokens=20),
-            Turn(role="tool_call", content="Fixing the schema", tool_name="Edit",
-                 tool_input='{"path": "app/routes/users.py", "new": "...email required..."}',
-                 tokens=20, duration_ms=90),
-            Turn(role="tool_call", content="Running tests again", tool_name="Bash",
-                 tool_input='{"command": "pytest tests/"}', tokens=5, duration_ms=2500),
+            Turn(
+                role="assistant",
+                content="Found it — the email column is NOT NULL but the schema allows None.",
+                tokens=20,
+            ),
+            Turn(
+                role="tool_call",
+                content="Fixing the schema",
+                tool_name="Edit",
+                tool_input='{"path": "app/routes/users.py", "new": "...email required..."}',
+                tokens=20,
+                duration_ms=90,
+            ),
+            Turn(
+                role="tool_call",
+                content="Running tests again",
+                tool_name="Bash",
+                tool_input='{"command": "pytest tests/"}',
+                tokens=5,
+                duration_ms=2500,
+            ),
             Turn(role="tool_result", content="All 12 tests passed", tokens=10),
-            Turn(role="assistant",
-                 content="Fixed. The email field was optional in the Pydantic schema but required in the DB.",
-                 tokens=20),
+            Turn(
+                role="assistant",
+                content="Fixed. The email field was optional in the Pydantic schema but required in the DB.",
+                tokens=20,
+            ),
         ],
     )
 
@@ -397,20 +470,51 @@ def make_trajectories() -> list[Trajectory]:
         tags=["refactor", "python", "failed"],
         metadata={"repo": "acme/api", "model": "claude-sonnet-4-6"},
         turns=[
-            Turn(role="user", content="Refactor the circular import between models and utils", tokens=12),
-            Turn(role="assistant", content="I'll restructure the imports to break the cycle.", tokens=10),
-            Turn(role="tool_call", content="Reading models/__init__.py", tool_name="Read",
-                 tool_input='{"path": "app/models/__init__.py"}', tokens=5, duration_ms=100),
-            Turn(role="tool_result", content="from .user import User\nfrom .utils import ...", tokens=40),
-            Turn(role="tool_call", content="Editing models/__init__.py", tool_name="Edit",
-                 tool_input='{"path": "app/models/__init__.py", "new": "...lazy imports..."}',
-                 tokens=30, duration_ms=90),
-            Turn(role="tool_call", content="Running tests", tool_name="Bash",
-                 tool_input='{"command": "pytest tests/"}', tokens=5, duration_ms=2000,
-                 error="ImportError: circular import detected"),
-            Turn(role="assistant",
-                 content="I'm stuck on this circular dependency. The issue runs deeper than I initially thought.",
-                 tokens=25),
+            Turn(
+                role="user",
+                content="Refactor the circular import between models and utils",
+                tokens=12,
+            ),
+            Turn(
+                role="assistant",
+                content="I'll restructure the imports to break the cycle.",
+                tokens=10,
+            ),
+            Turn(
+                role="tool_call",
+                content="Reading models/__init__.py",
+                tool_name="Read",
+                tool_input='{"path": "app/models/__init__.py"}',
+                tokens=5,
+                duration_ms=100,
+            ),
+            Turn(
+                role="tool_result",
+                content="from .user import User\nfrom .utils import ...",
+                tokens=40,
+            ),
+            Turn(
+                role="tool_call",
+                content="Editing models/__init__.py",
+                tool_name="Edit",
+                tool_input='{"path": "app/models/__init__.py", "new": "...lazy imports..."}',
+                tokens=30,
+                duration_ms=90,
+            ),
+            Turn(
+                role="tool_call",
+                content="Running tests",
+                tool_name="Bash",
+                tool_input='{"command": "pytest tests/"}',
+                tokens=5,
+                duration_ms=2000,
+                error="ImportError: circular import detected",
+            ),
+            Turn(
+                role="assistant",
+                content="I'm stuck on this circular dependency. The issue runs deeper than I initially thought.",
+                tokens=25,
+            ),
         ],
     )
 
@@ -421,11 +525,12 @@ def make_trajectories() -> list[Trajectory]:
 
 
 async def main():
+    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
+
     trajectories = make_trajectories()
     print(f"Created {len(trajectories)} synthetic trajectories\n")
 
     storage = StorageConfig(uri="./trajectory_data", namespace="trajectories")
-    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
@@ -440,11 +545,17 @@ async def main():
         )
 
         label_specs = [
-            ("efficiency", "Rate how directly the agent reached the solution without unnecessary "
-             "backtracking or wasted steps. A perfect score means the agent identified the "
-             "correct approach immediately."),
-            ("correctness", "Did the agent produce the correct final result? Score 1.0 for fully "
-             "correct, 0.5 for partially correct, 0.0 for incorrect or unresolved."),
+            (
+                "efficiency",
+                "Rate how directly the agent reached the solution without unnecessary "
+                "backtracking or wasted steps. A perfect score means the agent identified the "
+                "correct approach immediately.",
+            ),
+            (
+                "correctness",
+                "Did the agent produce the correct final result? Score 1.0 for fully "
+                "correct, 0.5 for partially correct, 0.0 for incorrect or unresolved.",
+            ),
         ]
 
         print("Ingesting trajectories...")
@@ -462,7 +573,7 @@ async def main():
             print("OPENAI_API_KEY not set; running sampling/score pipeline without LLM labeling.\n")
 
         print("Running pipeline (sample -> label -> score)...")
-        await world.step(config=RunConfig(num_steps=1))
+        await world.step()
         print("  -> Pipeline completed\n")
 
         print("Results:")
@@ -482,8 +593,7 @@ async def main():
 
         print("Forking world to compare a stricter sampling threshold...")
         fork = await world.fork("strict-eval", storage=storage)
-        fork.resources.insert(SamplingConfig(min_turns=8))
-        print(f"  -> Forked at tick {fork.tick}, both worlds coexist in storage\n")
+        print(f"  -> Forked world '{fork.name}', both worlds coexist in storage\n")
 
 
 if __name__ == "__main__":

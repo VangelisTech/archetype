@@ -9,12 +9,11 @@ Wires all services together. Single point of construction.
 
 from __future__ import annotations
 
-from pathlib import Path
-
+from archetype.app.audit_log import AuditLog
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
+from archetype.app.mutation_service import MutationService
 from archetype.app.query_service import QueryService
-from archetype.app.registry import WorldRegistry
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
@@ -22,35 +21,46 @@ from archetype.app.world_service import WorldService
 
 class ServiceContainer:
     """
-    Wires all services together with correct dependency ordering.
+    Wires services together with correct dependency ordering.
+
+    Each service owns its internal composition.
+    The container only handles service-to-service wiring.
 
     Usage:
         container = ServiceContainer()
         world = await container.world_service.create_world(config, storage_config)
         await container.simulation_service.step(world.world_id, run_config)
-
-    Pass ``registry_path`` to enable persistent world discovery across
-    server restarts.  The long-running ``archetype serve`` process uses
-    the registry to rehydrate previously created worlds on startup.
     """
 
-    def __init__(self, registry_path: str | Path | None = None):
+    def __init__(self):
         # Infrastructure
-        self.storage_service = StorageService()
         self.broker = CommandBroker()
-        self.registry: WorldRegistry | None = (
-            WorldRegistry(registry_path) if registry_path is not None else None
-        )
 
-        # Services (order matters — dependency chain)
-        self.world_service = WorldService(
-            self.storage_service, broker=self.broker, registry=self.registry
+        # Leaf services
+        self.storage_service = StorageService()
+
+        # Storage-backed services
+        self.world_service = WorldService(self.storage_service)
+        self.audit_log = AuditLog(self.storage_service)
+        self.query_service = QueryService(self.storage_service, self.audit_log)
+
+        # Services that depend on WorldService
+        self.mutation_service = MutationService(self.world_service)
+        self.simulation_service = SimulationService(self.world_service)
+
+        # The gate — depends on everything
+        self.command_service = CommandService(
+            mutations=self.mutation_service,
+            worlds=self.world_service,
+            simulation=self.simulation_service,
+            queries=self.query_service,
+            broker=self.broker,
+            audit=self.audit_log,
         )
-        self.command_service = CommandService(self.broker, self.world_service)
-        self.simulation_service = SimulationService(self.world_service, self.command_service)
-        self.query_service = QueryService(self.world_service, broker=self.broker)
+        self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
+        await self.audit_log.shutdown()
         await self.broker.clear()
         await self.world_service.shutdown()

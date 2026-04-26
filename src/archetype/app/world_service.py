@@ -4,70 +4,247 @@
 """
 World Service
 
-Manages the lifecycle of multiple worlds. Renamed from WorldOrchestrator for v0.1.
+WorldFactory  — store → world (pure construction)
+WorldRegistry — holds live worlds (lookup, insert, remove)
+WorldOrchestrator — lifecycle (create, fork, remove, discover)
+WorldService  — facade (bridges StorageService into the orchestrator)
 """
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-from urllib.parse import urlparse
+import logging
+from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
-from archetype.app.broker import CommandBroker
-from archetype.app.factory import WorldFactory
-from archetype.app.models import WorldInfo
-from archetype.app.registry import WorldRegistry
 from archetype.app.storage_service import StorageService
-from archetype.core.aio import AsyncSystem, AsyncWorld, PostTick
+from archetype.core.aio import (
+    AsyncQueryManager,
+    AsyncSystem,
+    AsyncUpdateManager,
+    AsyncWorld,
+)
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
-from archetype.core.interfaces import iAsyncSystem, iWorld
+from archetype.core.hooks import HookRegistry
+from archetype.core.interfaces import iAsyncStore, iAsyncSystem, iWorld
+from archetype.core.resources import Resources
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
 
 
-def _world_entity_count(world: iWorld) -> int:
-    """Return the number of tracked entities on a world.
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldFactory
+# ─────────────────────────────────────────────────────────────────────────────
 
-    ``iWorld`` does not define ``entity_count`` directly, but both
-    ``AsyncWorld`` and ``SyncWorld`` track entities in ``_entity2sig``.
-    Falls back to ``0`` if neither attribute is present.
+
+class WorldFactory:
+    """Takes a concrete store, returns a concrete world.
+
+    Resolves all world dependencies (querier, updater, system, resources,
+    hooks) and passes them as keyword args to the world constructor.
     """
-    count = getattr(world, "entity_count", None)
-    if isinstance(count, int):
-        return count
-    return len(getattr(world, "_entity2sig", {}))
+
+    def create_async_world(
+        self,
+        store: iAsyncStore,
+        config: WorldConfig,
+        system: iAsyncSystem | None = None,
+    ) -> AsyncWorld:
+        return AsyncWorld(
+            world_id=str(config.world_id),
+            name=config.name,
+            querier=AsyncQueryManager(store=store),
+            updater=AsyncUpdateManager(store=store),
+            system=system or AsyncSystem(),
+            resources=Resources(),
+            hooks=HookRegistry(),
+            run_id=config.run_id,
+            tick=config.tick,
+            next_entity_id=config.next_entity_id,
+            entity2sig=dict(config.entity2sig) if config.entity2sig else None,
+            spawn_cache=dict(config.spawn_cache) if config.spawn_cache else None,
+            despawn_cache=dict(config.despawn_cache) if config.despawn_cache else None,
+        )
 
 
-class WorldService:
-    """
-    Manages the lifecycle of multiple worlds.
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldRegistry
+# ─────────────────────────────────────────────────────────────────────────────
 
-    Provides:
-    - World creation with automatic resource sharing
-    - World lookup by ID or name
-    - World forking
-    - Clean shutdown of all managed resources
-    - Optional persistent discovery via ``WorldRegistry``
+
+class WorldRegistry:
+    """Holds live worlds. Lookup by ID or name, insert, remove, list."""
+
+    def __init__(self) -> None:
+        self._worlds: dict[str, iWorld] = {}
+        self._names: dict[str, str] = {}
+
+    def insert(self, world: iWorld) -> None:
+        wid = str(world.world_id)
+        self._worlds[wid] = world
+        if world.name:
+            self._names[world.name] = wid
+
+    def get(self, world_id: UUID | str) -> iWorld:
+        wid = str(world_id)
+        if wid not in self._worlds:
+            raise KeyError(f"World with ID '{world_id}' not found.")
+        return self._worlds[wid]
+
+    def get_by_name(self, name: str) -> iWorld:
+        if name not in self._names:
+            raise KeyError(f"World with name '{name}' not found.")
+        return self.get(self._names[name])
+
+    def remove(self, world_id: UUID | str) -> None:
+        wid = str(world_id)
+        world = self._worlds.pop(wid, None)
+        if world and world.name:
+            self._names.pop(world.name, None)
+
+    def list(self) -> list[iWorld]:
+        return list(self._worlds.values())
+
+    def has(self, world_id: UUID | str) -> bool:
+        return str(world_id) in self._worlds
+
+    def has_name(self, name: str) -> bool:
+        return name in self._names
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldOrchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class WorldOrchestrator:
+    """Manages the full lifecycle of all worlds.
+
+    Depends on WorldFactory (construction) and WorldRegistry (storage of
+    live worlds). Does NOT depend on StorageService or CommandBroker.
     """
 
     def __init__(
         self,
-        storage_service: StorageService,
-        broker: CommandBroker | None = None,
-        registry: WorldRegistry | None = None,
-    ):
-        self.storage_service = storage_service
-        self.factory = WorldFactory(storage_service)
-        self._broker = broker
+        factory: WorldFactory,
+        registry: WorldRegistry,
+    ) -> None:
+        self._factory = factory
         self._registry = registry
-        self._worlds: dict[UUID, iWorld] = {}
-        self._world_names: dict[str, UUID] = {}
 
-    async def shutdown(self):
-        """Gracefully shuts down all managed resources."""
-        await self.storage_service.shutdown()
-        self._worlds.clear()
-        self._world_names.clear()
+    def create_world(
+        self,
+        store: iAsyncStore,
+        config: WorldConfig,
+        system: iAsyncSystem | None = None,
+    ) -> AsyncWorld:
+        """Create a world from a concrete store and config.
+
+        Assigns a world_id if not set. Validates name uniqueness.
+        Registers the world in the registry.
+        """
+        world_id = config.world_id or uuid7()
+        if config.world_id is None:
+            config = config.model_copy(update={"world_id": world_id})
+
+        if self._registry.has(world_id):
+            return self._registry.get(world_id)
+
+        if config.name and self._registry.has_name(config.name):
+            raise ValueError(f"World with name '{config.name}' already exists.")
+
+        world = self._factory.create_async_world(store, config, system=system)
+        self._registry.insert(world)
+        return world
+
+    def get_world(self, world_id: UUID) -> iWorld:
+        return self._registry.get(world_id)
+
+    def get_world_by_name(self, name: str) -> iWorld:
+        return self._registry.get_by_name(name)
+
+    def list_worlds(self) -> list[iWorld]:
+        return self._registry.list()
+
+    def fork_world(
+        self,
+        store: iAsyncStore,
+        source_world_id: UUID | str,
+        name: str | None = None,
+    ) -> AsyncWorld:
+        """Fork a world: create a new world with a snapshot of the source's state.
+
+        Per-field semantics:
+          generated:    world_id (uuid7), run_id (uuid7)
+          deep-copied:  tick, next_entity_id, entity2sig, spawn_cache, despawn_cache
+          shared:       resources (same instance), processors (same instances)
+        """
+        source = self._registry.get(source_world_id)
+        if not isinstance(source, AsyncWorld):
+            raise TypeError("Can only fork AsyncWorld instances")
+
+        fork_config = WorldConfig(
+            name=name,
+            tick=source.tick,
+            next_entity_id=source.next_entity_id,
+            entity2sig=dict(source.entity2sig),
+            spawn_cache={sig: list(rows) for sig, rows in source.spawn_cache.items()},
+            despawn_cache={sig: list(ids) for sig, ids in source.despawn_cache.items()},
+        )
+
+        fork = self._factory.create_async_world(store, fork_config)
+
+        # Share resources and processors from source
+        fork.resources = source.resources
+        fork.system.processors = list(source.system.processors)
+
+        # Deep-copy hooks registry (independent post-fork)
+        for event_type, entries in source.hooks._by_type.items():
+            for _handle, fn, mode in entries:
+                fork.hooks.add(event_type, fn, mode=mode)
+
+        self._registry.insert(fork)
+        return fork
+
+    async def destroy_world(self, world_id: UUID | str) -> None:
+        """Destroy a world: fire OnDestroy, then remove from registry.
+
+        Idempotent — returns silently if world_id is not in the registry.
+        In-memory cleanup only. Storage and audit rows are preserved
+        (append-only invariant).
+        """
+        from archetype.core.hooks import OnDestroy
+
+        if not self._registry.has(world_id):
+            return
+
+        world = self._registry.get(world_id)
+        if isinstance(world, AsyncWorld):
+            await world.hooks.fire(OnDestroy(world_id=world.world_id))
+
+        self._registry.remove(world_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WorldService
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class WorldService:
+    """Service-layer facade. Bridges StorageService into the WorldOrchestrator.
+
+    Only external dependency: StorageService.
+    Internally owns: WorldFactory, WorldRegistry, WorldOrchestrator.
+    """
+
+    def __init__(self, storage_service: StorageService) -> None:
+        self._storage_service = storage_service
+        self._factory = WorldFactory()
+        self._registry = WorldRegistry()
+        self._orchestrator = WorldOrchestrator(self._factory, self._registry)
 
     async def create_world(
         self,
@@ -76,309 +253,77 @@ class WorldService:
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
     ) -> iWorld:
-        """
-        Creates or retrieves a world based on the provided configuration.
-        Idempotent: if a world_id already exists, returns the existing instance.
-        Injects CommandBroker into world resources if available.
-
-        If ``storage_config`` is omitted, a default :class:`StorageConfig` is
-        applied (LanceDB backend at ``./archetype_data``) so every world
-        created through the service layer is durable out of the box. If the
-        configured URI is a local path that cannot be created or written to,
-        a :class:`PermissionError` is raised with a clear message.
-        """
+        """Resolve storage, then delegate world creation to the orchestrator."""
         if storage_config is None:
             storage_config = StorageConfig()
 
-        _ensure_storage_uri_writable(storage_config)
-
-        # Ensure world_id is always a concrete UUID, even if caller passed None.
-        world_id = config.world_id or uuid7()
-        if config.world_id is None:
-            config = config.model_copy(update={"world_id": world_id})
-
-        if world_id in self._worlds:
-            return self._worlds[world_id]
-
-        # Validate name uniqueness before allocating resources.
-        if config.name and config.name in self._world_names:
-            raise ValueError(f"World with name '{config.name}' already exists.")
-
-        world = await self.factory.create_world(
-            world_config=config,
-            storage_config=storage_config,
-            cache_config=cache_config,
-            system=system or AsyncSystem(),
-        )
-
-        # Inject broker into world resources for processor access
-        if self._broker and isinstance(world, AsyncWorld) and hasattr(world, "resources"):
-            world.resources.insert(self._broker)
-
-        self._worlds[world.world_id] = world
-
-        if config.name:
-            self._world_names[config.name] = world.world_id
-
-        self._persist_entry(world, storage_config)
-        self._attach_registry_sync(world)
-
-        return world
+        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
+        return self._orchestrator.create_world(store, config, system=system)
 
     def get_world(self, world_id: UUID) -> iWorld:
-        """Retrieves a managed world instance by its ID."""
-        if world_id not in self._worlds:
-            raise KeyError(f"World with ID '{world_id}' not found.")
-        return self._worlds[world_id]
+        return self._orchestrator.get_world(world_id)
 
     def get_world_by_name(self, name: str) -> iWorld:
-        """Retrieves a managed world instance by its human-readable name."""
-        if name not in self._world_names:
-            raise KeyError(f"World with name '{name}' not found.")
-        return self.get_world(self._world_names[name])
+        return self._orchestrator.get_world_by_name(name)
 
-    def list_worlds(self) -> list[WorldInfo]:
-        """Returns info for all managed worlds."""
-        result = []
-        for wid, world in self._worlds.items():
-            info = WorldInfo(
-                world_id=wid,
-                name=getattr(world, "name", None),
-                tick=getattr(world, "tick", 0),
-                entity_count=_world_entity_count(world),
-                archetype_signatures=[],
-            )
-            result.append(info)
-        return result
-
-    async def remove_world(self, world_id: UUID) -> None:
-        """Removes a world and its broker state by ID."""
-        if world_id in self._worlds:
-            for name, uid in list(self._world_names.items()):
-                if uid == world_id:
-                    del self._world_names[name]
-            del self._worlds[world_id]
-        if self._broker is not None:
-            await self._broker.clear(world_id)
-        if self._registry is not None:
-            self._registry.delete(world_id)
+    def list_worlds(self) -> list[iWorld]:
+        return self._orchestrator.list_worlds()
 
     async def fork_world(
         self,
-        source_world_id: UUID,
-        name: str | None,
-        storage_config: StorageConfig,
+        source_world_id: UUID | str,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
     ) -> iWorld:
-        """
-        Fork a world: create a new world that clones the current state of the source.
+        """Fork a world. Resolves storage from source if not overridden."""
+        if storage_config is None:
+            storage_config = StorageConfig()
+        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
+        return self._orchestrator.fork_world(store, source_world_id, name=name)
 
-        The fork always receives a system-generated ``world_id``. Callers control
-        only the human-readable ``name`` and storage placement.
+    async def destroy_world(self, world_id: UUID | str) -> None:
+        """Destroy a world. In-memory cleanup only. Storage is preserved."""
+        await self._orchestrator.destroy_world(world_id)
 
-        The fork starts from an identical entity/component snapshot at the source's
-        current tick. Source and fork then diverge independently.
+    async def add_resource(self, world_id: str | UUID, resource: object) -> None:
+        """Attach a resource to a world's Resources container."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        world.resources.insert(resource)
 
-        Inheritance policy (see archetype#61):
-          * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_next_entity_id``,
-            live archetype snapshots (re-stamped with the new ``world_id``),
-            processors (shared instances), and non-broker resources.
-          * Persisted: the live snapshots are written to the store under the new
-            ``world_id`` at tick ``(source.tick - 1)`` so store-backed reads
-            see the forked state.
-          * Not copied: pending spawn/despawn caches (already reflected in
-            ``_live`` once materialized), lifecycle hooks (fork-specific
-            observers), and the ``CommandBroker`` reference (re-injected by
-            ``create_world`` via the service's own broker).
+    def list_processors(self, world_id: str | UUID) -> list:
+        """Return the world's registered processor instances."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "system") and hasattr(world.system, "processors"):
+            return list(world.system.processors)
+        return []
 
-        Raises:
-            KeyError: If ``source_world_id`` is not managed.
-            TypeError: If the source is not an ``AsyncWorld``.
-            ValueError: If the source has pending mutations (un-materialized
-                spawn/despawn caches).
-        """
-        from daft import lit
+    def list_hooks(self, world_id: str | UUID) -> list:
+        """Return the world's registered hook handles."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "hooks") and hasattr(world.hooks, "_by_type"):
+            handles = []
+            for entries in world.hooks._by_type.values():
+                handles.extend(entries)
+            return handles
+        return []
 
-        from archetype.app.broker import CommandBroker
-        from archetype.core.aio.async_system import AsyncSystem
+    def list_resources(self, world_id: str | UUID) -> list:
+        """Return (type, instance) pairs from the world's Resources container."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "resources"):
+            return list(world.resources.items())
+        return []
 
-        source = self.get_world(source_world_id)
-        if not isinstance(source, AsyncWorld):
-            raise TypeError("Can only fork AsyncWorld instances")
+    def add_hook(self, world_id: str | UUID, event_type, fn, *, mode="blocking"):
+        """Add a hook to a world's hook bus. Returns the HookHandle."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        return world.add_hook(event_type, fn, mode=mode)
 
-        # Guard: reject if the source has un-materialized mutations; callers
-        # must step() first so _live reflects the intended snapshot.
-        has_pending_spawns = any(v for v in source._spawn_cache.values())
-        has_pending_despawns = any(v for v in source._despawn_cache.values())
-        if has_pending_spawns or has_pending_despawns:
-            raise ValueError(
-                "Cannot fork a world with pending mutations. "
-                "Call step() to materialize spawn/despawn caches first."
-            )
+    def remove_hook(self, world_id: str | UUID, handle) -> None:
+        """Remove a hook by handle."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        world.remove_hook(handle)
 
-        fork_config = WorldConfig(world_id=uuid7(), name=name)
-
-        # Build a fresh system that shares processor instances with the source.
-        # Processors are stateless DataFrame transforms, so sharing is safe.
-        new_system = AsyncSystem()
-        new_system.processors = list(source.system.processors)
-
-        new_world = await self.create_world(
-            config=fork_config,
-            storage_config=storage_config,
-            cache_config=cache_config,
-            system=new_system,
-        )
-
-        if not isinstance(new_world, AsyncWorld):
-            return new_world
-
-        # --- Clone in-memory state ---
-        new_world.tick = source.tick
-        new_world.run_id = source.run_id
-        new_world._entity2sig = dict(source._entity2sig)
-        new_world._next_entity_id = source._next_entity_id
-
-        # --- Copy non-broker resources (selective policy) ---
-        # The broker is world-scoped governance; create_world already injected
-        # the service's broker into new_world.resources.
-        for resource_type, resource in source.resources.items():
-            if resource_type is CommandBroker or isinstance(resource, CommandBroker):
-                continue
-            if resource_type in new_world.resources:
-                continue
-            new_world.resources.insert(resource)
-
-        # --- Replicate source's most recent committed snapshot under the new world_id ---
-        # After step(), source.tick is the NEXT tick to process and the previous
-        # tick's rows are durably in the store. Re-stamp them with the fork's
-        # world_id so default store-backed reads find the forked state.
-        if source.tick > 0:
-            new_world_id_str = str(new_world.world_id)
-            persist_tick = source.tick - 1
-            persist_run_id = new_world.run_id or ""
-            sigs = await source.querier.list_signatures()
-            for sig in sigs:
-                df = await source.querier.query_archetype(
-                    sig=sig,
-                    world_id=source.world_id,
-                    run_id=source.run_id,
-                    ticks=[persist_tick],
-                )
-                df = df.with_column("world_id", lit(new_world_id_str))
-                await new_world.updater.update(
-                    df, sig, persist_tick, new_world.world_id, persist_run_id
-                )
-
-        return new_world
-
-    # ------------------------------------------------------------------
-    # Registry-backed discovery
-    # ------------------------------------------------------------------
-
-    async def discover_worlds(self) -> list[UUID]:
-        """Rehydrate worlds listed in the registry into the in-memory cache.
-
-        Returns the list of newly loaded world IDs. If no registry is
-        configured, returns an empty list.
-        """
-        if self._registry is None:
-            return []
-
-        loaded: list[UUID] = []
-        for entry in self._registry.list_entries():
-            try:
-                wid = UUID(entry["world_id"])
-            except (KeyError, ValueError):
-                continue
-            if wid in self._worlds:
-                continue
-
-            name = entry.get("name")
-            storage_config = StorageConfig(
-                uri=entry.get("storage_uri", "./archetype_data"),
-                namespace=entry.get("namespace", "archetypes"),
-            )
-            config = WorldConfig(world_id=wid, name=name)
-
-            # Reuse create_world so broker injection, registry hooks, and
-            # name tracking all go through a single code path.
-            world = await self.create_world(config, storage_config)
-
-            # Restore tick from registry so step/run continues where left off.
-            if isinstance(world, AsyncWorld):
-                world.tick = int(entry.get("tick", 0) or 0)
-
-            loaded.append(wid)
-
-        return loaded
-
-    def _persist_entry(self, world: iWorld, storage_config: StorageConfig) -> None:
-        if self._registry is None:
-            return
-        self._registry.upsert(
-            world.world_id,
-            {
-                "world_id": str(world.world_id),
-                "name": getattr(world, "name", None),
-                "storage_uri": str(storage_config.uri),
-                "namespace": storage_config.namespace,
-                "tick": int(getattr(world, "tick", 0)),
-            },
-        )
-
-    def _attach_registry_sync(self, world: iWorld) -> None:
-        """Attach a post_tick hook that keeps the registry tick in sync.
-
-        Captures the full registry entry in the closure so each tick only
-        writes (no read-modify-write) and never drops metadata fields.
-        """
-        if self._registry is None or not isinstance(world, AsyncWorld):
-            return
-        registry = self._registry
-        world_id = world.world_id
-        # Snapshot the current entry so the hook never re-reads from disk.
-        cached_entry = dict(registry.get(world_id) or {})
-        cached_entry.setdefault("world_id", str(world_id))
-        cached_entry.setdefault("name", getattr(world, "name", None))
-
-        async def _sync_tick(event: PostTick) -> None:
-            cached_entry["tick"] = int(event.tick)
-            registry.upsert(world_id, cached_entry)
-
-        world.add_hook(PostTick, _sync_tick)
-
-
-def _ensure_storage_uri_writable(storage_config: StorageConfig) -> None:
-    """Validate that a local storage URI is writable before initializing a backend.
-
-    Remote URIs (``s3://``, ``gs://``, etc.) are skipped — credentials and
-    permissions for those are surfaced by the remote client at first I/O.
-    For local paths, this creates the directory if needed and verifies that
-    the current process can write to it. Raises :class:`PermissionError`
-    with a clear message otherwise.
-    """
-    uri = str(storage_config.uri)
-    scheme = urlparse(uri).scheme.lower()
-    if scheme not in ("", "file"):
-        return
-
-    # Strip a ``file://`` prefix if present.
-    path_str = uri[len("file://") :] if scheme == "file" else uri
-    base_path = Path(path_str)
-    if not base_path.is_absolute():
-        base_path = Path.cwd() / base_path
-
-    try:
-        base_path.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise PermissionError(
-            f"Storage URI {base_path!s} is not writable: {exc}. "
-            "Configure a writable path via StorageConfig(uri=...)."
-        ) from exc
-
-    if not os.access(base_path, os.W_OK):
-        raise PermissionError(
-            f"Storage URI {base_path!s} exists but is not writable by the current user. "
-            "Configure a writable path via StorageConfig(uri=...)."
-        )
+    async def shutdown(self) -> None:
+        await self._storage_service.shutdown()

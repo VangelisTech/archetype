@@ -80,16 +80,16 @@ __all__ = [
     "CacheConfig",
     "RunConfig",
     "WorldConfig",
-    # Sugar runtime
+    # Runtime
     "ArchetypeRuntime",
     "RuntimeWorld",
     "SyncArchetypeRuntime",
     "SyncRuntimeWorld",
     "run_sync",
+    "configure_session",
     # App layer services
     "CommandBroker",
     "WorldService",
-    "WorldFactory",
     "StorageService",
     "CommandService",
     "SimulationService",
@@ -136,16 +136,16 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CacheConfig": ("archetype.core", "CacheConfig"),
     "RunConfig": ("archetype.core", "RunConfig"),
     "WorldConfig": ("archetype.core", "WorldConfig"),
-    # Sugar runtime
-    "ArchetypeRuntime": ("archetype.sugar", "ArchetypeRuntime"),
-    "RuntimeWorld": ("archetype.sugar", "RuntimeWorld"),
-    "SyncArchetypeRuntime": ("archetype.sugar", "SyncArchetypeRuntime"),
-    "SyncRuntimeWorld": ("archetype.sugar", "SyncRuntimeWorld"),
-    "run_sync": ("archetype.sugar", "run_sync"),
+    # Runtime
+    "ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime"),
+    "RuntimeWorld": ("archetype.runtime", "RuntimeWorld"),
+    "SyncArchetypeRuntime": ("archetype.runtime", "SyncArchetypeRuntime"),
+    "SyncRuntimeWorld": ("archetype.runtime", "SyncRuntimeWorld"),
+    "run_sync": ("archetype.runtime", "run_sync"),
+    "configure_session": ("archetype.runtime", "configure_session"),
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),
-    "WorldFactory": ("archetype.app", "WorldFactory"),
     "StorageService": ("archetype.app", "StorageService"),
     "CommandService": ("archetype.app", "CommandService"),
     "SimulationService": ("archetype.app", "SimulationService"),

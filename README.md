@@ -23,18 +23,19 @@ Archetype is split into layers:
 
 | Layer | Purpose |
 |---|---|
-| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
+| `src/archetype/runtime` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
 | `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer (lower-level): `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
+| `src/archetype/app` | Service layer (lower-level): command gate, audit log, broker, world/simulation/query services |
 | `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
 
 The runtime model is:
 
-1. commands are enqueued through the broker,
-2. each tick drains due commands,
-3. worlds materialize structural mutations,
-4. processors transform matching archetype DataFrames,
-5. updated rows are appended to storage.
+1. external calls enter through `iCommandService`,
+2. the gate authorizes, delegates, and audits,
+3. tick-deferred commands are drained when a world steps,
+4. worlds materialize structural mutations,
+5. processors transform matching archetype DataFrames,
+6. updated rows are appended to storage.
 
 ## Use Cases
 
@@ -115,7 +116,7 @@ For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop the `a
 Two things to know:
 
 - processor columns are prefixed `componentname__field` (e.g., `position__x`)
-- `ArchetypeRuntime` is the script boundary — process lifetime and world lifetime are separate concerns. See `docs/guide/specification.md` § "Contracts Before Sugar" for the full contract set (single-flight activation, honest `spawn()`, fork isolation, world-local shutdown). Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
+- `ArchetypeRuntime` is the script boundary. Process lifetime and world lifetime are separate concerns. See `docs/guide/runtime.md` and the Specifications group for the full contract set. Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
 
 ## CLI
 
@@ -131,20 +132,36 @@ archetype world create demo
 # List worlds
 archetype world list
 
+# Spawn an entity from component payload JSON
+archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
+
 # Run 10 ticks
 archetype run <world-id> --steps 10
+
+# Run an episode or rollout
+archetype episode <world-id> --max-steps 100
+archetype rollout <world-id> --num-episodes 4 --max-steps 100
 
 # Fork the current world state
 archetype world fork <world-id> --name branch-a
 
-# Show command history
+# Drop the live world object; storage and audit rows remain
+archetype world destroy <world-id>
+
+# Show audit history
 archetype history <world-id>
 ```
 
 Useful environment variables:
 
 - `ARCHETYPE_URL`: base URL for the CLI, default `http://localhost:8000`
-- `ARCHETYPE_REGISTRY_PATH`: file path for the persisted world registry
+
+Useful per-command flags:
+
+- `--url`: override `ARCHETYPE_URL` for one command
+- `--role` / `-r`: developer-mode auth shortcut (`admin`, `operator`, `player`, `viewer`)
+- `--token`: send `Authorization: Bearer <token>`; intended for production auth once v2 auth lands
+- `--json`: emit raw JSON for read commands
 
 ## REST API
 
@@ -155,19 +172,27 @@ Useful environment variables:
 | `POST` | `/worlds` | Create a world |
 | `GET` | `/worlds` | List worlds |
 | `GET` | `/worlds/{world_id}` | Inspect one world |
-| `DELETE` | `/worlds/{world_id}` | Remove a world |
+| `DELETE` | `/worlds/{world_id}` | Destroy a live world |
 | `POST` | `/worlds/{world_id}/fork` | Fork a world |
+| `POST` | `/worlds/{world_id}/entities` | Spawn an entity |
+| `DELETE` | `/worlds/{world_id}/entities/{entity_id}` | Despawn an entity |
+| `PATCH` | `/worlds/{world_id}/entities/{entity_id}` | Update entity components |
+| `POST` | `/worlds/{world_id}/entities/{entity_id}/components` | Add components |
+| `DELETE` | `/worlds/{world_id}/entities/{entity_id}/components` | Remove components |
 | `POST` | `/worlds/{world_id}/commands` | Submit one command |
 | `POST` | `/worlds/{world_id}/commands/batch` | Submit multiple commands |
-| `GET` | `/worlds/{world_id}/commands` | Command history |
-| `GET` | `/worlds/{world_id}/commands/pending` | Pending command count |
+| `GET` | `/worlds/{world_id}/commands` | Audit-backed command history |
 | `POST` | `/worlds/{world_id}/step` | Run one tick |
 | `POST` | `/worlds/{world_id}/run` | Run multiple ticks |
+| `POST` | `/worlds/{world_id}/episode` | Run one episode |
+| `POST` | `/worlds/{world_id}/rollout` | Run a rollout |
 | `GET` | `/worlds/{world_id}/processors` | List processors |
+| `GET` | `/worlds/{world_id}/hooks` | List hooks |
+| `GET` | `/worlds/{world_id}/resources` | List resources |
 | `GET` | `/worlds/{world_id}/state` | Query world snapshot |
 | `GET` | `/worlds/{world_id}/entities/{entity_id}` | Query one entity |
 | `GET` | `/worlds/{world_id}/components` | Query component projections |
-| `GET` | `/worlds/{world_id}/history` | Query command history |
+| `GET` | `/worlds/{world_id}/history` | Query audit history |
 
 ## Core Concepts
 
@@ -220,17 +245,18 @@ All external mutations are designed to flow through:
 ```text
 API / CLI / caller
   → CommandService
-  → CommandBroker
-  → AsyncWorld
+  → direct service delegate or tick-deferred CommandBroker
+  → AsyncWorld / storage
 ```
 
-The broker enforces:
+The command gate enforces:
 
 - role permissions
 - per-tick command quotas
 - daily token budgets
+- audit emission
 
-Default roles in code include `viewer`, `player`, `coder`, `operator`, `maintainer`, and `admin`.
+Current roles are `viewer`, `player`, `operator`, and `admin`.
 
 ### Storage
 
@@ -239,7 +265,7 @@ Archetype supports two async storage backends behind the same contracts:
 - `AsyncLancedbStore` for LanceDB-backed archetype tables
 - `AsyncStore` for the Daft catalog-backed path
 
-`StorageService` shares backend instances across worlds with the same `(uri, namespace)`.
+`StorageService` shares backend instances across worlds with the same effective storage pool key: `(uri, namespace, backend, cache config)`.
 
 ## World Forking
 
@@ -248,10 +274,11 @@ Forking is a first-class operation in `WorldService`.
 A fork:
 
 - gets a new `world_id`
-- copies the source world's current live snapshot
+- gets a new `run_id`
 - preserves tick position
-- shares processor instances
-- persists the copied snapshot under the new world identity
+- copies entity mappings and pending mutation caches
+- copies hook registrations present at fork time
+- shares processor and resource instances by default
 
 Source and fork diverge independently after that point.
 
@@ -263,15 +290,15 @@ Current state worth knowing before using it:
 - the Python service layer is richer than the REST read models
 - the FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet
 
-Start with `src/archetype/sugar.py` (`ArchetypeRuntime`) to use the system. Read `src/archetype/core` and `src/archetype/app` to understand how it works underneath.
+Start with `src/archetype/runtime` (`ArchetypeRuntime`) to use the system. Read `src/archetype/core` and `src/archetype/app` to understand how it works underneath.
 
 ## Repository Map
 
 ```text
 archetype/
-├── src/archetype/sugar.py   # ArchetypeRuntime — recommended top-level API
+├── src/archetype/runtime/   # ArchetypeRuntime — recommended top-level API
 ├── src/archetype/core/      # ECS runtime and storage contracts
-├── src/archetype/app/       # Brokered service layer (lower-level)
+├── src/archetype/app/       # Gated service layer (lower-level)
 ├── src/archetype/api/       # FastAPI server
 ├── src/archetype/cli/       # Typer CLI
 ├── examples/                # Runnable examples
@@ -292,9 +319,30 @@ uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
 uv run python examples/05_llm_agents.py
 uv run python examples/06_trajectory_analysis.py
+uv run python examples/07_hooks.py
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py` require `OPENAI_API_KEY`.
+
+## Observability
+
+Archetype ships with [Logfire](https://pydantic.dev/logfire) integration at three levels:
+
+**Gate spans** — every `CommandService` method is instrumented with `@logfire.instrument`. You see operation type, world_id, actor_id, and duration for every gated call.
+
+**Step phases** — inside each tick, four spans cover query/materialize/execute/update. This tells you whether time is in store I/O or processor compute.
+
+**Simulation hooks** — opt-in per-tick and per-entity event tracing:
+
+```python
+from archetype.contrib.logfire_observer import logfire_hooks
+
+world = runtime.world("demo", processors=[...], hooks=logfire_hooks())
+```
+
+The runtime calls `logfire.configure()` automatically. Python stdlib logging is bridged into Logfire via `LogfireLoggingHandler`, so all `logger.*` calls throughout the codebase appear as Logfire events.
+
+For the FastAPI server, `logfire.instrument_fastapi` auto-traces every route.
 
 ## Development
 
@@ -311,6 +359,7 @@ make docs        # build docs
 - Docs site: `https://archetype-docs.pages.dev`
 - Examples index: `examples/README.md`
 - Architecture notes: `LEARNINGS.md`
+- Specifications: `docs/guide/runtime.md`, `docs/guide/service-protocols.md`, `docs/guide/command-gate.md`, `docs/guide/execution-hierarchy.md`, `docs/guide/world-lifecycle.md`, `docs/guide/audit-log.md`
 
 ## License
 

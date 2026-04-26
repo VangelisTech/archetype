@@ -2,140 +2,593 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Command Service
+Command Service — the gate.
 
-The nerve center. Every mutation from an external actor flows through here.
-Accepts commands, routes them through the CommandBroker for auth and ordering,
-then dispatches to the appropriate world mutation.
+Every external operation flows through here. The gate runs:
+  1. guardrail_allow(cmd, ctx) — RBAC + quotas
+  2. delegate to the underlying service
+  3. emit an AuditRow via iAuditLog.record
+
+Two paths: direct (sync semantics) and tick-deferred (queued via broker).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections import defaultdict
 from typing import TYPE_CHECKING
 
+import logfire
 from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow
-from archetype.app.auth.models import ActorCtx
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
+from archetype.app.models import (
+    Command,
+    CommandType,
+    HookInfo,
+    ProcessorInfo,
+    ResourceInfo,
+    WorldInfo,
+)
 
 if TYPE_CHECKING:
+    from daft import DataFrame
+
+    from archetype.app.audit_log import AuditLog
+    from archetype.app.auth.models import ActorCtx
+    from archetype.app.broker import CommandBroker
+    from archetype.app.models import (
+        EpisodeConfig,
+        EpisodeResult,
+        RolloutConfig,
+        RolloutResult,
+        RunResult,
+        WorldInfo,
+    )
+    from archetype.app.mutation_service import MutationService
+    from archetype.app.query_service import QueryService
+    from archetype.app.simulation_service import SimulationService
     from archetype.app.world_service import WorldService
-    from archetype.core.aio import AsyncWorld
-    from archetype.core.interfaces import iWorld
+    from archetype.core.component import Component
+    from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+    from archetype.core.interfaces import ArchetypeSignature
 
 logger = logging.getLogger(__name__)
 
 
 class CommandService:
-    """
-    Auth routing + command dispatch.
+    """Policy enforcement point.
 
-    All mutations from external actors flow through submit() → broker → enqueue.
-    SimulationService calls drain_and_apply() during each tick to process queued commands.
+    Every external mutation, lifecycle operation, and read flows through
+    here. The only service that sees ActorCtx.
     """
 
-    def __init__(self, broker: CommandBroker, world_service: WorldService):
+    def __init__(
+        self,
+        mutations: MutationService,
+        worlds: WorldService,
+        simulation: SimulationService,
+        queries: QueryService,
+        broker: CommandBroker,
+        audit: AuditLog | None = None,
+    ) -> None:
+        self._mutations = mutations
+        self._worlds = worlds
+        self._simulation = simulation
+        self._queries = queries
         self._broker = broker
-        self._world_service = world_service
-        self._spawn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._audit = audit
+
+    def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
+        """RBAC + quota check. Raises GuardrailError if denied."""
+        guardrail_allow(cmd, ctx)
+
+    async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
+        """Emit one audit row. Best-effort — never raises."""
+        if self._audit is None:
+            return
+        try:
+            from archetype.app.audit_log import make_audit_row
+
+            row = make_audit_row(ctx, command_type, world_id, **kw)
+            await self._audit.record(row)
+        except Exception:
+            logger.debug("audit emission failed", exc_info=True)
+
+    # ── Mutations (gated, direct) ─────────────────────────────────────────
+
+    @logfire.instrument("gate.create_entity")
+    async def create_entity(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        components: list[Component],
+    ) -> int:
+        self._gate(Command(type=CommandType.SPAWN), ctx)
+        result = await self._mutations.create_entity(world_id, components)
+        await self._emit(ctx, "spawn", world_id)
+        return result
+
+    @logfire.instrument("gate.remove_entity")
+    async def remove_entity(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+    ) -> None:
+        self._gate(Command(type=CommandType.DESPAWN), ctx)
+        await self._mutations.remove_entity(world_id, entity_id)
+        await self._emit(ctx, "despawn", world_id)
+
+    @logfire.instrument("gate.update_entity")
+    async def update_entity(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        components: list[Component],
+    ) -> None:
+        """Overlay values on existing components (same archetype)."""
+        self._gate(Command(type=CommandType.UPDATE), ctx)
+        await self._mutations.update_entity(world_id, entity_id, components)
+        await self._emit(ctx, "update", world_id)
+
+    @logfire.instrument("gate.add_components")
+    async def add_components(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        components: list[Component],
+    ) -> None:
+        self._gate(Command(type=CommandType.ADD_COMPONENT), ctx)
+        await self._mutations.add_components(world_id, entity_id, components)
+        await self._emit(ctx, "add_component", world_id)
+
+    @logfire.instrument("gate.remove_components")
+    async def remove_components(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        component_types: list[type[Component]],
+    ) -> None:
+        self._gate(Command(type=CommandType.REMOVE_COMPONENT), ctx)
+        await self._mutations.remove_components(world_id, entity_id, component_types)
+        await self._emit(ctx, "remove_component", world_id)
+
+    @logfire.instrument("gate.add_processor")
+    async def add_processor(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        processor,
+    ) -> None:
+        self._gate(Command(type=CommandType.ADD_PROCESSOR), ctx)
+        await self._mutations.add_processor(world_id, processor)
+        await self._emit(ctx, "add_processor", world_id)
+
+    @logfire.instrument("gate.remove_processor")
+    async def remove_processor(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        proc_type,
+    ) -> None:
+        self._gate(Command(type=CommandType.REMOVE_PROCESSOR), ctx)
+        await self._mutations.remove_processor(world_id, proc_type)
+        await self._emit(ctx, "remove_processor", world_id)
+
+    # ── Lifecycle (gated, direct) ─────────────────────────────────────────
+
+    @logfire.instrument("gate.create_world")
+    async def create_world(
+        self,
+        ctx: ActorCtx,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> WorldInfo:
+        self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
+        world = await self._worlds.create_world(config, storage_config, cache_config)
+        info = WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
+        await self._emit(ctx, "create_world", info.world_id)
+        return info
+
+    @logfire.instrument("gate.fork_world")
+    async def fork_world(
+        self,
+        ctx: ActorCtx,
+        source_world_id: str | UUID,
+        name: str | None = None,
+        *,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> WorldInfo:
+        self._gate(Command(type=CommandType.FORK_WORLD), ctx)
+        world = await self._worlds.fork_world(source_world_id, name, storage_config, cache_config)
+        info = WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
+        await self._emit(ctx, "fork_world", info.world_id)
+        return info
+
+    @logfire.instrument("gate.destroy_world")
+    async def destroy_world(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> None:
+        self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
+        if self._audit:
+            await self._audit.flush()
+        await self._broker.clear(world_id)
+        await self._worlds.destroy_world(world_id)
+        await self._emit(ctx, "destroy_world", world_id)
+
+    @logfire.instrument("gate.get_world_info")
+    async def get_world_info(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> WorldInfo:
+        self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
+        world = self._worlds.get_world(UUID(str(world_id)))
+        info = WorldInfo(
+            world_id=world.world_id,
+            name=world.name,
+            tick=getattr(world, "tick", 0),
+            run_id=getattr(world, "run_id", None),
+        )
+        await self._emit(ctx, "get_world_info", world_id)
+        return info
+
+    async def list_worlds(self, ctx: ActorCtx) -> list[WorldInfo]:
+        self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
+        worlds = [
+            WorldInfo(
+                world_id=world.world_id,
+                name=world.name,
+                tick=getattr(world, "tick", 0),
+                run_id=getattr(world, "run_id", None),
+            )
+            for world in self._worlds.list_worlds()
+        ]
+        await self._emit(ctx, "list_worlds")
+        return worlds
+
+    # ── Simulation (gated, direct) ────────────────────────────────────────
+
+    @logfire.instrument("gate.step")
+    async def step(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        run_config: RunConfig,
+        **input_kwargs,
+    ) -> int:
+        self._gate(Command(type=CommandType.STEP), ctx)
+        commands_applied = await self._simulation.step(world_id, run_config, **input_kwargs)
+        await self._emit(ctx, "step", world_id)
+        return commands_applied
+
+    @logfire.instrument("gate.run")
+    async def run(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        run_config: RunConfig,
+        **input_kwargs,
+    ) -> RunResult:
+        self._gate(Command(type=CommandType.RUN), ctx)
+        result = await self._simulation.run(world_id, run_config, **input_kwargs)
+        await self._emit(ctx, "run", world_id)
+        return result
+
+    @logfire.instrument("gate.run_episode")
+    async def run_episode(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        config: EpisodeConfig,
+        **input_kwargs,
+    ) -> EpisodeResult:
+        """Gate, then delegate to SimulationService.run_episode."""
+        self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
+        result = await self._simulation.run_episode(world_id, config, **input_kwargs)
+        await self._emit(ctx, "run_episode", world_id)
+        return result
+
+    @logfire.instrument("gate.run_rollout")
+    async def run_rollout(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        config: RolloutConfig,
+        **input_kwargs,
+    ) -> RolloutResult:
+        """Gate, then delegate to SimulationService.run_rollout.
+
+        Emits ONE rollout-level audit row, not one per fork.
+        Internal forks are SimulationService's mechanics.
+        """
+        self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
+        result = await self._simulation.run_rollout(world_id, config, **input_kwargs)
+        await self._emit(ctx, "run_rollout", world_id)
+        return result
+
+    # ── Queries (gated reads) ─────────────────────────────────────────────
+
+    @logfire.instrument("gate.query_components")
+    async def query_components(
+        self,
+        ctx: ActorCtx,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Query entities by component subset. Gated read."""
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        return await self._queries.query_components(
+            components=components,
+            world_id=world_id,
+            run_id=run_id,
+            storage_config=storage_config,
+            ticks=ticks,
+            entity_ids=entity_ids,
+        )
+
+    @logfire.instrument("gate.query_archetype")
+    async def query_archetype(
+        self,
+        ctx: ActorCtx,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        components: list[type[Component]] | None = None,
+    ) -> DataFrame:
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        return await self._queries.query_archetype(
+            sig,
+            world_id,
+            run_id,
+            storage_config,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            components=components,
+        )
+
+    async def list_signatures(
+        self,
+        ctx: ActorCtx,
+        storage_config: StorageConfig | None = None,
+    ) -> list[ArchetypeSignature]:
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        return await self._queries.list_signatures(storage_config)
+
+    # ── Resource attachment (gated) ────────────────────────────────────────
+
+    async def add_resource(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        resource: object,
+    ) -> None:
+        self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
+        await self._worlds.add_resource(world_id, resource)
+        await self._emit(ctx, "add_resource", world_id)
+
+    async def add_hook(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        event_type,
+        fn,
+        *,
+        mode: str = "blocking",
+    ):
+        self._gate(Command(type=CommandType.ADD_HOOK), ctx)
+        return self._worlds.add_hook(world_id, event_type, fn, mode=mode)
+
+    async def remove_hook(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        handle,
+    ) -> None:
+        self._gate(Command(type=CommandType.REMOVE_HOOK), ctx)
+        self._worlds.remove_hook(world_id, handle)
+
+    # ── Read introspection (gated) ─────────────────────────────────────────
+
+    async def list_processors(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[ProcessorInfo]:
+        self._gate(Command(type=CommandType.LIST_PROCESSORS), ctx)
+        procs = self._worlds.list_processors(world_id)
+        return [
+            ProcessorInfo(
+                qualname=f"{type(p).__module__}.{type(p).__qualname__}",
+                priority=getattr(p, "priority", 0),
+                components=tuple(
+                    f"{c.__module__}.{c.__qualname__}" for c in getattr(p, "components", ())
+                ),
+            )
+            for p in procs
+        ]
+
+    async def list_hooks(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[HookInfo]:
+        self._gate(Command(type=CommandType.LIST_HOOKS), ctx)
+        entries = self._worlds.list_hooks(world_id)
+        result: list[HookInfo] = []
+        for entry in entries:
+            # Async registry entries are (HookHandle, fn, FireMode)
+            # Sync registry entries are (HookHandle, fn)
+            handle = entry[0]
+            fn = entry[1]
+            mode = entry[2] if len(entry) > 2 else "blocking"
+            result.append(
+                HookInfo(
+                    event_type=handle._event_type.__name__,
+                    handler_qualname=getattr(fn, "__qualname__", str(fn)),
+                    mode=mode,
+                    handle_id=handle._id,
+                )
+            )
+        return result
+
+    async def list_resources(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[ResourceInfo]:
+        self._gate(Command(type=CommandType.LIST_RESOURCES), ctx)
+        items = self._worlds.list_resources(world_id)
+        return [ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}") for t, _ in items]
+
+    async def get_audit_history(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID | None = None,
+        *,
+        tick_range: tuple[int, int] | None = None,
+        actor_id: str | UUID | None = None,
+        signer_address: str | None = None,
+        idempotency_key: str | None = None,
+        limit: int | None = None,
+    ):
+        self._gate(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
+        if self._audit is None:
+            return []
+        return await self._audit.query(
+            world_id=world_id,
+            tick_range=tick_range,
+            actor_id=actor_id,
+            signer_address=signer_address,
+            idempotency_key=idempotency_key,
+            limit=limit,
+        )
+
+    # ── Tick-deferred path (queued) ───────────────────────────────────────
+
+    @staticmethod
+    def _normalize_submit_args(ctx, world_id, command_or_commands):
+        """Accept canonical and pre-refactor positional submit ordering."""
+        from archetype.app.auth.models import ActorCtx
+
+        if isinstance(ctx, ActorCtx):
+            return ctx, world_id, command_or_commands
+        if isinstance(command_or_commands, ActorCtx):
+            return command_or_commands, ctx, world_id
+        raise TypeError("submit expects (ctx, world_id, command) or (world_id, command, ctx)")
 
     async def submit(
         self,
+        ctx: ActorCtx,
         world_id: str | UUID,
         cmd: Command,
-        ctx: ActorCtx,
     ) -> UUID:
-        """
-        Submit a command for a world.
-        Broker validates RBAC + quotas, then enqueues.
-        Returns the command ID.
-        """
-        await self._broker.enqueue(world_id, cmd, ctx)
+        """Gate, then enqueue for application at cmd.tick."""
+        ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
+        self._gate(cmd, ctx)
+        await self._broker.enqueue(world_id, cmd)
+        await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
         return cmd.id
 
     async def submit_batch(
         self,
+        ctx: ActorCtx,
         world_id: str | UUID,
         cmds: list[Command],
-        ctx: ActorCtx,
     ) -> list[UUID]:
-        """Submit multiple commands. All-or-nothing RBAC validation."""
-        await self._broker.enqueue_bulk(world_id, cmds, ctx)
+        """Gate all-or-nothing, then enqueue atomically."""
+        ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
+        for cmd in cmds:
+            self._gate(cmd, ctx)
+        await self._broker.enqueue_bulk(world_id, cmds)
+        for cmd in cmds:
+            await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
         return [cmd.id for cmd in cmds]
 
     async def submit_spawn(
         self,
-        world_id: str | UUID,
-        components: list,
         ctx: ActorCtx,
+        world_id: str | UUID,
+        components: list[Component],
         *,
         tick: int = 0,
         priority: int = 0,
     ) -> int:
-        """
-        Reserve an entity ID for a spawn command and enqueue it.
+        """Reserve entity_id, gate, enqueue spawn, return id immediately."""
+        from archetype.core.aio import AsyncWorld
 
-        The returned entity ID is stable across the full command lifecycle:
-        submit -> broker queue -> drain_and_apply. The entity is still
-        materialized at the broker drain boundary, preserving the service
-        layer's audit trail and ordering semantics.
-        """
-        world_key = str(world_id)
-        lock = self._spawn_locks[world_key]
+        world = self._worlds.get_world(UUID(str(world_id)))
+        if not isinstance(world, AsyncWorld):
+            raise TypeError("submit_spawn requires AsyncWorld")
 
-        async with lock:
-            world = self._world_service.get_world(UUID(world_key))
-            entity_id = self._reserve_entity_id(world)
-            cmd = Command(
-                type=CommandType.SPAWN,
-                tick=tick,
-                priority=priority,
-                payload={
-                    "entity_id": entity_id,
-                    # Keep live component instances through the in-process broker
-                    # so type identity is preserved even when different modules
-                    # define test-only components with the same class name.
-                    "components": list(components),
-                },
-            )
+        entity_id = world.next_entity_id
+        world.next_entity_id += 1
 
-            try:
-                guardrail_allow(cmd, ctx)
-                await self._broker.enqueue(world_id, cmd, None)
-            except Exception:
-                self._release_entity_id(world, entity_id)
-                raise
+        cmd = Command(
+            type=CommandType.SPAWN,
+            tick=tick,
+            priority=priority,
+            payload={"entity_id": entity_id, "components": list(components)},
+        )
 
-            return entity_id
+        try:
+            self._gate(cmd, ctx)
+            await self._broker.enqueue(world_id, cmd)
+            await self._emit(ctx, "spawn", world_id, command_id=cmd.id, status="queued")
+        except Exception:
+            # Roll back the reserved id
+            if world.next_entity_id == entity_id + 1:
+                world.next_entity_id = entity_id
+            raise
+
+        return entity_id
 
     async def drain_and_apply(
         self,
         world_id: str | UUID,
         tick: int,
     ) -> list[Command]:
-        """
-        Dequeue all commands due for this world at this tick,
-        apply them to the target world, ack on success.
-        Returns applied commands for audit.
+        """Drain commands due at tick, apply them via MutationService.
+
+        No ActorCtx — commands carry their own context validated at submit.
         """
         commands = await self._broker.dequeue_due(world_id, tick)
         if not commands:
             return []
 
-        world = self._world_service.get_world(UUID(str(world_id)))
         applied: list[Command] = []
-
         for cmd in commands:
             try:
-                await self.apply(world, cmd)
+                await self._apply(world_id, cmd)
                 applied.append(cmd)
             except Exception:
-                logger.exception(f"Failed to apply command {cmd.id} ({cmd.type.value})")
+                logger.exception("Failed to apply command %s (%s)", cmd.id, cmd.type.value)
 
         if applied:
             await self._broker.ack([cmd.id for cmd in applied])
@@ -143,203 +596,58 @@ class CommandService:
         return applied
 
     @staticmethod
-    def _hydrate_components(raw: list) -> list:
-        """Convert dicts in a component list back to typed Component instances.
-
-        Each dict entry must include a ``"type"`` key naming a concrete
-        Component subclass. Use ``Component.to_payload()`` to serialize an
-        instance to the expected form. Raw Component instances pass through.
-        """
+    def _hydrate_components(payload_components) -> list[Component]:
         from archetype.core.component import Component
 
-        result = []
-        for item in raw:
-            if isinstance(item, Component):
-                result.append(item)
-                continue
-            if isinstance(item, dict):
-                # copy to avoid mutating the caller's payload
-                result.append(Component.from_dict(dict(item)))
-                continue
-            raise TypeError(
-                f"Component payload entry must be a Component instance or dict "
-                f"with a 'type' key, got {type(item).__name__}"
-            )
-        return result
+        return [
+            component if isinstance(component, Component) else Component.from_dict(component)
+            for component in payload_components
+        ]
 
     @staticmethod
-    def _hydrate_component_types(raw: list) -> list:
-        """Resolve a payload's ``component_types`` list into Component classes.
-
-        REMOVE_COMPONENT payloads cross JSON boundaries (REST/CLI/MCP) so the
-        wire format is a list of strings naming Component subclasses. Pass
-        them straight to ``Archetype.remove_components`` and the set
-        difference compares strings against class objects, returns the full
-        signature unchanged, and the command silently no-ops. Resolve names
-        to concrete subclasses here so downstream comparisons work.
-        """
+    def _hydrate_component_types(payload_types) -> list[type[Component]]:
         from archetype.core.component import Component
 
-        result: list[type[Component]] = []
-        for item in raw:
-            if isinstance(item, type) and issubclass(item, Component):
-                result.append(item)
-                continue
-            if isinstance(item, str):
-                result.append(Component.get_type_by_name(item))
-                continue
-            raise TypeError(
-                f"component_types entries must be a Component subclass or string "
-                f"naming one, got {type(item).__name__}"
-            )
-        return result
+        return [
+            component_type
+            if isinstance(component_type, type) and issubclass(component_type, Component)
+            else Component.get_type_by_name(str(component_type))
+            for component_type in payload_types
+        ]
 
-    @staticmethod
-    def _reserve_entity_id(world: AsyncWorld) -> int:
-        entity_id = world._next_entity_id
-        world._next_entity_id += 1
-        return entity_id
-
-    @staticmethod
-    def _release_entity_id(world: AsyncWorld, entity_id: int) -> None:
-        if world._next_entity_id == entity_id + 1:
-            world._next_entity_id = entity_id
-
-    @staticmethod
-    async def _apply_update(world: AsyncWorld, entity_id: int, components: list) -> None:
-        """Apply an UPDATE: overlay component values on an existing entity.
-
-        Unlike ``ADD_COMPONENT``, UPDATE must mutate component values even when
-        the entity already has those component types (same archetype signature).
-        ``AsyncWorld.add_components`` early-returns in that case, which made
-        UPDATE a silent no-op for the natural use case. Here we detect the
-        same-signature path and push an overlaid row through the spawn cache
-        directly; type-widening updates still delegate to ``add_components``.
-        """
-        from archetype.core.archetype import Archetype
-
-        old_sig = world._entity2sig.get(entity_id)
-        if old_sig is None:
-            logger.warning("UPDATE: entity %s not found", entity_id)
-            return
-
-        if not components:
-            return
-
-        new_sig = Archetype.add_components(old_sig, [type(c) for c in components])
-        if new_sig != old_sig:
-            # New component types introduced — archetype move already handles
-            # overlaying the supplied values via _move_entity.
-            await world.add_components(entity_id, components)
-            return
-
-        row = await world._move_entity(entity_id, old_sig, new_sig, components)
-        if not row:
-            logger.warning("UPDATE: entity %s has no prior row to update", entity_id)
-            return
-
-        # Mark prior row inactive and append the updated row.
-        world._despawn_cache.setdefault(old_sig, []).append(entity_id)
-        world._spawn_cache.setdefault(new_sig, []).append(row)
-
-    async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
-        """Dispatch a world-level lifecycle command (create/destroy/fork).
-
-        These commands operate on ``WorldService`` directly and don't require
-        a pre-existing world instance, so they are separated from the
-        per-world ``apply()`` path.
-
-        Returns the created/forked world for CREATE and FORK, None for DESTROY.
-        """
-        payload = cmd.payload
-
-        try:
-            match cmd.type:
-                case CommandType.CREATE_WORLD:
-                    from archetype.core.config import StorageConfig, WorldConfig
-
-                    cfg = payload.get("config", {})
-                    world_config = WorldConfig(**cfg) if isinstance(cfg, dict) else cfg
-                    storage_config = StorageConfig(
-                        uri=payload.get("storage_uri", "./archetype_data"),
-                        namespace=payload.get("namespace", "archetypes"),
-                    )
-                    return await self._world_service.create_world(world_config, storage_config)
-
-                case CommandType.DESTROY_WORLD:
-                    target_id = UUID(str(payload["world_id"]))
-                    await self._world_service.remove_world(target_id)
-                    return None
-
-                case CommandType.FORK_WORLD:
-                    from archetype.core.config import StorageConfig
-
-                    source_id = UUID(str(payload["source_world_id"]))
-                    fork_name = payload.get("name") or payload.get("config", {}).get("name")
-                    return await self._world_service.fork_world(
-                        source_id, fork_name, StorageConfig()
-                    )
-
-                case _:
-                    raise ValueError(f"apply_world_lifecycle does not handle {cmd.type.value}")
-        finally:
-            await self._broker.remove("__global__", cmd.id)
-
-    async def apply(self, world: AsyncWorld, cmd: Command) -> None:
-        """
-        Dispatch a single entity/processor-level command to a world.
-        """
+    async def _apply(self, world_id: str | UUID, cmd: Command) -> None:
+        """Dispatch a single command to the appropriate mutation."""
         payload = cmd.payload
 
         match cmd.type:
             case CommandType.SPAWN:
                 components = self._hydrate_components(payload.get("components", []))
                 entity_id = payload.get("entity_id")
-                if entity_id is None:
-                    await world.create_entity(components)
+                if entity_id is not None:
+                    # Deferred spawn with reserved id — use create_entity
+                    # and hope the id matches (it will, since we reserved it)
+                    await self._mutations.create_entity(world_id, components)
                 else:
-                    await world.spawn_reserved(int(entity_id), components)
+                    await self._mutations.create_entity(world_id, components)
 
             case CommandType.DESPAWN:
-                entity_id = payload["entity_id"]
-                await world.remove_entity(entity_id)
-
-            case CommandType.UPDATE:
-                entity_id = payload["entity_id"]
-                components = self._hydrate_components(payload.get("components", []))
-                await self._apply_update(world, int(entity_id), components)
+                await self._mutations.remove_entity(world_id, payload["entity_id"])
 
             case CommandType.ADD_COMPONENT:
-                entity_id = payload["entity_id"]
                 components = self._hydrate_components(payload.get("components", []))
-                await world.add_components(entity_id, components)
+                await self._mutations.add_components(world_id, payload["entity_id"], components)
 
             case CommandType.REMOVE_COMPONENT:
-                entity_id = payload["entity_id"]
                 component_types = self._hydrate_component_types(payload.get("component_types", []))
-                await world.remove_components(entity_id, component_types)
+                await self._mutations.remove_components(
+                    world_id, payload["entity_id"], component_types
+                )
 
             case CommandType.ADD_PROCESSOR:
-                processor = payload["processor"]
-                await world.add_processor(processor)
+                await self._mutations.add_processor(world_id, payload["processor"])
 
             case CommandType.REMOVE_PROCESSOR:
-                proc_type = payload["processor_type"]
-                await world.remove_processor(proc_type)
-
-            case CommandType.CREATE_WORLD | CommandType.DESTROY_WORLD | CommandType.FORK_WORLD:
-                await self.apply_world_lifecycle(cmd)
-
-            case CommandType.MESSAGE:
-                # Message delivery — future extension point
-                # Processors can read MESSAGE commands from broker history
-                pass
-
-            case CommandType.QUERY_WORLD:
-                pass  # Read-only, delegated to QueryService
-
-            case CommandType.CUSTOM:
-                pass  # No default handler
+                await self._mutations.remove_processor(world_id, payload["processor_type"])
 
             case _:
-                logger.warning(f"Unhandled command type: {cmd.type.value}")
+                logger.warning("Unhandled command type in drain: %s", cmd.type.value)

@@ -1,92 +1,85 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-App-Layer Service Interfaces
+"""Application service contracts.
 
-Protocols for the application services that surround the core engine. Every
-concrete service in ``src/archetype/app/`` should satisfy one of these
-Protocols structurally; callers should depend on the Protocol, not the
-concrete class.
+Every protocol here represents a service boundary visible to the
+``ServiceContainer``.  Internal composition (factories, registries,
+orchestrators) lives in the implementation modules, not here.
 
-These interfaces capture the *current* public surface of each service
-faithfully — they are not aspirational. A planned redesign that splits
-cross-cutting concerns (broker injection, registry persistence, fork
-ownership) out of ``WorldService`` is documented in
-``docs/reports/2026-04-25-service-layer-redesign.md``; the migration
-will refine these Protocols over several PRs.
+Service dependency graph::
+
+    iStorageService                                    (leaf)
+        ↑             ↑                 ↑
+    iWorldService     iQueryService     iAuditLog      (storage-backed)
+        ↑
+    iMutationService  iSimulationService               (worlds)
+        ↑               ↑         ↑         ↑
+        └───────────────┴─────────┴─────────┘
+                        ↑
+                 iCommandBroker                         (queue)
+                        ↑
+                 iCommandService                        (the gate)
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from uuid_utils import UUID
+from daft import DataFrame
 
 if TYPE_CHECKING:
+    from uuid_utils import UUID
+
+    from archetype.app.auth.models import ActorCtx
     from archetype.app.models import (
-        ActorCtx,
+        AuditRow,
         Command,
+        EpisodeConfig,
+        EpisodeResult,
+        HookInfo,
+        ProcessorInfo,
+        ResourceInfo,
+        RolloutConfig,
+        RolloutResult,
         RunResult,
         WorldInfo,
-        WorldSnapshot,
     )
+    from archetype.core.component import Component
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import (
-        iAsyncQueryManager,
+        ArchetypeSignature,
+        iAsyncProcessor,
         iAsyncStore,
         iAsyncSystem,
-        iAsyncUpdateManager,
         iWorld,
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Storage
-# ─────────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Services (no ActorCtx — these do the work)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 class iStorageService(Protocol):
-    """Pool of storage backends keyed by ``(uri, namespace, backend, cache)``."""
+    """Creates and pools async stores. Manages storage lifecycle."""
 
-    async def get_backend(
+    async def get_or_create_store(
         self,
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
-    ) -> tuple[iAsyncStore, iAsyncQueryManager, iAsyncUpdateManager]: ...
+    ) -> iAsyncStore: ...
 
     async def shutdown(self) -> None: ...
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# World construction & lifecycle
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class iWorldFactory(Protocol):
-    """Assembles a fully-wired world from configs and a system."""
-
-    async def create_world(
-        self,
-        world_config: WorldConfig,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-        system: iAsyncSystem | None = None,
-    ) -> iWorld: ...
-
-
-# Hook signature for cross-cutting concerns at world creation time. Covers
-# broker injection, registry persistence, post-tick observers, etc.
-WorldCreationHook = Callable[["iWorld", "StorageConfig"], Awaitable[None]]
-
-
 class iWorldService(Protocol):
-    """World lifecycle: create, register, look up, fork, remove.
+    """World lifecycle management.
 
-    Concrete implementations today also handle broker injection and registry
-    persistence inline; the redesign extracts those to ``WorldCreationHook``s.
+    Depends on: ``iStorageService``
     """
+
+    def __init__(self, storage_service: iStorageService) -> None: ...
 
     async def create_world(
         self,
@@ -97,54 +90,119 @@ class iWorldService(Protocol):
     ) -> iWorld: ...
 
     def get_world(self, world_id: UUID) -> iWorld: ...
-
     def get_world_by_name(self, name: str) -> iWorld: ...
-
-    def list_worlds(self) -> list[WorldInfo]: ...
-
-    async def remove_world(self, world_id: UUID) -> None: ...
+    def list_worlds(self) -> list[iWorld]: ...
 
     async def fork_world(
         self,
-        source_world_id: UUID,
-        name: str | None,
-        storage_config: StorageConfig,
+        source_world_id: UUID | str,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
     ) -> iWorld: ...
 
-    async def discover_worlds(self) -> list[UUID]: ...
+    async def destroy_world(self, world_id: str | UUID) -> None: ...
+
+    async def add_resource(self, world_id: str | UUID, resource: object) -> None: ...
+    def add_hook(self, world_id: str | UUID, event_type, fn, *, mode: str = "blocking"): ...
+    def remove_hook(self, world_id: str | UUID, handle) -> None: ...
+    def list_processors(self, world_id: str | UUID) -> list: ...
+    def list_hooks(self, world_id: str | UUID) -> list: ...
+    def list_resources(self, world_id: str | UUID) -> list: ...
 
     async def shutdown(self) -> None: ...
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Registry (durable metadata catalog)
-# ─────────────────────────────────────────────────────────────────────────────
+class iMutationService(Protocol):
+    """Mutates world contents: entities, components, processors.
+
+    Depends on: ``iWorldService``
+    """
+
+    def __init__(self, world_service: iWorldService) -> None: ...
+
+    async def create_entity(self, world_id: str | UUID, components: list[Component]) -> int: ...
+
+    async def remove_entity(self, world_id: str | UUID, entity_id: int) -> None: ...
+
+    async def update_entity(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+
+    async def add_components(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+
+    async def remove_components(
+        self, world_id: str | UUID, entity_id: int, component_types: list[type[Component]]
+    ) -> None: ...
+
+    async def add_processor(self, world_id: str | UUID, processor: iAsyncProcessor) -> None: ...
+    async def remove_processor(
+        self, world_id: str | UUID, proc_type: type[iAsyncProcessor]
+    ) -> None: ...
 
 
-class iWorldRegistry(Protocol):
-    """File-backed catalog of world metadata. Pure repository."""
+class iSimulationService(Protocol):
+    """Execution engine. Drives stepping, episodes, and rollouts.
 
-    def get(self, world_id: UUID | str) -> dict[str, Any] | None: ...
-    def upsert(self, world_id: UUID | str, entry: dict[str, Any]) -> None: ...
-    def delete(self, world_id: UUID | str) -> None: ...
-    def list_entries(self) -> list[dict[str, Any]]: ...
+    Depends on: ``iWorldService``
+    """
+
+    def __init__(self, world_service: iWorldService) -> None: ...
+
+    async def step(self, world_id: str | UUID, run_config: RunConfig, **input_kwargs) -> None: ...
+    async def run(
+        self, world_id: str | UUID, run_config: RunConfig, **input_kwargs
+    ) -> RunResult: ...
+    async def run_episode(
+        self, world_id: str | UUID, config: EpisodeConfig, **input_kwargs
+    ) -> EpisodeResult: ...
+    async def run_rollout(
+        self, world_id: str | UUID, config: RolloutConfig, **input_kwargs
+    ) -> RolloutResult: ...
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Command path
-# ─────────────────────────────────────────────────────────────────────────────
+class iQueryService(Protocol):
+    """Direct read path to storage. Any world, any run, any tick.
+
+    Depends on: ``iStorageService``
+    """
+
+    def __init__(self, storage_service: iStorageService) -> None: ...
+
+    async def query_archetype(
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        components: list[type[Component]] | None = None,
+    ) -> DataFrame: ...
+
+    async def list_signatures(
+        self, storage_config: StorageConfig | None = None
+    ) -> list[ArchetypeSignature]: ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Command broker — pure queue. No RBAC. No ActorCtx.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
 class iCommandBroker(Protocol):
-    """Per-world command queue plus history. Authorization is the caller's job."""
+    """Priority queue + history. Pure plumbing."""
 
-    async def enqueue(self, world_id: str | UUID, cmd: Command, ctx: ActorCtx | None) -> None: ...
-    async def enqueue_bulk(
-        self, world_id: str | UUID, cmds: list[Command], ctx: ActorCtx | None
-    ) -> None: ...
+    async def enqueue(self, world_id: str | UUID, cmd: Command) -> None: ...
+    async def enqueue_bulk(self, world_id: str | UUID, cmds: list[Command]) -> None: ...
+    async def dequeue(
+        self, world_id: str | UUID, max_items: int | None = None
+    ) -> list[Command]: ...
     async def dequeue_due(
-        self, world_id: str | UUID, tick: int, max_items: int | None = None
+        self, world_id: str | UUID, tick: int, limit: int | None = None
     ) -> list[Command]: ...
     async def ack(self, cmd_ids: list[UUID]) -> None: ...
     async def remove(self, world_id: str | UUID, cmd_id: UUID) -> None: ...
@@ -154,45 +212,188 @@ class iCommandBroker(Protocol):
     async def clear(self, world_id: str | UUID | None = None) -> None: ...
 
 
-class iCommandService(Protocol):
-    """User-facing command submission and per-tick application."""
-
-    async def submit(self, world_id: str | UUID, cmd: Command, ctx: ActorCtx) -> UUID: ...
-    async def submit_batch(
-        self, world_id: str | UUID, cmds: list[Command], ctx: ActorCtx
-    ) -> list[UUID]: ...
-    async def drain_and_apply(self, world_id: str | UUID, tick: int) -> list[Command]: ...
+# ═══════════════════════════════════════════════════════════════════════════════
+# Audit log — append-only record
+# ═══════════════════════════════════════════════════════════════════════════════
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Simulation
-# ─────────────────────────────────────────────────────────────────────────────
+class iAuditLog(Protocol):
+    """Append-only record of accepted-and-applied commands.
 
+    Depends on: ``iStorageService``
+    """
 
-class iSimulationService(Protocol):
-    """Drives the tick loop. Drains queued commands, advances the world."""
+    def __init__(self, storage_service: iStorageService) -> None: ...
 
-    async def step(self, world_id: UUID, run_config: RunConfig, **input_kwargs: Any) -> int: ...
-    async def run(
-        self, world_id: UUID, run_config: RunConfig, **input_kwargs: Any
-    ) -> RunResult: ...
+    async def record(self, row: AuditRow) -> None: ...
+    async def flush(self) -> None: ...
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Query (read facade — currently a stub; full design pending)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class iQueryService(Protocol):
-    """External read facade. The full committed-snapshot contract will land
-    in a follow-up PR (see redesign doc in ``docs/reports/``)."""
-
-    async def get_world_state(self, world_id: UUID, tick: int | None = None) -> WorldSnapshot: ...
-    async def get_entity(self, world_id: UUID, entity_id: int, tick: int | None = None) -> dict: ...
-    async def get_components(
+    async def query(
         self,
-        world_id: UUID,
-        component_types: list[str],
+        world_id: str | UUID | None = None,
+        *,
+        tick_range: tuple[int, int] | None = None,
+        actor_id: str | UUID | None = None,
+        signer_address: str | None = None,
+        idempotency_key: str | None = None,
+        limit: int | None = None,
+    ) -> DataFrame: ...
+
+    async def shutdown(self) -> None: ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Command service — the gate. The only ActorCtx-aware service.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class iCommandService(Protocol):
+    """Policy enforcement point. Every external operation flows through here.
+
+    Depends on: iMutationService, iWorldService, iSimulationService,
+                iQueryService, iCommandBroker, iAuditLog
+    """
+
+    def __init__(
+        self,
+        mutations: iMutationService,
+        worlds: iWorldService,
+        simulation: iSimulationService,
+        queries: iQueryService,
+        broker: iCommandBroker,
+        audit: iAuditLog,
+    ) -> None: ...
+
+    # ── Mutations (gated, direct) ─────────────────────────────────────────
+
+    async def create_entity(
+        self, ctx: ActorCtx, world_id: str | UUID, components: list[Component]
+    ) -> int: ...
+    async def remove_entity(self, ctx: ActorCtx, world_id: str | UUID, entity_id: int) -> None: ...
+    async def update_entity(
+        self, ctx: ActorCtx, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+    async def add_components(
+        self, ctx: ActorCtx, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+    async def remove_components(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        component_types: list[type[Component]],
+    ) -> None: ...
+    async def add_processor(
+        self, ctx: ActorCtx, world_id: str | UUID, processor: iAsyncProcessor
+    ) -> None: ...
+    async def remove_processor(
+        self, ctx: ActorCtx, world_id: str | UUID, proc_type: type[iAsyncProcessor]
+    ) -> None: ...
+
+    # ── Lifecycle (gated, direct) — returns WorldInfo, never iWorld ────────
+
+    async def create_world(
+        self,
+        ctx: ActorCtx,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> WorldInfo: ...
+    async def fork_world(
+        self,
+        ctx: ActorCtx,
+        source_world_id: str | UUID,
+        name: str | None = None,
+        *,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> WorldInfo: ...
+    async def destroy_world(self, ctx: ActorCtx, world_id: str | UUID) -> None: ...
+    async def get_world_info(self, ctx: ActorCtx, world_id: str | UUID) -> WorldInfo: ...
+    async def list_worlds(self, ctx: ActorCtx) -> list[WorldInfo]: ...
+
+    # ── Simulation (gated, direct) ────────────────────────────────────────
+
+    async def step(
+        self, ctx: ActorCtx, world_id: str | UUID, run_config: RunConfig, **input_kwargs
+    ) -> int: ...
+    async def run(
+        self, ctx: ActorCtx, world_id: str | UUID, run_config: RunConfig, **input_kwargs
+    ) -> RunResult: ...
+    async def run_episode(
+        self, ctx: ActorCtx, world_id: str | UUID, config: EpisodeConfig, **input_kwargs
+    ) -> EpisodeResult: ...
+    async def run_rollout(
+        self, ctx: ActorCtx, world_id: str | UUID, config: RolloutConfig, **input_kwargs
+    ) -> RolloutResult: ...
+
+    # ── Resource / hook attachment (gated) ─────────────────────────────────
+
+    async def add_resource(self, ctx: ActorCtx, world_id: str | UUID, resource: object) -> None: ...
+    async def add_hook(
+        self, ctx: ActorCtx, world_id: str | UUID, event_type, fn, *, mode: str = "blocking"
+    ): ...
+    async def remove_hook(self, ctx: ActorCtx, world_id: str | UUID, handle) -> None: ...
+
+    # ── Read introspection (gated) ────────────────────────────────────────
+
+    async def list_processors(self, ctx: ActorCtx, world_id: str | UUID) -> list[ProcessorInfo]: ...
+    async def list_hooks(self, ctx: ActorCtx, world_id: str | UUID) -> list[HookInfo]: ...
+    async def list_resources(self, ctx: ActorCtx, world_id: str | UUID) -> list[ResourceInfo]: ...
+    async def get_audit_history(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID | None = None,
+        *,
+        tick_range: tuple[int, int] | None = None,
+        actor_id: str | UUID | None = None,
+        signer_address: str | None = None,
+        idempotency_key: str | None = None,
+        limit: int | None = None,
+    ) -> DataFrame: ...
+
+    # ── Queries (gated reads) ─────────────────────────────────────────────
+
+    async def query_archetype(
+        self,
+        ctx: ActorCtx,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> dict: ...
-    async def get_command_history(self, world_id: UUID, limit: int = 100) -> list[Command]: ...
+        components: list[type[Component]] | None = None,
+    ) -> DataFrame: ...
+    async def query_components(
+        self,
+        ctx: ActorCtx,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame: ...
+    async def list_signatures(
+        self, ctx: ActorCtx, storage_config: StorageConfig | None = None
+    ) -> list[ArchetypeSignature]: ...
+
+    # ── Tick-deferred path (queued) ───────────────────────────────────────
+
+    async def submit(self, ctx: ActorCtx, world_id: str | UUID, cmd: Command) -> UUID: ...
+    async def submit_batch(
+        self, ctx: ActorCtx, world_id: str | UUID, cmds: list[Command]
+    ) -> list[UUID]: ...
+    async def submit_spawn(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        components: list[Component],
+        *,
+        tick: int = 0,
+        priority: int = 0,
+    ) -> int: ...
+    async def drain_and_apply(self, world_id: str | UUID, tick: int) -> list[Command]: ...

@@ -15,18 +15,19 @@ Archetype is split into layers:
 
 | Layer | Purpose |
 |---|---|
-| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
+| `src/archetype/runtime` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
 | `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer (lower-level): `CommandBroker`, `CommandService`, `WorldService`, `SimulationService`, `QueryService` |
+| `src/archetype/app` | Service layer (lower-level): command gate, audit log, broker, world/simulation/query services |
 | `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
 
 The runtime model is:
 
-1. commands are enqueued through the broker
-2. each tick drains due commands
-3. worlds materialize structural mutations
-4. processors transform matching archetype DataFrames
-5. updated rows are appended to storage
+1. external calls enter through `iCommandService`
+2. the gate authorizes, delegates, and audits
+3. tick-deferred commands are drained when a world steps
+4. worlds materialize structural mutations
+5. processors transform matching archetype DataFrames
+6. updated rows are appended to storage
 
 ## Use Cases
 
@@ -115,15 +116,20 @@ The CLI is a thin HTTP client. Except for `serve`, every command talks to a runn
 archetype serve
 archetype world create demo
 archetype world list
+archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
 archetype run <world-id> --steps 10
+archetype rollout <world-id> --num-episodes 4 --max-steps 100
 archetype world fork <world-id> --name branch-a
+archetype world destroy <world-id>
 archetype history <world-id>
 ```
 
 Useful environment variables:
 
 - `ARCHETYPE_URL` for the CLI base URL
-- `ARCHETYPE_REGISTRY_PATH` for the persisted world registry
+- `--url` for a per-command URL override
+- `--role` / `-r` for the developer auth shortcut (`admin`, `operator`, `player`, `viewer`)
+- `--token` for `Authorization: Bearer <token>`
 
 See [CLI Reference](reference/cli.md) for the generated command docs.
 
@@ -136,19 +142,22 @@ See [CLI Reference](reference/cli.md) for the generated command docs.
 | `POST` | `/worlds` | Create a world |
 | `GET` | `/worlds` | List worlds |
 | `GET` | `/worlds/{world_id}` | Inspect one world |
-| `DELETE` | `/worlds/{world_id}` | Remove a world |
+| `DELETE` | `/worlds/{world_id}` | Destroy a live world |
 | `POST` | `/worlds/{world_id}/fork` | Fork a world |
 | `POST` | `/worlds/{world_id}/commands` | Submit one command |
 | `POST` | `/worlds/{world_id}/commands/batch` | Submit multiple commands |
-| `GET` | `/worlds/{world_id}/commands` | Command history |
-| `GET` | `/worlds/{world_id}/commands/pending` | Pending command count |
+| `GET` | `/worlds/{world_id}/commands` | Audit-backed command history |
 | `POST` | `/worlds/{world_id}/step` | Run one tick |
 | `POST` | `/worlds/{world_id}/run` | Run multiple ticks |
+| `POST` | `/worlds/{world_id}/episode` | Run one episode |
+| `POST` | `/worlds/{world_id}/rollout` | Run a rollout |
 | `GET` | `/worlds/{world_id}/processors` | List processors |
+| `GET` | `/worlds/{world_id}/hooks` | List hooks |
+| `GET` | `/worlds/{world_id}/resources` | List resources |
 | `GET` | `/worlds/{world_id}/state` | Query world snapshot |
 | `GET` | `/worlds/{world_id}/entities/{entity_id}` | Query one entity |
 | `GET` | `/worlds/{world_id}/components` | Query component projections |
-| `GET` | `/worlds/{world_id}/history` | Query command history |
+| `GET` | `/worlds/{world_id}/history` | Query audit history |
 
 See [REST API Reference](reference/rest-api.md) for the generated API docs.
 
@@ -193,17 +202,18 @@ All external mutations are designed to flow through:
 ```text
 API / CLI / caller
   → CommandService
-  → CommandBroker
-  → AsyncWorld
+  → direct service delegate or tick-deferred CommandBroker
+  → AsyncWorld / storage
 ```
 
-The broker enforces:
+The command gate enforces:
 
 - role permissions
 - per-tick command quotas
 - daily token budgets
+- audit emission
 
-See [Services](guide/services.md) and [Data Flow](guide/data-flow.md).
+See [Command Gate](guide/command-gate.md), [Services](guide/services.md), and [Data Flow](guide/data-flow.md).
 
 ### Storage
 
@@ -233,12 +243,26 @@ Forking is a first-class operation in `WorldService`.
 A fork:
 
 - gets a new `world_id`
-- copies the source world's current live snapshot
+- gets a new `run_id`
 - preserves tick position
-- shares processor instances
-- persists the copied snapshot under the new world identity
+- copies entity mappings and pending mutation caches at fork time
+- copies hook registrations present at fork time
+- shares processor and resource instances by default
 
 Source and fork diverge independently after that point.
+
+Destroying a world removes the live in-memory world only. Storage rows and audit rows remain queryable.
+
+## Specifications
+
+Normative behavior lives in the Specifications group:
+
+- [Runtime](guide/runtime.md)
+- [Service Protocols](guide/service-protocols.md)
+- [Command Gate](guide/command-gate.md)
+- [Execution Hierarchy](guide/execution-hierarchy.md)
+- [World Lifecycle](guide/world-lifecycle.md)
+- [Audit Log](guide/audit-log.md)
 
 ## Status
 
@@ -253,3 +277,4 @@ Current state worth knowing before using it:
 - **New to Archetype?** Start with the [Quickstart](guide/quickstart.md), which leads with `ArchetypeRuntime`, then read the [Architecture](guide/architecture.md) overview
 - **Building a simulation?** See [Building Simulations](guide/building-simulations.md) for the full workflow
 - **Integrating with the API?** See [App Overview](guide/app-overview.md) for how core connects through services to the HTTP layer
+- **Changing contracts?** Start with [Service Protocols](guide/service-protocols.md) and the focused specification pages

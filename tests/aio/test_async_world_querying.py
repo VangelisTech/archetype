@@ -9,8 +9,10 @@ from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -27,12 +29,12 @@ class Velocity(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=False)
-    context = StorageContextFactory.build(storage)
+    session = configure_session(storage)
 
     if request.param == "async":
-        store = AsyncStore(context)
+        store = AsyncStore(session, io_config=storage.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context)
+        base = AsyncStore(session, io_config=storage.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
@@ -48,11 +50,15 @@ async def store_backend(request, tmp_path):
 
 @pytest_asyncio.fixture()
 async def world(store_backend):
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w")
-    return AsyncWorld(wcfg, querier, updater, system)
+    return AsyncWorld(
+        world_id="test",
+        name="w",
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
 
 @pytest.mark.asyncio

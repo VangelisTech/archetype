@@ -8,9 +8,36 @@ The CLI is a thin HTTP client — every command (except `serve`) delegates to a 
 
 ## Commands
 
+### `archetype episode`
+
+Run one episode.
+
+```bash
+archetype episode <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--max-steps` / `-n` | integer | `1000` | Maximum episode steps |
+| `--terminal-component` | text | — | Terminal component type name |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
+
+---
+
 ### `archetype history`
 
-Show command history for a world.
+Show audit history for a world.
 
 ```bash
 archetype history <WORLD_ID> [OPTIONS]
@@ -26,13 +53,22 @@ archetype history <WORLD_ID> [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--limit` / `-n` | integer | `50` | Max commands to show |
+| `--limit` / `-n` | integer | `50` | Max audit rows to show |
+| `--actor-id` | text | — | Actor ID filter |
+| `--signer-address` | text | — | Signer filter |
+| `--idempotency-key` | text | — | Idempotency key |
+| `--tick-from` | integer | — | Reserved for API v2 |
+| `--tick-to` | integer | — | Reserved for API v2 |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---
 
 ### `archetype query`
 
-Query world state at a tick.
+Query world state.
 
 ```bash
 archetype query <WORLD_ID> [OPTIONS]
@@ -48,7 +84,44 @@ archetype query <WORLD_ID> [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--types` | text | — | Comma-separated component types |
 | `--tick` / `-t` | integer | — | Tick to query |
+| `--ticks` | text | — | Comma-separated ticks; first is used |
+| `--entity-ids` | text | — | Comma-separated entity IDs |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
+
+---
+
+### `archetype rollout`
+
+Run a rollout from a base world.
+
+```bash
+archetype rollout <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--num-episodes` / `-e` | integer | `1` | Number of episodes |
+| `--max-steps` / `-n` | integer | `1000` | Maximum steps per episode |
+| `--terminal-component` | text | — | Terminal component type name |
+| `--parallel` | boolean | `False` | Run episodes concurrently |
+| `--destroy-forks-on-complete` | boolean | `False` | Destroy forked worlds after each episode; storage retained |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---
 
@@ -71,6 +144,9 @@ archetype run <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--steps` / `-n` | integer | `1` | Number of steps |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
 
 ---
 
@@ -97,8 +173,17 @@ archetype serve [OPTIONS]
 Show all worlds and their state.
 
 ```bash
-archetype status
+archetype status [OPTIONS]
 ```
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---
 
@@ -107,7 +192,7 @@ archetype status
 Execute a single tick.
 
 ```bash
-archetype step <WORLD_ID>
+archetype step <WORLD_ID> [OPTIONS]
 ```
 
 **Arguments:**
@@ -116,35 +201,232 @@ archetype step <WORLD_ID>
 |------|------|----------|-------------|
 | `WORLD_ID` | text | Yes | World ID |
 
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
 ---
 
-## `archetype chronicle`
+## `archetype entity`
 
-Chronicle — personal archive (local, no server required)
+Entity mutation commands
 
-### `archetype chronicle ingest`
+### `archetype entity add-components`
 
-Ingest chat histories, photos, and videos into a chronicle world.
-
-Runs locally — does NOT require ``archetype serve``.
-Each source is attempted independently; missing sources are skipped.
+Add components to an entity.
 
 ```bash
-archetype chronicle ingest [OPTIONS]
+archetype entity add-components <WORLD_ID> <ENTITY_ID> [OPTIONS]
 ```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+| `ENTITY_ID` | integer | Yes | Entity ID |
 
 **Options:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--world-name` | text | `chronicle` | World name for the chronicle |
-| `--storage-uri` | text | `./archetype_data` | Storage URI |
-| `--namespace` | text | `chronicle` | Storage namespace |
-| `--claude-code-dir` | text | — | Claude Code projects dir (default: ~/.claude/projects) |
-| `--claude-ai-export` | text | — | Path to claude.ai data export (dir or conversations.json) |
-| `--chatgpt-export` | text | — | Path to ChatGPT data export (dir or conversations.json) |
-| `--apple-photos` / `--no-apple-photos` | boolean | `False` | Ingest Apple Photos library (requires osxphotos + FDA) |
-| `--apple-photos-dir` | text | — | Path to exported photos/videos folder (fallback) |
+| `--components` | text | — | JSON array of component payloads |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+### `archetype entity despawn`
+
+Despawn an entity.
+
+```bash
+archetype entity despawn <WORLD_ID> <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+| `ENTITY_ID` | integer | Yes | Entity ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+### `archetype entity remove-components`
+
+Remove component types from an entity.
+
+```bash
+archetype entity remove-components <WORLD_ID> <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+| `ENTITY_ID` | integer | Yes | Entity ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--types` / `--typ` | text | — | Comma-separated component type names |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+### `archetype entity spawn`
+
+Spawn an entity from component payloads.
+
+```bash
+archetype entity spawn <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--components` | text | — | JSON array of component payloads |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+### `archetype entity update`
+
+Overlay component values on an entity.
+
+```bash
+archetype entity update <WORLD_ID> <ENTITY_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+| `ENTITY_ID` | integer | Yes | Entity ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--components` | text | — | JSON array of component payloads |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+## `archetype hooks`
+
+Hook introspection commands
+
+### `archetype hooks list`
+
+List deployment-configured hooks.
+
+```bash
+archetype hooks list <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
+
+---
+
+## `archetype processors`
+
+Processor introspection commands
+
+### `archetype processors list`
+
+List deployment-configured processors.
+
+```bash
+archetype processors list <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
+
+---
+
+## `archetype resources`
+
+Resource introspection commands
+
+### `archetype resources list`
+
+List deployment-configured resources.
+
+```bash
+archetype resources list <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---
 
@@ -154,7 +436,7 @@ World management commands
 
 ### `archetype world create`
 
-Create a new world.
+Create a world. Defaults to API admin mode when auth is omitted.
 
 ```bash
 archetype world create <NAME> [OPTIONS]
@@ -170,14 +452,42 @@ archetype world create <NAME> [OPTIONS]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--uri` | text | `./archetype_data` | Storage URI |
+| `--storage` / `--uri` | text | `./archetype_data` | Storage URI |
 | `--namespace` | text | `archetypes` | Storage namespace |
+| `--cache` | boolean | `False` | Use default cache config |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+
+---
+
+### `archetype world destroy`
+
+Drop the in-memory world. Storage and audit rows are retained.
+
+```bash
+archetype world destroy <WORLD_ID> [OPTIONS]
+```
+
+**Arguments:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
 
 ---
 
 ### `archetype world fork`
 
-Fork a world (branch from current state).
+Fork a world.
 
 ```bash
 archetype world fork <WORLD_ID> [OPTIONS]
@@ -194,6 +504,12 @@ archetype world fork <WORLD_ID> [OPTIONS]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--name` / `-n` | text | — | Name for the fork |
+| `--storage` / `--uri` | text | — | Storage URI |
+| `--namespace` | text | `archetypes` | Storage namespace |
+| `--cache` | boolean | `False` | Use default cache config |
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
 
 ---
 
@@ -202,7 +518,7 @@ archetype world fork <WORLD_ID> [OPTIONS]
 Show world details.
 
 ```bash
-archetype world inspect <WORLD_ID>
+archetype world inspect <WORLD_ID> [OPTIONS]
 ```
 
 **Arguments:**
@@ -210,31 +526,33 @@ archetype world inspect <WORLD_ID>
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `WORLD_ID` | text | Yes | World ID |
+
+**Options:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---
 
 ### `archetype world list`
 
-List all worlds.
+List live worlds.
 
 ```bash
-archetype world list
+archetype world list [OPTIONS]
 ```
 
----
+**Options:**
 
-### `archetype world remove`
-
-Remove a world.
-
-```bash
-archetype world remove <WORLD_ID>
-```
-
-**Arguments:**
-
-| Name | Type | Required | Description |
-|------|------|----------|-------------|
-| `WORLD_ID` | text | Yes | World ID |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--url` | text | — | Override ARCHETYPE_URL for this command |
+| `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
+| `--token` | text | — | Bearer token to send verbatim |
+| `--json` | boolean | `False` | Emit raw JSON |
 
 ---

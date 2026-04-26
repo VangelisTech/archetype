@@ -5,9 +5,9 @@
 World Mutations
 ================
 
-Demonstrates the brokered runtime mutation surface: spawn, despawn, update,
-add/remove components, add/remove processors, fork, actor-bound handles, and
-broker audit history.
+Demonstrates the runtime mutation surface: spawn, despawn, update,
+add/remove components, add/remove processors, fork, actor-bound handles,
+and audit history.
 
 No external dependencies — runs entirely in-process.
 
@@ -60,9 +60,15 @@ async def main():
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world("mutations-demo", storage=storage)
+
+        # Activate the world with admin (default actor) before creating aliases
+        await world.step()
+
         viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
         player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
-        admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+        admin = world  # default actor is admin
+
+        # ── 1. SPAWN + RBAC ──────────────────────────────────────────────────
 
         print("1. SPAWN + RBAC")
         scout = await player.spawn(Position(x=0.0, y=0.0))
@@ -71,80 +77,71 @@ async def main():
             await viewer.spawn(Position(x=99.0, y=99.0))
             print("   viewer: SPAWN allowed (unexpected)")
         except PermissionError:
-            print("   viewer: SPAWN denied (correct)")
+            print("   viewer: SPAWN denied ✓")
         await admin.step()
-        print(f"   Created world: {world.world_id}")
-        print(f"   player: spawned scout={scout}, dummy={dummy}")
+        print(f"   player spawned: scout={scout}, dummy={dummy}")
+
+        # ── 2. UPDATE + COMPONENT MUTATIONS ───────────────────────────────────
 
         print("\n2. UPDATE + COMPONENT MUTATIONS")
         await player.update(scout, Position(x=2.0, y=1.0))
         await admin.step()
-        await admin.add_components(
-            scout,
-            Velocity(vx=1.5, vy=0.5),
-            Health(hp=80, max_hp=100),
-        )
+
+        await admin.add_components(scout, Velocity(vx=1.5, vy=0.5), Health(hp=80, max_hp=100))
         await admin.step()
 
-        enriched = (await admin.query(Position, Velocity, Health, entity_ids=[scout])).collect().to_pylist()[0]
-        print(
-            "   scout after update/add_components:"
-            f" pos=({enriched['position__x']}, {enriched['position__y']})"
-            f", vel=({enriched['velocity__vx']}, {enriched['velocity__vy']})"
-            f", hp={enriched['health__hp']}"
-        )
+        # Query returns full history — filter to latest tick for "current state"
+        info = await admin.info()
+        df = await admin.query(Position, Velocity, Health)
+        latest = df.where(col("tick") == info.tick - 1).where(col("entity_id") == scout)
+        print("   scout after update + add_components:")
+        latest.show()
 
         await admin.remove_components(scout, Health)
         await player.despawn(dummy)
         await admin.step()
 
-        narrowed = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
-        removed = (await admin.query(Position, entity_ids=[dummy])).collect().to_pylist()
-        print(
-            "   scout after remove_components:"
-            f" pos=({narrowed['position__x']}, {narrowed['position__y']})"
-            f", vel=({narrowed['velocity__vx']}, {narrowed['velocity__vy']})"
-        )
-        print(f"   dummy present after despawn: {bool(removed)}")
+        print("   scout after remove_components (Health removed):")
+        df2 = await admin.query(Position, Velocity)
+        info2 = await admin.info()
+        df2.where(col("tick") == info2.tick - 1).where(col("entity_id") == scout).show()
+
+        # ── 3. PROCESSOR MUTATIONS ────────────────────────────────────────────
 
         print("\n3. PROCESSOR MUTATIONS")
         try:
             await player.add_processor(MovementProcessor())
             print("   player: ADD_PROCESSOR allowed (unexpected)")
         except PermissionError:
-            print("   player: ADD_PROCESSOR denied (correct)")
+            print("   player: ADD_PROCESSOR denied ✓")
 
         await admin.add_processor(MovementProcessor())
         await admin.step()
-        moved = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
-        print(
-            "   scout after MovementProcessor:"
-            f" pos=({moved['position__x']}, {moved['position__y']})"
-        )
+
+        print("   scout after MovementProcessor:")
+        info3 = await admin.info()
+        df3 = await admin.query(Position, Velocity)
+        df3.where(col("tick") == info3.tick - 1).where(col("entity_id") == scout).show()
         await admin.remove_processor(MovementProcessor)
 
+        # ── 4. FORK ───────────────────────────────────────────────────────────
+
         print("\n4. FORK")
-        branch = await player.fork("branch-a", storage=storage)
+        branch = await admin.fork("branch-a", storage=storage)
         branch_seed = await branch.spawn(Position(x=-5.0, y=0.0), Velocity(vx=0.5, vy=0.0))
         await branch.step()
 
-        source_state = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
-        branch_state = (await branch.query(Position, Velocity, entity_ids=[branch_seed])).collect().to_pylist()[0]
-        print(f"   source tick={world.tick}, branch tick={branch.tick}")
-        print(
-            "   source scout:"
-            f" pos=({source_state['position__x']}, {source_state['position__y']})"
-        )
-        print(
-            "   branch new entity:"
-            f" pos=({branch_state['position__x']}, {branch_state['position__y']})"
-        )
+        source_info = await admin.info()
+        branch_info = await branch.info()
+        print(f"   source tick={source_info.tick}, branch tick={branch_info.tick}")
+        print(f"   branch has its own entity: {branch_seed}")
 
-        print("\n5. COMMAND HISTORY")
-        for cmd in await admin.command_history():
-            print(f"   source tick={cmd.tick}: {cmd.type.value}")
-        for cmd in await branch.command_history():
-            print(f"   branch tick={cmd.tick}: {cmd.type.value}")
+        # ── 5. AUDIT HISTORY ──────────────────────────────────────────────────
+
+        print("\n5. AUDIT HISTORY")
+        history = await admin.history()
+        print(f"   {history.count_rows()} audit rows for source world")
+        history.select("command_type", "actor_id").show()
 
 
 if __name__ == "__main__":

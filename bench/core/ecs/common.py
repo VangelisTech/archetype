@@ -9,7 +9,7 @@ from typing import Any
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncSystem
-from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 
 __all__ = [
     "BenchResult",
@@ -26,7 +26,6 @@ def _default_storage() -> StorageConfig:
     return StorageConfig(
         uri=uri,
         namespace=os.environ.get("ARCHETYPE_BENCH_NS", "benchmarks"),
-        backend=StorageBackend.ICEBERG,
     )
 
 

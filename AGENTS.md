@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Repo-specific guidance for AI collaborators. For normative behavior, read `docs/guide/specification.md` — that is the contract document and takes precedence over anything here.
+Repo-specific guidance for AI collaborators. For normative behavior, read the specification group under `docs/guide/`, starting with `docs/guide/specification.md`.
 
 ## Layout
 
@@ -10,8 +10,8 @@ archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
 │   ├── app/            # Service layer
 │   │   ├── auth/       #   RBAC guard (ActorCtx, roles, quotas)
-│   │   ├── broker.py   #   CommandBroker (priority queue + RBAC)
-│   │   ├── command_service.py    # Enqueue / drain / apply
+│   │   ├── broker.py   #   CommandBroker (priority queue)
+│   │   ├── command_service.py    # Gate: authorize / delegate / audit
 │   │   ├── world_service.py      # World lifecycle
 │   │   ├── simulation_service.py # Tick stepping and runs
 │   │   ├── query_service.py      # Read path
@@ -19,7 +19,7 @@ archetype/
 │   │   └── container.py          # Composition root
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
-│   └── sugar.py        # Top-level ergonomic wrapper over the service layer
+│   └── runtime/        # Top-level runtime over the service layer
 ├── examples/
 ├── tests/
 └── LEARNINGS.md        # Daft patterns and architectural notes
@@ -31,12 +31,12 @@ archetype/
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
 | `app/` | Extend carefully. Service contracts are in the specification. Lower-level interface. |
-| `sugar.py` | Recommended top-level API (`ArchetypeRuntime`). Additive only; top-level `World`/`Processor` exports stay stable. |
+| `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Additive only; top-level exports stay stable. |
 | `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
 
 ## Top-level runtime (recommended)
 
-`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. Process lifetime and world lifetime are separate concerns: the runtime owns the shared container; `world()` handles are lazy and world-local. See `docs/guide/specification.md` § "Contracts Before Sugar" for the full contract set (single-flight activation, honest `spawn()`, fork isolation, world-local shutdown).
+`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. Process lifetime and world lifetime are separate concerns: the runtime owns the shared container; `world()` handles are lazy and world-local. See `docs/guide/runtime.md` for the full runtime contract.
 
 ```python
 import asyncio
@@ -68,17 +68,19 @@ from uuid_utils import uuid7
 
 async def main():
     container = ServiceContainer()
-    world = await container.world_service.create_world(
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    info = await container.command_service.create_world(
+        ctx,
         WorldConfig(name="experiment"),
         StorageConfig(),
     )
 
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
     cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_service.submit(world.world_id, cmd, ctx)
+    await container.command_service.submit(ctx, info.world_id, cmd)
 
-    result = await container.simulation_service.run(
-        world.world_id,
+    result = await container.command_service.run(
+        ctx,
+        info.world_id,
         RunConfig(num_steps=10),
     )
     print(f"Completed {result.ticks_completed} ticks")
@@ -146,10 +148,10 @@ make test-cov    # coverage report
 ```text
 API / CLI / caller
     → CommandService
-    → CommandBroker    (RBAC + priority queue + audit)
+    → direct delegate or CommandBroker (tick-deferred queue)
     → WorldService / SimulationService
     → AsyncWorld       (query → mutate → execute → persist)
-    → QueryService     (read path)
+    → QueryService / AuditLog
 ```
 
 Roles (flat, not hierarchical):
@@ -158,8 +160,7 @@ Roles (flat, not hierarchical):
 |------|-------------|
 | `viewer` | Read-only |
 | `player` | spawn, despawn, update, message, custom |
-| `coder` | add/remove components, update |
-| `maintainer` | spawn, despawn, components, processors, update |
+| `operator` | schema, processors, hooks, resources, simulation, fork, destroy |
 | `admin` | All commands |
 
 ## Conventions
@@ -192,12 +193,15 @@ Roles (flat, not hierarchical):
 
 | File | Purpose |
 |------|---------|
-| `docs/guide/specification.md` | Normative contracts (engine, app, sugar/runtime) |
+| `docs/guide/specification.md` | Specification overview |
+| `docs/guide/runtime.md` | Runtime contract |
+| `docs/guide/service-protocols.md` | App service contracts |
+| `docs/guide/command-gate.md` | Roles, permissions, and audit gate |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
-| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API |
+| `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
 | `src/archetype/app/container.py` | Service wiring |
 | `src/archetype/app/command_service.py` | Mutation dispatch |
-| `src/archetype/app/broker.py` | RBAC + priority queue |
+| `src/archetype/app/broker.py` | Priority queue |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_sugar_runtime.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

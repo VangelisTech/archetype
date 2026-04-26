@@ -14,14 +14,24 @@
 
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import uuid_utils as uuid
 from daft.catalog import Catalog  # noqa: F401
 from daft.io import IOConfig
 from daft.session import Session  # noqa: F401
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PlainSerializer, WithJsonSchema, field_validator
 from uuid_utils import UUID
+
+JsonUUID = Annotated[
+    UUID,
+    PlainSerializer(lambda value: str(value), return_type=str, when_used="json"),
+    WithJsonSchema({"type": "string", "format": "uuid"}),
+]
+JsonIOConfig = Annotated[
+    IOConfig,
+    WithJsonSchema({"type": "object", "additionalProperties": True}),
+]
 
 
 class StorageBackend(Enum):
@@ -35,26 +45,26 @@ class StorageBackend(Enum):
 
 class StorageConfig(BaseModel):
     """
-    Storage Backend Context for configuring local or cloud storage access
+    Storage backend configuration for app/runtime storage resolution.
 
     Includes:
         - uri: str  - The URI location for the storage backend
         - namespace: str - The desired namespace for the catalog
-        - io_config: IOConfig - The access credentials or the daft session/catalog
+        - io_config: IOConfig - Native Daft I/O configuration for storage reads/writes
     """
 
     uri: str | Path = Field(
-        default="./archetype_data",
+        default="./archetype_db",
         description="The URI location for the storage backend (str or Path)",
     )
-    namespace: str = Field(default="archetypes")
+    namespace: str = Field(default="ecs")
     backend: StorageBackend = Field(
         default=StorageBackend.LANCEDB,
         description="Storage backend engine: 'iceberg' or 'lancedb (default)'",
     )
-    io_config: IOConfig | None = Field(
+    io_config: JsonIOConfig | None = Field(
         default=None,
-        description="Configuration for the native I/O layer, e.g. credentials for accessing cloud storage systems.",
+        description="Native Daft I/O configuration passed to Iceberg storage read/write operations.",
     )
     model_config = dict(arbitrary_types_allowed=True)
 
@@ -64,15 +74,6 @@ class StorageConfig(BaseModel):
         if isinstance(v, Path):
             return str(v)
         return v
-
-    # Back-compat helpers for legacy callers expecting these flags
-    @property
-    def is_async(self) -> bool:
-        return True
-
-    @property
-    def use_lancedb(self) -> bool:
-        return self.backend == StorageBackend.LANCEDB
 
 
 class CacheConfig(BaseModel):
@@ -114,7 +115,7 @@ class RunConfig(BaseModel):
           and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity.
     """
 
-    run_id: UUID = Field(
+    run_id: str | JsonUUID = Field(
         default_factory=uuid.uuid7,
         description="The unique identifier for the run sequence, a uuid7",
     )
@@ -122,22 +123,9 @@ class RunConfig(BaseModel):
         default=1, description="The number of steps to execute in the run sequence"
     )
     debug: bool = Field(default=False, description="Whether or not to enable debug mode")
-    enable_validation: bool = Field(
-        default=False, description="Whether or not to enable validation mode"
-    )
     show_rows: int = Field(
-        default=3,
+        default=8,
         description="Max rows to display for DataFrame snapshots in debug panels (0 disables)",
-    )
-    explain: bool = Field(
-        default=False, description="Whether to render DataFrame logical plans in debug panels"
-    )
-    suite: str | None = Field(
-        default=None,
-        description="Optional suite/experiment label for grouping runs (e.g., benchmarks, ensembles)",
-    )
-    trial: int | None = Field(
-        default=None, description="Optional trial index for ensemble/grid runs"
     )
     metadata: dict[str, Any] | None = Field(
         default=None, description="Arbitrary metadata for experiment tracking"
@@ -152,14 +140,12 @@ class RunConfig(BaseModel):
         *,
         steps: int = 1,
         debug: bool = True,
-        explain: bool = False,
         show_rows: int = 5,
         metadata: dict[str, Any] | None = None,
     ) -> "RunConfig":
         return cls(
             num_steps=steps,
             debug=debug,
-            explain=explain,
             show_rows=show_rows,
             metadata=metadata,
         )
@@ -169,52 +155,46 @@ class RunConfig(BaseModel):
         cls,
         *,
         steps: int,
-        explain: bool = False,
         debug: bool = False,
         show_rows: int = 0,
-        suite: str | None = "benchmark",
-        trial: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> "RunConfig":
         return cls(
             num_steps=steps,
-            explain=explain,
             debug=debug,
             show_rows=show_rows,
-            suite=suite,
-            trial=trial,
             metadata=metadata,
-        )
-
-    @classmethod
-    def validate(
-        cls,
-        *,
-        steps: int = 1,
-        enable_validation: bool = True,
-        debug: bool = True,
-        metadata: dict[str, Any] | None = None,
-    ) -> "RunConfig":
-        return cls(
-            num_steps=steps,
-            enable_validation=enable_validation,
-            debug=debug,
-            metadata=metadata,
-            suite="validate",
         )
 
 
 class WorldConfig(BaseModel):
     """
-    A world configuration is a container for the world configuration, including:
-      - world_id: Optional[UUID] - The unique identifier for the world. If not provided, a new one will be generated.
-      - name: Optional[str] - A human-readable alias for the world.
+    World identity and initial state.
+
+    Carries the world's identity (id, name) and its mutable simulation state
+    (tick counter, entity registry, mutation caches).  Passed to the world
+    constructor so all state is explicit and serializable.
     """
 
-    world_id: UUID | None = Field(
+    world_id: str | JsonUUID | None = Field(
         default_factory=uuid.uuid7,
-        description="The unique identifier for the world. If not provided, a new one will be generated.",
+        description="Unique identifier for the world. Auto-generated if omitted.",
     )
-    name: str | None = Field(default=None, description="A human-readable alias for the world")
+    name: str | None = Field(default=None, description="Human-readable alias for the world")
+    run_id: str | None = Field(default=None, description="Active run identifier")
+    tick: int = Field(default=0, description="Current simulation tick")
+    next_entity_id: int = Field(default=1, description="Next entity ID to assign")
+    entity2sig: dict[int, tuple] = Field(
+        default_factory=dict,
+        description="Entity ID → archetype signature mapping",
+    )
+    spawn_cache: dict[tuple, list[dict]] = Field(
+        default_factory=dict,
+        description="Pending spawn rows keyed by archetype signature",
+    )
+    despawn_cache: dict[tuple, list[int]] = Field(
+        default_factory=dict,
+        description="Pending despawn entity IDs keyed by archetype signature",
+    )
 
     model_config = dict(arbitrary_types_allowed=True)

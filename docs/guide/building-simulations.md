@@ -8,9 +8,9 @@ Every simulation follows the same structure:
 
 1. **Define components** -- the data your entities carry
 2. **Write processors** -- the rules that transform that data each tick
-3. **Create a world** and register processors
+3. **Create a runtime world** and stage processors/resources
 4. **Spawn entities** with initial component values
-5. **Run** -- the engine drains commands, applies them, steps processors, persists state
+5. **Run** -- the gate delegates, the engine steps processors, and storage appends state
 
 ## Complete Example
 
@@ -24,13 +24,8 @@ Source: [`examples/simulation_script.py`](https://github.com/VangelisTech/archet
 
 ```python
 import asyncio
-import daft
 from daft import DataFrame, col
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.aio.async_system import AsyncSystem
-from archetype.core.aio.async_world import AsyncWorld
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 # ── Step 1: Define components ───────────────────────────────────────────
@@ -72,13 +67,16 @@ class RatingProcessor(AsyncProcessor):
 # ── Step 3-5: Create world, spawn entities, run ────────────────────────
 
 async def main():
-    # (In-memory querier/updater omitted for brevity — see full source)
-    ...
-    await world.create_entity([Agent(name="Alice", role="engineer", skill=3.0)])
-    await world.create_entity([Agent(name="Bob", role="designer", skill=2.0)])
-    await world.create_entity([Agent(name="Charlie", role="manager", skill=1.5)])
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world(
+            "agents",
+            processors=[ExperienceProcessor(), RatingProcessor()],
+        )
+        await world.spawn(Agent(name="Alice", role="engineer", skill=3.0))
+        await world.spawn(Agent(name="Bob", role="designer", skill=2.0))
+        await world.spawn(Agent(name="Charlie", role="manager", skill=1.5))
 
-    await world.run(RunConfig(num_steps=10))
+        await world.run(steps=10)
 ```
 
 Output:
@@ -123,7 +121,7 @@ class Record(AsyncProcessor):
 
 ### Shared State via Resources
 
-Processors can share configuration and services through the world's `Resources` container:
+Processors can share configuration and services through staged resources:
 
 ```python
 from dataclasses import dataclass
@@ -133,10 +131,6 @@ class SimConfig:
     decay_rate: float = 2.0
     max_energy: float = 100.0
 
-# Register
-world.resources.insert(SimConfig(decay_rate=3.0))
-
-# Access in processor
 class DecayProcessor(AsyncProcessor):
     components = (Agent,)
     priority = 1
@@ -147,19 +141,23 @@ class DecayProcessor(AsyncProcessor):
             "agent__energy",
             col("agent__energy") - config.decay_rate,
         )
+
+world = runtime.world(
+    "decay",
+    processors=[DecayProcessor()],
+    resources=[SimConfig(decay_rate=3.0)],
+)
 ```
 
-### Mutations Are Deferred
+### Mutations Materialize at Tick Boundaries
 
-Spawn, despawn, add/remove components -- all mutations queue during a tick and apply at the start of the **next** tick. This keeps each tick consistent.
+Spawn, despawn, add/remove components, and updates are accepted through the runtime/gate surface and materialize at tick boundaries. This keeps each tick consistent.
 
 ```python
-# These don't take effect until the next step()
-await container.command_service.submit(wid, spawn_cmd, ctx)
-await container.command_service.submit(wid, spawn_cmd, ctx)
+entity_id = await world.spawn(Agent(name="Dana"))
 
-# Now they materialize
-await container.simulation_service.step(wid, rc)
+# Now it materializes
+await world.step()
 ```
 
 ### Fork to Compare Strategies
@@ -168,20 +166,15 @@ Run the same starting state with different processors or parameters:
 
 ```python
 # Base world with 100 ticks of history
-await container.simulation_service.run(wid, RunConfig(num_steps=100))
+await world.run(steps=100)
 
-# Fork and try a different strategy
-fork = await container.world_service.fork_world(
-    source_world_id=wid,
-    name="aggressive",
-    storage_config=StorageConfig(),
-)
-await fork.system.add_processor(AggressiveStrategy())
-await container.simulation_service.run(fork.world_id, RunConfig(num_steps=50))
+# Fork and try a different strategy through the gate
+fork = await world.fork(name="aggressive")
+await fork.add_processor(AggressiveStrategy())
+await fork.run(steps=50)
 
-# Compare outcomes
-base_state = await container.query_service.get_world_state(wid)
-fork_state = await container.query_service.get_world_state(fork.world_id)
+base_state = await world.query(Agent)
+fork_state = await fork.query(Agent)
 ```
 
 ## What's Next

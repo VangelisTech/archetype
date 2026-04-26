@@ -7,7 +7,7 @@ from daft import DataFrame
 from archetype import StorageConfig
 from archetype.core import Archetype, Component
 from archetype.core.aio import AsyncCachedStore, AsyncStore
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -28,8 +28,8 @@ class Stats(Component):
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
     storage = StorageConfig(uri=str(tmp_path), namespace="test", use_lancedb=False)
-    context = StorageContextFactory.build(storage)
-    store = AsyncStore(context)
+    session = configure_session(storage)
+    store = AsyncStore(session, io_config=storage.io_config)
     try:
         yield store
     finally:
@@ -46,6 +46,86 @@ async def cached_store(inner_store):
         yield cached
     finally:
         await cached.shutdown()
+
+
+class _FakeIcebergTable:
+    name = "fake"
+
+    def __init__(self):
+        self._inner = object()
+
+    def read(self):
+        raise AssertionError("explicit IOConfig reads should use daft.read_iceberg")
+
+    def append(self, df):
+        raise AssertionError("explicit IOConfig writes should use DataFrame.write_iceberg")
+
+
+class _FakeIcebergSession:
+    def __init__(self, table):
+        self.table = table
+
+    def create_table_if_not_exists(self, *args, **kwargs):
+        return self.table
+
+
+@pytest.mark.asyncio
+async def test_async_store_passes_io_config_to_iceberg_reads(monkeypatch):
+    from daft.io import IOConfig
+
+    io_config = IOConfig()
+    table = _FakeIcebergTable()
+    seen = {}
+
+    def fake_read_iceberg(inner_table, *, snapshot_id=None, io_config=None):
+        seen["inner_table"] = inner_table
+        seen["snapshot_id"] = snapshot_id
+        seen["io_config"] = io_config
+        return daft.from_pylist([{"world_id": "w", "run_id": "r"}])
+
+    monkeypatch.setattr("archetype.core.aio.async_store.read_iceberg", fake_read_iceberg)
+
+    store = AsyncStore(_FakeIcebergSession(table), io_config=io_config)
+    out = await store.get_archetype_df(
+        Archetype.sig_from_components([Position(x=1, y=2)]),
+        world_id="w",
+        run_id="r",
+    )
+
+    assert out.collect().count_rows() == 1
+    assert seen["inner_table"] is table._inner
+    assert seen["snapshot_id"] is None
+    assert seen["io_config"] is io_config
+
+
+@pytest.mark.asyncio
+async def test_async_store_passes_io_config_to_iceberg_writes():
+    from daft.io import IOConfig
+
+    io_config = IOConfig()
+    table = _FakeIcebergTable()
+    seen = {}
+
+    class FakeDataFrame:
+        column_names = ["world_id"]
+
+        def collect(self):
+            return self
+
+        def count_rows(self):
+            return 1
+
+        def write_iceberg(self, inner_table, *, mode, io_config=None):
+            seen["inner_table"] = inner_table
+            seen["mode"] = mode
+            seen["io_config"] = io_config
+
+    store = AsyncStore(_FakeIcebergSession(table), io_config=io_config)
+    await store.append(Archetype.sig_from_components([Position(x=1, y=2)]), FakeDataFrame())
+
+    assert seen["inner_table"] is table._inner
+    assert seen["mode"] == "append"
+    assert seen["io_config"] is io_config
 
 
 @pytest.mark.asyncio

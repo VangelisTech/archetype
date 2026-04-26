@@ -7,31 +7,39 @@
 The store delegates persistence to Daft's catalog and session system. All reads and writes go through lazy DataFrame references:
 
 - **Reads** return a lazy `DataFrame` -- no data is materialized until you collect
-- **Writes** append rows to the backing table via `Table.append()`
+- **Writes** append rows to the backing table, passing `StorageConfig.io_config` explicitly for Iceberg-backed stores when configured
 - **Tables** are created on demand when an archetype is first accessed
 
 Each archetype signature maps to a single table, named by the archetype's deterministic hash (see [Archetype](archetype.md)).
 
-## StorageContext
+## Storage Construction
 
-Before creating a store, you need a `StorageContext` -- the initialized runtime resources:
+`StorageService` owns the conversion from user-facing `StorageConfig` into
+backend-native core store inputs. The core stores do not interpret
+`StorageConfig` themselves.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.app.storage_service import StorageService
 
 config = StorageConfig(
     uri="./my_data",
     namespace="experiment_1",
+    backend=StorageBackend.ICEBERG,
 )
-context = StorageContextFactory.build(config)
+session = StorageService.build_session(config)
 ```
 
-`StorageContextFactory.build()` initializes:
+`StorageService.build_session()` is the default convenience path for catalog-backed
+storage. It initializes:
 
 1. An **Iceberg SqlCatalog** backed by SQLite for metadata
 2. A **Daft Session** attached to the catalog
 3. The **namespace** (created if it doesn't exist)
+
+For LanceDB, `StorageService` passes the resolved storage URI and namespace
+directly to `AsyncLancedbStore`. It does not build a Daft session/catalog for
+the LanceDB backend.
 
 ### Local vs Remote Storage
 
@@ -42,15 +50,16 @@ context = StorageContextFactory.build(config)
 
 Remote warehouses store data in the cloud but keep catalog metadata locally in a `.archetype_meta/` directory.
 
-### StorageContext Fields
+### Store Inputs
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `uri` | `str` | Resolved storage URI |
-| `namespace` | `str` | Daft namespace for table isolation |
-| `session` | `Session` | Daft session with catalog attached |
-| `catalog` | `Catalog` | Iceberg catalog (via Daft) |
-| `io_config` | `IOConfig` | Daft I/O configuration |
+| Store | Input |
+|-------|-------|
+| `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
+| `AsyncLancedbStore` | resolved `uri`, `namespace` |
+
+Storage context helpers live in `archetype.app.storage_service` as
+compatibility shims for the old `StorageContext` name. New code should use the
+Daft-native session and app-level factories.
 
 ## Store API
 
@@ -106,7 +115,7 @@ LanceDB stores data in Lance format on the local filesystem. It is the default b
 
 The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed PyIceberg SQL catalog. It writes Parquet files and supports:
 
-- Cloud object stores (S3, GCS) via `StorageConfig.io_config`
+- Cloud object stores (S3, GCS) via `StorageConfig.io_config`, passed explicitly to Daft Iceberg reads/writes
 - Catalog-level namespace isolation
 - Compatibility with the broader Iceberg ecosystem
 
@@ -117,8 +126,10 @@ The Iceberg backend uses Daft's native Iceberg integration with a SQLite-backed 
 ```text
 StorageService._create_backend(config, cache_config)
     |
-    +-- config.use_lancedb? --> AsyncLancedbStore(context)
-    +-- else              --> AsyncStore(context)
+    +-- config.use_lancedb? --> StorageService.resolve_location(config)
+    |                         --> AsyncLancedbStore(uri, namespace)
+    +-- else                --> StorageService.build_session(config)
+                              --> AsyncStore(session)
     |
     +-- cache_config?     --> AsyncCachedStore(store, cache_config)
     |
@@ -159,12 +170,12 @@ from archetype.core.config import CacheConfig
 cache = CacheConfig(flush_rows=500_000, idle_sec=15.0)
 ```
 
-Pass `CacheConfig` to `StorageService.get_backend()` or `WorldService.create_world()` to enable caching. See [Configuration](run-config.md#cacheconfig) for all fields.
+Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_create_store()` to enable caching. See [Configuration](run-config.md#cacheconfig) for all fields.
 
 ## Source Reference
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
-- Store (LanceDB): `src/archetype/core/storage.py`
+- Store (LanceDB): `src/archetype/core/storage/lancedb.py`
+- Storage service/builders: `src/archetype/app/storage_service.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
-- Storage context: `src/archetype/core/runtime/storage.py`
 - Storage service: `src/archetype/app/storage_service.py`

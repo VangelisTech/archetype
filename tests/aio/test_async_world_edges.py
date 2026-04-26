@@ -13,7 +13,9 @@ from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -24,14 +26,19 @@ class Position(Component):
 @pytest_asyncio.fixture
 async def world(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    ctx = StorageContextFactory.build(storage)
-    store = AsyncStore(ctx)
-    querier = AsyncQueryManager(store)
-    updater = AsyncUpdateManager(store)
-    system = AsyncSystem()
+    session = configure_session(storage)
+    store = AsyncStore(session, io_config=storage.io_config)
     wcfg = WorldConfig(name="w-edge")
     try:
-        yield AsyncWorld(wcfg, querier, updater, system)
+        yield AsyncWorld(
+            world_id=str(wcfg.world_id),
+            name=wcfg.name,
+            querier=AsyncQueryManager(store=store),
+            updater=AsyncUpdateManager(store=store),
+            system=AsyncSystem(),
+            resources=Resources(),
+            hooks=HookRegistry(),
+        )
     finally:
         await store.shutdown()
 
@@ -117,8 +124,8 @@ async def test_get_components_with_entity_filter(world):
 @pytest.mark.asyncio
 async def test_async_store_empty_append_and_double_shutdown(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="edge")
-    ctx = StorageContextFactory.build(storage)
-    store = AsyncStore(ctx)
+    session = configure_session(storage)
+    store = AsyncStore(session, io_config=storage.io_config)
     try:
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
         # Ensure table exists
@@ -135,8 +142,8 @@ async def test_async_store_empty_append_and_double_shutdown(tmp_path):
 @pytest.mark.asyncio
 async def test_async_cached_store_flush_sig_no_rows_and_shutdown(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="edge-cache")
-    ctx = StorageContextFactory.build(storage)
-    inner = AsyncStore(ctx)
+    session = configure_session(storage)
+    inner = AsyncStore(session, io_config=storage.io_config)
     cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
     cached = AsyncCachedStore(async_store=inner, cache_config=cache_cfg)
 

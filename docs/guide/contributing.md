@@ -25,7 +25,10 @@ These documents are the current orientation pack for contributors:
 | [`LEARNINGS.md`](https://github.com/VangelisTech/archetype/blob/main/LEARNINGS.md) | Hard-won architecture and Daft/runtime patterns. Read this before proposing structural changes. |
 | [`AGENTS.md`](https://github.com/VangelisTech/archetype/blob/main/AGENTS.md) | Repository conventions, architecture boundaries, testing expectations, and contribution norms |
 | [`CLAUDE.md`](https://github.com/VangelisTech/archetype/blob/main/CLAUDE.md) | Local development workflow and repo-specific guardrails for coding agents |
-| [Specification](specification.md) | Engine, application, and sugar/runtime contracts — normative behavior across the stack |
+| [Specification Overview](specification.md) | Umbrella contract and historical context |
+| [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
+| [Service Protocols](service-protocols.md) | Normative app service interfaces |
+| [Runtime](runtime.md) | Script-boundary runtime contract |
 | [Architecture](architecture.md) | High-level ECS and service-layer design |
 | [Quickstart](quickstart.md) | Fastest way to get oriented with the current API surface |
 
@@ -51,7 +54,7 @@ that now govern this codebase.
 
 ### Engine and app contracts
 
-See [Specification](specification.md).
+See [Specification](specification.md), [Service Protocols](service-protocols.md), [Command Gate](command-gate.md), [World Lifecycle](world-lifecycle.md), and [Execution Hierarchy](execution-hierarchy.md).
 
 These cover:
 
@@ -59,14 +62,13 @@ These cover:
 - append-only store behavior
 - querier, updater, and processor ordering semantics
 - world execution and mutation materialization
-- brokered command flow
+- gated command flow
 - multi-world runtime isolation
 - idempotent versus non-idempotent boundaries
 
-### Sugar and runtime contracts
+### Runtime contracts
 
-See [Specification](specification.md), especially the top-level runtime and
-sugar contracts section.
+See [Runtime](runtime.md).
 
 These cover:
 
@@ -149,8 +151,9 @@ Keep the work narrow and contract-driven.
 - Add or update a regression test before or alongside the fix.
 - Prefer service-layer changes over core changes when both could solve the same
   problem.
-- Do not bypass the broker, runtime, or world lifecycle semantics just to make
+- Do not bypass `iCommandService`, runtime, or world lifecycle semantics just to make
   a wrapper API feel shorter.
+- Do not introduce `coder` or `maintainer` in new docs or examples; use the four-role model in [Command Gate](command-gate.md).
 - If a proposed ergonomic change weakens a contract, document the tradeoff and
   get agreement before implementing it.
 

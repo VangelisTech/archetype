@@ -15,7 +15,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from daft import DataFrame  # type: ignore[import-not-found]
 
@@ -33,6 +34,22 @@ if TYPE_CHECKING:
     )
 
 ArchetypeSignature = tuple[type["Component"], ...]
+T = TypeVar("T")
+_HookEventT = TypeVar("_HookEventT", bound="HookEvent")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WORLD DEPENDENCIES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class iResourceContainer(Protocol):
+    def insert(self, resource: T) -> None: ...
+    def get(self, resource_type: type[T]) -> T | None: ...
+    def require(self, resource_type: type[T]) -> T: ...
+    def remove(self, resource_type: type[T]) -> T | None: ...
+    def contains(self, resource_type: type[T]) -> bool: ...
+    def items(self) -> Iterable[tuple[type, object]]: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -155,6 +172,17 @@ class iUpdateManager(Protocol):
         ...
 
 
+class iSyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: SyncHookHandler[_HookEventT],
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    def fire(self, event: HookEvent) -> None: ...
+
+
 class iWorld(Protocol):
     """
     Central simulation coordinator.
@@ -196,10 +224,6 @@ class iWorld(Protocol):
 
     def create_entity(self, components: list[Component]) -> int:
         """Create a new entity with the given components."""
-        ...
-
-    def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
-        """Create a new entity using a pre-reserved identifier."""
         ...
 
     def remove_entity(self, entity_id: int) -> None:
@@ -314,6 +338,19 @@ class iAsyncUpdateManager(Protocol):
     ) -> DataFrame: ...
 
 
+class iAsyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
+        *,
+        mode: FireMode = "blocking",
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    async def fire(self, event: HookEvent) -> None: ...
+
+
 class iAsyncWorld(Protocol):
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...
     async def step(self, run_config: RunConfig, **input_kwargs) -> None: ...
@@ -324,7 +361,6 @@ class iAsyncWorld(Protocol):
     @property
     def active_signatures(self) -> tuple[type[Component], ...]: ...
     async def create_entity(self, components: list[Component]) -> int: ...
-    async def spawn_reserved(self, entity_id: int, components: list[Component]) -> None: ...
     async def remove_entity(self, entity_id: int) -> None: ...
     async def add_components(self, entity_id: int, components: list[Component]) -> None: ...
     async def remove_components(

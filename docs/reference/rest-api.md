@@ -12,6 +12,8 @@ This reference is auto-generated from the FastAPI application's OpenAPI schema. 
 GET /worlds/{world_id}/commands
 ```
 
+Read audit history for a world. Requires viewer, player, operator, or admin.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -34,6 +36,8 @@ GET /worlds/{world_id}/commands
 POST /worlds/{world_id}/commands
 ```
 
+Queue a command. Required role depends on the command type.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -53,7 +57,7 @@ POST /worlds/{world_id}/commands
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `id` | string | Yes | — | Id |
+| `command_id` | string | Yes | — | Command Id |
 | `type` | string | Yes | — | Type |
 | `tick` | integer | Yes | — | Tick |
 | `priority` | integer | Yes | — | Priority |
@@ -68,6 +72,8 @@ POST /worlds/{world_id}/commands
 POST /worlds/{world_id}/commands/batch
 ```
 
+Queue commands atomically. Required roles depend on the command types.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -80,21 +86,137 @@ POST /worlds/{world_id}/commands/batch
 |-------|------|----------|---------|-------------|
 | `commands` | array[SubmitCommandRequest] | Yes | — | Commands |
 
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `command_ids` | array[string] | Yes | — | Command Ids |
+
 **Error codes:** `422`
 
 ---
 
-### Get Pending Count
+## Entities
+
+### Create Entity
 
 ```text
-GET /worlds/{world_id}/commands/pending
+POST /worlds/{world_id}/entities
 ```
+
+Create an entity. Requires player, operator, or admin.
 
 **Path parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `world_id` | string |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `components` | array[object] | No | — | Components |
+
+**Response** (`201`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `entity_id` | integer | Yes | — | Entity Id |
+
+**Error codes:** `422`
+
+---
+
+### Remove Entity
+
+```text
+DELETE /worlds/{world_id}/entities/{entity_id}
+```
+
+Remove an entity. Requires player, operator, or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `entity_id` | integer |  |
+
+**Error codes:** `422`
+
+---
+
+### Update Entity
+
+```text
+PATCH /worlds/{world_id}/entities/{entity_id}
+```
+
+Overlay component values on an entity. Requires player, operator, or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `entity_id` | integer |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `components` | array[object] | No | — | Components |
+
+**Error codes:** `422`
+
+---
+
+### Remove Components
+
+```text
+DELETE /worlds/{world_id}/entities/{entity_id}/components
+```
+
+Remove component types from an entity. Requires operator or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `entity_id` | integer |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `component_types` | array[string] | No | — | Component Types |
+
+**Error codes:** `422`
+
+---
+
+### Add Components
+
+```text
+POST /worlds/{world_id}/entities/{entity_id}/components
+```
+
+Extend an entity with components. Requires operator or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+| `entity_id` | integer |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `components` | array[object] | No | — | Components |
 
 **Error codes:** `422`
 
@@ -110,13 +232,35 @@ GET /
 
 ---
 
+### Healthz
+
+```text
+GET /healthz
+```
+
+---
+
 ## Query
+
+### List Signatures
+
+```text
+GET /signatures
+```
+
+List persisted archetype signatures. Requires viewer, player, operator, or admin.
+
+**Error codes:** `422`
+
+---
 
 ### Get Components
 
 ```text
 GET /worlds/{world_id}/components
 ```
+
+Read entities containing component types. Requires viewer, player, operator, or admin.
 
 **Path parameters:**
 
@@ -128,7 +272,9 @@ GET /worlds/{world_id}/components
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `types` | string | `""` |  |
+| `types` | string | `""` | Comma-separated component type names |
+| `tick` | integer \| null | — |  |
+| `entity_ids` | string \| null | — |  |
 
 **Error codes:** `422`
 
@@ -139,6 +285,8 @@ GET /worlds/{world_id}/components
 ```text
 GET /worlds/{world_id}/entities/{entity_id}
 ```
+
+Read one entity by component filter. Requires viewer, player, operator, or admin.
 
 **Path parameters:**
 
@@ -152,16 +300,19 @@ GET /worlds/{world_id}/entities/{entity_id}
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `tick` | integer \| null | — |  |
+| `components` | string | `""` | Comma-separated component type names to project |
 
 **Error codes:** `422`
 
 ---
 
-### Get Command History
+### Get Audit History
 
 ```text
 GET /worlds/{world_id}/history
 ```
+
+Read audit history. Requires viewer, player, operator, or admin.
 
 **Path parameters:**
 
@@ -174,6 +325,63 @@ GET /worlds/{world_id}/history
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | integer | `100` |  |
+| `actor_id` | string \| null | — |  |
+| `signer_address` | string \| null | — |  |
+| `idempotency_key` | string \| null | — |  |
+
+**Error codes:** `422`
+
+---
+
+### List Hooks
+
+```text
+GET /worlds/{world_id}/hooks
+```
+
+List deployment-configured hooks. Requires viewer, player, operator, or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Error codes:** `422`
+
+---
+
+### List Processors
+
+```text
+GET /worlds/{world_id}/processors
+```
+
+List deployment-configured processors. Requires viewer, player, operator, or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Error codes:** `422`
+
+---
+
+### List Resources
+
+```text
+GET /worlds/{world_id}/resources
+```
+
+List deployment-configured resources. Requires viewer, player, operator, or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
 
 **Error codes:** `422`
 
@@ -184,6 +392,8 @@ GET /worlds/{world_id}/history
 ```text
 GET /worlds/{world_id}/state
 ```
+
+Read world state rows by component filter. Requires viewer, player, operator, or admin.
 
 **Path parameters:**
 
@@ -196,6 +406,8 @@ GET /worlds/{world_id}/state
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `tick` | integer \| null | — |  |
+| `entity_ids` | string \| null | — |  |
+| `components` | string \| null | — |  |
 
 **Error codes:** `422`
 
@@ -203,27 +415,13 @@ GET /worlds/{world_id}/state
 
 ## Simulation
 
-### List Processors
+### Run Episode
 
 ```text
-GET /worlds/{world_id}/processors
+POST /worlds/{world_id}/episode
 ```
 
-**Path parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `world_id` | string |  |
-
-**Error codes:** `422`
-
----
-
-### Run World
-
-```text
-POST /worlds/{world_id}/run
-```
+Run one episode. Requires operator or admin.
 
 **Path parameters:**
 
@@ -235,6 +433,93 @@ POST /worlds/{world_id}/run
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `episode_id` | string \| string | No | — | Episode Id |
+| `run_config` | object | No | — | A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world.
+
+Carries configuration for the run, including:
+  - run_id: UUID - The unique identifier for the run sequence, a uuid7
+  - num_steps: int - The number of steps to execute in the run sequence
+  - debug: bool - Whether or not to enable debug mode
+  - validate: bool - Whether or not to enable validation mode
+
+TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True)
+      and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity. |
+| `max_steps` | integer | No | `1000` | Max Steps |
+| `terminal_component` | any \| null | No | — | Terminal Component |
+| `termination` | any \| null | No | — | Termination |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `episode_id` | string \| string | Yes | — | Episode Id |
+| `world_id` | string \| string | Yes | — | World Id |
+| `final_tick` | integer | No | `0` | Final Tick |
+| `terminated` | boolean | No | `false` | Terminated |
+| `duration_steps` | integer | No | `0` | Duration Steps |
+
+**Error codes:** `422`
+
+---
+
+### Run Rollout
+
+```text
+POST /worlds/{world_id}/rollout
+```
+
+Run a rollout. Requires operator or admin; emits one rollout audit row.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `rollout_id` | string \| string | No | — | Rollout Id |
+| `episode_config` | object | No | — | Configuration for a single episode (bounded simulation run). |
+| `num_episodes` | integer | No | `1` | Num Episodes |
+| `parallel` | boolean | No | `false` | Parallel |
+| `name_prefix` | string | No | `"ep"` | Name Prefix |
+| `destroy_forks_on_complete` | boolean | No | `false` | Destroy Forks On Complete |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `rollout_id` | string \| string | Yes | — | Rollout Id |
+| `base_world_id` | string \| string | Yes | — | Base World Id |
+| `episodes` | array[EpisodeResult] | No | — | Episodes |
+| `num_episodes` | integer | No | `0` | Num Episodes |
+| `total_duration_steps` | integer | No | `0` | Total Duration Steps |
+
+**Error codes:** `422`
+
+---
+
+### Run World
+
+```text
+POST /worlds/{world_id}/run
+```
+
+Run a bounded simulation. Requires operator or admin.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `world_id` | string |  |
+
+**Request body:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `run_config` | RunConfig \| null | No | — |  |
 | `num_steps` | integer | No | `1` | Num Steps |
 | `debug` | boolean | No | `false` | Debug |
 
@@ -258,6 +543,8 @@ POST /worlds/{world_id}/run
 POST /worlds/{world_id}/step
 ```
 
+Advance one tick. Requires operator or admin.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -268,6 +555,7 @@ POST /worlds/{world_id}/step
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `run_config` | RunConfig \| null | No | — |  |
 | `num_steps` | integer | No | `1` | Num Steps |
 | `debug` | boolean | No | `false` | Debug |
 
@@ -283,6 +571,10 @@ POST /worlds/{world_id}/step
 GET /worlds
 ```
 
+List live worlds. Requires admin.
+
+**Error codes:** `422`
+
 ---
 
 ### Create World
@@ -291,32 +583,41 @@ GET /worlds
 POST /worlds
 ```
 
+Create a world. Requires admin.
+
 **Request body:**
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
+| `config` | WorldConfig \| null | No | — |  |
+| `storage_config` | StorageConfig \| null | No | — |  |
+| `cache_config` | CacheConfig \| null | No | — |  |
 | `name` | string \| null | No | — | Name |
 | `storage_uri` | string | No | `"./archetype_data"` | Storage Uri |
 | `namespace` | string | No | `"archetypes"` | Namespace |
 
-**Response** (`200`):
+**Response** (`201`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
+| `world_id` | string \| string | Yes | — | World Id |
 | `name` | string \| null | No | — | Name |
 | `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
+| `run_id` | string \| string \| null | No | — | Run Id |
 
 **Error codes:** `422`
 
 ---
 
-### Remove World
+### Destroy World
 
 ```text
 DELETE /worlds/{world_id}
 ```
+
+Drop the in-memory world instance. Persisted storage and audit rows are retained.
+
+Requires operator or admin. Destroying an unknown world is a no-op.
 
 **Path parameters:**
 
@@ -334,6 +635,8 @@ DELETE /worlds/{world_id}
 GET /worlds/{world_id}
 ```
 
+Get world metadata. Requires viewer, player, operator, or admin.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -344,10 +647,10 @@ GET /worlds/{world_id}
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
+| `world_id` | string \| string | Yes | — | World Id |
 | `name` | string \| null | No | — | Name |
 | `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
+| `run_id` | string \| string \| null | No | — | Run Id |
 
 **Error codes:** `422`
 
@@ -358,6 +661,8 @@ GET /worlds/{world_id}
 ```text
 POST /worlds/{world_id}/fork
 ```
+
+Fork a world. Requires operator or admin.
 
 **Path parameters:**
 
@@ -370,15 +675,17 @@ POST /worlds/{world_id}/fork
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string \| null | No | — | Name |
+| `storage_config` | StorageConfig \| null | No | — |  |
+| `cache_config` | CacheConfig \| null | No | — |  |
 
-**Response** (`200`):
+**Response** (`201`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string | Yes | — | World Id |
+| `world_id` | string \| string | Yes | — | World Id |
 | `name` | string \| null | No | — | Name |
 | `tick` | integer | No | `0` | Tick |
-| `entity_count` | integer | No | `0` | Entity Count |
+| `run_id` | string \| string \| null | No | — | Run Id |
 
 **Error codes:** `422`
 

@@ -19,10 +19,11 @@ import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
+from uuid_utils import uuid7
 
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import RunConfig
 from archetype.core.hooks import (
     HookEvent,
     HookHandle,
@@ -33,16 +34,16 @@ from archetype.core.hooks import (
     PostTick,
     PreTick,
     SyncHookHandler,
-    SyncHookRegistry,
 )
 from archetype.core.interfaces import (
     ArchetypeSignature,
     iQueryManager,
+    iResourceContainer,
+    iSyncHookBus,
     iSystem,
     iUpdateManager,
     iWorld,
 )
-from archetype.core.resources import Resources
 from archetype.core.sync.processor import SyncProcessor
 
 logger = getLogger(__name__)
@@ -53,37 +54,42 @@ _HookEventT = TypeVar("_HookEventT", bound=HookEvent)
 class SyncWorld(iWorld):
     def __init__(
         self,
-        world_config: WorldConfig,
+        *,
+        world_id: str,
+        name: str,
         querier: iQueryManager,
         updater: iUpdateManager,
         system: iSystem,
+        resources: iResourceContainer,
+        hooks: iSyncHookBus,
+        run_id: str | None = None,
+        tick: int = 0,
+        next_entity_id: int = 1,
+        entity2sig: dict[int, ArchetypeSignature] | None = None,
+        spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] | None = None,
+        despawn_cache: dict[ArchetypeSignature, list[int]] | None = None,
     ):
         """
         Initialize the synchronous world.
         """
         # World Properties
-        self.name = world_config.name
-        self.world_id = world_config.world_id
-        self.run_id: str | None = None  # Set at start of run()
+        self.name = name
+        self.world_id = world_id
 
         # Dependencies
-        self.querier = querier
-        self.updater = updater
-        self.system = system
+        self.querier = querier  # Querier: read-only data access
+        self.updater = updater  # Updater: write-only data access
+        self.system = system  # System: processor executor
+        self.resources = resources  # Resources: type-safe DI container for shared state
+        self.hooks = hooks  # Hooks: typed lifecycle callbacks
 
-        # Resources: type-safe DI container for shared state
-        self.resources = Resources()
-
-        # Hooks: typed lifecycle callbacks for observability. See
-        # ``archetype.core.hooks`` for the event catalogue.
-        self._hooks = SyncHookRegistry()
-
-        # Internal State
-        self.tick = 0
-        self._next_entity_id = 1
-        self._entity2sig: dict[int, ArchetypeSignature] = {}
-        self._spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] = {}
-        self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
+        # State
+        self.run_id = run_id or str(uuid7())
+        self.tick = tick
+        self.next_entity_id = next_entity_id
+        self.entity2sig = entity2sig if entity2sig is not None else {}
+        self.spawn_cache = spawn_cache if spawn_cache is not None else {}
+        self.despawn_cache = despawn_cache if despawn_cache is not None else {}
 
     def run(self, run_config: RunConfig, **input_kwargs):
         """
@@ -106,7 +112,7 @@ class SyncWorld(iWorld):
         if self.run_id is None:
             self.run_id = str(run_config.run_id)
 
-        self._hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
+        self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
         results: dict[ArchetypeSignature, DataFrame] = {}
         for sig in sorted(self.active_signatures, key=Archetype.get_name):
@@ -116,7 +122,7 @@ class SyncWorld(iWorld):
         self._clear_caches()
         self.tick += 1
 
-        self._hooks.fire(PostTick(world_id=self.world_id, tick=self.tick, results=results))
+        self.hooks.fire(PostTick(world_id=self.world_id, tick=self.tick, results=results))
 
     def _run_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
@@ -149,17 +155,17 @@ class SyncWorld(iWorld):
     @property
     def active_signatures(self) -> set[ArchetypeSignature]:
         """Get the union of all archetypes that need processing this tick."""
-        active_sigs = set(self._entity2sig.values())
-        spawned_sigs = set(self._spawn_cache.keys())
-        despawn_sigs = set(self._despawn_cache.keys())
+        active_sigs = set(self.entity2sig.values())
+        spawned_sigs = set(self.spawn_cache.keys())
+        despawn_sigs = set(self.despawn_cache.keys())
         return active_sigs | spawned_sigs | despawn_sigs
 
     def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
         # Handle Despawns
-        if self._despawn_cache.get(sig):
+        if self.despawn_cache.get(sig):
             # Grab despawn list of dicts and dedupe by most recent mutation command
-            self._despawn_cache[sig] = list(dict.fromkeys(reversed(self._despawn_cache[sig])))
-            entities_to_despawn = self._despawn_cache[sig]
+            self.despawn_cache[sig] = list(dict.fromkeys(reversed(self.despawn_cache[sig])))
+            entities_to_despawn = self.despawn_cache[sig]
 
             # Left Join is O(n+m), better than df['entity_id'].is_in(entities_to_despawn) -> O(n*m)
             mask_df = daft.from_pydict(
@@ -180,9 +186,9 @@ class SyncWorld(iWorld):
             )
 
         # Handle Spawns
-        if self._spawn_cache.get(sig):
+        if self.spawn_cache.get(sig):
             # Grab spawn list of dicts
-            rows = self._spawn_cache[sig]
+            rows = self.spawn_cache[sig]
 
             # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
             rows = list({row["entity_id"]: row for row in rows}.values())
@@ -222,7 +228,7 @@ class SyncWorld(iWorld):
         row_dict: dict[str, Any] | None = None
 
         pending_rows = [
-            row for row in self._spawn_cache.get(old_sig, []) if row.get("entity_id") == entity_id
+            row for row in self.spawn_cache.get(old_sig, []) if row.get("entity_id") == entity_id
         ]
         if pending_rows:
             row_dict = dict(pending_rows[-1])
@@ -264,8 +270,8 @@ class SyncWorld(iWorld):
         return row_dict
 
     def _clear_caches(self):
-        self._spawn_cache.clear()
-        self._despawn_cache.clear()
+        self.spawn_cache.clear()
+        self.despawn_cache.clear()
 
     # ---------------------------------------------------------------------
     # World Mutation Commands
@@ -273,33 +279,22 @@ class SyncWorld(iWorld):
 
     def create_entity(self, components: list[Component]) -> int:
         """Spawn a new entity with an auto-assigned id. Fires ``OnSpawn``."""
-        entity_id = self._next_entity_id
-        self._next_entity_id += 1
+        entity_id = self.next_entity_id
+        self.next_entity_id += 1
         self._register_entity(entity_id, components)
         return entity_id
-
-    def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
-        """Spawn with a pre-reserved entity id. Fires ``OnSpawn``.
-
-        Raises ``ValueError`` if the id is already live.
-        """
-        if entity_id in self._entity2sig:
-            raise ValueError(f"Entity {entity_id} already exists in world {self.world_id}")
-        self._next_entity_id = max(self._next_entity_id, entity_id + 1)
-        self._register_entity(entity_id, components)
 
     def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
-        self._entity2sig[entity_id] = sig
-        # Use empty string placeholder if run_id not yet set; updater will stamp correct run_id
+        self.entity2sig[entity_id] = sig
         row_dict = Archetype.to_row_dict(
-            entity_id, self.tick, components, self.world_id, self.run_id or ""
+            entity_id, self.tick, components, self.world_id, self.run_id
         )
-        self._spawn_cache.setdefault(sig, []).append(row_dict)
-        self._hooks.fire(
+        self.spawn_cache.setdefault(sig, []).append(row_dict)
+        self.hooks.fire(
             OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))
         )
 
@@ -307,31 +302,31 @@ class SyncWorld(iWorld):
         """Despawn an entity. Cancels a pending same-tick spawn if present,
         otherwise queues a despawn row for the current tick. Fires
         ``OnDespawn`` iff the entity existed."""
-        sig = self._entity2sig.pop(entity_id, None)
+        sig = self.entity2sig.pop(entity_id, None)
         if sig is None:
             logger.warning(
                 f"World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}"
             )
             return
 
-        pending = self._spawn_cache.get(sig)
+        pending = self.spawn_cache.get(sig)
         if pending:
             remaining = [row for row in pending if row["entity_id"] != entity_id]
             if len(remaining) != len(pending):
                 if remaining:
-                    self._spawn_cache[sig] = remaining
+                    self.spawn_cache[sig] = remaining
                 else:
-                    del self._spawn_cache[sig]
-                self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
+                    del self.spawn_cache[sig]
+                self.hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
                 return
 
-        self._despawn_cache.setdefault(sig, []).append(entity_id)
-        self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
+        self.despawn_cache.setdefault(sig, []).append(entity_id)
+        self.hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
 
     def add_components(self, entity_id: int, components: list[Component]) -> None:
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""
-        old_sig = self._entity2sig.get(entity_id)
+        old_sig = self.entity2sig.get(entity_id)
         if not old_sig:
             logger.warning(f"add_components: entity {entity_id} not found")
             return
@@ -344,15 +339,15 @@ class SyncWorld(iWorld):
         row = self._move_entity(entity_id, old_sig, new_sig, components)
 
         # 1) mark *old row* inactive
-        self._despawn_cache.setdefault(old_sig, []).append(entity_id)
+        self.despawn_cache.setdefault(old_sig, []).append(entity_id)
 
         # 2) row to *insert* under new signature
-        self._spawn_cache.setdefault(new_sig, []).append(row)
+        self.spawn_cache.setdefault(new_sig, []).append(row)
 
         # 3) update bookkeeping – atomically
-        self._entity2sig[entity_id] = new_sig
+        self.entity2sig[entity_id] = new_sig
 
-        self._hooks.fire(
+        self.hooks.fire(
             OnComponentAdded(
                 world_id=self.world_id,
                 entity_id=entity_id,
@@ -363,7 +358,7 @@ class SyncWorld(iWorld):
     def remove_components(self, entity_id: int, component_types: list[type[Component]]) -> None:
         """Detach components from an existing entity. Fires
         ``OnComponentRemoved`` iff the signature actually changes."""
-        old_sig = self._entity2sig.get(entity_id)
+        old_sig = self.entity2sig.get(entity_id)
         if old_sig is None:
             return
 
@@ -373,11 +368,11 @@ class SyncWorld(iWorld):
 
         row = self._move_entity(entity_id, old_sig, new_sig, [])  # remove ≡ keep remaining columns
 
-        self._despawn_cache.setdefault(old_sig, []).append(entity_id)
-        self._spawn_cache.setdefault(new_sig, []).append(row)
-        self._entity2sig[entity_id] = new_sig
+        self.despawn_cache.setdefault(old_sig, []).append(entity_id)
+        self.spawn_cache.setdefault(new_sig, []).append(row)
+        self.entity2sig[entity_id] = new_sig
 
-        self._hooks.fire(
+        self.hooks.fire(
             OnComponentRemoved(
                 world_id=self.world_id,
                 entity_id=entity_id,
@@ -467,7 +462,7 @@ class SyncWorld(iWorld):
             # ... later ...
             world.remove_hook(handle)
         """
-        return self._hooks.add(event_type, fn)
+        return self.hooks.add(event_type, fn)
 
     def remove_hook(self, handle: HookHandle) -> None:
         """Unregister a hook by handle.
@@ -475,4 +470,4 @@ class SyncWorld(iWorld):
         The operation is idempotent. Passing a handle that was already removed,
         or a handle minted by another world, is a no-op.
         """
-        self._hooks.remove(handle)
+        self.hooks.remove(handle)

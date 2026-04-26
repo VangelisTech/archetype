@@ -16,16 +16,15 @@
 Archetype Core
 
 Pure ECS primitives: Component, Archetype, World, System, Processor.
-Storage interfaces and implementations.
 Resources: Type-safe DI container for passing services to processors.
 
-Application-level orchestration (WorldService, WorldFactory, StorageService)
-lives in archetype.app.
+Application-level orchestration lives in archetype.app.
 """
 
 # Async Module
 from .aio import (
     AsyncCachedStore,
+    AsyncLancedbStore,
     AsyncProcessor,
     AsyncQueryManager,
     AsyncStore,
@@ -38,7 +37,6 @@ from .component import Component
 from .config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from .interfaces import ArchetypeSignature
 from .resources import Resources
-from .storage import AsyncLancedbStore
 
 # Sync Module
 from .sync import (
@@ -75,7 +73,6 @@ __all__ = [
     "AsyncQueryManager",
     "AsyncUpdateManager",
     "AsyncCachedStore",
-    "AsyncProcessor",
-    # Storage backends
     "AsyncLancedbStore",
+    "AsyncProcessor",
 ]

@@ -9,8 +9,10 @@ from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -22,12 +24,12 @@ class Position(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test")
-    context = StorageContextFactory.build(storage)
+    session = configure_session(storage)
 
     if request.param == "async":
-        store = AsyncStore(context)
+        store = AsyncStore(session, io_config=storage.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context)
+        base = AsyncStore(session, io_config=storage.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
@@ -43,11 +45,15 @@ async def store_backend(request, tmp_path):
 
 @pytest_asyncio.fixture()
 async def world(store_backend):
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w")
-    return AsyncWorld(wcfg, querier, updater, system)
+    return AsyncWorld(
+        world_id="test",
+        name="w",
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
 
 @pytest.mark.asyncio
@@ -77,7 +83,7 @@ async def test_step_updates_live_snapshot_and_clears_caches(world, store_backend
     assert live_df.collect().count_rows() == 3
 
     # Store should have rows stamped with tick=0
-    out_all = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    out_all = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     out_all = out_all.collect()
     assert out_all.count_rows() == 3
     assert all(row["tick"] == 0 for row in out_all.select("tick").to_pylist())
@@ -94,6 +100,6 @@ async def test_query_default_tick_progression(world, store_backend):
     await world.step(rc)  # writes tick 1 (query from tick 0)
     await world.step(rc)  # writes tick 2 (query from tick 1)
 
-    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     ticks = sorted({row["tick"] for row in df.collect().to_pylist()})
     assert ticks == [0, 1, 2]

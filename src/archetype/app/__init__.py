@@ -8,34 +8,34 @@ Archetype Application Layer
 Service-oriented infrastructure for multi-world simulation orchestration.
 
 Services:
+- StorageService: Store creation + pooling + lifecycle
+- WorldService: World lifecycle management
 - CommandService: Auth routing + command dispatch
-- WorldService: World CRUD and lifecycle
 - SimulationService: Execution (step/run with broker drain)
 - QueryService: Time-travel reads
-- StorageService: Backend pooling
 - ServiceContainer: Wires everything together
 """
 
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.factory import WorldFactory
 from archetype.app.models import (
+    AuditRow,
     Command,
     CommandType,
+    HookInfo,
     ProcessorInfo,
+    ResourceInfo,
     RunResult,
     WorldInfo,
-    WorldSnapshot,
 )
 from archetype.app.query_service import QueryService
-from archetype.app.registry import WorldRegistry
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 
 # Core config (re-export for convenience)
-from archetype.core import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core import AsyncLancedbStore, CacheConfig, RunConfig, StorageConfig, WorldConfig
 
 __all__ = [
     # Services
@@ -46,16 +46,17 @@ __all__ = [
     "StorageService",
     "ServiceContainer",
     # Infrastructure
+    "AsyncLancedbStore",
     "CommandBroker",
-    "WorldFactory",
-    "WorldRegistry",
     # Models
     "Command",
     "CommandType",
+    "AuditRow",
     "WorldInfo",
     "RunResult",
     "ProcessorInfo",
-    "WorldSnapshot",
+    "HookInfo",
+    "ResourceInfo",
     # Config (re-exports)
     "CacheConfig",
     "RunConfig",

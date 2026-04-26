@@ -4,8 +4,7 @@ This page is the entry point for Archetype's contract documents.
 
 It does two things:
 
-1. names the current sources of truth for the contracts we established in this
-   session
+1. names the current sources of truth for Archetype contracts
 2. defines the broader engine and application contracts that every runtime,
    adapter, and orchestration layer must preserve
 
@@ -15,18 +14,24 @@ The current contract set is split across design docs and executable tests.
 
 | Contract source | Scope | Notes |
 |---|---|---|
-| `docs/guide/specification.md` | Engine, application, and top-level runtime contracts | This page. Normative behavior from storage through app/runtime boundaries, including sugar/runtime constraints. |
+| `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
+| [Runtime](runtime.md) | Script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, gate-only access. |
+| [Service Protocols](service-protocols.md) | Application service interfaces | `iCommandService` and the services it gates. |
+| [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
+| [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
+| [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
+| [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [`tests/app/test_sugar_runtime.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_sugar_runtime.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
 | [`tests/cli/test_cli.py`](https://github.com/VangelisTech/archetype/blob/main/tests/cli/test_cli.py) | CLI adapter contracts | Covers base URL handling, client lifecycle, error formatting, and server-backed command behavior. |
 
-## Session-Hardened Contracts
+## Contract Families
 
-The work in this session surfaced and hardened the following contract families:
+The current specification set covers the following contract families:
 
-- Top-level sugar/runtime contracts:
+- Top-level runtime contracts:
   pure construction, single-flight activation, honest `spawn()` return values,
   explicit runtime ownership, world-local shutdown, fork isolation, and
   backwards-compatible exports.
@@ -49,13 +54,9 @@ The work in this session surfaced and hardened the following contract families:
 
 ## Status
 
-This document defines the contracts that govern Archetype from storage through
-world execution into the application layer.
-
-It also includes the top-level sugar/runtime requirements that were previously
-tracked separately. The goal is a single specification that describes the
-engine contracts any runtime, API, CLI, or future orchestration layer must
-preserve.
+This document defines broad contracts from storage through world execution into
+the application layer. Focused specification pages are more precise for their
+areas and take precedence when they define a newer contract.
 
 Normative language:
 
@@ -71,8 +72,8 @@ This specification covers:
 - component and archetype identity
 - store, querier, updater, system, and world contracts
 - mutation materialization and world lifecycle events
-- brokered command flow in the application layer
-- top-level sugar/runtime API constraints
+- gated command flow in the application layer
+- top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
 
@@ -102,8 +103,8 @@ The stack is strictly layered:
 3. `Updater`: write facade that stamps metadata and persists rows
 4. `System`: processor orchestration
 5. `World`: query -> mutate -> execute -> persist lifecycle
-6. `Application services`: broker, command routing, multi-world orchestration
-7. `API / CLI / sugar`: outer adapters over the service layer
+6. `Application services`: command gate, audit, broker, multi-world orchestration
+7. `Runtime / API / CLI`: outer adapters over the service layer
 
 Each layer may depend downward. No lower layer may depend upward.
 
@@ -331,10 +332,22 @@ CURRENT GAP:
 
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
-- Worlds sharing the same `(uri, namespace)` MUST reuse the same backend
-  triplet.
+- Worlds sharing the same effective storage pool key `(uri, namespace, backend,
+  cache config)` MUST reuse the same backend triplet.
 - Concurrent backend acquisition for the same key MUST single-flight so only
   one backend is built.
+- Backend selection and storage-resource construction are app/runtime
+  composition concerns.
+- Core stores MUST receive backend-native inputs rather than a generic runtime
+  storage context.
+- The default catalog-backed path MAY construct a Daft `Session` and Daft
+  `Catalog` through `StorageService`.
+- When `StorageConfig.io_config` is provided for catalog-backed storage, it
+  MUST be bound to the store and passed explicitly to Daft Iceberg
+  read/write operations.
+- Per-store credentials MUST NOT rely solely on process-global Daft planning
+  config.
+- The LanceDB path MUST NOT construct a Daft `Session` or Daft `Catalog`.
 - Service shutdown MUST shut down every managed backend exactly once per
   instance.
 
@@ -351,10 +364,11 @@ CURRENT GAP:
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.
 - Broker injection into world resources is an app-layer responsibility.
-- `remove_world()` SHOULD be safe to call on a missing world.
+- `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
-- Forking MUST reject source worlds with pending un-materialized mutations.
+- Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
+  the next tick materializes in both worlds.
 
 CURRENT GAP:
 
@@ -363,12 +377,11 @@ CURRENT GAP:
 
 ### CommandBroker
 
-- The broker is the external command queue and audit surface.
+- The broker is a pure queue for tick-deferred commands.
 - Commands are ordered by `(tick, priority, seq)`.
 - Queues are partitioned by world key.
-- RBAC and quota validation MUST occur before enqueue when actor context is
-  supplied.
-- The broker MUST preserve pending and history state for observability.
+- RBAC, quota validation, and audit emission happen at `iCommandService`.
+- The broker MAY preserve pending and history state for queue observability.
 
 Idempotency:
 
@@ -379,13 +392,16 @@ Idempotency:
 
 ### CommandService
 
-- `submit()` and `submit_batch()` are enqueue-only APIs. They return command IDs
-  and do not apply mutations immediately.
+- `iCommandService` is the policy enforcement point for external operations.
+- Direct methods authorize, delegate, audit, and return a result immediately.
+- `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
+  and enqueue work for later application.
 - `submit_spawn()` is the special case that reserves a world-local entity ID
   before enqueue so `spawn()` can honestly return `entity_id`.
 - Reservation MUST be serialized per world.
 - `drain_and_apply()` is the command application boundary at tick time.
-- World lifecycle commands are dispatched through `apply_world_lifecycle()`.
+- World lifecycle operations use direct gated methods such as `create_world`,
+  `fork_world`, and `destroy_world`.
 
 CURRENT GAPS:
 
@@ -403,11 +419,12 @@ CURRENT GAPS:
   by reusing the same `RunConfig` across every step so the `run_id` is stable.
 - `run()` MUST preserve one logical `run_id` across all steps in the run by
   threading the caller's `RunConfig` into every `step()` call.
-- `run_all()` MAY execute multiple worlds concurrently.
+- Episodes and rollouts follow [Execution Hierarchy](execution-hierarchy.md).
 
 ### QueryService
 
-- `QueryService` is the intended read facade for external callers.
+- `QueryService` is the internal read facade below the gate.
+- External reads go through `iCommandService`.
 - Read behavior SHOULD be consistent with the underlying core world and querier
   contracts.
 - Query methods SHOULD either validate world existence consistently or
@@ -417,45 +434,44 @@ CURRENT GAP:
 
 - Most read methods are currently stubs that echo metadata rather than querying
   actual world state.
-- `get_command_history()` behaves differently from the other read methods on
-  unknown worlds.
+- Audit history is served by `iAuditLog` through `iCommandService`.
 
 ### ServiceContainer and runtime lifetime
 
 - `ServiceContainer` is the process-scoped composition root.
-- It owns one shared `StorageService`, one shared `CommandBroker`, and the
-  world, command, simulation, and query services built on top of them.
+- It owns one shared `StorageService`, one shared `CommandBroker`, one
+  append-only audit log, and the world, mutation, command, simulation, and
+  query services built on top of them.
 - Container shutdown MUST be explicit and distinct from per-world removal.
-- Container shutdown order MUST clear broker state and then shut down world and
-  storage services.
+- Container shutdown order MUST clear broker state, flush/shut down audit, and
+  then shut down world and storage services.
 
 ## Multi-World Contracts
 
 - Multiple worlds may coexist in one runtime.
 - Worlds MUST be isolated by `world_id`.
 - Storage rows are scoped by both `world_id` and `run_id`.
-- Broker queues and history are partitioned per world key.
-- `run_all()` may step multiple managed worlds concurrently.
+- Broker queues are partitioned per world key.
 - A fork shares runtime infrastructure, but not world identity.
-- Shutting down or removing one world MUST NOT invalidate sibling worlds that
+- Shutting down or destroying one world MUST NOT invalidate sibling worlds that
   share the same runtime.
 
 CURRENT GAP:
 
-- `remove_world()` only removes the world from the world catalog and registry.
+- `destroy_world()` only removes the world from the world catalog and registry.
   It does not explicitly clear per-world broker state or provide true
   world-local shutdown semantics.
 
-## Top-Level Runtime and Sugar Contracts
+## Top-Level Runtime Contracts
 
 ### Purpose
 
-This section defines the minimum contracts for any top-level "sugar" API that
+This section defines the minimum contracts for any top-level runtime API that
 wraps Archetype's service layer. These requirements exist to prevent a
 convenience API from weakening the engine's concurrency guarantees, world
-lifecycle isolation, or broker-based command semantics.
+lifecycle isolation, or gate-based command semantics.
 
-The sugar API may improve ergonomics. It may not change the underlying
+The runtime API may improve ergonomics. It may not change the underlying
 behavioral contracts unless that change is explicitly designed, versioned, and
 tested.
 
@@ -464,7 +480,7 @@ tested.
 These requirements apply to:
 
 - Any proposed top-level `World`, `Processor`, `Archetype`, `Runtime`, or
-  `run_sync` sugar API
+  `run_sync` runtime API
 - Any wrapper that hides `ServiceContainer`, `WorldService`,
   `SimulationService`, or `CommandService`
 - Any re-export change that alters the default public API surface
@@ -474,7 +490,7 @@ remains read-only unless separately approved.
 
 ### Core Principle
 
-Sugar wraps the service layer. Sugar does not bypass the service layer, weaken
+Runtime wraps the service layer. Runtime does not bypass the service layer, weaken
 its guarantees, or silently change the semantics of commands, world identity,
 or execution.
 
@@ -482,7 +498,7 @@ or execution.
 
 #### C1. Pure construction
 
-Constructing a sugar wrapper such as `World(...)` must be pure and side-effect
+Constructing a runtime wrapper such as `World(...)` must be pure and side-effect
 free.
 
 Required behavior:
@@ -510,7 +526,7 @@ Minimum implementation expectation:
 
 #### C3. No partially initialized observable state
 
-The sugar layer must not expose half-initialized runtime state.
+The runtime layer must not expose half-initialized runtime state.
 
 Required behavior:
 
@@ -547,14 +563,14 @@ Required behavior:
 
 #### C6. Broker semantics remain intact
 
-Command ordering and tick-boundary application must remain true under sugar.
+Command ordering and tick-boundary application must remain true under runtime.
 
 Required behavior:
 
 - Enqueued commands must still be subject to broker ordering
 - Enqueued commands must still be applied at the documented tick boundary
-- Sugar must not directly mutate worlds in ways that contradict the public
-  brokered mutation contract unless that method is explicitly documented as a
+- Runtime must not directly mutate worlds in ways that contradict the public
+  gated mutation contract unless that method is explicitly documented as a
   lower-level escape hatch
 
 #### C7. Same-tick composition must be defined
@@ -567,7 +583,7 @@ Required behavior:
 - If multiple commands targeting the same entity are drained in one tick, the
   implementation MUST define whether later commands observe earlier staged
   mutations from that same drain cycle
-- If the public contract claims ordered broker semantics for runtime mutation
+- If the public contract claims ordered command semantics for runtime mutation
   verbs, later commands SHOULD observe earlier same-tick mutations for the same
   entity even though none of them become query-visible until `step()` completes
 - If the implementation does not provide that composition guarantee, the
@@ -578,7 +594,7 @@ CURRENT GAP:
 
 - `UPDATE` followed by `ADD_COMPONENT` for the same entity in one drain cycle
   does not currently compose intuitively. The second command reads from `_live`
-  rather than from the staged update row, so broker history order and final
+  rather than from the staged update row, so command order and final
   materialized state can diverge.
 
 ### Multi-World Lifetime Contract
@@ -637,7 +653,7 @@ Required behavior:
 
 #### L5. Test isolation
 
-The sugar runtime must not make deterministic testing harder.
+The runtime must not make deterministic testing harder.
 
 Required behavior:
 
@@ -649,7 +665,7 @@ Required behavior:
 
 #### L6. Actor-bound aliases share one world lifecycle
 
-Sugar may expose multiple actor-bound handles to one logical world, but those
+Runtime may expose multiple actor-bound handles to one logical world, but those
 handles must not become independent world lifecycles by accident.
 
 Required behavior:
@@ -668,7 +684,7 @@ Required behavior:
 
 #### S1. Minimal ceremony, explicit boundary
 
-The sugar API should reduce ceremony for scripts, but execution boundaries must
+The runtime API should reduce ceremony for scripts, but execution boundaries must
 remain explicit.
 
 Required behavior:
@@ -709,13 +725,13 @@ Required behavior:
 
 #### S4. Preserve public API compatibility unless versioned
 
-Top-level sugar must not silently redefine long-standing public imports.
+Top-level runtime exports must not silently redefine long-standing public imports.
 
 Required behavior:
 
 - Existing default exports such as `World` and `Processor` must remain stable
   unless changed as part of an explicit breaking release
-- If new sugar types are introduced, prefer additive names first
+- If new runtime types are introduced, prefer additive names first
 - Any future alias swap requires migration notes and compatibility tests
 
 #### S5. Ergonomics must not bypass governance
@@ -724,7 +740,7 @@ Script ergonomics must not come from removing safety mechanisms.
 
 Required behavior:
 
-- If sugar claims to preserve RBAC, audit history, or broker semantics, those
+- If runtime claims to preserve RBAC, audit history, or command semantics, those
   paths must actually flow through the governing services
 - If a method intentionally bypasses governance, that bypass must be explicit in
   naming and documentation
@@ -738,31 +754,30 @@ the service layer.
 
 Required behavior:
 
-- The recommended runtime world handle SHOULD expose brokered entity mutation
+- The recommended runtime world handle SHOULD expose gated entity mutation
   verbs for `spawn`, `despawn`, `update`, `add_components`, and
   `remove_components`
-- The recommended runtime world handle SHOULD expose brokered processor
+- The recommended runtime world handle SHOULD expose gated processor
   mutation verbs for `add_processor` and `remove_processor`
-- Runtime audit access such as command history SHOULD remain available without
+- Runtime audit access such as audit history SHOULD remain available without
   requiring direct container access
 
-#### S7. Non-brokered scaffolding must remain explicit
+#### S7. Declarative scaffolding must remain explicit
 
-Some runtime operations are world-local scaffolding rather than governed
-simulation mutations. That distinction must be explicit.
+Some runtime operations are declarative handle construction rather than
+governed simulation mutations. That distinction must be explicit.
 
 Required behavior:
 
 - World-handle construction and actor rebinding may be immediate runtime
-  operations rather than brokered commands
-- Hook registration and direct resource mutation may remain immediate runtime
-  operations rather than brokered commands
-- Documentation MUST distinguish these immediate scaffolding operations from
-  brokered simulation mutations
+  operations rather than gated commands
+- Activation, hook registration, resource attachment, mutation, simulation,
+  read, fork, and destroy operations MUST flow through `iCommandService`
+- Documentation MUST distinguish handle construction from gated operations
 
-### Sugar Runtime Acceptance Criteria
+### Runtime Acceptance Criteria
 
-No sugar API may be considered ready for implementation until the design can
+No runtime API may be considered ready for implementation until the design can
 show how it satisfies all of the following:
 
 - Concurrent first-use of the same wrapper creates exactly one world
@@ -773,7 +788,7 @@ show how it satisfies all of the following:
 - Forked worlds remain valid after the source world is shut down
 - Recommended runtime mutation verbs cover entity, component, and processor
   mutations without dropping to the service layer
-- Non-brokered scaffolding boundaries are documented and tested
+- Gate-preserving scaffolding boundaries are documented and tested
 - Same-entity same-tick mutation composition is either guaranteed and tested or
   explicitly documented as weaker
 - Async and sync script entry points have a clear resource ownership model
@@ -789,9 +804,9 @@ the constraints that any acceptable design must satisfy.
 
 | Operation | Expected contract |
 |---|---|
-| `StorageService.get_backend(key)` | Idempotent per `(uri, namespace)` within one service instance |
+| `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, cache config)` within one service instance |
 | `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
-| `WorldService.remove_world(missing)` | Safe no-op |
+| `WorldService.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |
 | `CommandBroker.enqueue()` | Not idempotent; duplicate logical commands remain distinct |
 | `CommandService.submit()` | Not idempotent; duplicate submits create duplicate commands |
@@ -801,7 +816,7 @@ the constraints that any acceptable design must satisfy.
 | `RuntimeWorld.as_actor(ctx)` | Idempotent as handle binding only; creates another alias, not another world |
 | Duplicate despawn in one tick | Idempotent collapse by entity ID |
 | Duplicate spawn for same entity in one tick | Deterministic last-write-wins |
-| `RuntimeWorld.command_history()` | Idempotent for fixed broker history |
+| `RuntimeWorld.history()` | Idempotent for fixed audit history |
 | `add_components()` with no signature change | Idempotent no-op |
 | `remove_components()` with no signature change | Idempotent no-op |
 | `world.step()` | Not idempotent; advances tick and appends new rows |
@@ -843,24 +858,21 @@ all of the following:
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
 
-## Contracts Before Sugar (Apr 2026)
+## Runtime Boundary
 
-The top-level runtime sugar looked directionally right, but the first proposal
-was unsafe because it collapsed three separate concerns into one API shape:
+The runtime boundary separates process lifetime from world lifetime. This
+prevents the user-facing API from collapsing three separate concerns:
 
 1. **Concurrency** — first-use initialization races
 2. **Multi-world lifetime** — world shutdown vs process/runtime shutdown
 3. **Script ceremony** — making simple scripts ergonomic without hiding real
    lifecycle boundaries
 
-The fix was to make the contract explicit before changing the API.
+The safe top-level abstraction is `ArchetypeRuntime`, not a world-scoped
+context manager. A world handle can be lazy, but the shared runtime/container
+needs an explicit boundary.
 
-**Key lesson:** the safe top-level abstraction is `ArchetypeRuntime`, not a
-world-scoped context manager. Process lifetime and world lifetime are different
-concerns. A `World` handle can be lazy, but the shared runtime/container needs
-an explicit boundary.
-
-### Runtime / sugar contracts we chose to enforce
+### Runtime Contracts
 
 - `spawn()` must reserve and return a real `entity_id` all the way through the
   chain. Returning a command ID is a contract violation.
@@ -876,14 +888,13 @@ an explicit boundary.
 - The recommended script boundary is `async with ArchetypeRuntime()` or
   `with ArchetypeRuntime.sync()`, not implicit per-call global setup/teardown.
 - Top-level `World` and `Processor` exports should remain stable unless there
-  is an intentional versioned breaking change. Add sugar additively first.
+  is an intentional versioned breaking change. Add runtime ergonomics additively first.
 
-### Testing lesson
+### Contract Tests
 
 These contracts should not live only in docs. They need executable tests.
 
-The highest-value tests from this session were not generic coverage tests.
-They were contract tests for:
+High-value contract tests include:
 
 - concurrent first-use activation
 - shutdown vs init and fork vs init races
@@ -892,43 +903,37 @@ They were contract tests for:
 - async/sync smoke paths
 - example script smoke execution
 
-Once those existed, several real bugs surfaced immediately.
+### Sync-Core Coverage
 
-### Sync-core bugs contract tests exposed
+Contract-focused tests should cover correctness issues that happy-path tests
+often miss:
 
-Contract-focused tests found real correctness issues that happy-path tests had
-missed:
+- store append/read consistency across table lookup and namespace context
+- query projection schema selection
+- duplicate spawn last-write-wins behavior
+- component migration between signatures
+- moving an entity from a missing source archetype
+- despawn-only signature materialization
 
-- store append/read paths were inconsistent about table lookup and namespace
-  context
-- query projection used the wrong schema API
-- duplicate spawns were not true last-write-wins
-- component migration used instances where signature expansion required types
-- moving an entity from a missing source archetype crashed instead of returning
-  empty
-- final despawns could be skipped because despawn-only signatures were not
-  materialized
-
-**Lesson:** if a contract test feels "too specific," that usually means it is
-finally testing the real semantic boundary.
+If a contract test feels "too specific," it may be testing a real semantic
+boundary.
 
 ### Docs and examples are part of the contract
 
 The recommended public API now lives at the runtime layer, so beginner docs
 and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
 container. Low-level docs can still document `ServiceContainer`,
-`CommandService`, broker semantics, and raw ECS flows, but they should be
+`CommandService`, broker semantics, audit semantics, and raw ECS flows, but they should be
 explicit that they are lower-level interfaces.
 
 Examples also need to be executed in CI. An example that "looks right" but is
 never run is not documentation; it is an unverified claim.
 
-This mattered especially for LLM-backed examples: they need explicit
-credential gating or graceful degraded behavior when keys are missing.
+LLM-backed examples need explicit credential gating or graceful degraded
+behavior when keys are missing.
 
-### Specification lesson
+### Specification Ownership
 
-A temporary `REQUIREMENTS.md` was useful as a forcing function, but the clean
-end state is one canonical specification document. Normative contracts should
-converge into `Specification`, with tests enforcing them and contributor docs
-pointing back to that single source of truth.
+Focused specification pages are now the source of truth for their areas, with
+this page serving as the umbrella entry point. Tests enforce the contracts and
+contributor docs point back to the specification group.

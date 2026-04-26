@@ -5,7 +5,7 @@ from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -18,11 +18,13 @@ async def test_contexts_are_isolated_by_namespace(tmp_path):
     uri = str(tmp_path)
 
     # Same URI, different namespaces
-    ctx_a = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsA"))
-    ctx_b = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsB"))
+    cfg_a = StorageConfig(uri=uri, namespace="nsA")
+    cfg_b = StorageConfig(uri=uri, namespace="nsB")
+    session_a = configure_session(cfg_a)
+    session_b = configure_session(cfg_b)
 
-    store_a = AsyncStore(ctx_a)
-    store_b = AsyncStore(ctx_b)
+    store_a = AsyncStore(session_a, io_config=cfg_a.io_config)
+    store_b = AsyncStore(session_b, io_config=cfg_b.io_config)
 
     try:
         # Prepare signature and a single row

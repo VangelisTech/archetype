@@ -22,6 +22,8 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
+from archetype.core.config import JsonUUID, RunConfig
+
 # Global sequence counter for command ordering
 _SEQ = count()
 
@@ -52,13 +54,29 @@ class CommandType(StrEnum):
     DESTROY_WORLD = "destroy_world"  # Cleanup child simulation
     FORK_WORLD = "fork_world"  # Clone current state to explore alternatives
 
-    # Rollout/Episode commands (for mental simulation / MCTS)
-    RUN_ROLLOUT = "run_rollout"  # Run N steps in a world
-    RUN_EPISODE = "run_episode"  # Full episode with sampled ICs
-    QUERY_WORLD = "query_world"  # Get state/results from a world
+    # Simulation control
+    STEP = "step"
+    RUN = "run"
+    RUN_ROLLOUT = "run_rollout"
+    RUN_EPISODE = "run_episode"
+
+    # Reads / introspection
+    QUERY_WORLD = "query_world"
+    GET_WORLD_INFO = "get_world_info"
+    GET_AUDIT_HISTORY = "get_audit_history"
+    LIST_SIGNATURES = "list_signatures"
+    LIST_WORLDS = "list_worlds"
+    LIST_PROCESSORS = "list_processors"
+    LIST_HOOKS = "list_hooks"
+    LIST_RESOURCES = "list_resources"
+
+    # Resource management
+    ADD_RESOURCE = "add_resource"
+    ADD_HOOK = "add_hook"
+    REMOVE_HOOK = "remove_hook"
 
     # Agent-to-agent messaging (realized at tick boundary)
-    MESSAGE = "message"  # payload: {sender_id, receiver_id, channel?, content}
+    MESSAGE = "message"
 
     # Extensible
     CUSTOM = "custom"
@@ -127,32 +145,135 @@ class Command(BaseModel):
 
 
 class WorldInfo(BaseModel):
-    model_config = dict(arbitrary_types_allowed=True)
-    world_id: UUID
+    """Immutable snapshot of a world's identity and position.
+
+    This is the gate boundary type — iCommandService returns WorldInfo,
+    never iWorld. Field access is sync; fetch is gated.
+    """
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    # str | UUID: worlds store str internally; gate accepts both
+    world_id: str | JsonUUID
     name: str | None = None
     tick: int = 0
-    entity_count: int = 0
-    archetype_signatures: list[str] = Field(default_factory=list)
+    run_id: str | JsonUUID | None = None
 
 
 class RunResult(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
-    run_id: UUID
-    world_id: UUID
+    run_id: str | JsonUUID
+    world_id: str | JsonUUID
     ticks_completed: int = 0
     commands_applied: int = 0
     final_tick: int = 0
 
 
+class EpisodeConfig(BaseModel):
+    """Configuration for a single episode (bounded simulation run)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    episode_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
+    run_config: RunConfig = Field(default_factory=RunConfig)
+    max_steps: int = 1000
+    terminal_component: Any | None = None
+    termination: Any | None = None  # Callable[[iWorld], bool] | None
+
+
+class RolloutConfig(BaseModel):
+    """Configuration for a rollout (N episodes forked from a base world)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    rollout_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
+    episode_config: EpisodeConfig = Field(default_factory=EpisodeConfig)
+    num_episodes: int = 1
+    parallel: bool = False
+    name_prefix: str = "ep"
+    destroy_forks_on_complete: bool = False
+
+
+class EpisodeResult(BaseModel):
+    """Result of a single episode."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    episode_id: str | JsonUUID
+    world_id: str | JsonUUID
+    final_tick: int = 0
+    terminated: bool = False
+    duration_steps: int = 0
+
+
+class RolloutResult(BaseModel):
+    """Result of a rollout (N episodes)."""
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    rollout_id: str | JsonUUID
+    base_world_id: str | JsonUUID
+    episodes: list[EpisodeResult] = Field(default_factory=list)
+    num_episodes: int = 0
+    total_duration_steps: int = 0
+
+
 class ProcessorInfo(BaseModel):
-    name: str
-    priority: int
-    components: list[str] = Field(default_factory=list)
+    """Read-only summary of a registered processor."""
+
+    model_config = dict(frozen=True)
+    qualname: str = Field(description="Processor class qualname")
+    priority: int = 0
+    components: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Component qualnames this processor operates on",
+    )
 
 
-class WorldSnapshot(BaseModel):
-    model_config = dict(arbitrary_types_allowed=True)
-    world_id: UUID
-    tick: int = 0
-    entities: dict[int, list[str]] = Field(default_factory=dict)
-    archetype_counts: dict[str, int] = Field(default_factory=dict)
+class HookInfo(BaseModel):
+    """Read-only summary of a registered hook."""
+
+    model_config = dict(frozen=True)
+    event_type: str = Field(description="HookEvent subclass qualname")
+    handler_qualname: str = Field(description="Handler callable qualname")
+    mode: str = Field(default="blocking", description="'blocking' or 'spawn'")
+    handle_id: int = Field(description="HookHandle._id for removal")
+
+
+class ResourceInfo(BaseModel):
+    """Read-only summary of a resource attached to a world.
+
+    Resources are keyed by type in the underlying Resources container;
+    the qualname IS the unique identity of a resource within a world.
+    """
+
+    model_config = dict(frozen=True)
+    qualname: str = Field(description="Resource class qualname")
+
+
+class AuditRow(BaseModel):
+    """One row in the append-only audit log.
+
+    Schema matches platform spec § 3.3 Appendix A.5. Payment-bearing
+    columns are nullable for non-paid commands.
+    """
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+
+    # Identity
+    audit_id: UUID = Field(default_factory=uuid.uuid7)
+    command_id: UUID | None = None
+    world_id: str | UUID | None = None
+    actor_id: str | UUID | None = None
+
+    # What happened
+    command_type: str = ""
+    status: str = "applied"  # "applied" | "rejected" | "queued"
+    payload_json: str = "{}"
+
+    # When
+    accepted_at: str = Field(default_factory=lambda: "")
+    applied_at: str = Field(default_factory=lambda: "")
+
+    # Payment (Tier 2, nullable)
+    signer_address: str | None = None
+    tx_hash: str | None = None
+    price_paid_atomic: int | None = None
+    asset: str | None = None
+    chain_id: int | None = None
+    idempotency_key: str | None = None

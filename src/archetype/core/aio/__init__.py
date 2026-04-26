@@ -25,6 +25,7 @@ from archetype.core.hooks import (
 )
 
 from .async_cached_store import AsyncCachedStore
+from .async_lancedb_store import AsyncLancedbStore
 from .async_processor import AsyncProcessor
 from .async_querier import AsyncQueryManager
 from .async_store import AsyncStore
@@ -34,6 +35,7 @@ from .async_world import AsyncWorld
 
 __all__ = [
     "AsyncCachedStore",
+    "AsyncLancedbStore",
     "AsyncProcessor",
     "AsyncQueryManager",
     "AsyncStore",

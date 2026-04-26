@@ -1,120 +1,112 @@
 # API Layer
 
-Archetype runs as a single `archetype serve` process. The API layer is a FastAPI application that exposes the service layer over HTTP. The CLI is a thin httpx client that talks to that server. All worlds live in one event loop, and both interfaces share the same `ServiceContainer`.
+Archetype runs as a single `archetype serve` process. The API layer is a FastAPI application over the service layer, and the CLI is a thin HTTP client.
+
+External API operations should enter through `iCommandService` so authorization, audit emission, and info-class downgrades are consistent with the runtime.
 
 ## Application Factory
 
-`create_app()` builds the FastAPI application with four routers and a lifespan manager:
+`create_app()` builds the FastAPI app with routers for worlds, commands, simulation, and queries:
 
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     container = get_container()
-    await container.world_service.discover_worlds()  # rehydrate from registry
     try:
         yield
     finally:
         await container.shutdown()
         set_container(None)
-
-def create_app() -> FastAPI:
-    app = FastAPI(title="Archetype ECS", version="0.1.0", lifespan=lifespan)
-    app.include_router(worlds.router)       # /worlds
-    app.include_router(commands.router)     # /worlds/{id}/commands
-    app.include_router(simulation.router)   # /worlds/{id}/step, /run
-    app.include_router(query.router)        # /worlds/{id}/state, /entities, /components
-    return app
 ```
 
-On startup, `discover_worlds()` reads the `WorldRegistry` and rehydrates any previously created worlds so state survives server restarts. On shutdown, all storage backends are flushed and closed.
+All worlds live in the server event loop. CLI invocations and remote clients talk to that process over HTTP.
 
 ## Dependency Injection
 
-`deps.py` holds a module-level singleton `ServiceContainer` and provides getter functions for FastAPI's `Depends()`:
+`deps.py` owns a module-level `ServiceContainer` and exposes service getters for FastAPI `Depends()`.
+
+Routes that expose user-visible operations should inject:
+
+- `CommandService` for reads, writes, lifecycle, and simulation control.
+- `ActorCtx` from auth middleware.
+
+Lower-level services may still be injected for internal/admin diagnostics, but they are not the normal public boundary.
 
 ```python
-_container: ServiceContainer | None = None
-_default_ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-def get_container() -> ServiceContainer:
-    global _container
-    if _container is None:
-        _container = ServiceContainer(registry_path=default_registry_path())
-    return _container
-
-def get_world_service() -> WorldService:
-    return get_container().world_service
-
-def get_command_service() -> CommandService:
-    return get_container().command_service
-
-# ... one getter per service
-```
-
-Route handlers inject services via `Depends()`:
-
-```python
-@router.post("/worlds/{world_id}/step")
-async def step_world(
+@router.post("/worlds/{world_id}/run")
+async def run_world(
     world_id: str,
-    sim: SimulationService = Depends(get_simulation_service),
+    cs: CommandService = Depends(get_command_service),
+    ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    ...
+    return await cs.run(ctx, UUID(world_id), RunConfig(num_steps=10))
 ```
 
-The container is initialized lazily on the first `get_container()` call. The `set_container(None)` call during shutdown ensures a fresh container on restart.
+## Default Actor Context
 
-### Default Actor Context
+Until real multi-tenant auth is wired, `get_actor_ctx()` returns a default admin actor:
 
-In v0.1, there is no real auth. `get_actor_ctx()` returns a default `ActorCtx` with `roles={"admin"}`, granting wildcard permissions. Route handlers pass this context to `CommandService.submit()`, which forwards it to the broker's RBAC guardrails.
+```python
+ActorCtx(id=uuid7(), roles={"admin"})
+```
+
+That mirrors the script runtime default. API servers with real auth should map authenticated principals into `ActorCtx` explicitly. See [Command Gate](command-gate.md).
 
 ## Route Structure
 
-Routes are thin. They validate request payloads, construct `Command` objects, delegate to services, and return response models.
+Routes are thin translators: validate payloads, call `iCommandService`, return response models.
 
 ### Worlds
 
 | Endpoint | Method | What it does |
-|----------|--------|-------------|
-| `/worlds` | POST | Create world via CommandService (RBAC + audit), then apply immediately |
-| `/worlds` | GET | List all managed worlds |
-| `/worlds/{id}` | GET | Get world by ID |
-| `/worlds/{id}` | DELETE | Remove world via CommandService |
-| `/worlds/{id}/fork` | POST | Fork world via CommandService |
+|---|---|---|
+| `/worlds` | POST | Create world through the gate |
+| `/worlds` | GET | List managed worlds / world info |
+| `/worlds/{id}` | GET | Get `WorldInfo` |
+| `/worlds/{id}` | DELETE | Destroy the live world; persisted data remains |
+| `/worlds/{id}/fork` | POST | Fork a world through the gate |
 
-World mutations (create, remove, fork) go through `CommandService.submit()` for RBAC validation and audit logging, then `apply_world_lifecycle()` executes immediately -- world lifecycle commands are not tick-scheduled.
+Lifecycle operations are direct gate calls, not global lifecycle commands submitted through the broker.
 
 ### Commands
 
 | Endpoint | Method | What it does |
-|----------|--------|-------------|
-| `/worlds/{id}/commands` | POST | Submit single command to broker |
-| `/worlds/{id}/commands/batch` | POST | Submit batch (all-or-nothing RBAC) |
-| `/worlds/{id}/commands` | GET | Get command history |
-| `/worlds/{id}/commands/pending` | GET | Get pending command count |
+|---|---|---|
+| `/worlds/{id}/commands` | POST | Tick-deferred submit through `iCommandService.submit` |
+| `/worlds/{id}/commands/batch` | POST | Tick-deferred batch submit |
+| `/worlds/{id}/commands` | GET | Audit-backed command history |
+
+Broker pending state is an implementation detail. User-facing history is
+audit-backed through `/worlds/{id}/history` and `/worlds/{id}/commands`.
 
 ### Simulation
 
 | Endpoint | Method | What it does |
-|----------|--------|-------------|
-| `/worlds/{id}/step` | POST | Execute one tick (drain + step) |
+|---|---|---|
+| `/worlds/{id}/step` | POST | Execute one tick |
 | `/worlds/{id}/run` | POST | Execute N ticks |
-| `/worlds/{id}/processors` | GET | List active processors |
+| `/worlds/{id}/episode` | POST | Run until termination or cap on this world |
+| `/worlds/{id}/rollout` | POST | Fork N episodes and aggregate |
+| `/worlds/{id}/processors` | GET | List processor info |
+
+See [Execution Hierarchy](execution-hierarchy.md).
 
 ### Query
 
 | Endpoint | Method | What it does |
-|----------|--------|-------------|
-| `/worlds/{id}/state` | GET | World snapshot at optional tick |
-| `/worlds/{id}/entities/{eid}` | GET | Single entity state |
-| `/worlds/{id}/components` | GET | Query by component types |
-| `/worlds/{id}/history` | GET | Command history (read path) |
+|---|---|---|
+| `/worlds/{id}/state` | GET | Query world state through the gate |
+| `/worlds/{id}/entities/{eid}` | GET | Query one entity projection |
+| `/worlds/{id}/components` | GET | Query component projections |
+| `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
-See the [REST API Reference](../reference/rest-api.md) for full request/response schemas.
+Reads are authorized at `iCommandService`; `iQueryService` remains the internal read implementation.
+
+See the [REST API Reference](../reference/rest-api.md) for generated schemas.
 
 ## Route Pattern
 
-Every mutation route follows the same pattern. Here is `create_world` as an example:
+Example `create_world` route:
 
 ```python
 @router.post("", response_model=WorldResponse)
@@ -123,27 +115,23 @@ async def create_world(
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    # 1. Construct a Command from the request payload
-    cmd = Command(
-        type=CommandType.CREATE_WORLD,
-        payload={"config": {"name": req.name}, "storage_uri": req.storage_uri, ...},
+    info = await cs.create_world(
+        ctx,
+        WorldConfig(name=req.name),
+        StorageConfig(uri=req.storage_uri) if req.storage_uri else None,
     )
-
-    # 2. Submit through the broker (RBAC + audit)
-    await cs.submit("__global__", cmd, ctx)
-
-    # 3. Apply (world lifecycle commands execute immediately)
-    world = await cs.apply_world_lifecycle(cmd)
-
-    # 4. Return response model
-    return WorldResponse(world_id=str(world.world_id), name=world.name, tick=0)
+    return WorldResponse(
+        world_id=str(info.world_id),
+        name=info.name,
+        tick=info.tick,
+    )
 ```
 
-The route does not contain business logic. It translates HTTP into a `Command`, submits it for governance, and returns the result. The service layer handles everything else.
+The route does not construct a lifecycle command or bypass the gate.
 
 ## CLI
 
-The CLI (`archetype` command) is a thin HTTP client built with Typer. It does not import the service layer.
+The CLI (`archetype` command) is a thin HTTP client.
 
 ```text
 archetype serve              Starts uvicorn with the FastAPI app
@@ -151,30 +139,27 @@ archetype world create       POST /worlds
 archetype world list         GET /worlds
 archetype world inspect      GET /worlds/{id}
 archetype world fork         POST /worlds/{id}/fork
-archetype world remove       DELETE /worlds/{id}
+archetype world destroy      DELETE /worlds/{id}
+archetype entity spawn       POST /worlds/{id}/entities
 archetype step               POST /worlds/{id}/step
 archetype run                POST /worlds/{id}/run
+archetype episode            POST /worlds/{id}/episode
+archetype rollout            POST /worlds/{id}/rollout
 archetype query              GET /worlds/{id}/state
 archetype history            GET /worlds/{id}/history
-archetype status             GET /worlds
+archetype processors list    GET /worlds/{id}/processors
+archetype hooks list         GET /worlds/{id}/hooks
+archetype resources list     GET /worlds/{id}/resources
 ```
 
-Each command creates a fresh `httpx.Client`, makes one request, and exits. The server URL defaults to `http://localhost:8000` and can be overridden with the `ARCHETYPE_URL` environment variable.
-
-See the [CLI Reference](../reference/cli.md) for full command documentation.
-
-### Why a Thin Client
-
-This design means:
-
-- **All worlds share one event loop.** The server process owns all simulation state. Multiple CLI invocations (or API clients) interact with the same worlds.
-- **The CLI is stateless.** No local state to manage, no import of heavy dependencies.
-- **Distributed access.** Point `ARCHETYPE_URL` at a remote server and the CLI works identically.
+The server URL defaults to `http://localhost:8000` and can be overridden with
+`ARCHETYPE_URL` or per command with `--url`. HTTP commands accept the developer
+auth shortcut `--role` / `-r` and the bearer-token option `--token`.
 
 ## Source Reference
 
 - App factory: `src/archetype/api/app.py`
 - Dependency injection: `src/archetype/api/deps.py`
 - Request/response models: `src/archetype/api/models.py`
-- Routes: `src/archetype/api/routes/worlds.py`, `commands.py`, `simulation.py`, `query.py`
+- Routes: `src/archetype/api/routes/`
 - CLI: `src/archetype/cli/main.py`

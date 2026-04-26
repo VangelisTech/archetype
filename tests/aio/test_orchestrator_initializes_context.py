@@ -1,13 +1,12 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
 from archetype.core.config import StorageConfig, WorldConfig
+from tests.conftest import make_world_service
 
 
 @pytest.mark.asyncio
 async def test_world_service_builds_context_once(tmp_path):
-    ws = WorldService(StorageService())
+    ws = make_world_service()
     try:
         cfg = WorldConfig(name="w1")
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")

@@ -151,18 +151,19 @@ async with ArchetypeRuntime() as runtime:
 
 ## Fork-Based Comparison
 
-Clone the world, swap config, run independently:
+Clone the world and run an independent branch:
 
 ```python
 fork = await world.fork(
     "strict-eval",
     storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
 )
-fork.resources.insert(SamplingConfig(min_turns=8))
 await fork.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
 ```
 
-Both worlds persist to the same storage. Query either one at any tick.
+Forks share resource instances by default. For a strict-vs-lenient comparison, stage distinct resources on separate worlds or attach replacement resources through the gated resource-management path before running the fork.
+
+Both worlds persist to the same storage by default, partitioned by `world_id`. Query either one at any tick.
 
 ## When to Use
 

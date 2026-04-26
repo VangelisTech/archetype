@@ -1,10 +1,9 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from tests.conftest import make_world_service
 
 
 class Foo(Component):
@@ -30,7 +29,7 @@ class BadProc(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_async_world_processor_error_is_logged_not_raised(tmp_path, caplog):
     """If processors raise, system logs error and world continues (current design)."""
-    ws = WorldService(StorageService())
+    ws = make_world_service()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()

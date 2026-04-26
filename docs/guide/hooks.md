@@ -62,6 +62,7 @@ For a complete runnable example, see
 | `OnDespawn` | `world_id`, `entity_id` | After `remove_entity()` cancels a pending spawn or queues a despawn row |
 | `OnComponentAdded` | `world_id`, `entity_id`, `components` | After `add_components()` moves the entity to a wider archetype |
 | `OnComponentRemoved` | `world_id`, `entity_id`, `component_types` | After `remove_components()` moves the entity to a narrower archetype |
+| `OnDestroy` | `world_id` | Before in-memory world cleanup begins |
 
 Payloads carry `world_id`, not the world object. A handler that needs the world
 should close over it at registration time.
@@ -134,6 +135,8 @@ not reach into `world._hooks` or private fire methods.
 
 ## Forking
 
-Forked worlds do not inherit source-world hooks. A hook closes over process-local
-state and belongs to the specific world where it was registered. Register new
-hooks on the fork when needed.
+Forked worlds inherit hook registrations that exist at fork time. New
+registrations on either side after the fork do not propagate.
+
+Handlers often close over process-local state, so be intentional about hooks
+that are copied into forks.

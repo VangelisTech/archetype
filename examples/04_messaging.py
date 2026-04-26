@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""
-Messaging Example: Resources, MESSAGE Commands, and Hooks
+# Copyright 2025 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
 
-Demonstrates the three new features:
+"""
+Messaging Example: Resources, Shared State, and Hooks
+=====================================================
+
+Demonstrates:
 1. Resources - Type-safe dependency injection for shared state
-2. MESSAGE CommandType - Agent-to-agent communication via broker
+2. Shared mailbox resource - Agent-to-agent communication via a resource processors read/write
 3. Hooks - Lifecycle callbacks for observability
 
 Run: uv run python examples/04_messaging.py
@@ -12,14 +16,12 @@ Run: uv run python examples/04_messaging.py
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import daft
 from daft import DataFrame, col
 
 from archetype import ArchetypeRuntime
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -52,7 +54,7 @@ class Outbox(Component):
 
 
 # =============================================================================
-# Resource: Simulation Configuration
+# Resources
 # =============================================================================
 
 
@@ -65,10 +67,11 @@ class SimConfig:
 
 
 @dataclass
-class BrokerChannel:
-    """Shared broker queue key for the demo."""
+class Mailbox:
+    """Shared mailbox resource: processors deposit messages here, then drain them."""
 
-    key: str = "messaging-demo"
+    pending: list[dict] = field(default_factory=list)
+    delivered: int = 0
 
 
 # =============================================================================
@@ -78,8 +81,7 @@ class BrokerChannel:
 
 class GreetingProcessor(AsyncProcessor):
     """
-    Agents send greetings to each other via the MESSAGE command.
-    Demonstrates Resources access for broker and config.
+    Agents send greetings to each other via the shared Mailbox resource.
     """
 
     components = (AgentState, Outbox)
@@ -92,9 +94,8 @@ class GreetingProcessor(AsyncProcessor):
         tick: int,
         **kwargs,
     ) -> DataFrame:
-        """Generate greeting messages and enqueue via broker."""
-        broker = resources.require(CommandBroker)
-        channel = resources.require(BrokerChannel).key
+        """Generate greeting messages and deposit into the shared Mailbox."""
+        mailbox = resources.require(Mailbox)
         resources.require(SimConfig)  # validate config exists
 
         # Collect entities to process
@@ -104,25 +105,22 @@ class GreetingProcessor(AsyncProcessor):
         for sender in rows:
             for receiver in rows:
                 if sender["entity_id"] != receiver["entity_id"]:
-                    # Enqueue MESSAGE command via broker
-                    cmd = Command(
-                        type=CommandType.MESSAGE,
-                        tick=tick,
-                        payload={
+                    mailbox.pending.append(
+                        {
                             "sender_id": sender["entity_id"],
                             "receiver_id": receiver["entity_id"],
                             "content": f"Hello from {sender['agentstate__name']}!",
-                        },
+                            "tick": tick,
+                        }
                     )
-                    await broker.enqueue(channel, cmd)
 
         return df
 
 
 class MessageRealizationProcessor(AsyncProcessor):
     """
-    Realizes MESSAGE commands from the broker into agent Inboxes.
-    This runs early (low priority) to populate inboxes before other processors.
+    Realizes messages from the shared Mailbox into agent Inboxes.
+    Runs early (low priority) to populate inboxes before other processors.
     """
 
     components = (Inbox,)
@@ -135,30 +133,30 @@ class MessageRealizationProcessor(AsyncProcessor):
         tick: int,
         **kwargs,
     ) -> DataFrame:
-        """Drain MESSAGE commands from broker and populate inboxes."""
-        broker = resources.require(CommandBroker)
-        channel = resources.require(BrokerChannel).key
+        """Drain Mailbox and populate inboxes."""
+        mailbox = resources.require(Mailbox)
         resources.require(SimConfig)  # validate config exists
 
-        # Dequeue all pending MESSAGE commands
-        cmds = await broker.dequeue(channel, max_items=1000)
-        message_cmds = [c for c in cmds if c.type == CommandType.MESSAGE]
-
-        if not message_cmds:
+        if not mailbox.pending:
             return df
+
+        # Drain all pending messages
+        messages = mailbox.pending[:]
+        mailbox.pending.clear()
+        mailbox.delivered += len(messages)
 
         # Group messages by receiver (as JSON strings)
         messages_by_receiver: dict[int, list[str]] = {}
-        for cmd in message_cmds:
-            receiver_id = cmd.payload["receiver_id"]
-            msg = json.dumps(
+        for msg in messages:
+            receiver_id = msg["receiver_id"]
+            encoded = json.dumps(
                 {
-                    "sender_id": cmd.payload["sender_id"],
-                    "content": cmd.payload["content"],
-                    "tick": tick,
+                    "sender_id": msg["sender_id"],
+                    "content": msg["content"],
+                    "tick": msg["tick"],
                 }
             )
-            messages_by_receiver.setdefault(receiver_id, []).append(msg)
+            messages_by_receiver.setdefault(receiver_id, []).append(encoded)
 
         # Update inboxes via batch UDF
         @daft.func.batch(return_dtype=daft.DataType.list(daft.DataType.string()))
@@ -232,8 +230,18 @@ class MoodProcessor(AsyncProcessor):
 
 async def main():
     print("=" * 60)
-    print("Archetype Messaging Demo: Resources + MESSAGE + Hooks")
+    print("Archetype Messaging Demo: Resources + Shared Mailbox + Hooks")
     print("=" * 60)
+
+    mailbox = Mailbox()
+
+    async def on_pre_tick(event: PreTick) -> None:
+        print(f"\n-> Pre-tick {event.tick}: Starting processing...")
+
+    async def on_post_tick(event: PostTick) -> None:
+        print(f"<- Post-tick {event.tick}: Completed!")
+        print(f"   Messages delivered so far: {mailbox.delivered}")
+        print(f"   Messages pending in mailbox: {len(mailbox.pending)}")
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
@@ -246,29 +254,20 @@ async def main():
             ],
             resources=[
                 SimConfig(greeting_boost=15.0),
-                BrokerChannel(),
+                mailbox,
+            ],
+            hooks=[
+                (PreTick, on_pre_tick),
+                (PostTick, on_post_tick),
             ],
         )
 
-        async def on_pre_tick(event: PreTick) -> None:
-            print(f"\n-> Pre-tick {event.tick}: Starting processing...")
-
-        async def on_post_tick(event: PostTick) -> None:
-            print(f"<- Post-tick {event.tick}: Completed!")
-            broker = world.resources.require(CommandBroker)
-            channel = world.resources.require(BrokerChannel).key
-            pending = await broker.get_pending_count(channel)
-            print(f"   Messages pending in broker: {pending}")
-
-        world.add_hook(PreTick, on_pre_tick)
-        world.add_hook(PostTick, on_post_tick)
-
-        print("\n✓ Runtime world staged with resources, hooks, and processors")
+        print("\n[ok] Runtime world staged with resources, hooks, and processors")
 
         for name in ("Alice", "Bob", "Charlie"):
             await world.spawn(AgentState(name=name), Inbox(), Outbox())
 
-        print("✓ Created 3 agents: Alice, Bob, Charlie")
+        print("[ok] Created 3 agents: Alice, Bob, Charlie")
 
         print("\n" + "-" * 60)
         print("Running 3 ticks...")
@@ -301,21 +300,7 @@ async def main():
             msgs = row.get("inbox__messages") or []
             print(f"  {row['agentstate__name']}: {len(msgs)} messages received")
 
-        print("\n" + "-" * 60)
-        print("Broker Message History (last 10)")
-        print("-" * 60)
-        broker = world.resources.require(CommandBroker)
-        channel = world.resources.require(BrokerChannel).key
-        history = await broker.get_history(channel, limit=10)
-        for cmd in history[-10:]:
-            if cmd.type == CommandType.MESSAGE:
-                content = cmd.payload["content"]
-                if len(content) > 25:
-                    content = content[:25] + "..."
-                print(
-                    f"  tick={cmd.tick}: agent {cmd.payload['sender_id']} "
-                    f"-> agent {cmd.payload['receiver_id']}: {content}"
-                )
+        print(f"\nTotal messages delivered: {mailbox.delivered}")
 
 
 if __name__ == "__main__":

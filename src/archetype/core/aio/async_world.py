@@ -21,18 +21,17 @@ import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
-from uuid_utils import UUID  # noqa: F401 imported for type hints
+from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import RunConfig
 from archetype.core.hooks import (
     AsyncHookHandler,
     FireMode,
     HookEvent,
     HookHandle,
-    HookRegistry,
     OnComponentAdded,
     OnComponentRemoved,
     OnDespawn,
@@ -42,12 +41,13 @@ from archetype.core.hooks import (
 )
 from archetype.core.interfaces import (
     ArchetypeSignature,
+    iAsyncHookBus,
     iAsyncQueryManager,
     iAsyncSystem,
     iAsyncUpdateManager,
     iAsyncWorld,
+    iResourceContainer,
 )
-from archetype.core.resources import Resources
 
 logger = getLogger(__name__)
 
@@ -57,43 +57,52 @@ _HookEventT = TypeVar("_HookEventT", bound=HookEvent)
 class AsyncWorld(iAsyncWorld):
     def __init__(
         self,
-        world_config: WorldConfig,
+        *,
+        world_id: str,
+        name: str,
         querier: iAsyncQueryManager,
         updater: iAsyncUpdateManager,
         system: iAsyncSystem,
+        resources: iResourceContainer,
+        hooks: iAsyncHookBus,
+        run_id: str | None = None,
+        tick: int = 0,
+        next_entity_id: int = 1,
+        entity2sig: dict[int, ArchetypeSignature] | None = None,
+        spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] | None = None,
+        despawn_cache: dict[ArchetypeSignature, list[int]] | None = None,
     ):
         """
         Initialize the fully parallel async world.
         """
         # World Properties
-        self.name = world_config.name
-        self.world_id = world_config.world_id
+        self.name = name
+        self.world_id = world_id
 
         # Dependencies
-        self.querier = querier
-        self.updater = updater
-        self.system = system
+        self.querier = querier  # Querier: read-only data access
+        self.updater = updater  # Updater: write-only data access
+        self.system = system  # System: processor executor
+        self.resources = resources  # Resources: type-safe DI container for shared state
+        self.hooks = hooks  # Hooks: typed lifecycle callbacks
 
-        # Resources: type-safe DI container for shared state
-        self.resources = Resources()
+        # State
+        self.run_id = run_id or str(uuid7())
+        self.tick = tick
+        self.next_entity_id = next_entity_id
+        self.entity2sig = entity2sig if entity2sig is not None else {}
+        self.spawn_cache = spawn_cache if spawn_cache is not None else {}
+        self.despawn_cache = despawn_cache if despawn_cache is not None else {}
 
-        # Hooks: typed lifecycle callbacks for observability. See
-        # archetype.core.hooks for the event catalogue.
-        self._hooks = HookRegistry()
-
-        # Internal State
-        self.tick = 0
-        self.run_id: str | None = None
-        self._next_entity_id = 1
-        self._entity2sig: dict[int, ArchetypeSignature] = {}
-        self._spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] = {}
-        self._despawn_cache: dict[ArchetypeSignature, list[int]] = {}
+    @property
+    def _entity2sig(self):
+        """Compatibility alias for pre-refactor evals and diagnostics."""
+        return self.entity2sig
 
     async def run(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Runs the world for the given run configuration.
         """
-
         # Pin run_id on first invocation; subsequent calls keep the existing
         # run_id so cross-step reads/writes remain continuous.
         if self.run_id is None:
@@ -125,7 +134,7 @@ class AsyncWorld(iAsyncWorld):
         debug_handles = self._install_step_debug_hooks() if run_config.debug else ()
         try:
             # Fire pre-tick hooks
-            await self._hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
+            await self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
             sigs = sorted(self.active_signatures, key=Archetype.get_name)
 
@@ -145,7 +154,7 @@ class AsyncWorld(iAsyncWorld):
             self.tick += 1
 
             # Fire post-tick hooks
-            await self._hooks.fire(
+            await self.hooks.fire(
                 PostTick(world_id=self.world_id, tick=self.tick, results=result_frames)
             )
         finally:
@@ -156,23 +165,27 @@ class AsyncWorld(iAsyncWorld):
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
     ) -> DataFrame:
         "Atomic sequence of a world step with a dedicated execution and materialization helper for future remote operators."
+        import logfire
 
-        df = await self.query_archetype(
-            sig=sig,
-            run_id=self.run_id,
-            ticks=[self.tick - 1],
-            entity_ids=None,
-            components=None,
-        )
+        sig_name = Archetype.get_name(sig)
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self.materialize_mutations(df, sig)
+        with logfire.span("world.query", sig=sig_name, tick=self.tick):
+            df = await self.query_archetype(
+                sig=sig,
+                run_id=self.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=None,
+                components=None,
+            )
 
-        # 3. Execute Processors for this archetype via system
-        df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+        with logfire.span("world.materialize", sig=sig_name, tick=self.tick):
+            df = self.materialize_mutations(df, sig)
 
-        # 4. Update (returns materialized df with tick/world/run/entity_id set)
-        df_mat = await self.update(df, sig, run_config)
+        with logfire.span("world.execute", sig=sig_name, tick=self.tick):
+            df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+
+        with logfire.span("world.update", sig=sig_name, tick=self.tick):
+            df_mat = await self.update(df, sig, run_config)
 
         return df_mat
 
@@ -183,16 +196,16 @@ class AsyncWorld(iAsyncWorld):
     @property
     def active_signatures(self) -> set[ArchetypeSignature]:
         """Get the union of all archetypes that need processing this tick."""
-        active_sigs = set(self._entity2sig.values())
-        spawned_sigs = set(self._spawn_cache.keys())
-        despawn_sigs = set(self._despawn_cache.keys())
+        active_sigs = set(self.entity2sig.values())
+        spawned_sigs = set(self.spawn_cache.keys())
+        despawn_sigs = set(self.despawn_cache.keys())
         return active_sigs | spawned_sigs | despawn_sigs
 
     def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
         # Handle Despawns
-        if self._despawn_cache.get(sig):
+        if self.despawn_cache.get(sig):
             entities_to_despawn = list(
-                set(self._despawn_cache[sig])
+                set(self.despawn_cache[sig])
             )  # Dedupe and convert to list for Daft
             df = df.with_column(
                 "is_active",
@@ -201,13 +214,13 @@ class AsyncWorld(iAsyncWorld):
                 ),
             )
             # Clear Cache
-            self._despawn_cache[sig] = []
+            self.despawn_cache[sig] = []
 
         # Handle Spawns
-        if self._spawn_cache.get(sig):
+        if self.spawn_cache.get(sig):
             # Dedupe duplicate spawns, prioritizing "most recent cmd" (last write wins)
             # Dict keeps last value per key, so iterate forward to keep latest
-            rows = list({row["entity_id"]: row for row in self._spawn_cache[sig]}.values())
+            rows = list({row["entity_id"]: row for row in self.spawn_cache[sig]}.values())
 
             # Convert list of dicts to arrow table and eventually daft df
             pyarrow_schema = Archetype.get_archetype_schema(sig)
@@ -215,7 +228,7 @@ class AsyncWorld(iAsyncWorld):
             spawns_df = daft.from_arrow(arrow_table)
 
             df = df.concat(spawns_df)
-            self._spawn_cache[sig] = []
+            self.spawn_cache[sig] = []
 
         return df
 
@@ -273,8 +286,8 @@ class AsyncWorld(iAsyncWorld):
         return row_dict
 
     def _clear_caches(self, sig: ArchetypeSignature):
-        self._spawn_cache.pop(sig, None)
-        self._despawn_cache.pop(sig, None)
+        self.spawn_cache.pop(sig, None)
+        self.despawn_cache.pop(sig, None)
 
     # ---------------------------------------------------------------------
     # World Mutation Commands
@@ -282,32 +295,22 @@ class AsyncWorld(iAsyncWorld):
 
     async def create_entity(self, components: list[Component]) -> int:
         """Spawn a new entity with an auto-assigned id. Fires ``OnSpawn``."""
-        entity_id = self._next_entity_id
-        self._next_entity_id += 1
+        entity_id = self.next_entity_id
+        self.next_entity_id += 1
         await self._register_entity(entity_id, components)
         return entity_id
-
-    async def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
-        """Spawn with a pre-reserved entity id, as used by the service-layer
-        ``CommandService.submit_spawn`` flow. Fires ``OnSpawn``.
-
-        Raises ``ValueError`` if the id is already live.
-        """
-        if entity_id in self._entity2sig:
-            raise ValueError(f"Entity {entity_id} already exists in world {self.world_id}")
-        self._next_entity_id = max(self._next_entity_id, entity_id + 1)
-        await self._register_entity(entity_id, components)
 
     async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
-        self._entity2sig[entity_id] = sig
-        # Placeholder run_id; updater stamps correct run_id during persist.
-        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id="")
-        self._spawn_cache.setdefault(sig, []).append(row_dict)
-        await self._hooks.fire(
+        self.entity2sig[entity_id] = sig
+        row_dict = Archetype.to_row_dict(
+            entity_id, self.tick, components, self.world_id, run_id=self.run_id
+        )
+        self.spawn_cache.setdefault(sig, []).append(row_dict)
+        await self.hooks.fire(
             OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))
         )
 
@@ -315,7 +318,7 @@ class AsyncWorld(iAsyncWorld):
         """Despawn an entity. Cancels a pending same-tick spawn if present,
         otherwise queues a despawn row for the current tick. Fires
         ``OnDespawn`` iff the entity existed."""
-        sig = self._entity2sig.pop(entity_id, None)
+        sig = self.entity2sig.pop(entity_id, None)
         if sig is None:
             logger.warning(
                 "World %s (%s): Entity Removal Failed: No entity: %s",
@@ -325,24 +328,45 @@ class AsyncWorld(iAsyncWorld):
             )
             return
 
-        pending = self._spawn_cache.get(sig)
+        pending = self.spawn_cache.get(sig)
         if pending:
             remaining = [row for row in pending if row["entity_id"] != entity_id]
             if len(remaining) != len(pending):
                 if remaining:
-                    self._spawn_cache[sig] = remaining
+                    self.spawn_cache[sig] = remaining
                 else:
-                    del self._spawn_cache[sig]
-                await self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
+                    del self.spawn_cache[sig]
+                await self.hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
                 return
 
-        self._despawn_cache.setdefault(sig, []).append(entity_id)
-        await self._hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
+        self.despawn_cache.setdefault(sig, []).append(entity_id)
+        await self.hooks.fire(OnDespawn(world_id=self.world_id, entity_id=entity_id))
+
+    async def update_entity(self, entity_id: int, components: list[Component]) -> None:
+        """Overlay component values on an existing entity without changing its archetype.
+
+        The entity keeps its current signature. Only the supplied component
+        fields are overwritten. Used for value mutations (e.g., Position.x += 1)
+        as distinct from add_components which extends the signature.
+        """
+        sig = self.entity2sig.get(entity_id)
+        if sig is None:
+            logger.warning("update_entity: entity %s not found", entity_id)
+            return
+
+        row = await self._move_entity(entity_id, sig, sig, components)
+        if not row:
+            logger.warning("update_entity: entity %s has no prior row", entity_id)
+            return
+
+        # Mark prior row inactive, insert updated row under same sig
+        self.despawn_cache.setdefault(sig, []).append(entity_id)
+        self.spawn_cache.setdefault(sig, []).append(row)
 
     async def add_components(self, entity_id: int, components: list[Component]) -> None:
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""
-        old_sig = self._entity2sig.get(entity_id)
+        old_sig = self.entity2sig.get(entity_id)
         if not old_sig:
             logger.warning("add_components: entity %s not found", entity_id)
             return
@@ -355,15 +379,15 @@ class AsyncWorld(iAsyncWorld):
         row = await self._move_entity(entity_id, old_sig, new_sig, components)
 
         # 1) mark *old row* inactive
-        self._despawn_cache.setdefault(old_sig, []).append(entity_id)
+        self.despawn_cache.setdefault(old_sig, []).append(entity_id)
 
         # 2) row to *insert* under new signature
-        self._spawn_cache.setdefault(new_sig, []).append(row)
+        self.spawn_cache.setdefault(new_sig, []).append(row)
 
         # 3) update bookkeeping – atomically
-        self._entity2sig[entity_id] = new_sig
+        self.entity2sig[entity_id] = new_sig
 
-        await self._hooks.fire(
+        await self.hooks.fire(
             OnComponentAdded(
                 world_id=self.world_id,
                 entity_id=entity_id,
@@ -376,7 +400,7 @@ class AsyncWorld(iAsyncWorld):
     ) -> None:
         """Detach components from an existing entity. Fires
         ``OnComponentRemoved`` iff the signature actually changes."""
-        old_sig = self._entity2sig.get(entity_id)
+        old_sig = self.entity2sig.get(entity_id)
         if old_sig is None:
             return
 
@@ -388,11 +412,11 @@ class AsyncWorld(iAsyncWorld):
             entity_id, old_sig, new_sig, []
         )  # remove ≡ keep remaining columns
 
-        self._despawn_cache.setdefault(old_sig, []).append(entity_id)
-        self._spawn_cache.setdefault(new_sig, []).append(row)
-        self._entity2sig[entity_id] = new_sig
+        self.despawn_cache.setdefault(old_sig, []).append(entity_id)
+        self.spawn_cache.setdefault(new_sig, []).append(row)
+        self.entity2sig[entity_id] = new_sig
 
-        await self._hooks.fire(
+        await self.hooks.fire(
             OnComponentRemoved(
                 world_id=self.world_id,
                 entity_id=entity_id,
@@ -464,40 +488,18 @@ class AsyncWorld(iAsyncWorld):
         components: list[type[Component]],
         entity_ids: list[int] | None = None,
     ) -> DataFrame:
+        """Query all active entities that contain the requested component types.
+
+        Passthrough to the querier's query_components method.
         """
-        Query all active entities that contain at least the provided component types,
-        unioning rows across all matching archetype signatures.
-
-        Returns a DataFrame projected to the provided components' schema.
-        """
-        required_types = set(components)
-
-        # Build output schema directly from component types
-        temp_sig = tuple(sorted(components, key=lambda t: t.__name__))
-        schema = Archetype.get_archetype_schema(temp_sig)
-        df = daft.from_arrow(pa.Table.from_batches([], schema=schema))
-        # Discover all archetype signatures that contain the requested components.
-        all_sigs = await self.querier.list_signatures()
-        matching_sigs = [sig for sig in all_sigs if required_types.issubset(set(sig))]
-
-        # Read state at the latest committed tick (the previous tick to the one being processed).
         read_tick = max(self.tick - 1, 0)
-
-        # Project each matching archetype to the requested schema and union.
-        proj_cols = schema.names
-        for sig in matching_sigs:
-            sig_df = await self.querier.query_archetype(
-                sig=sig,
-                world_id=self.world_id,
-                run_id=self.run_id,
-                ticks=[read_tick],
-            )
-            df = df.concat(sig_df.select(*proj_cols))
-
-        if entity_ids:
-            df = df.where(col("entity_id").is_in(entity_ids))
-
-        return df
+        return await self.querier.query_components(
+            components=components,
+            world_id=self.world_id,
+            run_id=self.run_id,
+            ticks=[read_tick],
+            entity_ids=entity_ids,
+        )
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
         """
@@ -550,7 +552,7 @@ class AsyncWorld(iAsyncWorld):
             # ... later ...
             world.remove_hook(handle)
         """
-        return self._hooks.add(event_type, fn, mode=mode)
+        return self.hooks.add(event_type, fn, mode=mode)
 
     def remove_hook(self, handle: HookHandle) -> None:
         """Unregister a hook by handle.
@@ -558,7 +560,7 @@ class AsyncWorld(iAsyncWorld):
         The operation is idempotent. Passing a handle that was already removed,
         or a handle minted by another world, is a no-op.
         """
-        self._hooks.remove(handle)
+        self.hooks.remove(handle)
 
     def _install_step_debug_hooks(self) -> tuple[HookHandle, HookHandle]:
         """Install temporary hooks for RunConfig(debug=True) step logging."""
@@ -567,9 +569,9 @@ class AsyncWorld(iAsyncWorld):
             self._debug_log(
                 "tick_start",
                 tick=event.tick,
-                active_entities=len(self._entity2sig),
-                spawn_pending=sum(len(v) for v in self._spawn_cache.values()),
-                despawn_pending=sum(len(v) for v in self._despawn_cache.values()),
+                active_entities=len(self.entity2sig),
+                spawn_pending=sum(len(v) for v in self.spawn_cache.values()),
+                despawn_pending=sum(len(v) for v in self.despawn_cache.values()),
             )
             self._debug_log(
                 "archetypes_processing",
