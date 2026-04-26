@@ -295,7 +295,15 @@ class RuntimeWorld:
     # ── Queries ───────────────────────────────────────────────────────────
 
     async def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
-        """Query all entities that have the requested component types."""
+        """Query all entities that have the requested component types.
+
+        Returns the full append-only history (all ticks) for matching entities.
+        To get current state only, filter the result:
+
+            df = await world.query(Position)
+            info = await world.info()
+            current = df.where(col("tick") == info.tick - 1)
+        """
         async with self._state.op_lock:
             wid = await self._ensure_id()
             info = await self._gate.get_world_info(self._ctx, wid)
