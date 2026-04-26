@@ -22,9 +22,8 @@ from archetype.core.interfaces import ArchetypeSignature
 class QueryService:
     """Direct read path to storage.
 
-    Depends only on StorageService. Internally instantiates its own
-    querier per store. Does not depend on WorldService — queries are
-    against the store, not against live worlds.
+    Depends only on StorageService. Resolves a store per query via
+    get_or_create_store, so any historical storage location is reachable.
     """
 
     def __init__(self, storage_service: StorageService) -> None:
@@ -44,7 +43,9 @@ class QueryService:
         """Query an archetype table by signature, world, and run.
 
         Reads directly from the store. Works for any historical world/run,
-        not just worlds that are currently live.
+        not just worlds that are currently live. The store is resolved via
+        get_or_create_store, so repeated calls with the same config reuse
+        the cached instance.
         """
         store = await self._storage_service.get_or_create_store(
             storage_config or StorageConfig()
