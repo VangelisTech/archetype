@@ -1,15 +1,14 @@
 import pytest
 import uuid_utils as uuid
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from tests.conftest import make_world_orchestrator
 from archetype.core.config import StorageConfig, WorldConfig
 
 
 @pytest.mark.asyncio
 async def test_world_service_duplicate_name_raises(tmp_path):
     """Creating two worlds with the same name should raise to prevent ambiguous name lookups."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
@@ -23,7 +22,7 @@ async def test_world_service_duplicate_name_raises(tmp_path):
 async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tmp_path):
     """A failed duplicate-name create_world does not leave a
     half-built world in _worlds (previously inserted before the name check)."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
@@ -49,7 +48,7 @@ async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tm
 async def test_world_service_repeated_duplicate_name_creates_do_not_grow_worlds(tmp_path):
     """Repeated failing duplicate-name create_world calls
     not accumulate worlds in the in-memory registry."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
@@ -66,7 +65,7 @@ async def test_world_service_repeated_duplicate_name_creates_do_not_grow_worlds(
 @pytest.mark.asyncio
 async def test_world_service_getters_missing_keys_raise(tmp_path):
     """Accessing non-existent worlds by name and id should raise KeyError with a clear message."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         with pytest.raises(KeyError):
             ws.get_world_by_name("missing")
@@ -79,7 +78,7 @@ async def test_world_service_getters_missing_keys_raise(tmp_path):
 @pytest.mark.asyncio
 async def test_world_service_removal_clears_name_mapping_and_allows_reuse(tmp_path):
     """Removing a world by id should remove its name mapping so the same name can be reused."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store3"), namespace="ns")
         w = await ws.create_world(WorldConfig(name="cycle"), storage_config=storage)
@@ -97,7 +96,7 @@ async def test_world_service_removal_clears_name_mapping_and_allows_reuse(tmp_pa
 @pytest.mark.asyncio
 async def test_world_service_remove_nonexistent_is_noop(tmp_path):
     """Removing a world that does not exist should be a no-op (no exception)."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         await ws.remove_world(uuid.uuid7())
     finally:
@@ -107,7 +106,7 @@ async def test_world_service_remove_nonexistent_is_noop(tmp_path):
 @pytest.mark.asyncio
 async def test_world_service_allows_multiple_worlds_without_names(tmp_path):
     """Creating worlds with name=None should not clash and both should be listed."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store4"), namespace="ns")
         w1 = await ws.create_world(WorldConfig(), storage_config=storage)

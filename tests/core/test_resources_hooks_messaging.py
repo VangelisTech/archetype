@@ -25,7 +25,7 @@ from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
-from archetype.core.hooks import HookEvent, OnDespawn, OnSpawn, PostTick, PreTick
+from archetype.core.hooks import HookEvent, HookRegistry, OnDespawn, OnSpawn, PostTick, PreTick
 from archetype.core.resources import Resources
 
 # =============================================================================
@@ -119,9 +119,14 @@ async def world():
     """Create a minimal async world for testing."""
     querier = InMemoryQuerier()
     updater = InMemoryUpdater(querier)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="test_world")
-    return AsyncWorld(wcfg, querier, updater, system)
+    return AsyncWorld(
+        config=WorldConfig(name="test_world"),
+        querier=querier,
+        updater=updater,
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
 
 # =============================================================================
@@ -344,7 +349,12 @@ class TestHooks:
         other_querier = InMemoryQuerier()
         other_updater = InMemoryUpdater(other_querier)
         other = AsyncWorld(
-            WorldConfig(name="other_world"), other_querier, other_updater, AsyncSystem()
+            config=WorldConfig(name="other_world"),
+            querier=other_querier,
+            updater=other_updater,
+            system=AsyncSystem(),
+            resources=Resources(),
+            hooks=HookRegistry(),
         )
 
         counts = {"one": 0, "two": 0}
@@ -482,7 +492,7 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # Verify - x should be 0 + 100 = 100
-        for sig in set(world._entity2sig.values()):
+        for sig in set(world.entity2sig.values()):
             df = await world.querier.query_archetype(
                 sig=sig,
                 world_id=world.world_id,
@@ -505,7 +515,7 @@ class TestResourcesInProcessor:
         await world.run(rc)
 
         # x should be unchanged since no config
-        for sig in set(world._entity2sig.values()):
+        for sig in set(world.entity2sig.values()):
             df = await world.querier.query_archetype(
                 sig=sig,
                 world_id=world.world_id,
@@ -640,8 +650,14 @@ class TestIntegration:
         querier = InMemoryQuerier()
         updater = InMemoryUpdater(querier)
         system = AsyncSystem()
-        wcfg = WorldConfig(name="integration_world")
-        world = AsyncWorld(wcfg, querier, updater, system)
+        world = AsyncWorld(
+            config=WorldConfig(name="integration_world"),
+            querier=querier,
+            updater=updater,
+            system=system,
+            resources=Resources(),
+            hooks=HookRegistry(),
+        )
 
         broker = CommandBroker()
         world.resources.insert(broker)

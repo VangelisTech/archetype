@@ -12,6 +12,8 @@ from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
 
 
 class Position(Component):
@@ -32,12 +34,12 @@ class Meta(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=(request.param == "lancedb"))
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
 
     if request.param == "async":
-        store = AsyncStore(context)
+        store = AsyncStore(context.session, io_config=context.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context)
+        base = AsyncStore(context.session, io_config=context.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
@@ -58,11 +60,14 @@ async def store_backend(request, tmp_path):
 
 @pytest_asyncio.fixture()
 async def world(store_backend):
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w")
-    return AsyncWorld(wcfg, querier, updater, system)
+    return AsyncWorld(
+        config=WorldConfig(name="w"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
 
 @pytest.mark.asyncio
@@ -152,9 +157,9 @@ async def test_remove_entity_cancels_pending_same_tick_spawn(world):
     e1 = await world.create_entity([Position(x=1, y=2)])
     await world.remove_entity(e1)
 
-    assert sig not in world._spawn_cache
-    assert e1 not in world._entity2sig
-    assert e1 not in world._despawn_cache.get(sig, [])
+    assert sig not in world.spawn_cache
+    assert e1 not in world.entity2sig
+    assert e1 not in world.despawn_cache.get(sig, [])
 
 
 @pytest.mark.asyncio
@@ -167,8 +172,8 @@ async def test_remove_entity_schedules_despawn_after_spawn_materialized(world):
 
     await world.remove_entity(e1)
 
-    assert sig in world._despawn_cache
-    assert e1 in world._despawn_cache[sig]
+    assert sig in world.despawn_cache
+    assert e1 in world.despawn_cache[sig]
 
 
 @pytest.mark.asyncio
@@ -184,7 +189,7 @@ async def test_step_after_same_tick_spawn_remove_leaves_no_active_row(world, sto
     rows = [r for r in df.collect().to_pylist() if r["entity_id"] == eid]
     assert all(not r["is_active"] for r in rows), f"cancelled entity persisted as active: {rows}"
 
-    for s in set(world._entity2sig.values()):
+    for s in set(world.entity2sig.values()):
         live_df = await world.querier.query_archetype(
             sig=s,
             world_id=world.world_id,

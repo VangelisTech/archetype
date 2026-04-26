@@ -28,7 +28,7 @@ class Stats(Component):
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
     storage = StorageConfig(uri=str(tmp_path), namespace="test", use_lancedb=False)
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
     store = AsyncStore(context)
     try:
         yield store

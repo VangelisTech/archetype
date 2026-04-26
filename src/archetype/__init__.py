@@ -80,12 +80,13 @@ __all__ = [
     "CacheConfig",
     "RunConfig",
     "WorldConfig",
-    # Sugar runtime
+    # Runtime
     "ArchetypeRuntime",
     "RuntimeWorld",
     "SyncArchetypeRuntime",
     "SyncRuntimeWorld",
     "run_sync",
+    "configure_session",
     # App layer services
     "CommandBroker",
     "WorldService",
@@ -122,7 +123,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "SyncStore": ("archetype.core", "SyncStore"),
     "AsyncStore": ("archetype.core", "AsyncStore"),
     "AsyncCachedStore": ("archetype.core", "AsyncCachedStore"),
-    "AsyncLancedbStore": ("archetype.app", "AsyncLancedbStore"),
+    "AsyncLancedbStore": ("archetype.core", "AsyncLancedbStore"),
     "Store": ("archetype.core", "SyncStore"),
     # Query/update managers (and aliases)
     "QueryManager": ("archetype.core", "QueryManager"),
@@ -136,12 +137,13 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CacheConfig": ("archetype.core", "CacheConfig"),
     "RunConfig": ("archetype.core", "RunConfig"),
     "WorldConfig": ("archetype.core", "WorldConfig"),
-    # Sugar runtime
-    "ArchetypeRuntime": ("archetype.sugar", "ArchetypeRuntime"),
-    "RuntimeWorld": ("archetype.sugar", "RuntimeWorld"),
-    "SyncArchetypeRuntime": ("archetype.sugar", "SyncArchetypeRuntime"),
-    "SyncRuntimeWorld": ("archetype.sugar", "SyncRuntimeWorld"),
-    "run_sync": ("archetype.sugar", "run_sync"),
+    # Runtime
+    "ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime"),
+    "RuntimeWorld": ("archetype.runtime", "RuntimeWorld"),
+    "SyncArchetypeRuntime": ("archetype.runtime", "SyncArchetypeRuntime"),
+    "SyncRuntimeWorld": ("archetype.runtime", "SyncRuntimeWorld"),
+    "run_sync": ("archetype.runtime", "run_sync"),
+    "configure_session": ("archetype.runtime", "configure_session"),
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),

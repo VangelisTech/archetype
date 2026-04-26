@@ -15,6 +15,8 @@ from archetype.app.storage_service import StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import SyncHookRegistry
+from archetype.core.resources import Resources
 from archetype.core.sync import (
     QueryManager,
     SyncProcessor,
@@ -37,12 +39,19 @@ class Velocity(Component):
 
 def _make_sync_stack(tmp_path, name: str = "sync"):
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
-    ctx = StorageContextFactory.build(cfg)
+    ctx = StorageContextFactory().build(cfg)
     store = SyncStore(uri=ctx.uri, session=ctx.session, io_config=ctx.io_config)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
-    world = SyncWorld(WorldConfig(name=name), querier=querier, updater=updater, system=system)
+    world = SyncWorld(
+        config=WorldConfig(name=name),
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
+    )
     return store, querier, updater, system, world
 
 
@@ -405,7 +414,7 @@ def test_sync_world_materialize_mutations_prefers_latest_spawn_for_same_entity(t
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_spawn_dedupe")
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     base_df = _df_from_rows(sig, [])
-    world._spawn_cache[sig] = [
+    world.spawn_cache[sig] = [
         Archetype.to_row_dict(7, 0, [Position(x=1, y=1)], str(world.world_id), "run-a"),
         Archetype.to_row_dict(7, 0, [Position(x=9, y=9)], str(world.world_id), "run-a"),
     ]
@@ -443,7 +452,7 @@ def test_sync_world_materialize_mutations_marks_despawned_entities_inactive(tmp_
             }
         ],
     )
-    world._despawn_cache[sig] = [4, 4]
+    world.despawn_cache[sig] = [4, 4]
 
     rows = world._materialize_mutations(base_df, sig, RunConfig(num_steps=1)).collect().to_pylist()
 
@@ -506,14 +515,14 @@ def test_sync_world_add_and_remove_components_migrate_entity(tmp_path):
     world.step(rc)
     sig_with_velocity = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
     rows = _committed_rows(world, sig_with_velocity)
-    assert world._entity2sig[entity_id] == sig_with_velocity
+    assert world.entity2sig[entity_id] == sig_with_velocity
     assert rows[0]["velocity__vx"] == 5
 
     world.remove_components(entity_id, [Velocity])
     world.step(rc)
     sig_position = Archetype.sig_from_components([Position(x=0, y=0)])
     rows = _committed_rows(world, sig_position)
-    assert world._entity2sig[entity_id] == sig_position
+    assert world.entity2sig[entity_id] == sig_position
     assert rows[0]["position__x"] == 1
 
 
@@ -560,7 +569,9 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
     updater = Mock()
     system = SyncSystem()
     world = SyncWorld(
-        WorldConfig(name="query-forward"), querier=querier, updater=updater, system=system
+        config=WorldConfig(name="query-forward"),
+        querier=querier, updater=updater, system=system,
+        resources=Resources(), hooks=SyncHookRegistry(),
     )
     world.tick = 5
     rc = RunConfig(num_steps=1)
@@ -582,7 +593,7 @@ def test_sync_world_move_entity_returns_empty_when_source_row_missing(tmp_path):
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_missing_move")
     old_sig = Archetype.sig_from_components([Position(x=0, y=0)])
     new_sig = Archetype.sig_from_components([Position(x=0, y=0), Velocity(vx=0, vy=0)])
-    world._entity2sig[42] = old_sig
+    world.entity2sig[42] = old_sig
 
     world.query_archetype = lambda *args, **kwargs: _df_from_rows(old_sig, [])
     row = world._move_entity(42, old_sig, new_sig, [Velocity(vx=1, vy=1)])
@@ -597,7 +608,9 @@ def test_sync_world_update_uses_world_tick_by_default():
     updater = Mock(return_value=df)
     system = SyncSystem()
     world = SyncWorld(
-        WorldConfig(name="update-forward"), querier=querier, updater=updater, system=system
+        config=WorldConfig(name="update-forward"),
+        querier=querier, updater=updater, system=system,
+        resources=Resources(), hooks=SyncHookRegistry(),
     )
     world.tick = 11
     world.run_id = "pinned-run-id"

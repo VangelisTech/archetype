@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldOrchestrator, WorldService
 from archetype.core.aio import AsyncSystem
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig, WorldConfig
 
@@ -63,7 +63,7 @@ async def make_world(
       (this shares the StorageService and reduces setup overhead).
     - Defaults to a sane local StorageConfig if none is provided.
     """
-    orch = orchestrator or WorldService(StorageService())
+    orch = orchestrator or WorldOrchestrator(StorageService())
     world = await orch.create_world(
         config=WorldConfig(name=name),
         storage_config=storage or _default_storage(),

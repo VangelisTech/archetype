@@ -15,7 +15,7 @@ def test_storage_context_remote_uri_uses_meta_dir(tmp_path):
         shutil.rmtree(meta_dir)
 
     cfg = StorageConfig(uri=remote_uri, namespace="ns")
-    ctx = StorageContextFactory.build(cfg)
+    ctx = StorageContextFactory().build(cfg)
     # Local meta dir created
     assert pathlib.Path(".archetype_meta").exists()
     # Session initialized; namespace set
@@ -29,6 +29,6 @@ def test_storage_context_preserves_io_config_for_store_binding():
     io = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
 
     cfg = StorageConfig(uri="s3://bucket/prefix", namespace="ns", io_config=io)
-    ctx = StorageContextFactory.build(cfg)
+    ctx = StorageContextFactory().build(cfg)
     assert ctx.namespace == "ns"
     assert ctx.io_config is io

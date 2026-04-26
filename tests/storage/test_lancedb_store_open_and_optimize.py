@@ -2,7 +2,7 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -66,7 +66,7 @@ class OpenPathClient:
 @pytest.mark.asyncio
 async def test_lancedb_open_path_no_create_called(monkeypatch, tmp_path):
     """When table exists, store should open table and avoid create/index calls."""
-    uri, namespace = StorageService.resolve_location(
+    uri, namespace = StorageContextFactory().resolve_location(
         StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     )
     store = AsyncLancedbStore(uri, namespace)
@@ -80,7 +80,7 @@ async def test_lancedb_open_path_no_create_called(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
 
     # Append should open existing table and not attempt create
     arrow = pa.Table.from_pylist(
@@ -134,9 +134,9 @@ async def test_lancedb_optimize_multiple_tables(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
 
-    uri, namespace = StorageService.resolve_location(
+    uri, namespace = StorageContextFactory().resolve_location(
         StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
     )
     store = AsyncLancedbStore(uri, namespace)

@@ -14,7 +14,7 @@ class Demo(Component):
 @pytest.mark.asyncio
 async def test_async_store_ensure_table_create_failure(monkeypatch, tmp_path):
     """_ensure_table should wrap and raise an exception if table creation fails."""
-    ctx = StorageContextFactory.build(StorageConfig(uri=str(tmp_path / "wh"), namespace="ns"))
+    ctx = StorageContextFactory().build(StorageConfig(uri=str(tmp_path / "wh"), namespace="ns"))
     store = AsyncStore(ctx)
 
     def fail_create_table(name, source):

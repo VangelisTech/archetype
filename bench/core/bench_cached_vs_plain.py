@@ -19,7 +19,7 @@ from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig
-from archetype.core.runtime.storage import StorageContextFactory
+from archetype.app.storage_service import StorageContextFactory
 
 
 class Position(Component):
@@ -56,7 +56,7 @@ def build_rows(start_id: int, count: int, tick: int, world_id: str, run_id: str)
 
 async def make_store(uri: str, namespace: str, use_cache: bool, cache_cfg: CacheConfig | None):
     storage = StorageConfig(uri=uri, namespace=namespace)
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
     base = AsyncStore(context)
     if not use_cache:
         return base, AsyncQueryManager(base), AsyncUpdateManager(base)

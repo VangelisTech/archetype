@@ -30,13 +30,8 @@ from archetype.core.aio import (
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry, SyncHookRegistry
 from archetype.core.interfaces import (
-    AsyncWorldDescriptor,
-    SyncWorldDescriptor,
-    iAsyncHookBus,
+    iAsyncStore,
     iAsyncSystem,
-    iResourceContainer,
-    iSyncHookBus,
-    iSystem,
     iWorld,
 )
 from archetype.core.resources import Resources
@@ -90,148 +85,44 @@ class WorldRegistry:
         return self.load().get(str(world_id))
 
 
-class AsyncWorldFactory:
-    def __init__(self, storage_service: StorageService):
-        self._storage_service = storage_service
+class WorldFactory:
+    """Creates worlds from a store and config.
 
-    async def build_world_descriptor(
+    Resolves all world dependencies (querier, updater, system, resources, hooks)
+    and passes them flat to the world constructor.
+    """
+
+    def create_async_world(
         self,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-        *,
+        store: iAsyncStore,
+        config: WorldConfig,
         system: iAsyncSystem | None = None,
-        resources: iResourceContainer | None = None,
-        hooks: iAsyncHookBus | None = None,
-    ) -> AsyncWorldDescriptor:
-        store = await self._storage_service.create_store(storage_config, cache_config)
-        return AsyncWorldDescriptor(
+    ) -> AsyncWorld:
+        return AsyncWorld(
+            world_id=str(config.world_id),
+            name=config.name,
             querier=AsyncQueryManager(store=store),
             updater=AsyncUpdateManager(store=store),
             system=system or AsyncSystem(),
-            resources=resources or Resources(),
-            hooks=hooks or HookRegistry(),
+            resources=Resources(),
+            hooks=HookRegistry(),
         )
 
-    async def create_world(
+    def create_sync_world(
         self,
-        world_config: WorldConfig,
-        descriptor: AsyncWorldDescriptor,
-    ) -> iWorld:
-        world = AsyncWorld(
-            world_config=world_config,
-            querier=descriptor.querier,
-            updater=descriptor.updater,
-            system=descriptor.system,
-        )
-        world.resources = descriptor.resources
-        world._hooks = descriptor.hooks
-        return world
-
-
-class SyncWorldFactory:
-    def __init__(self, storage_service: StorageService):
-        self._storage_service = storage_service
-
-    def build_world_descriptor(
-        self,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-        *,
-        system: iSystem | None = None,
-        resources: iResourceContainer | None = None,
-        hooks: iSyncHookBus | None = None,
-    ) -> SyncWorldDescriptor:
-        uri, _, session = self._storage_service.build_session_with_metadata(storage_config)
-        from archetype.core.sync import SyncStore
-
-        store = SyncStore(uri, session, io_config=storage_config.io_config)
-        return SyncWorldDescriptor(
+        store,
+        config: WorldConfig,
+        system=None,
+    ) -> SyncWorld:
+        return SyncWorld(
+            world_id=str(config.world_id),
+            name=config.name,
             querier=QueryManager(store=store),
             updater=UpdateManager(store=store),
             system=system or SyncSystem(),
-            resources=resources or Resources(),
-            hooks=hooks or SyncHookRegistry(),
+            resources=Resources(),
+            hooks=SyncHookRegistry(),
         )
-
-    def create_sync_world(
-        self,
-        world_config: WorldConfig,
-        descriptor: SyncWorldDescriptor,
-    ) -> iWorld:
-        world = SyncWorld(
-            world_config=world_config,
-            querier=descriptor.querier,
-            updater=descriptor.updater,
-            system=descriptor.system,
-        )
-        world.resources = descriptor.resources
-        world._hooks = descriptor.hooks
-        return world
-
-
-class WorldFactory:
-    def __init__(self, storage_service: StorageService):
-        self.async_factory = AsyncWorldFactory(storage_service)
-        self.sync_factory = SyncWorldFactory(storage_service)
-
-    async def build_world_descriptor(
-        self,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-        *,
-        system: iAsyncSystem | None = None,
-        resources: iResourceContainer | None = None,
-        hooks: iAsyncHookBus | None = None,
-    ) -> AsyncWorldDescriptor:
-        return await self.async_factory.build_world_descriptor(
-            storage_config,
-            cache_config,
-            system=system,
-            resources=resources,
-            hooks=hooks,
-        )
-
-    async def create_world(
-        self,
-        world_config: WorldConfig,
-        storage_config: StorageConfig | None = None,
-        cache_config: CacheConfig | None = None,
-        system: iAsyncSystem | None = None,
-        descriptor: AsyncWorldDescriptor | None = None,
-    ) -> iWorld:
-        if descriptor is None:
-            if storage_config is None:
-                storage_config = StorageConfig()
-            descriptor = await self.build_world_descriptor(
-                storage_config,
-                cache_config,
-                system=system,
-            )
-        return await self.async_factory.create_world(world_config, descriptor)
-
-    def build_sync_world_descriptor(
-        self,
-        storage_config: StorageConfig,
-        cache_config: CacheConfig | None = None,
-        *,
-        system: iSystem | None = None,
-        resources: iResourceContainer | None = None,
-        hooks: iSyncHookBus | None = None,
-    ) -> SyncWorldDescriptor:
-        return self.sync_factory.build_world_descriptor(
-            storage_config,
-            cache_config,
-            system=system,
-            resources=resources,
-            hooks=hooks,
-        )
-
-    def create_sync_world(
-        self,
-        world_config: WorldConfig,
-        descriptor: SyncWorldDescriptor,
-    ) -> iWorld:
-        return self.sync_factory.create_sync_world(world_config, descriptor)
 
 
 def _world_entity_count(world: iWorld) -> int:
@@ -244,7 +135,7 @@ def _world_entity_count(world: iWorld) -> int:
     count = getattr(world, "entity_count", None)
     if isinstance(count, int):
         return count
-    return len(getattr(world, "_entity2sig", {}))
+    return len(getattr(world, "entity2sig", {}))
 
 
 class WorldOrchestrator:
@@ -264,9 +155,11 @@ class WorldOrchestrator:
         storage_service: StorageService,
         broker: CommandBroker | None = None,
         registry: WorldRegistry | None = None,
+        *,
+        world_factory: WorldFactory | None = None,
     ):
-        self.storage_service = storage_service
-        self.factory = WorldFactory(storage_service)
+        self._storage_service = storage_service
+        self._world_factory = world_factory or WorldFactory()
         self._broker = broker
         self._registry = registry
         self._worlds: dict[UUID, iWorld] = {}
@@ -274,7 +167,7 @@ class WorldOrchestrator:
 
     async def shutdown(self):
         """Gracefully shuts down all managed resources."""
-        await self.storage_service.shutdown()
+        await self._storage_service.shutdown()
         self._worlds.clear()
         self._world_names.clear()
 
@@ -313,12 +206,8 @@ class WorldOrchestrator:
         if config.name and config.name in self._world_names:
             raise ValueError(f"World with name '{config.name}' already exists.")
 
-        world = await self.factory.create_world(
-            world_config=config,
-            storage_config=storage_config,
-            cache_config=cache_config,
-            system=system or AsyncSystem(),
-        )
+        store = await self._storage_service.create_store(storage_config, cache_config)
+        world = self._world_factory.create_async_world(store, config, system=system)
 
         # Inject broker into world resources for processor access
         if self._broker and isinstance(world, AsyncWorld) and hasattr(world, "resources"):
@@ -389,7 +278,7 @@ class WorldOrchestrator:
         current tick. Source and fork then diverge independently.
 
         Inheritance policy (see archetype#61):
-          * Copied: ``tick``, ``run_id``, ``_entity2sig``, ``_next_entity_id``,
+          * Copied: ``tick``, ``run_id``, ``entity2sig``, ``next_entity_id``,
             live archetype snapshots (re-stamped with the new ``world_id``),
             processors (shared instances), and non-broker resources.
           * Persisted: the live snapshots are written to the store under the new
@@ -417,8 +306,8 @@ class WorldOrchestrator:
 
         # Guard: reject if the source has un-materialized mutations; callers
         # must step() first so _live reflects the intended snapshot.
-        has_pending_spawns = any(v for v in source._spawn_cache.values())
-        has_pending_despawns = any(v for v in source._despawn_cache.values())
+        has_pending_spawns = any(v for v in source.spawn_cache.values())
+        has_pending_despawns = any(v for v in source.despawn_cache.values())
         if has_pending_spawns or has_pending_despawns:
             raise ValueError(
                 "Cannot fork a world with pending mutations. "
@@ -445,8 +334,8 @@ class WorldOrchestrator:
         # --- Clone in-memory state ---
         new_world.tick = source.tick
         new_world.run_id = source.run_id
-        new_world._entity2sig = dict(source._entity2sig)
-        new_world._next_entity_id = source._next_entity_id
+        new_world.entity2sig = dict(source.entity2sig)
+        new_world.next_entity_id = source.next_entity_id
 
         # --- Copy non-broker resources (selective policy) ---
         # The broker is world-scoped governance; create_world already injected

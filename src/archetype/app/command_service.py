@@ -24,7 +24,7 @@ from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 
 if TYPE_CHECKING:
-    from archetype.app.world_service import WorldService
+    from archetype.app.world_service import WorldOrchestrator
     from archetype.core.aio import AsyncWorld
     from archetype.core.interfaces import iWorld
 
@@ -39,9 +39,9 @@ class CommandService:
     SimulationService calls drain_and_apply() during each tick to process queued commands.
     """
 
-    def __init__(self, broker: CommandBroker, world_service: WorldService):
+    def __init__(self, broker: CommandBroker, worlds: WorldOrchestrator):
         self._broker = broker
-        self._world_service = world_service
+        self._worlds = worlds
         self._spawn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def submit(
@@ -89,7 +89,7 @@ class CommandService:
         lock = self._spawn_locks[world_key]
 
         async with lock:
-            world = self._world_service.get_world(UUID(world_key))
+            world = self._worlds.get_world(UUID(world_key))
             entity_id = self._reserve_entity_id(world)
             cmd = Command(
                 type=CommandType.SPAWN,
@@ -127,7 +127,7 @@ class CommandService:
         if not commands:
             return []
 
-        world = self._world_service.get_world(UUID(str(world_id)))
+        world = self._worlds.get_world(UUID(str(world_id)))
         applied: list[Command] = []
 
         for cmd in commands:
@@ -196,14 +196,14 @@ class CommandService:
 
     @staticmethod
     def _reserve_entity_id(world: AsyncWorld) -> int:
-        entity_id = world._next_entity_id
-        world._next_entity_id += 1
+        entity_id = world.next_entity_id
+        world.next_entity_id += 1
         return entity_id
 
     @staticmethod
     def _release_entity_id(world: AsyncWorld, entity_id: int) -> None:
-        if world._next_entity_id == entity_id + 1:
-            world._next_entity_id = entity_id
+        if world.next_entity_id == entity_id + 1:
+            world.next_entity_id = entity_id
 
     @staticmethod
     async def _apply_update(world: AsyncWorld, entity_id: int, components: list) -> None:
@@ -218,7 +218,7 @@ class CommandService:
         """
         from archetype.core.archetype import Archetype
 
-        old_sig = world._entity2sig.get(entity_id)
+        old_sig = world.entity2sig.get(entity_id)
         if old_sig is None:
             logger.warning("UPDATE: entity %s not found", entity_id)
             return
@@ -239,8 +239,8 @@ class CommandService:
             return
 
         # Mark prior row inactive and append the updated row.
-        world._despawn_cache.setdefault(old_sig, []).append(entity_id)
-        world._spawn_cache.setdefault(new_sig, []).append(row)
+        world.despawn_cache.setdefault(old_sig, []).append(entity_id)
+        world.spawn_cache.setdefault(new_sig, []).append(row)
 
     async def apply_world_lifecycle(self, cmd: Command) -> iWorld | None:
         """Dispatch a world-level lifecycle command (create/destroy/fork).
@@ -264,11 +264,11 @@ class CommandService:
                         uri=payload.get("storage_uri", "./archetype_data"),
                         namespace=payload.get("namespace", "archetypes"),
                     )
-                    return await self._world_service.create_world(world_config, storage_config)
+                    return await self._worlds.create_world(world_config, storage_config)
 
                 case CommandType.DESTROY_WORLD:
                     target_id = UUID(str(payload["world_id"]))
-                    await self._world_service.remove_world(target_id)
+                    await self._worlds.remove_world(target_id)
                     return None
 
                 case CommandType.FORK_WORLD:
@@ -276,7 +276,7 @@ class CommandService:
 
                     source_id = UUID(str(payload["source_world_id"]))
                     fork_name = payload.get("name") or payload.get("config", {}).get("name")
-                    return await self._world_service.fork_world(
+                    return await self._worlds.fork_world(
                         source_id, fork_name, StorageConfig()
                     )
 

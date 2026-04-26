@@ -16,12 +16,15 @@ from archetype.app.command_service import CommandService
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldRegistry, WorldService
+from archetype.app.world_service import WorldOrchestrator, WorldRegistry
 
 
 class ServiceContainer:
     """
-    Wires all services together with correct dependency ordering.
+    Wires services together with correct dependency ordering.
+
+    Each service owns its internal composition (factories, context builders).
+    The container only handles service-to-service wiring.
 
     Usage:
         container = ServiceContainer()
@@ -29,21 +32,22 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
 
     Pass ``registry_path`` to enable persistent world discovery across
-    server restarts.  The long-running ``archetype serve`` process uses
-    the registry to rehydrate previously created worlds on startup.
+    server restarts.
     """
 
     def __init__(self, registry_path: str | Path | None = None):
         # Infrastructure
-        self.storage_service = StorageService()
         self.broker = CommandBroker()
         self.registry: WorldRegistry | None = (
             WorldRegistry(registry_path) if registry_path is not None else None
         )
 
-        # Services (order matters — dependency chain)
-        self.world_service = WorldService(
-            self.storage_service, broker=self.broker, registry=self.registry
+        # Services
+        self.storage_service = StorageService()
+        self.world_service = WorldOrchestrator(
+            self.storage_service,
+            broker=self.broker,
+            registry=self.registry,
         )
         self.command_service = CommandService(self.broker, self.world_service)
         self.simulation_service = SimulationService(self.world_service, self.command_service)

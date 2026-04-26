@@ -26,7 +26,7 @@ class MockStorageConfig:
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
     storage = MockStorageConfig(uri=str(tmp_path), namespace="test")
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
     store = AsyncStore(context)
     try:
         yield store

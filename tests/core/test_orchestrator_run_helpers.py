@@ -1,7 +1,7 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from tests.conftest import make_world_orchestrator
+
 from archetype.core.aio import AsyncWorld
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -9,7 +9,7 @@ from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 @pytest.mark.asyncio
 async def test_world_service_run_world(tmp_path):
     """Running a world through WorldService should work via direct world.run()."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         w = await ws.create_world(WorldConfig(name="w"), storage_config=storage)

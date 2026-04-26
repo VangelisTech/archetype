@@ -18,8 +18,8 @@ async def test_contexts_are_isolated_by_namespace(tmp_path):
     uri = str(tmp_path)
 
     # Same URI, different namespaces
-    ctx_a = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsA"))
-    ctx_b = StorageContextFactory.build(StorageConfig(uri=uri, namespace="nsB"))
+    ctx_a = StorageContextFactory().build(StorageConfig(uri=uri, namespace="nsA"))
+    ctx_b = StorageContextFactory().build(StorageConfig(uri=uri, namespace="nsB"))
 
     store_a = AsyncStore(ctx_a)
     store_b = AsyncStore(ctx_b)

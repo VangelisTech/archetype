@@ -39,7 +39,7 @@ class TestDefaultStorageDurable:
             # not an in-memory stub.
             store = container.storage_service._instances
             assert store, "StorageService should have at least one backend instance"
-            any_store = next(iter(store.values()))[0]
+            any_store = next(iter(store.values()))
             assert isinstance(any_store, AsyncLancedbStore)
             assert world.world_id is not None
         finally:
@@ -68,7 +68,7 @@ class TestDefaultStorageDurable:
             await c1.shutdown()
 
         # Default path should have been created under cwd.
-        assert (tmp_path / "archetype_data").exists()
+        assert (tmp_path / "archetype_db").exists()
 
         # Second container: rediscover via the persistent registry, query state.
         c2 = ServiceContainer(registry_path=registry_path)
@@ -113,7 +113,7 @@ class TestDefaultStorageDurable:
         locked.mkdir()
         # Make directory read+execute only; creating children must fail.
         locked.chmod(stat.S_IRUSR | stat.S_IXUSR)
-        target = locked / "archetype_data"
+        target = locked / "archetype_db"
 
         container = ServiceContainer()
         try:

@@ -16,7 +16,7 @@ from archetype.api.models import CreateWorldRequest, ForkWorldRequest, WorldResp
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import Command, CommandType
-from archetype.app.world_service import WorldService, _world_entity_count
+from archetype.app.world_service import WorldOrchestrator, _world_entity_count
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
@@ -48,7 +48,7 @@ async def create_world(
 
 
 @router.get("")
-async def list_worlds(ws: WorldService = Depends(get_world_service)):
+async def list_worlds(ws: WorldOrchestrator = Depends(get_world_service)):
     worlds = ws.list_worlds()
     return [
         WorldResponse(
@@ -62,7 +62,7 @@ async def list_worlds(ws: WorldService = Depends(get_world_service)):
 
 
 @router.get("/{world_id}", response_model=WorldResponse)
-async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)):
+async def get_world(world_id: str, ws: WorldOrchestrator = Depends(get_world_service)):
     try:
         world = ws.get_world(UUID(world_id))
         return WorldResponse(

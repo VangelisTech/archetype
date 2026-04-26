@@ -17,6 +17,8 @@ from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
 
 
 class Position(Component):
@@ -52,12 +54,12 @@ class PBug(AsyncProcessor):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=False)
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
 
     if request.param == "async":
-        store = AsyncStore(context)
+        store = AsyncStore(context.session, io_config=context.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context)
+        base = AsyncStore(context.session, io_config=context.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
@@ -73,11 +75,14 @@ async def store_backend(request, tmp_path):
 
 @pytest_asyncio.fixture()
 async def world(store_backend):
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="w"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
     await w.add_processor(P1ScaleX())
     await w.add_processor(PBug())
     await w.add_processor(P2IncY())
@@ -148,11 +153,14 @@ async def test_archetypes_process_in_parallel(world, store_backend):
         value: int
 
     # Use a fresh world with a parallelism indicator
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w2")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="w2"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
     shared = {"current": 0, "peak": 0, "lock": asyncio.Lock()}
     # Use events to deterministically coordinate overlap across archetypes
     start_evt = asyncio.Event()
@@ -215,11 +223,14 @@ async def test_var_keyword_processor_receives_all_kwargs(store_backend):
     """A processor declared as ``process(self, df, **kwargs)`` must actually
     receive tick, debug, resources, etc. Previously the filter keyed on
     named parameters only and handed var-keyword processors an empty dict."""
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="catchall")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="catchall"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
     probe = CatchAllKwargsProbe()
     await w.add_processor(probe)
@@ -238,11 +249,14 @@ async def test_run_config_debug_propagates_to_processor(store_backend):
     """RunConfig(debug=True) must reach processors. Previously ``debug`` bound
     to AsyncSystem.execute's named param and was never re-injected into the
     kwargs dict forwarded to processors."""
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="debugprobe")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="debugprobe"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
     probe = DebugProbe()
     await w.add_processor(probe)
@@ -256,11 +270,14 @@ async def test_run_config_debug_propagates_to_processor(store_backend):
 
 @pytest.mark.asyncio
 async def test_run_config_debug_logs_step_lifecycle_via_hooks(store_backend, caplog):
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="debughooks")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="debughooks"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
     await w.add_processor(DebugProbe())
     _ = await w.create_entity([Position(x=1, y=1)])
@@ -306,11 +323,14 @@ async def test_closed_signature_processor_still_filters_unknown_kwargs(store_bac
             self.calls += 1
             return df
 
-    querier = AsyncQueryManager(store_backend)
-    updater = AsyncUpdateManager(store_backend)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="closed")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    w = AsyncWorld(
+        config=WorldConfig(name="closed"),
+        querier=AsyncQueryManager(store=store_backend),
+        updater=AsyncUpdateManager(store=store_backend),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
 
     proc = ClosedProc()
     await w.add_processor(proc)

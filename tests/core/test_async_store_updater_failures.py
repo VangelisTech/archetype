@@ -22,7 +22,7 @@ def build_context(tmp_path):
     from archetype.app.storage_service import StorageContextFactory
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
-    return StorageContextFactory.build(cfg)
+    return StorageContextFactory().build(cfg)
 
 
 @pytest.mark.asyncio

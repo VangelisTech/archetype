@@ -13,7 +13,7 @@ from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
-from archetype.app.world_service import WorldService, default_registry_path
+from archetype.app.world_service import WorldOrchestrator, default_registry_path
 
 # Singleton container — initialized once at app startup
 _container: ServiceContainer | None = None
@@ -34,7 +34,7 @@ def set_container(container: ServiceContainer) -> None:
     _container = container
 
 
-def get_world_service() -> WorldService:
+def get_world_service() -> WorldOrchestrator:
     return get_container().world_service
 
 

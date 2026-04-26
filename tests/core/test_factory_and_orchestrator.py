@@ -1,32 +1,30 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldFactory, WorldService
+from archetype.app.world_service import WorldFactory
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from tests.conftest import make_storage_service, make_world_orchestrator
 
 
 @pytest.mark.asyncio
 async def test_factory_creates_async_world_and_default_system(tmp_path):
     """Creating a world with no explicit system yields a default async world and runs 1 step without error."""
-    svc = StorageService()
+    ws = make_world_orchestrator()
     try:
-        factory = WorldFactory(svc)
-        world = await factory.create_world(
-            world_config=WorldConfig(name="w"),
-            storage_config=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
-            system=None,
+        world = await ws.create_world(
+            WorldConfig(name="w"),
+            StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
         )
         assert world.world_id is not None
         assert world.name == "w"
         await world.run(RunConfig(num_steps=1))
     finally:
-        await svc.shutdown()
+        await ws.shutdown()
 
 
 @pytest.mark.asyncio
 async def test_world_service_lifecycle_and_name_lookup(tmp_path):
     """Idempotent create by world_id, name lookup, and remove behavior are correct."""
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         w1 = await ws.create_world(WorldConfig(name="alpha"), storage_config=storage)

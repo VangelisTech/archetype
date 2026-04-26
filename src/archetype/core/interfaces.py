@@ -52,49 +52,6 @@ class iResourceContainer(Protocol):
     def contains(self, resource_type: type[T]) -> bool: ...
     def items(self) -> Iterable[tuple[type, object]]: ...
 
-
-class iAsyncHookBus(Protocol):
-    def add(
-        self,
-        event_type: type[_HookEventT],
-        fn: AsyncHookHandler[_HookEventT],
-        *,
-        mode: FireMode = "blocking",
-    ) -> HookHandle: ...
-    def remove(self, handle: HookHandle) -> None: ...
-    def clear(self) -> None: ...
-    async def fire(self, event: HookEvent) -> None: ...
-
-
-class iSyncHookBus(Protocol):
-    def add(
-        self,
-        event_type: type[_HookEventT],
-        fn: SyncHookHandler[_HookEventT],
-    ) -> HookHandle: ...
-    def remove(self, handle: HookHandle) -> None: ...
-    def clear(self) -> None: ...
-    def fire(self, event: HookEvent) -> None: ...
-
-
-@dataclass(frozen=True, slots=True)
-class AsyncWorldDescriptor:
-    querier: iAsyncQueryManager
-    updater: iAsyncUpdateManager
-    system: iAsyncSystem
-    resources: iResourceContainer
-    hooks: iAsyncHookBus
-
-
-@dataclass(frozen=True, slots=True)
-class SyncWorldDescriptor:
-    querier: iQueryManager
-    updater: iUpdateManager
-    system: iSystem
-    resources: iResourceContainer
-    hooks: iSyncHookBus
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # SYNCHRONOUS INTERFACES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -213,6 +170,16 @@ class iUpdateManager(Protocol):
     ) -> None:
         """Persist entity state changes to storage."""
         ...
+
+class iSyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: SyncHookHandler[_HookEventT],
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    def fire(self, event: HookEvent) -> None: ...
 
 
 class iWorld(Protocol):
@@ -373,6 +340,17 @@ class iAsyncUpdateManager(Protocol):
         self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
     ) -> DataFrame: ...
 
+class iAsyncHookBus(Protocol):
+    def add(
+        self,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
+        *,
+        mode: FireMode = "blocking",
+    ) -> HookHandle: ...
+    def remove(self, handle: HookHandle) -> None: ...
+    def clear(self) -> None: ...
+    async def fire(self, event: HookEvent) -> None: ...
 
 class iAsyncWorld(Protocol):
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...

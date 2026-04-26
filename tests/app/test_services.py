@@ -17,8 +17,9 @@ from archetype.app.models import Command, CommandType
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.world_service import WorldOrchestrator
 from archetype.core.component import Component
+from tests.conftest import make_world_orchestrator
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
@@ -40,7 +41,7 @@ class TestServiceContainer:
         container = ServiceContainer()
         assert isinstance(container.storage_service, StorageService)
         assert isinstance(container.broker, CommandBroker)
-        assert isinstance(container.world_service, WorldService)
+        assert isinstance(container.world_service, WorldOrchestrator)
         assert isinstance(container.command_service, CommandService)
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
@@ -292,7 +293,7 @@ class TestSimulationService:
         world_service = Mock()
         world_service.get_world.return_value = world
         command_service = Mock()
-        sim = SimulationService(world_service=world_service, command_service=command_service)
+        sim = SimulationService(worlds=world_service, command_drain=command_service)
         sim.step = AsyncMock(side_effect=[1, 2, 3])  # type: ignore[method-assign]
         rc = RunConfig(num_steps=3)
 
@@ -335,8 +336,6 @@ class TestSimulationService:
             user_rc = RunConfig(
                 num_steps=3,
                 debug=True,
-                suite="regression",
-                trial=7,
                 metadata={"source": "test"},
             )
             result = await container.simulation_service.run(world.world_id, user_rc)
@@ -349,8 +348,6 @@ class TestSimulationService:
                 assert rc is user_rc
                 assert rc.run_id == user_rc.run_id
                 assert rc.debug is True
-                assert rc.suite == "regression"
-                assert rc.trial == 7
                 assert rc.metadata == {"source": "test"}
             # World's run_id pointer is pinned to the user's run_id.
             assert str(world.run_id) == str(user_rc.run_id)
@@ -364,7 +361,7 @@ class TestSimulationService:
         world_service.get_world.return_value = world
         command_service = Mock()
         command_service.drain_and_apply = AsyncMock(return_value=["a", "b"])
-        sim = SimulationService(world_service=world_service, command_service=command_service)
+        sim = SimulationService(worlds=world_service, command_drain=command_service)
 
         count = await sim.step(uuid7(), RunConfig(num_steps=2))
 
@@ -376,7 +373,7 @@ class TestSimulationService:
         world = AsyncMock()
         world_service = Mock()
         world_service.get_world.return_value = world
-        sim = SimulationService(world_service=world_service, command_service=Mock())
+        sim = SimulationService(worlds=world_service, command_drain=Mock())
         proc = object()
 
         await sim.add_processor(uuid7(), proc)
@@ -443,8 +440,8 @@ class TestSimulationService:
         world = Mock()
         world.system.processors = [processor]
         sim = SimulationService.__new__(SimulationService)
-        sim._world_service = Mock()
-        sim._world_service.get_world.return_value = world
+        sim._worlds = Mock()
+        sim._worlds.get_world.return_value = world
 
         infos = sim.list_processors(uuid7())
 
@@ -458,8 +455,8 @@ class TestSimulationService:
             pass
 
         sim = SimulationService.__new__(SimulationService)
-        sim._world_service = Mock()
-        sim._world_service.get_world.return_value = _World()
+        sim._worlds = Mock()
+        sim._worlds.get_world.return_value = _World()
 
         assert sim.list_processors(uuid7()) == []
 
@@ -595,7 +592,7 @@ class TestQueryService:
     @pytest.mark.asyncio
     async def test_get_command_history_without_broker(self, tmp_path):
         """QueryService without broker returns empty history."""
-        ws = WorldService(StorageService())
+        ws = make_world_orchestrator()
         qs = QueryService(ws, broker=None)
 
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -604,7 +601,7 @@ class TestQueryService:
             history = await qs.get_command_history(world.world_id)
             assert history == []
         finally:
-            await ws.storage_service.shutdown()
+            await ws._storage_service.shutdown()
 
     @pytest.mark.asyncio
     async def test_get_world_state_not_found(self):
@@ -740,7 +737,7 @@ class TestWorldService:
     @pytest.mark.asyncio
     async def test_create_world_with_explicit_none_world_id_generates_uuid(self, tmp_path):
         """create_world with explicit world_id=None produces a real UUID."""
-        ws = WorldService(StorageService())
+        ws = make_world_orchestrator()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = await ws.create_world(WorldConfig(name="t", world_id=None), storage)
@@ -758,7 +755,7 @@ class TestWorldService:
     @pytest.mark.asyncio
     async def test_two_worlds_with_explicit_none_ids_do_not_collide(self, tmp_path):
         """Two creates with world_id=None produce distinct worlds."""
-        ws = WorldService(StorageService())
+        ws = make_world_orchestrator()
         try:
             w1 = await ws.create_world(
                 WorldConfig(name="a", world_id=None),
@@ -789,7 +786,7 @@ class TestWorldService:
         The fix resolves ``world_id`` locally and threads it to the factory
         via ``model_copy``, leaving the caller's config object untouched.
         """
-        ws = WorldService(StorageService())
+        ws = make_world_orchestrator()
         try:
             original = WorldConfig(name="immutable", world_id=None)
             assert original.world_id is None

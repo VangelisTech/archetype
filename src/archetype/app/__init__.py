@@ -8,11 +8,11 @@ Archetype Application Layer
 Service-oriented infrastructure for multi-world simulation orchestration.
 
 Services:
+- StorageService: Store creation + pooling + lifecycle
+- WorldOrchestrator: World CRUD and lifecycle
 - CommandService: Auth routing + command dispatch
-- WorldService: World CRUD and lifecycle
 - SimulationService: Execution (step/run with broker drain)
 - QueryService: Time-travel reads
-- StorageService: Backend pooling
 - ServiceContainer: Wires everything together
 """
 
@@ -29,45 +29,27 @@ from archetype.app.models import (
 )
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import (
-    AsyncLancedbStore,
-    AsyncStorageFactory,
-    StorageContext,
-    StorageContextFactory,
-    StorageService,
-    SyncStorageFactory,
-)
-from archetype.app.world_service import (
-    AsyncWorldFactory,
-    SyncWorldFactory,
-    WorldFactory,
-    WorldOrchestrator,
-    WorldRegistry,
-    WorldService,
-)
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldOrchestrator, WorldRegistry
+
+# Backward-compat alias — prefer WorldOrchestrator in new code
+WorldService = WorldOrchestrator
 
 # Core config (re-export for convenience)
-from archetype.core import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core import AsyncLancedbStore, CacheConfig, RunConfig, StorageConfig, WorldConfig
 
 __all__ = [
     # Services
     "CommandService",
+    "WorldOrchestrator",
     "WorldService",
     "SimulationService",
     "QueryService",
     "StorageService",
     "ServiceContainer",
     # Infrastructure
-    "AsyncStorageFactory",
-    "SyncStorageFactory",
-    "StorageContext",
-    "StorageContextFactory",
     "AsyncLancedbStore",
-    "AsyncWorldFactory",
-    "SyncWorldFactory",
     "CommandBroker",
-    "WorldFactory",
-    "WorldOrchestrator",
     "WorldRegistry",
     # Models
     "Command",

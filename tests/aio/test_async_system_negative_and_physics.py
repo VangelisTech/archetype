@@ -15,6 +15,8 @@ from archetype.core.aio import (
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import HookRegistry
+from archetype.core.resources import Resources
 
 
 class Position(Component):
@@ -35,13 +37,16 @@ class Accel(Component):
 @pytest_asyncio.fixture
 async def world(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    ctx = StorageContextFactory.build(storage)
-    store = AsyncStore(ctx)
-    querier = AsyncQueryManager(store)
-    updater = AsyncUpdateManager(store)
-    system = AsyncSystem()
-    wcfg = WorldConfig(name="w")
-    w = AsyncWorld(wcfg, querier, updater, system)
+    ctx = StorageContextFactory().build(storage)
+    store = AsyncStore(ctx.session, io_config=ctx.io_config)
+    w = AsyncWorld(
+        config=WorldConfig(name="w"),
+        querier=AsyncQueryManager(store=store),
+        updater=AsyncUpdateManager(store=store),
+        system=AsyncSystem(),
+        resources=Resources(),
+        hooks=HookRegistry(),
+    )
     try:
         yield w
     finally:

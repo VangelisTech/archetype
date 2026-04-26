@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -41,8 +41,8 @@ async def test_lancedb_create_index_failure_propagates(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return IndexFailClient()
 
-    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageService.resolve_location(
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    uri, namespace = StorageContextFactory().resolve_location(
         StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     )
     store = AsyncLancedbStore(uri, namespace)

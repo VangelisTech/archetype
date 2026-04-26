@@ -82,12 +82,12 @@ async def test_submit_spawn_returns_reserved_entity_id_and_materializes_it(tmp_p
         )
 
         assert entity_id == 1
-        assert world._next_entity_id == 2
+        assert world.next_entity_id == 2
 
         rc = RunConfig()
         await container.simulation_service.step(world.world_id, rc)
 
-        assert entity_id in world._entity2sig
+        assert entity_id in world.entity2sig
         df = await world.get_components([Pos], entity_ids=[entity_id])
         rows = df.collect().to_pylist()
         assert len(rows) == 1
@@ -175,7 +175,7 @@ async def test_spawn_preserves_typed_components_through_command_service(tmp_path
         await container.simulation_service.step(world.world_id, rc)
 
         # Entity should live in the (Pose, Tag) archetype — not (Component,).
-        signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
+        signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
         assert frozenset({Pose, Tag}) in signatures, (
             f"SPAWN lost component type info; world archetypes = {signatures}"
         )
@@ -206,7 +206,7 @@ async def test_spawn_with_component_instances_passes_through(tmp_path):
         rc = RunConfig()
         await container.simulation_service.step(world.world_id, rc)
 
-        assert frozenset({Foo}) in {frozenset(sig) for sig in set(world._entity2sig.values())}
+        assert frozenset({Foo}) in {frozenset(sig) for sig in set(world.entity2sig.values())}
     finally:
         await container.shutdown()
 
@@ -242,7 +242,7 @@ async def test_spawn_with_bare_model_dump_raises(tmp_path):
         rc = RunConfig()
         await container.simulation_service.step(world.world_id, rc)
 
-        signatures = {frozenset(sig) for sig in set(world._entity2sig.values())}
+        signatures = {frozenset(sig) for sig in set(world.entity2sig.values())}
         assert frozenset({Bar}) not in signatures
     finally:
         await container.shutdown()
@@ -394,11 +394,11 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
         await container.simulation_service.step(world.world_id, rc)
 
         assert frozenset({_RemovePosition, _RemoveVelocity}) in {
-            frozenset(sig) for sig in set(world._entity2sig.values())
+            frozenset(sig) for sig in set(world.entity2sig.values())
         }
         entity_id = next(
             eid
-            for eid, sig in world._entity2sig.items()
+            for eid, sig in world.entity2sig.items()
             if frozenset(sig) == frozenset({_RemovePosition, _RemoveVelocity})
         )
 
@@ -416,7 +416,7 @@ async def test_remove_component_resolves_string_type_names(tmp_path):
         await container.simulation_service.step(world.world_id, rc)
 
         # Entity must now live in the (_RemovePosition,) archetype.
-        new_sig = world._entity2sig[entity_id]
+        new_sig = world.entity2sig[entity_id]
         assert frozenset(new_sig) == frozenset({_RemovePosition}), (
             f"REMOVE_COMPONENT silently no-opped on string types: entity still at {new_sig}"
         )
@@ -449,7 +449,7 @@ async def test_remove_component_unknown_string_type_raises(tmp_path):
         await container.command_service.submit(str(world.world_id), spawn_cmd, ctx)
         await container.simulation_service.step(world.world_id, rc)
 
-        entity_id = next(iter(world._entity2sig))
+        entity_id = next(iter(world.entity2sig))
         # Ask the service to apply directly so the ValueError surfaces (drain_and_apply
         # swallows per-command exceptions to keep the tick alive).
         bad_cmd = Command(

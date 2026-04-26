@@ -1,7 +1,7 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
 from archetype.core.config import StorageConfig
+from tests.conftest import make_storage_service
 
 
 class FakeSyncStore:
@@ -12,7 +12,7 @@ class FakeSyncStore:
 @pytest.mark.asyncio
 async def test_storage_service_shutdown_calls_sync_shutdown(monkeypatch, tmp_path):
     """Shutdown should call sync shutdown() on stores that are not async."""
-    svc = StorageService()
+    svc = make_storage_service()
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
@@ -59,14 +59,14 @@ async def test_storage_service_shutdown_continues_after_first_store_failure():
     without exception handling — the first failing store aborted the loop,
     leaving later stores open and `_instances`/`_locks` un-cleared.
     """
-    svc = StorageService()
+    svc = make_storage_service()
     try:
         failing = _FailingAsyncStore()
         counting = _CountingAsyncStore()
         # Insertion order matters: failing must come BEFORE counting
         # so the pre-fix code would abort before reaching counting.
-        svc._instances["fail::ns"] = (failing, object(), object())
-        svc._instances["ok::ns"] = (counting, object(), object())
+        svc._instances["fail::ns"] = failing
+        svc._instances["ok::ns"] = counting
 
         with pytest.raises(RuntimeError, match="simulated shutdown failure"):
             await svc.shutdown()
@@ -85,14 +85,14 @@ async def test_storage_service_shutdown_continues_after_first_store_failure():
 async def test_storage_service_shutdown_failing_in_middle_drains_all():
     """A failing store in the middle of iteration
     must not block stores that come after it."""
-    svc = StorageService()
+    svc = make_storage_service()
     try:
         first = _CountingAsyncStore()
         middle = _FailingAsyncStore("middle failure")
         last = _CountingAsyncStore()
-        svc._instances["a::ns"] = (first, object(), object())
-        svc._instances["b::ns"] = (middle, object(), object())
-        svc._instances["c::ns"] = (last, object(), object())
+        svc._instances["a::ns"] = first
+        svc._instances["b::ns"] = middle
+        svc._instances["c::ns"] = last
 
         with pytest.raises(RuntimeError, match="middle failure"):
             await svc.shutdown()

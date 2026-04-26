@@ -2,7 +2,7 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -65,8 +65,8 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageService.resolve_location(
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    uri, namespace = StorageContextFactory().resolve_location(
         StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     )
     store = AsyncLancedbStore(uri, namespace)
@@ -77,7 +77,7 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
 
     sig = (T,)
     # Monkeypatch Archetype.get_name to return 't'
-    monkeypatch.setattr("archetype.app.storage_service.Archetype.get_name", lambda s: "t")
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.Archetype.get_name", lambda s: "t")
 
     with pytest.raises(RuntimeError, match="open failed"):
         await store.get_archetype_df(sig, world_id="w", run_id="r")
@@ -90,8 +90,8 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.app.storage_service.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageService.resolve_location(
+    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    uri, namespace = StorageContextFactory().resolve_location(
         StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
     )
     store = AsyncLancedbStore(uri, namespace)

@@ -21,7 +21,7 @@ class Position(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=(request.param == "lancedb"))
-    context = StorageContextFactory.build(storage)
+    context = StorageContextFactory().build(storage)
 
     if request.param == "async":
         store = AsyncStore(context)

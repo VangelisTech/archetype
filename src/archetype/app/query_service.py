@@ -18,7 +18,7 @@ from archetype.app.models import Command, WorldSnapshot
 
 if TYPE_CHECKING:
     from archetype.app.broker import CommandBroker
-    from archetype.app.world_service import WorldService
+    from archetype.app.world_service import WorldOrchestrator
 
 
 class QueryService:
@@ -26,8 +26,8 @@ class QueryService:
     Read path facade. Time-travel queries, entity state, cross-world reads.
     """
 
-    def __init__(self, world_service: WorldService, broker: CommandBroker | None = None):
-        self._world_service = world_service
+    def __init__(self, worlds: WorldOrchestrator, broker: CommandBroker | None = None):
+        self._worlds = worlds
         self._broker = broker
 
     async def get_world_state(
@@ -36,7 +36,7 @@ class QueryService:
         tick: int | None = None,
     ) -> WorldSnapshot:
         """Get the current (or historical) world state snapshot."""
-        world = self._world_service.get_world(world_id)
+        world = self._worlds.get_world(world_id)
         return WorldSnapshot(
             world_id=world_id,
             tick=tick if tick is not None else getattr(world, "tick", 0),
@@ -51,7 +51,7 @@ class QueryService:
         tick: int | None = None,
     ) -> dict:
         """Get entity state, optionally at a specific tick."""
-        world = self._world_service.get_world(world_id)
+        world = self._worlds.get_world(world_id)
         return {
             "world_id": str(world_id),
             "entity_id": entity_id,
@@ -65,7 +65,7 @@ class QueryService:
         entity_ids: list[int] | None = None,
     ) -> dict:
         """Query specific component types across entities."""
-        self._world_service.get_world(world_id)  # validate world exists
+        self._worlds.get_world(world_id)  # validate world exists
         return {
             "world_id": str(world_id),
             "component_types": component_types,

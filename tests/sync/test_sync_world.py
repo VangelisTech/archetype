@@ -8,6 +8,8 @@ from daft.session import Session
 
 from archetype.core.component import Component
 from archetype.core.config import WorldConfig
+from archetype.core.hooks import SyncHookRegistry
+from archetype.core.resources import Resources
 from archetype.core.sync import (
     QueryManager,
     SyncProcessor,
@@ -166,7 +168,14 @@ def _make_sync_world(tmp_path, name="test"):
     updater = UpdateManager(store=store)
     system = SyncSystem()
     config = WorldConfig(name=name)
-    return SyncWorld(world_config=config, querier=querier, updater=updater, system=system)
+    return SyncWorld(
+        config=config,
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
+    )
 
 
 def _make_sync_world_with_catalog(tmp_path, name="test"):
@@ -176,13 +185,18 @@ def _make_sync_world_with_catalog(tmp_path, name="test"):
     from archetype.core.config import StorageConfig
 
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
-    ctx = StorageContextFactory.build(cfg)
+    ctx = StorageContextFactory().build(cfg)
     store = SyncStore(uri=ctx.uri, session=ctx.session)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
     return SyncWorld(
-        world_config=WorldConfig(name=name), querier=querier, updater=updater, system=system
+        config=WorldConfig(name=name),
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
     )
 
 
@@ -206,8 +220,8 @@ class TestSyncWorld:
 
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
         world.create_entity([Position(x=1, y=2)])
-        assert sig in world._spawn_cache
-        assert len(world._spawn_cache[sig]) == 1
+        assert sig in world.spawn_cache
+        assert len(world.spawn_cache[sig]) == 1
 
     def test_remove_entity_cancels_pending_spawn_in_same_tick(self, tmp_path):
         from archetype.core.archetype import Archetype
@@ -218,9 +232,9 @@ class TestSyncWorld:
 
         world.remove_entity(e1)
 
-        assert sig not in world._spawn_cache
-        assert e1 not in world._entity2sig
-        assert e1 not in world._despawn_cache.get(sig, [])
+        assert sig not in world.spawn_cache
+        assert e1 not in world.entity2sig
+        assert e1 not in world.despawn_cache.get(sig, [])
 
     def test_remove_entity_schedules_despawn_after_spawn_materialized(self, tmp_path):
         from archetype.core.archetype import Archetype
@@ -233,13 +247,13 @@ class TestSyncWorld:
 
         world.remove_entity(e1)
 
-        assert sig in world._despawn_cache
-        assert e1 in world._despawn_cache[sig]
+        assert sig in world.despawn_cache
+        assert e1 in world.despawn_cache[sig]
 
     def test_remove_nonexistent_entity_is_noop(self, tmp_path):
         world = _make_sync_world(tmp_path)
         world.remove_entity(999)  # should not raise
-        assert len(world._despawn_cache) == 0
+        assert len(world.despawn_cache) == 0
 
     def test_active_signatures(self, tmp_path):
         world = _make_sync_world(tmp_path)
@@ -252,10 +266,10 @@ class TestSyncWorld:
     def test_clear_caches(self, tmp_path):
         world = _make_sync_world(tmp_path)
         world.create_entity([Position(x=1, y=2)])
-        assert len(world._spawn_cache) > 0
+        assert len(world.spawn_cache) > 0
         world._clear_caches()
-        assert len(world._spawn_cache) == 0
-        assert len(world._despawn_cache) == 0
+        assert len(world.spawn_cache) == 0
+        assert len(world.despawn_cache) == 0
 
     def test_resources_container_accessible(self, tmp_path):
         world = _make_sync_world(tmp_path)
@@ -268,13 +282,13 @@ class TestSyncWorld:
         world = _make_sync_world(tmp_path)
         sig = Archetype.sig_from_components([Position(x=0, y=0)])
         e = world.create_entity([Position(x=1, y=2)])
-        assert world._entity2sig[e] == sig
+        assert world.entity2sig[e] == sig
 
     def test_entity_counter_increments(self, tmp_path):
         world = _make_sync_world(tmp_path)
         world.create_entity([Position(x=1, y=2)])
         world.create_entity([Position(x=3, y=4)])
-        assert world._next_entity_id == 3
+        assert world.next_entity_id == 3
 
     def test_step_after_same_tick_spawn_remove_leaves_no_active_row(self, tmp_path):
         from archetype.core.archetype import Archetype
@@ -301,7 +315,7 @@ class TestSyncWorld:
             f"cancelled entity persisted as active: {rows}"
         )
 
-        for s in set(world._entity2sig.values()):
+        for s in set(world.entity2sig.values()):
             sig_df = world.querier.query_archetype(
                 sig=s,
                 world_id=str(world.world_id),
@@ -423,7 +437,7 @@ class TestSyncHooks:
 
         assert len(events) == 1
         assert events[0].entity_id == 42
-        assert world._next_entity_id == 43
+        assert world.next_entity_id == 43
 
     def test_spawn_reserved_rejects_live_id(self, tmp_path):
         import pytest

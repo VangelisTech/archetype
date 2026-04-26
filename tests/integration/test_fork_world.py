@@ -46,11 +46,11 @@ async def test_fork_preserves_tick_and_entity_state(tmp_path):
         # Fork has a new world_id and identical tick/entity mapping.
         assert fork.world_id != source.world_id
         assert fork.tick == source_tick
-        assert fork._entity2sig == source._entity2sig
-        assert set(fork._entity2sig) == {e1, e2}
+        assert fork.entity2sig == source.entity2sig
+        assert set(fork.entity2sig) == {e1, e2}
 
         # Entity counter resumes from where the source left off.
-        assert fork._next_entity_id == source._next_entity_id
+        assert fork.next_entity_id == source.next_entity_id
     finally:
         await container.shutdown()
 
@@ -109,22 +109,22 @@ async def test_fork_diverges_independently_from_source(tmp_path):
         # entity_counter was cloned: each world has its own counter, but both
         # start from the same value, so they may yield identical ids. Entities
         # are still distinct because world_id scopes all storage reads/writes.
-        source_before = dict(source._entity2sig)
-        fork_before = dict(fork._entity2sig)
+        source_before = dict(source.entity2sig)
+        fork_before = dict(fork.entity2sig)
 
         # Mutate only the fork.
         fork_new = await fork.create_entity([Position(x=99, y=99)])
-        assert fork_new in fork._entity2sig
+        assert fork_new in fork.entity2sig
         assert fork_new not in source_before  # source's view pre-mutation
 
         # Mutate only the source.
         source_new = await source.create_entity([Position(x=55, y=55)])
-        assert source_new in source._entity2sig
+        assert source_new in source.entity2sig
         assert source_new not in fork_before  # fork's view pre-mutation
 
         # Their mutation caches are independent (not shared references).
-        assert source._spawn_cache is not fork._spawn_cache
-        assert source._despawn_cache is not fork._despawn_cache
+        assert source.spawn_cache is not fork.spawn_cache
+        assert source.despawn_cache is not fork.despawn_cache
     finally:
         await container.shutdown()
 
@@ -164,7 +164,7 @@ async def test_fork_inherits_processors_not_hooks_or_broker(tmp_path):
         assert len(fork.system.processors) == 1
 
         # Hooks not inherited.
-        assert fork._hooks._by_type.get(PostTick, []) == []
+        assert fork.hooks._by_type.get(PostTick, []) == []
 
         # Broker re-injected by create_world (not copied from source).
         assert CommandBroker in fork.resources
@@ -238,7 +238,7 @@ async def test_fork_step_both_and_verify_divergence(tmp_path):
         await source.run(rc)
 
         source_tick_before_fork = source.tick
-        source_entity_count = len(source._entity2sig)
+        source_entity_count = len(source.entity2sig)
 
         # Fork
         fork = await container.world_service.fork_world(source.world_id, "fork-div", storage)
@@ -253,8 +253,8 @@ async def test_fork_step_both_and_verify_divergence(tmp_path):
         await source.step(RunConfig(num_steps=1))
 
         # Fork has one more entity than source
-        assert len(fork._entity2sig) == source_entity_count + 1
-        assert len(source._entity2sig) == source_entity_count
+        assert len(fork.entity2sig) == source_entity_count + 1
+        assert len(source.entity2sig) == source_entity_count
 
         # Ticks advanced independently
         assert fork.tick == source_tick_before_fork + 1

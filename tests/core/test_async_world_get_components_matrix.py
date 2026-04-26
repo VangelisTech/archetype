@@ -1,7 +1,7 @@
 import pytest
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from tests.conftest import make_world_orchestrator
+
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -48,7 +48,7 @@ async def test_get_components_matrix_union_and_projection(tmp_path):
 
     Validates union and projection semantics of get_components across signatures, including nested and list/bytes types.
     """
-    ws = WorldService(StorageService())
+    ws = make_world_orchestrator()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
