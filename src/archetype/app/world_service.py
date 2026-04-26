@@ -281,5 +281,34 @@ class WorldService:
         """Destroy a world. In-memory cleanup only. Storage is preserved."""
         await self._orchestrator.destroy_world(world_id)
 
+    async def add_resource(self, world_id: str | UUID, resource: object) -> None:
+        """Attach a resource to a world's Resources container."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        world.resources.insert(resource)
+
+    def list_processors(self, world_id: str | UUID) -> list:
+        """Return the world's registered processor instances."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "system") and hasattr(world.system, "processors"):
+            return list(world.system.processors)
+        return []
+
+    def list_hooks(self, world_id: str | UUID) -> list:
+        """Return the world's registered hook handles."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "hooks") and hasattr(world.hooks, "_by_type"):
+            handles = []
+            for entries in world.hooks._by_type.values():
+                handles.extend(entries)
+            return handles
+        return []
+
+    def list_resources(self, world_id: str | UUID) -> list:
+        """Return (type, instance) pairs from the world's Resources container."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        if hasattr(world, "resources"):
+            return list(world.resources.items())
+        return []
+
     async def shutdown(self) -> None:
         await self._storage_service.shutdown()

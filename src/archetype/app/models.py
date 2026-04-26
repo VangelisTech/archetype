@@ -211,14 +211,66 @@ class RolloutResult(BaseModel):
 
 
 class ProcessorInfo(BaseModel):
-    name: str
-    priority: int
-    components: list[str] = Field(default_factory=list)
+    """Read-only summary of a registered processor."""
+
+    model_config = dict(frozen=True)
+    qualname: str = Field(description="Processor class qualname")
+    priority: int = 0
+    components: tuple[str, ...] = Field(
+        default_factory=tuple,
+        description="Component qualnames this processor operates on",
+    )
 
 
-class WorldSnapshot(BaseModel):
-    model_config = dict(arbitrary_types_allowed=True)
-    world_id: str | UUID
-    tick: int = 0
-    entities: dict[int, list[str]] = Field(default_factory=dict)
-    archetype_counts: dict[str, int] = Field(default_factory=dict)
+class HookInfo(BaseModel):
+    """Read-only summary of a registered hook."""
+
+    model_config = dict(frozen=True)
+    event_type: str = Field(description="HookEvent subclass qualname")
+    handler_qualname: str = Field(description="Handler callable qualname")
+    mode: str = Field(default="blocking", description="'blocking' or 'spawn'")
+    handle_id: int = Field(description="HookHandle._id for removal")
+
+
+class ResourceInfo(BaseModel):
+    """Read-only summary of a resource attached to a world.
+
+    Resources are keyed by type in the underlying Resources container;
+    the qualname IS the unique identity of a resource within a world.
+    """
+
+    model_config = dict(frozen=True)
+    qualname: str = Field(description="Resource class qualname")
+
+
+class AuditRow(BaseModel):
+    """One row in the append-only audit log.
+
+    Schema matches platform spec § 3.3 Appendix A.5. Payment-bearing
+    columns are nullable for non-paid commands.
+    """
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
+
+    # Identity
+    audit_id: UUID = Field(default_factory=uuid.uuid7)
+    command_id: UUID | None = None
+    world_id: str | UUID | None = None
+    actor_id: str | UUID | None = None
+
+    # What happened
+    command_type: str = ""
+    status: str = "applied"  # "applied" | "rejected" | "queued"
+    payload_json: str = "{}"
+
+    # When
+    accepted_at: str = Field(default_factory=lambda: "")
+    applied_at: str = Field(default_factory=lambda: "")
+
+    # Payment (Tier 2, nullable)
+    signer_address: str | None = None
+    tx_hash: str | None = None
+    price_paid_atomic: int | None = None
+    asset: str | None = None
+    chain_id: int | None = None
+    idempotency_key: str | None = None

@@ -20,12 +20,14 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.models import (
+    AuditRow,
     Command,
     CommandType,
+    HookInfo,
     ProcessorInfo,
+    ResourceInfo,
     RunResult,
     WorldInfo,
-    WorldSnapshot,
 )
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
@@ -49,10 +51,12 @@ __all__ = [
     # Models
     "Command",
     "CommandType",
+    "AuditRow",
     "WorldInfo",
     "RunResult",
     "ProcessorInfo",
-    "WorldSnapshot",
+    "HookInfo",
+    "ResourceInfo",
     # Config (re-exports)
     "CacheConfig",
     "RunConfig",

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow
-from archetype.app.models import Command, CommandType, WorldInfo
+from archetype.app.models import Command, CommandType, HookInfo, ProcessorInfo, ResourceInfo, WorldInfo
 
 if TYPE_CHECKING:
     from daft import DataFrame
@@ -266,6 +266,83 @@ class CommandService:
     ) -> list[ArchetypeSignature]:
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
         return await self._queries.list_signatures(storage_config)
+
+
+    # ── Resource attachment (gated) ────────────────────────────────────────
+
+    async def add_resource(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        resource: object,
+    ) -> None:
+        self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
+        await self._worlds.add_resource(world_id, resource)
+
+    # ── Read introspection (gated) ─────────────────────────────────────────
+
+    async def list_processors(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[ProcessorInfo]:
+        self._gate(Command(type=CommandType.LIST_PROCESSORS), ctx)
+        procs = self._worlds.list_processors(world_id)
+        return [
+            ProcessorInfo(
+                qualname=f"{type(p).__module__}.{type(p).__qualname__}",
+                priority=getattr(p, "priority", 0),
+                components=tuple(
+                    f"{c.__module__}.{c.__qualname__}"
+                    for c in getattr(p, "components", ())
+                ),
+            )
+            for p in procs
+        ]
+
+    async def list_hooks(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[HookInfo]:
+        self._gate(Command(type=CommandType.LIST_HOOKS), ctx)
+        handles = self._worlds.list_hooks(world_id)
+        return [
+            HookInfo(
+                event_type=getattr(h, "_event_type", type(h)).__name__,
+                handler_qualname=str(getattr(h, "_fn", "")),
+                mode=getattr(h, "_mode", "blocking"),
+                handle_id=getattr(h, "_id", 0),
+            )
+            for h in handles
+        ]
+
+    async def list_resources(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+    ) -> list[ResourceInfo]:
+        self._gate(Command(type=CommandType.LIST_RESOURCES), ctx)
+        items = self._worlds.list_resources(world_id)
+        return [
+            ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}")
+            for t, _ in items
+        ]
+
+    async def get_audit_history(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID | None = None,
+        *,
+        tick_range: tuple[int, int] | None = None,
+        actor_id: str | UUID | None = None,
+        signer_address: str | None = None,
+        idempotency_key: str | None = None,
+        limit: int | None = None,
+    ):
+        self._gate(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
+        # TODO: delegate to iAuditLog.query when implemented
+        return []
 
     # ── Tick-deferred path (queued) ───────────────────────────────────────
 
