@@ -82,21 +82,8 @@ class CommandService:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
 
-    @logfire.instrument("gate.{command_type}")
-    async def _gated_op(self, ctx: ActorCtx, command_type: str, world_id=None):
-        """Logfire span wrapper — called at the start of each gated method."""
-        # The span is created by the decorator; attributes are set by the caller.
-        # This method exists solely for the instrumentation decorator.
-        pass
-
     async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
-        """Emit one audit row + logfire span. Best-effort — never raises."""
-        logfire.info(
-            "gate.{command_type}",
-            command_type=command_type,
-            world_id=str(world_id) if world_id else None,
-            actor_id=str(ctx.id),
-        )
+        """Emit one audit row. Best-effort — never raises."""
         if self._audit is None:
             return
         try:
@@ -109,6 +96,7 @@ class CommandService:
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
 
+    @logfire.instrument("gate.create_entity")
     async def create_entity(
         self,
         ctx: ActorCtx,
@@ -120,6 +108,7 @@ class CommandService:
         await self._emit(ctx, "spawn", world_id)
         return result
 
+    @logfire.instrument("gate.remove_entity")
     async def remove_entity(
         self,
         ctx: ActorCtx,
@@ -130,6 +119,7 @@ class CommandService:
         await self._mutations.remove_entity(world_id, entity_id)
         await self._emit(ctx, "despawn", world_id)
 
+    @logfire.instrument("gate.update_entity")
     async def update_entity(
         self,
         ctx: ActorCtx,
@@ -142,6 +132,7 @@ class CommandService:
         await self._mutations.update_entity(world_id, entity_id, components)
         await self._emit(ctx, "update", world_id)
 
+    @logfire.instrument("gate.add_components")
     async def add_components(
         self,
         ctx: ActorCtx,
@@ -153,6 +144,7 @@ class CommandService:
         await self._mutations.add_components(world_id, entity_id, components)
         await self._emit(ctx, "add_component", world_id)
 
+    @logfire.instrument("gate.remove_components")
     async def remove_components(
         self,
         ctx: ActorCtx,
@@ -164,6 +156,7 @@ class CommandService:
         await self._mutations.remove_components(world_id, entity_id, component_types)
         await self._emit(ctx, "remove_component", world_id)
 
+    @logfire.instrument("gate.add_processor")
     async def add_processor(
         self,
         ctx: ActorCtx,
@@ -174,6 +167,7 @@ class CommandService:
         await self._mutations.add_processor(world_id, processor)
         await self._emit(ctx, "add_processor", world_id)
 
+    @logfire.instrument("gate.remove_processor")
     async def remove_processor(
         self,
         ctx: ActorCtx,
@@ -186,6 +180,7 @@ class CommandService:
 
     # ── Lifecycle (gated, direct) ─────────────────────────────────────────
 
+    @logfire.instrument("gate.create_world")
     async def create_world(
         self,
         ctx: ActorCtx,
@@ -204,6 +199,7 @@ class CommandService:
         await self._emit(ctx, "create_world", info.world_id)
         return info
 
+    @logfire.instrument("gate.fork_world")
     async def fork_world(
         self,
         ctx: ActorCtx,
@@ -224,6 +220,7 @@ class CommandService:
         await self._emit(ctx, "fork_world", info.world_id)
         return info
 
+    @logfire.instrument("gate.destroy_world")
     async def destroy_world(
         self,
         ctx: ActorCtx,
@@ -236,6 +233,7 @@ class CommandService:
         await self._worlds.destroy_world(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
+    @logfire.instrument("gate.get_world_info")
     async def get_world_info(
         self,
         ctx: ActorCtx,
@@ -268,6 +266,7 @@ class CommandService:
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
+    @logfire.instrument("gate.step")
     async def step(
         self,
         ctx: ActorCtx,
@@ -280,6 +279,7 @@ class CommandService:
         await self._emit(ctx, "step", world_id)
         return commands_applied
 
+    @logfire.instrument("gate.run")
     async def run(
         self,
         ctx: ActorCtx,
@@ -292,6 +292,7 @@ class CommandService:
         await self._emit(ctx, "run", world_id)
         return result
 
+    @logfire.instrument("gate.run_episode")
     async def run_episode(
         self,
         ctx: ActorCtx,
@@ -305,6 +306,7 @@ class CommandService:
         await self._emit(ctx, "run_episode", world_id)
         return result
 
+    @logfire.instrument("gate.run_rollout")
     async def run_rollout(
         self,
         ctx: ActorCtx,
@@ -324,6 +326,7 @@ class CommandService:
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
 
+    @logfire.instrument("gate.query_components")
     async def query_components(
         self,
         ctx: ActorCtx,
@@ -346,6 +349,7 @@ class CommandService:
             entity_ids=entity_ids,
         )
 
+    @logfire.instrument("gate.query_archetype")
     async def query_archetype(
         self,
         ctx: ActorCtx,
