@@ -35,13 +35,25 @@ class ServiceContainer:
         # Infrastructure
         self.broker = CommandBroker()
 
-        # Services
+        # Leaf services
         self.storage_service = StorageService()
+
+        # Services that depend on leaves
         self.world_service = WorldService(self.storage_service)
-        self.command_service = CommandService(self.broker, self.world_service)
+        self.query_service = QueryService(self.storage_service)
+
+        # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
-        self.query_service = QueryService(self.storage_service)
+
+        # The gate — depends on everything
+        self.command_service = CommandService(
+            mutations=self.mutation_service,
+            worlds=self.world_service,
+            simulation=self.simulation_service,
+            queries=self.query_service,
+            broker=self.broker,
+        )
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
