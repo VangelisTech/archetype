@@ -61,6 +61,50 @@ class AsyncQueryManager(iAsyncQueryManager):
 
         return df
 
+    async def query_components(
+        self,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Query all entities that contain the requested component types.
+
+        Discovers matching archetype signatures, queries each, projects to
+        the requested component columns, and unions the results.
+        """
+        import daft
+        import pyarrow as pa
+
+        required = set(components)
+
+        # Build the output schema from the requested components
+        output_sig = tuple(sorted(components, key=lambda t: t.__name__))
+        schema = Archetype.get_archetype_schema(output_sig)
+        proj_cols = schema.names
+
+        # Find all sigs that contain the required types
+        all_sigs = await self.list_signatures()
+        matching = [sig for sig in all_sigs if required.issubset(set(sig))]
+
+        # Start with empty DataFrame of the right schema
+        result = daft.from_arrow(pa.Table.from_batches([], schema=schema))
+
+        for sig in matching:
+            df = await self._store.get_archetype_df(
+                sig=sig,
+                world_id=world_id,
+                run_id=run_id,
+                ticks=ticks,
+                entity_ids=entity_ids,
+                active_only=True,
+            )
+            result = result.concat(df.select(*proj_cols))
+
+        return result
+
     async def list_signatures(self) -> list[ArchetypeSignature]:
         """Delegate to the underlying store's signature registry."""
         return await self._store.list_signatures()

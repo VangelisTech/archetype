@@ -284,6 +284,28 @@ class CommandService:
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
 
+    async def query_components(
+        self,
+        ctx: ActorCtx,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Query entities by component subset. Gated read."""
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        return await self._queries.query_components(
+            components=components,
+            world_id=world_id,
+            run_id=run_id,
+            storage_config=storage_config,
+            ticks=ticks,
+            entity_ids=entity_ids,
+        )
+
     async def query_archetype(
         self,
         ctx: ActorCtx,

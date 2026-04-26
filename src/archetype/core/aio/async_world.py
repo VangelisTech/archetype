@@ -477,40 +477,18 @@ class AsyncWorld(iAsyncWorld):
         components: list[type[Component]],
         entity_ids: list[int] | None = None,
     ) -> DataFrame:
+        """Query all active entities that contain the requested component types.
+
+        Passthrough to the querier's query_components method.
         """
-        Query all active entities that contain at least the provided component types,
-        unioning rows across all matching archetype signatures.
-
-        Returns a DataFrame projected to the provided components' schema.
-        """
-        required_types = set(components)
-
-        # Build output schema directly from component types
-        temp_sig = tuple(sorted(components, key=lambda t: t.__name__))
-        schema = Archetype.get_archetype_schema(temp_sig)
-        df = daft.from_arrow(pa.Table.from_batches([], schema=schema))
-        # Discover all archetype signatures that contain the requested components.
-        all_sigs = await self.querier.list_signatures()
-        matching_sigs = [sig for sig in all_sigs if required_types.issubset(set(sig))]
-
-        # Read state at the latest committed tick (the previous tick to the one being processed).
         read_tick = max(self.tick - 1, 0)
-
-        # Project each matching archetype to the requested schema and union.
-        proj_cols = schema.names
-        for sig in matching_sigs:
-            sig_df = await self.querier.query_archetype(
-                sig=sig,
-                world_id=self.world_id,
-                run_id=self.run_id,
-                ticks=[read_tick],
-            )
-            df = df.concat(sig_df.select(*proj_cols))
-
-        if entity_ids:
-            df = df.where(col("entity_id").is_in(entity_ids))
-
-        return df
+        return await self.querier.query_components(
+            components=components,
+            world_id=self.world_id,
+            run_id=self.run_id,
+            ticks=[read_tick],
+            entity_ids=entity_ids,
+        )
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
         """

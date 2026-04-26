@@ -293,13 +293,15 @@ class RuntimeWorld:
     # ── Queries ───────────────────────────────────────────────────────────
 
     async def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
-        """Query components at the current tick."""
+        """Query all entities that have the requested component types."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            sig = tuple(sorted(component_types, key=lambda t: t.__name__))
             info = await self._gate.get_world_info(self._ctx, wid)
-            return await self._gate.query_archetype(
-                self._ctx, sig, str(wid), str(info.run_id or ""),
+            return await self._gate.query_components(
+                self._ctx,
+                list(component_types),
+                str(wid),
+                str(info.run_id or ""),
                 storage_config=self._state.storage_config,
                 entity_ids=entity_ids,
             )

@@ -60,6 +60,33 @@ class QueryService:
             components=components,
         )
 
+    async def query_components(
+        self,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Query all entities that contain the requested component types.
+
+        Subset matching: finds all archetype signatures that contain the
+        requested types, queries each, projects to requested columns, unions.
+        """
+        store = await self._storage_service.get_or_create_store(
+            storage_config or StorageConfig()
+        )
+        querier = AsyncQueryManager(store=store)
+        return await querier.query_components(
+            components=components,
+            world_id=world_id,
+            run_id=run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+        )
+
     async def list_signatures(
         self,
         storage_config: StorageConfig | None = None,
