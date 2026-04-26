@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import make_world_orchestrator
+from tests.conftest import make_world_service
 
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.archetype import Archetype
@@ -23,7 +23,7 @@ class Noop(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_world_materialize_mutations_cast_and_join_paths(tmp_path):
     """Exercise cast and left-join branches in materialize_mutations by creating despawns and spawns and ensure no type errors."""
-    ws = make_world_orchestrator()
+    ws = make_world_service()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()

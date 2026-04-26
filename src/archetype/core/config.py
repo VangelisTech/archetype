@@ -166,7 +166,7 @@ class WorldConfig(BaseModel):
     constructor so all state is explicit and serializable.
     """
 
-    world_id: UUID | None = Field(
+    world_id: str | UUID | None = Field(
         default_factory=uuid.uuid7,
         description="Unique identifier for the world. Auto-generated if omitted.",
     )

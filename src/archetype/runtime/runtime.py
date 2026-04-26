@@ -40,10 +40,9 @@ class ArchetypeRuntime:
     def __init__(
         self,
         *,
-        registry_path: str | Path | None = None,
         actor_ctx: ActorCtx | None = None,
     ) -> None:
-        self._container = ServiceContainer(registry_path=registry_path)
+        self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or _default_actor_ctx()
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
         self._closed = False
@@ -59,10 +58,9 @@ class ArchetypeRuntime:
     def sync(
         cls,
         *,
-        registry_path: str | Path | None = None,
         actor_ctx: ActorCtx | None = None,
     ) -> SyncArchetypeRuntime:
-        return SyncArchetypeRuntime(registry_path=registry_path, actor_ctx=actor_ctx)
+        return SyncArchetypeRuntime(actor_ctx=actor_ctx)
 
     def world(
         self,
@@ -109,10 +107,9 @@ class SyncArchetypeRuntime:
     def __init__(
         self,
         *,
-        registry_path: str | Path | None = None,
         actor_ctx: ActorCtx | None = None,
     ) -> None:
-        self._runtime = ArchetypeRuntime(registry_path=registry_path, actor_ctx=actor_ctx)
+        self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx)
         self._runner: asyncio.Runner | None = None
 
     def __enter__(self) -> SyncArchetypeRuntime:

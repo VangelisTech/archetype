@@ -24,7 +24,7 @@ from archetype.app.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 
 if TYPE_CHECKING:
-    from archetype.app.world_service import WorldOrchestrator
+    from archetype.app.world_service import WorldService
     from archetype.core.aio import AsyncWorld
     from archetype.core.interfaces import iWorld
 
@@ -39,7 +39,7 @@ class CommandService:
     SimulationService calls drain_and_apply() during each tick to process queued commands.
     """
 
-    def __init__(self, broker: CommandBroker, worlds: WorldOrchestrator):
+    def __init__(self, broker: CommandBroker, worlds: WorldService):
         self._broker = broker
         self._worlds = worlds
         self._spawn_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)

@@ -1,19 +1,19 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for WorldFactory assembly logic via WorldOrchestrator."""
+"""Tests for WorldFactory assembly logic via WorldService."""
 
 import pytest
 
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldOrchestrator
+from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 
 
 def _make_orchestrator(tmp_path):
     ss = StorageService()
-    orch = WorldOrchestrator(ss)
+    orch = WorldService(ss)
     return orch, ss
 
 

@@ -18,7 +18,7 @@ from archetype.app.models import Command, WorldSnapshot
 
 if TYPE_CHECKING:
     from archetype.app.broker import CommandBroker
-    from archetype.app.world_service import WorldOrchestrator
+    from archetype.app.world_service import WorldService
 
 
 class QueryService:

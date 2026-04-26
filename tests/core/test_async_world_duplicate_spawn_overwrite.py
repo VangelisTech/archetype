@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import make_world_orchestrator
+from tests.conftest import make_world_service
 
 from archetype.core.aio import AsyncProcessor, AsyncSystem
 from archetype.core.component import Component
@@ -22,7 +22,7 @@ class Noop(AsyncProcessor):
 @pytest.mark.asyncio
 async def test_duplicate_spawn_same_entity_overwrites(monkeypatch, tmp_path):
     """Simulate duplicate spawn commands for the same entity within the same tick; ensure last write wins via world internals by using public API to observe final state."""
-    ws = make_world_orchestrator()
+    ws = make_world_service()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         system = AsyncSystem()

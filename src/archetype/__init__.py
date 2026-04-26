@@ -90,7 +90,6 @@ __all__ = [
     # App layer services
     "CommandBroker",
     "WorldService",
-    "WorldFactory",
     "StorageService",
     "CommandService",
     "SimulationService",
@@ -147,7 +146,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),
-    "WorldFactory": ("archetype.app", "WorldFactory"),
     "StorageService": ("archetype.app", "StorageService"),
     "CommandService": ("archetype.app", "CommandService"),
     "SimulationService": ("archetype.app", "SimulationService"),

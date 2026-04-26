@@ -1,13 +1,13 @@
 import pytest
 
-from tests.conftest import make_world_orchestrator
+from tests.conftest import make_world_service
 
 from archetype.core.config import StorageConfig, WorldConfig
 
 
 @pytest.mark.asyncio
 async def test_world_service_builds_context_once(tmp_path):
-    ws = make_world_orchestrator()
+    ws = make_world_service()
     try:
         cfg = WorldConfig(name="w1")
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")

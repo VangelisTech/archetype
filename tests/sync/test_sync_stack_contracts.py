@@ -46,7 +46,7 @@ def _make_sync_stack(tmp_path, name: str = "sync"):
     updater = UpdateManager(store=store)
     system = SyncSystem()
     world = SyncWorld(
-        config=WorldConfig(name=name),
+        world_id="test", name=name,
         querier=querier,
         updater=updater,
         system=system,

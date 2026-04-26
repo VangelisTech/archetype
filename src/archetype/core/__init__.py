@@ -18,12 +18,13 @@ Archetype Core
 Pure ECS primitives: Component, Archetype, World, System, Processor.
 Resources: Type-safe DI container for passing services to processors.
 
-Application-level orchestration and storage backends live in archetype.app.
+Application-level orchestration lives in archetype.app.
 """
 
 # Async Module
 from .aio import (
     AsyncCachedStore,
+    AsyncLancedbStore,
     AsyncProcessor,
     AsyncQueryManager,
     AsyncStore,
@@ -72,5 +73,6 @@ __all__ = [
     "AsyncQueryManager",
     "AsyncUpdateManager",
     "AsyncCachedStore",
+    "AsyncLancedbStore",
     "AsyncProcessor",
 ]

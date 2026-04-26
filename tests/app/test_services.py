@@ -17,9 +17,9 @@ from archetype.app.models import Command, CommandType
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldOrchestrator
+from archetype.app.world_service import WorldService
 from archetype.core.component import Component
-from tests.conftest import make_world_orchestrator
+from tests.conftest import make_world_service
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
@@ -41,7 +41,7 @@ class TestServiceContainer:
         container = ServiceContainer()
         assert isinstance(container.storage_service, StorageService)
         assert isinstance(container.broker, CommandBroker)
-        assert isinstance(container.world_service, WorldOrchestrator)
+        assert isinstance(container.world_service, WorldService)
         assert isinstance(container.command_service, CommandService)
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
@@ -592,7 +592,7 @@ class TestQueryService:
     @pytest.mark.asyncio
     async def test_get_command_history_without_broker(self, tmp_path):
         """QueryService without broker returns empty history."""
-        ws = make_world_orchestrator()
+        ws = make_world_service()
         qs = QueryService(ws, broker=None)
 
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -730,14 +730,14 @@ class TestWorldService:
 
             worlds = container.world_service.list_worlds()
             assert len(worlds) == 1
-            assert worlds[0].entity_count == 5
+            assert len(worlds[0].entity2sig) == 5
         finally:
             await container.shutdown()
 
     @pytest.mark.asyncio
     async def test_create_world_with_explicit_none_world_id_generates_uuid(self, tmp_path):
         """create_world with explicit world_id=None produces a real UUID."""
-        ws = make_world_orchestrator()
+        ws = make_world_service()
         try:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = await ws.create_world(WorldConfig(name="t", world_id=None), storage)
@@ -748,14 +748,14 @@ class TestWorldService:
             )
             # Round-trip lookup by the returned UUID must succeed.
             assert ws.get_world(world.world_id) is world
-            assert None not in ws._worlds
+            assert None not in ws._orchestrator._registry._worlds
         finally:
             await ws.shutdown()
 
     @pytest.mark.asyncio
     async def test_two_worlds_with_explicit_none_ids_do_not_collide(self, tmp_path):
         """Two creates with world_id=None produce distinct worlds."""
-        ws = make_world_orchestrator()
+        ws = make_world_service()
         try:
             w1 = await ws.create_world(
                 WorldConfig(name="a", world_id=None),
@@ -771,8 +771,8 @@ class TestWorldService:
             assert w1.world_id != w2.world_id, (
                 "two WorldConfig(world_id=None) calls collapsed to the same id"
             )
-            assert len(ws._worlds) == 2, (
-                f"expected two distinct worlds, got {len(ws._worlds)} entries"
+            assert len(ws._orchestrator._registry._worlds) == 2, (
+                f"expected two distinct worlds, got {len(ws._orchestrator._registry._worlds)} entries"
             )
             assert ws.get_world(w1.world_id) is w1
             assert ws.get_world(w2.world_id) is w2
@@ -786,7 +786,7 @@ class TestWorldService:
         The fix resolves ``world_id`` locally and threads it to the factory
         via ``model_copy``, leaving the caller's config object untouched.
         """
-        ws = make_world_orchestrator()
+        ws = make_world_service()
         try:
             original = WorldConfig(name="immutable", world_id=None)
             assert original.world_id is None

@@ -1,6 +1,6 @@
 import pytest
 
-from tests.conftest import make_world_orchestrator
+from tests.conftest import make_world_service
 
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -17,7 +17,7 @@ class B(Component):
 @pytest.mark.asyncio
 async def test_get_components_unions_across_signatures_and_projects_schema(tmp_path):
     """get_components([A]) should union rows from all active archetypes that include A and project to A's schema; get_components([A,B]) should only return rows that include both."""
-    ws = make_world_orchestrator()
+    ws = make_world_service()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)

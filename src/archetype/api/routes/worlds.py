@@ -16,7 +16,7 @@ from archetype.api.models import CreateWorldRequest, ForkWorldRequest, WorldResp
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import Command, CommandType
-from archetype.app.world_service import WorldOrchestrator, _world_entity_count
+from archetype.app.world_service import WorldService
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
 
@@ -37,39 +37,38 @@ async def create_world(
         },
     )
     await cs.submit("__global__", cmd, ctx)
-    # Apply immediately — world lifecycle commands are not tick-scheduled.
     world = await cs.apply_world_lifecycle(cmd)
     return WorldResponse(
         world_id=str(world.world_id),
         name=getattr(world, "name", None),
         tick=getattr(world, "tick", 0),
-        entity_count=_world_entity_count(world),
+        entity_count=len(getattr(world, "entity2sig", {})),
     )
 
 
 @router.get("")
-async def list_worlds(ws: WorldOrchestrator = Depends(get_world_service)):
+async def list_worlds(ws: WorldService = Depends(get_world_service)):
     worlds = ws.list_worlds()
     return [
         WorldResponse(
             world_id=str(w.world_id),
             name=w.name,
             tick=w.tick,
-            entity_count=w.entity_count,
+            entity_count=len(getattr(w, "entity2sig", {})),
         )
         for w in worlds
     ]
 
 
 @router.get("/{world_id}", response_model=WorldResponse)
-async def get_world(world_id: str, ws: WorldOrchestrator = Depends(get_world_service)):
+async def get_world(world_id: str, ws: WorldService = Depends(get_world_service)):
     try:
         world = ws.get_world(UUID(world_id))
         return WorldResponse(
             world_id=str(world.world_id),
             name=getattr(world, "name", None),
             tick=getattr(world, "tick", 0),
-            entity_count=_world_entity_count(world),
+            entity_count=len(getattr(world, "entity2sig", {})),
         )
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid UUID: {world_id}") from None
@@ -118,5 +117,5 @@ async def fork_world(
         world_id=str(new_world.world_id),
         name=getattr(new_world, "name", None),
         tick=getattr(new_world, "tick", 0),
-        entity_count=_world_entity_count(new_world),
+        entity_count=len(getattr(new_world, "entity2sig", {})),
     )

@@ -22,7 +22,7 @@ from archetype.core.config import RunConfig
 
 if TYPE_CHECKING:
     from archetype.app.command_service import CommandService
-    from archetype.app.world_service import WorldOrchestrator
+    from archetype.app.world_service import WorldService
 
 
 class SimulationService:

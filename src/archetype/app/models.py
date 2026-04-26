@@ -128,7 +128,7 @@ class Command(BaseModel):
 
 class WorldInfo(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
-    world_id: UUID
+    world_id: str | UUID
     name: str | None = None
     tick: int = 0
     entity_count: int = 0
@@ -138,7 +138,7 @@ class WorldInfo(BaseModel):
 class RunResult(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
     run_id: UUID
-    world_id: UUID
+    world_id: str | UUID
     ticks_completed: int = 0
     commands_applied: int = 0
     final_tick: int = 0
@@ -152,7 +152,7 @@ class ProcessorInfo(BaseModel):
 
 class WorldSnapshot(BaseModel):
     model_config = dict(arbitrary_types_allowed=True)
-    world_id: UUID
+    world_id: str | UUID
     tick: int = 0
     entities: dict[int, list[str]] = Field(default_factory=dict)
     archetype_counts: dict[str, int] = Field(default_factory=dict)

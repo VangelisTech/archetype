@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-
 import pytest
 from daft import DataFrame, col
 from uuid_utils import uuid7
@@ -98,9 +96,9 @@ class SlowPass(AsyncProcessor):
 def test_sugar_exports_are_additive():
     assert World is SyncWorld
     assert Processor is SyncProcessor
-    assert ArchetypeRuntime.__module__ == "archetype.sugar"
-    assert SyncArchetypeRuntime.__module__ == "archetype.sugar"
-    assert RuntimeWorld.__module__ == "archetype.sugar"
+    assert ArchetypeRuntime.__module__ == "archetype.runtime.runtime"
+    assert SyncArchetypeRuntime.__module__ == "archetype.runtime.runtime"
+    assert RuntimeWorld.__module__ == "archetype.runtime.world"
 
 
 @pytest.mark.asyncio
@@ -441,9 +439,7 @@ async def test_world_shutdown_clears_only_its_pending_commands(tmp_path):
 
 @pytest.mark.asyncio
 async def test_world_shutdown_removes_only_its_registry_entry(tmp_path):
-    registry_path = tmp_path / "registry.json"
-
-    async with ArchetypeRuntime(registry_path=registry_path) as app:
+    async with ArchetypeRuntime() as app:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="runtime_registry")
         left = app.world("left", storage=storage)
         right = app.world("right", storage=storage)
@@ -452,8 +448,8 @@ async def test_world_shutdown_removes_only_its_registry_entry(tmp_path):
         await right.query(Position)
         await left.shutdown()
 
-        data = json.loads(registry_path.read_text())
-        names = {entry["name"] for entry in data.values()}
+        remaining = app._container.world_service.list_worlds()
+        names = {w.name for w in remaining}
         assert names == {"right"}
 
 
