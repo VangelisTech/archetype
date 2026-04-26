@@ -284,16 +284,6 @@ class SyncWorld(iWorld):
         self._register_entity(entity_id, components)
         return entity_id
 
-    def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
-        """Spawn with a pre-reserved entity id. Fires ``OnSpawn``.
-
-        Raises ``ValueError`` if the id is already live.
-        """
-        if entity_id in self.entity2sig:
-            raise ValueError(f"Entity {entity_id} already exists in world {self.world_id}")
-        self.next_entity_id = max(self.next_entity_id, entity_id + 1)
-        self._register_entity(entity_id, components)
-
     def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so

@@ -14,8 +14,8 @@ async def test_storage_service_multiton_and_caching(tmp_path):
         cfg1 = StorageConfig(uri=str(tmp_path / "store1"), namespace="ns")
         cfg2 = StorageConfig(uri=str(tmp_path / "store1"), namespace="ns")  # identical key
 
-        store1 = await svc.create_store(cfg1)
-        store2 = await svc.create_store(cfg2)
+        store1 = await svc.get_or_create_store(cfg1)
+        store2 = await svc.get_or_create_store(cfg2)
 
         # Same store for identical (uri, namespace)
         assert store1 is store2
@@ -36,7 +36,7 @@ async def test_storage_service_cache_wrapper(tmp_path):
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         cache_cfg = CacheConfig(flush_rows=1, flush_mb=1, global_mb=1, idle_sec=1)
-        store = await svc.create_store(cfg, cache_config=cache_cfg)
+        store = await svc.get_or_create_store(cfg, cache_config=cache_cfg)
         from archetype.core.aio import AsyncCachedStore
 
         assert isinstance(store, AsyncCachedStore)
@@ -54,13 +54,13 @@ async def test_backend_selection_between_default_and_lancedb(tmp_path):
             namespace="ns_default",
             backend=StorageBackend.ICEBERG,
         )
-        store_default = await svc.create_store(cfg_default)
+        store_default = await svc.get_or_create_store(cfg_default)
         assert isinstance(store_default, AsyncStore)
 
         cfg_lance = StorageConfig(
             uri=str(tmp_path / "store_lance"), namespace="ns_lance", backend=StorageBackend.LANCEDB
         )
-        store_lance = await svc.create_store(cfg_lance)
+        store_lance = await svc.get_or_create_store(cfg_lance)
         assert isinstance(store_lance, AsyncLancedbStore)
     finally:
         await svc.shutdown()
@@ -75,8 +75,8 @@ async def test_get_backend_pool_distinguishes_cache_config(tmp_path):
     try:
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
 
-        store_cached = await svc.create_store(cfg, cache_config=CacheConfig(idle_sec=999))
-        store_uncached = await svc.create_store(cfg, cache_config=None)
+        store_cached = await svc.get_or_create_store(cfg, cache_config=CacheConfig(idle_sec=999))
+        store_uncached = await svc.get_or_create_store(cfg, cache_config=None)
 
         assert isinstance(store_cached, AsyncCachedStore), "first call should be cached"
         assert not isinstance(store_uncached, AsyncCachedStore), (
@@ -102,8 +102,8 @@ async def test_get_backend_pool_distinguishes_backend_choice(tmp_path):
             backend=StorageBackend.LANCEDB,
         )
 
-        store_iceberg = await svc.create_store(cfg_iceberg)
-        store_lance = await svc.create_store(cfg_lance)
+        store_iceberg = await svc.get_or_create_store(cfg_iceberg)
+        store_lance = await svc.get_or_create_store(cfg_lance)
 
         assert isinstance(store_iceberg, AsyncStore), (
             f"iceberg caller got {type(store_iceberg).__name__}"
@@ -135,7 +135,7 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
             namespace="ns",
             backend=StorageBackend.LANCEDB,
         )
-        store = await svc.create_store(cfg)
+        store = await svc.get_or_create_store(cfg)
 
         assert isinstance(store, AsyncLancedbStore)
         assert not hasattr(store, "session")
@@ -183,8 +183,8 @@ async def test_get_backend_pool_shares_when_cache_config_matches(tmp_path):
         cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         cache = CacheConfig(idle_sec=123)
 
-        store_a = await svc.create_store(cfg, cache_config=cache)
-        store_b = await svc.create_store(cfg, cache_config=CacheConfig(idle_sec=123))
+        store_a = await svc.get_or_create_store(cfg, cache_config=cache)
+        store_b = await svc.get_or_create_store(cfg, cache_config=CacheConfig(idle_sec=123))
 
         assert isinstance(store_a, AsyncCachedStore)
         assert store_a is store_b
@@ -200,7 +200,7 @@ async def test_multiton_concurrent_calls_return_same_instances(tmp_path):
         cfg = StorageConfig(uri=str(tmp_path / "store_cc"), namespace="ns_cc")
 
         async def get_store():
-            return await svc.create_store(cfg)
+            return await svc.get_or_create_store(cfg)
 
         results = await __import__("asyncio").gather(*[get_store() for _ in range(5)])
         s0 = results[0]

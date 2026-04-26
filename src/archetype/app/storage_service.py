@@ -114,12 +114,16 @@ class StorageService:
             f"::cache({cache_part})"
         )
 
-    async def create_store(
+    async def get_or_create_store(
         self,
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> iAsyncStore:
-        """Return the pooled async store for a storage/cache configuration."""
+        """Return the pooled async store for a storage/cache configuration.
+
+        Creates the store on first call for a given config key.
+        Subsequent calls with the same config return the cached instance.
+        """
         key = self._pool_key(storage_config, cache_config)
 
         if key not in self._instances:

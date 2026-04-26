@@ -196,7 +196,7 @@ class WorldService:
         if storage_config is None:
             storage_config = StorageConfig()
 
-        store = await self._storage_service.create_store(storage_config, cache_config)
+        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         return self._orchestrator.create_world(store, config, system=system)
 
     def get_world(self, world_id: UUID) -> iWorld:

@@ -4,116 +4,60 @@
 """
 Simulation Service
 
-Owns execution. A simulation maps to Runs.
-The world is just the container — SimulationService drives what happens inside it.
+Owns execution. Drives world stepping via RunConfig.
+The world is the container — SimulationService drives what happens inside it.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
 
-from archetype.app.auth.guard import reset_tick_counters
-from archetype.app.models import ProcessorInfo, RunResult
+from archetype.app.models import RunResult
 from archetype.core.aio import AsyncWorld
 from archetype.core.config import RunConfig
 
 if TYPE_CHECKING:
-    from archetype.app.command_service import CommandService
     from archetype.app.world_service import WorldService
 
 
 class SimulationService:
-    """
-    Execution engine. Drives world stepping with broker drain.
-    """
+    """Execution engine. Takes a RunConfig and drives worlds through ticks."""
 
-    def __init__(self, worlds: WorldOrchestrator, command_drain: CommandService):
-        self._worlds = worlds
-        self._command_drain = command_drain
+    def __init__(self, world_service: WorldService) -> None:
+        self._world_service = world_service
 
     async def step(
         self,
-        world_id: UUID,
+        world_id: str | UUID,
         run_config: RunConfig,
         **input_kwargs,
-    ) -> int:
-        """Drain queued commands, advance the world one tick. Returns applied count."""
-        world = self._worlds.get_world(world_id)
-        tick = getattr(world, "tick", 0)
-
-        applied = await self._command_drain.drain_and_apply(world_id, tick)
-        reset_tick_counters()
-
+    ) -> None:
+        """Advance a world by one tick."""
+        world = self._world_service.get_world(UUID(str(world_id)))
         if isinstance(world, AsyncWorld):
             await world.step(run_config, **input_kwargs)
 
-        return len(applied)
-
     async def run(
         self,
-        world_id: UUID,
+        world_id: str | UUID,
         run_config: RunConfig,
         **input_kwargs,
     ) -> RunResult:
-        """Execute ``run_config.num_steps`` ticks and return the RunResult."""
-        world = self._worlds.get_world(world_id)
+        """Execute ``run_config.num_steps`` ticks and return a RunResult."""
+        world = self._world_service.get_world(UUID(str(world_id)))
 
-        if hasattr(world, "run_id") and world.run_id is None:
+        if isinstance(world, AsyncWorld) and world.run_id is None:
             world.run_id = str(run_config.run_id)
 
-        total_commands = 0
-
         for _ in range(run_config.num_steps):
-            cmds = await self.step(world_id, run_config, **input_kwargs)
-            total_commands += cmds
+            await self.step(world_id, run_config, **input_kwargs)
 
         return RunResult(
             run_id=run_config.run_id,
             world_id=world_id,
             ticks_completed=run_config.num_steps,
-            commands_applied=total_commands,
+            commands_applied=0,
             final_tick=getattr(world, "tick", 0),
         )
-
-    async def run_all(
-        self,
-        run_config: RunConfig,
-        **input_kwargs,
-    ) -> list[RunResult]:
-        """Step all worlds concurrently."""
-        worlds = self._worlds.list_worlds()
-        tasks = [self.run(w.world_id, run_config, **input_kwargs) for w in worlds]
-        if tasks:
-            return list(await asyncio.gather(*tasks))
-        return []
-
-    async def add_processor(self, world_id: UUID, processor) -> None:
-        """Add a processor to a world's system."""
-        world = self._worlds.get_world(world_id)
-        await world.add_processor(processor)
-
-    async def remove_processor(self, world_id: UUID, proc_type) -> None:
-        """Remove a processor from a world."""
-        world = self._worlds.get_world(world_id)
-        await world.remove_processor(proc_type)
-
-    def list_processors(self, world_id: UUID) -> list[ProcessorInfo]:
-        """List processors in a world."""
-        world = self._worlds.get_world(world_id)
-        result = []
-        if hasattr(world, "system") and hasattr(world.system, "processors"):
-            for proc in world.system.processors:
-                result.append(
-                    ProcessorInfo(
-                        name=type(proc).__name__,
-                        priority=getattr(proc, "priority", 0),
-                        components=[
-                            c.__name__ if hasattr(c, "__name__") else str(c)
-                            for c in getattr(proc, "components", ())
-                        ],
-                    )
-                )
-        return result

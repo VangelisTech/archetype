@@ -23,7 +23,7 @@ class TestStorageServiceMultiton:
     async def test_get_backend_returns_triplet(self, tmp_path):
         ss = make_storage_service()
         try:
-            store = await ss.create_store(
+            store = await ss.get_or_create_store(
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns")
             )
             querier = AsyncQueryManager(store=store)
@@ -40,8 +40,8 @@ class TestStorageServiceMultiton:
         ss = make_storage_service()
         try:
             cfg = StorageConfig(uri=str(tmp_path / "s"), namespace="ns")
-            s1 = await ss.create_store(cfg)
-            s2 = await ss.create_store(cfg)
+            s1 = await ss.get_or_create_store(cfg)
+            s2 = await ss.get_or_create_store(cfg)
             assert s1 is s2
         finally:
             await ss.shutdown()
@@ -50,8 +50,8 @@ class TestStorageServiceMultiton:
     async def test_multiton_different_config_different_instances(self, tmp_path):
         ss = make_storage_service()
         try:
-            s1 = await ss.create_store(StorageConfig(uri=str(tmp_path / "a"), namespace="ns"))
-            s2 = await ss.create_store(StorageConfig(uri=str(tmp_path / "b"), namespace="ns"))
+            s1 = await ss.get_or_create_store(StorageConfig(uri=str(tmp_path / "a"), namespace="ns"))
+            s2 = await ss.get_or_create_store(StorageConfig(uri=str(tmp_path / "b"), namespace="ns"))
             assert s1 is not s2
         finally:
             await ss.shutdown()
@@ -59,7 +59,7 @@ class TestStorageServiceMultiton:
     @pytest.mark.asyncio
     async def test_shutdown_clears_instances(self, tmp_path):
         ss = make_storage_service()
-        await ss.create_store(StorageConfig(uri=str(tmp_path / "s"), namespace="ns"))
+        await ss.get_or_create_store(StorageConfig(uri=str(tmp_path / "s"), namespace="ns"))
         assert len(ss._instances) == 1
         await ss.shutdown()
         assert len(ss._instances) == 0
@@ -71,7 +71,7 @@ class TestStorageRoundTrip:
         """Write a DataFrame via updater, read back via querier, verify data."""
         ss = make_storage_service()
         try:
-            store = await ss.create_store(
+            store = await ss.get_or_create_store(
                 StorageConfig(uri=str(tmp_path / "rt"), namespace="ns")
             )
             querier = AsyncQueryManager(store=store)
@@ -118,7 +118,7 @@ class TestStorageRoundTrip:
     async def test_multiple_entities_round_trip(self, tmp_path):
         ss = make_storage_service()
         try:
-            store = await ss.create_store(
+            store = await ss.get_or_create_store(
                 StorageConfig(uri=str(tmp_path / "rt2"), namespace="ns")
             )
             querier = AsyncQueryManager(store=store)

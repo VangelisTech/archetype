@@ -108,20 +108,20 @@ async def test_runtime_world_construction_is_pure(tmp_path, monkeypatch):
         backend_calls = 0
 
         original_create_world = app._container.world_service.create_world
-        original_create_store = app._container.storage_service.create_store
+        original_get_or_create_store = app._container.storage_service.get_or_create_store
 
         async def tracked_create_world(*args, **kwargs):
             nonlocal create_calls
             create_calls += 1
             return await original_create_world(*args, **kwargs)
 
-        async def tracked_create_store(*args, **kwargs):
+        async def tracked_get_or_create_store(*args, **kwargs):
             nonlocal backend_calls
             backend_calls += 1
-            return await original_create_store(*args, **kwargs)
+            return await original_get_or_create_store(*args, **kwargs)
 
         monkeypatch.setattr(app._container.world_service, "create_world", tracked_create_world)
-        monkeypatch.setattr(app._container.storage_service, "create_store", tracked_create_store)
+        monkeypatch.setattr(app._container.storage_service, "get_or_create_store", tracked_get_or_create_store)
 
         world = app.world(
             "pure-construction",
@@ -141,20 +141,20 @@ async def test_runtime_world_as_actor_is_pure_before_activation(tmp_path, monkey
         backend_calls = 0
 
         original_create_world = app._container.world_service.create_world
-        original_create_store = app._container.storage_service.create_store
+        original_get_or_create_store = app._container.storage_service.get_or_create_store
 
         async def tracked_create_world(*args, **kwargs):
             nonlocal create_calls
             create_calls += 1
             return await original_create_world(*args, **kwargs)
 
-        async def tracked_create_store(*args, **kwargs):
+        async def tracked_get_or_create_store(*args, **kwargs):
             nonlocal backend_calls
             backend_calls += 1
-            return await original_create_store(*args, **kwargs)
+            return await original_get_or_create_store(*args, **kwargs)
 
         monkeypatch.setattr(app._container.world_service, "create_world", tracked_create_world)
-        monkeypatch.setattr(app._container.storage_service, "create_store", tracked_create_store)
+        monkeypatch.setattr(app._container.storage_service, "get_or_create_store", tracked_get_or_create_store)
 
         world = app.world(
             "alias-pure",

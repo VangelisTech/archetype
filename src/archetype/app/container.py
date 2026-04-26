@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
+from archetype.app.mutation_service import MutationService
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
@@ -38,8 +39,9 @@ class ServiceContainer:
         self.storage_service = StorageService()
         self.world_service = WorldService(self.storage_service)
         self.command_service = CommandService(self.broker, self.world_service)
-        self.simulation_service = SimulationService(self.world_service, self.command_service)
-        self.query_service = QueryService(self.world_service, broker=self.broker)
+        self.mutation_service = MutationService(self.world_service)
+        self.simulation_service = SimulationService(self.world_service)
+        self.query_service = QueryService(self.storage_service)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

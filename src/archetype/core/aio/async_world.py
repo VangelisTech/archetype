@@ -291,25 +291,13 @@ class AsyncWorld(iAsyncWorld):
         await self._register_entity(entity_id, components)
         return entity_id
 
-    async def spawn_reserved(self, entity_id: int, components: list[Component]) -> None:
-        """Spawn with a pre-reserved entity id, as used by the service-layer
-        ``CommandService.submit_spawn`` flow. Fires ``OnSpawn``.
-
-        Raises ``ValueError`` if the id is already live.
-        """
-        if entity_id in self.entity2sig:
-            raise ValueError(f"Entity {entity_id} already exists in world {self.world_id}")
-        self.next_entity_id = max(self.next_entity_id, entity_id + 1)
-        await self._register_entity(entity_id, components)
-
     async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
         self.entity2sig[entity_id] = sig
-        # Placeholder run_id; updater stamps correct run_id during persist.
-        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id="")
+        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id=self.run_id or "")
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         await self.hooks.fire(
             OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))
