@@ -15,6 +15,8 @@
 from logging import getLogger
 from typing import Any, TypeVar
 
+from uuid_utils import uuid7
+
 import daft
 import pyarrow as pa
 from daft import DataFrame, col
@@ -84,7 +86,7 @@ class SyncWorld(iWorld):
         self.hooks = hooks           # Hooks: typed lifecycle callbacks 
         
         # State
-        self.run_id = run_id
+        self.run_id = run_id or str(uuid7())
         self.tick = tick
         self.next_entity_id = next_entity_id
         self.entity2sig = entity2sig if entity2sig is not None else {}
@@ -290,9 +292,8 @@ class SyncWorld(iWorld):
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
         self.entity2sig[entity_id] = sig
-        # Use empty string placeholder if run_id not yet set; updater will stamp correct run_id
         row_dict = Archetype.to_row_dict(
-            entity_id, self.tick, components, self.world_id, self.run_id or ""
+            entity_id, self.tick, components, self.world_id, self.run_id
         )
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         self.hooks.fire(

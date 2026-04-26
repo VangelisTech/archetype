@@ -278,6 +278,7 @@ __all__ = [
     "OnComponentAdded",
     "OnComponentRemoved",
     "OnDespawn",
+    "OnDestroy",
     "OnSpawn",
     "PostTick",
     "PreTick",

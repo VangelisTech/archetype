@@ -279,6 +279,27 @@ class CommandService:
         self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
         await self._worlds.add_resource(world_id, resource)
 
+    async def add_hook(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        event_type,
+        fn,
+        *,
+        mode: str = "blocking",
+    ):
+        self._gate(Command(type=CommandType.ADD_HOOK), ctx)
+        return self._worlds.add_hook(world_id, event_type, fn, mode=mode)
+
+    async def remove_hook(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        handle,
+    ) -> None:
+        self._gate(Command(type=CommandType.REMOVE_HOOK), ctx)
+        self._worlds.remove_hook(world_id, handle)
+
     # ── Read introspection (gated) ─────────────────────────────────────────
 
     async def list_processors(
@@ -306,16 +327,23 @@ class CommandService:
         world_id: str | UUID,
     ) -> list[HookInfo]:
         self._gate(Command(type=CommandType.LIST_HOOKS), ctx)
-        handles = self._worlds.list_hooks(world_id)
-        return [
-            HookInfo(
-                event_type=getattr(h, "_event_type", type(h)).__name__,
-                handler_qualname=str(getattr(h, "_fn", "")),
-                mode=getattr(h, "_mode", "blocking"),
-                handle_id=getattr(h, "_id", 0),
+        entries = self._worlds.list_hooks(world_id)
+        result: list[HookInfo] = []
+        for entry in entries:
+            # Async registry entries are (HookHandle, fn, FireMode)
+            # Sync registry entries are (HookHandle, fn)
+            handle = entry[0]
+            fn = entry[1]
+            mode = entry[2] if len(entry) > 2 else "blocking"
+            result.append(
+                HookInfo(
+                    event_type=handle._event_type.__name__,
+                    handler_qualname=getattr(fn, "__qualname__", str(fn)),
+                    mode=mode,
+                    handle_id=handle._id,
+                )
             )
-            for h in handles
-        ]
+        return result
 
     async def list_resources(
         self,

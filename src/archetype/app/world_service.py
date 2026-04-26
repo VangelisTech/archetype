@@ -201,6 +201,11 @@ class WorldOrchestrator:
         fork.resources = source.resources
         fork.system.processors = list(source.system.processors)
 
+        # Deep-copy hooks registry (independent post-fork)
+        for event_type, entries in source.hooks._by_type.items():
+            for _handle, fn, mode in entries:
+                fork.hooks.add(event_type, fn, mode=mode)
+
         self._registry.insert(fork)
         return fork
 
@@ -309,6 +314,16 @@ class WorldService:
         if hasattr(world, "resources"):
             return list(world.resources.items())
         return []
+
+    def add_hook(self, world_id: str | UUID, event_type, fn, *, mode="blocking"):
+        """Add a hook to a world's hook bus. Returns the HookHandle."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        return world.add_hook(event_type, fn, mode=mode)
+
+    def remove_hook(self, world_id: str | UUID, handle) -> None:
+        """Remove a hook by handle."""
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        world.remove_hook(handle)
 
     async def shutdown(self) -> None:
         await self._storage_service.shutdown()

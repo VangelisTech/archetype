@@ -10,6 +10,7 @@ Adding a new CommandType automatically expands coverage.
 import pytest
 from uuid_utils import uuid7
 
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import guardrail_allow, reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.auth.permissions import COMMANDS_BY_ROLE
@@ -45,7 +46,7 @@ def test_role_command_matrix(role, cmd_type, allowed):
     if allowed:
         guardrail_allow(cmd, ctx)  # should not raise
     else:
-        with pytest.raises(PermissionError):
+        with pytest.raises(GuardrailError):
             guardrail_allow(cmd, ctx)
 
 
@@ -65,9 +66,9 @@ def test_viewer_cannot_mutate():
     guardrail_allow(Command(type=CommandType.GET_WORLD_INFO), ctx)
 
     # Mutations fail
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.SPAWN), ctx)
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.CREATE_WORLD), ctx)
 
 
@@ -79,9 +80,9 @@ def test_player_can_spawn_but_not_add_component():
     guardrail_allow(Command(type=CommandType.DESPAWN), ctx)
     guardrail_allow(Command(type=CommandType.UPDATE), ctx)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.ADD_COMPONENT), ctx)
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.STEP), ctx)
 
 
@@ -97,7 +98,7 @@ def test_operator_can_run_and_fork():
     guardrail_allow(Command(type=CommandType.DESTROY_WORLD), ctx)
 
     # But cannot create worlds from scratch
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.CREATE_WORLD), ctx)
 
 
@@ -110,5 +111,5 @@ def test_multi_role_union():
     guardrail_allow(Command(type=CommandType.SPAWN), ctx)
 
     # Still can't do operator things
-    with pytest.raises(PermissionError):
+    with pytest.raises(GuardrailError):
         guardrail_allow(Command(type=CommandType.STEP), ctx)

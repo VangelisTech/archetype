@@ -21,7 +21,7 @@ import daft
 import pyarrow as pa
 from daft import DataFrame, col
 from daft.functions import when
-from uuid_utils import UUID  # noqa: F401 imported for type hints
+from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
@@ -87,7 +87,7 @@ class AsyncWorld(iAsyncWorld):
         self.hooks = hooks           # Hooks: typed lifecycle callbacks
 
         # State
-        self.run_id = run_id
+        self.run_id = run_id or str(uuid7())
         self.tick = tick
         self.next_entity_id = next_entity_id
         self.entity2sig = entity2sig if entity2sig is not None else {}
@@ -297,7 +297,7 @@ class AsyncWorld(iAsyncWorld):
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
         self.entity2sig[entity_id] = sig
-        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id=self.run_id or "")
+        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id=self.run_id)
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         await self.hooks.fire(
             OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))

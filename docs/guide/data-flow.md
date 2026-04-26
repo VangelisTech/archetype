@@ -1,10 +1,15 @@
 # Data Flow
 
-Every interaction with world state follows one of two paths: a **read path** through the querier or a **write path** through the command pipeline and updater. The two paths are structurally separated at the core layer and the service layer enforces different access policies on each.
+World state has separate read and write facades in core, while the service layer adds a gate for external access.
 
-## Read/Write Split
+The important boundary is:
 
-The `AsyncWorld` never touches the store directly. It delegates through two interfaces:
+- Below the gate, services such as `iQueryService`, `iMutationService`, and `iWorldService` do not know about `ActorCtx`.
+- At the boundary, `iCommandService` authorizes, delegates, audits, and returns user-safe results.
+
+## Core Read/Write Split
+
+`AsyncWorld` does not touch storage directly:
 
 ```text
                   AsyncWorld
@@ -12,151 +17,97 @@ The `AsyncWorld` never touches the store directly. It delegates through two inte
        QueryManager        UpdateManager
             |                   |
         AsyncStore          AsyncStore
-         (reads)            (appends)
+         reads              appends
 ```
 
-`AsyncQueryManager` owns every read. `AsyncUpdateManager` owns every write. Both hold a reference to the same `AsyncStore`, but the world can only reach the store through one of these two facades.
+`QueryManager` owns reads. `UpdateManager` owns writes. This split is independent of auth.
 
-This split exists at the core layer, independent of any auth or service machinery. The interfaces are defined in `archetype.core.interfaces` as `iAsyncQueryManager` and `iAsyncUpdateManager`.
+## External Direct Path
 
-## Write Path
-
-All mutations from external actors flow through the command pipeline:
+Most runtime and API calls use a direct gated path:
 
 ```text
-External actor
+Runtime / API / caller
     |
-CommandService.submit(cmd, ctx: ActorCtx)
+iCommandService.<method>(ctx, ...)
     |
-CommandBroker.enqueue(cmd, ctx)
-    |  ← guardrail_allow(cmd, ctx)
-    |     1. RBAC role check
-    |     2. Per-tick quota (500 cmds/tick)
-    |     3. Daily token budget (200k tokens)
+guardrail_allow(command, ctx)
     |
-    |  [queued by (tick, priority, seq)]
+delegate to one service
+    |
+iAuditLog.record(row)
+    |
+return result
+```
+
+Examples:
+
+- `create_world` delegates to `iWorldService` and returns `WorldInfo`.
+- `create_entity` delegates to `iMutationService` and returns `entity_id`.
+- `run` delegates to `iSimulationService` and returns `RunResult`.
+- `query_archetype` delegates to `iQueryService` and returns a DataFrame.
+
+Reads are gated at this external boundary. The internal `iQueryService` remains ActorCtx-free.
+
+## Tick-Deferred Path
+
+When a caller wants work applied at a tick boundary, the gate enqueues a command:
+
+```text
+Runtime / API / caller
+    |
+iCommandService.submit(ctx, world_id, cmd)
+    |
+guardrail_allow(command, ctx)
+    |
+iCommandBroker.enqueue(world_id, cmd)
     |
 SimulationService.step()
     |
-CommandService.drain_and_apply(world_id, tick)
-    |  ← broker.dequeue_due(world_id, tick)
+iCommandService.drain_and_apply(world_id, tick)
     |
-CommandService.apply(world, cmd)
-    |  ← dispatches to world.create_entity(), world.add_components(), etc.
+MutationService / WorldService
     |
 AsyncWorld internal mutation
-    |
-UpdateManager.update(df, sig, tick, world_id, run_id)
-    |  ← stamps tick, world_id, run_id, casts entity_id
-    |
-AsyncStore.append(sig, df)
 ```
 
-Every step in this chain is mandatory. There is no way to reach `UpdateManager.update()` from outside the process without going through `CommandService.submit()`, which requires an `ActorCtx`. The broker calls `guardrail_allow()` before enqueueing, so RBAC and quota enforcement cannot be bypassed.
+`drain_and_apply` has no `ActorCtx` argument because submitted commands were validated before entering the queue.
 
-### Command Dispatch
+Commands are ordered by `(tick, priority, seq)` within the broker queue.
 
-`CommandService.apply()` pattern-matches on `CommandType` and calls the corresponding world mutation:
+## Internal Writes
 
-| CommandType | World method |
-|-------------|-------------|
-| `SPAWN` | `create_entity(components)` |
-| `DESPAWN` | `remove_entity(entity_id)` |
-| `UPDATE`, `ADD_COMPONENT` | `add_components(entity_id, components)` |
-| `REMOVE_COMPONENT` | `remove_components(entity_id, types)` |
-| `ADD_PROCESSOR` | `add_processor(processor)` |
-| `REMOVE_PROCESSOR` | `remove_processor(proc_type)` |
-| `CREATE_WORLD`, `DESTROY_WORLD`, `FORK_WORLD` | `WorldService` lifecycle methods |
-| `MESSAGE` | No-op (processors read from broker history) |
-| `CUSTOM` | No-op by default (subclass to handle) |
-
-See [Custom Commands](custom-commands.md) for extending the dispatch.
-
-### Drain Cycle
-
-`SimulationService.step()` drives the per-tick drain:
-
-1. `drain_and_apply(world_id, tick)` -- dequeue all commands where `cmd.tick <= tick`, apply each to the world, ack on success
-2. `reset_tick_counters()` -- clear per-actor command counts for the next tick
-3. `world.step(run_config)` -- execute processors, which read from the querier and write through the updater
-
-Commands are ordered by `(tick, priority, seq)` within the broker's priority queue. Lower priority values execute first. Commands targeting a future tick remain queued until that tick arrives.
-
-## Read Path
-
-Reads bypass the command pipeline entirely:
-
-```text
-External actor
-    |
-QueryService.get_world_state(world_id, tick?)
-QueryService.get_entity(world_id, entity_id, tick?)
-QueryService.get_components(world_id, component_types)
-QueryService.get_command_history(world_id)
-    |
-AsyncWorld
-    |
-QueryManager.query_archetype(sig, world_id, ticks?, entity_ids?, components?)
-    |  ← filters: is_active, ticks, entity_ids, component projection
-    |
-AsyncStore.get_archetype_df(sig, world_id, run_id)
-```
-
-`QueryService` methods take no `ActorCtx`. There is no RBAC check, no quota deduction, no broker involvement. Reads are unconditionally allowed because they have no side effects on world state.
-
-The `viewer` role exists in `ROLE_PERMS` to gate the `query_world` *command type* -- a command that can be submitted through the broker for audit purposes. But direct reads through `QueryService` do not require it.
-
-## RBAC Boundary
-
-The read/write split determines where RBAC applies:
-
-```text
-                    ┌─────────────────────┐
-                    │   Service Layer      │
-                    │                      │
-  QueryService ─────┤  (no ActorCtx)       │
-                    │                      │
-                    │ ─ ─ ─ RBAC fence ─ ─ │
-                    │                      │
-  CommandService ───┤  ActorCtx required   │
-                    │  guardrail_allow()   │
-                    └─────────────────────┘
-                              |
-                    ┌─────────────────────┐
-                    │   Core Layer         │
-                    │                      │
-                    │  QueryManager        │
-                    │  UpdateManager       │
-                    │  (no auth awareness) │
-                    └─────────────────────┘
-```
-
-The core layer has no knowledge of RBAC. `QueryManager` and `UpdateManager` are pure data facades -- they don't check permissions, they don't know about actors. Auth is enforced entirely at the service layer boundary, and the structural separation between the two facades is what makes that enforcement complete.
-
-This means:
-
-- **Processors run without auth.** Once a tick starts, processors read from `QueryManager` and write through `UpdateManager` with no RBAC overhead. They are trusted internal code.
-- **External actors are always gated.** The only external entry point for mutations is `CommandService.submit()`, which requires `ActorCtx`.
-- **The read path is a fast path.** No auth checks, no broker, no queue -- `QueryService` goes straight to the querier.
-
-## Internal Writes (Processors)
-
-Processors write to the updater as part of normal tick execution, outside the command pipeline:
+Processors are trusted internal code. During a tick, processors transform DataFrames and the world persists the result through the updater:
 
 ```text
 AsyncSystem.execute(resources, tick)
     |
 processor.process(df, resources=resources, tick=tick)
-    |  ← returns transformed DataFrame
     |
 AsyncWorld._update_archetype(sig, df, run_config)
     |
 UpdateManager.update(df, sig, tick, world_id, run_id)
 ```
 
-These writes are not command-gated because processors are registered by a `maintainer` or `admin` at setup time. The trust boundary is at processor registration, not at each write.
+These writes are not individually command-gated. The trust boundary is processor registration, which is an operator/admin operation through the gate.
 
-Processors that need to submit commands (e.g., spawning new entities mid-tick) access the `CommandBroker` through [Resources](resources.md) and enqueue commands for the next drain cycle.
+## Lifecycle Flow
+
+World lifecycle operations are direct gated methods:
+
+- `create_world`: admin only; returns `WorldInfo`.
+- `fork_world`: operator/admin; returns `WorldInfo`.
+- `destroy_world`: operator/admin; removes the live world only.
+
+Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifecycle.md).
+
+## Audit Flow
+
+Every gated call emits one audit row. Broker queue history is not the audit log.
+
+`RuntimeWorld.history(...)` and API history reads use `iCommandService.get_audit_history(...)`, which authorizes the read and delegates to `iAuditLog.query(...)`.
+
+See [Audit Log](audit-log.md).
 
 ## Source Reference
 
@@ -165,6 +116,5 @@ Processors that need to submit commands (e.g., spawning new entities mid-tick) a
 - Simulation service: `src/archetype/app/simulation_service.py`
 - Query service: `src/archetype/app/query_service.py`
 - RBAC guard: `src/archetype/app/auth/guard.py`
-- Actor model: `src/archetype/app/auth/models.py`
 - Querier: `src/archetype/core/aio/async_querier.py`
 - Updater: `src/archetype/core/aio/async_updater.py`

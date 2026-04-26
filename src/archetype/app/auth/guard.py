@@ -13,6 +13,7 @@ from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.permissions import COMMANDS_BY_ROLE
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ def guardrail_check(
 ) -> int:
     """Pure RBAC + quota check.
 
-    Returns the token cost of ``cmd`` if allowed; raises ``PermissionError``
+    Returns the token cost of ``cmd`` if allowed; raises ``GuardrailError``
     otherwise. Does NOT mutate counters.
     """
     maybe_reset_daily_tokens()
@@ -84,14 +85,14 @@ def guardrail_check(
     allowed = any(cmd.type in COMMANDS_BY_ROLE.get(r, frozenset()) for r in ctx.roles)
 
     if not allowed:
-        raise PermissionError(
+        raise GuardrailError(
             f"Actor {ctx.id} with roles {sorted(ctx.roles)} cannot execute '{cmd.type.value}'"
         )
 
     # 2. Per-tick quota
     current_count = _tick_counters.get(ctx.id, 0)
     if current_count + projected_count >= MAX_CMDS_PER_TICK:
-        raise PermissionError(
+        raise GuardrailError(
             f"Actor {ctx.id} exceeded per-tick quota ({MAX_CMDS_PER_TICK} commands)"
         )
 
@@ -99,7 +100,7 @@ def guardrail_check(
     cost = estimate_token_cost(cmd)
     current_tokens = _daily_tokens.get(ctx.id, 0)
     if current_tokens + projected_tokens + cost > MAX_TOKENS_PER_DAY:
-        raise PermissionError(
+        raise GuardrailError(
             f"Actor {ctx.id} exceeded daily token budget ({MAX_TOKENS_PER_DAY} tokens)"
         )
 
@@ -115,7 +116,7 @@ def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
 
 
 def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
-    """Check RBAC + quotas and debit counters. Raises PermissionError if denied."""
+    """Check RBAC + quotas and debit counters. Raises GuardrailError if denied."""
     cost = guardrail_check(cmd, ctx)
     guardrail_commit(ctx, count=1, tokens=cost)
 

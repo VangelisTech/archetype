@@ -151,6 +151,7 @@ class WorldInfo(BaseModel):
     """
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
+    # str | UUID: worlds store str internally; gate accepts both
     world_id: str | UUID
     name: str | None = None
     tick: int = 0
@@ -208,6 +209,7 @@ class RolloutResult(BaseModel):
     base_world_id: str | UUID
     episodes: list[EpisodeResult] = Field(default_factory=list)
     num_episodes: int = 0
+    total_duration_steps: int = 0
 
 
 class ProcessorInfo(BaseModel):

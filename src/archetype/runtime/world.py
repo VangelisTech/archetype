@@ -95,11 +95,7 @@ class _RuntimeWorldState:
                 await gate.add_processor(ctx, self.world_id, proc)
 
             for event_type, fn in self.init_hooks:
-                # Hooks are non-serializable — escape hatch until gate.add_hook dispatches
-                world = self.runtime._container.world_service.get_world(
-                    UUID(str(self.world_id))
-                )
-                world.add_hook(event_type, fn)
+                await gate.add_hook(ctx, self.world_id, event_type, fn)
 
             for resource in self.init_resources:
                 await gate.add_resource(ctx, self.world_id, resource)
@@ -326,6 +322,22 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.list_hooks(self._ctx, wid)
 
+    async def add_hook(self, event_type, fn, *, mode: str = "blocking"):
+        """Add a hook. Raises if world not yet activated (use runtime.world(..., hooks=[...]) instead)."""
+        if not self._state.initialized:
+            raise RuntimeError(
+                "Cannot add_hook before activation. Pass hooks via runtime.world(..., hooks=[...])."
+            )
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.add_hook(self._ctx, wid, event_type, fn, mode=mode)
+
+    async def remove_hook(self, handle) -> None:
+        """Remove a hook by handle."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            await self._gate.remove_hook(self._ctx, wid, handle)
+
     async def list_resources(self):
         """List resource summaries (ResourceInfo)."""
         async with self._state.op_lock:
@@ -422,6 +434,12 @@ class SyncRuntimeWorld:
 
     def list_resources(self):
         return self._run(lambda: self._world.list_resources())
+
+    def add_hook(self, event_type, fn, *, mode: str = "blocking"):
+        return self._run(lambda: self._world.add_hook(event_type, fn, mode=mode))
+
+    def remove_hook(self, handle) -> None:
+        self._run(lambda: self._world.remove_hook(handle))
 
     def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
         return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
