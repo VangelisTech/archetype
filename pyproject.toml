@@ -27,6 +27,7 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "typer>=0.9",
     "httpx>=0.27",
+    "logfire>=4.32.0",
 ]
 
 [project.scripts]

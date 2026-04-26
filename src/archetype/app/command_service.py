@@ -135,13 +135,13 @@ class CommandService:
         self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
         return await self._worlds.create_world(config, storage_config, cache_config)
 
-    async def remove_world(
+    async def destroy_world(
         self,
         ctx: ActorCtx,
         world_id: str | UUID,
     ) -> None:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
-        await self._worlds.remove_world(UUID(str(world_id)))
+        await self._worlds.destroy_world(world_id)
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 

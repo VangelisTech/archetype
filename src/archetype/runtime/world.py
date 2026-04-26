@@ -130,7 +130,7 @@ class _RuntimeWorldState:
                 and self.world is not None
                 and (from_runtime or not self.runtime._closed)
             ):
-                await self.runtime._container.world_service.remove_world(self.world.world_id)
+                await self.runtime._container.world_service.destroy_world(self.world.world_id)
             self.closed = True
             self.world = None
             self.initialized = False

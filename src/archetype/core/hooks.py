@@ -107,6 +107,15 @@ class OnComponentRemoved(HookEvent):
     component_types: list[type[Component]]
 
 
+@dataclass(frozen=True, slots=True)
+class OnDestroy(HookEvent):
+    """Fires when a world is destroyed via ``WorldOrchestrator.destroy_world``.
+
+    Fires before the world is removed from the registry. Handlers can
+    perform cleanup or final reads against the still-live world.
+    """
+
+
 E = TypeVar("E", bound=HookEvent)
 
 

@@ -169,7 +169,57 @@ class WorldOrchestrator:
     def list_worlds(self) -> list[iWorld]:
         return self._registry.list()
 
-    def remove_world(self, world_id: UUID) -> None:
+    def fork_world(
+        self,
+        store: iAsyncStore,
+        source_world_id: UUID | str,
+        name: str | None = None,
+    ) -> AsyncWorld:
+        """Fork a world: create a new world with a snapshot of the source's state.
+
+        Per-field semantics:
+          generated:    world_id (uuid7), run_id (uuid7)
+          deep-copied:  tick, next_entity_id, entity2sig, spawn_cache, despawn_cache
+          shared:       resources (same instance), processors (same instances)
+        """
+        source = self._registry.get(source_world_id)
+        if not isinstance(source, AsyncWorld):
+            raise TypeError("Can only fork AsyncWorld instances")
+
+        fork_config = WorldConfig(
+            name=name,
+            tick=source.tick,
+            next_entity_id=source.next_entity_id,
+            entity2sig=dict(source.entity2sig),
+            spawn_cache={sig: list(rows) for sig, rows in source.spawn_cache.items()},
+            despawn_cache={sig: list(ids) for sig, ids in source.despawn_cache.items()},
+        )
+
+        fork = self._factory.create_async_world(store, fork_config)
+
+        # Share resources and processors from source
+        fork.resources = source.resources
+        fork.system.processors = list(source.system.processors)
+
+        self._registry.insert(fork)
+        return fork
+
+    async def destroy_world(self, world_id: UUID | str) -> None:
+        """Destroy a world: fire OnDestroy, then remove from registry.
+
+        Idempotent — returns silently if world_id is not in the registry.
+        In-memory cleanup only. Storage and audit rows are preserved
+        (append-only invariant).
+        """
+        from archetype.core.hooks import OnDestroy
+
+        if not self._registry.has(world_id):
+            return
+
+        world = self._registry.get(world_id)
+        if isinstance(world, AsyncWorld):
+            await world.hooks.fire(OnDestroy(world_id=world.world_id))
+
         self._registry.remove(world_id)
 
 
@@ -214,8 +264,22 @@ class WorldService:
     def list_worlds(self) -> list[iWorld]:
         return self._orchestrator.list_worlds()
 
-    async def remove_world(self, world_id: UUID) -> None:
-        self._orchestrator.remove_world(world_id)
+    async def fork_world(
+        self,
+        source_world_id: UUID | str,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> iWorld:
+        """Fork a world. Resolves storage from source if not overridden."""
+        if storage_config is None:
+            storage_config = StorageConfig()
+        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
+        return self._orchestrator.fork_world(store, source_world_id, name=name)
+
+    async def destroy_world(self, world_id: UUID | str) -> None:
+        """Destroy a world. In-memory cleanup only. Storage is preserved."""
+        await self._orchestrator.destroy_world(world_id)
 
     async def shutdown(self) -> None:
         await self._storage_service.shutdown()

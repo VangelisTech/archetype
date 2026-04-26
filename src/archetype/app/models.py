@@ -127,12 +127,17 @@ class Command(BaseModel):
 
 
 class WorldInfo(BaseModel):
-    model_config = dict(arbitrary_types_allowed=True)
+    """Immutable snapshot of a world's identity and position.
+
+    This is the gate boundary type — iCommandService returns WorldInfo,
+    never iWorld. Field access is sync; fetch is gated.
+    """
+
+    model_config = dict(frozen=True, arbitrary_types_allowed=True)
     world_id: str | UUID
     name: str | None = None
     tick: int = 0
-    entity_count: int = 0
-    archetype_signatures: list[str] = Field(default_factory=list)
+    run_id: str | UUID | None = None
 
 
 class RunResult(BaseModel):

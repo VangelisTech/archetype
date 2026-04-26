@@ -79,7 +79,15 @@ class iWorldService(Protocol):
 
     def list_worlds(self) -> list[iWorld]: ...
 
-    async def remove_world(self, world_id: UUID) -> None: ...
+    async def fork_world(
+        self,
+        source_world_id: UUID | str,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> iWorld: ...
+
+    async def destroy_world(self, world_id: UUID | str) -> None: ...
 
     async def shutdown(self) -> None: ...
 
@@ -384,7 +392,7 @@ class iCommandService(Protocol):
         cache_config: CacheConfig | None = None,
     ) -> iWorld: ...
 
-    async def remove_world(
+    async def destroy_world(
         self,
         ctx: ActorCtx,
         world_id: str | UUID,
