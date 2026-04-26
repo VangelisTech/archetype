@@ -91,14 +91,15 @@ class _RuntimeWorldState:
             self.world_id = info.world_id
 
             # Wire non-serializable config through dedicated gate methods
+            # Order: processors → resources → hooks (hooks may depend on resources)
             for proc in self.init_processors:
                 await gate.add_processor(ctx, self.world_id, proc)
 
-            for event_type, fn in self.init_hooks:
-                await gate.add_hook(ctx, self.world_id, event_type, fn)
-
             for resource in self.init_resources:
                 await gate.add_resource(ctx, self.world_id, resource)
+
+            for event_type, fn in self.init_hooks:
+                await gate.add_hook(ctx, self.world_id, event_type, fn)
 
             self.initialized = True
 
@@ -299,6 +300,7 @@ class RuntimeWorld:
             info = await self._gate.get_world_info(self._ctx, wid)
             return await self._gate.query_archetype(
                 self._ctx, sig, str(wid), str(info.run_id or ""),
+                storage_config=self._state.storage_config,
                 entity_ids=entity_ids,
             )
 

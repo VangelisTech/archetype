@@ -211,7 +211,7 @@ class CommandService:
         run_config: RunConfig,
         **input_kwargs,
     ) -> None:
-        self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
+        self._gate(Command(type=CommandType.STEP), ctx)
         await self._simulation.step(world_id, run_config, **input_kwargs)
 
     async def run(
@@ -221,7 +221,7 @@ class CommandService:
         run_config: RunConfig,
         **input_kwargs,
     ) -> RunResult:
-        self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
+        self._gate(Command(type=CommandType.RUN), ctx)
         return await self._simulation.run(world_id, run_config, **input_kwargs)
 
     async def run_episode(
