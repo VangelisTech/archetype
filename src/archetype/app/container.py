@@ -9,6 +9,7 @@ Wires all services together. Single point of construction.
 
 from __future__ import annotations
 
+from archetype.app.audit_log import AuditLog
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.mutation_service import MutationService
@@ -38,9 +39,10 @@ class ServiceContainer:
         # Leaf services
         self.storage_service = StorageService()
 
-        # Services that depend on leaves
+        # Storage-backed services
         self.world_service = WorldService(self.storage_service)
         self.query_service = QueryService(self.storage_service)
+        self.audit_log = AuditLog(self.storage_service)
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -53,9 +55,11 @@ class ServiceContainer:
             simulation=self.simulation_service,
             queries=self.query_service,
             broker=self.broker,
+            audit=self.audit_log,
         )
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
+        await self.audit_log.shutdown()
         await self.broker.clear()
         await self.world_service.shutdown()

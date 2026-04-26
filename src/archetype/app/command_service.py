@@ -25,6 +25,7 @@ from archetype.app.models import Command, CommandType, HookInfo, ProcessorInfo, 
 if TYPE_CHECKING:
     from daft import DataFrame
 
+    from archetype.app.audit_log import AuditLog
     from archetype.app.auth.models import ActorCtx
     from archetype.app.broker import CommandBroker
     from archetype.app.mutation_service import MutationService
@@ -61,16 +62,29 @@ class CommandService:
         simulation: SimulationService,
         queries: QueryService,
         broker: CommandBroker,
+        audit: AuditLog | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
         self._simulation = simulation
         self._queries = queries
         self._broker = broker
+        self._audit = audit
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
-        """RBAC + quota check. Raises PermissionError if denied."""
+        """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
+
+    async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
+        """Emit one audit row. Best-effort — never raises."""
+        if self._audit is None:
+            return
+        try:
+            from archetype.app.audit_log import make_audit_row
+            row = make_audit_row(ctx, command_type, world_id, **kw)
+            await self._audit.record(row)
+        except Exception:
+            logger.debug("audit emission failed", exc_info=True)
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
 
@@ -81,7 +95,9 @@ class CommandService:
         components: list[Component],
     ) -> int:
         self._gate(Command(type=CommandType.SPAWN), ctx)
-        return await self._mutations.create_entity(world_id, components)
+        result = await self._mutations.create_entity(world_id, components)
+        await self._emit(ctx, 'spawn', world_id)
+        return result
 
     async def remove_entity(
         self,
@@ -91,6 +107,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.DESPAWN), ctx)
         await self._mutations.remove_entity(world_id, entity_id)
+        await self._emit(ctx, 'despawn', world_id)
 
     async def update_entity(
         self,
@@ -102,6 +119,7 @@ class CommandService:
         """Overlay values on existing components (same archetype)."""
         self._gate(Command(type=CommandType.UPDATE), ctx)
         await self._mutations.update_entity(world_id, entity_id, components)
+        await self._emit(ctx, 'update', world_id)
 
     async def add_components(
         self,
@@ -112,6 +130,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_COMPONENT), ctx)
         await self._mutations.add_components(world_id, entity_id, components)
+        await self._emit(ctx, 'add_component', world_id)
 
     async def remove_components(
         self,
@@ -122,6 +141,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.REMOVE_COMPONENT), ctx)
         await self._mutations.remove_components(world_id, entity_id, component_types)
+        await self._emit(ctx, 'remove_component', world_id)
 
     async def add_processor(
         self,
@@ -131,6 +151,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_PROCESSOR), ctx)
         await self._mutations.add_processor(world_id, processor)
+        await self._emit(ctx, 'add_processor', world_id)
 
     async def remove_processor(
         self,
@@ -140,6 +161,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.REMOVE_PROCESSOR), ctx)
         await self._mutations.remove_processor(world_id, proc_type)
+        await self._emit(ctx, 'remove_processor', world_id)
 
     # ── Lifecycle (gated, direct) ─────────────────────────────────────────
 
@@ -185,8 +207,11 @@ class CommandService:
         world_id: str | UUID,
     ) -> None:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
+        if self._audit:
+            await self._audit.flush()
         await self._broker.clear(world_id)
         await self._worlds.destroy_world(world_id)
+        await self._emit(ctx, 'destroy_world', world_id)
 
     async def get_world_info(
         self,
@@ -213,6 +238,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.STEP), ctx)
         await self._simulation.step(world_id, run_config, **input_kwargs)
+        await self._emit(ctx, 'step', world_id)
 
     async def run(
         self,
@@ -222,7 +248,9 @@ class CommandService:
         **input_kwargs,
     ) -> RunResult:
         self._gate(Command(type=CommandType.RUN), ctx)
-        return await self._simulation.run(world_id, run_config, **input_kwargs)
+        result = await self._simulation.run(world_id, run_config, **input_kwargs)
+        await self._emit(ctx, 'run', world_id)
+        return result
 
     async def run_episode(
         self,
@@ -233,7 +261,9 @@ class CommandService:
     ) -> EpisodeResult:
         """Gate, then delegate to SimulationService.run_episode."""
         self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
-        return await self._simulation.run_episode(world_id, config, **input_kwargs)
+        result = await self._simulation.run_episode(world_id, config, **input_kwargs)
+        await self._emit(ctx, 'run_episode', world_id)
+        return result
 
     async def run_rollout(
         self,
@@ -248,7 +278,9 @@ class CommandService:
         Internal forks are SimulationService's mechanics.
         """
         self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
-        return await self._simulation.run_rollout(world_id, config, **input_kwargs)
+        result = await self._simulation.run_rollout(world_id, config, **input_kwargs)
+        await self._emit(ctx, 'run_rollout', world_id)
+        return result
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
 
@@ -289,6 +321,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
         await self._worlds.add_resource(world_id, resource)
+        await self._emit(ctx, 'add_resource', world_id)
 
     async def add_hook(
         self,
@@ -380,8 +413,16 @@ class CommandService:
         limit: int | None = None,
     ):
         self._gate(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
-        # TODO: delegate to iAuditLog.query when implemented
-        return []
+        if self._audit is None:
+            return []
+        return await self._audit.query(
+            world_id=world_id,
+            tick_range=tick_range,
+            actor_id=actor_id,
+            signer_address=signer_address,
+            idempotency_key=idempotency_key,
+            limit=limit,
+        )
 
     # ── Tick-deferred path (queued) ───────────────────────────────────────
 
