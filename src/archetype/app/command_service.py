@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import logfire
 from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow
@@ -81,8 +82,21 @@ class CommandService:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
 
+    @logfire.instrument("gate.{command_type}")
+    async def _gated_op(self, ctx: ActorCtx, command_type: str, world_id=None):
+        """Logfire span wrapper — called at the start of each gated method."""
+        # The span is created by the decorator; attributes are set by the caller.
+        # This method exists solely for the instrumentation decorator.
+        pass
+
     async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
-        """Emit one audit row. Best-effort — never raises."""
+        """Emit one audit row + logfire span. Best-effort — never raises."""
+        logfire.info(
+            "gate.{command_type}",
+            command_type=command_type,
+            world_id=str(world_id) if world_id else None,
+            actor_id=str(ctx.id),
+        )
         if self._audit is None:
             return
         try:

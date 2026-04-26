@@ -5,10 +5,13 @@
 
 from contextlib import asynccontextmanager
 
+import logfire
 from fastapi import FastAPI
 
 from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, query, simulation, worlds
+
+logfire.configure(service_name="archetype-ecs")
 
 
 @asynccontextmanager
@@ -32,6 +35,7 @@ def create_app() -> FastAPI:
         version="0.1.1",
         lifespan=lifespan,
     )
+    logfire.instrument_fastapi(app)
 
     app.include_router(worlds.router)
     app.include_router(entities.router)
