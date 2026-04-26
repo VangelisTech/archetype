@@ -61,6 +61,12 @@ class WorldFactory:
             system=system or AsyncSystem(),
             resources=Resources(),
             hooks=HookRegistry(),
+            run_id=config.run_id,
+            tick=config.tick,
+            next_entity_id=config.next_entity_id,
+            entity2sig=dict(config.entity2sig) if config.entity2sig else None,
+            spawn_cache=dict(config.spawn_cache) if config.spawn_cache else None,
+            despawn_cache=dict(config.despawn_cache) if config.despawn_cache else None,
         )
 
 

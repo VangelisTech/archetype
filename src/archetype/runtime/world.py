@@ -329,19 +329,35 @@ class RuntimeWorld:
         storage: str | Path | StorageConfig | None = None,
         cache: CacheConfig | None = None,
     ) -> RuntimeWorld:
+        """Fork this world: create a new world with a snapshot of the current state.
+
+        The fork gets a new world_id but inherits tick, entity state, and
+        mutation caches from the source. Source and fork diverge independently.
+        """
         async with self._state.op_lock:
             world = await self._state.ensure_init()
-            forked = await self._state.runtime._container.world_service.fork_world(
-                world.world_id,
-                name,
+
+            fork_config = WorldConfig(
+                name=name or "fork",
+                tick=world.tick,
+                next_entity_id=world.next_entity_id,
+                entity2sig=dict(world.entity2sig),
+                spawn_cache=dict(world.spawn_cache),
+                despawn_cache=dict(world.despawn_cache),
+                run_id=world.run_id,
+            )
+
+            forked = await self._state.runtime._container.world_service.create_world(
+                fork_config,
                 _coerce_storage_config(storage),
                 cache,
             )
             if not isinstance(forked, AsyncWorld):
                 raise TypeError("ArchetypeRuntime only supports AsyncWorld forks")
+
             state = _RuntimeWorldState(
                 runtime=self._state.runtime,
-                name=name or forked.name or "fork",
+                name=name or "fork",
                 storage=storage,
                 cache=cache,
                 existing_world=forked,
