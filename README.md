@@ -132,11 +132,21 @@ archetype world create demo
 # List worlds
 archetype world list
 
+# Spawn an entity from component payload JSON
+archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
+
 # Run 10 ticks
 archetype run <world-id> --steps 10
 
+# Run an episode or rollout
+archetype episode <world-id> --max-steps 100
+archetype rollout <world-id> --num-episodes 4 --max-steps 100
+
 # Fork the current world state
 archetype world fork <world-id> --name branch-a
+
+# Drop the live world object; storage and audit rows remain
+archetype world destroy <world-id>
 
 # Show audit history
 archetype history <world-id>
@@ -145,7 +155,13 @@ archetype history <world-id>
 Useful environment variables:
 
 - `ARCHETYPE_URL`: base URL for the CLI, default `http://localhost:8000`
-- `ARCHETYPE_REGISTRY_PATH`: file path for the persisted world registry
+
+Useful per-command flags:
+
+- `--url`: override `ARCHETYPE_URL` for one command
+- `--role` / `-r`: developer-mode auth shortcut (`admin`, `operator`, `player`, `viewer`)
+- `--token`: send `Authorization: Bearer <token>`; intended for production auth once v2 auth lands
+- `--json`: emit raw JSON for read commands
 
 ## REST API
 
@@ -158,13 +174,21 @@ Useful environment variables:
 | `GET` | `/worlds/{world_id}` | Inspect one world |
 | `DELETE` | `/worlds/{world_id}` | Destroy a live world |
 | `POST` | `/worlds/{world_id}/fork` | Fork a world |
+| `POST` | `/worlds/{world_id}/entities` | Spawn an entity |
+| `DELETE` | `/worlds/{world_id}/entities/{entity_id}` | Despawn an entity |
+| `PATCH` | `/worlds/{world_id}/entities/{entity_id}` | Update entity components |
+| `POST` | `/worlds/{world_id}/entities/{entity_id}/components` | Add components |
+| `DELETE` | `/worlds/{world_id}/entities/{entity_id}/components` | Remove components |
 | `POST` | `/worlds/{world_id}/commands` | Submit one command |
 | `POST` | `/worlds/{world_id}/commands/batch` | Submit multiple commands |
-| `GET` | `/worlds/{world_id}/commands` | Command history |
-| `GET` | `/worlds/{world_id}/commands/pending` | Pending command count |
+| `GET` | `/worlds/{world_id}/commands` | Audit-backed command history |
 | `POST` | `/worlds/{world_id}/step` | Run one tick |
 | `POST` | `/worlds/{world_id}/run` | Run multiple ticks |
+| `POST` | `/worlds/{world_id}/episode` | Run one episode |
+| `POST` | `/worlds/{world_id}/rollout` | Run a rollout |
 | `GET` | `/worlds/{world_id}/processors` | List processors |
+| `GET` | `/worlds/{world_id}/hooks` | List hooks |
+| `GET` | `/worlds/{world_id}/resources` | List resources |
 | `GET` | `/worlds/{world_id}/state` | Query world snapshot |
 | `GET` | `/worlds/{world_id}/entities/{entity_id}` | Query one entity |
 | `GET` | `/worlds/{world_id}/components` | Query component projections |

@@ -116,15 +116,20 @@ The CLI is a thin HTTP client. Except for `serve`, every command talks to a runn
 archetype serve
 archetype world create demo
 archetype world list
+archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
 archetype run <world-id> --steps 10
+archetype rollout <world-id> --num-episodes 4 --max-steps 100
 archetype world fork <world-id> --name branch-a
+archetype world destroy <world-id>
 archetype history <world-id>
 ```
 
 Useful environment variables:
 
 - `ARCHETYPE_URL` for the CLI base URL
-- `ARCHETYPE_REGISTRY_PATH` for the persisted world registry
+- `--url` for a per-command URL override
+- `--role` / `-r` for the developer auth shortcut (`admin`, `operator`, `player`, `viewer`)
+- `--token` for `Authorization: Bearer <token>`
 
 See [CLI Reference](reference/cli.md) for the generated command docs.
 
@@ -141,11 +146,14 @@ See [CLI Reference](reference/cli.md) for the generated command docs.
 | `POST` | `/worlds/{world_id}/fork` | Fork a world |
 | `POST` | `/worlds/{world_id}/commands` | Submit one command |
 | `POST` | `/worlds/{world_id}/commands/batch` | Submit multiple commands |
-| `GET` | `/worlds/{world_id}/commands` | Command history |
-| `GET` | `/worlds/{world_id}/commands/pending` | Pending command count |
+| `GET` | `/worlds/{world_id}/commands` | Audit-backed command history |
 | `POST` | `/worlds/{world_id}/step` | Run one tick |
 | `POST` | `/worlds/{world_id}/run` | Run multiple ticks |
+| `POST` | `/worlds/{world_id}/episode` | Run one episode |
+| `POST` | `/worlds/{world_id}/rollout` | Run a rollout |
 | `GET` | `/worlds/{world_id}/processors` | List processors |
+| `GET` | `/worlds/{world_id}/hooks` | List hooks |
+| `GET` | `/worlds/{world_id}/resources` | List resources |
 | `GET` | `/worlds/{world_id}/state` | Query world snapshot |
 | `GET` | `/worlds/{world_id}/entities/{entity_id}` | Query one entity |
 | `GET` | `/worlds/{world_id}/components` | Query component projections |

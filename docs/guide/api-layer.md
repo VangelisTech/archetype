@@ -74,10 +74,10 @@ Lifecycle operations are direct gate calls, not global lifecycle commands submit
 |---|---|---|
 | `/worlds/{id}/commands` | POST | Tick-deferred submit through `iCommandService.submit` |
 | `/worlds/{id}/commands/batch` | POST | Tick-deferred batch submit |
-| `/worlds/{id}/commands/pending` | GET | Broker pending count |
-| `/worlds/{id}/commands` | GET | Broker queue history / diagnostics |
+| `/worlds/{id}/commands` | GET | Audit-backed command history |
 
-Broker history is queue introspection. User-facing audit history is `/worlds/{id}/history`.
+Broker pending state is an implementation detail. User-facing history is
+audit-backed through `/worlds/{id}/history` and `/worlds/{id}/commands`.
 
 ### Simulation
 
@@ -140,13 +140,21 @@ archetype world list         GET /worlds
 archetype world inspect      GET /worlds/{id}
 archetype world fork         POST /worlds/{id}/fork
 archetype world destroy      DELETE /worlds/{id}
+archetype entity spawn       POST /worlds/{id}/entities
 archetype step               POST /worlds/{id}/step
 archetype run                POST /worlds/{id}/run
+archetype episode            POST /worlds/{id}/episode
+archetype rollout            POST /worlds/{id}/rollout
 archetype query              GET /worlds/{id}/state
 archetype history            GET /worlds/{id}/history
+archetype processors list    GET /worlds/{id}/processors
+archetype hooks list         GET /worlds/{id}/hooks
+archetype resources list     GET /worlds/{id}/resources
 ```
 
-The server URL defaults to `http://localhost:8000` and can be overridden with `ARCHETYPE_URL`.
+The server URL defaults to `http://localhost:8000` and can be overridden with
+`ARCHETYPE_URL` or per command with `--url`. HTTP commands accept the developer
+auth shortcut `--role` / `-r` and the bearer-token option `--token`.
 
 ## Source Reference
 
