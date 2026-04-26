@@ -13,7 +13,7 @@ from archetype.core.aio import (
 )
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.resources import Resources
 from archetype.runtime.session import configure_session
@@ -40,7 +40,8 @@ async def world(tmp_path):
     session = configure_session(storage)
     store = AsyncStore(session, io_config=storage.io_config)
     w = AsyncWorld(
-        world_id="test", name="w",
+        world_id="test",
+        name="w",
         querier=AsyncQueryManager(store=store),
         updater=AsyncUpdateManager(store=store),
         system=AsyncSystem(),

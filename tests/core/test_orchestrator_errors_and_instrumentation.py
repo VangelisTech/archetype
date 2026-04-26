@@ -38,7 +38,11 @@ async def test_world_service_duplicate_name_create_does_not_leak_orphan_world(tm
         )
         assert len(ws._orchestrator._registry._names) == baseline_names
         # Every world in _worlds must be reachable via _world_names.
-        unreachable = [wid for wid in ws._orchestrator._registry._worlds if wid not in ws._orchestrator._registry._names.values()]
+        unreachable = [
+            wid
+            for wid in ws._orchestrator._registry._worlds
+            if wid not in ws._orchestrator._registry._names.values()
+        ]
         assert unreachable == [], f"orphaned worlds: {unreachable}"
     finally:
         await ws.shutdown()
@@ -57,7 +61,9 @@ async def test_world_service_repeated_duplicate_name_creates_do_not_grow_worlds(
             with pytest.raises(ValueError):
                 await ws.create_world(WorldConfig(name="dup"), storage_config=storage)
 
-        assert len(ws._orchestrator._registry._worlds) == 1, f"10 failed retries leaked {len(ws._orchestrator._registry._worlds) - 1} orphan worlds"
+        assert len(ws._orchestrator._registry._worlds) == 1, (
+            f"10 failed retries leaked {len(ws._orchestrator._registry._worlds) - 1} orphan worlds"
+        )
     finally:
         await ws.shutdown()
 

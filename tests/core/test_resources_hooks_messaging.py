@@ -24,7 +24,7 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import RunConfig
 from archetype.core.hooks import HookEvent, HookRegistry, OnDespawn, OnSpawn, PostTick, PreTick
 from archetype.core.resources import Resources
 
@@ -120,7 +120,8 @@ async def world():
     querier = InMemoryQuerier()
     updater = InMemoryUpdater(querier)
     return AsyncWorld(
-        world_id="test", name="test_world",
+        world_id="test",
+        name="test_world",
         querier=querier,
         updater=updater,
         system=AsyncSystem(),
@@ -349,7 +350,8 @@ class TestHooks:
         other_querier = InMemoryQuerier()
         other_updater = InMemoryUpdater(other_querier)
         other = AsyncWorld(
-            world_id="test", name="other_world",
+            world_id="test",
+            name="other_world",
             querier=other_querier,
             updater=other_updater,
             system=AsyncSystem(),
@@ -636,7 +638,8 @@ class TestIntegration:
         updater = InMemoryUpdater(querier)
         system = AsyncSystem()
         world = AsyncWorld(
-            world_id="test", name="integration_world",
+            world_id="test",
+            name="integration_world",
             querier=querier,
             updater=updater,
             system=system,

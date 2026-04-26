@@ -26,7 +26,7 @@ from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import RunConfig
 from archetype.core.hooks import (
     AsyncHookHandler,
     FireMode,
@@ -80,11 +80,11 @@ class AsyncWorld(iAsyncWorld):
         self.world_id = world_id
 
         # Dependencies
-        self.querier = querier       # Querier: read-only data access
-        self.updater = updater       # Updater: write-only data access
-        self.system = system         # System: processor executor
-        self.resources = resources   # Resources: type-safe DI container for shared state
-        self.hooks = hooks           # Hooks: typed lifecycle callbacks
+        self.querier = querier  # Querier: read-only data access
+        self.updater = updater  # Updater: write-only data access
+        self.system = system  # System: processor executor
+        self.resources = resources  # Resources: type-safe DI container for shared state
+        self.hooks = hooks  # Hooks: typed lifecycle callbacks
 
         # State
         self.run_id = run_id or str(uuid7())
@@ -297,7 +297,9 @@ class AsyncWorld(iAsyncWorld):
         ``OnSpawn`` is always fired exactly once with the correct payload."""
         sig = Archetype.sig_from_components(components)
         self.entity2sig[entity_id] = sig
-        row_dict = Archetype.to_row_dict(entity_id, self.tick, components, self.world_id, run_id=self.run_id)
+        row_dict = Archetype.to_row_dict(
+            entity_id, self.tick, components, self.world_id, run_id=self.run_id
+        )
         self.spawn_cache.setdefault(sig, []).append(row_dict)
         await self.hooks.fire(
             OnSpawn(world_id=self.world_id, entity_id=entity_id, components=list(components))

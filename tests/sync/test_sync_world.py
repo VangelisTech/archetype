@@ -7,7 +7,6 @@ from daft import DataFrame
 from daft.session import Session
 
 from archetype.core.component import Component
-from archetype.core.config import WorldConfig
 from archetype.core.hooks import SyncHookRegistry
 from archetype.core.resources import Resources
 from archetype.core.sync import (

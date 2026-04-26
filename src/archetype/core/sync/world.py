@@ -24,7 +24,7 @@ from daft.functions import when
 
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, WorldConfig
+from archetype.core.config import RunConfig
 from archetype.core.hooks import (
     HookEvent,
     HookHandle,
@@ -40,7 +40,6 @@ from archetype.core.interfaces import (
     ArchetypeSignature,
     iQueryManager,
     iResourceContainer,
-    iStore,
     iSyncHookBus,
     iSystem,
     iUpdateManager,
@@ -79,12 +78,12 @@ class SyncWorld(iWorld):
         self.world_id = world_id
 
         # Dependencies
-        self.querier = querier       # Querier: read-only data access
-        self.updater = updater       # Updater: write-only data access
-        self.system = system         # System: processor executor 
-        self.resources = resources   # Resources: type-safe DI container for shared state
-        self.hooks = hooks           # Hooks: typed lifecycle callbacks 
-        
+        self.querier = querier  # Querier: read-only data access
+        self.updater = updater  # Updater: write-only data access
+        self.system = system  # System: processor executor
+        self.resources = resources  # Resources: type-safe DI container for shared state
+        self.hooks = hooks  # Hooks: typed lifecycle callbacks
+
         # State
         self.run_id = run_id or str(uuid7())
         self.tick = tick

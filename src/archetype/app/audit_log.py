@@ -15,7 +15,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import daft
-import pyarrow as pa
 from uuid_utils import UUID
 
 from archetype.app.models import AuditRow
@@ -78,29 +77,33 @@ class AuditLog:
 
         # Convert to DataFrame
         if not filtered:
-            return daft.from_pydict({
-                "audit_id": [],
-                "command_id": [],
-                "world_id": [],
-                "actor_id": [],
-                "command_type": [],
-                "status": [],
-                "payload_json": [],
-                "accepted_at": [],
-                "applied_at": [],
-            })
+            return daft.from_pydict(
+                {
+                    "audit_id": [],
+                    "command_id": [],
+                    "world_id": [],
+                    "actor_id": [],
+                    "command_type": [],
+                    "status": [],
+                    "payload_json": [],
+                    "accepted_at": [],
+                    "applied_at": [],
+                }
+            )
 
-        return daft.from_pydict({
-            "audit_id": [str(r.audit_id) for r in filtered],
-            "command_id": [str(r.command_id) if r.command_id else None for r in filtered],
-            "world_id": [str(r.world_id) if r.world_id else None for r in filtered],
-            "actor_id": [str(r.actor_id) if r.actor_id else None for r in filtered],
-            "command_type": [r.command_type for r in filtered],
-            "status": [r.status for r in filtered],
-            "payload_json": [r.payload_json for r in filtered],
-            "accepted_at": [r.accepted_at for r in filtered],
-            "applied_at": [r.applied_at for r in filtered],
-        })
+        return daft.from_pydict(
+            {
+                "audit_id": [str(r.audit_id) for r in filtered],
+                "command_id": [str(r.command_id) if r.command_id else None for r in filtered],
+                "world_id": [str(r.world_id) if r.world_id else None for r in filtered],
+                "actor_id": [str(r.actor_id) if r.actor_id else None for r in filtered],
+                "command_type": [r.command_type for r in filtered],
+                "status": [r.status for r in filtered],
+                "payload_json": [r.payload_json for r in filtered],
+                "accepted_at": [r.accepted_at for r in filtered],
+                "applied_at": [r.applied_at for r in filtered],
+            }
+        )
 
     async def shutdown(self) -> None:
         """Flush and close. Idempotent."""

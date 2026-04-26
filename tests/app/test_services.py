@@ -47,7 +47,6 @@ class TestServiceContainer:
         await container.shutdown()  # should not raise
 
 
-
 class TestSimulationService:
     @pytest.mark.asyncio
     async def test_step(self, tmp_path):
@@ -85,7 +84,6 @@ class TestSimulationService:
                 await container.simulation_service.step(world.world_id)  # type: ignore[call-arg]
         finally:
             await container.shutdown()
-
 
 
 class TestWorldService:

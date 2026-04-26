@@ -144,8 +144,12 @@ class SyncArchetypeRuntime:
         hooks: list[tuple[type[HookEvent], Any]] | None = None,
     ) -> SyncRuntimeWorld:
         rw = self._runtime.world(
-            name, storage=storage, cache=cache,
-            processors=processors, resources=resources, hooks=hooks,
+            name,
+            storage=storage,
+            cache=cache,
+            processors=processors,
+            resources=resources,
+            hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
 

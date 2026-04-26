@@ -26,6 +26,7 @@ from archetype.core.config import StorageConfig
 
 class Marker(Component):
     """Empty component used to track entity count across ticks."""
+
     label: str = ""
 
 

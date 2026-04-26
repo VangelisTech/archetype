@@ -13,7 +13,7 @@ WorldService  — facade (bridges StorageService into the orchestrator)
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 

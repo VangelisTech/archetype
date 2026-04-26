@@ -41,7 +41,9 @@ async def test_lancedb_create_index_failure_propagates(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return IndexFailClient()
 
-    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr(
+        "archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async
+    )
     config = StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     uri = _resolve_uri(str(config.uri))
     store = AsyncLancedbStore(uri, config.namespace)

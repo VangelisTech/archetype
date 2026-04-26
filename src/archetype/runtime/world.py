@@ -12,7 +12,6 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
-from daft import DataFrame
 from uuid_utils import UUID
 
 from archetype.app.auth.models import ActorCtx
@@ -115,6 +114,7 @@ class _RuntimeWorldState:
             gate = self.runtime._container.command_service
             # Use a default admin ctx for shutdown
             from archetype.runtime._actor import default_actor_ctx
+
             await gate.destroy_world(default_actor_ctx(), self.world_id)
 
         for alias in list(self.aliases):
@@ -253,7 +253,9 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             info = await self._gate.fork_world(
-                self._ctx, wid, name,
+                self._ctx,
+                wid,
+                name,
                 storage_config=coerce_storage(storage),
                 cache_config=coerce_cache(cache),
             )
@@ -310,9 +312,7 @@ class RuntimeWorld:
         """Read the audit log for this world. Returns raw DataFrame."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.get_audit_history(
-                self._ctx, wid, limit=limit, **filters
-            )
+            return await self._gate.get_audit_history(self._ctx, wid, limit=limit, **filters)
 
     async def list_processors(self):
         """List processor summaries (ProcessorInfo)."""
@@ -405,7 +405,9 @@ class SyncRuntimeWorld:
     def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
         self._run(lambda: self._world.step(debug=debug, config=config, **kw))
 
-    def run(self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw) -> RunResult:
+    def run(
+        self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
+    ) -> RunResult:
         return self._run(lambda: self._world.run(steps=steps, debug=debug, config=config, **kw))
 
     def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:

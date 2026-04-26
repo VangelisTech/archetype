@@ -15,44 +15,50 @@ from archetype.app.models import CommandType
 
 # ── Reads: universally allowed ────────────────────────────────────────────
 
-_READS = frozenset({
-    CommandType.QUERY_WORLD,
-    CommandType.GET_WORLD_INFO,
-    CommandType.GET_AUDIT_HISTORY,
-    CommandType.LIST_SIGNATURES,
-    CommandType.LIST_PROCESSORS,
-    CommandType.LIST_HOOKS,
-    CommandType.LIST_RESOURCES,
-})
+_READS = frozenset(
+    {
+        CommandType.QUERY_WORLD,
+        CommandType.GET_WORLD_INFO,
+        CommandType.GET_AUDIT_HISTORY,
+        CommandType.LIST_SIGNATURES,
+        CommandType.LIST_PROCESSORS,
+        CommandType.LIST_HOOKS,
+        CommandType.LIST_RESOURCES,
+    }
+)
 
 # ── Player adds: entity-value mutation + participation ────────────────────
 
-_PLAYER_ADDS = frozenset({
-    CommandType.SPAWN,
-    CommandType.DESPAWN,
-    CommandType.UPDATE,
-    CommandType.MESSAGE,
-    CommandType.CUSTOM,
-})
+_PLAYER_ADDS = frozenset(
+    {
+        CommandType.SPAWN,
+        CommandType.DESPAWN,
+        CommandType.UPDATE,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+    }
+)
 
 # ── Operator adds: schema mutation, system management, simulation,
 #    fork + destroy ────────────────────────────────────────────────────────
 
-_OPERATOR_ADDS = frozenset({
-    CommandType.ADD_COMPONENT,
-    CommandType.REMOVE_COMPONENT,
-    CommandType.ADD_PROCESSOR,
-    CommandType.REMOVE_PROCESSOR,
-    CommandType.ADD_HOOK,
-    CommandType.REMOVE_HOOK,
-    CommandType.ADD_RESOURCE,
-    CommandType.STEP,
-    CommandType.RUN,
-    CommandType.RUN_EPISODE,
-    CommandType.RUN_ROLLOUT,
-    CommandType.FORK_WORLD,
-    CommandType.DESTROY_WORLD,
-})
+_OPERATOR_ADDS = frozenset(
+    {
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.ADD_HOOK,
+        CommandType.REMOVE_HOOK,
+        CommandType.ADD_RESOURCE,
+        CommandType.STEP,
+        CommandType.RUN,
+        CommandType.RUN_EPISODE,
+        CommandType.RUN_ROLLOUT,
+        CommandType.FORK_WORLD,
+        CommandType.DESTROY_WORLD,
+    }
+)
 
 # ── The mapping ───────────────────────────────────────────────────────────
 

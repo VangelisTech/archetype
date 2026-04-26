@@ -50,8 +50,12 @@ class TestStorageServiceMultiton:
     async def test_multiton_different_config_different_instances(self, tmp_path):
         ss = make_storage_service()
         try:
-            s1 = await ss.get_or_create_store(StorageConfig(uri=str(tmp_path / "a"), namespace="ns"))
-            s2 = await ss.get_or_create_store(StorageConfig(uri=str(tmp_path / "b"), namespace="ns"))
+            s1 = await ss.get_or_create_store(
+                StorageConfig(uri=str(tmp_path / "a"), namespace="ns")
+            )
+            s2 = await ss.get_or_create_store(
+                StorageConfig(uri=str(tmp_path / "b"), namespace="ns")
+            )
             assert s1 is not s2
         finally:
             await ss.shutdown()

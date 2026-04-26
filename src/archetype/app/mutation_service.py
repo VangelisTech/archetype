@@ -38,9 +38,7 @@ class MutationService:
 
     # ── Entities ──────────────────────────────────────────────────────────
 
-    async def create_entity(
-        self, world_id: str | UUID, components: list[Component]
-    ) -> int:
+    async def create_entity(self, world_id: str | UUID, components: list[Component]) -> int:
         """Spawn a new entity with the given components.
 
         Returns the entity ID immediately. The entity is registered in

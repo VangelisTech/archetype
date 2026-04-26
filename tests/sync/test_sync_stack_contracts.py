@@ -14,7 +14,7 @@ from daft import DataFrame, col
 from archetype.app.storage_service import _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import RunConfig, StorageConfig
 from archetype.runtime.session import configure_session
 from archetype.core.hooks import SyncHookRegistry
 from archetype.core.resources import Resources
@@ -46,7 +46,8 @@ def _make_sync_stack(tmp_path, name: str = "sync"):
     updater = UpdateManager(store=store)
     system = SyncSystem()
     world = SyncWorld(
-        world_id="test", name=name,
+        world_id="test",
+        name=name,
         querier=querier,
         updater=updater,
         system=system,
@@ -570,9 +571,13 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
     updater = Mock()
     system = SyncSystem()
     world = SyncWorld(
-        world_id="test", name="query-forward",
-        querier=querier, updater=updater, system=system,
-        resources=Resources(), hooks=SyncHookRegistry(),
+        world_id="test",
+        name="query-forward",
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
     )
     world.tick = 5
     rc = RunConfig(num_steps=1)
@@ -609,9 +614,13 @@ def test_sync_world_update_uses_world_tick_by_default():
     updater = Mock(return_value=df)
     system = SyncSystem()
     world = SyncWorld(
-        world_id="test", name="update-forward",
-        querier=querier, updater=updater, system=system,
-        resources=Resources(), hooks=SyncHookRegistry(),
+        world_id="test",
+        name="update-forward",
+        querier=querier,
+        updater=updater,
+        system=system,
+        resources=Resources(),
+        hooks=SyncHookRegistry(),
     )
     world.tick = 11
     world.run_id = "pinned-run-id"

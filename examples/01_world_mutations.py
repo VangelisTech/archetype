@@ -91,7 +91,11 @@ async def main():
         )
         await admin.step()
 
-        enriched = (await admin.query(Position, Velocity, Health, entity_ids=[scout])).collect().to_pylist()[0]
+        enriched = (
+            (await admin.query(Position, Velocity, Health, entity_ids=[scout]))
+            .collect()
+            .to_pylist()[0]
+        )
         print(
             "   scout after update/add_components:"
             f" pos=({enriched['position__x']}, {enriched['position__y']})"
@@ -103,7 +107,9 @@ async def main():
         await player.despawn(dummy)
         await admin.step()
 
-        narrowed = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        narrowed = (
+            (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        )
         removed = (await admin.query(Position, entity_ids=[dummy])).collect().to_pylist()
         print(
             "   scout after remove_components:"
@@ -133,14 +139,19 @@ async def main():
         branch_seed = await branch.spawn(Position(x=-5.0, y=0.0), Velocity(vx=0.5, vy=0.0))
         await branch.step()
 
-        source_state = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
-        branch_state = (await branch.query(Position, Velocity, entity_ids=[branch_seed])).collect().to_pylist()[0]
+        source_state = (
+            (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
+        )
+        branch_state = (
+            (await branch.query(Position, Velocity, entity_ids=[branch_seed]))
+            .collect()
+            .to_pylist()[0]
+        )
         source_info = await admin.info()
         branch_info = await branch.info()
         print(f"   source tick={source_info.tick}, branch tick={branch_info.tick}")
         print(
-            "   source scout:"
-            f" pos=({source_state['position__x']}, {source_state['position__y']})"
+            f"   source scout: pos=({source_state['position__x']}, {source_state['position__y']})"
         )
         print(
             "   branch new entity:"

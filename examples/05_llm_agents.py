@@ -84,12 +84,7 @@ class ThinkProcessor(AsyncProcessor):
 
         # Append the new thought to the journal
         # We rebuild the journal JSON by appending the new thought string
-        new_journal = (
-            col("agent__journal").str.rstrip("]")
-            + ', "'
-            + thought
-            + '"]'
-        )
+        new_journal = col("agent__journal").str.rstrip("]") + ', "' + thought + '"]'
         # Fix the leading comma for empty journals
         new_journal = new_journal.str.replace('[, "', '["')
 

@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from daft import DataFrame  # type: ignore[import-not-found]
@@ -51,6 +50,7 @@ class iResourceContainer(Protocol):
     def remove(self, resource_type: type[T]) -> T | None: ...
     def contains(self, resource_type: type[T]) -> bool: ...
     def items(self) -> Iterable[tuple[type, object]]: ...
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SYNCHRONOUS INTERFACES
@@ -170,6 +170,7 @@ class iUpdateManager(Protocol):
     ) -> None:
         """Persist entity state changes to storage."""
         ...
+
 
 class iSyncHookBus(Protocol):
     def add(
@@ -336,6 +337,7 @@ class iAsyncUpdateManager(Protocol):
         self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
     ) -> DataFrame: ...
 
+
 class iAsyncHookBus(Protocol):
     def add(
         self,
@@ -347,6 +349,7 @@ class iAsyncHookBus(Protocol):
     def remove(self, handle: HookHandle) -> None: ...
     def clear(self) -> None: ...
     async def fire(self, event: HookEvent) -> None: ...
+
 
 class iAsyncWorld(Protocol):
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...

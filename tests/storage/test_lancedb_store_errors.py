@@ -65,7 +65,9 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr(
+        "archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async
+    )
     config = StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
     uri = _resolve_uri(str(config.uri))
     store = AsyncLancedbStore(uri, config.namespace)
@@ -89,7 +91,9 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return client
 
-    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr(
+        "archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async
+    )
     config = StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
     uri = _resolve_uri(str(config.uri))
     store = AsyncLancedbStore(uri, config.namespace)

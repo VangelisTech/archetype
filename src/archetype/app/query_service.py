@@ -47,9 +47,7 @@ class QueryService:
         get_or_create_store, so repeated calls with the same config reuse
         the cached instance.
         """
-        store = await self._storage_service.get_or_create_store(
-            storage_config or StorageConfig()
-        )
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
         querier = AsyncQueryManager(store=store)
         return await querier.query_archetype(
             sig=sig,
@@ -75,9 +73,7 @@ class QueryService:
         Subset matching: finds all archetype signatures that contain the
         requested types, queries each, projects to requested columns, unions.
         """
-        store = await self._storage_service.get_or_create_store(
-            storage_config or StorageConfig()
-        )
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
         querier = AsyncQueryManager(store=store)
         return await querier.query_components(
             components=components,
@@ -92,8 +88,6 @@ class QueryService:
         storage_config: StorageConfig | None = None,
     ) -> list[ArchetypeSignature]:
         """List all archetype signatures in a store."""
-        store = await self._storage_service.get_or_create_store(
-            storage_config or StorageConfig()
-        )
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
         querier = AsyncQueryManager(store=store)
         return await querier.list_signatures()

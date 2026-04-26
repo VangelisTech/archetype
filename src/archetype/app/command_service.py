@@ -15,12 +15,19 @@ Two paths: direct (sync semantics) and tick-deferred (queued via broker).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow
-from archetype.app.models import Command, CommandType, HookInfo, ProcessorInfo, ResourceInfo, WorldInfo
+from archetype.app.models import (
+    Command,
+    CommandType,
+    HookInfo,
+    ProcessorInfo,
+    ResourceInfo,
+    WorldInfo,
+)
 
 if TYPE_CHECKING:
     from daft import DataFrame
@@ -34,7 +41,7 @@ if TYPE_CHECKING:
     from archetype.app.world_service import WorldService
     from archetype.core.component import Component
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-    from archetype.core.interfaces import ArchetypeSignature, iWorld
+    from archetype.core.interfaces import ArchetypeSignature
 
     from archetype.app.models import (
         EpisodeConfig,
@@ -81,6 +88,7 @@ class CommandService:
             return
         try:
             from archetype.app.audit_log import make_audit_row
+
             row = make_audit_row(ctx, command_type, world_id, **kw)
             await self._audit.record(row)
         except Exception:
@@ -96,7 +104,7 @@ class CommandService:
     ) -> int:
         self._gate(Command(type=CommandType.SPAWN), ctx)
         result = await self._mutations.create_entity(world_id, components)
-        await self._emit(ctx, 'spawn', world_id)
+        await self._emit(ctx, "spawn", world_id)
         return result
 
     async def remove_entity(
@@ -107,7 +115,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.DESPAWN), ctx)
         await self._mutations.remove_entity(world_id, entity_id)
-        await self._emit(ctx, 'despawn', world_id)
+        await self._emit(ctx, "despawn", world_id)
 
     async def update_entity(
         self,
@@ -119,7 +127,7 @@ class CommandService:
         """Overlay values on existing components (same archetype)."""
         self._gate(Command(type=CommandType.UPDATE), ctx)
         await self._mutations.update_entity(world_id, entity_id, components)
-        await self._emit(ctx, 'update', world_id)
+        await self._emit(ctx, "update", world_id)
 
     async def add_components(
         self,
@@ -130,7 +138,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_COMPONENT), ctx)
         await self._mutations.add_components(world_id, entity_id, components)
-        await self._emit(ctx, 'add_component', world_id)
+        await self._emit(ctx, "add_component", world_id)
 
     async def remove_components(
         self,
@@ -141,7 +149,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.REMOVE_COMPONENT), ctx)
         await self._mutations.remove_components(world_id, entity_id, component_types)
-        await self._emit(ctx, 'remove_component', world_id)
+        await self._emit(ctx, "remove_component", world_id)
 
     async def add_processor(
         self,
@@ -151,7 +159,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_PROCESSOR), ctx)
         await self._mutations.add_processor(world_id, processor)
-        await self._emit(ctx, 'add_processor', world_id)
+        await self._emit(ctx, "add_processor", world_id)
 
     async def remove_processor(
         self,
@@ -161,7 +169,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.REMOVE_PROCESSOR), ctx)
         await self._mutations.remove_processor(world_id, proc_type)
-        await self._emit(ctx, 'remove_processor', world_id)
+        await self._emit(ctx, "remove_processor", world_id)
 
     # ── Lifecycle (gated, direct) ─────────────────────────────────────────
 
@@ -191,9 +199,7 @@ class CommandService:
         cache_config: CacheConfig | None = None,
     ) -> WorldInfo:
         self._gate(Command(type=CommandType.FORK_WORLD), ctx)
-        world = await self._worlds.fork_world(
-            source_world_id, name, storage_config, cache_config
-        )
+        world = await self._worlds.fork_world(source_world_id, name, storage_config, cache_config)
         return WorldInfo(
             world_id=world.world_id,
             name=world.name,
@@ -211,7 +217,7 @@ class CommandService:
             await self._audit.flush()
         await self._broker.clear(world_id)
         await self._worlds.destroy_world(world_id)
-        await self._emit(ctx, 'destroy_world', world_id)
+        await self._emit(ctx, "destroy_world", world_id)
 
     async def get_world_info(
         self,
@@ -238,7 +244,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.STEP), ctx)
         await self._simulation.step(world_id, run_config, **input_kwargs)
-        await self._emit(ctx, 'step', world_id)
+        await self._emit(ctx, "step", world_id)
 
     async def run(
         self,
@@ -249,7 +255,7 @@ class CommandService:
     ) -> RunResult:
         self._gate(Command(type=CommandType.RUN), ctx)
         result = await self._simulation.run(world_id, run_config, **input_kwargs)
-        await self._emit(ctx, 'run', world_id)
+        await self._emit(ctx, "run", world_id)
         return result
 
     async def run_episode(
@@ -262,7 +268,7 @@ class CommandService:
         """Gate, then delegate to SimulationService.run_episode."""
         self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
         result = await self._simulation.run_episode(world_id, config, **input_kwargs)
-        await self._emit(ctx, 'run_episode', world_id)
+        await self._emit(ctx, "run_episode", world_id)
         return result
 
     async def run_rollout(
@@ -279,7 +285,7 @@ class CommandService:
         """
         self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
         result = await self._simulation.run_rollout(world_id, config, **input_kwargs)
-        await self._emit(ctx, 'run_rollout', world_id)
+        await self._emit(ctx, "run_rollout", world_id)
         return result
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
@@ -320,8 +326,13 @@ class CommandService:
     ) -> DataFrame:
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
         return await self._queries.query_archetype(
-            sig, world_id, run_id, storage_config,
-            ticks=ticks, entity_ids=entity_ids, components=components,
+            sig,
+            world_id,
+            run_id,
+            storage_config,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            components=components,
         )
 
     async def list_signatures(
@@ -331,7 +342,6 @@ class CommandService:
     ) -> list[ArchetypeSignature]:
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
         return await self._queries.list_signatures(storage_config)
-
 
     # ── Resource attachment (gated) ────────────────────────────────────────
 
@@ -343,7 +353,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.ADD_RESOURCE), ctx)
         await self._worlds.add_resource(world_id, resource)
-        await self._emit(ctx, 'add_resource', world_id)
+        await self._emit(ctx, "add_resource", world_id)
 
     async def add_hook(
         self,
@@ -380,8 +390,7 @@ class CommandService:
                 qualname=f"{type(p).__module__}.{type(p).__qualname__}",
                 priority=getattr(p, "priority", 0),
                 components=tuple(
-                    f"{c.__module__}.{c.__qualname__}"
-                    for c in getattr(p, "components", ())
+                    f"{c.__module__}.{c.__qualname__}" for c in getattr(p, "components", ())
                 ),
             )
             for p in procs
@@ -418,10 +427,7 @@ class CommandService:
     ) -> list[ResourceInfo]:
         self._gate(Command(type=CommandType.LIST_RESOURCES), ctx)
         items = self._worlds.list_resources(world_id)
-        return [
-            ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}")
-            for t, _ in items
-        ]
+        return [ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}") for t, _ in items]
 
     async def get_audit_history(
         self,

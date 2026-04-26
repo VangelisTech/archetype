@@ -132,17 +132,13 @@ class SimulationService:
                 world_id,
                 name=f"{base.name}:{config.name_prefix}:{i}",
             )
-            result = await self.run_episode(
-                fork.world_id, config.episode_config, **input_kwargs
-            )
+            result = await self.run_episode(fork.world_id, config.episode_config, **input_kwargs)
             if config.destroy_forks_on_complete:
                 await self._world_service.destroy_world(fork.world_id)
             return result
 
         if config.parallel:
-            results = list(await asyncio.gather(
-                *[_run_one(i) for i in range(config.num_episodes)]
-            ))
+            results = list(await asyncio.gather(*[_run_one(i) for i in range(config.num_episodes)]))
         else:
             results = [await _run_one(i) for i in range(config.num_episodes)]
 

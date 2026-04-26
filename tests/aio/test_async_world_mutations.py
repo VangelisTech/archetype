@@ -10,7 +10,7 @@ from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.aio.async_world import AsyncWorld
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.resources import Resources
 from archetype.runtime.session import configure_session
@@ -61,7 +61,8 @@ async def store_backend(request, tmp_path):
 @pytest_asyncio.fixture()
 async def world(store_backend):
     return AsyncWorld(
-        world_id="test", name="w",
+        world_id="test",
+        name="w",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),

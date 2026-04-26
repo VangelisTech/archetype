@@ -73,7 +73,9 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
     async def fake_connect_async(path):
         return fake
 
-    monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
+    monkeypatch.setattr(
+        "archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async
+    )
 
     config = StorageConfig(uri=str(tmp_path / "warehouse"), namespace="ns")
     uri = _resolve_uri(str(config.uri))

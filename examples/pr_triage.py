@@ -75,9 +75,7 @@ class CategoryProcessor(AsyncProcessor):
                 return "refactor"
             return "other"
 
-        return df.with_column(
-            "triage__category", categorize(col("pullrequest__title"))
-        )
+        return df.with_column("triage__category", categorize(col("pullrequest__title")))
 
 
 class StalenessProcessor(AsyncProcessor):
@@ -105,9 +103,7 @@ class StalenessProcessor(AsyncProcessor):
             return min(1.0, age / 90.0)
 
         df = df.with_column("triage__age_days", age_days(col("pullrequest__created_at")))
-        return df.with_column(
-            "triage__staleness", staleness_score(col("triage__age_days"))
-        )
+        return df.with_column("triage__staleness", staleness_score(col("triage__age_days")))
 
 
 class RiskProcessor(AsyncProcessor):
@@ -182,11 +178,17 @@ def fetch_prs() -> list[dict]:
     try:
         result = subprocess.run(
             [
-                "gh", "pr", "list",
-                "--repo", "VangelisTech/archetype",
-                "--state", "all",
-                "--limit", "100",
-                "--json", "number,title,state,author,createdAt,url",
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                "VangelisTech/archetype",
+                "--state",
+                "all",
+                "--limit",
+                "100",
+                "--json",
+                "number,title,state,author,createdAt,url",
             ],
             capture_output=True,
             text=True,
