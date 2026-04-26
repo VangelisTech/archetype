@@ -95,19 +95,14 @@ class _RuntimeWorldState:
                 await gate.add_processor(ctx, self.world_id, proc)
 
             for event_type, fn in self.init_hooks:
-                # Hooks are non-serializable; wire directly on the world
-                # (escape hatch until gate.add_hook is implemented)
+                # Hooks are non-serializable — escape hatch until gate.add_hook dispatches
                 world = self.runtime._container.world_service.get_world(
                     UUID(str(self.world_id))
                 )
                 world.add_hook(event_type, fn)
 
             for resource in self.init_resources:
-                # TODO: gate.add_resource when implemented
-                world = self.runtime._container.world_service.get_world(
-                    UUID(str(self.world_id))
-                )
-                world.resources.insert(resource)
+                await gate.add_resource(ctx, self.world_id, resource)
 
             self.initialized = True
 
@@ -311,6 +306,32 @@ class RuntimeWorld:
                 entity_ids=entity_ids,
             )
 
+    async def history(self, *, limit: int = 100, **filters):
+        """Read the audit log for this world. Returns raw DataFrame."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.get_audit_history(
+                self._ctx, wid, limit=limit, **filters
+            )
+
+    async def list_processors(self):
+        """List processor summaries (ProcessorInfo)."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.list_processors(self._ctx, wid)
+
+    async def list_hooks(self):
+        """List hook summaries (HookInfo)."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.list_hooks(self._ctx, wid)
+
+    async def list_resources(self):
+        """List resource summaries (ResourceInfo)."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.list_resources(self._ctx, wid)
+
     # ── Aliasing ──────────────────────────────────────────────────────────
 
     def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
@@ -389,6 +410,18 @@ class SyncRuntimeWorld:
 
     def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
         return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
+
+    def history(self, *, limit: int = 100, **filters):
+        return self._run(lambda: self._world.history(limit=limit, **filters))
+
+    def list_processors(self):
+        return self._run(lambda: self._world.list_processors())
+
+    def list_hooks(self):
+        return self._run(lambda: self._world.list_hooks())
+
+    def list_resources(self):
+        return self._run(lambda: self._world.list_resources())
 
     def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
         return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
