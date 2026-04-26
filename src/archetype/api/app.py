@@ -4,6 +4,7 @@
 """FastAPI application factory."""
 
 from contextlib import asynccontextmanager
+from logging import basicConfig
 
 import logfire
 from fastapi import FastAPI
@@ -12,6 +13,7 @@ from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, query, simulation, worlds
 
 logfire.configure(service_name="archetype-ecs")
+basicConfig(handlers=[logfire.LogfireLoggingHandler()])
 
 
 @asynccontextmanager
