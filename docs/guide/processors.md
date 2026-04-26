@@ -75,8 +75,11 @@ class PhysicsProcessor(AsyncProcessor):
 Setup:
 
 ```python
-world.resources.insert(SimConfig(gravity=9.8))
-await world.system.add_processor(PhysicsProcessor())
+world = runtime.world(
+    "physics",
+    processors=[PhysicsProcessor()],
+    resources=[SimConfig(gravity=9.8)],
+)
 ```
 
 ## LLM-Powered Processors
@@ -174,16 +177,16 @@ class CleanupProcessor(AsyncProcessor):
 ## Adding Processors to a World
 
 ```python
-# Direct (Python API)
-await world.system.add_processor(ThinkProcessor())
+# Runtime script surface
+world = runtime.world("agents", processors=[ThinkProcessor()])
 
-# Via SimulationService
-container.simulation_service.add_processor(world_id, ThinkProcessor())
+# Post-activation gated method
+await world.add_processor(ThinkProcessor())
 ```
 
 ## Interacting with the Broker
 
-Processors can submit commands via the broker in Resources:
+Processors are trusted internal code after registration. If they need delayed scheduling, they may use an internal broker resource or another sanctioned internal path:
 
 ```python
 from archetype.app.broker import CommandBroker
@@ -205,7 +208,7 @@ class SpawnerProcessor(AsyncProcessor):
         return df
 ```
 
-This enables agents to spawn new entities, send messages, or trigger world-level operations from within the simulation loop.
+External user actions should still go through `iCommandService`. Processor-originated queueing is internal simulation mechanics, not a replacement for the command gate.
 
 ## Testing Processors
 

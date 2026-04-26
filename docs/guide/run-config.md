@@ -4,7 +4,7 @@ Archetype uses Pydantic models for all configuration. There are four config type
 
 ## RunConfig
 
-`RunConfig` controls the behavior of `world.run()` and `world.step()`. Each run gets a unique `run_id` (UUID7) for storage isolation.
+`RunConfig` controls the behavior of `step` and `run`. Each run gets a unique `run_id` (UUID7) for storage isolation.
 
 ```python
 from archetype.core.config import RunConfig
@@ -18,6 +18,8 @@ await world.run(config)
 - A `RunConfig` identifies a run — one `run_id` shared by every tick in the run.
 - `SimulationService.step()` and `world.step()` **require** an explicit `RunConfig`. They MUST NOT mint one per call. Callers driving a multi-tick run reuse the same `RunConfig` across every step so persisted rows stay addressable by `run_id`.
 - `SimulationService.run()` and `world.run()` thread the caller's `RunConfig` into every internal `step()` call.
+- `EpisodeConfig` wraps `RunConfig` with termination semantics.
+- `RolloutConfig` wraps `EpisodeConfig` with fork-and-aggregate semantics.
 
 ### Fields
 
@@ -78,7 +80,7 @@ config = RunConfig.validate(steps=3)
 
 ## WorldConfig
 
-Identifies a world instance. Passed to `WorldService.create_world()`.
+Identifies a world instance. Runtime/API callers create worlds through `iCommandService.create_world(...)`; lower-level internal callers use `WorldService.create_world()`.
 
 ```python
 from archetype.core.config import WorldConfig
@@ -93,7 +95,7 @@ config = WorldConfig(name="my-sim")
 
 ## StorageConfig
 
-Configures the persistence backend. Passed to `WorldService.create_world()` and `StorageService.get_backend()`.
+Configures the persistence backend. Runtime/API callers pass it through the gate; lower-level services pass it to `WorldService.create_world()` and `StorageService.get_or_create_store()`.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
@@ -133,6 +135,38 @@ cache = CacheConfig(flush_rows=500_000, idle_sec=15.0)
 
 The cache flushes when any threshold is exceeded. See [Stores -- Write-Behind Cache](stores.md#write-behind-cache) for details.
 
+## EpisodeConfig
+
+`EpisodeConfig` describes step-until-termination execution on the world supplied by the caller. It does not fork.
+
+Key fields:
+
+| Field | Description |
+|---|---|
+| `episode_id` | Episode identity |
+| `run_config` | `RunConfig` used for each step |
+| `max_steps` | Defensive cap |
+| `terminal_component` | Terminate when any active entity has this component |
+| `termination` | Optional callable predicate over world state |
+
+## RolloutConfig
+
+`RolloutConfig` describes N forked episodes from a base world.
+
+Key fields:
+
+| Field | Description |
+|---|---|
+| `rollout_id` | Rollout identity |
+| `episode_config` | Episode template per fork |
+| `num_episodes` | Number of forked episodes |
+| `parallel` | Whether to run forked episodes concurrently |
+| `name_prefix` | Prefix for fork names |
+| `destroy_forks_on_complete` | Remove live fork worlds after completion; persisted rows remain |
+
+See [Execution Hierarchy](execution-hierarchy.md).
+
 ## Source Reference
 
 - RunConfig, WorldConfig, StorageConfig, CacheConfig: `src/archetype/core/config.py`
+- EpisodeConfig, RolloutConfig: `src/archetype/app/models.py`

@@ -15,7 +15,13 @@ The current contract set is split across design docs and executable tests.
 
 | Contract source | Scope | Notes |
 |---|---|---|
-| `docs/guide/specification.md` | Engine, application, and top-level runtime contracts | This page. Normative behavior from storage through app/runtime boundaries, including sugar/runtime constraints. |
+| `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
+| [Runtime](runtime.md) | Script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, gate-only access. |
+| [Service Protocols](service-protocols.md) | Application service interfaces | `iCommandService` and the services it gates. |
+| [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
+| [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
+| [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
+| [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [`tests/app/test_sugar_runtime.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_sugar_runtime.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
@@ -49,13 +55,9 @@ The work in this session surfaced and hardened the following contract families:
 
 ## Status
 
-This document defines the contracts that govern Archetype from storage through
-world execution into the application layer.
-
-It also includes the top-level sugar/runtime requirements that were previously
-tracked separately. The goal is a single specification that describes the
-engine contracts any runtime, API, CLI, or future orchestration layer must
-preserve.
+This document defines broad contracts from storage through world execution into
+the application layer. Focused specification pages are more precise for their
+areas and take precedence when they define a newer contract.
 
 Normative language:
 
@@ -71,8 +73,8 @@ This specification covers:
 - component and archetype identity
 - store, querier, updater, system, and world contracts
 - mutation materialization and world lifecycle events
-- brokered command flow in the application layer
-- top-level sugar/runtime API constraints
+- gated command flow in the application layer
+- top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
 
@@ -102,8 +104,8 @@ The stack is strictly layered:
 3. `Updater`: write facade that stamps metadata and persists rows
 4. `System`: processor orchestration
 5. `World`: query -> mutate -> execute -> persist lifecycle
-6. `Application services`: broker, command routing, multi-world orchestration
-7. `API / CLI / sugar`: outer adapters over the service layer
+6. `Application services`: command gate, audit, broker, multi-world orchestration
+7. `Runtime / API / CLI`: outer adapters over the service layer
 
 Each layer may depend downward. No lower layer may depend upward.
 

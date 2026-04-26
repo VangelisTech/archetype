@@ -2,8 +2,8 @@
 
 Every example on this page runs end-to-end with a single command. The
 recommended pattern is `ArchetypeRuntime` for scripts. A small number of
-examples intentionally drop lower when the read path is still below the
-runtime API, most notably the time-travel example.
+examples intentionally call the service layer when they need lower-level
+storage or queue control.
 
 ## 1. World Mutations
 
@@ -21,12 +21,12 @@ service layer.
 
 **What it demonstrates:**
 
-- **SPAWN / DESPAWN / UPDATE** through the brokered runtime surface
+- **SPAWN / DESPAWN / UPDATE** through the gated runtime surface
 - **ADD_COMPONENT / REMOVE_COMPONENT** with archetype migration at tick boundaries
 - **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
 - **RBAC** checks through actor-bound handles: viewer denied spawn, player denied add_processor
 - **FORK** from an actor-bound handle while keeping the same actor binding on the branch
-- **Command history** through `world.command_history()`
+- **Audit history** through `world.history()`
 
 Output:
 
@@ -46,25 +46,25 @@ Output:
 
 | Command | Payload | Who Can Run It |
 |---------|---------|----------------|
-| `spawn` | `{"components": [...]}` | player, maintainer, admin |
-| `despawn` | `{"entity_id": int}` | player, maintainer, admin |
-| `update` | `{"entity_id": int, "components": [...]}` | player, coder, maintainer, admin |
-| `add_component` | `{"entity_id": int, "components": [...]}` | coder, maintainer, admin |
-| `remove_component` | `{"entity_id": int, "component_types": [...]}` | coder, maintainer, admin |
-| `add_processor` | `{"processor": ...}` | maintainer, admin |
-| `remove_processor` | `{"processor_type": str}` | maintainer, admin |
+| `spawn` | `{"components": [...]}` | player, operator, admin |
+| `despawn` | `{"entity_id": int}` | player, operator, admin |
+| `update` | `{"entity_id": int, "components": [...]}` | player, operator, admin |
+| `add_component` | `{"entity_id": int, "components": [...]}` | operator, admin |
+| `remove_component` | `{"entity_id": int, "component_types": [...]}` | operator, admin |
+| `add_processor` | `{"processor": ...}` | operator, admin |
+| `remove_processor` | `{"processor_type": str}` | operator, admin |
 | `create_world` | `{"config": {"name": str}}` | admin |
-| `destroy_world` | `{"world_id": str}` | admin |
-| `fork_world` | `{"source_world_id": str, "name": str}` | admin |
-| `message` | `{"sender_id", "receiver_id", "content"}` | player, admin |
-| `custom` | `{...}` | player, admin |
-| `query_world` | `{}` | viewer, operator, admin |
+| `destroy_world` | `{"world_id": str}` | operator, admin |
+| `fork_world` | `{"source_world_id": str, "name": str}` | operator, admin |
+| `message` | `{"sender_id", "receiver_id", "content"}` | player, operator, admin |
+| `custom` | `{...}` | player, operator, admin |
+| `query_world` | `{}` | viewer, player, operator, admin |
 
 ---
 
 ## 2. Fork for Counterfactuals
 
-Fork a world three times with different parameters, run each branch, compare results.
+Fork a world three times, run each branch, compare results.
 
 ```bash
 uv run python examples/02_fork_counterfactual.py
@@ -74,15 +74,7 @@ Source: [`examples/02_fork_counterfactual.py`](https://github.com/VangelisTech/a
 
 ```python
 import asyncio
-from dataclasses import dataclass
-
 from archetype import ArchetypeRuntime, Component, StorageConfig
-
-
-@dataclass
-class PhysicsConfig:
-    gravity: float = 9.8
-    drag: float = 0.1
 
 
 class Probe(Component):
@@ -97,13 +89,11 @@ async def main():
         await base.spawn(Probe(label="seed"))
         await base.run(steps=1)
 
-        for gravity in [1.0, 9.8, 25.0]:
-            fork = await base.fork(f"gravity-{gravity}", storage=storage)
-            fork.resources.insert(PhysicsConfig(gravity=gravity))
-
+        for branch in ["low", "baseline", "high"]:
+            fork = await base.fork(f"branch-{branch}", storage=storage)
             result = await fork.run(steps=10)
             rows = (await fork.query(Probe)).collect().to_pylist()
-            print(f"gravity={gravity:>5.1f}: tick={result.final_tick}, entities={len(rows)}")
+            print(f"{branch}: tick={result.final_tick}, entities={len(rows)}")
 
 asyncio.run(main())
 ```
@@ -111,12 +101,13 @@ asyncio.run(main())
 Output:
 
 ```text
-gravity=  1.0: tick=11
-gravity=  9.8: tick=11
-gravity= 25.0: tick=11
+low: tick=11
+baseline: tick=11
+high: tick=11
 ```
 
 All three branches start from the same base state and diverge independently.
+Forks share resource instances by default; attach replacement resources through the gated resource-management path when per-branch resource isolation is required.
 
 ---
 
@@ -130,10 +121,9 @@ uv run python examples/03_time_travel.py
 
 Source: [`examples/03_time_travel.py`](https://github.com/VangelisTech/archetype/blob/main/examples/03_time_travel.py)
 
-This example intentionally uses the lower-level `QueryService` because
-historical snapshot reads are part of the read path rather than the current
-top-level runtime sugar. Current-state runtime mutation helpers exist; history
-snapshot helpers do not yet.
+This example uses lower-level service calls for historical storage queries, but
+external reads still enter through `CommandService` so viewer permissions and
+audit behavior apply.
 
 ```python
 import asyncio
@@ -150,31 +140,32 @@ async def main():
     container = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
 
-    world = await container.world_service.create_world(
-        WorldConfig(name="time-travel-demo"), StorageConfig(),
+    info = await container.command_service.create_world(
+        ctx, WorldConfig(name="time-travel-demo"), StorageConfig(),
     )
 
     # Spawn 3 entities and run 5 ticks
     for _ in range(3):
         cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(world.world_id, cmd, ctx)
-    await container.simulation_service.run(world.world_id, RunConfig(num_steps=5))
+        await container.command_service.submit(ctx, info.world_id, cmd)
+    await container.command_service.run(ctx, info.world_id, RunConfig(num_steps=5))
 
     # Spawn 2 more and run 5 more ticks
     for _ in range(2):
         cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(world.world_id, cmd, ctx)
-    await container.simulation_service.run(world.world_id, RunConfig(num_steps=5))
+        await container.command_service.submit(ctx, info.world_id, cmd)
+    await container.command_service.run(ctx, info.world_id, RunConfig(num_steps=5))
 
     # Query state at different ticks
     for tick in [1, 5, 10]:
-        state = await container.query_service.get_world_state(world.world_id, tick=tick)
-        print(f"tick {tick:>2}: {len(state.entities)} entities")
+        state = await container.command_service.query_archetype(
+            ctx, (), str(info.world_id), str(info.run_id or ""), ticks=[tick]
+        )
+        print(f"tick {tick:>2}: {len(state.collect().to_pylist())} rows")
 
     # Full command audit trail
-    history = await container.query_service.get_command_history(world.world_id)
-    for cmd in history:
-        print(f"  tick={cmd.tick}: {cmd.type.value}")
+    history = await container.command_service.get_audit_history(ctx, info.world_id)
+    print(history)
 
     await container.shutdown()
 
@@ -185,7 +176,7 @@ asyncio.run(main())
 
 ## 4. Agent Messaging
 
-Three agents send greetings to each other via the CommandBroker. Messages are enqueued as `MESSAGE` commands and delivered at tick boundaries. Mood and energy update based on messages received.
+Three agents send greetings to each other via tick-deferred `MESSAGE` commands. Mood and energy update based on messages received.
 
 ```bash
 uv run python examples/04_messaging.py
@@ -253,7 +244,7 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 - **Components**: `Trajectory` (JSON-encoded turns), `Label` (evaluation result)
 - **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
 - **Resources**: `SamplingConfig`, `LabelingConfig` staged on `runtime.world(..., resources=[...])`
-- **Fork-based comparison**: Clone a world with `world.fork(...)`, swap config, run independently
+- **Fork-based comparison**: Clone a world with `world.fork(...)` and run an independent branch
 
 ---
 
