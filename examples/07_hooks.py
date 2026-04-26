@@ -84,62 +84,65 @@ async def main() -> None:
     metrics: list[TickMetric] = []
     tick_started_at: dict[int, float] = {}
 
+    # ── Hook handlers (all async) ────────────────────────────────────────
+
+    async def audit_spawn(event: OnSpawn) -> None:
+        components = ", ".join(type(component).__name__ for component in event.components)
+        audit_log.append(f"spawn entity={event.entity_id} components=[{components}]")
+
+    async def audit_despawn(event: OnDespawn) -> None:
+        audit_log.append(f"despawn entity={event.entity_id}")
+
+    async def audit_component_added(event: OnComponentAdded) -> None:
+        components = ", ".join(type(component).__name__ for component in event.components)
+        audit_log.append(f"add_components entity={event.entity_id} components=[{components}]")
+
+    async def audit_component_removed(event: OnComponentRemoved) -> None:
+        names = ", ".join(component_type.__name__ for component_type in event.component_types)
+        audit_log.append(f"remove_components entity={event.entity_id} components=[{names}]")
+
+    async def start_timer(event: PreTick) -> None:
+        tick_started_at[event.tick] = time.perf_counter()
+
+    async def publish_metrics(event: PostTick) -> None:
+        completed_tick = event.tick - 1
+        started_at = tick_started_at.pop(completed_tick, time.perf_counter())
+        battery_levels: list[float] = []
+
+        for signature, df in event.results.items():
+            if Battery not in signature:
+                continue
+            rows = df.select("battery__percent").collect().to_pylist()
+            battery_levels.extend(row["battery__percent"] for row in rows)
+
+        metrics.append(
+            TickMetric(
+                completed_tick=completed_tick,
+                duration_ms=(time.perf_counter() - started_at) * 1000,
+                active_rovers=len(battery_levels),
+                low_battery_rovers=sum(level < 50.0 for level in battery_levels),
+            )
+        )
+
+    async def temporary_debug_trace(event: PreTick) -> None:
+        print(f"debug hook: tick {event.tick} is starting")
+
+    # ── World setup with hooks at construction ───────────────────────────
+
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
             "hooks-demo",
             storage=storage,
             processors=[RoverProcessor()],
+            hooks=[
+                (OnSpawn, audit_spawn),
+                (OnDespawn, audit_despawn),
+                (OnComponentAdded, audit_component_added),
+                (OnComponentRemoved, audit_component_removed),
+                (PreTick, start_timer),
+                (PostTick, publish_metrics),
+            ],
         )
-
-        async def audit_spawn(event: OnSpawn) -> None:
-            components = ", ".join(type(component).__name__ for component in event.components)
-            audit_log.append(f"spawn entity={event.entity_id} components=[{components}]")
-
-        async def audit_despawn(event: OnDespawn) -> None:
-            audit_log.append(f"despawn entity={event.entity_id}")
-
-        async def audit_component_added(event: OnComponentAdded) -> None:
-            components = ", ".join(type(component).__name__ for component in event.components)
-            audit_log.append(f"add_components entity={event.entity_id} components=[{components}]")
-
-        async def audit_component_removed(event: OnComponentRemoved) -> None:
-            names = ", ".join(component_type.__name__ for component_type in event.component_types)
-            audit_log.append(f"remove_components entity={event.entity_id} components=[{names}]")
-
-        async def start_timer(event: PreTick) -> None:
-            tick_started_at[event.tick] = time.perf_counter()
-
-        async def publish_metrics(event: PostTick) -> None:
-            completed_tick = event.tick - 1
-            started_at = tick_started_at.pop(completed_tick, time.perf_counter())
-            battery_levels: list[float] = []
-
-            for signature, df in event.results.items():
-                if Battery not in signature:
-                    continue
-                rows = df.select("battery__percent").collect().to_pylist()
-                battery_levels.extend(row["battery__percent"] for row in rows)
-
-            metrics.append(
-                TickMetric(
-                    completed_tick=completed_tick,
-                    duration_ms=(time.perf_counter() - started_at) * 1000,
-                    active_rovers=len(battery_levels),
-                    low_battery_rovers=sum(level < 50.0 for level in battery_levels),
-                )
-            )
-
-        async def temporary_debug_trace(event: PreTick) -> None:
-            print(f"debug hook: tick {event.tick} is starting")
-
-        world.add_hook(OnSpawn, audit_spawn)
-        world.add_hook(OnDespawn, audit_despawn)
-        world.add_hook(OnComponentAdded, audit_component_added)
-        world.add_hook(OnComponentRemoved, audit_component_removed)
-        world.add_hook(PreTick, start_timer)
-        world.add_hook(PostTick, publish_metrics)
-
-        debug_handle = world.add_hook(PreTick, temporary_debug_trace)
 
         rover_a = await world.spawn(
             Position(x=0.0, y=0.0),
@@ -152,8 +155,13 @@ async def main() -> None:
             Battery(percent=55.0),
         )
 
+        # Add a temporary debug hook post-activation to get a removable handle
+        debug_handle = await world.add_hook(PreTick, temporary_debug_trace)
+
         await world.step()
-        world.remove_hook(debug_handle)
+
+        # Remove the temporary debug hook — subsequent ticks won't print the trace
+        await world.remove_hook(debug_handle)
 
         await world.add_components(rover_a, Payload(label="soil sample"))
         await world.run(steps=2)

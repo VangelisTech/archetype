@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,7 +33,7 @@ from daft import DataFrame, col
 from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig
+from archetype.core.config import StorageConfig
 from archetype.core.resources import Resources
 
 # ── Data Types ──────────────────────────────────────────────────────
@@ -421,11 +422,12 @@ def make_trajectories() -> list[Trajectory]:
 
 
 async def main():
+    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
+
     trajectories = make_trajectories()
     print(f"Created {len(trajectories)} synthetic trajectories\n")
 
     storage = StorageConfig(uri="./trajectory_data", namespace="trajectories")
-    has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world(
@@ -462,7 +464,7 @@ async def main():
             print("OPENAI_API_KEY not set; running sampling/score pipeline without LLM labeling.\n")
 
         print("Running pipeline (sample -> label -> score)...")
-        await world.step(config=RunConfig(num_steps=1))
+        await world.step()
         print("  -> Pipeline completed\n")
 
         print("Results:")
@@ -482,8 +484,7 @@ async def main():
 
         print("Forking world to compare a stricter sampling threshold...")
         fork = await world.fork("strict-eval", storage=storage)
-        fork.resources.insert(SamplingConfig(min_turns=8))
-        print(f"  -> Forked at tick {fork.tick}, both worlds coexist in storage\n")
+        print(f"  -> Forked world '{fork.name}', both worlds coexist in storage\n")
 
 
 if __name__ == "__main__":

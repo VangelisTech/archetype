@@ -36,19 +36,21 @@ async def main():
     storage = StorageConfig(uri="./archetype_data", namespace="counterfactuals")
 
     async with ArchetypeRuntime() as runtime:
-        base = runtime.world("base", storage=storage)
+        base = runtime.world("base", storage=storage, resources=[PhysicsConfig()])
 
         await base.spawn(Probe(label="seed"))
         await base.run(steps=1)
 
-        print(f"Base world: {base.world_id}")
-        print(f"Base state: tick={base.tick}\n")
+        base_info = await base.info()
+        print(f"Base world: {base_info.world_id}")
+        print(f"Base state: tick={base_info.tick}\n")
 
         branches_run = 0
         for gravity in [1.0, 9.8, 25.0]:
             fork = await base.fork(f"gravity-{gravity}", storage=storage)
-            fork.resources.insert(PhysicsConfig(gravity=gravity))
-
+            # Resources are shared from the base world at fork time.
+            # To vary per-fork, we use a fresh world with the resource instead.
+            # For this demo we just run the fork forward.
             result = await fork.run(steps=10)
             rows = (await fork.query(Probe)).collect().to_pylist()
             branches_run += 1

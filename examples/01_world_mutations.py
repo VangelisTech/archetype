@@ -60,9 +60,13 @@ async def main():
 
     async with ArchetypeRuntime() as runtime:
         world = runtime.world("mutations-demo", storage=storage)
+
+        # Activate the world with admin (default actor) before creating aliases
+        await world.step()
+
         viewer = world.as_actor(ActorCtx(id=uuid7(), roles={"viewer"}))
         player = world.as_actor(ActorCtx(id=uuid7(), roles={"player"}))
-        admin = world.as_actor(ActorCtx(id=uuid7(), roles={"admin"}))
+        admin = world  # default actor is admin
 
         print("1. SPAWN + RBAC")
         scout = await player.spawn(Position(x=0.0, y=0.0))
@@ -73,7 +77,8 @@ async def main():
         except PermissionError:
             print("   viewer: SPAWN denied (correct)")
         await admin.step()
-        print(f"   Created world: {world.world_id}")
+        info = await world.info()
+        print(f"   Created world: {info.world_id}")
         print(f"   player: spawned scout={scout}, dummy={dummy}")
 
         print("\n2. UPDATE + COMPONENT MUTATIONS")
@@ -124,13 +129,15 @@ async def main():
         await admin.remove_processor(MovementProcessor)
 
         print("\n4. FORK")
-        branch = await player.fork("branch-a", storage=storage)
+        branch = await admin.fork("branch-a", storage=storage)
         branch_seed = await branch.spawn(Position(x=-5.0, y=0.0), Velocity(vx=0.5, vy=0.0))
         await branch.step()
 
         source_state = (await admin.query(Position, Velocity, entity_ids=[scout])).collect().to_pylist()[0]
         branch_state = (await branch.query(Position, Velocity, entity_ids=[branch_seed])).collect().to_pylist()[0]
-        print(f"   source tick={world.tick}, branch tick={branch.tick}")
+        source_info = await admin.info()
+        branch_info = await branch.info()
+        print(f"   source tick={source_info.tick}, branch tick={branch_info.tick}")
         print(
             "   source scout:"
             f" pos=({source_state['position__x']}, {source_state['position__y']})"
@@ -141,10 +148,14 @@ async def main():
         )
 
         print("\n5. COMMAND HISTORY")
-        for cmd in await admin.command_history():
-            print(f"   source tick={cmd.tick}: {cmd.type.value}")
-        for cmd in await branch.command_history():
-            print(f"   branch tick={cmd.tick}: {cmd.type.value}")
+        source_history = await admin.history()
+        source_rows = source_history.collect().to_pylist()
+        for row in source_rows:
+            print(f"   source: {row}")
+        branch_history = await branch.history()
+        branch_rows = branch_history.collect().to_pylist()
+        for row in branch_rows:
+            print(f"   branch: {row}")
 
 
 if __name__ == "__main__":

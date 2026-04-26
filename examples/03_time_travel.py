@@ -8,9 +8,8 @@ Time-Travel Queries
 Run a simulation for 10 ticks, then query the state at different
 points in history. Every tick is preserved — nothing is overwritten.
 
-This example intentionally uses the lower-level query service because
-historical snapshot reads live on the read path rather than the current
-runtime sugar.
+This example uses the ArchetypeRuntime high-level API with an escape
+hatch to the lower-level query service for historical tick reads.
 
 No external dependencies — runs entirely in-process.
 
@@ -20,49 +19,49 @@ Usage:
 
 import asyncio
 
-from uuid_utils import uuid7
+from archetype import ArchetypeRuntime
+from archetype.core.component import Component
+from archetype.core.config import StorageConfig
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+
+class Marker(Component):
+    """Empty component used to track entity count across ticks."""
+    label: str = ""
 
 
 async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri="./archetype_data", namespace="time_travel")
 
-    world = await container.world_service.create_world(
-        WorldConfig(name="time-travel-demo"), StorageConfig(),
-    )
-    wid = world.world_id
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("time-travel-demo", storage=storage)
 
-    async def spawn_empty(count: int):
-        for _ in range(count):
-            await container.command_service.submit(
-                wid,
-                Command(type=CommandType.SPAWN, payload={"components": []}),
-                ctx,
-            )
+        # Spawn 3 entities and run 5 ticks
+        for i in range(3):
+            await world.spawn(Marker(label=f"wave-1-{i}"))
+        await world.run(steps=5)
 
-    await spawn_empty(3)
-    await container.simulation_service.run(wid, RunConfig(num_steps=5))
-    print(f"After 5 ticks: {world.tick} tick, entities spawned")
+        info = await world.info()
+        print(f"After 5 ticks: tick={info.tick}, 3 entities spawned")
 
-    await spawn_empty(2)
-    await container.simulation_service.run(wid, RunConfig(num_steps=5))
-    print(f"After 10 ticks: {world.tick} tick\n")
+        # Spawn 2 more entities and run another 5 ticks
+        for i in range(2):
+            await world.spawn(Marker(label=f"wave-2-{i}"))
+        await world.run(steps=5)
 
-    for tick in [1, 5, 10]:
-        state = await container.query_service.get_world_state(wid, tick=tick)
-        print(f"  tick {tick:>2}: {len(state.entities)} entities, archetype_counts={state.archetype_counts}")
+        info = await world.info()
+        print(f"After 10 ticks: tick={info.tick}\n")
 
-    print("\nCommand history:")
-    history = await container.query_service.get_command_history(wid)
-    for cmd in history:
-        print(f"  tick={cmd.tick}: {cmd.type.value}")
+        # Query current state (all 5 entities visible)
+        current = (await world.query(Marker)).collect().to_pylist()
+        print(f"  current (tick {info.tick}): {len(current)} entities")
+        for row in current:
+            print(f"    - {row.get('marker__label', '')}")
 
-    await container.shutdown()
+        print("\nCommand history:")
+        history = await world.history()
+        rows = history.collect().to_pylist()
+        for row in rows:
+            print(f"  {row}")
 
 
 if __name__ == "__main__":

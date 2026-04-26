@@ -23,6 +23,8 @@ Usage:
 
 import asyncio
 import json
+import os
+import sys
 
 from daft import DataFrame, col
 from daft.functions import prompt
@@ -102,6 +104,11 @@ class ThinkProcessor(AsyncProcessor):
 
 
 async def main():
+    if not os.getenv("OPENAI_API_KEY"):
+        print("OPENAI_API_KEY not set. Skipping LLM agent example.")
+        print("Set the key to run: export OPENAI_API_KEY=sk-...")
+        sys.exit(0)
+
     agents = [
         ("Ada", "You are a curious scientist who loves discovering patterns."),
         ("Rex", "You are a bold explorer who takes risks and seeks adventure."),
