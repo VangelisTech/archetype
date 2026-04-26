@@ -5,18 +5,15 @@
 
 import pytest
 
-from archetype.app.storage_service import AsyncStorageFactory, StorageContextFactory, StorageService
-from archetype.app.world_service import WorldFactory, WorldOrchestrator
+from archetype.app.storage_service import StorageService
+from archetype.app.world_service import WorldOrchestrator
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 
 
 def _make_orchestrator(tmp_path):
-    ctx_factory = StorageContextFactory()
-    async_factory = AsyncStorageFactory(ctx_factory)
-    ss = StorageService(async_factory)
-    wf = WorldFactory()
-    orch = WorldOrchestrator(ss, wf)
+    ss = StorageService()
+    orch = WorldOrchestrator(ss)
     return orch, ss
 
 
@@ -86,7 +83,7 @@ class TestWorldFactory:
                 WorldConfig(name="f5", world_id=wid),
                 StorageConfig(uri=str(tmp_path / "s"), namespace="ns"),
             )
-            assert world.world_id == wid
+            assert world.world_id == str(wid)
         finally:
             await ss.shutdown()
 

@@ -167,9 +167,9 @@ def _make_sync_world(tmp_path, name="test"):
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
-    config = WorldConfig(name=name)
     return SyncWorld(
-        config=config,
+        world_id="test",
+        name=name,
         querier=querier,
         updater=updater,
         system=system,
@@ -181,17 +181,19 @@ def _make_sync_world(tmp_path, name="test"):
 def _make_sync_world_with_catalog(tmp_path, name="test"):
     """Helper to construct a SyncWorld backed by a real catalog so
     ``world.step`` can actually persist rows."""
-    from archetype.app.storage_service import StorageContextFactory
+    from archetype.app.storage_service import _resolve_uri
     from archetype.core.config import StorageConfig
+    from archetype.runtime.session import configure_session
 
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
-    ctx = StorageContextFactory().build(cfg)
-    store = SyncStore(uri=ctx.uri, session=ctx.session)
+    session = configure_session(cfg)
+    store = SyncStore(uri=_resolve_uri(str(cfg.uri)), session=session)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
     return SyncWorld(
-        config=WorldConfig(name=name),
+        world_id="test",
+        name=name,
         querier=querier,
         updater=updater,
         system=system,

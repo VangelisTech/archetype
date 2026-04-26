@@ -2,14 +2,15 @@ import daft
 import pytest
 import pytest_asyncio
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.core.aio.async_lancedb_store import AsyncLancedbStore
 from archetype.core.config import CacheConfig, StorageConfig
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -21,18 +22,18 @@ class Position(Component):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=(request.param == "lancedb"))
-    context = StorageContextFactory().build(storage)
+    session = configure_session(storage)
 
     if request.param == "async":
-        store = AsyncStore(context)
+        store = AsyncStore(session, io_config=storage.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context)
+        base = AsyncStore(session, io_config=storage.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
         store = AsyncCachedStore(async_store=base, cache_config=cache_cfg)
     elif request.param == "lancedb":
-        store = AsyncLancedbStore(context)
+        store = AsyncLancedbStore(uri, storage.namespace)
     else:
         raise AssertionError("unknown backend")
 

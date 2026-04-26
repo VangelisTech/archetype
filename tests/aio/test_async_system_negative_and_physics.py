@@ -4,7 +4,6 @@ import pytest
 import pytest_asyncio
 from daft import col, lit
 
-from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio import (
     AsyncQueryManager,
     AsyncStore,
@@ -17,6 +16,7 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.resources import Resources
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -37,10 +37,10 @@ class Accel(Component):
 @pytest_asyncio.fixture
 async def world(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-    ctx = StorageContextFactory().build(storage)
-    store = AsyncStore(ctx.session, io_config=ctx.io_config)
+    session = configure_session(storage)
+    store = AsyncStore(session, io_config=storage.io_config)
     w = AsyncWorld(
-        config=WorldConfig(name="w"),
+        world_id="test", name="w",
         querier=AsyncQueryManager(store=store),
         updater=AsyncUpdateManager(store=store),
         system=AsyncSystem(),

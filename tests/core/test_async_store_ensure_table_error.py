@@ -1,10 +1,10 @@
 import pytest
 
-from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.runtime.session import configure_session
 
 
 class Demo(Component):
@@ -14,8 +14,9 @@ class Demo(Component):
 @pytest.mark.asyncio
 async def test_async_store_ensure_table_create_failure(monkeypatch, tmp_path):
     """_ensure_table should wrap and raise an exception if table creation fails."""
-    ctx = StorageContextFactory().build(StorageConfig(uri=str(tmp_path / "wh"), namespace="ns"))
-    store = AsyncStore(ctx)
+    cfg = StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
+    session = configure_session(cfg)
+    store = AsyncStore(session, io_config=cfg.io_config)
 
     def fail_create_table(name, source):
         raise RuntimeError("create table failed")

@@ -6,7 +6,6 @@ import pytest
 import pytest_asyncio
 from daft import col, lit
 
-from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_querier import AsyncQueryManager
@@ -19,6 +18,7 @@ from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.resources import Resources
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -54,12 +54,12 @@ class PBug(AsyncProcessor):
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
     storage = StorageConfig(uri=uri, namespace="test", use_lancedb=False)
-    context = StorageContextFactory().build(storage)
+    session = configure_session(storage)
 
     if request.param == "async":
-        store = AsyncStore(context.session, io_config=context.io_config)
+        store = AsyncStore(session, io_config=storage.io_config)
     elif request.param == "async_cached":
-        base = AsyncStore(context.session, io_config=context.io_config)
+        base = AsyncStore(session, io_config=storage.io_config)
         cache_cfg = CacheConfig(
             flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600
         )
@@ -76,7 +76,7 @@ async def store_backend(request, tmp_path):
 @pytest_asyncio.fixture()
 async def world(store_backend):
     w = AsyncWorld(
-        config=WorldConfig(name="w"),
+        world_id="test", name="w",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),
@@ -154,7 +154,7 @@ async def test_archetypes_process_in_parallel(world, store_backend):
 
     # Use a fresh world with a parallelism indicator
     w = AsyncWorld(
-        config=WorldConfig(name="w2"),
+        world_id="test", name="w2",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),
@@ -224,7 +224,7 @@ async def test_var_keyword_processor_receives_all_kwargs(store_backend):
     receive tick, debug, resources, etc. Previously the filter keyed on
     named parameters only and handed var-keyword processors an empty dict."""
     w = AsyncWorld(
-        config=WorldConfig(name="catchall"),
+        world_id="test", name="catchall",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),
@@ -250,7 +250,7 @@ async def test_run_config_debug_propagates_to_processor(store_backend):
     to AsyncSystem.execute's named param and was never re-injected into the
     kwargs dict forwarded to processors."""
     w = AsyncWorld(
-        config=WorldConfig(name="debugprobe"),
+        world_id="test", name="debugprobe",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),
@@ -271,7 +271,7 @@ async def test_run_config_debug_propagates_to_processor(store_backend):
 @pytest.mark.asyncio
 async def test_run_config_debug_logs_step_lifecycle_via_hooks(store_backend, caplog):
     w = AsyncWorld(
-        config=WorldConfig(name="debughooks"),
+        world_id="test", name="debughooks",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),
@@ -324,7 +324,7 @@ async def test_closed_signature_processor_still_filters_unknown_kwargs(store_bac
             return df
 
     w = AsyncWorld(
-        config=WorldConfig(name="closed"),
+        world_id="test", name="closed",
         querier=AsyncQueryManager(store=store_backend),
         updater=AsyncUpdateManager(store=store_backend),
         system=AsyncSystem(),

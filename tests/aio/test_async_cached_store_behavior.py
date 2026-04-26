@@ -4,11 +4,11 @@ import daft
 import pytest
 import pytest_asyncio
 
-from archetype.app.storage_service import StorageContextFactory
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
+from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -16,18 +16,13 @@ class Position(Component):
     y: int
 
 
-class MockStorageConfig:
-    def __init__(self, uri: str, namespace: str):
-        self.uri = str(uri)
-        self.namespace = namespace
-        self.io_config = None
-
-
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
-    storage = MockStorageConfig(uri=str(tmp_path), namespace="test")
-    context = StorageContextFactory().build(storage)
-    store = AsyncStore(context)
+    from archetype.core.config import StorageConfig
+
+    storage = StorageConfig(uri=str(tmp_path), namespace="test")
+    session = configure_session(storage)
+    store = AsyncStore(session, io_config=storage.io_config)
     try:
         yield store
     finally:

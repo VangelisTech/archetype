@@ -120,7 +120,7 @@ async def world():
     querier = InMemoryQuerier()
     updater = InMemoryUpdater(querier)
     return AsyncWorld(
-        config=WorldConfig(name="test_world"),
+        world_id="test", name="test_world",
         querier=querier,
         updater=updater,
         system=AsyncSystem(),
@@ -349,7 +349,7 @@ class TestHooks:
         other_querier = InMemoryQuerier()
         other_updater = InMemoryUpdater(other_querier)
         other = AsyncWorld(
-            config=WorldConfig(name="other_world"),
+            world_id="test", name="other_world",
             querier=other_querier,
             updater=other_updater,
             system=AsyncSystem(),
@@ -651,7 +651,7 @@ class TestIntegration:
         updater = InMemoryUpdater(querier)
         system = AsyncSystem()
         world = AsyncWorld(
-            config=WorldConfig(name="integration_world"),
+            world_id="test", name="integration_world",
             querier=querier,
             updater=updater,
             system=system,

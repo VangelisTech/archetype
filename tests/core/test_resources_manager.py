@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, AsyncStorageFactory, StorageContextFactory, StorageService
+from archetype.app.storage_service import AsyncLancedbStore, StorageService, create_async_store
 from archetype.core.aio import AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from tests.conftest import make_storage_service
@@ -125,7 +125,7 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
         raise AssertionError("LanceDB backend should not construct Daft/Iceberg storage")
 
     monkeypatch.setattr(
-        "archetype.app.storage_service.StorageContextFactory.build",
+        "archetype.runtime.session.configure_session",
         fail_if_called,
     )
 
@@ -145,11 +145,10 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
 
 def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
     from daft.io import IOConfig
-
-    from archetype.app.storage_service import StorageContext
+    from daft.session import Session
 
     io_config = IOConfig()
-    session = object()
+    session = Session()
     seen = {}
 
     class FakeStore:
@@ -159,10 +158,6 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr("archetype.app.storage_service.AsyncStore", FakeStore)
 
-    resolved_uri = str(tmp_path / "store")
-    fake_ctx = StorageContext(uri=resolved_uri, namespace="ns", session=session, io_config=io_config)
-    monkeypatch.setattr(StorageContextFactory, "build", lambda self, config: fake_ctx)
-
     cfg = StorageConfig(
         uri=str(tmp_path / "store"),
         namespace="ns",
@@ -170,8 +165,7 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
         io_config=io_config,
     )
 
-    factory = AsyncStorageFactory(StorageContextFactory())
-    store = factory.create_store(cfg, cache_config=None)
+    store = create_async_store(cfg, session=session, cache_config=None)
 
     assert isinstance(store, FakeStore)
     assert seen["session"] is session

@@ -2,7 +2,7 @@ import daft
 import pyarrow as pa
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
+from archetype.app.storage_service import AsyncLancedbStore, _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -66,10 +66,9 @@ async def test_lancedb_store_open_table_failure_raises(monkeypatch, tmp_path):
         return client
 
     monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageContextFactory().resolve_location(
-        StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
-    )
-    store = AsyncLancedbStore(uri, namespace)
+    config = StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
+    uri = _resolve_uri(str(config.uri))
+    store = AsyncLancedbStore(uri, config.namespace)
 
     # Craft sig that maps to existing table name to hit open path
     class T(Component):
@@ -91,10 +90,9 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
         return client
 
     monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageContextFactory().resolve_location(
-        StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
-    )
-    store = AsyncLancedbStore(uri, namespace)
+    config = StorageConfig(uri=str(tmp_path / "wh2"), namespace="ns")
+    uri = _resolve_uri(str(config.uri))
+    store = AsyncLancedbStore(uri, config.namespace)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
     schema = Archetype.get_archetype_schema(sig)

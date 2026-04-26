@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, StorageContextFactory
+from archetype.app.storage_service import AsyncLancedbStore, _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -42,10 +42,9 @@ async def test_lancedb_create_index_failure_propagates(monkeypatch, tmp_path):
         return IndexFailClient()
 
     monkeypatch.setattr("archetype.core.aio.async_lancedb_store.lancedb.connect_async", fake_connect_async)
-    uri, namespace = StorageContextFactory().resolve_location(
-        StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
-    )
-    store = AsyncLancedbStore(uri, namespace)
+    config = StorageConfig(uri=str(tmp_path / "wh"), namespace="ns")
+    uri = _resolve_uri(str(config.uri))
+    store = AsyncLancedbStore(uri, config.namespace)
 
     sig = Archetype.sig_from_components([Demo(v=1)])
     # First operation that ensures the table should attempt index creation and fail

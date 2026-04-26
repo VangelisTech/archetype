@@ -11,10 +11,11 @@ import pyarrow as pa
 import pytest
 from daft import DataFrame, col
 
-from archetype.app.storage_service import StorageContextFactory
+from archetype.app.storage_service import _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.runtime.session import configure_session
 from archetype.core.hooks import SyncHookRegistry
 from archetype.core.resources import Resources
 from archetype.core.sync import (
@@ -39,8 +40,8 @@ class Velocity(Component):
 
 def _make_sync_stack(tmp_path, name: str = "sync"):
     cfg = StorageConfig(uri=str(tmp_path / f"{name}_store"), namespace=f"{name}_ns")
-    ctx = StorageContextFactory().build(cfg)
-    store = SyncStore(uri=ctx.uri, session=ctx.session, io_config=ctx.io_config)
+    session = configure_session(cfg)
+    store = SyncStore(uri=_resolve_uri(str(cfg.uri)), session=session, io_config=cfg.io_config)
     querier = QueryManager(store=store)
     updater = UpdateManager(store=store)
     system = SyncSystem()
@@ -569,7 +570,7 @@ def test_sync_world_query_archetype_uses_world_tick_and_world_id():
     updater = Mock()
     system = SyncSystem()
     world = SyncWorld(
-        config=WorldConfig(name="query-forward"),
+        world_id="test", name="query-forward",
         querier=querier, updater=updater, system=system,
         resources=Resources(), hooks=SyncHookRegistry(),
     )
@@ -608,7 +609,7 @@ def test_sync_world_update_uses_world_tick_by_default():
     updater = Mock(return_value=df)
     system = SyncSystem()
     world = SyncWorld(
-        config=WorldConfig(name="update-forward"),
+        world_id="test", name="update-forward",
         querier=querier, updater=updater, system=system,
         resources=Resources(), hooks=SyncHookRegistry(),
     )
