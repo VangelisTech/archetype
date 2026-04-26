@@ -5,11 +5,8 @@
 Archetype Runtime
 =================
 
-Process lifecycle, session management, and the user-facing scripting API.
-
-- ``ArchetypeRuntime`` / ``SyncArchetypeRuntime``: process entry points
-- ``RuntimeWorld`` / ``SyncRuntimeWorld``: lazy world handles
-- ``configure_session``: Daft session setup for Iceberg storage
+The script boundary. Owns the service container and provides ergonomic
+world handles that route every operation through iCommandService.
 """
 
 from archetype.runtime.runtime import (

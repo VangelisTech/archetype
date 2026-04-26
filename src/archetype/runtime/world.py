@@ -1,370 +1,348 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Runtime world handles — lazy, actor-scoped world wrappers."""
+"""RuntimeWorld — the user-facing world handle.
+
+Holds world_id (not iWorld). Routes every operation through iCommandService.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import itertools
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
+from daft import DataFrame
 from uuid_utils import UUID
 
-from archetype.app.models import Command, RunResult
-from archetype.core.aio import AsyncProcessor, AsyncWorld
+from archetype.app.auth.models import ActorCtx
+from archetype.app.models import (
+    EpisodeConfig,
+    EpisodeResult,
+    RolloutConfig,
+    RolloutResult,
+    RunResult,
+    WorldInfo,
+)
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
-from archetype.core.hooks import AsyncHookHandler, HookEvent, HookHandle
-from archetype.core.resources import Resources
+from archetype.core.hooks import HookEvent
 
 if TYPE_CHECKING:
-    from archetype.app.auth.models import ActorCtx
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
-_HookEventT = Any  # TypeVar not needed at runtime
-_FireMode = Literal["blocking", "spawn"]
+_FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
 
 
-def _coerce_storage_config(storage: str | Path | StorageConfig | None) -> StorageConfig:
-    if storage is None:
-        return StorageConfig()
-    if isinstance(storage, StorageConfig):
-        return storage
-    return StorageConfig(uri=str(storage))
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared state (behind potentially multiple aliased handles)
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class _RuntimeWorldState:
-    """Shared lifecycle state for actor-bound aliases of one logical world."""
+    """Shared activation state. One per logical world, N handles (via as_actor)."""
 
     def __init__(
         self,
         *,
         runtime: ArchetypeRuntime,
-        name: str = "world",
-        storage: str | Path | StorageConfig | None = None,
-        cache: CacheConfig | None = None,
-        processors: list[AsyncProcessor] | None = None,
-        resources: list[Any] | None = None,
-        existing_world: AsyncWorld | None = None,
+        name: str,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None,
+        init_processors: list,
+        init_resources: list,
+        init_hooks: list[tuple[type[HookEvent], Any]],
+        # Pre-activated fork state (set when forking from an existing world)
+        world_id: str | UUID | None = None,
     ) -> None:
         self.runtime = runtime
         self.name = name
-        self.storage_config = _coerce_storage_config(storage)
-        self.cache_config = cache
-        self.init_processors = list(processors or [])
-        self.init_resources = list(resources or [])
-        self.pending_hooks: list[
-            tuple[HookHandle, type[HookEvent], AsyncHookHandler, _FireMode]
-        ] = []
-        self.handle_map: dict[HookHandle, HookHandle] = {}
-        self.sugar_hook_ids = itertools.count(1)
-        self.sugar_hook_token = object()
-        self.world = existing_world
-        self.initialized = existing_world is not None
+        self.storage_config = storage_config
+        self.cache_config = cache_config
+        self.init_processors = init_processors
+        self.init_resources = init_resources
+        self.init_hooks = init_hooks
+
+        self.world_id: str | UUID | None = world_id
+        self.initialized: bool = world_id is not None
         self.init_lock = asyncio.Lock()
         self.op_lock = asyncio.Lock()
         self.closed = False
         self.aliases: WeakSet[RuntimeWorld] = WeakSet()
 
-    def bind(self, actor_ctx: ActorCtx) -> RuntimeWorld:
-        handle = RuntimeWorld(state=self, actor_ctx=actor_ctx)
-        self.aliases.add(handle)
-        self.runtime._register_handle(handle)
-        return handle
-
-    def ensure_usable(self) -> None:
-        self.runtime._ensure_open()
-        if self.closed:
-            raise RuntimeError("World handle is closed")
-
-    async def ensure_init(self) -> AsyncWorld:
-        self.ensure_usable()
+    async def ensure_init(self, ctx: ActorCtx) -> str | UUID:
+        """Single-flight activation. Returns world_id."""
         if self.initialized:
-            assert self.world is not None
-            return self.world
+            return self.world_id
 
         async with self.init_lock:
-            self.ensure_usable()
             if self.initialized:
-                assert self.world is not None
-                return self.world
+                return self.world_id
 
-            world = await self.runtime._container.world_service.create_world(
+            gate = self.runtime._container.command_service
+
+            # Create the world (serializable config only)
+            info = await gate.create_world(
+                ctx,
                 WorldConfig(name=self.name),
                 self.storage_config,
                 self.cache_config,
             )
-            if not isinstance(world, AsyncWorld):
-                raise TypeError("ArchetypeRuntime only supports AsyncWorld instances")
+            self.world_id = info.world_id
 
+            # Wire non-serializable config through dedicated gate methods
             for proc in self.init_processors:
-                await world.add_processor(proc)
+                await gate.add_processor(ctx, self.world_id, proc)
+
+            for event_type, fn in self.init_hooks:
+                # Hooks are non-serializable; wire directly on the world
+                # (escape hatch until gate.add_hook is implemented)
+                world = self.runtime._container.world_service.get_world(
+                    UUID(str(self.world_id))
+                )
+                world.add_hook(event_type, fn)
+
             for resource in self.init_resources:
+                # TODO: gate.add_resource when implemented
+                world = self.runtime._container.world_service.get_world(
+                    UUID(str(self.world_id))
+                )
                 world.resources.insert(resource)
-            for sugar_handle, event_type, fn, mode in self.pending_hooks:
-                self.handle_map[sugar_handle] = world.add_hook(event_type, fn, mode=mode)
-            self.pending_hooks.clear()
 
-            self.world = world
             self.initialized = True
-            self.name = world.name or self.name
 
-        assert self.world is not None
-        return self.world
-
-    def require_initialized_world(self) -> AsyncWorld:
-        self.ensure_usable()
-        if not self.initialized or self.world is None:
-            raise RuntimeError("World has not been activated yet")
-        return self.world
+        return self.world_id
 
     async def shutdown(self, *, from_runtime: bool) -> None:
-        async with self.op_lock:
-            if self.closed:
-                return
-            if (
-                self.initialized
-                and self.world is not None
-                and (from_runtime or not self.runtime._closed)
-            ):
-                await self.runtime._container.world_service.destroy_world(self.world.world_id)
-            self.closed = True
-            self.world = None
-            self.initialized = False
-            for alias in list(self.aliases):
-                self.runtime._unregister_handle(alias)
+        """Shut down this world state. Idempotent."""
+        if self.closed:
+            return
+        self.closed = True
+
+        if not from_runtime and self.initialized and self.world_id is not None:
+            gate = self.runtime._container.command_service
+            # Use a default admin ctx for shutdown
+            from archetype.runtime._actor import default_actor_ctx
+            await gate.destroy_world(default_actor_ctx(), self.world_id)
+
+        for alias in list(self.aliases):
+            self.runtime._unregister_handle(alias)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RuntimeWorld — the handle
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class RuntimeWorld:
-    """Lazy world handle bound to an ``ArchetypeRuntime``."""
+    """User-facing world handle. Holds world_id, NOT iWorld.
 
-    def __init__(
-        self,
-        *,
-        state: _RuntimeWorldState,
-        actor_ctx: ActorCtx,
-    ) -> None:
+    Every operation routes through CommandService with the bound ActorCtx.
+    """
+
+    def __init__(self, *, state: _RuntimeWorldState, actor_ctx: ActorCtx) -> None:
         self._state = state
-        self._actor_ctx = actor_ctx
-
-    def _ensure_usable(self) -> None:
-        self._state.ensure_usable()
-
-    def _require_initialized_world(self) -> AsyncWorld:
-        return self._state.require_initialized_world()
+        self._ctx = actor_ctx
 
     @property
     def _gate(self):
         return self._state.runtime._container.command_service
 
+    async def _ensure_id(self) -> str | UUID:
+        self._state.runtime._ensure_open()
+        if self._state.closed:
+            raise RuntimeError("World handle is closed")
+        return await self._state.ensure_init(self._ctx)
+
+    # ── Properties (sync, no round-trip) ──────────────────────────────────
+
+    @property
+    def world_id(self) -> str | UUID:
+        if not self._state.initialized or self._state.world_id is None:
+            raise RuntimeError("World has not been activated yet")
+        return self._state.world_id
+
+    @property
+    def name(self) -> str:
+        return self._state.name
+
+    # ── Mutations ─────────────────────────────────────────────────────────
+
     async def spawn(self, *components: Component) -> int:
-        """Create an entity. Returns the entity ID immediately."""
+        """Create an entity. Returns entity_id immediately."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            return await self._gate.create_entity(
-                self._actor_ctx, world.world_id, list(components)
-            )
+            wid = await self._ensure_id()
+            return await self._gate.create_entity(self._ctx, wid, list(components))
 
     async def despawn(self, entity_id: int) -> None:
         """Remove an entity."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.remove_entity(self._actor_ctx, world.world_id, entity_id)
+            wid = await self._ensure_id()
+            await self._gate.remove_entity(self._ctx, wid, entity_id)
 
     async def update(self, entity_id: int, *components: Component) -> None:
-        """Update components on an existing entity (add/overwrite)."""
+        """Overlay values on existing components."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.add_components(
-                self._actor_ctx, world.world_id, entity_id, list(components)
-            )
+            wid = await self._ensure_id()
+            await self._gate.add_components(self._ctx, wid, entity_id, list(components))
 
     async def add_components(self, entity_id: int, *components: Component) -> None:
-        """Add components to an existing entity."""
+        """Extend entity's archetype with new component types."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.add_components(
-                self._actor_ctx, world.world_id, entity_id, list(components)
-            )
+            wid = await self._ensure_id()
+            await self._gate.add_components(self._ctx, wid, entity_id, list(components))
 
     async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
-        """Remove components from an existing entity."""
+        """Remove component types from an entity."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.remove_components(
-                self._actor_ctx, world.world_id, entity_id, list(component_types)
-            )
+            wid = await self._ensure_id()
+            await self._gate.remove_components(self._ctx, wid, entity_id, list(component_types))
 
-    async def add_processor(self, processor: AsyncProcessor) -> None:
+    async def add_processor(self, processor) -> None:
         """Add a processor to this world's system."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.add_processor(self._actor_ctx, world.world_id, processor)
+            wid = await self._ensure_id()
+            await self._gate.add_processor(self._ctx, wid, processor)
 
-    async def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
+    async def remove_processor(self, proc_type) -> None:
         """Remove a processor from this world's system."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            await self._gate.remove_processor(self._actor_ctx, world.world_id, processor_type)
+            wid = await self._ensure_id()
+            await self._gate.remove_processor(self._ctx, wid, proc_type)
 
-    async def step(
-        self,
-        *,
-        debug: bool = False,
-        config: RunConfig | None = None,
-        **input_kwargs: Any,
-    ) -> None:
+    # ── Simulation ────────────────────────────────────────────────────────
+
+    async def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
+        """Advance one tick."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            run_config = config or RunConfig(num_steps=1, debug=debug)
-            await self._gate.step(
-                self._actor_ctx, world.world_id, run_config, **input_kwargs
-            )
+            wid = await self._ensure_id()
+            rc = config or RunConfig(num_steps=1, debug=debug)
+            await self._gate.step(self._ctx, wid, rc, **kw)
 
     async def run(
-        self,
-        steps: int = 1,
-        *,
-        debug: bool = False,
-        config: RunConfig | None = None,
-        **input_kwargs: Any,
+        self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
     ) -> RunResult:
+        """Run N ticks."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            run_config = config or RunConfig(num_steps=steps, debug=debug)
-            return await self._gate.run(
-                self._actor_ctx, world.world_id, run_config, **input_kwargs
-            )
+            wid = await self._ensure_id()
+            rc = config or RunConfig(num_steps=steps, debug=debug)
+            return await self._gate.run(self._ctx, wid, rc, **kw)
 
-    async def query(
-        self,
-        *component_types: type[Component],
-        entity_ids: list[int] | None = None,
-    ):
+    async def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
+        """Run a bounded episode."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            return await world.get_components(list(component_types), entity_ids=entity_ids)
+            wid = await self._ensure_id()
+            return await self._gate.run_episode(self._ctx, wid, config, **kw)
 
-    async def command_history(self, *, limit: int = 100) -> list[Command]:
+    async def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
+        """Run N forked episodes."""
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-            return await self._state.runtime._container.query_service.get_command_history(
-                world.world_id,
-                limit=limit,
-            )
+            wid = await self._ensure_id()
+            return await self._gate.run_rollout(self._ctx, wid, config, **kw)
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────
+
+    async def info(self) -> WorldInfo:
+        """Get an immutable snapshot of world state."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.get_world_info(self._ctx, wid)
 
     async def fork(
         self,
         name: str | None = None,
         *,
-        storage: str | Path | StorageConfig | None = None,
+        storage: str | StorageConfig | None = None,
         cache: CacheConfig | None = None,
     ) -> RuntimeWorld:
-        """Fork this world: create a new world with a snapshot of the current state.
+        """Fork this world. Returns a new handle."""
+        from archetype.runtime._config import coerce_storage, coerce_cache
 
-        The fork gets a new world_id but inherits tick, entity state, and
-        mutation caches from the source. Source and fork diverge independently.
-        """
         async with self._state.op_lock:
-            world = await self._state.ensure_init()
-
-            fork_config = WorldConfig(
-                name=name or "fork",
-                tick=world.tick,
-                next_entity_id=world.next_entity_id,
-                entity2sig=dict(world.entity2sig),
-                spawn_cache=dict(world.spawn_cache),
-                despawn_cache=dict(world.despawn_cache),
-                run_id=world.run_id,
+            wid = await self._ensure_id()
+            info = await self._gate.fork_world(
+                self._ctx, wid, name,
+                storage_config=coerce_storage(storage),
+                cache_config=coerce_cache(cache),
             )
 
-            forked = await self._state.runtime._container.world_service.create_world(
-                fork_config,
-                _coerce_storage_config(storage),
-                cache,
-            )
-            if not isinstance(forked, AsyncWorld):
-                raise TypeError("ArchetypeRuntime only supports AsyncWorld forks")
-
-            state = _RuntimeWorldState(
+            # Build a pre-activated state for the fork
+            fork_state = _RuntimeWorldState(
                 runtime=self._state.runtime,
-                name=name or "fork",
-                storage=storage,
-                cache=cache,
-                existing_world=forked,
+                name=info.name or name or "fork",
+                storage_config=coerce_storage(storage),
+                cache_config=coerce_cache(cache),
+                init_processors=[],
+                init_resources=[],
+                init_hooks=[],
+                world_id=info.world_id,
             )
-            return state.bind(self._actor_ctx)
+            fork_handle = RuntimeWorld(state=fork_state, actor_ctx=self._ctx)
+            fork_state.aliases.add(fork_handle)
+            self._state.runtime._register_handle(fork_handle)
+            return fork_handle
 
-    def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
-        self._ensure_usable()
-        return self._state.bind(actor_ctx)
-
-    def add_hook(
-        self,
-        event_type: type,
-        fn: AsyncHookHandler,
-        *,
-        mode: _FireMode = "blocking",
-    ) -> HookHandle:
-        self._ensure_usable()
-        world = self._state.world
-        if self._state.initialized and world is not None:
-            return world.add_hook(event_type, fn, mode=mode)
-        sugar_handle = HookHandle(
-            _id=next(self._state.sugar_hook_ids),
-            _event_type=event_type,
-            _registry_token=self._state.sugar_hook_token,
-        )
-        self._state.pending_hooks.append((sugar_handle, event_type, fn, mode))
-        return sugar_handle
-
-    def remove_hook(self, handle: HookHandle) -> None:
-        self._ensure_usable()
-        world = self._state.world
-        if self._state.initialized and world is not None:
-            world_handle = self._state.handle_map.pop(handle, handle)
-            world.remove_hook(world_handle)
-            return
-        self._state.pending_hooks = [row for row in self._state.pending_hooks if row[0] != handle]
+    async def destroy(self) -> None:
+        """Destroy this world. In-memory cleanup; storage retained."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            await self._gate.destroy_world(self._ctx, wid)
+            self._state.closed = True
+            for alias in list(self._state.aliases):
+                self._state.runtime._unregister_handle(alias)
 
     async def shutdown(self) -> None:
+        """Shut down this handle."""
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
         await self._state.shutdown(from_runtime=from_runtime)
 
-    @property
-    def world_id(self) -> UUID:
-        return self._require_initialized_world().world_id
+    # ── Queries ───────────────────────────────────────────────────────────
 
-    @property
-    def tick(self) -> int:
-        return self._require_initialized_world().tick
+    async def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
+        """Query components at the current tick."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            sig = tuple(sorted(component_types, key=lambda t: t.__name__))
+            info = await self._gate.get_world_info(self._ctx, wid)
+            return await self._gate.query_archetype(
+                self._ctx, sig, str(wid), str(info.run_id or ""),
+                entity_ids=entity_ids,
+            )
 
-    @property
-    def name(self) -> str | None:
-        if self._state.initialized and self._state.world is not None:
-            return self._state.world.name
-        return self._state.name
+    # ── Aliasing ──────────────────────────────────────────────────────────
 
-    @property
-    def resources(self) -> Resources:
-        return self._require_initialized_world().resources
+    def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
+        """Return a sibling handle with a different ActorCtx."""
+        sibling = RuntimeWorld(state=self._state, actor_ctx=actor_ctx)
+        self._state.aliases.add(sibling)
+        self._state.runtime._register_handle(sibling)
+        return sibling
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SyncRuntimeWorld
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 class SyncRuntimeWorld:
-    """Synchronous facade over ``RuntimeWorld``."""
+    """Synchronous facade. Mirrors RuntimeWorld without await."""
 
     def __init__(self, world: RuntimeWorld, runtime: SyncArchetypeRuntime) -> None:
         self._world = world
         self._runtime = runtime
 
     def _run(self, factory) -> Any:
-        runner = self._runtime._require_runner()
-        return runner.run(factory())
+        return self._runtime._require_runner().run(factory())
+
+    @property
+    def world_id(self):
+        return self._world.world_id
+
+    @property
+    def name(self):
+        return self._world.name
 
     def spawn(self, *components: Component) -> int:
         return self._run(lambda: self._world.spawn(*components))
@@ -381,73 +359,39 @@ class SyncRuntimeWorld:
     def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
         self._run(lambda: self._world.remove_components(entity_id, *component_types))
 
-    def add_processor(self, processor: AsyncProcessor) -> None:
+    def add_processor(self, processor) -> None:
         self._run(lambda: self._world.add_processor(processor))
 
-    def remove_processor(self, processor_type: type[AsyncProcessor]) -> None:
-        self._run(lambda: self._world.remove_processor(processor_type))
+    def remove_processor(self, proc_type) -> None:
+        self._run(lambda: self._world.remove_processor(proc_type))
 
-    def step(self, *, debug: bool = False, config: RunConfig | None = None, **kwargs: Any) -> None:
-        self._run(lambda: self._world.step(debug=debug, config=config, **kwargs))
+    def step(self, *, debug: bool = False, config: RunConfig | None = None, **kw) -> None:
+        self._run(lambda: self._world.step(debug=debug, config=config, **kw))
 
-    def run(
-        self,
-        steps: int = 1,
-        *,
-        debug: bool = False,
-        config: RunConfig | None = None,
-        **kwargs: Any,
-    ) -> RunResult:
-        return self._run(lambda: self._world.run(steps=steps, debug=debug, config=config, **kwargs))
+    def run(self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw) -> RunResult:
+        return self._run(lambda: self._world.run(steps=steps, debug=debug, config=config, **kw))
+
+    def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
+        return self._run(lambda: self._world.run_episode(config, **kw))
+
+    def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
+        return self._run(lambda: self._world.run_rollout(config, **kw))
+
+    def info(self) -> WorldInfo:
+        return self._run(lambda: self._world.info())
+
+    def fork(self, name: str | None = None, *, storage=None, cache=None) -> SyncRuntimeWorld:
+        rw = self._run(lambda: self._world.fork(name, storage=storage, cache=cache))
+        return SyncRuntimeWorld(rw, self._runtime)
+
+    def destroy(self) -> None:
+        self._run(lambda: self._world.destroy())
 
     def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
         return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
 
-    def command_history(self, *, limit: int = 100) -> list[Command]:
-        return self._run(lambda: self._world.command_history(limit=limit))
-
-    def fork(
-        self,
-        name: str | None = None,
-        *,
-        storage: str | Path | StorageConfig | None = None,
-        cache: CacheConfig | None = None,
-    ) -> SyncRuntimeWorld:
-        return SyncRuntimeWorld(
-            self._run(lambda: self._world.fork(name, storage=storage, cache=cache)),
-            self._runtime,
-        )
-
     def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
         return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
 
-    def add_hook(
-        self,
-        event_type: type,
-        fn: AsyncHookHandler,
-        *,
-        mode: _FireMode = "blocking",
-    ) -> HookHandle:
-        return self._world.add_hook(event_type, fn, mode=mode)
-
-    def remove_hook(self, handle: HookHandle) -> None:
-        self._world.remove_hook(handle)
-
     def shutdown(self) -> None:
         self._run(lambda: self._world.shutdown())
-
-    @property
-    def world_id(self) -> UUID:
-        return self._world.world_id
-
-    @property
-    def tick(self) -> int:
-        return self._world.tick
-
-    @property
-    def name(self) -> str | None:
-        return self._world.name
-
-    @property
-    def resources(self) -> Resources:
-        return self._world.resources
