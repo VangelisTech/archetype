@@ -342,7 +342,7 @@ class TestSyncWorld:
 
         df = world.querier.query_archetype(
             sig=sig,
-            run_config=rc,
+            run_id=world.run_id,
             ticks=None,
             entity_ids=None,
             components=None,

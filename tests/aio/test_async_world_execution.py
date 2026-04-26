@@ -101,7 +101,7 @@ async def test_processors_run_in_priority_and_filter_kwargs(world, store_backend
     rc = RunConfig()
     await world.step(rc, scale=4)
 
-    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     out = df.collect().to_pylist()
     assert len(out) == 1
     row = out[0]

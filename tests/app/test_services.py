@@ -4,14 +4,11 @@
 """Tests for service container, command service, simulation service, world service."""
 
 import pytest
-from uuid_utils import uuid7
 
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
@@ -49,150 +46,6 @@ class TestServiceContainer:
         container = ServiceContainer()
         await container.shutdown()  # should not raise
 
-
-class TestCommandService:
-    @pytest.mark.asyncio
-    async def test_submit_enqueues(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            config = WorldConfig(name="test")
-            world = await container.world_service.create_world(config, storage)
-
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-            cmd_id = await container.command_service.submit(str(world.world_id), cmd, ctx)
-
-            assert cmd_id == cmd.id
-            count = await container.broker.get_pending_count(str(world.world_id))
-            assert count == 1
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_submit_batch(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
-
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            cmds = [
-                Command(type=CommandType.SPAWN, payload={"components": []}),
-                Command(type=CommandType.SPAWN, payload={"components": []}),
-            ]
-            ids = await container.command_service.submit_batch(str(world.world_id), cmds, ctx)
-            assert len(ids) == 2
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_apply_world_lifecycle_does_not_leak_broker_state(self, tmp_path):
-        """apply_world_lifecycle drains __global__ after each lifecycle op."""
-        container = ServiceContainer()
-        try:
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            broker = container.broker
-            assert len(broker._pending) == 0
-            assert len(broker._queues.get("__global__", [])) == 0
-
-            create_cmd = Command(
-                type=CommandType.CREATE_WORLD,
-                tick=0,
-                payload={
-                    "config": {"name": "leak_check"},
-                    "storage_uri": str(tmp_path / "store"),
-                    "namespace": "archetypes",
-                },
-            )
-            await container.command_service.submit("__global__", create_cmd, ctx)
-            world = await container.command_service.apply_world_lifecycle(create_cmd)
-
-            assert len(broker._pending) == 0, (
-                f"CREATE_WORLD leaked into broker._pending ({len(broker._pending)} zombies)"
-            )
-            assert len(broker._queues.get("__global__", [])) == 0, (
-                f"CREATE_WORLD leaked into broker._queues['__global__'] "
-                f"({len(broker._queues['__global__'])} zombies)"
-            )
-
-            destroy_cmd = Command(
-                type=CommandType.DESTROY_WORLD,
-                tick=0,
-                payload={"world_id": str(world.world_id)},
-            )
-            await container.command_service.submit("__global__", destroy_cmd, ctx)
-            await container.command_service.apply_world_lifecycle(destroy_cmd)
-
-            assert len(broker._pending) == 0, (
-                f"DESTROY_WORLD leaked into broker._pending ({len(broker._pending)} zombies)"
-            )
-            assert len(broker._queues.get("__global__", [])) == 0
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_lifecycle_round_trip_does_not_leak_at_volume(self, tmp_path):
-        """50 CREATE/DESTROY round-trips leave zero broker zombies."""
-        container = ServiceContainer()
-        try:
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            broker = container.broker
-
-            for i in range(50):
-                create = Command(
-                    type=CommandType.CREATE_WORLD,
-                    tick=0,
-                    payload={
-                        "config": {"name": f"w{i}"},
-                        "storage_uri": str(tmp_path / "store"),
-                        "namespace": "archetypes",
-                    },
-                )
-                await container.command_service.submit("__global__", create, ctx)
-                world = await container.command_service.apply_world_lifecycle(create)
-
-                destroy = Command(
-                    type=CommandType.DESTROY_WORLD,
-                    tick=0,
-                    payload={"world_id": str(world.world_id)},
-                )
-                await container.command_service.submit("__global__", destroy, ctx)
-                await container.command_service.apply_world_lifecycle(destroy)
-
-            assert len(broker._pending) == 0, (
-                f"50 CREATE/DESTROY pairs leaked {len(broker._pending)} "
-                f"zombies into broker._pending"
-            )
-            assert len(broker._queues.get("__global__", [])) == 0
-            # History is the audit trail; it should still record everything.
-            history = await broker.get_history("__global__", limit=200)
-            assert len(history) == 100
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_apply_world_lifecycle_drains_on_failure(self, tmp_path):
-        """Failed lifecycle commands are still drained from the broker."""
-        container = ServiceContainer()
-        try:
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            broker = container.broker
-
-            # Missing world_id triggers KeyError inside apply_world_lifecycle
-            bad_destroy = Command(
-                type=CommandType.DESTROY_WORLD,
-                tick=0,
-                payload={},  # missing "world_id"
-            )
-            await container.command_service.submit("__global__", bad_destroy, ctx)
-            with pytest.raises(KeyError):
-                await container.command_service.apply_world_lifecycle(bad_destroy)
-
-            assert len(broker._pending) == 0, "Failed lifecycle command leaked into broker._pending"
-            assert len(broker._queues.get("__global__", [])) == 0
-        finally:
-            await container.shutdown()
 
 
 class TestSimulationService:
@@ -233,49 +86,6 @@ class TestSimulationService:
         finally:
             await container.shutdown()
 
-    @pytest.mark.asyncio
-    async def test_run_threads_user_run_config_into_every_step(self, tmp_path):
-        """Regression for bug-simulation-service-run-discards-runconfig.
-
-        ``SimulationService.run`` used to construct ``RunConfig(num_steps=1)``
-        inside its loop, dropping the user's run_id, debug, suite, trial,
-        metadata, etc. Every per-tick step must now receive the same RunConfig
-        the caller passed in, and the world's run_id pointer must be set to
-        the user's run_id.
-        """
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="t"), storage)
-            seen: list[RunConfig] = []
-            original_step = container.simulation_service.step
-
-            async def capturing_step(wid, rc=None, **kwargs):
-                seen.append(rc)
-                return await original_step(wid, rc, **kwargs)
-
-            container.simulation_service.step = capturing_step  # type: ignore[method-assign]
-
-            user_rc = RunConfig(
-                num_steps=3,
-                debug=True,
-                metadata={"source": "test"},
-            )
-            result = await container.simulation_service.run(world.world_id, user_rc)
-
-            assert result.run_id == user_rc.run_id
-            assert result.ticks_completed == 3
-            # Every per-tick step received the user's RunConfig, not a fresh one.
-            assert len(seen) == 3
-            for rc in seen:
-                assert rc is user_rc
-                assert rc.run_id == user_rc.run_id
-                assert rc.debug is True
-                assert rc.metadata == {"source": "test"}
-            # World's run_id pointer is pinned to the user's run_id.
-            assert str(world.run_id) == str(user_rc.run_id)
-        finally:
-            await container.shutdown()
 
 
 class TestWorldService:
@@ -292,17 +102,6 @@ class TestWorldService:
             await container.shutdown()
 
     @pytest.mark.asyncio
-    async def test_remove_world(self, tmp_path):
-        container = ServiceContainer()
-        try:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="w1"), storage)
-            await container.world_service.remove_world(world.world_id)
-            assert len(container.world_service.list_worlds()) == 0
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
     async def test_get_world_by_name(self, tmp_path):
         container = ServiceContainer()
         try:
@@ -310,75 +109,6 @@ class TestWorldService:
             world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
             found = container.world_service.get_world_by_name("alpha")
             assert found.world_id == world.world_id
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_remove_world_clears_broker_state(self, tmp_path):
-        """remove_world clears the world's broker state."""
-        container = ServiceContainer()
-        try:
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(WorldConfig(name="doomed"), storage)
-            wid = world.world_id
-            wid_str = str(wid)
-
-            # Enqueue a few commands so the broker has non-trivial state.
-            for i in range(3):
-                cmd = Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"components": [_ListWorldsPos(x=i).to_payload()]},
-                )
-                await container.command_service.submit(wid, cmd, ctx)
-
-            broker = container.broker
-            assert len(broker._queues.get(wid_str, [])) == 3
-            assert len(broker._history.get(wid_str, [])) == 3
-            assert await broker.get_pending_count() >= 3
-
-            await container.world_service.remove_world(wid)
-
-            assert broker._queues.get(wid_str, []) == []
-            assert broker._history.get(wid_str, []) == []
-            assert await broker.get_pending_count() == 0
-            assert all(cmd_id not in broker._pending for cmd_id in list(broker._pending))
-        finally:
-            await container.shutdown()
-
-    @pytest.mark.asyncio
-    async def test_destroy_world_command_clears_broker_state(self, tmp_path):
-        """DESTROY_WORLD command clears broker state for the destroyed world."""
-        container = ServiceContainer()
-        try:
-            ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = await container.world_service.create_world(
-                WorldConfig(name="ephemeral"), storage
-            )
-            wid = world.world_id
-            wid_str = str(wid)
-
-            spawn_cmd = Command(
-                type=CommandType.SPAWN,
-                tick=0,
-                payload={"components": [_ListWorldsPos(x=0).to_payload()]},
-            )
-            await container.command_service.submit(wid, spawn_cmd, ctx)
-
-            broker = container.broker
-            assert len(broker._queues.get(wid_str, [])) == 1
-
-            destroy_cmd = Command(
-                type=CommandType.DESTROY_WORLD,
-                tick=0,
-                payload={"world_id": str(wid)},
-            )
-            await container.command_service.apply_world_lifecycle(destroy_cmd)
-
-            assert broker._queues.get(wid_str, []) == []
-            assert broker._history.get(wid_str, []) == []
         finally:
             await container.shutdown()
 

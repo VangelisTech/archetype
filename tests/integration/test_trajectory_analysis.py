@@ -143,7 +143,7 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
                     ],
                 },
             )
-            await container.command_service.submit(str(world.world_id), cmd, ctx)
+            await container.command_service.submit(ctx, str(world.world_id), cmd)
 
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
@@ -188,7 +188,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
                 ],
             },
         )
-        await container.command_service.submit(str(world.world_id), cmd, ctx)
+        await container.command_service.submit(ctx, str(world.world_id), cmd)
 
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
@@ -233,7 +233,7 @@ async def test_full_pipeline_without_llm(tmp_path):
                     ],
                 },
             )
-            await container.command_service.submit(str(world.world_id), cmd, ctx)
+            await container.command_service.submit(ctx, str(world.world_id), cmd)
 
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 

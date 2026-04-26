@@ -82,7 +82,7 @@ async def test_step_updates_live_snapshot_and_clears_caches(world, store_backend
     assert live_df.collect().count_rows() == 3
 
     # Store should have rows stamped with tick=0
-    out_all = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    out_all = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     out_all = out_all.collect()
     assert out_all.count_rows() == 3
     assert all(row["tick"] == 0 for row in out_all.select("tick").to_pylist())
@@ -99,6 +99,6 @@ async def test_query_default_tick_progression(world, store_backend):
     await world.step(rc)  # writes tick 1 (query from tick 0)
     await world.step(rc)  # writes tick 2 (query from tick 1)
 
-    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     ticks = sorted({row["tick"] for row in df.collect().to_pylist()})
     assert ticks == [0, 1, 2]

@@ -81,14 +81,14 @@ async def test_create_and_remove_entity_spawns_and_despawns(world, store_backend
     # First step writes spawns
     rc = RunConfig()
     await world.step(rc)
-    df_all = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df_all = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     assert df_all.collect().count_rows() == 2
 
     # Request despawn of e1; materialized next step
     await world.remove_entity(e1)
     await world.step(rc)
 
-    out = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    out = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     py = out.collect().to_pylist()
     # Should contain 4 rows total: For e1 we have spawn@t0, despawn@t1; for e2 spawn@t0 remains active
     assert len(py) == 4
@@ -112,13 +112,13 @@ async def test_add_components_moves_to_superset_signature(world, store_backend):
     await world.step(rc)
 
     # Verify last row under new signature exists and is_active
-    df_new = await store_backend.get_archetype_df(sig_pos_vel, world.world_id, rc.run_id)
+    df_new = await store_backend.get_archetype_df(sig_pos_vel, world.world_id, world.run_id)
     latest = df_new.collect().sort(col("tick"), desc=True).limit(1).to_pylist()[0]
     assert latest["entity_id"] == e1
     assert latest["is_active"] is True
 
     # Old signature latest row should be inactive for e1 after move
-    df_old = await store_backend.get_archetype_df(sig_pos, world.world_id, rc.run_id)
+    df_old = await store_backend.get_archetype_df(sig_pos, world.world_id, world.run_id)
     old_rows = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
     assert len(old_rows) >= 1
     old_latest = sorted(old_rows, key=lambda r: r["tick"])[-1]
@@ -138,12 +138,12 @@ async def test_remove_components_moves_to_subset_signature(world, store_backend)
     await world.step(rc)
 
     # Now entity should appear under sig_pos with active latest row
-    df_new = await store_backend.get_archetype_df(sig_pos, world.world_id, rc.run_id)
+    df_new = await store_backend.get_archetype_df(sig_pos, world.world_id, world.run_id)
     latest = [r for r in df_new.collect().to_pylist() if r["entity_id"] == e1][-1]
     assert latest["is_active"] is True
 
     # And old signature should have an inactive marker for e1
-    df_old = await store_backend.get_archetype_df(sig_pos_meta, world.world_id, rc.run_id)
+    df_old = await store_backend.get_archetype_df(sig_pos_meta, world.world_id, world.run_id)
     old_rows2 = [r for r in df_old.collect().to_pylist() if r["entity_id"] == e1]
     assert len(old_rows2) >= 1
     latest_old = sorted(old_rows2, key=lambda r: r["tick"])[-1]
@@ -185,7 +185,7 @@ async def test_step_after_same_tick_spawn_remove_leaves_no_active_row(world, sto
     await world.remove_entity(eid)
     await world.step(rc)
 
-    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     rows = [r for r in df.collect().to_pylist() if r["entity_id"] == eid]
     assert all(not r["is_active"] for r in rows), f"cancelled entity persisted as active: {rows}"
 
@@ -210,7 +210,7 @@ async def test_step_after_same_tick_spawn_remove_preserves_sibling_entity(world,
     await world.remove_entity(cancelled)
     await world.step(rc)
 
-    df = await store_backend.get_archetype_df(sig, world.world_id, rc.run_id)
+    df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
     rows = df.collect().to_pylist()
     active_ids = sorted(r["entity_id"] for r in rows if r["is_active"])
     assert active_ids == [survivor], f"expected only survivor {survivor} active, got {active_ids}"

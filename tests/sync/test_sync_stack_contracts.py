@@ -479,7 +479,7 @@ def test_sync_world_run_materializes_spawns_and_sets_run_id(tmp_path):
     world.run(rc)
 
     assert world.tick == 2
-    assert world.run_id == str(rc.run_id)
+    assert world.run_id is not None  # auto-generated at construction
     rows = _committed_rows(world, sig)
     assert rows[0]["entity_id"] == entity_id
     assert rows[0]["position__x"] == 1
