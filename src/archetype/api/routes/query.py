@@ -51,19 +51,27 @@ async def _query_all_state(
     tick: int | None = None,
     entity_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
-    info = await cs.get_world_info(ctx, world_id)
+    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
     rows: list[dict[str, Any]] = []
     for sig in await cs.list_signatures(ctx):
         df = await cs.query_archetype(
             ctx,
             sig,
-            str(info.world_id),
-            str(info.run_id or ""),
+            query_world_id,
+            run_id,
             ticks=[tick] if tick is not None else None,
             entity_ids=entity_ids,
         )
         rows.extend(dataframe_to_rows(df))
     return rows
+
+
+async def _query_ids(cs: CommandService, ctx: ActorCtx, world_id: str) -> tuple[str, str]:
+    try:
+        info = await cs.get_world_info(ctx, world_id)
+    except KeyError:
+        return str(world_id), ""
+    return str(info.world_id), str(info.run_id or "")
 
 
 async def _query_components(
@@ -77,13 +85,13 @@ async def _query_components(
 ):
     if not component_names:
         return []
-    info = await cs.get_world_info(ctx, world_id)
+    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
     component_types = hydrate_component_types(component_names)
     df = await cs.query_components(
         ctx,
         component_types,
-        str(info.world_id),
-        str(info.run_id or ""),
+        query_world_id,
+        run_id,
         ticks=[tick] if tick is not None else None,
         entity_ids=entity_ids,
     )

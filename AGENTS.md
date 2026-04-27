@@ -203,5 +203,5 @@ Roles (flat, not hierarchical):
 | `src/archetype/app/command_service.py` | Mutation dispatch |
 | `src/archetype/app/broker.py` | Priority queue |
 | `src/archetype/core/aio/async_world.py` | World runtime |
-| `tests/app/test_sugar_runtime.py` | Executable runtime contracts |
+| `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

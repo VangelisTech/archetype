@@ -14,6 +14,7 @@ Two paths: direct (sync semantics) and tick-deferred (queued via broker).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -303,7 +304,19 @@ class CommandService:
         """Gate, then delegate to SimulationService.run_episode."""
         self._gate(Command(type=CommandType.RUN_EPISODE), ctx)
         result = await self._simulation.run_episode(world_id, config, **input_kwargs)
-        await self._emit(ctx, "run_episode", world_id)
+        await self._emit(
+            ctx,
+            "run_episode",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "episode_id": str(result.episode_id),
+                    "final_tick": result.final_tick,
+                    "terminated": result.terminated,
+                    "duration_steps": result.duration_steps,
+                }
+            ),
+        )
         return result
 
     @logfire.instrument("gate.run_rollout")
@@ -321,7 +334,18 @@ class CommandService:
         """
         self._gate(Command(type=CommandType.RUN_ROLLOUT), ctx)
         result = await self._simulation.run_rollout(world_id, config, **input_kwargs)
-        await self._emit(ctx, "run_rollout", world_id)
+        await self._emit(
+            ctx,
+            "run_rollout",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "num_episodes": result.num_episodes,
+                    "total_duration_steps": result.total_duration_steps,
+                    "episode_world_ids": [str(ep.world_id) for ep in result.episodes],
+                }
+            ),
+        )
         return result
 
     # ── Queries (gated reads) ─────────────────────────────────────────────
@@ -340,7 +364,7 @@ class CommandService:
     ) -> DataFrame:
         """Query entities by component subset. Gated read."""
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
-        return await self._queries.query_components(
+        result = await self._queries.query_components(
             components=components,
             world_id=world_id,
             run_id=run_id,
@@ -348,6 +372,8 @@ class CommandService:
             ticks=ticks,
             entity_ids=entity_ids,
         )
+        await self._emit(ctx, "query_world", world_id)
+        return result
 
     @logfire.instrument("gate.query_archetype")
     async def query_archetype(
@@ -363,7 +389,7 @@ class CommandService:
         components: list[type[Component]] | None = None,
     ) -> DataFrame:
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
-        return await self._queries.query_archetype(
+        result = await self._queries.query_archetype(
             sig,
             world_id,
             run_id,
@@ -372,6 +398,8 @@ class CommandService:
             entity_ids=entity_ids,
             components=components,
         )
+        await self._emit(ctx, "query_world", world_id)
+        return result
 
     async def list_signatures(
         self,
@@ -379,7 +407,9 @@ class CommandService:
         storage_config: StorageConfig | None = None,
     ) -> list[ArchetypeSignature]:
         self._gate(Command(type=CommandType.LIST_SIGNATURES), ctx)
-        return await self._queries.list_signatures(storage_config)
+        result = await self._queries.list_signatures(storage_config)
+        await self._emit(ctx, "list_signatures")
+        return result
 
     # ── Resource attachment (gated) ────────────────────────────────────────
 
@@ -403,7 +433,9 @@ class CommandService:
         mode: str = "blocking",
     ):
         self._gate(Command(type=CommandType.ADD_HOOK), ctx)
-        return self._worlds.add_hook(world_id, event_type, fn, mode=mode)
+        handle = self._worlds.add_hook(world_id, event_type, fn, mode=mode)
+        await self._emit(ctx, "add_hook", world_id)
+        return handle
 
     async def remove_hook(
         self,
@@ -413,6 +445,7 @@ class CommandService:
     ) -> None:
         self._gate(Command(type=CommandType.REMOVE_HOOK), ctx)
         self._worlds.remove_hook(world_id, handle)
+        await self._emit(ctx, "remove_hook", world_id)
 
     # ── Read introspection (gated) ─────────────────────────────────────────
 
@@ -423,7 +456,7 @@ class CommandService:
     ) -> list[ProcessorInfo]:
         self._gate(Command(type=CommandType.LIST_PROCESSORS), ctx)
         procs = self._worlds.list_processors(world_id)
-        return [
+        result = [
             ProcessorInfo(
                 qualname=f"{type(p).__module__}.{type(p).__qualname__}",
                 priority=getattr(p, "priority", 0),
@@ -433,6 +466,8 @@ class CommandService:
             )
             for p in procs
         ]
+        await self._emit(ctx, "list_processors", world_id)
+        return result
 
     async def list_hooks(
         self,
@@ -456,6 +491,7 @@ class CommandService:
                     handle_id=handle._id,
                 )
             )
+        await self._emit(ctx, "list_hooks", world_id)
         return result
 
     async def list_resources(
@@ -465,7 +501,9 @@ class CommandService:
     ) -> list[ResourceInfo]:
         self._gate(Command(type=CommandType.LIST_RESOURCES), ctx)
         items = self._worlds.list_resources(world_id)
-        return [ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}") for t, _ in items]
+        result = [ResourceInfo(qualname=f"{t.__module__}.{t.__qualname__}") for t, _ in items]
+        await self._emit(ctx, "list_resources", world_id)
+        return result
 
     async def get_audit_history(
         self,
@@ -481,7 +519,7 @@ class CommandService:
         self._gate(Command(type=CommandType.GET_AUDIT_HISTORY), ctx)
         if self._audit is None:
             return []
-        return await self._audit.query(
+        result = await self._audit.query(
             world_id=world_id,
             tick_range=tick_range,
             actor_id=actor_id,
@@ -489,6 +527,8 @@ class CommandService:
             idempotency_key=idempotency_key,
             limit=limit,
         )
+        await self._emit(ctx, "get_audit_history", world_id)
+        return result
 
     # ── Tick-deferred path (queued) ───────────────────────────────────────
 

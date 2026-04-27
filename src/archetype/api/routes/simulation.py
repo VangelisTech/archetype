@@ -12,8 +12,8 @@ from archetype.api.models import (
     RolloutConfig,
     RunRequest,
     RunResultResponse,
-    StepResponse,
     StepRequest,
+    StepResponse,
 )
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService

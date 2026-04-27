@@ -1,0 +1,305 @@
+# Copyright 2025 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Contract tests for fork and destroy semantics.
+
+Verifies:
+  - Pending spawn_cache transfers to fork and materializes in both worlds.
+  - Hook isolation: hooks added to source after fork do not fire on the fork.
+  - Destroy preserves storage rows (append-only invariant).
+  - Destroy preserves audit rows.
+  - 10-world destroy stress: all query data survives destroy.
+  - Audit row monotonicity: row count never decreases across operations + destroys.
+"""
+
+import pytest
+from uuid_utils import uuid7
+
+from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.auth.models import ActorCtx
+from archetype.app.container import ServiceContainer
+from archetype.core.component import Component
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.hooks import PostTick
+
+
+# ---------------------------------------------------------------------------
+# Test component
+# ---------------------------------------------------------------------------
+
+
+class Tag(Component):
+    label: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_quotas():
+    reset_tick_counters()
+    reset_daily_tokens()
+    yield
+    reset_tick_counters()
+    reset_daily_tokens()
+
+
+def _admin_ctx() -> ActorCtx:
+    return ActorCtx(id=uuid7(), roles={"admin"})
+
+
+def _storage(tmp_path) -> StorageConfig:
+    return StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+
+# ---------------------------------------------------------------------------
+# 1. Spawn-then-fork pending mutation transfer
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_then_fork_pending_mutation_transfer(tmp_path):
+    """Spawn an entity (goes to spawn_cache), fork before stepping.
+    Step both source and fork. Entity should exist in both."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        # Spawn goes to spawn_cache (not yet materialized)
+        eid = await c.mutation_service.create_entity(source.world_id, [Tag(label="pending")])
+        assert eid in source.entity2sig
+
+        # Fork before stepping — spawn_cache should transfer
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        assert eid in fork.entity2sig
+
+        # Step both worlds to materialize
+        await c.simulation_service.step(source.world_id, RunConfig())
+        await c.simulation_service.step(fork.world_id, RunConfig())
+
+        # Query both — entity should exist in each
+        source_df = await c.query_service.query_components(
+            [Tag],
+            world_id=str(source.world_id),
+            run_id=str(source.run_id),
+            storage_config=storage,
+        )
+        fork_df = await c.query_service.query_components(
+            [Tag],
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            storage_config=storage,
+        )
+        assert source_df.count_rows() >= 1
+        assert fork_df.count_rows() >= 1
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 2. Post-fork hook isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_fork_hook_isolation(tmp_path):
+    """Register a hook on source AFTER forking. Step the fork.
+    The hook should NOT fire on the fork."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    hook_fired: list[str] = []
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Tag(label="x")])
+
+        # Fork first
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+
+        # Register hook on source AFTER the fork
+        async def _on_post_tick(event: PostTick):
+            hook_fired.append("source")
+
+        c.world_service.add_hook(source.world_id, PostTick, _on_post_tick)
+
+        # Step the fork — the hook must NOT fire
+        await c.simulation_service.step(fork.world_id, RunConfig())
+        assert hook_fired == [], f"Hook fired on fork unexpectedly: {hook_fired}"
+
+        # Step the source — the hook SHOULD fire
+        await c.simulation_service.step(source.world_id, RunConfig())
+        assert hook_fired == ["source"]
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 3. Destroy storage row preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destroy_storage_row_preservation(tmp_path):
+    """Create world, spawn, step (rows in store). Destroy world.
+    Query the store directly via QueryService — rows still exist."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        await c.mutation_service.create_entity(world.world_id, [Tag(label="keep")])
+        await c.simulation_service.step(world.world_id, RunConfig())
+
+        world_id = str(world.world_id)
+        run_id = str(world.run_id)
+
+        # Rows should be in the store
+        df_before = await c.query_service.query_components(
+            [Tag],
+            world_id=world_id,
+            run_id=run_id,
+            storage_config=storage,
+        )
+        rows_before = df_before.count_rows()
+        assert rows_before >= 1
+
+        # Destroy the world (in-memory only; storage preserved)
+        await c.world_service.destroy_world(world.world_id)
+
+        # Query again — rows must still be present
+        df_after = await c.query_service.query_components(
+            [Tag],
+            world_id=world_id,
+            run_id=run_id,
+            storage_config=storage,
+        )
+        assert df_after.count_rows() == rows_before
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 4. Destroy audit row preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destroy_audit_row_preservation(tmp_path):
+    """Create world, do operations (audit rows emitted). Destroy.
+    Query audit log — rows still there."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    ctx = _admin_ctx()
+    try:
+        info = await c.command_service.create_world(ctx, WorldConfig(name="aw"), storage)
+        await c.command_service.create_entity(ctx, info.world_id, [Tag(label="audited")])
+        await c.command_service.step(ctx, info.world_id, RunConfig())
+
+        # Audit rows should exist
+        audit_df_before = await c.audit_log.query(world_id=info.world_id)
+        rows_before = audit_df_before.count_rows()
+        assert rows_before >= 1
+
+        # Destroy
+        await c.command_service.destroy_world(ctx, info.world_id)
+
+        # Audit rows must survive (append-only). The destroy itself adds a row too.
+        audit_df_after = await c.audit_log.query(world_id=info.world_id)
+        rows_after = audit_df_after.count_rows()
+        assert rows_after >= rows_before
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 5. 10-world destroy stress test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_10_world_destroy_stress(tmp_path):
+    """Create 10 worlds, spawn + step in each. Count total store queries
+    possible. Destroy all 10. Verify same queries still return data."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        worlds = []
+        for i in range(10):
+            w = await c.world_service.create_world(WorldConfig(name=f"stress-{i}"), storage)
+            await c.mutation_service.create_entity(w.world_id, [Tag(label=f"e{i}")])
+            await c.simulation_service.step(w.world_id, RunConfig())
+            worlds.append(w)
+
+        # Collect row counts before destroy
+        counts_before: dict[str, int] = {}
+        for w in worlds:
+            df = await c.query_service.query_components(
+                [Tag],
+                world_id=str(w.world_id),
+                run_id=str(w.run_id),
+                storage_config=storage,
+            )
+            counts_before[str(w.world_id)] = df.count_rows()
+            assert counts_before[str(w.world_id)] >= 1
+
+        # Destroy all 10
+        for w in worlds:
+            await c.world_service.destroy_world(w.world_id)
+
+        # All queries must still return the same data
+        for w in worlds:
+            df = await c.query_service.query_components(
+                [Tag],
+                world_id=str(w.world_id),
+                run_id=str(w.run_id),
+                storage_config=storage,
+            )
+            assert df.count_rows() == counts_before[str(w.world_id)]
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 6. Audit row monotonicity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_audit_row_monotonicity(tmp_path):
+    """Across a sequence of operations + destroys, audit row count never
+    decreases."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    ctx = _admin_ctx()
+    try:
+        high_water = 0
+
+        for i in range(3):
+            info = await c.command_service.create_world(ctx, WorldConfig(name=f"mono-{i}"), storage)
+            await c.command_service.create_entity(ctx, info.world_id, [Tag(label=f"m{i}")])
+            await c.command_service.step(ctx, info.world_id, RunConfig())
+
+            # Check monotonicity after operations
+            current = (await c.audit_log.query()).count_rows()
+            assert current >= high_water, f"Audit rows decreased: {current} < {high_water}"
+            high_water = current
+
+            # Destroy
+            await c.command_service.destroy_world(ctx, info.world_id)
+
+            # Check monotonicity after destroy
+            current = (await c.audit_log.query()).count_rows()
+            assert current >= high_water, (
+                f"Audit rows decreased after destroy: {current} < {high_water}"
+            )
+            high_water = current
+
+        # Final count should reflect all operations + destroys
+        assert high_water > 0
+    finally:
+        await c.shutdown()
