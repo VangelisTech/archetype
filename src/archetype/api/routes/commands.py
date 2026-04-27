@@ -3,6 +3,8 @@
 
 """Command submission and audit-backed command history routes."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends
 
 from archetype.api.deps import get_actor_ctx, get_command_service
@@ -67,7 +69,7 @@ async def submit_batch(
         raise_api_error(exc)
 
 
-@router.get("")
+@router.get("", response_model=list[dict[str, Any]])
 async def get_command_history(
     world_id: str,
     limit: int = 100,

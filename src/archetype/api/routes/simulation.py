@@ -12,6 +12,7 @@ from archetype.api.models import (
     RolloutConfig,
     RunRequest,
     RunResultResponse,
+    StepResponse,
     StepRequest,
 )
 from archetype.app.auth.models import ActorCtx
@@ -21,7 +22,7 @@ from archetype.app.models import EpisodeResult, RolloutResult
 router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])
 
 
-@router.post("/step")
+@router.post("/step", response_model=StepResponse)
 async def step_world(
     world_id: str,
     req: StepRequest | None = None,
@@ -32,12 +33,7 @@ async def step_world(
     try:
         run_config = (req or StepRequest()).to_run_config()
         commands_applied = await cs.step(ctx, world_id, run_config)
-        info = await cs.get_world_info(ctx, world_id)
-        return {
-            "world_id": str(info.world_id),
-            "tick": info.tick,
-            "commands_applied": commands_applied,
-        }
+        return StepResponse(commands_applied=commands_applied)
     except Exception as exc:
         raise_api_error(exc)
 

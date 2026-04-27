@@ -53,16 +53,12 @@ async def main():
         print(f"After 10 ticks: tick={info.tick}\n")
 
         # Query current state (all 5 entities visible)
-        current = (await world.query(Marker)).collect().to_pylist()
-        print(f"  current (tick {info.tick}): {len(current)} entities")
-        for row in current:
-            print(f"    - {row.get('marker__label', '')}")
+        print(f"  Current state (tick {info.tick}):")
+        (await world.query(Marker)).show()
 
         print("\nCommand history:")
         history = await world.history()
-        rows = history.collect().to_pylist()
-        for row in rows:
-            print(f"  {row}")
+        history.select("command_type", "actor_id").show()
 
 
 if __name__ == "__main__":

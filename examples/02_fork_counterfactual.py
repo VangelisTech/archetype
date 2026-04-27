@@ -52,9 +52,10 @@ async def main():
             # To vary per-fork, we use a fresh world with the resource instead.
             # For this demo we just run the fork forward.
             result = await fork.run(steps=10)
-            rows = (await fork.query(Probe)).collect().to_pylist()
+            df = await fork.query(Probe)
             branches_run += 1
-            print(f"gravity={gravity:>5.1f}: tick={result.final_tick}, entities={len(rows)}")
+            print(f"\ngravity={gravity:>5.1f}: tick={result.final_tick}")
+            df.show()
 
         print(f"\nRan {branches_run} counterfactual branches from the same base state.")
 

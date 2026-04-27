@@ -74,7 +74,7 @@ format:
 	@uv run ruff format src tests
 
 .PHONY: lint
-lint: lazy-audit
+lint: lazy-audit api-boundary-audit
 	@uv run ruff check src tests
 
 .PHONY: lint-fix
@@ -94,6 +94,10 @@ check: format lint
 .PHONY: lazy-audit
 lazy-audit:
 	@uv run python scripts/check_lazy_audit.py
+
+.PHONY: api-boundary-audit
+api-boundary-audit:
+	@uv run python scripts/check_api_import_boundaries.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.

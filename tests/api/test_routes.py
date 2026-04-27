@@ -3,6 +3,9 @@
 
 """API route tests using FastAPI TestClient."""
 
+import subprocess
+import sys
+
 import pytest
 
 from archetype.api.app import create_app
@@ -203,6 +206,14 @@ class TestCommandRoutes:
         assert len(history) >= 1
         assert any(row["type"] == "spawn" for row in history)
 
+    def test_command_history_schema_is_pinned(self, client):
+        schema = client.get("/openapi.json").json()
+        response_schema = schema["paths"]["/worlds/{world_id}/commands"]["get"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]
+        assert response_schema["type"] == "array"
+        assert response_schema["items"]["type"] == "object"
+
     def test_get_pending(self, client, tmp_path):
         create_resp = client.post(
             "/worlds",
@@ -239,7 +250,20 @@ class TestSimulationRoutes:
 
         resp = client.post(f"/worlds/{world_id}/step", json={"num_steps": 1})
         assert resp.status_code == 200
-        assert "commands_applied" in resp.json()
+        assert set(resp.json()) == {"commands_applied"}
+
+    def test_step_emits_one_audit_row(self, client, tmp_path):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "step_audit", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.post(f"/worlds/{world_id}/step", json={"num_steps": 1})
+        assert resp.status_code == 200
+
+        history = client.get(f"/worlds/{world_id}/history").json()
+        assert [row["command_type"] for row in history] == ["create_world", "step"]
 
     def test_step_not_found(self, client):
         resp = client.post(
@@ -272,6 +296,60 @@ class TestSimulationRoutes:
         )
         assert resp.status_code == 404
 
+    def test_step_schema_is_pinned(self, client):
+        schema = client.get("/openapi.json").json()
+        response_schema = schema["paths"]["/worlds/{world_id}/step"]["post"]["responses"]["200"][
+            "content"
+        ]["application/json"]["schema"]
+        assert response_schema["$ref"] == "#/components/schemas/StepResponse"
+
+
+class TestQueryRoutes:
+    def test_history_accepts_tick_range(self, client, tmp_path):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "history_tick_range", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.get(f"/worlds/{world_id}/history?tick_range=0,10")
+        assert resp.status_code == 200
+
+    def test_history_rejects_invalid_tick_range(self, client, tmp_path):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "history_bad_tick_range", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        resp = client.get(f"/worlds/{world_id}/history?tick_range=10,0")
+        assert resp.status_code == 400
+
+    def test_signatures_accepts_storage_query(self, client, tmp_path):
+        resp = client.get(f"/signatures?storage_uri={tmp_path / 'store'}&namespace=ns")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    @pytest.mark.parametrize(
+        ("path", "method"),
+        (
+            ("/worlds/{world_id}/state", "get"),
+            ("/worlds/{world_id}/entities/{entity_id}", "get"),
+            ("/worlds/{world_id}/components", "get"),
+            ("/worlds/{world_id}/history", "get"),
+            ("/worlds/{world_id}/processors", "get"),
+            ("/worlds/{world_id}/hooks", "get"),
+            ("/worlds/{world_id}/resources", "get"),
+            ("/signatures", "get"),
+        ),
+    )
+    def test_query_response_schema_is_pinned(self, client, path, method):
+        schema = client.get("/openapi.json").json()
+        response_schema = schema["paths"][path][method]["responses"]["200"]["content"][
+            "application/json"
+        ]["schema"]
+        assert response_schema != {}
+
 
 def test_route_modules_do_not_import_forbidden_services():
     route_dir = __import__("pathlib").Path("src/archetype/api/routes")
@@ -289,3 +367,13 @@ def test_route_modules_do_not_import_forbidden_services():
             if needle in text:
                 offenders.append(f"{path}:{needle}")
     assert offenders == []
+
+
+def test_api_import_boundary_lint_script_passes():
+    result = subprocess.run(
+        [sys.executable, "scripts/check_api_import_boundaries.py"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

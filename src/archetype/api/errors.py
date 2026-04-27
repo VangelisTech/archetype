@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import NoReturn
 
 from fastapi import HTTPException
 
 from archetype.app.auth.errors import GuardrailError
+
+logger = logging.getLogger(__name__)
 
 
 def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
@@ -21,4 +24,5 @@ def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
     if isinstance(exc, ValueError):
         status_code = 409 if conflict else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from None
+    logger.exception("Unhandled API exception")
     raise HTTPException(status_code=500, detail="Internal server error") from exc

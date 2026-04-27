@@ -135,6 +135,10 @@ class RunResultResponse(BaseModel):
     final_tick: int
 
 
+class StepResponse(BaseModel):
+    commands_applied: int
+
+
 class ErrorResponse(BaseModel):
     detail: str
 
@@ -155,6 +159,7 @@ __all__ = [
     "RunConfig",
     "RunRequest",
     "RunResultResponse",
+    "StepResponse",
     "StepRequest",
     "StorageConfig",
     "WorldConfig",

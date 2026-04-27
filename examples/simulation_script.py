@@ -97,23 +97,13 @@ async def main():
         print(f"Ran {len(history_frames)} ticks (final tick={info.tick})\n")
 
         print("Final state:")
-        rows = sorted(
-            (await world.query(Agent)).collect().to_pylist(),
-            key=lambda row: row["entity_id"],
-        )
-        for row in rows:
-            name = row.get("agent__name", "?")
-            exp = row.get("agent__experience", 0)
-            rating = row.get("agent__rating", 0)
-            skill = row.get("agent__skill", 0)
-            print(f"  {name}: skill={skill:.1f}, experience={exp:.0f}, rating={rating:.1f}")
+        (await world.query(Agent)).show()
 
         history_df = history_frames[0]
         for frame in history_frames[1:]:
             history_df = history_df.concat(frame)
 
         print("\nState history (DataFrame):")
-        history_row_count = len(history_frames) * len(rows)
         history_df.select(
             "history_tick",
             "entity_id",
@@ -121,7 +111,7 @@ async def main():
             "agent__skill",
             "agent__experience",
             "agent__rating",
-        ).collect().sort([col("history_tick"), col("entity_id")]).show(history_row_count)
+        ).show()
 
 
 if __name__ == "__main__":

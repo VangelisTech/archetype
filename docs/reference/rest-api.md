@@ -250,6 +250,13 @@ GET /signatures
 
 List persisted archetype signatures. Requires viewer, player, operator, or admin.
 
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `storage_uri` | string \| null | — |  |
+| `namespace` | string \| null | — |  |
+
 **Error codes:** `422`
 
 ---
@@ -325,6 +332,7 @@ Read audit history. Requires viewer, player, operator, or admin.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `limit` | integer | `100` |  |
+| `tick_range` | string \| null | — | Comma-separated inclusive start,end |
 | `actor_id` | string \| null | — |  |
 | `signer_address` | string \| null | — |  |
 | `idempotency_key` | string \| null | — |  |
@@ -558,6 +566,12 @@ Advance one tick. Requires operator or admin.
 | `run_config` | RunConfig \| null | No | — |  |
 | `num_steps` | integer | No | `1` | Num Steps |
 | `debug` | boolean | No | `false` | Debug |
+
+**Response** (`200`):
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `commands_applied` | integer | Yes | — | Commands Applied |
 
 **Error codes:** `422`
 

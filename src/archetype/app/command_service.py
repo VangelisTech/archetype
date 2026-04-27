@@ -378,7 +378,7 @@ class CommandService:
         ctx: ActorCtx,
         storage_config: StorageConfig | None = None,
     ) -> list[ArchetypeSignature]:
-        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        self._gate(Command(type=CommandType.LIST_SIGNATURES), ctx)
         return await self._queries.list_signatures(storage_config)
 
     # ── Resource attachment (gated) ────────────────────────────────────────

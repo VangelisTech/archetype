@@ -3,6 +3,8 @@
 
 """Read/query routes."""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
 
 from archetype.api.deps import get_actor_ctx, get_command_service
@@ -10,6 +12,8 @@ from archetype.api.errors import raise_api_error
 from archetype.api.models import dataframe_to_rows, hydrate_component_types
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
+from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
+from archetype.core.config import StorageConfig
 
 router = APIRouter(tags=["query"])
 
@@ -25,6 +29,41 @@ def _entity_ids(value: str | None) -> list[int] | None:
     if not items:
         return None
     return [int(item) for item in items]
+
+
+def _tick_range(value: str | None) -> tuple[int, int] | None:
+    items = _split_csv(value)
+    if not items:
+        return None
+    if len(items) != 2:
+        raise ValueError("tick_range must be two comma-separated integers: start,end")
+    start, end = (int(item) for item in items)
+    if start > end:
+        raise ValueError("tick_range start must be less than or equal to end")
+    return start, end
+
+
+async def _query_all_state(
+    cs: CommandService,
+    ctx: ActorCtx,
+    world_id: str,
+    *,
+    tick: int | None = None,
+    entity_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    info = await cs.get_world_info(ctx, world_id)
+    rows: list[dict[str, Any]] = []
+    for sig in await cs.list_signatures(ctx):
+        df = await cs.query_archetype(
+            ctx,
+            sig,
+            str(info.world_id),
+            str(info.run_id or ""),
+            ticks=[tick] if tick is not None else None,
+            entity_ids=entity_ids,
+        )
+        rows.extend(dataframe_to_rows(df))
+    return rows
 
 
 async def _query_components(
@@ -51,7 +90,7 @@ async def _query_components(
     return dataframe_to_rows(df)
 
 
-@router.get("/worlds/{world_id}/state")
+@router.get("/worlds/{world_id}/state", response_model=list[dict[str, Any]])
 async def get_world_state(
     world_id: str,
     tick: int | None = None,
@@ -62,11 +101,20 @@ async def get_world_state(
 ):
     """Read world state rows by component filter. Requires viewer, player, operator, or admin."""
     try:
+        component_names = _split_csv(components)
+        if not component_names:
+            return await _query_all_state(
+                cs,
+                ctx,
+                world_id,
+                tick=tick,
+                entity_ids=_entity_ids(entity_ids),
+            )
         return await _query_components(
             cs,
             ctx,
             world_id,
-            component_names=_split_csv(components),
+            component_names=component_names,
             tick=tick,
             entity_ids=_entity_ids(entity_ids),
         )
@@ -74,7 +122,7 @@ async def get_world_state(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/entities/{entity_id}")
+@router.get("/worlds/{world_id}/entities/{entity_id}", response_model=list[dict[str, Any]])
 async def get_entity(
     world_id: str,
     entity_id: int,
@@ -97,7 +145,7 @@ async def get_entity(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/components")
+@router.get("/worlds/{world_id}/components", response_model=list[dict[str, Any]])
 async def get_components(
     world_id: str,
     types: str = Query("", description="Comma-separated component type names"),
@@ -120,10 +168,11 @@ async def get_components(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/history")
+@router.get("/worlds/{world_id}/history", response_model=list[dict[str, Any]])
 async def get_audit_history(
     world_id: str,
     limit: int = 100,
+    tick_range: str | None = Query(None, description="Comma-separated inclusive start,end"),
     actor_id: str | None = None,
     signer_address: str | None = None,
     idempotency_key: str | None = None,
@@ -135,6 +184,7 @@ async def get_audit_history(
         df = await cs.get_audit_history(
             ctx,
             world_id,
+            tick_range=_tick_range(tick_range),
             actor_id=actor_id,
             signer_address=signer_address,
             idempotency_key=idempotency_key,
@@ -148,7 +198,7 @@ async def get_audit_history(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/processors")
+@router.get("/worlds/{world_id}/processors", response_model=list[ProcessorInfo])
 async def list_processors(
     world_id: str,
     cs: CommandService = Depends(get_command_service),
@@ -161,7 +211,7 @@ async def list_processors(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/hooks")
+@router.get("/worlds/{world_id}/hooks", response_model=list[HookInfo])
 async def list_hooks(
     world_id: str,
     cs: CommandService = Depends(get_command_service),
@@ -174,7 +224,7 @@ async def list_hooks(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/resources")
+@router.get("/worlds/{world_id}/resources", response_model=list[ResourceInfo])
 async def list_resources(
     world_id: str,
     cs: CommandService = Depends(get_command_service),
@@ -187,13 +237,21 @@ async def list_resources(
         raise_api_error(exc)
 
 
-@router.get("/signatures")
+@router.get("/signatures", response_model=list[str])
 async def list_signatures(
+    storage_uri: str | None = None,
+    namespace: str | None = None,
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List persisted archetype signatures. Requires viewer, player, operator, or admin."""
     try:
-        return [str(sig) for sig in await cs.list_signatures(ctx)]
+        storage_config = None
+        if storage_uri is not None or namespace is not None:
+            storage_config = StorageConfig(
+                uri=storage_uri or "./archetype_data",
+                namespace=namespace or "archetypes",
+            )
+        return [str(sig) for sig in await cs.list_signatures(ctx, storage_config)]
     except Exception as exc:
         raise_api_error(exc)
