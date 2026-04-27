@@ -68,7 +68,8 @@ class RatingProcessor(AsyncProcessor):
 
 
 async def collect_agent_snapshot(world) -> DataFrame:
-    return (await world.query(Agent)).with_column("history_tick", lit(world.tick))
+    info = await world.info()
+    return (await world.query(Agent)).with_column("history_tick", lit(info.tick))
 
 
 async def main():
@@ -92,7 +93,8 @@ async def main():
             await world.step()
             history_frames.append(await collect_agent_snapshot(world))
 
-        print(f"Ran {len(history_frames)} ticks (final tick={world.tick})\n")
+        info = await world.info()
+        print(f"Ran {len(history_frames)} ticks (final tick={info.tick})\n")
 
         print("Final state:")
         rows = sorted(
