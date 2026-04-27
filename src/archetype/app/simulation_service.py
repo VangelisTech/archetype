@@ -161,4 +161,5 @@ class SimulationService:
             base_world_id=world_id,
             episodes=results,
             num_episodes=len(results),
+            total_duration_steps=sum(r.duration_steps for r in results),
         )
