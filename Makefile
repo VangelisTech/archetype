@@ -99,6 +99,14 @@ lazy-audit:
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
 
+# Pre-merge audit suite — see docs/audits/categorization.md.
+# Runs the executable subset of the pre-merge checklist as fast pytest
+# tests (model/protocol/import-boundary/RBAC reflection). The full audit
+# layers integration + e2e + slow markers on top of this.
+.PHONY: audit
+audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest tests/audit/ -m "audit and not audit_slow" --no-cov -q
+
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
 # CC ranks: A (1-5) B (6-10) C (11-20) D (21-30) E (31-40) F (41+).
