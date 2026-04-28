@@ -34,6 +34,7 @@ nav:
       - Custom Commands: guide/custom-commands.md
       - Token Quotas: guide/token-quotas.md
       - Trajectories: guide/trajectories.md
+      - AgentPrism Capture: guide/agentprism.md
       - AutoResearch: guide/autoresearch.md
   - Core Architecture:
       - Overview: guide/architecture.md

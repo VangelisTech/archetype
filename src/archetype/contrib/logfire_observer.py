@@ -109,3 +109,31 @@ def logfire_hooks() -> list[tuple]:
         (OnComponentRemoved, _on_component_removed),
         (OnDestroy, _on_destroy),
     ]
+
+
+def trajectory_span(
+    name: str,
+    *,
+    trajectory_id: str,
+    source: str = "",
+    model: str = "",
+    **extra: object,
+):
+    """Open a trajectory-level span with AgentPrism-friendly attributes.
+
+    The returned object is a logfire span context manager. Tag values follow
+    OpenInference-style ``gen_ai.*`` and ``agent.*`` conventions so an OTel
+    backend reading the trace can render it directly in AgentPrism.
+    """
+    return logfire.span(
+        name,
+        _tags=["agent_invocation"],
+        **{
+            "agent.span.kind": "agent_invocation",
+            "agent.trajectory.id": trajectory_id,
+            "agent.source": source,
+            "gen_ai.system": source or "archetype",
+            "gen_ai.request.model": model,
+            **extra,
+        },
+    )
