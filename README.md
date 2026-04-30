@@ -10,6 +10,8 @@
 
 </div>
 
+![Archetype Architecture Diagram](assets/archetype_diagram2.png)
+
 Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows. Consequences of that storage model:
 
 - entities are grouped by exact component sets
