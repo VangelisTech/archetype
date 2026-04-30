@@ -1,0 +1,327 @@
+<!doctype html>
+<html><head><meta charset="utf-8"/>
+<title>Archetype — Pareto Frontier</title>
+<style>
+  body { background:#0d1117; color:#e6edf3;
+         font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+         margin: 24px 32px; }
+  h1 { margin: 0 0 4px 0; font-weight: 600; letter-spacing: -0.02em; }
+  p.sub { color:#8b949e; margin:0 0 18px 0; max-width: 920px; line-height: 1.5; }
+  svg { background:#0d1117; }
+  .legend { display:flex; gap:24px; margin: 14px 0 6px 0; font-size: 12px; color:#c9d1d9; flex-wrap: wrap; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius: 50%; vertical-align:middle; margin-right:6px; }
+  .ring { display:inline-block; width:10px; height:10px; border-radius: 50%;
+          border: 2px solid #f39c12; vertical-align:middle; margin-right:6px; }
+  .bubbles { display:inline-flex; align-items: center; gap:6px; }
+  .bubbles span.b { display:inline-block; border-radius:50%; background:#58a6ff; opacity:0.7; }
+  table { width:100%; border-collapse: collapse; font-size: 12px; margin-top:6px; }
+  th, td { text-align:left; padding: 6px 10px; border-bottom: 1px solid #1c232c; }
+  th { color:#8b949e; font-weight:500; }
+  td:nth-child(3), td:nth-child(4), td:nth-child(5) { font-variant-numeric: tabular-nums; }
+  code { background:#161b22; padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+  <h1>Archetype — Pareto frontier of storage configurations</h1>
+  <p class="sub">
+    Each point is one storage configuration evaluated against the same workload.
+    Axes are log-scale. Bubble area encodes the configured cache memory budget
+    (<code>global_mb</code>; plain configs cost 0). Orange-ringed points are on the
+    full <strong>3D Pareto frontier</strong> — no other config beats them on all of
+    p95 latency, throughput, <em>and</em> memory. The dashed orange curve is the 2D
+    (latency, throughput) projection for visual orientation.
+    Hover for full configuration details.
+  </p>
+  <div class="legend">
+    <span><span class="swatch" style="background:#d2a8ff"></span>plain (no cache)</span>
+    <span><span class="swatch" style="background:#58a6ff"></span>cached</span>
+    <span><span class="ring"></span>3D Pareto-optimal</span>
+    <span class="bubbles">cache budget:
+      <span class="b" style="width:6px; height:6px;"></span>64MB
+      <span class="b" style="width:10px; height:10px;"></span>1GB
+      <span class="b" style="width:16px; height:16px;"></span>4GB
+    </span>
+  </div>
+  <svg width="1380" height="520" viewBox="0 0 1380 520" xmlns="http://www.w3.org/2000/svg">
+    <rect x="80" y="70" width="360" height="370" fill="#0e1117" stroke="#2a3340" stroke-width="1" />
+<text x="260.0" y="48" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">APPEND</text>
+<text x="260.0" y="64" fill="#8b949e" font-size="11" text-anchor="middle">20 configs · 4 on 3D frontier</text>
+<line x1="210.10781606742486" y1="70" x2="210.10781606742486" y2="440" stroke="#1c232c" stroke-width="1" />
+<text x="210.10781606742486" y="456" fill="#8b949e" font-size="10" text-anchor="middle">10^1</text>
+<line x1="80" y1="296.84268520865305" x2="440" y2="296.84268520865305" stroke="#1c232c" stroke-width="1" />
+<text x="74" y="300.84268520865305" fill="#8b949e" font-size="10" text-anchor="end">10^4</text>
+<line x1="80" y1="103.43903889965117" x2="440" y2="103.43903889965117" stroke="#1c232c" stroke-width="1" />
+<text x="74" y="107.43903889965117" fill="#8b949e" font-size="10" text-anchor="end">10^5</text>
+<text x="260.0" y="478" fill="#c9d1d9" font-size="11" text-anchor="middle">p95 latency (ms, log)</text>
+<text transform="translate(24, 255.0) rotate(-90)" fill="#c9d1d9" font-size="11" text-anchor="middle">throughput rows/s (log)</text>
+<circle cx="417.6" cy="421.3" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=100
+  p95: 54.19 ms
+  throughput: 2,274 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="358.6" cy="258.2" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=500
+  p95: 33.51 ms
+  throughput: 15,840 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="350.3" cy="146.4" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=2000
+  p95: 31.33 ms
+  throughput: 59,969 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="350.1" cy="145.8" r="6.0" fill="#d2a8ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>plain·bs=10000 · PARETO
+  p95: 31.28 ms
+  throughput: 60,365 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="172.1" cy="259.7" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=10000·gm=64MB
+  p95: 7.34 ms
+  throughput: 15,559 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="157.0" cy="253.8" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=100000·gm=256MB
+  p95: 6.49 ms
+  throughput: 16,692 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="163.9" cy="257.1" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=500000·gm=1024MB
+  p95: 6.86 ms
+  throughput: 16,045 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="166.1" cy="255.1" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=2000000·gm=4096MB
+  p95: 6.99 ms
+  throughput: 16,444 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="161.3" cy="146.4" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=10000·gm=64MB
+  p95: 6.72 ms
+  throughput: 59,946 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="173.5" cy="145.5" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=100000·gm=256MB
+  p95: 7.42 ms
+  throughput: 60,604 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="140.9" cy="145.5" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=500000·gm=1024MB
+  p95: 5.69 ms
+  throughput: 60,609 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="130.2" cy="141.5" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=2000000·gm=4096MB
+  p95: 5.22 ms
+  throughput: 63,544 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="115.9" cy="92.3" r="7.1" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=2000·fr=10000·gm=64MB · PARETO
+  p95: 4.64 ms
+  throughput: 114,248 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="137.5" cy="91.3" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=100000·gm=256MB
+  p95: 5.54 ms
+  throughput: 115,593 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="120.9" cy="91.2" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=500000·gm=1024MB
+  p95: 4.83 ms
+  throughput: 115,635 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="107.4" cy="85.3" r="15.0" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=2000·fr=2000000·gm=4096MB · PARETO
+  p95: 4.33 ms
+  throughput: 124,084 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="118.1" cy="88.1" r="7.1" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=10000·fr=10000·gm=64MB · PARETO
+  p95: 4.73 ms
+  throughput: 120,007 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="146.3" cy="90.6" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=100000·gm=256MB
+  p95: 5.95 ms
+  throughput: 116,569 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="146.4" cy="89.5" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=500000·gm=1024MB
+  p95: 5.95 ms
+  throughput: 118,094 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="126.6" cy="88.2" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=2000000·gm=4096MB
+  p95: 5.07 ms
+  throughput: 119,845 rows/s
+  cache budget: 4096MB</title></circle>
+<rect x="500" y="70" width="360" height="370" fill="#0e1117" stroke="#2a3340" stroke-width="1" />
+<text x="680.0" y="48" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">UPDATER</text>
+<text x="680.0" y="64" fill="#8b949e" font-size="11" text-anchor="middle">20 configs · 7 on 3D frontier</text>
+<line x1="628.5810888050894" y1="70" x2="628.5810888050894" y2="440" stroke="#1c232c" stroke-width="1" />
+<text x="628.5810888050894" y="456" fill="#8b949e" font-size="10" text-anchor="middle">10^1</text>
+<line x1="500" y1="299.63933719274826" x2="860" y2="299.63933719274826" stroke="#1c232c" stroke-width="1" />
+<text x="494" y="303.63933719274826" fill="#8b949e" font-size="10" text-anchor="end">10^4</text>
+<line x1="500" y1="109.48542790477484" x2="860" y2="109.48542790477484" stroke="#1c232c" stroke-width="1" />
+<text x="494" y="113.48542790477484" fill="#8b949e" font-size="10" text-anchor="end">10^5</text>
+<text x="680.0" y="478" fill="#c9d1d9" font-size="11" text-anchor="middle">p95 latency (ms, log)</text>
+<polyline points="527.5,195.2 529.3,88.6 530.3,85.2 536.3,85.1" fill="none" stroke="#f39c12" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.7" />
+<circle cx="837.6" cy="421.6" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=100
+  p95: 54.60 ms
+  throughput: 2,284 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="785.0" cy="263.3" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=500
+  p95: 35.63 ms
+  throughput: 15,529 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="772.7" cy="148.4" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=2000
+  p95: 32.25 ms
+  throughput: 62,396 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="772.7" cy="147.3" r="6.0" fill="#d2a8ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>plain·bs=10000 · PARETO
+  p95: 32.23 ms
+  throughput: 63,257 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="578.2" cy="257.3" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=10000·gm=64MB
+  p95: 6.64 ms
+  throughput: 16,693 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="585.7" cy="259.2" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=100000·gm=256MB
+  p95: 7.06 ms
+  throughput: 16,314 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="588.8" cy="256.7" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=500000·gm=1024MB
+  p95: 7.24 ms
+  throughput: 16,814 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="572.7" cy="257.9" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=2000000·gm=4096MB
+  p95: 6.35 ms
+  throughput: 16,587 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="548.8" cy="152.9" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=10000·gm=64MB
+  p95: 5.23 ms
+  throughput: 59,090 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="571.3" cy="149.3" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=100000·gm=256MB
+  p95: 6.28 ms
+  throughput: 61,763 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="577.8" cy="146.4" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=500000·gm=1024MB
+  p95: 6.62 ms
+  throughput: 63,921 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="540.9" cy="142.5" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=2000000·gm=4096MB
+  p95: 4.91 ms
+  throughput: 67,070 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="547.8" cy="96.6" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=10000·gm=64MB
+  p95: 5.19 ms
+  throughput: 116,834 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="527.5" cy="195.2" r="8.2" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=2000·fr=100000·gm=256MB · PARETO
+  p95: 4.40 ms
+  throughput: 35,406 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="530.3" cy="85.2" r="10.5" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=2000·fr=500000·gm=1024MB · PARETO
+  p95: 4.50 ms
+  throughput: 134,131 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="536.3" cy="85.1" r="15.0" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=2000·fr=2000000·gm=4096MB · PARETO
+  p95: 4.73 ms
+  throughput: 134,421 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="543.8" cy="90.0" r="7.1" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=10000·fr=10000·gm=64MB · PARETO
+  p95: 5.02 ms
+  throughput: 126,581 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="549.3" cy="88.8" r="8.2" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=10000·fr=100000·gm=256MB · PARETO
+  p95: 5.25 ms
+  throughput: 128,407 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="529.3" cy="88.6" r="10.5" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=10000·fr=500000·gm=1024MB · PARETO
+  p95: 4.47 ms
+  throughput: 128,831 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="534.2" cy="88.9" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=2000000·gm=4096MB
+  p95: 4.65 ms
+  throughput: 128,310 rows/s
+  cache budget: 4096MB</title></circle>
+<rect x="920" y="70" width="360" height="370" fill="#0e1117" stroke="#2a3340" stroke-width="1" />
+<text x="1100.0" y="48" fill="#e6edf3" font-size="16" font-weight="600" text-anchor="middle">QUERY</text>
+<text x="1100.0" y="64" fill="#8b949e" font-size="11" text-anchor="middle">20 configs · 2 on 3D frontier</text>
+<line x1="1144.0378100305377" y1="70" x2="1144.0378100305377" y2="440" stroke="#1c232c" stroke-width="1" />
+<text x="1144.0378100305377" y="456" fill="#8b949e" font-size="10" text-anchor="middle">10^2</text>
+<line x1="920" y1="255.71787163543854" x2="1280" y2="255.71787163543854" stroke="#1c232c" stroke-width="1" />
+<text x="914" y="259.71787163543854" fill="#8b949e" font-size="10" text-anchor="end">10^5</text>
+<text x="1100.0" y="478" fill="#c9d1d9" font-size="11" text-anchor="middle">p95 latency (ms, log)</text>
+<circle cx="1260.9" cy="414.7" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=100
+  p95: 305.18 ms
+  throughput: 24,602 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="1093.4" cy="243.0" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=500
+  p95: 61.69 ms
+  throughput: 111,848 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="986.2" cy="137.3" r="6.0" fill="#d2a8ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>plain·bs=2000 · PARETO
+  p95: 22.17 ms
+  throughput: 284,200 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="991.4" cy="142.4" r="4.0" fill="#d2a8ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>plain·bs=10000
+  p95: 23.29 ms
+  throughput: 271,657 rows/s
+  cache budget: 0MB (no cache)</title></circle>
+<circle cx="958.9" cy="103.8" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=10000·gm=64MB
+  p95: 17.08 ms
+  throughput: 382,046 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="970.7" cy="108.5" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=100000·gm=256MB
+  p95: 19.11 ms
+  throughput: 366,343 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="966.8" cy="103.1" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=500000·gm=1024MB
+  p95: 18.42 ms
+  throughput: 384,150 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="954.7" cy="97.6" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=100·fr=2000000·gm=4096MB
+  p95: 16.40 ms
+  throughput: 403,351 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="960.6" cy="105.2" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=10000·gm=64MB
+  p95: 17.35 ms
+  throughput: 377,156 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="959.8" cy="100.5" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=100000·gm=256MB
+  p95: 17.22 ms
+  throughput: 393,099 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="967.1" cy="112.4" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=500000·gm=1024MB
+  p95: 18.47 ms
+  throughput: 353,945 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="996.9" cy="115.6" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=500·fr=2000000·gm=4096MB
+  p95: 24.53 ms
+  throughput: 344,111 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="964.6" cy="105.9" r="5.1" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=10000·gm=64MB
+  p95: 18.04 ms
+  throughput: 374,809 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="951.8" cy="103.3" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=100000·gm=256MB
+  p95: 15.95 ms
+  throughput: 383,656 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="971.9" cy="105.5" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=500000·gm=1024MB
+  p95: 19.34 ms
+  throughput: 376,295 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="969.0" cy="97.9" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=2000·fr=2000000·gm=4096MB
+  p95: 18.81 ms
+  throughput: 402,330 rows/s
+  cache budget: 4096MB</title></circle>
+<circle cx="943.4" cy="90.7" r="7.1" fill="#58a6ff" fill-opacity="0.9" stroke="#f39c12" stroke-width="2.5"><title>cached·bs=10000·fr=10000·gm=64MB · PARETO
+  p95: 14.72 ms
+  throughput: 428,802 rows/s
+  cache budget: 64MB</title></circle>
+<circle cx="951.0" cy="96.9" r="6.2" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=100000·gm=256MB
+  p95: 15.83 ms
+  throughput: 405,859 rows/s
+  cache budget: 256MB</title></circle>
+<circle cx="954.6" cy="97.3" r="8.5" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=500000·gm=1024MB
+  p95: 16.39 ms
+  throughput: 404,568 rows/s
+  cache budget: 1024MB</title></circle>
+<circle cx="959.4" cy="96.7" r="13.0" fill="#58a6ff" fill-opacity="0.45" stroke="#0e1117" stroke-width="0.8"><title>cached·bs=10000·fr=2000000·gm=4096MB
+  p95: 17.16 ms
+  throughput: 406,564 rows/s
+  cache budget: 4096MB</title></circle>
+  </svg>
+  <h3 style="margin-top:28px;">3D Pareto-optimal configurations</h3>
+  <table>
+    <thead><tr>
+      <th>Phase</th><th>Configuration</th>
+      <th>p95 latency (ms)</th><th>Throughput (rows/s)</th><th>Cache budget (MB)</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>append</td><td>cached·bs=2000·fr=2000000·gm=4096MB</td><td>4.33</td><td>124,084</td><td>4096</td></tr><tr><td>append</td><td>cached·bs=2000·fr=10000·gm=64MB</td><td>4.64</td><td>114,248</td><td>64</td></tr><tr><td>append</td><td>cached·bs=10000·fr=10000·gm=64MB</td><td>4.73</td><td>120,007</td><td>64</td></tr><tr><td>append</td><td>plain·bs=10000</td><td>31.28</td><td>60,365</td><td>0</td></tr><tr><td>updater</td><td>cached·bs=2000·fr=100000·gm=256MB</td><td>4.40</td><td>35,406</td><td>256</td></tr><tr><td>updater</td><td>cached·bs=10000·fr=500000·gm=1024MB</td><td>4.47</td><td>128,831</td><td>1024</td></tr><tr><td>updater</td><td>cached·bs=2000·fr=500000·gm=1024MB</td><td>4.50</td><td>134,131</td><td>1024</td></tr><tr><td>updater</td><td>cached·bs=2000·fr=2000000·gm=4096MB</td><td>4.73</td><td>134,421</td><td>4096</td></tr><tr><td>updater</td><td>cached·bs=10000·fr=10000·gm=64MB</td><td>5.02</td><td>126,581</td><td>64</td></tr><tr><td>updater</td><td>cached·bs=10000·fr=100000·gm=256MB</td><td>5.25</td><td>128,407</td><td>256</td></tr><tr><td>updater</td><td>plain·bs=10000</td><td>32.23</td><td>63,257</td><td>0</td></tr><tr><td>query</td><td>cached·bs=10000·fr=10000·gm=64MB</td><td>14.72</td><td>428,802</td><td>64</td></tr><tr><td>query</td><td>plain·bs=2000</td><td>22.17</td><td>284,200</td><td>0</td></tr>
+    </tbody>
+  </table>
+</body></html>

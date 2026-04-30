@@ -1,0 +1,642 @@
+[
+  {
+    "knob": {
+      "name": "plain_bs100",
+      "cache": false,
+      "batch_size": 100,
+      "flush_rows": null,
+      "flush_mb": null,
+      "global_mb": null,
+      "idle_sec": null
+    },
+    "label": "plain\u00b7bs=100",
+    "append": {
+      "throughput_rows_s": 2273.580548368267,
+      "latency_p50_ms": 42.878908500000534,
+      "latency_p95_ms": 54.19227600003751,
+      "duration_s": 2.639009207000015,
+      "flush_s": 4.425999975410377e-06
+    },
+    "updater": {
+      "throughput_rows_s": 2284.3761321153897,
+      "latency_p50_ms": 44.57355499999949,
+      "latency_p95_ms": 54.60055899999361,
+      "duration_s": 2.626537686000006,
+      "flush_s": 3.197000012278295e-06
+    },
+    "query": {
+      "throughput_rows_s": 24602.077221446798,
+      "latency_p50_ms": 220.57572699998218,
+      "latency_p95_ms": 305.1762110000027,
+      "duration_s": 0.731645536999963
+    }
+  },
+  {
+    "knob": {
+      "name": "plain_bs500",
+      "cache": false,
+      "batch_size": 500,
+      "flush_rows": null,
+      "flush_mb": null,
+      "global_mb": null,
+      "idle_sec": null
+    },
+    "label": "plain\u00b7bs=500",
+    "append": {
+      "throughput_rows_s": 15839.946715685866,
+      "latency_p50_ms": 30.500803500018492,
+      "latency_p95_ms": 33.51462599999877,
+      "duration_s": 0.3787891530000138,
+      "flush_s": 1.992000022710272e-06
+    },
+    "updater": {
+      "throughput_rows_s": 15528.907082531554,
+      "latency_p50_ms": 30.664652500007605,
+      "latency_p95_ms": 35.63108599996667,
+      "duration_s": 0.38637619300004644,
+      "flush_s": 2.22200003463513e-06
+    },
+    "query": {
+      "throughput_rows_s": 111848.27061290204,
+      "latency_p50_ms": 51.44725700000663,
+      "latency_p95_ms": 61.688231999994514,
+      "duration_s": 0.1609323050000171
+    }
+  },
+  {
+    "knob": {
+      "name": "plain_bs2000",
+      "cache": false,
+      "batch_size": 2000,
+      "flush_rows": null,
+      "flush_mb": null,
+      "global_mb": null,
+      "idle_sec": null
+    },
+    "label": "plain\u00b7bs=2000",
+    "append": {
+      "throughput_rows_s": 59969.31490095559,
+      "latency_p50_ms": 29.672368999968057,
+      "latency_p95_ms": 31.32971100001214,
+      "duration_s": 0.10005116799999314,
+      "flush_s": 1.7479999883107666e-06
+    },
+    "updater": {
+      "throughput_rows_s": 62395.9320348312,
+      "latency_p50_ms": 28.02167200002259,
+      "latency_p95_ms": 32.25370800004157,
+      "duration_s": 0.09616011499997512,
+      "flush_s": 2.1420000280159e-06
+    },
+    "query": {
+      "throughput_rows_s": 284200.0094194064,
+      "latency_p50_ms": 21.636238000041885,
+      "latency_p95_ms": 22.168137999983628,
+      "duration_s": 0.0633356770000546
+    }
+  },
+  {
+    "knob": {
+      "name": "plain_bs10000",
+      "cache": false,
+      "batch_size": 10000,
+      "flush_rows": null,
+      "flush_mb": null,
+      "global_mb": null,
+      "idle_sec": null
+    },
+    "label": "plain\u00b7bs=10000",
+    "append": {
+      "throughput_rows_s": 60365.4129725972,
+      "latency_p50_ms": 29.084359999956177,
+      "latency_p95_ms": 31.28183500001569,
+      "duration_s": 0.09939466500003391,
+      "flush_s": 1.6310000319208484e-06
+    },
+    "updater": {
+      "throughput_rows_s": 63256.54031511668,
+      "latency_p50_ms": 27.166177000026437,
+      "latency_p95_ms": 32.23145299995167,
+      "duration_s": 0.09485185199997659,
+      "flush_s": 1.7350000121041376e-06
+    },
+    "query": {
+      "throughput_rows_s": 271656.56307965255,
+      "latency_p50_ms": 21.492976000047292,
+      "latency_p95_ms": 23.28783000001522,
+      "duration_s": 0.06626013300007116
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs100_fr10000_gm64",
+      "cache": true,
+      "batch_size": 100,
+      "flush_rows": 10000,
+      "flush_mb": 64,
+      "global_mb": 64,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=100\u00b7fr=10000\u00b7gm=64MB",
+    "append": {
+      "throughput_rows_s": 15559.093180471378,
+      "latency_p50_ms": 4.464629000011655,
+      "latency_p95_ms": 7.340139999996609,
+      "duration_s": 0.3856265869999902,
+      "flush_s": 0.03773405200001889
+    },
+    "updater": {
+      "throughput_rows_s": 16692.791255932716,
+      "latency_p50_ms": 4.76343499997256,
+      "latency_p95_ms": 6.643406999955914,
+      "duration_s": 0.35943659200000866,
+      "flush_s": 0.03806837499996618
+    },
+    "query": {
+      "throughput_rows_s": 382045.5162657802,
+      "latency_p50_ms": 16.258397000001423,
+      "latency_p95_ms": 17.081071000006887,
+      "duration_s": 0.047114805000035176
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs100_fr100000_gm256",
+      "cache": true,
+      "batch_size": 100,
+      "flush_rows": 100000,
+      "flush_mb": 256,
+      "global_mb": 256,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=100\u00b7fr=100000\u00b7gm=256MB",
+    "append": {
+      "throughput_rows_s": 16692.30168350743,
+      "latency_p50_ms": 4.445829999980333,
+      "latency_p95_ms": 6.4867980000258285,
+      "duration_s": 0.35944713399999273,
+      "flush_s": 0.047174224000002596
+    },
+    "updater": {
+      "throughput_rows_s": 16314.440435466684,
+      "latency_p50_ms": 4.911159000016596,
+      "latency_p95_ms": 7.057274999965557,
+      "duration_s": 0.36777234400000225,
+      "flush_s": 0.036046420999980455
+    },
+    "query": {
+      "throughput_rows_s": 366342.79317933065,
+      "latency_p50_ms": 15.756903000010425,
+      "latency_p95_ms": 19.114386000012473,
+      "duration_s": 0.049134309000010035
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs100_fr500000_gm1024",
+      "cache": true,
+      "batch_size": 100,
+      "flush_rows": 500000,
+      "flush_mb": 256,
+      "global_mb": 1024,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=100\u00b7fr=500000\u00b7gm=1024MB",
+    "append": {
+      "throughput_rows_s": 16044.567358429777,
+      "latency_p50_ms": 5.034410000007483,
+      "latency_p95_ms": 6.862037000018972,
+      "duration_s": 0.37395835399996713,
+      "flush_s": 0.03601240900002267
+    },
+    "updater": {
+      "throughput_rows_s": 16814.245910201822,
+      "latency_p50_ms": 4.838783500019872,
+      "latency_p95_ms": 7.241002999990087,
+      "duration_s": 0.3568402669999955,
+      "flush_s": 0.03699602799997592
+    },
+    "query": {
+      "throughput_rows_s": 384149.76718878665,
+      "latency_p50_ms": 14.348454000014499,
+      "latency_p95_ms": 18.417390000024625,
+      "duration_s": 0.046856725000054666
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs100_fr2000000_gm4096",
+      "cache": true,
+      "batch_size": 100,
+      "flush_rows": 2000000,
+      "flush_mb": 256,
+      "global_mb": 4096,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=100\u00b7fr=2000000\u00b7gm=4096MB",
+    "append": {
+      "throughput_rows_s": 16444.379943495685,
+      "latency_p50_ms": 4.7101929999939784,
+      "latency_p95_ms": 6.9861139999716215,
+      "duration_s": 0.3648662960000024,
+      "flush_s": 0.032356612999990375
+    },
+    "updater": {
+      "throughput_rows_s": 16586.644446608636,
+      "latency_p50_ms": 4.906734000002189,
+      "latency_p95_ms": 6.349073000023964,
+      "duration_s": 0.36173681899998655,
+      "flush_s": 0.03704991000000746
+    },
+    "query": {
+      "throughput_rows_s": 403351.31159740826,
+      "latency_p50_ms": 14.969113999995898,
+      "latency_p95_ms": 16.398793999996997,
+      "duration_s": 0.044626110000024255
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs500_fr10000_gm64",
+      "cache": true,
+      "batch_size": 500,
+      "flush_rows": 10000,
+      "flush_mb": 64,
+      "global_mb": 64,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=500\u00b7fr=10000\u00b7gm=64MB",
+    "append": {
+      "throughput_rows_s": 59946.4809806853,
+      "latency_p50_ms": 4.195293999998739,
+      "latency_p95_ms": 6.719020999980785,
+      "duration_s": 0.1000892780000413,
+      "flush_s": 0.02817660599998817
+    },
+    "updater": {
+      "throughput_rows_s": 59090.18255025704,
+      "latency_p50_ms": 4.676274500013733,
+      "latency_p95_ms": 5.228604999956588,
+      "duration_s": 0.10153970999999729,
+      "flush_s": 0.03545139699997435
+    },
+    "query": {
+      "throughput_rows_s": 377156.17829950666,
+      "latency_p50_ms": 15.60775799998737,
+      "latency_p95_ms": 17.34730399999762,
+      "duration_s": 0.047725586999945335
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs500_fr100000_gm256",
+      "cache": true,
+      "batch_size": 500,
+      "flush_rows": 100000,
+      "flush_mb": 256,
+      "global_mb": 256,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=500\u00b7fr=100000\u00b7gm=256MB",
+    "append": {
+      "throughput_rows_s": 60604.437141764414,
+      "latency_p50_ms": 3.9944124999635733,
+      "latency_p95_ms": 7.421863000047324,
+      "duration_s": 0.09900265199996738,
+      "flush_s": 0.029732919000025504
+    },
+    "updater": {
+      "throughput_rows_s": 61763.343455687704,
+      "latency_p50_ms": 4.447762500007002,
+      "latency_p95_ms": 6.27870900001426,
+      "duration_s": 0.09714499999995496,
+      "flush_s": 0.03024216799997248
+    },
+    "query": {
+      "throughput_rows_s": 393099.0415002458,
+      "latency_p50_ms": 14.754202999995414,
+      "latency_p95_ms": 17.216915000005883,
+      "duration_s": 0.04578998699997783
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs500_fr500000_gm1024",
+      "cache": true,
+      "batch_size": 500,
+      "flush_rows": 500000,
+      "flush_mb": 256,
+      "global_mb": 1024,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=500\u00b7fr=500000\u00b7gm=1024MB",
+    "append": {
+      "throughput_rows_s": 60608.724941138695,
+      "latency_p50_ms": 3.9894054999933815,
+      "latency_p95_ms": 5.693323000002692,
+      "duration_s": 0.09899564799997052,
+      "flush_s": 0.029994074000001092
+    },
+    "updater": {
+      "throughput_rows_s": 63921.164578852906,
+      "latency_p50_ms": 4.476647500013087,
+      "latency_p95_ms": 6.61852700000054,
+      "duration_s": 0.09386562399998866,
+      "flush_s": 0.02814808899995569
+    },
+    "query": {
+      "throughput_rows_s": 353945.2775825178,
+      "latency_p50_ms": 16.67811099997607,
+      "latency_p95_ms": 18.466360999980225,
+      "duration_s": 0.05085531899999296
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs500_fr2000000_gm4096",
+      "cache": true,
+      "batch_size": 500,
+      "flush_rows": 2000000,
+      "flush_mb": 256,
+      "global_mb": 4096,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=500\u00b7fr=2000000\u00b7gm=4096MB",
+    "append": {
+      "throughput_rows_s": 63543.51491142412,
+      "latency_p50_ms": 4.164074000016171,
+      "latency_p95_ms": 5.215478000025087,
+      "duration_s": 0.09442348300001413,
+      "flush_s": 0.028412501999980577
+    },
+    "updater": {
+      "throughput_rows_s": 67069.90284613927,
+      "latency_p50_ms": 4.1266279999945255,
+      "latency_p95_ms": 4.907370000012179,
+      "duration_s": 0.0894589039999687,
+      "flush_s": 0.028338636999990285
+    },
+    "query": {
+      "throughput_rows_s": 344111.1428521809,
+      "latency_p50_ms": 14.920539000002009,
+      "latency_p95_ms": 24.534410000001117,
+      "duration_s": 0.052308680999999524
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs2000_fr10000_gm64",
+      "cache": true,
+      "batch_size": 2000,
+      "flush_rows": 10000,
+      "flush_mb": 64,
+      "global_mb": 64,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=2000\u00b7fr=10000\u00b7gm=64MB",
+    "append": {
+      "throughput_rows_s": 114247.94500327416,
+      "latency_p50_ms": 4.00685199997497,
+      "latency_p95_ms": 4.643322999982047,
+      "duration_s": 0.052517355999953,
+      "flush_s": 0.025346243999990747
+    },
+    "updater": {
+      "throughput_rows_s": 116833.96999089635,
+      "latency_p50_ms": 4.852207999988423,
+      "latency_p95_ms": 5.188372000020536,
+      "duration_s": 0.051354926999977124,
+      "flush_s": 0.025012237999987974
+    },
+    "query": {
+      "throughput_rows_s": 374809.3625879787,
+      "latency_p50_ms": 15.6499839999924,
+      "latency_p95_ms": 18.037767999999232,
+      "duration_s": 0.048024413999996796
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs2000_fr100000_gm256",
+      "cache": true,
+      "batch_size": 2000,
+      "flush_rows": 100000,
+      "flush_mb": 256,
+      "global_mb": 256,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=2000\u00b7fr=100000\u00b7gm=256MB",
+    "append": {
+      "throughput_rows_s": 115592.91826923747,
+      "latency_p50_ms": 4.972742999996171,
+      "latency_p95_ms": 5.537823999986813,
+      "duration_s": 0.05190629399999125,
+      "flush_s": 0.024459232000026532
+    },
+    "updater": {
+      "throughput_rows_s": 35405.59925744133,
+      "latency_p50_ms": 4.120560999979261,
+      "latency_p95_ms": 4.398590000050717,
+      "duration_s": 0.1694647209999971,
+      "flush_s": 0.026101267999990796
+    },
+    "query": {
+      "throughput_rows_s": 383655.57346474874,
+      "latency_p50_ms": 15.77035100001467,
+      "latency_p95_ms": 15.954391999969175,
+      "duration_s": 0.046917081999993115
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs2000_fr500000_gm1024",
+      "cache": true,
+      "batch_size": 2000,
+      "flush_rows": 500000,
+      "flush_mb": 256,
+      "global_mb": 1024,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=2000\u00b7fr=500000\u00b7gm=1024MB",
+    "append": {
+      "throughput_rows_s": 115635.39965755609,
+      "latency_p50_ms": 4.158351000000948,
+      "latency_p95_ms": 4.833947999998145,
+      "duration_s": 0.05188722500002996,
+      "flush_s": 0.02601321800000278
+    },
+    "updater": {
+      "throughput_rows_s": 134131.4242496748,
+      "latency_p50_ms": 4.4432040000401685,
+      "latency_p95_ms": 4.500059000008605,
+      "duration_s": 0.0447322470000131,
+      "flush_s": 0.023367999000015516
+    },
+    "query": {
+      "throughput_rows_s": 376295.0429083243,
+      "latency_p50_ms": 15.423436999981277,
+      "latency_p95_ms": 19.336461000023064,
+      "duration_s": 0.04783480500003634
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs2000_fr2000000_gm4096",
+      "cache": true,
+      "batch_size": 2000,
+      "flush_rows": 2000000,
+      "flush_mb": 256,
+      "global_mb": 4096,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=2000\u00b7fr=2000000\u00b7gm=4096MB",
+    "append": {
+      "throughput_rows_s": 124084.18119019187,
+      "latency_p50_ms": 3.6793440000337796,
+      "latency_p95_ms": 4.3323579999992035,
+      "duration_s": 0.04835427000000436,
+      "flush_s": 0.023033330999965074
+    },
+    "updater": {
+      "throughput_rows_s": 134421.45409434068,
+      "latency_p50_ms": 4.725893999989239,
+      "latency_p95_ms": 4.726124000001164,
+      "duration_s": 0.044635731999960626,
+      "flush_s": 0.02276765100003786
+    },
+    "query": {
+      "throughput_rows_s": 402329.6406101702,
+      "latency_p50_ms": 14.441466999983277,
+      "latency_p95_ms": 18.81143800000018,
+      "duration_s": 0.044739433000017925
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs10000_fr10000_gm64",
+      "cache": true,
+      "batch_size": 10000,
+      "flush_rows": 10000,
+      "flush_mb": 64,
+      "global_mb": 64,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=10000\u00b7fr=10000\u00b7gm=64MB",
+    "append": {
+      "throughput_rows_s": 120006.52115440283,
+      "latency_p50_ms": 4.234697000015331,
+      "latency_p95_ms": 4.727253999988079,
+      "duration_s": 0.04999728299998196,
+      "flush_s": 0.025587440999970568
+    },
+    "updater": {
+      "throughput_rows_s": 126580.72960292075,
+      "latency_p50_ms": 5.019285999992462,
+      "latency_p95_ms": 5.024002000027394,
+      "duration_s": 0.04740057999998726,
+      "flush_s": 0.023892291999970894
+    },
+    "query": {
+      "throughput_rows_s": 428802.154759446,
+      "latency_p50_ms": 13.817082000002756,
+      "latency_p95_ms": 14.722968999990371,
+      "duration_s": 0.04197740099999692
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs10000_fr100000_gm256",
+      "cache": true,
+      "batch_size": 10000,
+      "flush_rows": 100000,
+      "flush_mb": 256,
+      "global_mb": 256,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=10000\u00b7fr=100000\u00b7gm=256MB",
+    "append": {
+      "throughput_rows_s": 116568.72497628894,
+      "latency_p50_ms": 4.369463000045926,
+      "latency_p95_ms": 5.945479999979852,
+      "duration_s": 0.05147178200002145,
+      "flush_s": 0.02544350300001952
+    },
+    "updater": {
+      "throughput_rows_s": 128406.57562370964,
+      "latency_p50_ms": 4.664024000021527,
+      "latency_p95_ms": 5.254004999983408,
+      "duration_s": 0.04672657899999422,
+      "flush_s": 0.024393212999996194
+    },
+    "query": {
+      "throughput_rows_s": 405859.0168434071,
+      "latency_p50_ms": 15.459788999976354,
+      "latency_p95_ms": 15.82754600002545,
+      "duration_s": 0.04435037600001124
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs10000_fr500000_gm1024",
+      "cache": true,
+      "batch_size": 10000,
+      "flush_rows": 500000,
+      "flush_mb": 256,
+      "global_mb": 1024,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=10000\u00b7fr=500000\u00b7gm=1024MB",
+    "append": {
+      "throughput_rows_s": 118094.31905902764,
+      "latency_p50_ms": 5.217193000021325,
+      "latency_p95_ms": 5.953787999999349,
+      "duration_s": 0.05080684699998983,
+      "flush_s": 0.02236884500001679
+    },
+    "updater": {
+      "throughput_rows_s": 128830.67822603085,
+      "latency_p50_ms": 4.248311000026206,
+      "latency_p95_ms": 4.46536199996217,
+      "duration_s": 0.046572758000024805,
+      "flush_s": 0.025902878000010787
+    },
+    "query": {
+      "throughput_rows_s": 404567.54056198633,
+      "latency_p50_ms": 15.077731000019412,
+      "latency_p95_ms": 16.38929599999983,
+      "duration_s": 0.04449195299997655
+    }
+  },
+  {
+    "knob": {
+      "name": "cached_bs10000_fr2000000_gm4096",
+      "cache": true,
+      "batch_size": 10000,
+      "flush_rows": 2000000,
+      "flush_mb": 256,
+      "global_mb": 4096,
+      "idle_sec": 30.0
+    },
+    "label": "cached\u00b7bs=10000\u00b7fr=2000000\u00b7gm=4096MB",
+    "append": {
+      "throughput_rows_s": 119844.57836003689,
+      "latency_p50_ms": 4.518209000025308,
+      "latency_p95_ms": 5.065160000015112,
+      "duration_s": 0.05006484300002967,
+      "flush_s": 0.024317079000013564
+    },
+    "updater": {
+      "throughput_rows_s": 128310.08201398935,
+      "latency_p50_ms": 4.353403000038725,
+      "latency_p95_ms": 4.645847999995567,
+      "duration_s": 0.04676171899996007,
+      "flush_s": 0.02621443699996462
+    },
+    "query": {
+      "throughput_rows_s": 406563.91110098973,
+      "latency_p50_ms": 15.48893199998247,
+      "latency_p95_ms": 17.159045000028073,
+      "duration_s": 0.04427348200005099
+    }
+  }
+]
