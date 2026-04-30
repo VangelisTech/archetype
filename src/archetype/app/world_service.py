@@ -166,6 +166,9 @@ class WorldOrchestrator:
     def get_world_by_name(self, name: str) -> iWorld:
         return self._registry.get_by_name(name)
 
+    def has_world(self, world_id: str | UUID) -> bool:
+        return self._registry.has(world_id)
+
     def list_worlds(self) -> list[iWorld]:
         return self._registry.list()
 
@@ -265,6 +268,9 @@ class WorldService:
 
     def get_world_by_name(self, name: str) -> iWorld:
         return self._orchestrator.get_world_by_name(name)
+
+    def has_world(self, world_id: str | UUID) -> bool:
+        return self._orchestrator.has_world(world_id)
 
     def list_worlds(self) -> list[iWorld]:
         return self._orchestrator.list_worlds()
