@@ -302,3 +302,108 @@ async def test_audit_row_monotonicity(tmp_path):
         assert high_water > 0
     finally:
         await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 7. Fork inherits source's storage by default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fork_inherits_source_storage(tmp_path):
+    """spec: docs/guide/world-lifecycle.md § 4.5 — "The fork writes to the same
+    physical store as the source by default".
+
+    A fork created without an explicit storage_config must land in the source's
+    store, not in a fresh default StorageConfig() (./archetype_db).
+    """
+    c = ServiceContainer()
+    source_storage = StorageConfig(uri=str(tmp_path / "src_store"), namespace="ns")
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), source_storage)
+        await c.mutation_service.create_entity(source.world_id, [Tag(label="seed")])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        # Fork without specifying storage — must inherit source's store.
+        fork = await c.world_service.fork_world(source.world_id, name="fork")
+
+        # Spawn a fresh entity in the fork and step it so a write is forced.
+        fork_eid = await c.mutation_service.create_entity(fork.world_id, [Tag(label="fork-only")])
+        await c.simulation_service.step(fork.world_id, RunConfig())
+
+        rows_in_source_store = (
+            await c.query_service.query_components(
+                [Tag],
+                world_id=str(fork.world_id),
+                run_id=str(fork.run_id),
+                storage_config=source_storage,
+                entity_ids=[fork_eid],
+            )
+        ).count_rows()
+        rows_in_default_store = (
+            await c.query_service.query_components(
+                [Tag],
+                world_id=str(fork.world_id),
+                run_id=str(fork.run_id),
+                storage_config=StorageConfig(),
+                entity_ids=[fork_eid],
+            )
+        ).count_rows()
+
+        assert rows_in_source_store >= 1, (
+            f"fork's data must land in source's store; got {rows_in_source_store} rows there "
+            f"and {rows_in_default_store} rows in the default store"
+        )
+        assert rows_in_default_store == 0, (
+            "fork without explicit storage_config must NOT write to ./archetype_db; "
+            f"found {rows_in_default_store} stray rows there"
+        )
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_explicit_storage_override(tmp_path):
+    """spec: docs/guide/world-lifecycle.md § 4.5 — "The optional storage_config
+    argument allows the fork to write to a different store entirely."
+
+    Override path stays intact: an explicit storage_config wins over the
+    source's store.
+    """
+    c = ServiceContainer()
+    source_storage = StorageConfig(uri=str(tmp_path / "src_store"), namespace="ns")
+    fork_storage = StorageConfig(uri=str(tmp_path / "fork_store"), namespace="ns")
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), source_storage)
+        await c.mutation_service.create_entity(source.world_id, [Tag(label="seed")])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=fork_storage
+        )
+        fork_eid = await c.mutation_service.create_entity(fork.world_id, [Tag(label="fork-only")])
+        await c.simulation_service.step(fork.world_id, RunConfig())
+
+        rows_in_fork_store = (
+            await c.query_service.query_components(
+                [Tag],
+                world_id=str(fork.world_id),
+                run_id=str(fork.run_id),
+                storage_config=fork_storage,
+                entity_ids=[fork_eid],
+            )
+        ).count_rows()
+        rows_in_source_store = (
+            await c.query_service.query_components(
+                [Tag],
+                world_id=str(fork.world_id),
+                run_id=str(fork.run_id),
+                storage_config=source_storage,
+                entity_ids=[fork_eid],
+            )
+        ).count_rows()
+
+        assert rows_in_fork_store >= 1
+        assert rows_in_source_store == 0
+    finally:
+        await c.shutdown()
