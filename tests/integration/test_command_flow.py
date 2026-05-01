@@ -95,6 +95,47 @@ async def test_submit_to_unknown_world_rejected():
 
 
 @pytest.mark.asyncio
+async def test_run_result_run_id_round_trips_to_query(tmp_path):
+    """spec: docs/guide/specification.md Inv O3 — Query defaults SHOULD use
+    world's active run_id.
+
+    RunResult.run_id MUST match the run_id stamped on persisted rows so
+    callers can round-trip the value back into a query and find the data
+    they just wrote. Previously RunResult returned RunConfig.run_id while
+    AsyncWorld stamped its construction-time uuid; the two diverged and the
+    round-trip lost data.
+    """
+    from uuid_utils import UUID, uuid7
+
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+    try:
+        info = await c.command_service.create_world(ctx, WorldConfig(name="r"), storage)
+        await c.command_service.create_entity(ctx, info.world_id, [Marker(tag="x")])
+
+        rc = RunConfig(run_id=str(uuid7()), num_steps=1)
+        result = await c.command_service.run(ctx, info.world_id, rc)
+
+        world = c.world_service.get_world(UUID(str(info.world_id)))
+        assert str(result.run_id) == str(world.run_id)
+
+        df = await c.command_service.query_components(
+            ctx,
+            [Marker],
+            str(info.world_id),
+            str(result.run_id),
+            storage_config=storage,
+        )
+        assert df.count_rows() >= 1, (
+            "RunResult.run_id did not round-trip back into a query; data was "
+            "stamped with a different run_id than RunResult reported."
+        )
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_submit_to_destroyed_world_rejected(tmp_path):
     """A destroyed world_id is no longer a valid submit target."""
     from archetype.app.errors import WorldNotFoundError
@@ -114,5 +155,46 @@ async def test_submit_to_destroyed_world_rejected(tmp_path):
             await c.command_service.submit(
                 ctx, wid, Command(type=CommandType.DESPAWN, payload={"entity_id": 1})
             )
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_runs_share_world_run_id(tmp_path):
+    """spec: docs/guide/execution-hierarchy.md section 2 — vanilla pattern is
+    repeated run calls on a single world; state accumulates with run_id
+    stable across steps. World run_id stays stable across consecutive run
+    calls so cross-run reads/writes remain continuous in append-only storage.
+    """
+    from uuid_utils import UUID, uuid7
+
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+    try:
+        info = await c.command_service.create_world(ctx, WorldConfig(name="r2"), storage)
+        await c.command_service.create_entity(ctx, info.world_id, [Marker(tag="x")])
+
+        result_a = await c.command_service.run(
+            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
+        )
+        result_b = await c.command_service.run(
+            ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
+        )
+
+        assert str(result_a.run_id) == str(result_b.run_id), (
+            "Consecutive runs reported different run_ids; the world's active "
+            "run_id must stay stable across runs for append-only state continuity."
+        )
+
+        world = c.world_service.get_world(UUID(str(info.world_id)))
+        df = await c.command_service.query_components(
+            ctx,
+            [Marker],
+            str(info.world_id),
+            str(world.run_id),
+            storage_config=storage,
+        )
+        assert df.count_rows() >= 1
     finally:
         await c.shutdown()
