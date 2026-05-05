@@ -29,6 +29,10 @@ help:
 	@echo "  make test-cov       Run tests with coverage"
 	@echo "  make test-all       Run all tests verbose"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
+	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
+	@echo "  make mutmut-results Show mutmut survivors from the last run"
+	@echo "  make mutmut-browse  Interactive TUI to inspect surviving mutants"
+	@echo "  make mutmut-clean   Remove mutmut cache and generated mutants"
 	@echo ""
 	@echo "Benchmarks & Evals:"
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
@@ -150,6 +154,26 @@ test-all:
 .PHONY: ci
 ci: format-check lint lock-check test-cov eval-reg
 	@echo "CI gate passed"
+
+# Mutation testing (mutmut). Not part of `make ci` — each mutation runs the
+# full pilot test suite, so even the narrow scope takes minutes. Run
+# on-demand to probe assertion strength on the modules under [tool.mutmut].
+# See docs/guide/mutation-testing.md.
+.PHONY: mutmut
+mutmut:
+	@PYTHONPATH=$(PYTHONPATH) uv run mutmut run
+
+.PHONY: mutmut-results
+mutmut-results:
+	@uv run mutmut results
+
+.PHONY: mutmut-browse
+mutmut-browse:
+	@uv run mutmut browse
+
+.PHONY: mutmut-clean
+mutmut-clean:
+	@rm -rf mutants/ .mutmut-cache
 
 # ------------------------------------------------------------------------------
 # Benchmarks & Evals

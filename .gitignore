@@ -75,3 +75,7 @@ coverage.xml
 .wrangler/
 bench-results.json
 eval-results.json
+
+# mutmut: working tree of generated mutants and its on-disk cache
+mutants/
+.mutmut-cache

@@ -35,6 +35,7 @@ nav:
       - Token Quotas: guide/token-quotas.md
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
+      - Mutation Testing: guide/mutation-testing.md
   - Core Architecture:
       - Overview: guide/architecture.md
       - Archetypes: guide/archetype.md
