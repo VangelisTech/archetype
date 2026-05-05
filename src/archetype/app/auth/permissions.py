@@ -21,6 +21,7 @@ _READS = frozenset(
         CommandType.GET_WORLD_INFO,
         CommandType.GET_AUDIT_HISTORY,
         CommandType.LIST_SIGNATURES,
+        CommandType.LIST_WORLDS,
         CommandType.LIST_PROCESSORS,
         CommandType.LIST_HOOKS,
         CommandType.LIST_RESOURCES,

@@ -45,6 +45,7 @@ _TOKEN_COSTS: dict[str, int] = {
     "get_world_info": 2,
     "get_audit_history": 5,
     "list_signatures": 2,
+    "list_worlds": 2,
     "list_processors": 2,
     "list_hooks": 2,
     "list_resources": 2,

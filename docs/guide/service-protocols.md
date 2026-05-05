@@ -171,6 +171,7 @@ async def create_world(ctx, config, storage_config=None, cache_config=None) -> W
 async def fork_world(ctx, source_world_id, name=None, *, storage_config=None, cache_config=None) -> WorldInfo
 async def destroy_world(ctx, world_id) -> None
 async def get_world_info(ctx, world_id) -> WorldInfo
+async def list_worlds(ctx) -> list[WorldInfo]
 ```
 
 #### Simulation

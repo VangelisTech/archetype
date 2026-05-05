@@ -50,6 +50,7 @@ Roles are flat. A user with `{operator}` is NOT also `viewer` — they get whate
 | `list_signatures` | ✓ | ✓ | ✓ | ✓ |
 | `get_world_info` | ✓ | ✓ | ✓ | ✓ |
 | `get_audit_history` | ✓ | ✓ | ✓ | ✓ |
+| `list_worlds` | ✓ | ✓ | ✓ | ✓ |
 | `list_processors` | ✓ | ✓ | ✓ | ✓ |
 | `list_hooks` | ✓ | ✓ | ✓ | ✓ |
 | `list_resources` | ✓ | ✓ | ✓ | ✓ |
@@ -126,6 +127,7 @@ _READS = frozenset({
     CommandType.GET_WORLD_INFO,
     CommandType.GET_AUDIT_HISTORY,
     CommandType.LIST_SIGNATURES,
+    CommandType.LIST_WORLDS,
     CommandType.LIST_PROCESSORS,
     CommandType.LIST_HOOKS,
     CommandType.LIST_RESOURCES,
