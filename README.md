@@ -1,68 +1,65 @@
 <div align="center">
 
+<img src="assets/archetype_diagram2.png" alt="Archetype" width="100%" />
+
 # Archetype
 
 **A dataframe-first, append-only ECS runtime for simulations and AI agents.**
 
 [![CI](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml/badge.svg)](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/archetype-ecs?color=blue)](https://pypi.org/project/archetype-ecs/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-archetype--docs.pages.dev-blue)](https://archetype-docs.pages.dev)
 
 </div>
 
-![Archetype Architecture Diagram](assets/archetype_diagram2.png)
-
-Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows. Consequences of that storage model:
-
-- entities are grouped by exact component sets
-- processors run over whole archetype DataFrames
-- writes are append-only
-- time-travel and world forking fall out of the storage model
-
-## What It Is
-
-Archetype is split into layers:
-
-| Layer | Purpose |
-|---|---|
-| `src/archetype/runtime` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
-| `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer (lower-level): command gate, audit log, broker, world/simulation/query services |
-| `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
-
-The runtime model is:
-
-1. external calls enter through `iCommandService`,
-2. the gate authorizes, delegates, and audits,
-3. tick-deferred commands are drained when a world steps,
-4. worlds materialize structural mutations,
-5. processors transform matching archetype DataFrames,
-6. updated rows are appended to storage.
-
-## Use Cases
-
-Simulations where tick-by-tick history is part of the model:
-
-- multi-agent worlds
-- counterfactual branches and forks
-- rollout-heavy evaluation
-- LLM-powered processors running over many entities in parallel
-
-## Installation
-
-### Package
+World state lives in columnar archetype tables. Behavior is a DataFrame transform. Every tick is a new snapshot, never an overwrite. Time-travel, forking, and large-batch agent inference fall out of the storage model.
 
 ```bash
 pip install archetype-ecs
 ```
 
-### Development
+## Features
 
-```bash
-git clone https://github.com/VangelisTech/archetype.git
-cd archetype
-uv sync --group dev
-```
+<table>
+<tr>
+<td width="220"><strong>Append-only world state</strong></td>
+<td>Every tick writes a new snapshot. Old rows are never mutated, so any prior tick is a real query — not a reconstruction.</td>
+</tr>
+<tr>
+<td><strong>DataFrame-native processors</strong></td>
+<td>Behavior is a Daft <code>DataFrame &rarr; DataFrame</code> transform over an entire archetype. No per-entity loops.</td>
+</tr>
+<tr>
+<td><strong>First-class world forking</strong></td>
+<td>Branch a world by ID. Source and fork share processors and resources, then diverge in storage independently.</td>
+</tr>
+<tr>
+<td><strong>Async ECS</strong></td>
+<td>Different archetypes run concurrently. Within an archetype, processors run in ascending <code>priority</code>.</td>
+</tr>
+<tr>
+<td><strong>LLM-batched agents</strong></td>
+<td>Async UDFs let one processor call an LLM for thousands of agents at once, with throughput shared across the archetype.</td>
+</tr>
+<tr>
+<td><strong>Gated commands</strong></td>
+<td>Every external mutation flows through <code>CommandService</code>: RBAC, per-tick quotas, daily token budgets, audit emission.</td>
+</tr>
+<tr>
+<td><strong>Pluggable storage</strong></td>
+<td>LanceDB-backed or Daft-catalog-backed archetype tables behind one async contract. Backends pool across worlds.</td>
+</tr>
+<tr>
+<td><strong>One runtime, three surfaces</strong></td>
+<td>Drive the same world from a Python script (<code>ArchetypeRuntime</code>), a FastAPI server, or a Typer CLI.</td>
+</tr>
+<tr>
+<td><strong>Logfire built in</strong></td>
+<td>Gate spans, per-phase tick spans, and opt-in per-entity hooks ship by default. <code>logfire.configure()</code> runs automatically.</td>
+</tr>
+</table>
 
 ## Quickstart
 
@@ -107,7 +104,7 @@ async def main():
         await world.run(steps=3)
 
         df = await world.query(Position)
-        print(df.collect().to_pylist())
+        df.show()
 
 
 asyncio.run(main())
@@ -117,57 +114,77 @@ For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop the `a
 
 Two things to know:
 
-- processor columns are prefixed `componentname__field` (e.g., `position__x`)
-- `ArchetypeRuntime` is the script boundary. Process lifetime and world lifetime are separate concerns. See `docs/guide/runtime.md` and the Specifications group for the full contract set. Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
+- Processor columns are flattened as `componentname__field` (e.g. `position__x`).
+- `ArchetypeRuntime` is the script boundary. Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
+
+## Concepts
+
+<table>
+<tr>
+<td width="160"><strong>Component</strong></td>
+<td>A typed <code>LanceModel</code>. Fields flatten to columns: <code>Health(hp, max_hp)</code> &rarr; <code>health__hp</code>, <code>health__max_hp</code>.</td>
+</tr>
+<tr>
+<td><strong>Archetype</strong></td>
+<td>The exact set of component types attached to an entity. Signatures are canonicalized by sorted type name.</td>
+</tr>
+<tr>
+<td><strong>Processor</strong></td>
+<td>A DataFrame transform selected by <em>subset match</em>. If an archetype has at least the required components, the processor runs on it.</td>
+</tr>
+<tr>
+<td><strong>World</strong></td>
+<td>Owns entity-to-archetype bookkeeping, pending mutation caches, hooks, and the live snapshot for the latest tick.</td>
+</tr>
+<tr>
+<td><strong>Tick</strong></td>
+<td>Four phases: query &rarr; materialize &rarr; execute &rarr; update. Each is its own Logfire span.</td>
+</tr>
+<tr>
+<td><strong>Fork</strong></td>
+<td>New <code>world_id</code> and <code>run_id</code>; preserves tick position; copies entity mappings, pending caches, and hooks at fork time.</td>
+</tr>
+<tr>
+<td><strong>Command gate</strong></td>
+<td><code>CommandService</code> authorizes, delegates (direct or tick-deferred via <code>CommandBroker</code>), and audits every external mutation.</td>
+</tr>
+<tr>
+<td><strong>Roles</strong></td>
+<td><code>viewer</code>, <code>player</code>, <code>operator</code>, <code>admin</code>. Permissions, per-tick quotas, and daily token budgets are enforced at the gate.</td>
+</tr>
+</table>
+
+## Use Cases
+
+Simulations where tick-by-tick history is part of the model:
+
+- multi-agent worlds and societies
+- counterfactual branches and forks
+- rollout-heavy evaluation
+- LLM-powered processors over thousands of entities
 
 ## CLI
 
 The CLI is a thin HTTP client. Except for `serve`, every command talks to a running FastAPI server.
 
 ```bash
-# Start the server
-archetype serve
-
-# Create a world
+archetype serve                                          # start the server
 archetype world create demo
-
-# List worlds
 archetype world list
-
-# Spawn an entity from component payload JSON
 archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
-
-# Run 10 ticks
 archetype run <world-id> --steps 10
-
-# Run an episode or rollout
 archetype episode <world-id> --max-steps 100
 archetype rollout <world-id> --num-episodes 4 --max-steps 100
-
-# Fork the current world state
 archetype world fork <world-id> --name branch-a
-
-# Drop the live world object; storage and audit rows remain
-archetype world destroy <world-id>
-
-# Show audit history
+archetype world destroy <world-id>                       # drop live world; storage and audit remain
 archetype history <world-id>
 ```
 
-Useful environment variables:
-
-- `ARCHETYPE_URL`: base URL for the CLI, default `http://localhost:8000`
-
-Useful per-command flags:
-
-- `--url`: override `ARCHETYPE_URL` for one command
-- `--role` / `-r`: developer-mode auth shortcut (`admin`, `operator`, `player`, `viewer`)
-- `--token`: send `Authorization: Bearer <token>`; intended for production auth once v2 auth lands
-- `--json`: emit raw JSON for read commands
+Configure with `ARCHETYPE_URL` (default `http://localhost:8000`). Per-command flags: `--url`, `--role` / `-r` (`admin` | `operator` | `player` | `viewer`), `--token`, `--json`.
 
 ## REST API
 
-`archetype serve` exposes a FastAPI app with these routes:
+`archetype serve` exposes a FastAPI app:
 
 | Method | Endpoint | Purpose |
 |---|---|---|
@@ -196,155 +213,42 @@ Useful per-command flags:
 | `GET` | `/worlds/{world_id}/components` | Query component projections |
 | `GET` | `/worlds/{world_id}/history` | Query audit history |
 
-## Core Concepts
-
-### Components
-
-Components are typed `LanceModel` subclasses. Their fields define the archetype schema fragments that get flattened into storage columns.
-
-```python
-class Health(Component):
-    hp: int = 100
-    max_hp: int = 100
-```
-
-`Health` becomes columns like `health__hp` and `health__max_hp`.
-
-### Archetypes
-
-An archetype is the exact set of component types attached to an entity. Archetype signatures are canonicalized by sorted component type name, so component order is not meaningful.
-
-If you add or remove a component, the entity migrates to a different archetype table.
-
-### Processors
-
-Processors are pure-ish DataFrame transforms selected by subset match on component signatures:
-
-```python
-class ThinkProcessor(AsyncProcessor):
-    components = (Agent, Memory)
-    priority = 20
-```
-
-If an archetype contains at least `Agent` and `Memory`, that processor runs on its DataFrame.
-
-### Worlds
-
-`AsyncWorld` owns:
-
-- entity-to-archetype bookkeeping
-- pending spawn/despawn caches
-- the live in-memory snapshot for the latest tick
-- lifecycle hooks
-- query / execute / update orchestration
-
-Different archetypes are processed concurrently; processors within one archetype run in ascending `priority`.
-
-### Commands and RBAC
-
-All external mutations are designed to flow through:
-
-```text
-API / CLI / caller
-  → CommandService
-  → direct service delegate or tick-deferred CommandBroker
-  → AsyncWorld / storage
-```
-
-The command gate enforces:
-
-- role permissions
-- per-tick command quotas
-- daily token budgets
-- audit emission
-
-Current roles are `viewer`, `player`, `operator`, and `admin`.
-
-### Storage
-
-Archetype supports two async storage backends behind the same contracts:
-
-- `AsyncLancedbStore` for LanceDB-backed archetype tables
-- `AsyncStore` for the Daft catalog-backed path
-
-`StorageService` shares backend instances across worlds with the same effective storage pool key: `(uri, namespace, backend, cache config)`.
-
-## World Forking
-
-Forking is a first-class operation in `WorldService`.
-
-A fork:
-
-- gets a new `world_id`
-- gets a new `run_id`
-- preserves tick position
-- copies entity mappings and pending mutation caches
-- copies hook registrations present at fork time
-- shares processor and resource instances by default
-
-Source and fork diverge independently after that point.
-
-## Status
-
-Current state worth knowing before using it:
-
-- the core runtime and append-only write path are the most mature parts
-- the Python service layer is richer than the REST read models
-- the FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet
-
-Start with `src/archetype/runtime` (`ArchetypeRuntime`) to use the system. Read `src/archetype/core` and `src/archetype/app` to understand how it works underneath.
-
-## Repository Map
-
-```text
-archetype/
-├── src/archetype/runtime/   # ArchetypeRuntime — recommended top-level API
-├── src/archetype/core/      # ECS runtime and storage contracts
-├── src/archetype/app/       # Gated service layer (lower-level)
-├── src/archetype/api/       # FastAPI server
-├── src/archetype/cli/       # Typer CLI
-├── examples/                # Runnable examples
-├── tests/                   # Test suite
-├── docs/                    # MkDocs site
-├── AGENTS.md                # Repo-specific collaborator guidance
-└── LEARNINGS.md             # Architecture notes
-```
-
 ## Examples
-
-Run the examples directly:
 
 ```bash
 uv run python examples/01_world_mutations.py
 uv run python examples/02_fork_counterfactual.py
 uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
-uv run python examples/05_llm_agents.py
-uv run python examples/06_trajectory_analysis.py
+uv run python examples/05_llm_agents.py             # requires OPENAI_API_KEY
+uv run python examples/06_trajectory_analysis.py    # parts require OPENAI_API_KEY
 uv run python examples/07_hooks.py
 ```
 
-`examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py` require `OPENAI_API_KEY`.
+## Repository Layout
 
-## Observability
-
-Archetype ships with [Logfire](https://pydantic.dev/logfire) integration at three levels:
-
-**Gate spans** — every `CommandService` method is instrumented with `@logfire.instrument`. You see operation type, world_id, actor_id, and duration for every gated call.
-
-**Step phases** — inside each tick, four spans cover query/materialize/execute/update. This tells you whether time is in store I/O or processor compute.
-
-**Simulation hooks** — opt-in per-tick and per-entity event tracing:
-
-```python
-from archetype.contrib.logfire_observer import logfire_hooks
-
-world = runtime.world("demo", processors=[...], hooks=logfire_hooks())
+```text
+archetype/
+├── src/archetype/
+│   ├── runtime/      # ArchetypeRuntime — recommended top-level API
+│   ├── core/         # ECS primitives and storage contracts (Daft + Arrow + LanceDB)
+│   ├── app/          # Service layer: command gate, broker, world/sim/query/storage services
+│   ├── api/          # FastAPI server
+│   └── cli/          # Typer CLI (thin HTTP client)
+├── examples/         # Runnable examples
+├── tests/            # Test suite
+├── docs/             # MkDocs site
+├── AGENTS.md         # Repo-specific collaborator guidance
+└── LEARNINGS.md      # Daft patterns and architectural notes
 ```
 
-The runtime calls `logfire.configure()` automatically. Python stdlib logging is bridged into Logfire via `LogfireLoggingHandler`, so all `logger.*` calls throughout the codebase appear as Logfire events.
+## Status
 
-For the FastAPI server, `logfire.instrument_fastapi` auto-traces every route.
+- The core runtime and append-only write path are the most mature parts.
+- The Python service layer is richer than the REST read models.
+- The FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet.
+
+Start with `ArchetypeRuntime`. Read `core/` and `app/` to understand how it works underneath.
 
 ## Development
 
@@ -356,13 +260,31 @@ make ci          # CI gate
 make docs        # build docs
 ```
 
+Clone and bootstrap:
+
+```bash
+git clone https://github.com/VangelisTech/archetype.git
+cd archetype
+uv sync --group dev
+```
+
 ## Documentation
 
-- Docs site: `https://archetype-docs.pages.dev`
-- Examples index: `examples/README.md`
-- Architecture notes: `LEARNINGS.md`
-- Specifications: `docs/guide/runtime.md`, `docs/guide/service-protocols.md`, `docs/guide/command-gate.md`, `docs/guide/execution-hierarchy.md`, `docs/guide/world-lifecycle.md`, `docs/guide/audit-log.md`
+- Docs site: <https://archetype-docs.pages.dev>
+- Examples index: [`examples/README.md`](examples/README.md)
+- Specifications: [`docs/guide/runtime.md`](docs/guide/runtime.md), [`docs/guide/service-protocols.md`](docs/guide/service-protocols.md), [`docs/guide/command-gate.md`](docs/guide/command-gate.md), [`docs/guide/execution-hierarchy.md`](docs/guide/execution-hierarchy.md), [`docs/guide/world-lifecycle.md`](docs/guide/world-lifecycle.md), [`docs/guide/audit-log.md`](docs/guide/audit-log.md)
+- Architecture notes: [`LEARNINGS.md`](LEARNINGS.md)
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=VangelisTech%2Farchetype&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=VangelisTech/archetype&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=VangelisTech/archetype&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=VangelisTech/archetype&type=date&legend=top-left" />
+  </picture>
+</a>
 
 ## License
 
-Apache 2.0 — `LICENSE`
+Apache 2.0 — see [`LICENSE`](LICENSE).
