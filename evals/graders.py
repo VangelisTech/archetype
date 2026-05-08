@@ -88,6 +88,8 @@ def crap_score(
         raise ValueError(f"coverage must be in [0.0, 1.0], got {coverage}")
     if complexity < 0:
         raise ValueError(f"complexity must be >= 0, got {complexity}")
+    if max_crap <= 0:
+        raise ValueError(f"max_crap must be > 0, got {max_crap}")
 
     crap = complexity * complexity * (1.0 - coverage) ** 3 + complexity
     cc_ok = max_complexity is None or complexity <= max_complexity

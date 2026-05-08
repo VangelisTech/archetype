@@ -64,6 +64,13 @@ def test_invalid_complexity_raises() -> None:
         crap_score(complexity=-1, coverage=0.5)
 
 
+def test_invalid_max_crap_raises() -> None:
+    with pytest.raises(ValueError, match="max_crap must be > 0"):
+        crap_score(complexity=1, coverage=0.5, max_crap=0)
+    with pytest.raises(ValueError, match="max_crap must be > 0"):
+        crap_score(complexity=1, coverage=0.5, max_crap=-1)
+
+
 def test_partial_score_between_thresholds() -> None:
     # cc=12, cov=0.5 → CRAP = 144·0.125 + 12 = 30 → passes (== threshold)
     # bump complexity slightly to force failure with non-zero partial credit
