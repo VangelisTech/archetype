@@ -19,7 +19,7 @@ import json
 import sys
 
 from evals.harness import EvalHarness
-from evals.suites import capability, poison_command, regression
+from evals.suites import capability, dry_detection, poison_command, regression
 from evals.types import TaskResult
 
 
@@ -39,6 +39,7 @@ def build_harness(trials: int = 1) -> EvalHarness:
     regression.register(harness)
     poison_command.register(harness)
     capability.register(harness)
+    dry_detection.register(harness)
     return harness
 
 
