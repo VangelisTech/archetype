@@ -118,9 +118,11 @@ dev = [
 [tool.mutmut]
 paths_to_mutate = [
     "src/archetype/core/component.py",
+    "src/archetype/core/archetype.py",
 ]
 tests_dir = [
     "tests/core/test_component_core.py",
+    "tests/core/test_archetype_core_signatures.py",
 ]
 # pytest's [tool.pytest.ini_options].pythonpath puts mutants/src first on
 # sys.path, so the rest of the archetype package has to be staged into

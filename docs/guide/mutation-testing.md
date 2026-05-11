@@ -29,15 +29,57 @@ The fix is usually to tighten a test, not to revert the mutation.
 ## Pilot scope
 
 Configuration lives in `pyproject.toml` under `[tool.mutmut]`. The
-initial scope is intentionally tight:
+initial scope is intentionally tight and walks the dependency tree
+upward from the keystone invariants:
 
-- `paths_to_mutate`: `src/archetype/core/component.py`
-- `tests_dir`: `tests/core/test_component_core.py`
+- `paths_to_mutate`: `core/component.py`, `core/archetype.py`
+- `tests_dir`: `tests/core/test_component_core.py`,
+  `tests/core/test_archetype_core_signatures.py`
 
-`component.py` is small, pure Python, and has dedicated tests — a good
-shape for a first run. Expand `paths_to_mutate` and `tests_dir` together
-as the workflow proves out. The constraint is wall-clock: a module with
-N mutations and a T-second test suite takes roughly N × T seconds.
+`component.py` and `archetype.py` are small, pure-Python, and encode
+the framework's foundational data contract: components serialize into
+prefixed Arrow fields, and archetypes canonicalize a sorted tuple of
+component types into a unified schema. The specification spells out
+why these are keystone:
+
+> `ArchetypeSignature` MUST be canonicalized as a sorted tuple of
+> component types. Signature identity is order-invariant.
+> — `docs/guide/specification.md`
+
+A mutation that survives in either module is a missing assertion on
+something the storage layer depends on. Expand `paths_to_mutate` and
+`tests_dir` together as the workflow proves out. The constraint is
+wall-clock: a module with N mutations and a T-second test suite takes
+roughly N × T seconds.
+
+## Behavioral vs structural — pick the right tool
+
+Not every module is a mutation-testing target. Before adding a module
+to `paths_to_mutate`, ask whether its contract is **behavioral** or
+**structural**:
+
+| Contract type | Example modules | Right tool |
+|---|---|---|
+| Behavioral — input→output, invariants, side effects | `core/component.py`, `core/archetype.py`, `core/hooks.py` dispatch logic | mutmut |
+| Structural — this thing has these methods with these signatures | `core/interfaces.py` (Protocols), Pydantic schemas in `core/config.py` | type checker (mypy / pyright / `ty`) |
+
+`core/interfaces.py` is the canonical example of the wrong target:
+~99% of its body is `def foo(self) -> X: ...`. Mutmut has nothing to
+mutate, and the few mutations it can generate (default values, type
+aliases) aren't *executed* — Protocols are *checked*. The same logic
+applies to Pydantic models: schema correctness is the type checker's
+job, not the mutation runner's. Mutate the validators, not the fields.
+
+This is the same data-centric framing the project uses elsewhere:
+
+> Archetype is data-centric. The DataFrame is the source of truth.
+> Processors are pure functions `DataFrame → DataFrame`. So long as
+> the data looks right at the end of a tick, nothing else matters.
+> — `LEARNINGS.md`
+
+Mutation testing on the data-shaping layer (components, archetypes,
+processors) directly probes that contract. Mutation testing on
+shape-declaration layers (Protocols, schemas) does not.
 
 ## Running
 
@@ -83,14 +125,45 @@ on. Equivalent mutants are an inherent noise floor in mutation testing.
   you expand the scope into modules that do, switch the multiprocessing
   start method or scope tests away from LanceDB-touching paths.
 
+## Reading a "no tests" survivor
+
+Mutmut marks a survivor as `no tests` when its stats-collection phase
+observed zero tests entering the mutated function. That's a stronger
+signal than a normal survivor: not "tests ran but missed the mutation"
+but "no test exercises this code path at all." When the function is
+called from production code elsewhere, that's an unverified contract.
+
+The pilot's expansion to `archetype.py` surfaced exactly this case —
+`Archetype.__init__` was used by both queriers (`core/sync/querier.py`
+and `core/aio/async_querier.py`) but no test in the dedicated suite
+ever constructed an instance. A single contract test that asserts the
+constructor populates `sig`, `name`, and `schema` consistently with
+the staticmethod API killed all seven survivors at once.
+
+This is consistent with the project's stated testing posture:
+
+> Prefer contract tests over happy-path coverage… If a test feels
+> "too specific," it is usually testing the real semantic boundary.
+> — `AGENTS.md`
+
+The mutation runner is a way to find the missing contract tests.
+
 ## Suggested expansion order
 
-After the pilot, candidate modules in rough order of value-per-effort:
+After the current pilot (`component.py`, `archetype.py`), candidate
+modules in rough order of value-per-effort:
 
-1. `src/archetype/core/resources.py` — small, well-tested, central.
-2. `src/archetype/core/hooks.py` — semantic surface with dedicated tests.
-3. `src/archetype/app/auth/` — RBAC logic where assertion gaps are
-   most consequential.
+1. `core/hooks.py` — real dispatch logic (register, fire, ordering,
+   fire modes). Behavioral. Async fixtures need to assert observed
+   dispatch, not just absence of exceptions.
+2. `core/resources.py` — lifecycle ordering and insert/get/require
+   contract. Source is 81 lines but `test_resources_hooks_messaging.py`
+   (~680 lines, async) sprawls; scope `tests_dir` to
+   `test_resources_manager.py` only to keep wall-clock sane.
+3. `app/auth/` — RBAC logic where assertion gaps are most
+   consequential (quota math, role gating).
 
 Each expansion is a separate commit that updates `[tool.mutmut]` and
-addresses the surviving mutants.
+addresses the surviving mutants. Modules whose contract is structural
+(Protocols, schemas) belong on the type-checker side of the divide,
+not here.
