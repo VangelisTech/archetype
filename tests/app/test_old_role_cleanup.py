@@ -13,7 +13,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 _PROJECT = Path(__file__).resolve().parents[2]
 _SEARCH_DIRS = [_PROJECT / "src", _PROJECT / "tests", _PROJECT / "examples"]
 
