@@ -764,3 +764,93 @@ all of the following:
 - explicit multi-world isolation and fork divergence
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
+
+## Contracts Before Sugar (Apr 2026)
+
+The top-level runtime sugar looked directionally right, but the first proposal
+was unsafe because it collapsed three separate concerns into one API shape:
+
+1. **Concurrency** — first-use initialization races
+2. **Multi-world lifetime** — world shutdown vs process/runtime shutdown
+3. **Script ceremony** — making simple scripts ergonomic without hiding real
+   lifecycle boundaries
+
+The fix was to make the contract explicit before changing the API.
+
+**Key lesson:** the safe top-level abstraction is `ArchetypeRuntime`, not a
+world-scoped context manager. Process lifetime and world lifetime are different
+concerns. A `World` handle can be lazy, but the shared runtime/container needs
+an explicit boundary.
+
+### Runtime / sugar contracts we chose to enforce
+
+- `spawn()` must reserve and return a real `entity_id` all the way through the
+  chain. Returning a command ID is a contract violation.
+- World-handle construction must be pure: no I/O, no registration, no backend
+  allocation.
+- First activation must be single-flight. Concurrent first calls must produce
+  exactly one backing world.
+- A world must never expose partially initialized state.
+- Shutdown, fork, and activation must have defined race behavior.
+- World shutdown must be world-local.
+- Runtime shutdown must be process-scoped and explicit.
+- Forked worlds share a runtime, but not world identity or lifecycle.
+- The recommended script boundary is `async with ArchetypeRuntime()` or
+  `with ArchetypeRuntime.sync()`, not implicit per-call global setup/teardown.
+- Top-level `World` and `Processor` exports should remain stable unless there
+  is an intentional versioned breaking change. Add sugar additively first.
+
+### Testing lesson
+
+These contracts should not live only in docs. They need executable tests.
+
+The highest-value tests from this session were not generic coverage tests.
+They were contract tests for:
+
+- concurrent first-use activation
+- shutdown vs init and fork vs init races
+- multi-world lifetime isolation
+- spawn materialization timing
+- async/sync smoke paths
+- example script smoke execution
+
+Once those existed, several real bugs surfaced immediately.
+
+### Sync-core bugs contract tests exposed
+
+Contract-focused tests found real correctness issues that happy-path tests had
+missed:
+
+- store append/read paths were inconsistent about table lookup and namespace
+  context
+- query projection used the wrong schema API
+- duplicate spawns were not true last-write-wins
+- component migration used instances where signature expansion required types
+- moving an entity from a missing source archetype crashed instead of returning
+  empty
+- final despawns could be skipped because despawn-only signatures were not
+  materialized
+
+**Lesson:** if a contract test feels "too specific," that usually means it is
+finally testing the real semantic boundary.
+
+### Docs and examples are part of the contract
+
+The recommended public API now lives at the runtime layer, so beginner docs
+and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
+container. Low-level docs can still document `ServiceContainer`,
+`CommandService`, broker semantics, and raw ECS flows, but they should be
+explicit that they are lower-level interfaces.
+
+Examples also need to be executed in CI. An example that "looks right" but is
+never run is not documentation; it is an unverified claim.
+
+This mattered especially for LLM-backed examples: they need explicit
+credential gating or graceful degraded behavior when keys are missing.
+
+### Specification lesson
+
+A temporary `REQUIREMENTS.md` was useful as a forcing function, but the clean
+end state is one canonical specification document. Normative contracts should
+converge into `Specification`, with tests enforcing them and contributor docs
+pointing back to that single source of truth.

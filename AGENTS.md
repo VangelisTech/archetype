@@ -30,10 +30,33 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `app/` | Extend carefully. Service contracts are in the specification. |
-| `api/`, `cli/`, `sugar.py` | Write freely, subject to the contracts they wrap. |
+| `app/` | Extend carefully. Service contracts are in the specification. Lower-level interface. |
+| `sugar.py` | Recommended top-level API (`ArchetypeRuntime`). Additive only; top-level `World`/`Processor` exports stay stable. |
+| `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
 
-## Using the service layer
+## Top-level runtime (recommended)
+
+`ArchetypeRuntime` is the recommended entry point for scripts and beginner docs. Process lifetime and world lifetime are separate concerns: the runtime owns the shared container; `world()` handles are lazy and world-local. See `docs/guide/specification.md` § "Contracts Before Sugar" for the full contract set (single-flight activation, honest `spawn()`, fork isolation, world-local shutdown).
+
+```python
+import asyncio
+from archetype import ArchetypeRuntime
+
+async def main():
+    async with ArchetypeRuntime() as runtime:
+        world = runtime.world("experiment")
+        entity_id = await world.spawn()  # real entity_id, reserved through the chain
+        result = await world.run(steps=10)
+        print(f"Completed {result.ticks_completed} ticks")
+
+asyncio.run(main())
+```
+
+Sync scripts use `with ArchetypeRuntime.sync() as runtime:` instead.
+
+## Using the service layer (lower-level)
+
+`ServiceContainer`, `CommandService`, and broker semantics are lower-level interfaces. Reach for them when you need explicit `ActorCtx` / RBAC, custom command routing, or to wire a non-script host. Beginner docs and quickstarts should default to `ArchetypeRuntime`.
 
 ```python
 import asyncio
@@ -157,6 +180,8 @@ Roles (flat, not hierarchical):
 
 - Integration tests in `tests/integration/`.
 - Use the `tmp_path` fixture for storage isolation.
+- Prefer contract tests over happy-path coverage: concurrent first-use activation, shutdown/fork races, multi-world lifetime isolation, spawn materialization timing, and example-script smoke execution. If a test feels "too specific," it is usually testing the real semantic boundary.
+- Examples are part of the contract. Run them in CI; gate LLM-backed ones on credentials or degrade gracefully.
 
 ### Commits
 
@@ -169,7 +194,10 @@ Roles (flat, not hierarchical):
 |------|---------|
 | `docs/guide/specification.md` | Normative contracts (engine, app, sugar/runtime) |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
+| `src/archetype/sugar.py` | `ArchetypeRuntime` — recommended top-level API |
 | `src/archetype/app/container.py` | Service wiring |
 | `src/archetype/app/command_service.py` | Mutation dispatch |
 | `src/archetype/app/broker.py` | RBAC + priority queue |
 | `src/archetype/core/aio/async_world.py` | World runtime |
+| `tests/app/test_sugar_runtime.py` | Executable runtime contracts |
+| `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |
