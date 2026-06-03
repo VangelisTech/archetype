@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from archetype.experiments.components import Run
+from archetype.experiments.components import Run, RunReport
 
 if TYPE_CHECKING:
     from archetype.core.aio import AsyncWorld
@@ -136,3 +136,115 @@ async def ingest_runner_state(
     for run in runs:
         await world.create_entity([run])
     return len(runs)
+
+
+def _default_requests_db_path() -> Path:
+    """Conventional path where Archetype writes run requests for Runner."""
+    return Path.home() / ".archetype-runner" / "requests.db"
+
+
+def load_runner_reports(path: str | Path | None = None) -> list[RunReport]:
+    """Read Runner's ``run_reports`` table and return one RunReport per row.
+
+    Args:
+        path: Path to the runner's SQLite registry. If None, defaults
+            to ``~/.archetype-runner/state.db``.
+
+    Returns:
+        One ``RunReport`` Component instance per row, ordered by
+        ``created_at`` ascending (oldest first).
+
+    Raises:
+        FileNotFoundError: If the SQLite file does not exist.
+
+    Notes:
+        Opens the database read-only via SQLite URI mode. Returns an
+        empty list if the ``run_reports`` table does not yet exist
+        (Runner hasn't written any reports yet).
+    """
+    db_path = Path(path) if path is not None else _default_runner_state_path()
+    if not db_path.exists():
+        raise FileNotFoundError(f"archetype-runner state.db not found at {db_path}")
+
+    uri = f"file:{db_path}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        # Check if the run_reports table exists — Runner may not have
+        # created it yet if no runs have completed.
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_reports'"
+        )
+        if cursor.fetchone() is None:
+            return []
+
+        cursor = conn.execute(
+            """
+            SELECT report_id, agent_id, request_id, exit_status,
+                   commit_hash, diff_stat, stdout_tail, stderr_tail,
+                   metadata_json, created_at
+            FROM run_reports
+            ORDER BY created_at ASC
+            """
+        )
+        reports: list[RunReport] = []
+        for row in cursor:
+            reports.append(
+                RunReport(
+                    report_id=row[0] or "",
+                    run_id=row[1] or "",
+                    request_id=row[2] or "",
+                    exit_status=row[3] or "",
+                    commit_hash=row[4] or "",
+                    diff_stat=row[5] or "",
+                    stdout_tail=row[6] or "",
+                    stderr_tail=row[7] or "",
+                    metadata_json=row[8] or "{}",
+                    created_at_ms=_iso_to_ms(row[9]),
+                )
+            )
+        return reports
+    finally:
+        conn.close()
+
+
+def load_request_status(path: str | Path | None = None) -> list[dict]:
+    """Read ``run_requests`` from ``requests.db`` to check claim/reject status.
+
+    Returns lightweight dicts (not full Components) since Archetype
+    already has the original RunRequest entities — this is a status
+    poll, not a full load.
+
+    Args:
+        path: Path to the requests database. If None, defaults to
+            ``~/.archetype-runner/requests.db``.
+
+    Returns:
+        List of dicts with keys: ``request_id``, ``status``,
+        ``claimed_at``, ``claimed_by``. Empty list if the file or
+        table does not exist.
+    """
+    db_path = Path(path) if path is not None else _default_requests_db_path()
+    if not db_path.exists():
+        return []
+
+    uri = f"file:{db_path}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True)
+    try:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='run_requests'"
+        )
+        if cursor.fetchone() is None:
+            return []
+
+        cursor = conn.execute("SELECT request_id, status, claimed_at, claimed_by FROM run_requests")
+        return [
+            {
+                "request_id": row[0],
+                "status": row[1],
+                "claimed_at": row[2] or "",
+                "claimed_by": row[3] or "",
+            }
+            for row in cursor
+        ]
+    finally:
+        conn.close()

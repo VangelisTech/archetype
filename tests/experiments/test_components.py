@@ -11,9 +11,13 @@ import pytest
 from archetype.core.component import Component
 from archetype.experiments import (
     BranchHead,
+    ExitStatus,
     Experiment,
+    RequestStatus,
     Result,
     Run,
+    RunReport,
+    RunRequest,
     RunStatus,
 )
 
@@ -323,11 +327,199 @@ class TestBranchHeadComponent:
             assert forbidden not in BranchHead.model_fields
 
 
+class TestRequestStatus:
+    def test_string_values(self):
+        assert RequestStatus.PENDING.value == "pending"
+        assert RequestStatus.CLAIMED.value == "claimed"
+        assert RequestStatus.REJECTED.value == "rejected"
+
+
+class TestExitStatus:
+    def test_string_values(self):
+        assert ExitStatus.COMPLETED.value == "completed"
+        assert ExitStatus.CRASHED.value == "crashed"
+        assert ExitStatus.TIMED_OUT.value == "timed_out"
+
+
+class TestRunRequestComponent:
+    def test_is_archetype_component(self):
+        assert issubclass(RunRequest, Component)
+
+    def test_default_construction(self):
+        req = RunRequest()
+        assert req.request_id == ""
+        assert req.experiment_name == ""
+        assert req.repo_url == ""
+        assert req.branch == "main"
+        assert req.base_commit == ""
+        assert req.task == ""
+        assert req.harness == "claude-code"
+        assert req.timeout_sec == 1800
+        assert req.status == "pending"
+        assert req.created_at_ms == 0
+        assert req.metadata_json == "{}"
+
+    def test_make_convenience_constructor(self):
+        req = RunRequest.make(
+            request_id="req-001",
+            experiment_name="frontend-perf",
+            repo_url="https://github.com/foo/bar",
+            task="Optimize the hot loop in render.py",
+            branch="autoresearch/perf",
+            base_commit="abc123",
+            harness="claude-code",
+            timeout_sec=600,
+            metadata={"priority": "high"},
+        )
+        assert req.request_id == "req-001"
+        assert req.experiment_name == "frontend-perf"
+        assert req.repo_url == "https://github.com/foo/bar"
+        assert req.task == "Optimize the hot loop in render.py"
+        assert req.branch == "autoresearch/perf"
+        assert req.base_commit == "abc123"
+        assert req.harness == "claude-code"
+        assert req.timeout_sec == 600
+        assert req.status == "pending"
+        assert req.created_at_ms > 0
+        assert req.get_metadata()["priority"] == "high"
+
+    def test_make_sets_pending_status(self):
+        req = RunRequest.make(request_id="r", experiment_name="e", repo_url="u", task="t")
+        assert req.status == RequestStatus.PENDING.value
+
+    def test_get_metadata_round_trip(self):
+        payload = {"a": 1, "nested": {"b": [1, 2, 3]}}
+        req = RunRequest.make(
+            request_id="r",
+            experiment_name="e",
+            repo_url="u",
+            task="t",
+            metadata=payload,
+        )
+        assert req.get_metadata() == payload
+
+    def test_prefix(self):
+        assert RunRequest.get_prefix() == "runrequest__"
+
+    def test_arrow_schema_is_materializable(self):
+        schema = RunRequest.to_pyarrow_schema()
+        assert isinstance(schema, pa.Schema)
+        required = {
+            "request_id",
+            "experiment_name",
+            "repo_url",
+            "branch",
+            "base_commit",
+            "task",
+            "harness",
+            "timeout_sec",
+            "status",
+            "created_at_ms",
+            "metadata_json",
+        }
+        assert required.issubset(set(schema.names))
+
+
+class TestRunReportComponent:
+    def test_is_archetype_component(self):
+        assert issubclass(RunReport, Component)
+
+    def test_default_construction(self):
+        report = RunReport()
+        assert report.report_id == ""
+        assert report.run_id == ""
+        assert report.request_id == ""
+        assert report.exit_status == ""
+        assert report.commit_hash == ""
+        assert report.diff_stat == ""
+        assert report.stdout_tail == ""
+        assert report.stderr_tail == ""
+        assert report.metadata_json == "{}"
+        assert report.created_at_ms == 0
+
+    def test_make_completed_report(self):
+        report = RunReport.make(
+            report_id="rpt-001",
+            run_id="claude-001",
+            exit_status="completed",
+            request_id="req-001",
+            commit_hash="def456",
+            diff_stat="3 files changed, 47 insertions(+), 12 deletions(-)",
+            stdout_tail="All 42 tests passed",
+            metadata={"wall_time_sec": 312, "tokens_used": 15000},
+        )
+        assert report.report_id == "rpt-001"
+        assert report.run_id == "claude-001"
+        assert report.request_id == "req-001"
+        assert report.exit_status == "completed"
+        assert report.commit_hash == "def456"
+        assert report.diff_stat == "3 files changed, 47 insertions(+), 12 deletions(-)"
+        assert report.stdout_tail == "All 42 tests passed"
+        assert report.created_at_ms > 0
+        assert report.get_metadata()["wall_time_sec"] == 312
+
+    def test_make_crashed_report(self):
+        report = RunReport.make(
+            report_id="rpt-002",
+            run_id="claude-002",
+            exit_status="crashed",
+            stderr_tail="Traceback: RuntimeError: out of memory",
+        )
+        assert report.exit_status == "crashed"
+        assert report.commit_hash == ""
+        assert "RuntimeError" in report.stderr_tail
+
+    def test_make_timed_out_report(self):
+        report = RunReport.make(
+            report_id="rpt-003",
+            run_id="claude-003",
+            exit_status="timed_out",
+            commit_hash="abc789",
+            metadata={"timeout_sec": 1800, "actual_sec": 1800},
+        )
+        assert report.exit_status == "timed_out"
+        assert report.commit_hash == "abc789"
+
+    def test_get_metadata_round_trip(self):
+        payload = {"wall_time": 300, "nested": {"gpu": "H100"}}
+        report = RunReport.make(
+            report_id="r",
+            run_id="x",
+            exit_status="completed",
+            metadata=payload,
+        )
+        assert report.get_metadata() == payload
+
+    def test_prefix(self):
+        assert RunReport.get_prefix() == "runreport__"
+
+    def test_arrow_schema_is_materializable(self):
+        schema = RunReport.to_pyarrow_schema()
+        assert isinstance(schema, pa.Schema)
+        required = {
+            "report_id",
+            "run_id",
+            "request_id",
+            "exit_status",
+            "commit_hash",
+            "diff_stat",
+            "stdout_tail",
+            "stderr_tail",
+            "metadata_json",
+            "created_at_ms",
+        }
+        assert required.issubset(set(schema.names))
+
+    def test_no_eval_or_scoring_fields(self):
+        for forbidden in ("metric", "score", "reward", "value", "direction"):
+            assert forbidden not in RunReport.model_fields
+
+
 class TestComponentDiscovery:
     def test_discoverable_by_name(self):
         # Component.get_type_by_name walks __subclasses__, so importing
         # the module is enough to register. No explicit registry.
-        for name in ("Experiment", "Run", "Result", "BranchHead"):
+        for name in ("Experiment", "Run", "Result", "BranchHead", "RunRequest", "RunReport"):
             resolved = Component.get_type_by_name(name)
             assert resolved.__name__ == name
 
@@ -341,5 +533,7 @@ class TestComponentDiscovery:
             Run.get_prefix(),
             Result.get_prefix(),
             BranchHead.get_prefix(),
+            RunRequest.get_prefix(),
+            RunReport.get_prefix(),
         }
-        assert len(prefixes) == 4  # all distinct
+        assert len(prefixes) == 6  # all distinct
