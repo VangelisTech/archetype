@@ -136,7 +136,15 @@ Each `step()` call:
 
 ## QueryService
 
-Read-only access to world state. No `ActorCtx` required, no RBAC checks, no broker involvement.
+Read-only access to world state.
+
+Current status:
+
+- The current implementation takes no `ActorCtx`, performs no RBAC checks, and
+  involves no broker coordination.
+- That behavior is provisional.
+- The durable target contract is defined in
+  [Committed Read Model](committed-read-model.md).
 
 ```python
 state = await container.query_service.get_world_state(world_id, tick=5)
@@ -145,7 +153,9 @@ components = await container.query_service.get_components(world_id, [Position, H
 history = await container.query_service.get_command_history(world_id)
 ```
 
-Reads are unconditionally allowed because they have no side effects on world state. See [Data Flow -- Read Path](data-flow.md#read-path) for the full read architecture.
+See [Data Flow -- Read Path](data-flow.md#read-path) for the current
+implementation and [Committed Read Model](committed-read-model.md) for the
+normative target contract.
 
 ## How Services Connect to the API
 

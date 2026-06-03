@@ -32,6 +32,7 @@ nav:
       - Resources: guide/resources.md
       - Stores: guide/stores.md
       - Querier: guide/querier.md
+      - Committed Read Model: guide/committed-read-model.md
       - Updater: guide/updater.md
       - Configuration: guide/run-config.md
   - App Architecture:

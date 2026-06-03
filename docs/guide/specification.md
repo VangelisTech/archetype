@@ -16,6 +16,7 @@ The current contract set is split across design docs and executable tests.
 | Contract source | Scope | Notes |
 |---|---|---|
 | `docs/guide/specification.md` | Engine, application, and top-level runtime contracts | This page. Normative behavior from storage through app/runtime boundaries, including sugar/runtime constraints. |
+| `docs/guide/committed-read-model.md` | Durable external query contracts | Normative target for committed snapshots, snapshot metadata, broker-governed reads, and restart-safe `QueryService` behavior over Lance `AsyncTable` storage. |
 | [`tests/app/test_sugar_runtime.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_sugar_runtime.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
@@ -46,6 +47,9 @@ The work in this session surfaced and hardened the following contract families:
 - Adapter contracts:
   service and CLI layers must preserve the underlying engine/runtime semantics
   rather than invent new ones.
+- Durable external read contracts:
+  committed snapshots, broker-governed read admission, snapshot manifests,
+  entity locators, and restart-safe historical queries over archetype tables.
 
 ## Status
 
@@ -166,6 +170,8 @@ CURRENT GAP:
 - The querier MUST be read-only.
 - Full append history remains part of the storage model, but the current
   querier contract is an active-state projection, not a full history API.
+- The querier is a low-level archetype-table primitive, not by itself the full
+  external `QueryService` contract. See [Committed Read Model](committed-read-model.md).
 
 Idempotency:
 
@@ -413,15 +419,17 @@ CURRENT GAP:
 ### QueryService
 
 - `QueryService` is the intended read facade for external callers.
-- Read behavior SHOULD be consistent with the underlying core world and querier
-  contracts.
+- External read behavior SHOULD follow the durable snapshot rules in
+  [Committed Read Model](committed-read-model.md).
 - Query methods SHOULD either validate world existence consistently or
   intentionally document which routes are world-agnostic.
 
 CURRENT GAP:
 
-- Most read methods are currently stubs that echo metadata rather than querying
-  actual world state.
+- The current read path still behaves like a provisional fast path and does not
+  yet implement a durable committed snapshot model.
+- Read governance is inconsistent: direct `QueryService` calls bypass the
+  broker and guard layer, while `query_world` exists as a brokered command.
 - `get_command_history()` behaves differently from the other read methods on
   unknown worlds.
 

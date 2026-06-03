@@ -104,6 +104,14 @@ AsyncStore.get_archetype_df(sig, world_id, run_id)
 
 `QueryService` methods take no `ActorCtx`. There is no RBAC check, no quota deduction, no broker involvement. Reads are unconditionally allowed because they have no side effects on world state.
 
+Current status note:
+
+- This describes the current implementation, not the intended long-term
+  contract.
+- The normative target for durable external reads is
+  [Committed Read Model](committed-read-model.md), which introduces
+  broker-governed read admission and committed snapshot semantics.
+
 The `viewer` role exists in `ROLE_PERMS` to gate the `query_world` *command type* -- a command that can be submitted through the broker for audit purposes. But direct reads through `QueryService` do not require it.
 
 ## RBAC Boundary
@@ -131,13 +139,13 @@ The read/write split determines where RBAC applies:
                     └─────────────────────┘
 ```
 
-The core layer has no knowledge of RBAC. `QueryManager` and `UpdateManager` are pure data facades -- they don't check permissions, they don't know about actors. Auth is enforced entirely at the service layer boundary, and the structural separation between the two facades is what makes that enforcement complete.
+The core layer has no knowledge of RBAC. `QueryManager` and `UpdateManager` are pure data facades -- they don't check permissions, they don't know about actors. In the current implementation, auth is only enforced on the mutation path. The committed read model tightens that by requiring explicit read admission at the service-layer boundary.
 
 This means:
 
 - **Processors run without auth.** Once a tick starts, processors read from `QueryManager` and write through `UpdateManager` with no RBAC overhead. They are trusted internal code.
 - **External actors are always gated.** The only external entry point for mutations is `CommandService.submit()`, which requires `ActorCtx`.
-- **The read path is a fast path.** No auth checks, no broker, no queue -- `QueryService` goes straight to the querier.
+- **The current read path is a fast path.** That is a provisional implementation detail, not the long-term durable query contract.
 
 ## Internal Writes (Processors)
 

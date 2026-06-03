@@ -2,6 +2,13 @@
 
 `AsyncQueryManager` is the read facade to the store. It provides filtered access to archetype tables by tick, entity ID, and component projections.
 
+Current status:
+
+- `AsyncQueryManager` is the internal archetype-table reader.
+- It is not, by itself, the full external `QueryService` contract.
+- The durable public read target is defined in
+  [Committed Read Model](committed-read-model.md).
+
 ```python
 class AsyncQueryManager(iAsyncQueryManager):
     def __init__(self, store: iAsyncStore):
@@ -113,6 +120,11 @@ df = await world.get_components([Position, Health])
 ```
 
 `world.query_archetype()` automatically fills in `world_id` and `run_id` from the world's current state and defaults to the current tick if no ticks are specified.
+
+That makes it a good execution-time primitive, but not yet a complete
+restart-safe external query layer. The committed external read model requires
+durable snapshot metadata in addition to the querier's single-archetype read
+capabilities.
 
 ## Further Reading
 
