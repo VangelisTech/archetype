@@ -23,7 +23,6 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import PostTick
 
-
 # ---------------------------------------------------------------------------
 # Test component
 # ---------------------------------------------------------------------------

@@ -14,7 +14,6 @@ import ast
 import typing
 from pathlib import Path
 
-
 _ROOT = Path(__file__).resolve().parents[2] / "src" / "archetype"
 _RUNTIME_DIR = _ROOT / "runtime"
 _API_DIR = _ROOT / "api"
@@ -137,7 +136,7 @@ class TestRuntimeAppBoundary:
     def test_runtime_imports_only_allowed_app_modules(self):
         violations: list[str] = []
         for py in _python_files(_RUNTIME_DIR):
-            for module, lineno, in_tc in _extract_app_imports(py):
+            for module, lineno, _in_tc in _extract_app_imports(py):
                 if module not in _RUNTIME_ALLOWED_APP:
                     rel = py.relative_to(_ROOT)
                     violations.append(f"{rel}:{lineno}  imports {module}")
@@ -153,7 +152,7 @@ class TestApiAppBoundary:
     def test_api_imports_only_allowed_app_modules(self):
         violations: list[str] = []
         for py in _python_files(_API_DIR):
-            for module, lineno, in_tc in _extract_app_imports(py):
+            for module, lineno, _in_tc in _extract_app_imports(py):
                 if module not in _API_ALLOWED_APP:
                     rel = py.relative_to(_ROOT)
                     violations.append(f"{rel}:{lineno}  imports {module}")
