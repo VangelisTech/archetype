@@ -153,9 +153,7 @@ class AutoResearchService:
             )
 
             # Run the rollout
-            rollout_result = await self._simulation_service.run_rollout(
-                world_id, rollout_config
-            )
+            rollout_result = await self._simulation_service.run_rollout(world_id, rollout_config)
 
             # Evaluate
             score = evaluator(rollout_result)

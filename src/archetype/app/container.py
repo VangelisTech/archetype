@@ -61,9 +61,7 @@ class ServiceContainer:
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
 
         # AutoResearch — depends on WorldService + SimulationService
-        self.autoresearch_service = AutoResearchService(
-            self.world_service, self.simulation_service
-        )
+        self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
