@@ -86,7 +86,7 @@ The first ergonomic call on a `RuntimeWorld` triggers world creation. Concurrent
 
 Activation flow at the runtime layer:
 
-```
+```text
 1. Build WorldConfig (serializable identity only).
 2. command_service.create_world(ctx, config, storage, cache) -> WorldInfo
 3. For each init_processor: command_service.add_processor(ctx, world_id, proc)
@@ -211,7 +211,7 @@ Distinct user intents → distinct methods.
 
 ## 5. Module layout
 
-```
+```text
 src/archetype/runtime/
 ├── __init__.py        public exports
 ├── runtime.py         ArchetypeRuntime, SyncArchetypeRuntime, run_sync

@@ -8,11 +8,17 @@ from logging import basicConfig
 
 import logfire
 from fastapi import FastAPI
+from logfire.exceptions import LogfireConfigError
 
 from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, query, simulation, worlds
 
-logfire.configure(service_name="archetype-ecs")
+try:
+    logfire.configure(service_name="archetype-ecs")
+except LogfireConfigError:
+    # No Logfire credentials on this machine — degrade to local-only
+    # instrumentation instead of refusing to import.
+    logfire.configure(service_name="archetype-ecs", send_to_logfire=False)
 basicConfig(handlers=[logfire.LogfireLoggingHandler()])
 
 

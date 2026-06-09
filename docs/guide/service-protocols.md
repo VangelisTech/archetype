@@ -11,7 +11,7 @@ The gate (`iCommandService`) sits in front of the other services and applies aut
 
 ## 2. Service dependency graph
 
-```
+```text
 iStorageService                                                   (leaf)
     ↑             ↑                              ↑
 iWorldService     iQueryService           iAuditLog               (storage)

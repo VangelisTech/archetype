@@ -80,11 +80,17 @@ def schema_to_table(schema: dict[str, Any], root: dict[str, Any], indent: int = 
             default = "`null`"
         elif default != "—":
             default = f"`{json.dumps(default)}`"
-        desc = prop.get("description", prop.get("title", ""))
+        desc = _table_cell(prop.get("description", prop.get("title", "")))
         prefix = "&nbsp;" * (indent * 4)
         lines.append(f"| {prefix}`{name}` | {typ} | {req} | {default} | {desc} |")
 
     return lines
+
+
+def _table_cell(text: str) -> str:
+    """Flatten text for a Markdown table cell: collapse newlines/whitespace
+    and escape pipes so multi-line docstrings cannot break the table."""
+    return " ".join(str(text).split()).replace("|", "\\|")
 
 
 def _type_label(prop: dict[str, Any], root: dict[str, Any]) -> str:
@@ -145,7 +151,7 @@ def render_operation(
         for p in path_params:
             schema = p.get("schema", {})
             typ = _type_label(schema, root) if schema else "string"
-            desc = p.get("description", "")
+            desc = _table_cell(p.get("description", ""))
             lines.append(f"| `{p['name']}` | {typ} | {desc} |")
         lines.append("")
 
@@ -160,7 +166,7 @@ def render_operation(
             default = schema.get("default", "—")
             if default != "—":
                 default = f"`{json.dumps(default)}`"
-            desc = p.get("description", "")
+            desc = _table_cell(p.get("description", ""))
             lines.append(f"| `{p['name']}` | {typ} | {default} | {desc} |")
         lines.append("")
 
