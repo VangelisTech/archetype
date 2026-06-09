@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -24,6 +25,8 @@ jobs:
           fetch-depth: 0
 
       - name: Run footgun-detector
+        id: footgun-detector
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -48,3 +51,19 @@ jobs:
             Do not edit any files. Do not run tests. Do not push commits.
             This job is advisory and must not fail the build, so report
             cleanly and exit.
+
+      - name: Report footgun-detector failure
+        if: steps.footgun-detector.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > /tmp/footgun-review-failed.md <<EOF
+          ## Footgun review
+
+          Footgun review did not complete. This advisory check is non-blocking; inspect the workflow log for details:
+          ${RUN_URL}
+          EOF
+          gh pr comment "${PR_NUMBER}" --body-file /tmp/footgun-review-failed.md
