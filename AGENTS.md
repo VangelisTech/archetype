@@ -183,6 +183,7 @@ Roles (flat, not hierarchical):
 - Use the `tmp_path` fixture for storage isolation.
 - Prefer contract tests over happy-path coverage: concurrent first-use activation, shutdown/fork races, multi-world lifetime isolation, spawn materialization timing, and example-script smoke execution. If a test feels "too specific," it is usually testing the real semantic boundary.
 - Examples are part of the contract. Run them in CI; gate LLM-backed ones on credentials or degrade gracefully.
+- Mutation testing via `mutmut` (`make mutmut`) is on-demand, not in `make ci`. Scope is narrow by design — see `docs/guide/mutation-testing.md`.
 
 ### Commits
 

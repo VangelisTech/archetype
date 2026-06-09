@@ -112,3 +112,20 @@ def test_get_archetype_schema_allows_repeated_same_type_in_sig():
     should fail."""
     schema = Archetype.get_archetype_schema((PrefixCollisionA,))
     assert "prefixcollisiona__value" in set(schema.names)
+
+
+def test_archetype_instance_populates_sig_name_and_schema():
+    """The Archetype constructor is used at the query layer
+    (``core/sync/querier.py`` and ``core/aio/async_querier.py``) to bundle a
+    component list into its signature, archetype name, and unified PyArrow
+    schema. Each attribute must equal what the corresponding staticmethod
+    returns — drift between ``__init__`` and the static API would silently
+    break the queriers' archetype lookups."""
+    components = [B(y=2), A(x=1)]
+    archetype = Archetype(components)
+
+    expected_sig = Archetype.sig_from_components(components)
+    assert archetype.components is components
+    assert archetype.sig == expected_sig
+    assert archetype.name == Archetype.get_name(expected_sig)
+    assert archetype.schema == Archetype.get_archetype_schema(expected_sig)
