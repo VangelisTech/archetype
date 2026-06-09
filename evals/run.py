@@ -19,8 +19,11 @@ import json
 import sys
 
 from evals.harness import EvalHarness
-from evals.suites import capability, poison_command, regression
+from evals.suites import capability, poison_command, regression, spec_contracts
 from evals.types import TaskResult
+
+REQUIRED_SUITES = frozenset({"regression", "spec"})
+KNOWN_SUITES = ("regression", "spec", "capability")
 
 
 def _positive_int(value: str) -> int:
@@ -38,6 +41,7 @@ def build_harness(trials: int = 1) -> EvalHarness:
     harness = EvalHarness(trials=trials)
     regression.register(harness)
     poison_command.register(harness)
+    spec_contracts.register(harness)
     capability.register(harness)
     return harness
 
@@ -52,7 +56,7 @@ def print_report(results: list[TaskResult]) -> None:
     print("EVAL RESULTS")
     print("=" * 72)
 
-    for suite_name in ["regression", "capability"]:
+    for suite_name in KNOWN_SUITES:
         tasks = suites.get(suite_name, [])
         if not tasks:
             continue
@@ -82,19 +86,17 @@ def print_report(results: list[TaskResult]) -> None:
     print("\n" + "=" * 72)
 
     # Summary
-    reg_tasks = suites.get("regression", [])
-    cap_tasks = suites.get("capability", [])
-    reg_pass = sum(1 for t in reg_tasks if t.all_passed)
-    cap_pass = sum(1 for t in cap_tasks if t.all_passed)
-    print(f"  Regression: {reg_pass}/{len(reg_tasks)} passed")
-    print(f"  Capability: {cap_pass}/{len(cap_tasks)} passed")
+    for suite_name in KNOWN_SUITES:
+        tasks = suites.get(suite_name, [])
+        passed = sum(1 for t in tasks if t.all_passed)
+        print(f"  {suite_name.title()}: {passed}/{len(tasks)} passed")
     print("=" * 72)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run archetype evals")
     parser.add_argument("--out", default=None, help="Write JSON results to file")
-    parser.add_argument("--suite", choices=["regression", "capability"], default=None)
+    parser.add_argument("--suite", choices=KNOWN_SUITES, default=None)
     parser.add_argument(
         "--trials",
         type=_positive_int,
@@ -120,20 +122,28 @@ def main() -> int:
         print("\nNo eval tasks executed; refusing to report success.")
         return 1
 
-    reg_results = [t for t in results if t.suite == "regression"]
-    cap_results = [t for t in results if t.suite == "capability"]
-    reg_ok = all(t.all_passed for t in reg_results)
-    cap_no_errors = all(not any(trial.error for trial in t.trials) for t in cap_results)
+    by_suite: dict[str, list[TaskResult]] = {
+        suite_name: [task for task in results if task.suite == suite_name]
+        for suite_name in KNOWN_SUITES
+    }
 
-    suite_required = args.suite or "regression"
-    if suite_required == "regression" and not reg_results:
-        print("\nNo regression tasks executed; refusing to report success.")
-        return 1
-    if suite_required == "capability" and not cap_results:
-        print("\nNo capability tasks executed; refusing to report success.")
-        return 1
+    required_to_exist = {args.suite} if args.suite else REQUIRED_SUITES
+    required_to_pass = {args.suite} if args.suite else set(KNOWN_SUITES)
+    for suite_name in required_to_exist:
+        if not by_suite[suite_name]:
+            print(f"\nNo {suite_name} tasks executed; refusing to report success.")
+            return 1
 
-    return 0 if reg_ok and cap_no_errors else 1
+    suite_status: dict[str, bool] = {}
+    for suite_name, tasks in by_suite.items():
+        if suite_name in REQUIRED_SUITES:
+            suite_status[suite_name] = all(task.all_passed for task in tasks)
+        else:
+            suite_status[suite_name] = all(
+                not any(trial.error for trial in task.trials) for task in tasks
+            )
+
+    return 0 if all(suite_status[suite_name] for suite_name in required_to_pass) else 1
 
 
 if __name__ == "__main__":
