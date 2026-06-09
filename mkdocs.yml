@@ -59,6 +59,8 @@ nav:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
       - Python API: reference/python-api.md
+  - Experiments:
+      - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
 
 markdown_extensions:
   - admonition
