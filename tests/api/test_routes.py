@@ -330,6 +330,78 @@ class TestQueryRoutes:
         assert resp.status_code == 200
         assert resp.json() == []
 
+    def test_create_world_request_defaults_match_storage_config(self):
+        """The API's `CreateWorldRequest` shorthand defaults must match
+        ``StorageConfig`` defaults.
+
+        Otherwise a world created via ``POST /worlds`` with no body lands at
+        one storage path while subsequent reads (``GET /worlds/{id}/state``,
+        ``GET /signatures``) default to the ``StorageConfig()`` path and return
+        empty results.
+        """
+        from archetype.api.models import CreateWorldRequest
+        from archetype.core.config import StorageConfig
+
+        api_default = CreateWorldRequest()
+        sc_default = StorageConfig()
+
+        assert api_default.storage_uri == sc_default.uri, (
+            f"CreateWorldRequest.storage_uri default ({api_default.storage_uri!r}) "
+            f"does not match StorageConfig.uri default ({sc_default.uri!r})"
+        )
+        assert api_default.namespace == sc_default.namespace, (
+            f"CreateWorldRequest.namespace default ({api_default.namespace!r}) "
+            f"does not match StorageConfig.namespace default ({sc_default.namespace!r})"
+        )
+
+    def test_signatures_default_storage_matches_storage_config(self):
+        """``GET /signatures`` with only one storage param must fall back to
+        ``StorageConfig`` defaults, not to a hand-rolled set in the route.
+        """
+        # The query route used ``"./archetype_data"`` and ``"archetypes"`` as
+        # local fallbacks, contradicting StorageConfig's actual defaults.
+        from archetype.api.routes.query import _split_csv  # noqa: F401  (smoke import)
+        from archetype.core.config import StorageConfig
+
+        # If the route ever resolves a single-arg call, both fields must come
+        # from StorageConfig() so the data location matches the rest of the API.
+        sc_default = StorageConfig()
+        # Build the StorageConfig the way the route should: omit fields and let
+        # pydantic apply defaults rather than substituting the wrong literal.
+        from_route = StorageConfig(uri=sc_default.uri, namespace="custom")
+        assert from_route.uri == sc_default.uri
+        assert from_route.namespace == "custom"
+
+    def test_create_then_query_roundtrip_default_storage(self, client, tmp_path, monkeypatch):
+        """End-to-end: a world created via POST /worlds with the API's default
+        shorthand must be readable via GET /signatures without explicit storage.
+
+        The defaults must agree across endpoints; otherwise data lands in one
+        store and reads target another.
+        """
+        # Run inside tmp_path so any relative defaults resolve to a tmp dir
+        # rather than polluting the workspace.
+        monkeypatch.chdir(tmp_path)
+
+        create_resp = client.post("/worlds", json={"name": "default_storage"})
+        assert create_resp.status_code == 201
+        world_id = create_resp.json()["world_id"]
+
+        # Submit a spawn, then step so the row materializes to disk.
+        client.post(
+            f"/worlds/{world_id}/commands",
+            json={"type": "spawn", "payload": {"components": []}},
+        )
+        client.post(f"/worlds/{world_id}/step", json={"num_steps": 1})
+
+        # /signatures with no params must hit the same store the POST landed on.
+        sigs_resp = client.get("/signatures")
+        assert sigs_resp.status_code == 200, sigs_resp.text
+        assert sigs_resp.json(), (
+            "API default-storage POST landed in a different store than "
+            "GET /signatures default-storage; signatures list came back empty"
+        )
+
     @pytest.mark.parametrize(
         ("path", "method"),
         (

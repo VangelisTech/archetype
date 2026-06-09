@@ -30,15 +30,20 @@ def hydrate_component_types(names: list[str]) -> list[type[Component]]:
     return [Component.get_type_by_name(name) for name in names]
 
 
+_STORAGE_DEFAULTS = StorageConfig()
+
+
 class CreateWorldRequest(BaseModel):
     config: WorldConfig | None = None
     storage_config: StorageConfig | None = None
     cache_config: CacheConfig | None = None
 
-    # Backwards-compatible shorthand.
+    # Backwards-compatible shorthand. Defaults MUST track StorageConfig so the
+    # POST /worlds default landing path matches the GET /worlds/{id}/state and
+    # GET /signatures default read path; otherwise data is silently sharded.
     name: str | None = None
-    storage_uri: str = "./archetype_data"
-    namespace: str = "archetypes"
+    storage_uri: str = str(_STORAGE_DEFAULTS.uri)
+    namespace: str = _STORAGE_DEFAULTS.namespace
 
     model_config = dict(arbitrary_types_allowed=True)
 
