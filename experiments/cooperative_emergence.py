@@ -25,6 +25,7 @@ from archetype import ArchetypeRuntime, AsyncProcessor, Component
 from archetype.app.autoresearch_service import AutoResearchConfig
 from archetype.app.models import EpisodeConfig, RolloutResult
 from archetype.core.config import RunConfig
+from archetype.core.hooks import PostTick
 
 
 # ── Components ────────────────────────────────────────────────────────────
@@ -141,6 +142,29 @@ class DepletionProcessor(AsyncProcessor):
         )
 
 
+# ── Termination ───────────────────────────────────────────────────────────
+
+# World ids whose pool has hit zero. The PostTick hook below is registered
+# on the base world and carried onto every fork (fork deep-copies the hook
+# registry), so episode forks report collapse here under their own world_id.
+_collapsed_worlds: set[str] = set()
+
+
+async def detect_collapse(event: PostTick) -> None:
+    """Flag the world as collapsed once its pool reaches zero."""
+    for df in event.results.values():
+        if "pool__current" not in df.column_names:
+            continue
+        values = df.to_pydict().get("pool__current", [])
+        if any(v is not None and v <= 0.0 for v in values):
+            _collapsed_worlds.add(str(event.world_id))
+
+
+def pool_collapsed(world) -> bool:
+    """EpisodeConfig.termination predicate — must be synchronous."""
+    return str(world.world_id) in _collapsed_worlds
+
+
 # ── Evaluator ─────────────────────────────────────────────────────────────
 
 
@@ -152,18 +176,24 @@ def survival_rate(result: RolloutResult) -> float:
     return survived / len(result.episodes)
 
 
-def cooperation_score(result: RolloutResult) -> float:
+def make_cooperation_score(max_steps: int):
     """Score = average episode duration / max_steps.
 
     Longer episodes mean the commons sustained longer.
     1.0 = all episodes ran to max_steps (sustainable).
     0.0 = all episodes collapsed immediately.
+
+    Normalizes by the configured step budget, not the longest observed
+    episode — otherwise uniform collapse scores a perfect 1.0.
     """
-    if not result.episodes:
-        return 0.0
-    max_steps = max(ep.duration_steps for ep in result.episodes) or 1
-    avg_duration = sum(ep.duration_steps for ep in result.episodes) / len(result.episodes)
-    return avg_duration / max_steps
+
+    def cooperation_score(result: RolloutResult) -> float:
+        if not result.episodes:
+            return 0.0
+        avg_duration = sum(ep.duration_steps for ep in result.episodes) / len(result.episodes)
+        return avg_duration / max_steps
+
+    return cooperation_score
 
 
 # ── Main ──────────────────────────────────────────────────────────────────
@@ -187,12 +217,15 @@ async def main():
             await world.spawn(Strategy(type="cooperative", energy=100.0))
         for _ in range(3):
             await world.spawn(Strategy(type="greedy", energy=100.0))
-        await world.spawn(Pool(current=1000.0, capacity=1000.0, regen_rate=0.05))
+        pool_id = await world.spawn(Pool(current=1000.0, capacity=1000.0, regen_rate=0.05))
+        # Hooks registered before forking are deep-copied onto every fork,
+        # including the per-episode forks created by run_rollout.
+        await world.add_hook(PostTick, detect_collapse)
         await world.step()  # materialize the seed state
 
         info = await world.info()
         print(f"Base world: {info.world_id}")
-        print(f"  4 cooperative + 3 greedy agents, pool=1000")
+        print("  4 cooperative + 3 greedy agents, pool=1000")
         print()
 
         # ── Parameter Sweep ───────────────────────────────────────────────
@@ -209,24 +242,31 @@ async def main():
         results: dict[float, float] = {}
 
         for regen in regen_rates:
-            # Fork the base world for this parameter point
+            # Fork the base for this parameter point. Fork lineage makes
+            # the parent's materialized rows readable from the fork, so
+            # the update below finds its prior row and episode forks see
+            # the full seed state.
             fork = await world.fork(f"regen-{regen}")
+            await fork.update(pool_id, Pool(current=1000.0, capacity=1000.0, regen_rate=regen))
+            await fork.step()  # materialize the regen update before episodes fork
 
             config = AutoResearchConfig(
                 experiment_name=f"commons-regen-{regen}",
                 episode_config=EpisodeConfig(
                     run_config=RunConfig(),
                     max_steps=max_steps,
+                    termination=pool_collapsed,
                 ),
                 num_episodes=episodes_per_point,
                 max_iterations=1,  # single iteration per param point
                 destroy_forks_on_complete=True,
             )
 
+            fork_info = await fork.info()
             result = await svc.run(
-                fork.world_id,
+                fork_info.world_id,
                 config,
-                cooperation_score,
+                make_cooperation_score(max_steps),
             )
 
             score = result.final_score

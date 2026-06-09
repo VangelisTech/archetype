@@ -407,3 +407,225 @@ async def test_fork_explicit_storage_override(tmp_path):
         assert rows_in_source_store == 0
     finally:
         await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 8. Fork lineage: pre-fork ticks readable through ancestry
+# ---------------------------------------------------------------------------
+
+
+class Score(Component):
+    value: float = 0.0
+
+
+@pytest.mark.asyncio
+async def test_fork_after_step_reads_parent_history(tmp_path):
+    """Fork a world that has already materialized rows. The fork's
+    pre-fork ticks resolve to the parent's run via lineage."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=7.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        assert fork.lineage == [(str(source.world_id), str(source.run_id), source.tick - 1)]
+
+        fork_df = await c.query_service.query_components(
+            [Score],
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            storage_config=storage,
+            lineage=fork.lineage,
+        )
+        rows = fork_df.to_pydict()
+        assert rows["score__value"] == [7.0]
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_after_step_processes_parent_state(tmp_path):
+    """The fork's first step must read the parent's last tick as input,
+    not an empty frame: state continues across the fork point."""
+    from daft import DataFrame, col
+
+    from archetype.core.aio.async_processor import AsyncProcessor
+
+    class Inc(AsyncProcessor):
+        components = (Score,)
+        priority = 10
+
+        async def process(self, df: DataFrame, **kw) -> DataFrame:
+            return df.with_column("score__value", col("score__value") + 1.0)
+
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        source.system.processors = [Inc()]
+        await c.mutation_service.create_entity(source.world_id, [Score(value=0.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())  # value -> 1.0
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        await c.simulation_service.step(fork.world_id, RunConfig())  # must see 1.0 -> 2.0
+
+        fork_df = await c.query_service.query_components(
+            [Score],
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            storage_config=storage,
+            ticks=[fork.tick - 1],
+        )
+        assert fork_df.to_pydict()["score__value"] == [2.0]
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_lineage_excludes_parent_post_fork_rows(tmp_path):
+    """A parent that keeps running after the fork must not leak its
+    post-fork rows into the fork's history."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        # Parent advances past the fork point
+        await c.simulation_service.step(source.world_id, RunConfig())
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork_df = await c.query_service.query_components(
+            [Score],
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            storage_config=storage,
+            lineage=fork.lineage,
+        )
+        # Only the single pre-fork tick — not the parent's two later ticks
+        assert fork_df.count_rows() == 1
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fork_of_fork_lineage_chain(tmp_path):
+    """Lineage flattens across fork generations: a fork of a fork reads
+    base history, mid-fork history, and its own rows."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
+        await c.mutation_service.create_entity(base.world_id, [Score(value=5.0)])
+        await c.simulation_service.step(base.world_id, RunConfig())
+
+        mid = await c.world_service.fork_world(base.world_id, name="mid", storage_config=storage)
+        await c.simulation_service.step(mid.world_id, RunConfig())
+
+        leaf = await c.world_service.fork_world(mid.world_id, name="leaf", storage_config=storage)
+        assert len(leaf.lineage) == 2
+        await c.simulation_service.step(leaf.world_id, RunConfig())
+
+        leaf_df = await c.query_service.query_components(
+            [Score],
+            world_id=str(leaf.world_id),
+            run_id=str(leaf.run_id),
+            storage_config=storage,
+            lineage=leaf.lineage,
+        )
+        ticks = sorted(leaf_df.to_pydict()["tick"])
+        assert ticks == [0, 1, 2]  # base tick, mid tick, leaf tick
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unstepped_fork_has_no_lineage_segment(tmp_path):
+    """Forking an unstepped world adds no lineage segment — the
+    pending-spawn-transfer contract covers that case unchanged."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        assert fork.lineage == []
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 9. Persisted lineage: ancestry survives dead worlds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destroyed_fork_ancestry_remains_resolvable(tmp_path):
+    """Lineage is persisted append-only at fork time: after the fork is
+    destroyed, gated reads still resolve pre-fork ticks through ancestry."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    ctx = _admin_ctx()
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=9.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        await c.simulation_service.step(fork.world_id, RunConfig())
+        fork_world_id, fork_run_id = str(fork.world_id), str(fork.run_id)
+        expected_lineage = list(fork.lineage)
+
+        await c.command_service.destroy_world(ctx, fork.world_id)
+
+        # Persisted lineage is recoverable without the live world object
+        recovered = await c.query_service.get_lineage(
+            fork_world_id, fork_run_id, storage_config=storage
+        )
+        assert recovered == expected_lineage
+
+        # Gated read on the dead fork still includes the pre-fork tick
+        df = await c.command_service.query_components(
+            ctx,
+            [Score],
+            fork_world_id,
+            fork_run_id,
+            storage_config=storage,
+        )
+        assert sorted(df.to_pydict()["tick"]) == [0, 1]
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_root_world_has_no_persisted_lineage(tmp_path):
+    """Root worlds record nothing; get_lineage returns None, not []."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        recovered = await c.query_service.get_lineage(
+            str(source.world_id), str(source.run_id), storage_config=storage
+        )
+        assert recovered is None
+    finally:
+        await c.shutdown()

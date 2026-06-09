@@ -28,8 +28,14 @@ class ArchetypeRuntime:
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None) -> None:
         import logfire
+        from logfire.exceptions import LogfireConfigError
 
-        logfire.configure(service_name="archetype-runtime")
+        try:
+            logfire.configure(service_name="archetype-runtime")
+        except LogfireConfigError:
+            # No Logfire credentials on this machine — degrade to
+            # local-only instrumentation instead of refusing to start.
+            logfire.configure(service_name="archetype-runtime", send_to_logfire=False)
 
         self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or default_actor_ctx()

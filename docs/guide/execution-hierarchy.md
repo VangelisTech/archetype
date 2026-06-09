@@ -5,7 +5,7 @@
 
 ## 1. The four execution levels
 
-```
+```text
 Rollout      = N episodes, each in a fork of a base world.
                Lives at iSimulationService. Forks via iWorldService directly.
                Audit unit: the rollout call (one row at the gate).
@@ -78,7 +78,7 @@ async def run_episode(world_id, config: EpisodeConfig, **kw) -> EpisodeResult: .
 
 The implementation:
 
-```
+```text
 - resolve world via iWorldService.get_world
 - start_tick = world.tick
 - step_count = 0
@@ -135,7 +135,7 @@ async def run_rollout(world_id, config: RolloutConfig, **kw) -> RolloutResult: .
 
 The implementation:
 
-```
+```text
 - base = await iWorldService.get_world(world_id)
 - async def _one(i: int) -> EpisodeResult:
     fork = await self._world_service.fork_world(

@@ -43,7 +43,7 @@ async def create_world(
 ) -> WorldInfo: ...
 ```
 
-`WorldConfig` is serializable: `world_id`, `run_id`, `name`, `tick`, `next_entity_id`, plus dictionaries for `entity2sig`, `spawn_cache`, `despawn_cache`. NOTHING ELSE.
+`WorldConfig` is serializable: `world_id`, `run_id`, `name`, `tick`, `next_entity_id`, dictionaries for `entity2sig`, `spawn_cache`, `despawn_cache`, plus `lineage` (fork ancestry read segments, see §4.6). NOTHING ELSE.
 
 Processors, resources, and hooks are arbitrary Python objects; they do NOT go in `WorldConfig`. The runtime wires them at activation through dedicated gated paths:
 
@@ -104,7 +104,22 @@ For users who want isolated resources per fork, they instantiate new resource in
 
 The fork writes to the same physical store as the source by default, with rows partitioned by `world_id`. The optional `storage_config` argument allows the fork to write to a different store entirely.
 
-### 4.6 — Audit emission
+### 4.6 — Read lineage (copy-on-write history)
+
+A fork does not copy the source's materialized rows. Instead it carries a `lineage` — an ascending list of `(world_id, run_id, up_to_tick)` segments: the source's own lineage plus, if the source has stepped, one segment covering the source's rows for ticks `0..tick-1`.
+
+Reads resolve per tick: a tick at or below a segment's `up_to_tick` reads from that ancestor's run; later ticks read from the fork's own run. Because the store is append-only, ancestor rows are immutable history — a parent that keeps running (or is destroyed) after the fork never affects the fork's view, and rows the parent writes after the fork point are excluded from the fork's history.
+
+Consequences:
+
+- Forking stays O(metadata) regardless of world size.
+- A fork of a stepped world is immediately queryable, and its first step processes the parent's last tick as input — state continues across the fork point.
+- Lineage flattens across generations: a fork of a fork reads base history, mid-fork history, and its own rows through one segment list.
+- Lineage is durable. At fork time the full ancestor chain is appended to the store as `WorldLineage` rows under the fork's `(world_id, run_id)` (negative entity ids — metadata, never live entities). The store is append-only, so provenance is never compromised: gated reads resolve ancestry for destroyed worlds by loading the persisted chain (`QueryService.get_lineage`). Live worlds resolve from memory; the persisted rows are the fallback and the system of record.
+
+Contract tests: `tests/integration/test_fork_destroy_contracts.py` (§8 fork lineage, §9 persisted lineage / dead-world ancestry).
+
+### 4.7 — Audit emission
 
 `iCommandService.fork_world` emits one audit row with:
 

@@ -27,6 +27,7 @@ from archetype.core.aio import (
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem, iWorld
+from archetype.core.lineage import persist_lineage
 from archetype.core.resources import Resources
 
 if TYPE_CHECKING:
@@ -67,6 +68,7 @@ class WorldFactory:
             entity2sig=dict(config.entity2sig) if config.entity2sig else None,
             spawn_cache=dict(config.spawn_cache) if config.spawn_cache else None,
             despawn_cache=dict(config.despawn_cache) if config.despawn_cache else None,
+            lineage=list(config.lineage) if config.lineage else None,
         )
 
 
@@ -184,10 +186,20 @@ class WorldOrchestrator:
           generated:    world_id (uuid7), run_id (uuid7)
           deep-copied:  tick, next_entity_id, entity2sig, spawn_cache, despawn_cache
           shared:       resources (same instance), processors (same instances)
+          lineage:      source's lineage plus a segment covering the source's
+                        materialized rows, so the fork reads pre-fork ticks
+                        from its ancestry (append-only store: those rows are
+                        immutable history)
         """
         source = self._registry.get(source_world_id)
         if not isinstance(source, AsyncWorld):
             raise TypeError("Can only fork AsyncWorld instances")
+
+        lineage = list(source.lineage)
+        if source.tick > 0:
+            # The source has written rows for ticks 0..tick-1 under its own
+            # run; the fork's writes start at `tick`.
+            lineage.append((str(source.world_id), str(source.run_id), source.tick - 1))
 
         fork_config = WorldConfig(
             name=name,
@@ -196,6 +208,7 @@ class WorldOrchestrator:
             entity2sig=dict(source.entity2sig),
             spawn_cache={sig: list(rows) for sig, rows in source.spawn_cache.items()},
             despawn_cache={sig: list(ids) for sig, ids in source.despawn_cache.items()},
+            lineage=lineage,
         )
 
         fork = self._factory.create_async_world(store, fork_config)
@@ -304,6 +317,15 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
+        # Persist the fork's ancestor chain (append-only): provenance must
+        # survive the fork being destroyed or the process restarting.
+        await persist_lineage(
+            store,
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            tick=fork.tick,
+            lineage=fork.lineage,
+        )
         return fork
 
     async def destroy_world(self, world_id: UUID | str) -> None:

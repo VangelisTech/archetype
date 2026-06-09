@@ -196,5 +196,13 @@ class WorldConfig(BaseModel):
         default_factory=dict,
         description="Pending despawn entity IDs keyed by archetype signature",
     )
+    lineage: list[tuple[str, str, int]] = Field(
+        default_factory=list,
+        description=(
+            "Ancestor read segments as (world_id, run_id, up_to_tick), ascending. "
+            "Reads for ticks <= up_to_tick resolve to that ancestor's rows; later "
+            "ticks belong to this world's own run. Populated by fork."
+        ),
+    )
 
     model_config = dict(arbitrary_types_allowed=True)

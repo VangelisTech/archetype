@@ -67,4 +67,3 @@ Payment-bearing fields are nullable:
 - `limit`
 
 External callers do not call `iAuditLog` directly. They use `iCommandService.get_audit_history(ctx, ...)`, which applies the read permission check before delegating.
-

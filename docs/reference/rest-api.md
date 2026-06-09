@@ -442,16 +442,7 @@ Run one episode. Requires operator or admin.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `episode_id` | string \| string | No | — | Episode Id |
-| `run_config` | object | No | — | A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world.
-
-Carries configuration for the run, including:
-  - run_id: UUID - The unique identifier for the run sequence, a uuid7
-  - num_steps: int - The number of steps to execute in the run sequence
-  - debug: bool - Whether or not to enable debug mode
-  - validate: bool - Whether or not to enable validation mode
-
-TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True)
-      and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity. |
+| `run_config` | object | No | — | A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world. Carries configuration for the run, including: - run_id: UUID - The unique identifier for the run sequence, a uuid7 - num_steps: int - The number of steps to execute in the run sequence - debug: bool - Whether or not to enable debug mode - validate: bool - Whether or not to enable validation mode TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True) and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity. |
 | `max_steps` | integer | No | `1000` | Max Steps |
 | `terminal_component` | any \| null | No | — | Terminal Component |
 | `termination` | any \| null | No | — | Termination |
@@ -607,8 +598,8 @@ Create a world. Requires admin.
 | `storage_config` | StorageConfig \| null | No | — |  |
 | `cache_config` | CacheConfig \| null | No | — |  |
 | `name` | string \| null | No | — | Name |
-| `storage_uri` | string | No | `"./archetype_data"` | Storage Uri |
-| `namespace` | string | No | `"archetypes"` | Namespace |
+| `storage_uri` | string | No | `"./archetype_db"` | Storage Uri |
+| `namespace` | string | No | `"ecs"` | Namespace |
 
 **Response** (`201`):
 
