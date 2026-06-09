@@ -16,6 +16,7 @@ Skills in `.claude/skills/` enforce framework rules automatically. They fire bas
 | `archetype-components` | auto (Python files) | Component definitions, Arrow serialization, field conventions |
 | `archetype-processors` | auto (Python files) | AsyncProcessor patterns, priority ordering, resource access |
 | `footgun-detector` | `/footgun` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
+| `tick` | `/tick` (recurring via `/loop 30m /tick`) | One bounded, idempotent step of repo stewardship: main CI health, footgun reviews on open PRs, own-PR fixes, issue triage, hygiene rotation |
 
 ## Agents
 
