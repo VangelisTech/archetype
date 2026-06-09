@@ -31,8 +31,12 @@ class SyncSystem(iSystem):
     def add_processor(self, proc: SyncProcessor):
         self.processors.append(proc)
 
-    def remove_processor(self, proc: SyncProcessor):
-        self.processors.remove(proc)
+    def remove_processor(self, proc: SyncProcessor | type[SyncProcessor]):
+        """Remove a processor instance, or all processors of a given type."""
+        if isinstance(proc, type):
+            self.processors = [p for p in self.processors if not isinstance(p, proc)]
+        else:
+            self.processors.remove(proc)
 
     def execute(
         self,

@@ -243,8 +243,11 @@ class CommandService:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
         if self._audit:
             await self._audit.flush()
-        await self._broker.clear(world_id)
+        # Remove the world before clearing its queue: submit re-validates
+        # world existence, so once the registry entry is gone no new command
+        # can land in the queue after the clear.
         await self._worlds.destroy_world(world_id)
+        await self._broker.clear(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
     @logfire.instrument("gate.get_world_info")
@@ -601,9 +604,11 @@ class CommandService:
         """Gate all-or-nothing, then enqueue atomically."""
         ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
         self._require_world(world_id)
-        for cmd in cmds:
-            self._gate(cmd, ctx)
-        await self._broker.enqueue_bulk(world_id, cmds)
+        # Delegate gating to the broker's two-phase check/commit so a
+        # mid-batch RBAC or quota failure leaves the actor's counters
+        # untouched — gating per command here would debit quota for
+        # commands that never get enqueued.
+        await self._broker.enqueue_bulk(world_id, cmds, ctx=ctx)
         for cmd in cmds:
             await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
         return [cmd.id for cmd in cmds]
@@ -714,6 +719,10 @@ class CommandService:
 
             case CommandType.DESPAWN:
                 await self._mutations.remove_entity(world_id, payload["entity_id"])
+
+            case CommandType.UPDATE:
+                components = self._hydrate_components(payload.get("components", []))
+                await self._mutations.update_entity(world_id, payload["entity_id"], components)
 
             case CommandType.ADD_COMPONENT:
                 components = self._hydrate_components(payload.get("components", []))

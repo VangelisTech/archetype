@@ -218,8 +218,9 @@ class AsyncWorld(iAsyncWorld):
                     col("is_active")
                 ),
             )
-            # Clear Cache
-            self.despawn_cache[sig] = []
+            # Clear cache; drop the key so emptied signatures are not
+            # re-processed on every future tick via active_signatures.
+            self.despawn_cache.pop(sig, None)
 
         # Handle Spawns
         if self.spawn_cache.get(sig):
@@ -233,7 +234,7 @@ class AsyncWorld(iAsyncWorld):
             spawns_df = daft.from_arrow(arrow_table)
 
             df = df.concat(spawns_df)
-            self.spawn_cache[sig] = []
+            self.spawn_cache.pop(sig, None)
 
         return df
 
@@ -250,29 +251,49 @@ class AsyncWorld(iAsyncWorld):
         previous most-recent row in the OLD archetype.
         """
 
-        # 1) fetch *only* the single entity from old archetype's previous tick
-        df = await self.query_archetype(
-            sig=old_sig,
-            run_id=self.run_id,
-            ticks=[self.tick - 1],
-            entity_ids=[entity_id],
-            components=None,
-        )
+        # 1) find the most recent row for the entity. Pending spawn rows take
+        # priority because they represent same-tick mutations that haven't yet
+        # been committed to the store; otherwise read the previous-tick row
+        # from durable storage.
+        row_dict: dict[str, Any] | None = None
 
-        row_list = df.to_pylist()
-        if len(row_list) == 0:
+        pending_rows = [
+            row for row in self.spawn_cache.get(old_sig, []) if row.get("entity_id") == entity_id
+        ]
+        if pending_rows:
+            row_dict = dict(pending_rows[-1])
+            # Consume the pending spawn so the entity is not also materialized
+            # under the old signature this tick.
+            remaining = [
+                row for row in self.spawn_cache[old_sig] if row.get("entity_id") != entity_id
+            ]
+            if remaining:
+                self.spawn_cache[old_sig] = remaining
+            else:
+                del self.spawn_cache[old_sig]
+        else:
+            df = await self.query_archetype(
+                sig=old_sig,
+                run_id=self.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=[entity_id],
+                components=None,
+            )
+            row_list = df.to_pylist()
+            if len(row_list) == 1:
+                row_dict = row_list[0]
+            elif len(row_list) > 1:
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration ambiguous: "
+                    f"{len(row_list)} rows for entity {entity_id} at tick {self.tick - 1}"
+                )
+                row_dict = row_list[0]
+
+        if row_dict is None:
             logger.warning(
                 f"World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}"
             )
-            return {}
-        if len(row_list) > 1:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}"
-            )
-            return {}
-
-        # We should never have multiple entities with the same entity_id in the same tick.
-        row_dict = row_list[0]
+            return {}  # entity vanished, caller decides
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)
         for c in mutated_components:
@@ -382,6 +403,9 @@ class AsyncWorld(iAsyncWorld):
             return
 
         row = await self._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning("add_components: entity %s has no prior row", entity_id)
+            return
 
         # 1) mark *old row* inactive
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
@@ -416,6 +440,9 @@ class AsyncWorld(iAsyncWorld):
         row = await self._move_entity(
             entity_id, old_sig, new_sig, []
         )  # remove ≡ keep remaining columns
+        if not row:
+            logger.warning("remove_components: entity %s has no prior row", entity_id)
+            return
 
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
         self.spawn_cache.setdefault(new_sig, []).append(row)
@@ -554,7 +581,8 @@ class AsyncWorld(iAsyncWorld):
         tick: int | None = None,
     ) -> DataFrame:
         """Update the store with the given archetypes."""
-        df = await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
+        effective_tick = tick if tick is not None else self.tick
+        df = await self.updater.update(df, sig, effective_tick, self.world_id, self.run_id)
         return df
 
     # -------------------------------------------------------------------------

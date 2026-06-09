@@ -103,25 +103,34 @@ class AsyncCachedStore(iAsyncStore):
     # Private helpers, Cache Management
     # ---------------------------------------------------
 
-    def _build_arrow_table(self, sig: ArchetypeSignature) -> pa.Table | None:
-        mt = self._mem.get(sig)
-        return mt.to_table() if mt and mt.rows else None
-
     async def _background_flush_sig(self, sig: ArchetypeSignature):
-        # 1. Build the Arrow table synchronously in a worker thread
-        async with self._flush_lock:  # serialises flushes
-            tbl = await asyncio.to_thread(self._build_arrow_table, sig)
-            if tbl is None:
+        # 1. Take ownership of the current batches atomically. Anything
+        # appended while the write below is in flight lands in the fresh
+        # memtable and is flushed later — never cleared without being
+        # persisted, and never persisted twice by a concurrent flusher.
+        async with self._flush_lock:  # serialises flush snapshots
+            mt = self._mem.get(sig)
+            if mt is None or not mt.rows:
                 return
-        flushed_bytes = tbl.nbytes
+            batches, rows, flushed_bytes = mt.batches, mt.rows, mt.bytes
+            mt.batches = []
+            mt.rows = mt.bytes = 0
+            self._update_total_bytes(-flushed_bytes)
 
-        # 2. Convert to Daft and flush on the event-loop thread
+        # 2. Build the Arrow table in a worker thread, then flush
+        tbl = await asyncio.to_thread(pa.Table.from_batches, batches)
         df = daft.from_arrow(tbl)
-        await self._inner.append(sig, df)
-
-        # 3. Clear the memtable
-        self._mem[sig].clear()
-        self._update_total_bytes(-flushed_bytes)
+        try:
+            await self._inner.append(sig, df)
+        except Exception:
+            # Restore the unpersisted batches so the data is not lost;
+            # the next flush retries them.
+            mt = self._mem.setdefault(sig, MemTable())
+            mt.batches = batches + mt.batches
+            mt.rows += rows
+            mt.bytes += flushed_bytes
+            self._update_total_bytes(flushed_bytes)
+            raise
 
     async def _background_flush(self, idle_sec=30):
         while self._bg_on:
@@ -194,18 +203,23 @@ class AsyncCachedStore(iAsyncStore):
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.
         """
         # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
-        added_bytes = 0
-        for batch in df.to_arrow_iter():
-            self._mem.setdefault(sig, MemTable()).append(batch)
-            added_bytes += batch.nbytes
+        batches = list(df.to_arrow_iter())
+        if not batches:
+            return
 
-        self._update_total_bytes(added_bytes)
+        mt = self._mem.setdefault(sig, MemTable())
+        bytes_before = mt.bytes
+        for batch in batches:
+            mt.append(batch)
+        # Use the memtable's own measure so the global counter stays
+        # consistent with the per-sig counters decremented on flush.
+        self._update_total_bytes(mt.bytes - bytes_before)
 
         # cheap in‑mem stats
         needs_flush = (
-            self._mem[sig].rows >= self.flush_rows
-            or self._mem[sig].bytes >= self.flush_bytes
-            or sum(m.bytes for m in self._mem.values()) >= self.global_budget_bytes
+            mt.rows >= self.flush_rows
+            or mt.bytes >= self.flush_bytes
+            or self.total_cached_bytes >= self.global_budget_bytes
         )
 
         if needs_flush:

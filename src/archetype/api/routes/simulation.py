@@ -18,8 +18,23 @@ from archetype.api.models import (
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import EpisodeResult, RolloutResult
+from archetype.core.component import Component
 
 router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])
+
+
+def _hydrate_episode_config(config: EpisodeConfig) -> EpisodeConfig:
+    """Resolve a terminal_component sent over the wire as a type name.
+
+    The episode loop checks ``terminal_component in sig`` against tuples of
+    Component types, so a raw string would never match and the episode would
+    silently run to max_steps.
+    """
+    if isinstance(config.terminal_component, str):
+        config = config.model_copy(
+            update={"terminal_component": Component.get_type_by_name(config.terminal_component)}
+        )
+    return config
 
 
 @router.post("/step", response_model=StepResponse)
@@ -68,7 +83,7 @@ async def run_episode(
 ):
     """Run one episode. Requires operator or admin."""
     try:
-        return await cs.run_episode(ctx, world_id, config)
+        return await cs.run_episode(ctx, world_id, _hydrate_episode_config(config))
     except Exception as exc:
         raise_api_error(exc)
 
@@ -82,6 +97,9 @@ async def run_rollout(
 ):
     """Run a rollout. Requires operator or admin; emits one rollout audit row."""
     try:
+        config = config.model_copy(
+            update={"episode_config": _hydrate_episode_config(config.episode_config)}
+        )
         return await cs.run_rollout(ctx, world_id, config)
     except Exception as exc:
         raise_api_error(exc)

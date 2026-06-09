@@ -160,7 +160,7 @@ class HookRegistry:
     """Per-world async hook storage. Not thread-safe; ``AsyncWorld``
     serializes mutations via its own event loop."""
 
-    __slots__ = ("_by_type", "_ids", "_token")
+    __slots__ = ("_by_type", "_ids", "_tasks", "_token")
 
     def __init__(self) -> None:
         self._by_type: dict[
@@ -168,6 +168,10 @@ class HookRegistry:
         ] = {}
         self._ids = itertools.count(1)
         self._token = object()
+        # Strong references to detached ("spawn" mode) tasks. The event loop
+        # only keeps weak references, so without this a detached handler can
+        # be garbage-collected before it finishes.
+        self._tasks: set[asyncio.Task] = set()
 
     def add(
         self,
@@ -206,7 +210,9 @@ class HookRegistry:
                         exc,
                     )
             else:
-                asyncio.create_task(_fire_detached(fn, event))
+                task = asyncio.create_task(_fire_detached(fn, event))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
 
 class SyncHookRegistry:

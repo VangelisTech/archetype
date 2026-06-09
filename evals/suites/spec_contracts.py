@@ -406,9 +406,19 @@ def task_command_service_gate_map() -> list[GraderResult]:
         if node is None:
             continue
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
-        checks[f"{method}:has_dynamic_gate"] = any(
-            _called_attr_name(call) == "_gate" for call in calls
+        # Gating may run inline (self._gate per command) or be delegated to
+        # the broker's atomic two-phase check by passing ctx to enqueue_bulk
+        # (required for all-or-nothing quota accounting on batches).
+        gates_inline = any(_called_attr_name(call) == "_gate" for call in calls)
+        gates_via_broker = any(
+            _called_attr_name(call) in {"enqueue", "enqueue_bulk"}
+            and (
+                any(kw.arg == "ctx" for kw in call.keywords)
+                or len(call.args) >= 3
+            )
+            for call in calls
         )
+        checks[f"{method}:has_dynamic_gate"] = gates_inline or gates_via_broker
         checks[f"{method}:emits_audit"] = any(_called_attr_name(call) == "_emit" for call in calls)
 
     return [state_check(checks, name="command_service_gate_shape")]

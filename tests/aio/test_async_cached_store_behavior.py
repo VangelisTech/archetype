@@ -284,3 +284,103 @@ async def test_cached_store_concurrent_appends_are_safe(inner_store):
     finally:
         # idempotent
         await cached.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_append_during_inflight_flush_is_not_lost(inner_store):
+    """Rows appended while a flush is writing must not be cleared with the
+    flushed batch — they belong to the next flush (regression: data loss)."""
+    from uuid_utils import uuid7
+
+    from archetype.core.config import CacheConfig
+    from archetype.core.interfaces import iAsyncStore
+
+    class SlowStore(iAsyncStore):
+        """Wraps the inner store with an append that parks mid-write."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_archetype_df(self, sig, world_id, run_id, **kw):
+            return await self._inner.get_archetype_df(sig, world_id, run_id, **kw)
+
+        async def list_signatures(self):
+            return await self._inner.list_signatures()
+
+        async def append(self, sig, df):
+            self.entered.set()
+            await self.release.wait()
+            await self._inner.append(sig, df)
+
+        async def shutdown(self):
+            await self._inner.shutdown()
+
+    slow = SlowStore(inner_store)
+    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+    cached = AsyncCachedStore(async_store=slow, cache_config=cache_cfg)
+    try:
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        world_id, run_id = str(uuid7()), str(uuid7())
+
+        def rows(start, n):
+            return daft.from_pylist(
+                [
+                    Archetype.to_row_dict(
+                        entity_id=i,
+                        tick=0,
+                        components=[Position(x=i, y=i)],
+                        world_id=world_id,
+                        run_id=run_id,
+                    )
+                    for i in range(start, start + n)
+                ]
+            ).collect()
+
+        await cached.append(sig, rows(0, 3))
+
+        flush_task = asyncio.create_task(cached._background_flush_sig(sig))
+        await slow.entered.wait()
+
+        # While the flush write is in flight, more rows arrive
+        await cached.append(sig, rows(3, 2))
+
+        slow.release.set()
+        await flush_task
+
+        # The late rows are still cached, not silently dropped
+        assert cached._mem[sig].rows == 2
+
+        out = await cached.get_archetype_df(sig, world_id=world_id, run_id=run_id)
+        assert out.collect().count_rows() == 5
+    finally:
+        await cached.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_append_empty_frame_for_unseen_signature_is_noop(inner_store):
+    """An empty DataFrame for a never-seen signature must not raise
+    (regression: KeyError on self._mem[sig])."""
+    from archetype.core.config import CacheConfig
+
+    cache_cfg = CacheConfig(flush_rows=10_000_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
+    cached = AsyncCachedStore(async_store=inner_store, cache_config=cache_cfg)
+    try:
+        sig = Archetype.sig_from_components([Position(x=0, y=0)])
+        empty = daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=0,
+                    tick=0,
+                    components=[Position(x=0, y=0)],
+                    world_id="w",
+                    run_id="r",
+                )
+            ]
+        ).where(daft.col("entity_id") < 0)
+
+        await cached.append(sig, empty)
+        assert sig not in cached._mem
+    finally:
+        await cached.shutdown()

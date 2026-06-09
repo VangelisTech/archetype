@@ -216,7 +216,7 @@ class TestForkHandles:
             )
 
             # Fork should be tracked
-            assert fork in rt._handles
+            assert fork in rt._handles.values()
 
         # After exiting the context manager (shutdown), the fork state is closed
         assert fork._state.closed
@@ -264,3 +264,26 @@ class TestLogfireDegradation:
         asyncio.run(runtime.shutdown())
 
         assert calls[-1]["send_to_logfire"] is False
+
+
+class TestForkStorageInheritance:
+    @pytest.mark.asyncio
+    async def test_fork_without_storage_inherits_source_store(self, tmp_path):
+        """fork() with no storage override must inherit the source world's
+        store (world-lifecycle.md § 4.5). It used to coerce None into
+        StorageConfig() and silently route the fork to the default store."""
+        async with ArchetypeRuntime() as rt:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = rt.world("inherit-source", storage=storage)
+            await world.spawn(Pos(x=3.0))
+            await world.step()
+
+            fork = await world.fork("inherit-branch")
+
+            # The fork handle reads from the same physical store as the source
+            assert fork._state.storage_config == storage
+
+            # And pre-fork history is visible through the fork handle
+            df = await fork.query(Pos)
+            rows = df.collect().to_pylist()
+            assert any(r["pos__x"] == 3.0 for r in rows)

@@ -134,7 +134,8 @@ class TestCLI:
             def __init__(self):
                 self.closed = False
 
-            def get(self, path, **kwargs):
+            def request(self, method, path, **kwargs):
+                assert method == "GET"
                 assert path == "/worlds"
                 assert kwargs == {}
                 return response
@@ -160,7 +161,8 @@ class TestCLI:
             def __init__(self):
                 self.closed = False
 
-            def get(self, path, **kwargs):
+            def request(self, method, path, **kwargs):
+                assert method == "GET"
                 assert path == "/worlds"
                 return response
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -36,46 +37,63 @@ class AsyncLancedbStore(iAsyncStore):
         self.namespace = namespace
         self.lancedb = None
         self._known_sigs: dict[str, tuple[type, ...]] = {}
+        self._tables: dict[str, object] = {}
+        # Serializes lazy connect and table creation. step() ensures tables
+        # for all archetypes concurrently on first use; without the lock each
+        # coroutine opens its own connection and all but the last leak.
+        self._ensure_lock = asyncio.Lock()
 
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
-        pyarrow_schema = Archetype.get_archetype_schema(sig)
 
-        if self.lancedb is None:
-            subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
-            self.lancedb = await lancedb.connect_async(
-                os.path.join(self.uri, self.namespace, subdir)
-            )
+        cached = self._tables.get(table_name)
+        if cached is not None:
+            return cached
 
-        if table_name in await self._list_table_names():
+        async with self._ensure_lock:
+            cached = self._tables.get(table_name)
+            if cached is not None:
+                return cached
+
+            pyarrow_schema = Archetype.get_archetype_schema(sig)
+
+            if self.lancedb is None:
+                subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
+                self.lancedb = await lancedb.connect_async(
+                    os.path.join(self.uri, self.namespace, subdir)
+                )
+
+            if table_name in await self._list_table_names():
+                try:
+                    async_table = await self.lancedb.open_table(table_name)
+                except Exception as e:
+                    raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
+
+                self._known_sigs[table_name] = sig
+                self._tables[table_name] = async_table
+                return async_table
+
             try:
-                async_table = await self.lancedb.open_table(table_name)
+                async_table = await self.lancedb.create_table(
+                    name=table_name,
+                    schema=pyarrow_schema,
+                    exist_ok=True,
+                )
+                if os.environ.get("ARCT_LANCEDB_INDEX_ENTITY", "1") == "1":
+                    await async_table.create_index(column="entity_id", config=BTree(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_WORLD", "1") == "1":
+                    await async_table.create_index(column="world_id", config=Bitmap(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_RUN", "1") == "1":
+                    await async_table.create_index(column="run_id", config=Bitmap(), replace=True)
+                if os.environ.get("ARCT_LANCEDB_INDEX_TICK", "1") == "1":
+                    await async_table.create_index(column="tick", config=BTree(), replace=True)
             except Exception as e:
-                raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
+                logger.error(f"Error creating LanceDB table {table_name}: {e}")
+                raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
 
             self._known_sigs[table_name] = sig
+            self._tables[table_name] = async_table
             return async_table
-
-        try:
-            async_table = await self.lancedb.create_table(
-                name=table_name,
-                schema=pyarrow_schema,
-                exist_ok=True,
-            )
-            if os.environ.get("ARCT_LANCEDB_INDEX_ENTITY", "1") == "1":
-                await async_table.create_index(column="entity_id", config=BTree(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_WORLD", "1") == "1":
-                await async_table.create_index(column="world_id", config=Bitmap(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_RUN", "1") == "1":
-                await async_table.create_index(column="run_id", config=Bitmap(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_TICK", "1") == "1":
-                await async_table.create_index(column="tick", config=BTree(), replace=True)
-        except Exception as e:
-            logger.error(f"Error creating LanceDB table {table_name}: {e}")
-            raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
-
-        self._known_sigs[table_name] = sig
-        return async_table
 
     async def _list_table_names(self) -> list[str]:
         if self.lancedb is None:
@@ -171,6 +189,7 @@ class AsyncLancedbStore(iAsyncStore):
                         await result
             finally:
                 self.lancedb = None
+                self._tables.clear()
 
     async def optimize_tables(self) -> None:
         if self.lancedb is None:

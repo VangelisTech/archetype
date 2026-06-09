@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -117,7 +118,9 @@ class AuditLog:
         self._storage_config = storage_config or StorageConfig(
             uri="./archetype_data", namespace="audit"
         )
-        self._rows: list[AuditRow] = []
+        # Bounded in-memory mirror for current-process observability and the
+        # storage-failure fallback; persisted storage is the source of truth.
+        self._rows: deque[AuditRow] = deque(maxlen=10_000)
         self._pending: list[AuditRow] = []
         self._db = None
         self._table = None

@@ -554,3 +554,72 @@ class TestSyncHooks:
 
         world.create_entity([Position(x=1, y=2)])
         assert counts == {"a": 1, "b": 1}
+
+
+class TestSameTickMigration:
+    """Regression: migrating an entity spawned in the same tick used to
+    leave the stale pending spawn row in the old signature's cache, so the
+    entity materialized active under two archetypes at once."""
+
+    def test_same_tick_spawn_then_add_components_consumes_pending_row(self, tmp_path):
+        from archetype.core.archetype import Archetype
+
+        world = _make_sync_world(tmp_path)
+        sig_pos = Archetype.sig_from_components([Position(x=0, y=0)])
+        sig_pos_vel = Archetype.add_components(sig_pos, [Velocity])
+
+        e1 = world.create_entity([Position(x=5, y=6)])
+        world.add_components(e1, [Velocity(vx=1, vy=1)])
+
+        # Pending spawn row moved, not duplicated
+        assert not world.spawn_cache.get(sig_pos)
+        assert len(world.spawn_cache[sig_pos_vel]) == 1
+        row = world.spawn_cache[sig_pos_vel][0]
+        assert row["entity_id"] == e1
+        assert row["position__x"] == 5
+        assert row["velocity__vx"] == 1
+        assert world.entity2sig[e1] == sig_pos_vel
+
+    def test_same_tick_spawn_migration_persists_single_active_row(self, tmp_path):
+        from archetype.core.archetype import Archetype
+        from archetype.core.config import RunConfig
+
+        world = _make_sync_world_with_catalog(tmp_path, "same_tick_migrate")
+        sig_pos = Archetype.sig_from_components([Position(x=0, y=0)])
+        sig_pos_vel = Archetype.add_components(sig_pos, [Velocity])
+
+        e1 = world.create_entity([Position(x=5, y=6)])
+        world.add_components(e1, [Velocity(vx=1, vy=1)])
+        world.step(RunConfig(num_steps=1))
+
+        new_rows = world.query_archetype(sig_pos_vel, ticks=[0]).to_pylist()
+        assert [r["entity_id"] for r in new_rows if r["is_active"]] == [e1]
+
+        old_rows = world.query_archetype(sig_pos, ticks=[0]).to_pylist()
+        assert not any(r["is_active"] for r in old_rows if r["entity_id"] == e1)
+
+    def test_add_components_without_prior_row_is_dropped(self, tmp_path):
+        world = _make_sync_world_with_catalog(tmp_path, "no_prior_row")
+        from archetype.core.archetype import Archetype
+
+        sig_pos = Archetype.sig_from_components([Position(x=0, y=0)])
+        e1 = world.create_entity([Position(x=1, y=1)])
+        # Simulate a vanished prior row: pending spawn consumed and no store row
+        world.spawn_cache.pop(sig_pos)
+
+        world.add_components(e1, [Velocity(vx=1, vy=1)])
+
+        # No empty row may be enqueued (used to KeyError during materialize)
+        for rows in world.spawn_cache.values():
+            assert all(row for row in rows)
+
+    def test_remove_processor_accepts_type(self, tmp_path):
+        world = _make_sync_world(tmp_path)
+
+        class Proc(SyncProcessor):
+            components = (Position,)
+
+        proc = Proc()
+        world.add_processor(proc)
+        world.remove_processor(Proc)  # matches the declared type signature
+        assert proc not in world.system.processors

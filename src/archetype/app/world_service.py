@@ -195,6 +195,9 @@ class WorldOrchestrator:
         if not isinstance(source, AsyncWorld):
             raise TypeError("Can only fork AsyncWorld instances")
 
+        if name and self._registry.has_name(name):
+            raise ValueError(f"World with name '{name}' already exists.")
+
         lineage = list(source.lineage)
         if source.tick > 0:
             # The source has written rows for ticks 0..tick-1 under its own

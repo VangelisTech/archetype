@@ -38,12 +38,12 @@ def configure_session(
 ) -> Session:
     """Configure a Daft session for Archetype's Iceberg storage backend.
 
-    Uses the global default session if none is provided.
+    Creates a fresh session if none is provided; keep the returned session.
     Resolves the URI, creates the Iceberg catalog, attaches it, and sets the namespace.
 
     Args:
         config: Storage configuration with uri and namespace.
-        session: Optional explicit session. Defaults to the global Daft session.
+        session: Optional explicit session. Defaults to a new Session.
 
     Returns:
         The configured session.

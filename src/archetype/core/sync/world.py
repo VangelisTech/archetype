@@ -232,6 +232,15 @@ class SyncWorld(iWorld):
         ]
         if pending_rows:
             row_dict = dict(pending_rows[-1])
+            # Consume the pending spawn so the entity is not also materialized
+            # under the old signature this tick.
+            remaining = [
+                row for row in self.spawn_cache[old_sig] if row.get("entity_id") != entity_id
+            ]
+            if remaining:
+                self.spawn_cache[old_sig] = remaining
+            else:
+                del self.spawn_cache[old_sig]
         else:
             df = self.query_archetype(
                 sig=old_sig,
@@ -337,6 +346,9 @@ class SyncWorld(iWorld):
             return
 
         row = self._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning(f"add_components: entity {entity_id} has no prior row")
+            return
 
         # 1) mark *old row* inactive
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
@@ -367,6 +379,9 @@ class SyncWorld(iWorld):
             return
 
         row = self._move_entity(entity_id, old_sig, new_sig, [])  # remove ≡ keep remaining columns
+        if not row:
+            logger.warning(f"remove_components: entity {entity_id} has no prior row")
+            return
 
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
         self.spawn_cache.setdefault(new_sig, []).append(row)
@@ -429,7 +444,8 @@ class SyncWorld(iWorld):
         tick: int | None = None,
     ) -> DataFrame:
         """Update the store with the given archetypes. Returns the stamped DataFrame."""
-        return self.updater.update(df, sig, tick or self.tick, str(self.world_id), self.run_id)
+        effective_tick = tick if tick is not None else self.tick
+        return self.updater.update(df, sig, effective_tick, str(self.world_id), self.run_id)
 
     # -------------------------------------------------------------------------
     # Hooks: Typed lifecycle callbacks for observability

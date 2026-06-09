@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 
 from archetype.api.deps import get_actor_ctx, get_command_service
 from archetype.api.errors import raise_api_error
-from archetype.api.models import dataframe_to_rows, hydrate_component_types
+from archetype.api.models import dataframe_to_rows_async, hydrate_component_types
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
@@ -62,7 +62,7 @@ async def _query_all_state(
             ticks=[tick] if tick is not None else None,
             entity_ids=entity_ids,
         )
-        rows.extend(dataframe_to_rows(df))
+        rows.extend(await dataframe_to_rows_async(df))
     return rows
 
 
@@ -95,7 +95,7 @@ async def _query_components(
         ticks=[tick] if tick is not None else None,
         entity_ids=entity_ids,
     )
-    return dataframe_to_rows(df)
+    return await dataframe_to_rows_async(df)
 
 
 @router.get("/worlds/{world_id}/state", response_model=list[dict[str, Any]])
@@ -198,7 +198,7 @@ async def get_audit_history(
             idempotency_key=idempotency_key,
             limit=limit,
         )
-        rows = dataframe_to_rows(df)
+        rows = await dataframe_to_rows_async(df)
         for row in rows:
             row.setdefault("type", row.get("command_type"))
         return rows

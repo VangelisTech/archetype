@@ -89,22 +89,32 @@ class _RuntimeWorldState:
             )
             self.world_id = info.world_id
 
-            # Wire non-serializable config through dedicated gate methods
-            # Order: processors → resources → hooks (hooks may depend on resources)
-            for proc in self.init_processors:
-                await gate.add_processor(ctx, self.world_id, proc)
+            try:
+                # Wire non-serializable config through dedicated gate methods
+                # Order: processors → resources → hooks (hooks may depend on resources)
+                for proc in self.init_processors:
+                    await gate.add_processor(ctx, self.world_id, proc)
 
-            for resource in self.init_resources:
-                await gate.add_resource(ctx, self.world_id, resource)
+                for resource in self.init_resources:
+                    await gate.add_resource(ctx, self.world_id, resource)
 
-            for event_type, fn in self.init_hooks:
-                await gate.add_hook(ctx, self.world_id, event_type, fn)
+                for event_type, fn in self.init_hooks:
+                    await gate.add_hook(ctx, self.world_id, event_type, fn)
+            except BaseException:
+                # Wiring failed: tear down the half-built world so a retry
+                # does not create a duplicate and leak the first one.
+                failed_world_id, self.world_id = self.world_id, None
+                try:
+                    await gate.destroy_world(ctx, failed_world_id)
+                except Exception:
+                    pass
+                raise
 
             self.initialized = True
 
         return self.world_id
 
-    async def shutdown(self, *, from_runtime: bool) -> None:
+    async def shutdown(self, *, from_runtime: bool, ctx: ActorCtx | None = None) -> None:
         """Shut down this world state. Idempotent."""
         if self.closed:
             return
@@ -112,10 +122,10 @@ class _RuntimeWorldState:
 
         if not from_runtime and self.initialized and self.world_id is not None:
             gate = self.runtime._container.command_service
-            # Use a default admin ctx for shutdown
-            from archetype.runtime._actor import default_actor_ctx
-
-            await gate.destroy_world(default_actor_ctx(), self.world_id)
+            # Destroy as the calling handle's actor (falling back to the
+            # runtime's default identity) so RBAC applies and the audit row
+            # attributes the destruction to a real actor.
+            await gate.destroy_world(ctx or self.runtime._actor_ctx, self.world_id)
 
         for alias in list(self.aliases):
             self.runtime._unregister_handle(alias)
@@ -252,20 +262,32 @@ class RuntimeWorld:
 
         async with self._state.op_lock:
             wid = await self._ensure_id()
+            # Pass None through unchanged: WorldService inherits the source
+            # world's storage/cache only when no explicit config is given
+            # (world-lifecycle.md § 4.5). Coercing None to StorageConfig()
+            # would silently route the fork to the default store.
+            fork_storage = None if storage is None else coerce_storage(storage)
+            fork_cache = coerce_cache(cache)
             info = await self._gate.fork_world(
                 self._ctx,
                 wid,
                 name,
-                storage_config=coerce_storage(storage),
-                cache_config=coerce_cache(cache),
+                storage_config=fork_storage,
+                cache_config=fork_cache,
             )
 
-            # Build a pre-activated state for the fork
+            # Build a pre-activated state for the fork. Mirror the service's
+            # inheritance so the fork handle reads from the store the fork
+            # actually writes to.
+            if fork_storage is None:
+                fork_storage = self._state.storage_config
+                if fork_cache is None:
+                    fork_cache = self._state.cache_config
             fork_state = _RuntimeWorldState(
                 runtime=self._state.runtime,
                 name=info.name or name or "fork",
-                storage_config=coerce_storage(storage),
-                cache_config=coerce_cache(cache),
+                storage_config=fork_storage,
+                cache_config=fork_cache,
                 init_processors=[],
                 init_resources=[],
                 init_hooks=[],
@@ -290,7 +312,7 @@ class RuntimeWorld:
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
-        await self._state.shutdown(from_runtime=from_runtime)
+        await self._state.shutdown(from_runtime=from_runtime, ctx=self._ctx)
 
     # ── Queries ───────────────────────────────────────────────────────────
 

@@ -10,9 +10,10 @@ that route every operation through iCommandService.
 from __future__ import annotations
 
 import asyncio
+import itertools
 from pathlib import Path
 from typing import Any
-from weakref import WeakSet
+from weakref import WeakValueDictionary
 
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
@@ -39,7 +40,9 @@ class ArchetypeRuntime:
 
         self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or default_actor_ctx()
-        self._handles: WeakSet[RuntimeWorld] = WeakSet()
+        # Insertion-ordered weak registry so shutdown can run LIFO (R5).
+        self._handles: WeakValueDictionary[int, RuntimeWorld] = WeakValueDictionary()
+        self._handle_seq = itertools.count()
         self._closed = False
 
     async def __aenter__(self) -> ArchetypeRuntime:
@@ -57,7 +60,8 @@ class ArchetypeRuntime:
         self._closed = True
 
         errors: list[Exception] = []
-        for handle in list(self._handles):
+        live = [self._handles[key] for key in sorted(self._handles.keys(), reverse=True)]
+        for handle in live:
             try:
                 await handle._shutdown_internal(from_runtime=True)
             except Exception as e:
@@ -98,7 +102,7 @@ class ArchetypeRuntime:
         )
         handle = RuntimeWorld(state=state, actor_ctx=self._actor_ctx)
         state.aliases.add(handle)
-        self._handles.add(handle)
+        self._register_handle(handle)
         return handle
 
     @classmethod
@@ -107,10 +111,13 @@ class ArchetypeRuntime:
         return SyncArchetypeRuntime(actor_ctx=actor_ctx)
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
-        self._handles.add(handle)
+        self._handles[next(self._handle_seq)] = handle
 
     def _unregister_handle(self, handle: RuntimeWorld) -> None:
-        self._handles.discard(handle)
+        for key, value in list(self._handles.items()):
+            if value is handle:
+                del self._handles[key]
+                return
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -126,13 +133,29 @@ class SyncArchetypeRuntime:
 
     def __enter__(self) -> SyncArchetypeRuntime:
         self._runner = asyncio.Runner()
-        self._runner.run(self._runtime.__aenter__())
+        try:
+            self._runner.run(self._runtime.__aenter__())
+        except BaseException:
+            self._runner.close()
+            self._runner = None
+            raise
         return self
 
     def __exit__(self, *exc_info: object) -> None:
-        assert self._runner is not None
+        if self._runner is None:
+            return
         try:
             self._runner.run(self._runtime.__aexit__(*exc_info))
+        finally:
+            self._runner.close()
+            self._runner = None
+
+    def shutdown(self) -> None:
+        """Shut down all handles then the container. Idempotent (R6)."""
+        if self._runner is None:
+            return
+        try:
+            self._runner.run(self._runtime.shutdown())
         finally:
             self._runner.close()
             self._runner = None

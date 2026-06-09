@@ -15,13 +15,13 @@
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 22
+line = 23
 method = "collect"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 22
+line = 23
 method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
@@ -33,13 +33,13 @@ reason = "Storage write boundary: defensive empty-frame probe before delegating 
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 262
+line = 282
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
 path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 140
+line = 158
 method = "collect"
 reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
 
@@ -51,7 +51,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 243
+line = 252
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 

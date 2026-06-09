@@ -30,9 +30,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        await container.shutdown()
-        app.state.container = None
-        set_container(None)
+        try:
+            await container.shutdown()
+        finally:
+            # Always drop the global reference: a failed shutdown must not
+            # leave a half-shutdown container for the next create_app().
+            app.state.container = None
+            set_container(None)
 
 
 def create_app() -> FastAPI:

@@ -50,6 +50,12 @@ class SimulationService:
         **input_kwargs,
     ) -> int:
         """Advance a world by one tick."""
+        from archetype.app.auth.guard import reset_tick_counters
+
+        # Tick boundary: per-tick command quotas reset here, per
+        # docs/guide/token-quotas.md ("Reset at tick boundary").
+        reset_tick_counters()
+
         world = self._world_service.get_world(UUID(str(world_id)))
         commands_applied = 0
         if self._drain_commands is not None:

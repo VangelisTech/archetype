@@ -14,7 +14,7 @@ from archetype.api.models import (
     CommandResponse,
     SubmitBatchRequest,
     SubmitCommandRequest,
-    dataframe_to_rows,
+    dataframe_to_rows_async,
 )
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
@@ -79,7 +79,7 @@ async def get_command_history(
     """Read audit history for a world. Requires viewer, player, operator, or admin."""
     try:
         df = await cs.get_audit_history(ctx, world_id, limit=limit)
-        rows = dataframe_to_rows(df)
+        rows = await dataframe_to_rows_async(df)
         for row in rows:
             row.setdefault("type", row.get("command_type"))
         return rows

@@ -138,7 +138,9 @@ def _request(
         headers = {**headers, **_headers(role, token)}
         if headers:
             kwargs["headers"] = headers
-        resp = getattr(client, method)(path, **kwargs)
+        # client.request supports a body on any method; the verb-specific
+        # helpers (client.delete in particular) reject json/data kwargs.
+        resp = client.request(method.upper(), path, **kwargs)
         return _handle_response(resp, role=role)
     finally:
         client.close()
@@ -154,6 +156,20 @@ def _parse_json_array(value: str) -> list[dict[str, Any]]:
         typer.echo("validation error: expected a JSON array", err=True)
         raise typer.Exit(code=1)
     return parsed
+
+
+def _storage_config(storage: str | None, namespace: str | None) -> dict[str, str]:
+    """Build a partial storage_config dict from CLI overrides.
+
+    Empty when neither flag was given, so the server-side StorageConfig
+    defaults apply (keeping write and read paths on the same store).
+    """
+    config: dict[str, str] = {}
+    if storage:
+        config["uri"] = storage
+    if namespace:
+        config["namespace"] = namespace
+    return config
 
 
 def _csv(value: str | None) -> list[str]:
@@ -242,18 +258,25 @@ def status(
 @world_app.command("create")
 def world_create(
     name: str = typer.Argument(..., help="World name"),
-    storage: str = typer.Option("./archetype_data", "--storage", "--uri", help="Storage URI"),
-    namespace: str = typer.Option("archetypes", help="Storage namespace"),
+    storage: str | None = typer.Option(
+        None, "--storage", "--uri", help="Storage URI (defaults to the server's default store)"
+    ),
+    namespace: str | None = typer.Option(
+        None, help="Storage namespace (defaults to the server's default namespace)"
+    ),
     cache: bool = typer.Option(False, "--cache", help="Use default cache config"),
     url: str | None = typer.Option(None, "--url", help="Override ARCHETYPE_URL for this command"),
     role: Role | None = ROLE_OPTION,
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
 ):
     """Create a world. Defaults to API admin mode when auth is omitted."""
-    body: dict[str, Any] = {
-        "config": {"name": name},
-        "storage_config": {"uri": storage, "namespace": namespace},
-    }
+    body: dict[str, Any] = {"config": {"name": name}}
+    # Only send storage_config when overridden: the server's StorageConfig
+    # defaults must apply to both the write path and the query read path,
+    # otherwise data is silently sharded across two stores.
+    storage_config = _storage_config(storage, namespace)
+    if storage_config:
+        body["storage_config"] = storage_config
     if cache:
         body["cache_config"] = {}
     data = _request("post", "/worlds", json=body, **_common_request_kwargs(url, role, token))
@@ -295,8 +318,12 @@ def world_inspect(
 def world_fork(
     world_id: str = typer.Argument(..., help="Source world ID"),
     name: str | None = typer.Option(None, "--name", "-n", help="Name for the fork"),
-    storage: str | None = typer.Option(None, "--storage", "--uri", help="Storage URI"),
-    namespace: str = typer.Option("archetypes", help="Storage namespace"),
+    storage: str | None = typer.Option(
+        None, "--storage", "--uri", help="Storage URI (defaults to inheriting the source's store)"
+    ),
+    namespace: str | None = typer.Option(
+        None, help="Storage namespace (defaults to the server's default namespace)"
+    ),
     cache: bool = typer.Option(False, "--cache", help="Use default cache config"),
     url: str | None = typer.Option(None, "--url", help="Override ARCHETYPE_URL for this command"),
     role: Role | None = ROLE_OPTION,
@@ -304,8 +331,9 @@ def world_fork(
 ):
     """Fork a world."""
     body: dict[str, Any] = {"name": name}
-    if storage:
-        body["storage_config"] = {"uri": storage, "namespace": namespace}
+    storage_config = _storage_config(storage, namespace)
+    if storage_config:
+        body["storage_config"] = storage_config
     if cache:
         body["cache_config"] = {}
     data = _request(
@@ -600,21 +628,27 @@ def history(
     actor_id: str | None = typer.Option(None, "--actor-id", help="Actor ID filter"),
     signer_address: str | None = typer.Option(None, "--signer-address", help="Signer filter"),
     idempotency_key: str | None = typer.Option(None, "--idempotency-key", help="Idempotency key"),
-    tick_from: int | None = typer.Option(None, "--tick-from", help="Reserved for API v2"),
-    tick_to: int | None = typer.Option(None, "--tick-to", help="Reserved for API v2"),
+    tick_from: int | None = typer.Option(None, "--tick-from", help="Inclusive tick range start"),
+    tick_to: int | None = typer.Option(None, "--tick-to", help="Inclusive tick range end"),
     url: str | None = typer.Option(None, "--url", help="Override ARCHETYPE_URL for this command"),
     role: Role | None = ROLE_OPTION,
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Show audit history for a world."""
+    # The API expects a single tick_range="start,end" query param.
+    tick_range: str | None = None
+    if (tick_from is None) != (tick_to is None):
+        typer.echo("validation error: --tick-from and --tick-to must be given together", err=True)
+        raise typer.Exit(code=1)
+    if tick_from is not None and tick_to is not None:
+        tick_range = f"{tick_from},{tick_to}"
     params = {
         "limit": limit,
         "actor_id": actor_id,
         "signer_address": signer_address,
         "idempotency_key": idempotency_key,
-        "tick_from": tick_from,
-        "tick_to": tick_to,
+        "tick_range": tick_range,
     }
     data = _request(
         "get",

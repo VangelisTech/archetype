@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from daft import DataFrame
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from archetype.app.models import Command, EpisodeConfig, RolloutConfig
 from archetype.core.component import Component
@@ -20,6 +21,17 @@ def dataframe_to_rows(df: DataFrame | list) -> list[dict[str, Any]]:
     if isinstance(df, list):
         return df
     return df.collect().to_pylist()
+
+
+async def dataframe_to_rows_async(df: DataFrame | list) -> list[dict[str, Any]]:
+    """Materialize rows in a worker thread.
+
+    Collection executes the whole plan synchronously; running it on the
+    event loop would stall every concurrent request.
+    """
+    if isinstance(df, list):
+        return df
+    return await asyncio.to_thread(dataframe_to_rows, df)
 
 
 def hydrate_components(payloads: list[dict[str, Any]]) -> list[Component]:
@@ -106,6 +118,15 @@ class StepRequest(BaseModel):
 
     model_config = dict(arbitrary_types_allowed=True)
 
+    @field_validator("num_steps")
+    @classmethod
+    def _single_step_only(cls, value: int) -> int:
+        # /step advances exactly one tick. Accepting another value and
+        # ignoring it would silently report success for work never done.
+        if value != 1:
+            raise ValueError("step advances exactly one tick; use /run for multi-tick execution")
+        return value
+
     def to_run_config(self) -> RunConfig:
         return self.run_config or RunConfig(num_steps=1, debug=self.debug)
 
@@ -169,6 +190,7 @@ __all__ = [
     "StorageConfig",
     "WorldConfig",
     "dataframe_to_rows",
+    "dataframe_to_rows_async",
     "hydrate_component_types",
     "hydrate_components",
 ]
