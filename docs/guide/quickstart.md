@@ -120,6 +120,7 @@ archetype history <world-id>
 
 ## Next Steps
 
+- [Running & Scripting](./running.md) — the fuller how-to: driving execution, reading state back, persistence, roles, and running the server
 - [Architecture](./architecture.md) — how the layers and tick lifecycle fit together
 - [Components](./components.md) — field types, Arrow serialization, column prefixing
 - [Processors](./processors.md) — LLM-powered processors, structured outputs, testing

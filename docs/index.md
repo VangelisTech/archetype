@@ -274,6 +274,7 @@ Current state worth knowing before using it:
 
 ## Where to Start
 
+- **Just want to run it?** [Running & Scripting](guide/running.md) is the practical how-to: run a Python script, drive a world, read state back, and start the server/CLI
 - **New to Archetype?** Start with the [Quickstart](guide/quickstart.md), which leads with `ArchetypeRuntime`, then read the [Architecture](guide/architecture.md) overview
 - **Building a simulation?** See [Building Simulations](guide/building-simulations.md) for the full workflow
 - **Integrating with the API?** See [App Overview](guide/app-overview.md) for how core connects through services to the HTTP layer

@@ -18,6 +18,7 @@ extra_css:
 nav:
   - Getting Started:
       - archetype-ecs: index.md
+      - Running & Scripting: guide/running.md
       - Quickstart: guide/quickstart.md
       - Examples: guide/examples.md
       - Contributing Guide: guide/contributing.md
