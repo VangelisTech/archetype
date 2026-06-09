@@ -65,18 +65,28 @@ class SimulationService:
         run_config: RunConfig,
         **input_kwargs,
     ) -> RunResult:
-        """Execute ``run_config.num_steps`` ticks and return a RunResult."""
+        """Execute ``run_config.num_steps`` ticks and return a RunResult.
+
+        Inv O3: the returned ``run_id`` is the world's active run_id —
+        i.e. the run_id actually stamped on persisted rows during this
+        run — so callers can round-trip ``RunResult.run_id`` back into a
+        query and find the data they just wrote. ``RunConfig.run_id``
+        seeds the world's run_id only when the world has none set yet
+        (per the "first run pins" semantics that keep cross-run state
+        continuity intact).
+        """
         world = self._world_service.get_world(UUID(str(world_id)))
 
-        if isinstance(world, AsyncWorld) and world.run_id is None:
+        if isinstance(world, AsyncWorld) and not world.run_id:
             world.run_id = str(run_config.run_id)
 
         commands_applied = 0
         for _ in range(run_config.num_steps):
             commands_applied += await self.step(world_id, run_config, **input_kwargs)
 
+        active_run_id = getattr(world, "run_id", None) or run_config.run_id
         return RunResult(
-            run_id=run_config.run_id,
+            run_id=active_run_id,
             world_id=world_id,
             ticks_completed=run_config.num_steps,
             commands_applied=commands_applied,
