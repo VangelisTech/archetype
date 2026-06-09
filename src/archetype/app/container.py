@@ -10,6 +10,7 @@ Wires all services together. Single point of construction.
 from __future__ import annotations
 
 from archetype.app.audit_log import AuditLog
+from archetype.app.autoresearch_service import AutoResearchService
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.mutation_service import MutationService
@@ -58,6 +59,9 @@ class ServiceContainer:
             audit=self.audit_log,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
+
+        # AutoResearch — depends on WorldService + SimulationService
+        self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
