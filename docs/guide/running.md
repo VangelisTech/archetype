@@ -158,8 +158,11 @@ world = runtime.world(
 )
 ```
 
-Post-construction reconfiguration uses methods: `world.add_processor(...)`,
-`world.add_resource(...)`, `world.add_hook(...)`. See the full surface in
+Processors can be added or removed later (`world.add_processor(...)`,
+`world.remove_processor(...)`). Hooks can be added with `world.add_hook(...)`
+only **after** the world has activated (its first operation) — before that,
+pass them via `runtime.world(..., hooks=[...])` or the call raises. Resources
+can only be staged at construction. See the full surface in
 [Runtime §3](runtime.md#3-ergonomic-surface).
 
 ## Driving execution

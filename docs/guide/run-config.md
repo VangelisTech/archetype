@@ -10,7 +10,7 @@ Archetype uses Pydantic models for all configuration. There are four config type
 from archetype.core.config import RunConfig
 
 config = RunConfig(num_steps=10, debug=True)
-await world.run(config)
+await world.run(config=config)
 ```
 
 ### Contract
