@@ -399,14 +399,15 @@ Idempotency:
 - `submit_spawn()` is the special case that reserves a world-local entity ID
   before enqueue so `spawn()` can honestly return `entity_id`.
 - Reservation MUST be serialized per world.
+- `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
+  an unknown `world_id` by raising `archetype.app.errors.WorldNotFoundError`
+  before any quota debit, broker enqueue, or audit emit.
 - `drain_and_apply()` is the command application boundary at tick time.
 - World lifecycle operations use direct gated methods such as `create_world`,
   `fork_world`, and `destroy_world`.
 
 CURRENT GAPS:
 
-- `submit()` does not currently validate that the target world exists before
-  enqueue.
 - `drain_and_apply()` logs failed applies but does not retry or requeue them, so
   failed commands are effectively dropped.
 
@@ -831,8 +832,9 @@ coherent engine contract:
 1. Make updater durability failures explicit instead of log-only.
 2. Define and implement world-lifecycle command ack semantics so API create,
    destroy, and fork are not left in ambiguous broker state.
-3. Decide whether command submission to an unknown world is allowed; if not,
-   reject at submit time.
+3. ~~Decide whether command submission to an unknown world is allowed; if not,
+   reject at submit time.~~ Resolved: `CommandService.submit*` raise
+   `archetype.app.errors.WorldNotFoundError` before any side effect.
 4. Fix `WorldService.create_world()` duplicate-name failure ordering so failed
    creation does not cache a hidden world.
 5. Align hook documentation and implementation for spawn/despawn lifecycle

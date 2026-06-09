@@ -83,6 +83,19 @@ class CommandService:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
 
+    def _require_world(self, world_id: str | UUID) -> None:
+        """Reject submissions to worlds not in the registry.
+
+        Per ``docs/guide/specification.md`` "Required Hardening Work" item 3
+        and the "CommandService" CURRENT GAPS list, ``submit*`` MUST reject
+        commands targeted at unknown ``world_id`` before quota debit, broker
+        enqueue, or audit emit.
+        """
+        from archetype.app.errors import WorldNotFoundError
+
+        if not self._worlds.has_world(world_id):
+            raise WorldNotFoundError(world_id)
+
     async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
         """Emit one audit row. Best-effort — never raises."""
         if self._audit is None:
@@ -551,6 +564,7 @@ class CommandService:
     ) -> UUID:
         """Gate, then enqueue for application at cmd.tick."""
         ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
+        self._require_world(world_id)
         self._gate(cmd, ctx)
         await self._broker.enqueue(world_id, cmd)
         await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
@@ -564,6 +578,7 @@ class CommandService:
     ) -> list[UUID]:
         """Gate all-or-nothing, then enqueue atomically."""
         ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
+        self._require_world(world_id)
         for cmd in cmds:
             self._gate(cmd, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)
@@ -583,6 +598,7 @@ class CommandService:
         """Reserve entity_id, gate, enqueue spawn, return id immediately."""
         from archetype.core.aio import AsyncWorld
 
+        self._require_world(world_id)
         world = self._worlds.get_world(UUID(str(world_id)))
         if not isinstance(world, AsyncWorld):
             raise TypeError("submit_spawn requires AsyncWorld")
