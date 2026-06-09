@@ -71,6 +71,7 @@ class AsyncWorld(iAsyncWorld):
         entity2sig: dict[int, ArchetypeSignature] | None = None,
         spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] | None = None,
         despawn_cache: dict[ArchetypeSignature, list[int]] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
     ):
         """
         Initialize the fully parallel async world.
@@ -93,6 +94,10 @@ class AsyncWorld(iAsyncWorld):
         self.entity2sig = entity2sig if entity2sig is not None else {}
         self.spawn_cache = spawn_cache if spawn_cache is not None else {}
         self.despawn_cache = despawn_cache if despawn_cache is not None else {}
+        # Ancestor read segments (world_id, run_id, up_to_tick), ascending.
+        # Rows for ticks <= up_to_tick live under that ancestor's run; the
+        # store is append-only, so those rows are immutable history.
+        self.lineage = list(lineage) if lineage else []
 
     @property
     def _entity2sig(self):
@@ -462,26 +467,59 @@ class AsyncWorld(iAsyncWorld):
             or (run_config and str(run_config.run_id))
             or ""
         )
-        # Prefer to pass run_config if the querier supports it (instrumented); otherwise omit.
-        try:
-            return await self.querier.query_archetype(
-                sig=sig,
-                world_id=self.world_id,
-                run_id=effective_run_id,
-                ticks=ticks or [self.tick],
-                entity_ids=entity_ids,
-                components=components,
-                run_config=run_config,
-            )  # type: ignore[call-arg]
-        except TypeError:
-            return await self.querier.query_archetype(
-                sig=sig,
-                world_id=self.world_id,
-                run_id=effective_run_id,
-                ticks=ticks or [self.tick],
-                entity_ids=entity_ids,
-                components=components,
-            )
+
+        async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
+            # Prefer to pass run_config if the querier supports it (instrumented);
+            # otherwise omit.
+            try:
+                return await self.querier.query_archetype(
+                    sig=sig,
+                    world_id=target_world,
+                    run_id=target_run,
+                    ticks=target_ticks,
+                    entity_ids=entity_ids,
+                    components=components,
+                    run_config=run_config,
+                )  # type: ignore[call-arg]
+            except TypeError:
+                return await self.querier.query_archetype(
+                    sig=sig,
+                    world_id=target_world,
+                    run_id=target_run,
+                    ticks=target_ticks,
+                    entity_ids=entity_ids,
+                    components=components,
+                )
+
+        requested_ticks = ticks or [self.tick]
+        if not self.lineage:
+            return await _query_one(self.world_id, effective_run_id, requested_ticks)
+
+        # Group ticks by the lineage segment that owns them, preserving
+        # segment order so pre-fork history reads from the ancestor's run.
+        groups: dict[tuple[str, str], list[int]] = {}
+        for t in requested_ticks:
+            groups.setdefault(self._tick_source(t, effective_run_id), []).append(t)
+
+        frames = [
+            await _query_one(target_world, target_run, group_ticks)
+            for (target_world, target_run), group_ticks in groups.items()
+        ]
+        result = frames[0]
+        for frame in frames[1:]:
+            result = result.concat(frame)
+        return result
+
+    def _tick_source(self, tick: int, own_run_id: str | None = None) -> tuple[str, str]:
+        """Resolve which (world_id, run_id) owns the rows for a tick.
+
+        Forks own ticks after their fork point; earlier ticks live under the
+        ancestor that wrote them. Lineage segments ascend by up_to_tick.
+        """
+        for ancestor_world, ancestor_run, up_to_tick in self.lineage:
+            if tick <= up_to_tick:
+                return str(ancestor_world), str(ancestor_run)
+        return str(self.world_id), str(own_run_id or self.run_id or "")
 
     async def get_components(
         self,
@@ -493,10 +531,11 @@ class AsyncWorld(iAsyncWorld):
         Passthrough to the querier's query_components method.
         """
         read_tick = max(self.tick - 1, 0)
+        source_world, source_run = self._tick_source(read_tick)
         return await self.querier.query_components(
             components=components,
-            world_id=self.world_id,
-            run_id=self.run_id,
+            world_id=source_world,
+            run_id=source_run,
             ticks=[read_tick],
             entity_ids=entity_ids,
         )

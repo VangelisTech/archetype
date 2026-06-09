@@ -206,6 +206,28 @@ async def main():
     print()
 
     async with ArchetypeRuntime() as rt:
+        # Create the base world with processors
+        world = rt.world(
+            "commons",
+            processors=[HarvestProcessor(), RegrowthProcessor(), DepletionProcessor()],
+        )
+
+        # Seed: 4 cooperative + 3 greedy agents + 1 pool
+        for _ in range(4):
+            await world.spawn(Strategy(type="cooperative", energy=100.0))
+        for _ in range(3):
+            await world.spawn(Strategy(type="greedy", energy=100.0))
+        pool_id = await world.spawn(Pool(current=1000.0, capacity=1000.0, regen_rate=0.05))
+        # Hooks registered before forking are deep-copied onto every fork,
+        # including the per-episode forks created by run_rollout.
+        await world.add_hook(PostTick, detect_collapse)
+        await world.step()  # materialize the seed state
+
+        info = await world.info()
+        print(f"Base world: {info.world_id}")
+        print("  4 cooperative + 3 greedy agents, pool=1000")
+        print()
+
         # ── Parameter Sweep ───────────────────────────────────────────────
 
         regen_rates = [0.01, 0.03, 0.05, 0.10, 0.20]
@@ -214,29 +236,19 @@ async def main():
 
         print(f"Sweeping {len(regen_rates)} regen rates × {episodes_per_point} episodes each")
         print(f"Max steps per episode: {max_steps}")
-        print("Seed per point: 4 cooperative + 3 greedy agents, pool=1000")
         print()
 
         svc = rt._container.autoresearch_service
         results: dict[float, float] = {}
 
         for regen in regen_rates:
-            # One UNSTEPPED base world per parameter point. The fork
-            # contract transfers pending spawn_cache (not materialized
-            # rows), so episode forks only inherit the seed entities if
-            # the base never steps before run_rollout forks from it.
-            world = rt.world(
-                f"commons-regen-{regen}",
-                processors=[HarvestProcessor(), RegrowthProcessor(), DepletionProcessor()],
-            )
-            for _ in range(4):
-                await world.spawn(Strategy(type="cooperative", energy=100.0))
-            for _ in range(3):
-                await world.spawn(Strategy(type="greedy", energy=100.0))
-            await world.spawn(Pool(current=1000.0, capacity=1000.0, regen_rate=regen))
-            # Hooks registered before forking are deep-copied onto every
-            # episode fork created by run_rollout.
-            await world.add_hook(PostTick, detect_collapse)
+            # Fork the base for this parameter point. Fork lineage makes
+            # the parent's materialized rows readable from the fork, so
+            # the update below finds its prior row and episode forks see
+            # the full seed state.
+            fork = await world.fork(f"regen-{regen}")
+            await fork.update(pool_id, Pool(current=1000.0, capacity=1000.0, regen_rate=regen))
+            await fork.step()  # materialize the regen update before episodes fork
 
             config = AutoResearchConfig(
                 experiment_name=f"commons-regen-{regen}",
@@ -250,9 +262,9 @@ async def main():
                 destroy_forks_on_complete=True,
             )
 
-            info = await world.info()
+            fork_info = await fork.info()
             result = await svc.run(
-                info.world_id,
+                fork_info.world_id,
                 config,
                 make_cooperation_score(max_steps),
             )

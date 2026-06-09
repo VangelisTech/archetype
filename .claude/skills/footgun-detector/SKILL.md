@@ -60,7 +60,7 @@ Boolean or filter columns that AND onto existing state instead of recomputing fr
 Sharing a `ServiceContainer`, `CommandBroker`, `Resources`, or other stateful object between a parent world and its fork. Forks must get independent copies. Double-shutdown, cross-world mutation, and state leakage are the consequences.
 
 #### Store vs live reads
-Querying the persistent store (LanceDB) when `_live` / `get_components()` has the correct in-memory data. After `fork_world`, the fork's state is in memory — the store may have stale or empty data for the fork's world_id.
+Querying the persistent store (LanceDB) when `_live` / `get_components()` has the correct in-memory data. After `fork_world`, pre-fork ticks resolve through the fork's `lineage` (ancestor world/run segments) — but only on lineage-aware paths (`AsyncWorld.query_archetype` / `get_components`, gated `QueryService` reads). Raw store queries by the fork's `(world_id, run_id)` alone still miss pre-fork history.
 
 #### Governance bypass
 Mutating world state (spawn, despawn, modify entities) without going through `CommandService.submit()` / `CommandBroker`. Direct mutations skip RBAC checks, audit history, and serialized writes.
