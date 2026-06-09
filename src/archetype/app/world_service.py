@@ -248,6 +248,9 @@ class WorldService:
         self._factory = WorldFactory()
         self._registry = WorldRegistry()
         self._orchestrator = WorldOrchestrator(self._factory, self._registry)
+        # Records the storage/cache config that backs each world so fork_world
+        # can default to "same store as source" per world-lifecycle.md § 4.5.
+        self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
 
     async def create_world(
         self,
@@ -261,7 +264,9 @@ class WorldService:
             storage_config = StorageConfig()
 
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
-        return self._orchestrator.create_world(store, config, system=system)
+        world = self._orchestrator.create_world(store, config, system=system)
+        self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
+        return world
 
     def get_world(self, world_id: UUID) -> iWorld:
         return self._orchestrator.get_world(world_id)
@@ -282,15 +287,29 @@ class WorldService:
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
     ) -> iWorld:
-        """Fork a world. Resolves storage from source if not overridden."""
+        """Fork a world. Inherits source's storage when no override is given.
+
+        Per ``docs/guide/world-lifecycle.md`` § 4.5, the fork writes to the
+        same physical store as the source by default; an explicit
+        ``storage_config`` argument routes the fork to a different store.
+        """
         if storage_config is None:
-            storage_config = StorageConfig()
+            source_record = self._storage_configs.get(str(source_world_id))
+            if source_record is not None:
+                storage_config, source_cache = source_record
+                if cache_config is None:
+                    cache_config = source_cache
+            else:
+                storage_config = StorageConfig()
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
-        return self._orchestrator.fork_world(store, source_world_id, name=name)
+        fork = self._orchestrator.fork_world(store, source_world_id, name=name)
+        self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
+        return fork
 
     async def destroy_world(self, world_id: UUID | str) -> None:
         """Destroy a world. In-memory cleanup only. Storage is preserved."""
         await self._orchestrator.destroy_world(world_id)
+        self._storage_configs.pop(str(world_id), None)
 
     async def add_resource(self, world_id: str | UUID, resource: object) -> None:
         """Attach a resource to a world's Resources container."""
