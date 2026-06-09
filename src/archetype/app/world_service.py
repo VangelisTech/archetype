@@ -27,6 +27,7 @@ from archetype.core.aio import (
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem, iWorld
+from archetype.core.lineage import persist_lineage
 from archetype.core.resources import Resources
 
 if TYPE_CHECKING:
@@ -316,6 +317,15 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
+        # Persist the fork's ancestor chain (append-only): provenance must
+        # survive the fork being destroyed or the process restarting.
+        await persist_lineage(
+            store,
+            world_id=str(fork.world_id),
+            run_id=str(fork.run_id),
+            tick=fork.tick,
+            lineage=fork.lineage,
+        )
         return fork
 
     async def destroy_world(self, world_id: UUID | str) -> None:

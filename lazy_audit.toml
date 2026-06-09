@@ -54,3 +54,9 @@ path = "src/archetype/core/sync/world.py"
 line = 243
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
+
+[[entries]]
+path = "src/archetype/core/lineage.py"
+line = 94
+method = "to_pylist"
+reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."

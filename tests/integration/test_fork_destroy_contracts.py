@@ -566,3 +566,66 @@ async def test_unstepped_fork_has_no_lineage_segment(tmp_path):
         assert fork.lineage == []
     finally:
         await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 9. Persisted lineage: ancestry survives dead worlds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destroyed_fork_ancestry_remains_resolvable(tmp_path):
+    """Lineage is persisted append-only at fork time: after the fork is
+    destroyed, gated reads still resolve pre-fork ticks through ancestry."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    ctx = _admin_ctx()
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=9.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        fork = await c.world_service.fork_world(
+            source.world_id, name="fork", storage_config=storage
+        )
+        await c.simulation_service.step(fork.world_id, RunConfig())
+        fork_world_id, fork_run_id = str(fork.world_id), str(fork.run_id)
+        expected_lineage = list(fork.lineage)
+
+        await c.command_service.destroy_world(ctx, fork.world_id)
+
+        # Persisted lineage is recoverable without the live world object
+        recovered = await c.query_service.get_lineage(
+            fork_world_id, fork_run_id, storage_config=storage
+        )
+        assert recovered == expected_lineage
+
+        # Gated read on the dead fork still includes the pre-fork tick
+        df = await c.command_service.query_components(
+            ctx,
+            [Score],
+            fork_world_id,
+            fork_run_id,
+            storage_config=storage,
+        )
+        assert sorted(df.to_pydict()["tick"]) == [0, 1]
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_root_world_has_no_persisted_lineage(tmp_path):
+    """Root worlds record nothing; get_lineage returns None, not []."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    try:
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+        await c.mutation_service.create_entity(source.world_id, [Score(value=1.0)])
+        await c.simulation_service.step(source.world_id, RunConfig())
+
+        recovered = await c.query_service.get_lineage(
+            str(source.world_id), str(source.run_id), storage_config=storage
+        )
+        assert recovered is None
+    finally:
+        await c.shutdown()

@@ -115,9 +115,9 @@ Consequences:
 - Forking stays O(metadata) regardless of world size.
 - A fork of a stepped world is immediately queryable, and its first step processes the parent's last tick as input — state continues across the fork point.
 - Lineage flattens across generations: a fork of a fork reads base history, mid-fork history, and its own rows through one segment list.
-- Lineage lives on the in-memory world (`WorldConfig.lineage`). Once a fork is no longer live, only its own rows remain reachable by `(world_id, run_id)`; ancestry resolution requires the live world object.
+- Lineage is durable. At fork time the full ancestor chain is appended to the store as `WorldLineage` rows under the fork's `(world_id, run_id)` (negative entity ids — metadata, never live entities). The store is append-only, so provenance is never compromised: gated reads resolve ancestry for destroyed worlds by loading the persisted chain (`QueryService.get_lineage`). Live worlds resolve from memory; the persisted rows are the fallback and the system of record.
 
-Contract tests: `tests/integration/test_fork_destroy_contracts.py` (§8, fork lineage).
+Contract tests: `tests/integration/test_fork_destroy_contracts.py` (§8 fork lineage, §9 persisted lineage / dead-world ancestry).
 
 ### 4.7 — Audit emission
 

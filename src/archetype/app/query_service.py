@@ -18,6 +18,7 @@ from archetype.core.aio import AsyncQueryManager
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import ArchetypeSignature
+from archetype.core.lineage import load_lineage
 
 
 class QueryService:
@@ -139,6 +140,20 @@ class QueryService:
             result = result.concat(df)
             previous_up_to = up_to_tick
         return result
+
+    async def get_lineage(
+        self,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+    ) -> list[tuple[str, str, int]] | None:
+        """Recover a world's persisted fork ancestry from the store.
+
+        Lineage rows are append-only, so this works for destroyed worlds.
+        Returns None for root worlds (nothing was recorded at fork time).
+        """
+        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        return await load_lineage(store, world_id=world_id, run_id=run_id)
 
     async def list_signatures(
         self,

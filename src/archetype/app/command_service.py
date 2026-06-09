@@ -384,23 +384,30 @@ class CommandService:
             storage_config=storage_config,
             ticks=ticks,
             entity_ids=entity_ids,
-            lineage=self._live_lineage(world_id),
+            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
         )
         await self._emit(ctx, "query_world", world_id)
         return result
 
-    def _live_lineage(self, world_id: str) -> list[tuple[str, str, int]] | None:
-        """Fork ancestry for a live world, so reads cover pre-fork ticks.
+    async def _resolve_lineage(
+        self,
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None,
+    ) -> list[tuple[str, str, int]] | None:
+        """Fork ancestry for a world, so reads cover pre-fork ticks.
 
-        Worlds no longer in memory have no recoverable lineage; their own
-        rows remain queryable as before.
+        Live worlds carry lineage in memory; destroyed worlds fall back to
+        the lineage rows persisted at fork time (append-only, never lost).
         """
         try:
             world = self._worlds.get_world(UUID(str(world_id)))
         except Exception:
-            return None
-        lineage = getattr(world, "lineage", None)
-        return list(lineage) if lineage else None
+            world = None
+        if world is not None:
+            lineage = getattr(world, "lineage", None)
+            return list(lineage) if lineage else None
+        return await self._queries.get_lineage(world_id, run_id, storage_config)
 
     @logfire.instrument("gate.query_archetype")
     async def query_archetype(
@@ -424,7 +431,7 @@ class CommandService:
             ticks=ticks,
             entity_ids=entity_ids,
             components=components,
-            lineage=self._live_lineage(world_id),
+            lineage=await self._resolve_lineage(world_id, run_id, storage_config),
         )
         await self._emit(ctx, "query_world", world_id)
         return result
