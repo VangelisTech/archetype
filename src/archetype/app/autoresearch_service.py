@@ -15,17 +15,14 @@ new score beats the incumbent.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from uuid_utils import UUID, uuid7
+from uuid_utils import UUID
 
-from archetype.app.models import EpisodeConfig, EpisodeResult, RolloutConfig, RolloutResult
-from archetype.core.config import RunConfig
-from archetype.experiments.components import BranchHead, Experiment, Result, Run, RunStatus
+from archetype.app.models import EpisodeConfig, RolloutConfig, RolloutResult
 
 if TYPE_CHECKING:
     from archetype.app.simulation_service import SimulationService
@@ -135,7 +132,9 @@ class AutoResearchService:
         from the base, runs episodes on the forks, and optionally destroys
         them. The base world's state is the "seed" for every iteration.
         """
-        world = self._world_service.get_world(UUID(str(world_id)))
+        # Validate the base world exists (raises if not); the loop forks
+        # from world_id rather than mutating this instance.
+        self._world_service.get_world(UUID(str(world_id)))
 
         # Track the incumbent score
         incumbent_score = float("-inf")
