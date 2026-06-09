@@ -239,3 +239,28 @@ class TestPreActivationHookRaises:
 
             with pytest.raises(RuntimeError, match="Cannot add_hook before activation"):
                 await world.add_hook(PreTick, handler)
+
+
+# ── Logfire degradation ──────────────────────────────────────────────────
+
+
+class TestLogfireDegradation:
+    """ArchetypeRuntime must construct without Logfire credentials."""
+
+    def test_runtime_constructs_when_logfire_unauthenticated(self, monkeypatch):
+        import logfire
+        from logfire.exceptions import LogfireConfigError
+
+        calls: list[dict] = []
+
+        def fake_configure(**kwargs):
+            calls.append(kwargs)
+            if "send_to_logfire" not in kwargs:
+                raise LogfireConfigError("You are not logged into Logfire.")
+
+        monkeypatch.setattr(logfire, "configure", fake_configure)
+
+        runtime = ArchetypeRuntime()
+        asyncio.run(runtime.shutdown())
+
+        assert calls[-1]["send_to_logfire"] is False
