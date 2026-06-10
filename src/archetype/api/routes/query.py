@@ -182,7 +182,6 @@ async def get_audit_history(
     limit: int = 100,
     tick_range: str | None = Query(None, description="Comma-separated inclusive start,end"),
     actor_id: str | None = None,
-    signer_address: str | None = None,
     idempotency_key: str | None = None,
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
@@ -194,7 +193,6 @@ async def get_audit_history(
             world_id,
             tick_range=_tick_range(tick_range),
             actor_id=actor_id,
-            signer_address=signer_address,
             idempotency_key=idempotency_key,
             limit=limit,
         )

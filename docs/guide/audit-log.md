@@ -46,13 +46,8 @@ Required identity and operation fields:
 - `accepted_at`
 - `applied_at`
 
-Payment-bearing fields are nullable:
+Nullable fields:
 
-- `signer_address`
-- `tx_hash`
-- `price_paid_atomic`
-- `asset`
-- `chain_id`
 - `idempotency_key`
 
 ## 5. Query Contract
@@ -62,7 +57,6 @@ Payment-bearing fields are nullable:
 - `world_id`
 - `tick_range`
 - `actor_id`
-- `signer_address`
 - `idempotency_key`
 - `limit`
 

@@ -240,10 +240,12 @@ This is also how multi-tenant API servers map authenticated principals to ActorC
 
 Every gated call emits one audit row. The audit row schema is defined in [Audit Log](audit-log.md); fields include:
 
-- `command_id`, `world_id`, `tick`, `actor_id`, `actor_roles`
+- `command_id`, `world_id`, `actor_id`
 - `command_type`, `payload_json`, `idempotency_key`
 - `accepted_at`, `applied_at`, `status`
-- Payment-bearing columns (nullable): `signer_address`, `tx_hash`, `price_paid_atomic`, `asset`, `chain_id`
+
+(`tick` and per-row `actor_roles` are not yet recorded; adding them is
+tracked as audit-log hardening.)
 
 Multi-step gate methods (e.g. `destroy_world` orchestrating broker.clear + audit.flush + world_service.destroy_world) emit ONE audit row, not one per step. The row's `payload_json` captures sub-operation outcomes.
 
@@ -268,4 +270,3 @@ Existing code that constructs `ActorCtx(roles={"maintainer"})` should be updated
 - **Role hierarchy.** Today: flat sets, explicit composition.
 - **Custom roles.** Products may extend `COMMANDS_BY_ROLE` with new keys.
 - **Quota differentiation.** Per-tick command quotas key off `ctx.id`, not role. Quotas-by-role is a v2 addition.
-- **Payment-aware role.** A `paid` role indicates the request was paid for via x402. Composes with other roles. See platform spec § 3.3.

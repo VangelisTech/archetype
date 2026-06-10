@@ -55,7 +55,6 @@ archetype history <WORLD_ID> [OPTIONS]
 |------|------|---------|-------------|
 | `--limit` / `-n` | integer | `50` | Max audit rows to show |
 | `--actor-id` | text | — | Actor ID filter |
-| `--signer-address` | text | — | Signer filter |
 | `--idempotency-key` | text | — | Idempotency key |
 | `--tick-from` | integer | — | Reserved for API v2 |
 | `--tick-to` | integer | — | Reserved for API v2 |

@@ -334,7 +334,6 @@ Read audit history. Requires viewer, player, operator, or admin.
 | `limit` | integer | `100` |  |
 | `tick_range` | string \| null | — | Comma-separated inclusive start,end |
 | `actor_id` | string \| null | — |  |
-| `signer_address` | string \| null | — |  |
 | `idempotency_key` | string \| null | — |  |
 
 **Error codes:** `422`
