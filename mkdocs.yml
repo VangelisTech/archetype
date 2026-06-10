@@ -1,5 +1,5 @@
 site_name: Archetype
-site_description: Entity-Component-System simulation engine for AI agents
+site_description: A forkable, append-only world ledger for simulations and AI agents
 site_url: https://archetype-docs.pages.dev
 repo_url: https://github.com/VangelisTech/archetype
 repo_name: VangelisTech/archetype
@@ -17,7 +17,7 @@ extra_css:
 
 nav:
   - Getting Started:
-      - archetype-ecs: index.md
+      - Archetype: index.md
       - Quickstart: guide/quickstart.md
       - Examples: guide/examples.md
       - Contributing Guide: guide/contributing.md
@@ -29,13 +29,15 @@ nav:
       - Execution Hierarchy: guide/execution-hierarchy.md
       - World Lifecycle: guide/world-lifecycle.md
       - Audit Log: guide/audit-log.md
-  - Guides:
+  - Building:
       - Building Simulations: guide/building-simulations.md
       - Custom Commands: guide/custom-commands.md
       - Token Quotas: guide/token-quotas.md
+      - Mutation Testing: guide/mutation-testing.md
+  - Agent Evaluation:
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
-      - Mutation Testing: guide/mutation-testing.md
+      - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - Core Architecture:
       - Overview: guide/architecture.md
       - Archetypes: guide/archetype.md
@@ -59,8 +61,6 @@ nav:
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
       - Python API: reference/python-api.md
-  - Experiments:
-      - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
 
 markdown_extensions:
   - admonition

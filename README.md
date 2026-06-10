@@ -2,7 +2,7 @@
 
 # Archetype
 
-**A dataframe-first, append-only ECS runtime for simulations and AI agents.**
+**A forkable, append-only world ledger for simulations and AI agents.**
 
 [![CI](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml/badge.svg)](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
@@ -12,51 +12,69 @@
 
 ![Archetype Architecture Diagram](assets/archetype_diagram2.png)
 
-Archetype stores world state as columnar archetype tables, executes behavior as DataFrame transforms, and persists every tick as a new snapshot instead of overwriting rows. Consequences of that storage model:
+Every tick of a running world persists as queryable Arrow rows keyed
+`(world_id, run_id, tick)`. Nothing is ever overwritten — there is no update
+path and no delete path anywhere in the storage layer. Everything distinctive
+about Archetype falls out of that one decision:
 
-- entities are grouped by exact component sets
-- processors run over whole archetype DataFrames
-- writes are append-only
-- time-travel and world forking fall out of the storage model
+- **Time travel is a query.** `df.where(col("tick") == t)` is the state of the
+  world at tick `t`. Forever.
+- **Forking is branching the timeline.** Fork any moment of any run, vary one
+  condition, and diff the branches with a dataframe query. Forks read pre-fork
+  history through lineage — O(metadata), no row copying.
+- **Every run leaves a dataset behind.** Trajectories, rollout results, and
+  audit history land in the same store as world state, ready for analysis
+  without an export step.
+- **A tick either commits or it didn't happen.** Failed persistence raises; a
+  failed processor fails its tick. The ledger has no silent holes.
 
-## What It Is
+Mechanically, Archetype is an ECS on the [Daft](https://daft.ai) dataframe
+engine: entities are rows grouped into columnar archetype tables by exact
+component set, behavior is DataFrame transforms over whole archetypes, and a
+deterministic tick loop is the ledger's commit protocol.
 
-Archetype is split into layers:
+## What it's for
 
-| Layer | Purpose |
-|---|---|
-| `src/archetype/runtime` | `ArchetypeRuntime` — recommended top-level API for scripts and simulations |
-| `src/archetype/core` | ECS primitives: `Component`, `Archetype`, `AsyncWorld`, `AsyncProcessor`, storage/query/update contracts |
-| `src/archetype/app` | Service layer (lower-level): command gate, audit log, broker, world/simulation/query services |
-| `src/archetype/api` + `src/archetype/cli` | FastAPI server and Typer CLI |
+Workloads where history is part of the model, not exhaust:
 
-The runtime model is:
+- **Counterfactual evaluation of agent populations** — run many LLM agents in
+  a shared world, fork mid-history, replay a branch under a different
+  condition, and compare outcomes as tables.
+- **Rollout-heavy simulation** — episodes and rollouts are first-class; every
+  rollout's full tick history is queryable after the fact.
+- **Trajectory datasets** — agent runs recorded as rows you can filter, join,
+  grade, and train on (`archetype.experiments`).
+- **Multi-agent worlds with replay** — anything you'd want to rewind, audit,
+  or branch.
 
-1. external calls enter through `iCommandService`,
-2. the gate authorizes, delegates, and audits,
-3. tick-deferred commands are drained when a world steps,
-4. worlds materialize structural mutations,
-5. processors transform matching archetype DataFrames,
-6. updated rows are appended to storage.
+Orchestration frameworks checkpoint a conversation thread. Game ECS engines
+snapshot in-process memory. RL environments discard state on `reset()`.
+Archetype persists the whole world, every tick, as data — so replay, forks,
+and audit are storage facts rather than features.
 
-## Use Cases
+## The tick
 
-Simulations where tick-by-tick history is part of the model:
+One pass of the loop, for every archetype concurrently:
 
-- multi-agent worlds
-- counterfactual branches and forks
-- rollout-heavy evaluation
-- LLM-powered processors running over many entities in parallel
+1. external calls enter through the command gate, which authorizes, audits,
+   and defers mutations to the next tick boundary
+2. queued commands drain in deterministic `(tick, priority, sequence)` order,
+   with entity ids reserved at submit time
+3. the world reads tick `N-1`, materializes spawns/despawns
+4. processors transform the archetype's DataFrame in priority order
+5. the result is appended at tick `N` — or the step raises
+
+The tick boundary is the frame of the system: the deterministic answer to
+"when does an agent's action land." Same world state + same command queue +
+same processor outputs → same ledger.
 
 ## Installation
-
-### Package
 
 ```bash
 pip install archetype-ecs
 ```
 
-### Development
+Development:
 
 ```bash
 git clone https://github.com/VangelisTech/archetype.git
@@ -66,7 +84,9 @@ uv sync --group dev
 
 ## Quickstart
 
-`ArchetypeRuntime` is the recommended entry point. It owns the shared container, activates a world lazily on first use, and returns a real `entity_id` from `spawn()`.
+`ArchetypeRuntime` is the recommended entry point. It owns the shared
+container, activates a world lazily on first use, and returns a real
+`entity_id` from `spawn()`.
 
 ```python
 import asyncio
@@ -106,101 +126,51 @@ async def main():
         await world.spawn(Position(x=0, y=0), Velocity(dx=1, dy=2))
         await world.run(steps=3)
 
-        df = await world.query(Position)
+        df = await world.query(Position)  # full append-only history
         print(df.collect().to_pylist())
 
 
 asyncio.run(main())
 ```
 
-For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop the `await`s.
+Fork-and-diff — the move the storage model exists for:
+
+```python
+fork = await world.fork("counterfactual")  # inherits the source's store
+await fork.step()                          # continues from the source's last tick
+
+source_df = await world.query(Position)
+fork_df = await fork.query(Position)       # pre-fork history + its own branch
+```
+
+For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop the
+`await`s.
 
 Two things to know:
 
-- processor columns are prefixed `componentname__field` (e.g., `position__x`)
-- `ArchetypeRuntime` is the script boundary. Process lifetime and world lifetime are separate concerns. See `docs/guide/runtime.md` and the Specifications group for the full contract set. Drop to `ServiceContainer` only when you need explicit RBAC, custom command routing, or a non-script host.
+- component columns are prefixed `componentname__field` (e.g., `position__x`)
+- `ArchetypeRuntime` is the script boundary. Process lifetime and world
+  lifetime are separate concerns. See `docs/guide/runtime.md` and the
+  Specifications group for the full contract set. Drop to `ServiceContainer`
+  only when you need explicit RBAC, custom command routing, or a non-script
+  host.
 
-## CLI
+## How it's organized
 
-The CLI is a thin HTTP client. Except for `serve`, every command talks to a running FastAPI server.
-
-```bash
-# Start the server
-archetype serve
-
-# Create a world
-archetype world create demo
-
-# List worlds
-archetype world list
-
-# Spawn an entity from component payload JSON
-archetype entity spawn <world-id> --components '[{"type":"Position","x":0,"y":0}]'
-
-# Run 10 ticks
-archetype run <world-id> --steps 10
-
-# Run an episode or rollout
-archetype episode <world-id> --max-steps 100
-archetype rollout <world-id> --num-episodes 4 --max-steps 100
-
-# Fork the current world state
-archetype world fork <world-id> --name branch-a
-
-# Drop the live world object; storage and audit rows remain
-archetype world destroy <world-id>
-
-# Show audit history
-archetype history <world-id>
-```
-
-Useful environment variables:
-
-- `ARCHETYPE_URL`: base URL for the CLI, default `http://localhost:8000`
-
-Useful per-command flags:
-
-- `--url`: override `ARCHETYPE_URL` for one command
-- `--role` / `-r`: developer-mode auth shortcut (`admin`, `operator`, `player`, `viewer`)
-- `--token`: send `Authorization: Bearer <token>`; intended for production auth once v2 auth lands
-- `--json`: emit raw JSON for read commands
-
-## REST API
-
-`archetype serve` exposes a FastAPI app with these routes:
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/worlds` | Create a world |
-| `GET` | `/worlds` | List worlds |
-| `GET` | `/worlds/{world_id}` | Inspect one world |
-| `DELETE` | `/worlds/{world_id}` | Destroy a live world |
-| `POST` | `/worlds/{world_id}/fork` | Fork a world |
-| `POST` | `/worlds/{world_id}/entities` | Spawn an entity |
-| `DELETE` | `/worlds/{world_id}/entities/{entity_id}` | Despawn an entity |
-| `PATCH` | `/worlds/{world_id}/entities/{entity_id}` | Update entity components |
-| `POST` | `/worlds/{world_id}/entities/{entity_id}/components` | Add components |
-| `DELETE` | `/worlds/{world_id}/entities/{entity_id}/components` | Remove components |
-| `POST` | `/worlds/{world_id}/commands` | Submit one command |
-| `POST` | `/worlds/{world_id}/commands/batch` | Submit multiple commands |
-| `GET` | `/worlds/{world_id}/commands` | Audit-backed command history |
-| `POST` | `/worlds/{world_id}/step` | Run one tick |
-| `POST` | `/worlds/{world_id}/run` | Run multiple ticks |
-| `POST` | `/worlds/{world_id}/episode` | Run one episode |
-| `POST` | `/worlds/{world_id}/rollout` | Run a rollout |
-| `GET` | `/worlds/{world_id}/processors` | List processors |
-| `GET` | `/worlds/{world_id}/hooks` | List hooks |
-| `GET` | `/worlds/{world_id}/resources` | List resources |
-| `GET` | `/worlds/{world_id}/state` | Query world snapshot |
-| `GET` | `/worlds/{world_id}/entities/{entity_id}` | Query one entity |
-| `GET` | `/worlds/{world_id}/components` | Query component projections |
-| `GET` | `/worlds/{world_id}/history` | Query audit history |
+| Layer | What it is |
+|---|---|
+| `src/archetype/core` | The ledger and the tick loop. Hard invariants: append-only stores, canonical archetype identity, lineage-aware reads, loud persistence failures. |
+| `src/archetype/app` | The gate. Every operation is authorized, audited, and — for mutations — deferred to the tick boundary through a deterministic broker. |
+| `src/archetype/runtime` | `ArchetypeRuntime` — the recommended script boundary. World handles that route everything through the gate. |
+| `src/archetype/api` + `src/archetype/cli` | A reference deployment of the gate over HTTP, plus a thin CLI client. Inspection and ops — worlds get their behavior (processors, hooks) in-process. |
+| `src/archetype/experiments` | Experiment tracking as components: runs, results, trajectories, branch heads. The ledger's first first-party consumer. |
 
 ## Core Concepts
 
 ### Components
 
-Components are typed `LanceModel` subclasses. Their fields define the archetype schema fragments that get flattened into storage columns.
+Components are typed `LanceModel` subclasses. Their fields define the
+archetype schema fragments that get flattened into storage columns.
 
 ```python
 class Health(Component):
@@ -212,13 +182,15 @@ class Health(Component):
 
 ### Archetypes
 
-An archetype is the exact set of component types attached to an entity. Archetype signatures are canonicalized by sorted component type name, so component order is not meaningful.
-
-If you add or remove a component, the entity migrates to a different archetype table.
+An archetype is the exact set of component types attached to an entity.
+Signatures are canonicalized by sorted component type name, so component
+order is not meaningful. Adding or removing a component migrates the entity
+to a different archetype table.
 
 ### Processors
 
-Processors are pure-ish DataFrame transforms selected by subset match on component signatures:
+Processors are pure DataFrame transforms selected by subset match on
+component signatures:
 
 ```python
 class ThinkProcessor(AsyncProcessor):
@@ -226,85 +198,90 @@ class ThinkProcessor(AsyncProcessor):
     priority = 20
 ```
 
-If an archetype contains at least `Agent` and `Memory`, that processor runs on its DataFrame.
+If an archetype contains at least `Agent` and `Memory`, that processor runs
+on its DataFrame. Because a processor sees the whole population at once, an
+LLM-backed processor batches inference across every matching agent in one
+pass instead of looping agent by agent.
 
-### Worlds
+### Forking and lineage
 
-`AsyncWorld` owns:
+A fork gets a new `world_id` and `run_id`, preserves the tick position, and
+carries a *lineage* — pointers to the ancestor segments of its timeline.
+Pre-fork ticks resolve to the ancestor's immutable rows; post-fork ticks are
+the fork's own. The parent can keep running or be destroyed without affecting
+the fork's view. Lineage is persisted append-only at fork time, so ancestry
+survives process restarts and dead worlds. See
+`docs/guide/world-lifecycle.md`.
 
-- entity-to-archetype bookkeeping
-- pending spawn/despawn caches
-- the live in-memory snapshot for the latest tick
-- lifecycle hooks
-- query / execute / update orchestration
+### Commands and governance
 
-Different archetypes are processed concurrently; processors within one archetype run in ascending `priority`.
-
-### Commands and RBAC
-
-All external mutations are designed to flow through:
+All external mutations flow through one gate:
 
 ```text
-API / CLI / caller
-  → CommandService
-  → direct service delegate or tick-deferred CommandBroker
-  → AsyncWorld / storage
+caller → CommandService → direct delegate or tick-deferred CommandBroker → world → store
 ```
 
-The command gate enforces:
-
-- role permissions
-- per-tick command quotas
-- daily token budgets
-- audit emission
-
-Current roles are `viewer`, `player`, `operator`, and `admin`.
+The gate enforces role permissions (`viewer`, `player`, `operator`, `admin`),
+per-tick command quotas, token budgets, and emits one audit row per gated
+call — to an append-only audit table you query like any other DataFrame.
+Auth today is developer-mode (role-as-bearer-token); treat the RBAC surface
+as single-trusted-user until v2 auth lands.
 
 ### Storage
 
-Archetype supports two async storage backends behind the same contracts:
+Two async backends behind the same contracts: `AsyncLancedbStore` (LanceDB,
+default) and `AsyncStore` (Daft catalog / Iceberg). `StorageService` pools
+instances by `(uri, namespace, backend, cache config)`, and the gate resolves
+each world's recorded store so readers find rows wherever the world wrote
+them.
 
-- `AsyncLancedbStore` for LanceDB-backed archetype tables
-- `AsyncStore` for the Daft catalog-backed path
+## CLI and REST (reference deployment)
 
-`StorageService` shares backend instances across worlds with the same effective storage pool key: `(uri, namespace, backend, cache config)`.
+`archetype serve` exposes the gate over HTTP; the CLI is a thin client for
+it. This surface is for inspection and operations — listing worlds, stepping,
+forking, reading audit history. Worlds created over the wire have no
+processors; behavior is attached in-process through `ArchetypeRuntime`.
 
-## World Forking
+```bash
+archetype serve                       # start the FastAPI server
+archetype world create demo           # create a world
+archetype run <world-id> --steps 10   # run ticks
+archetype world fork <world-id> --name branch-a
+archetype history <world-id>          # audit history
+```
 
-Forking is a first-class operation in `WorldService`.
-
-A fork:
-
-- gets a new `world_id`
-- gets a new `run_id`
-- preserves tick position
-- copies entity mappings and pending mutation caches
-- copies hook registrations present at fork time
-- shares processor and resource instances by default
-
-Source and fork diverge independently after that point.
+Full route table and flags: `docs/guide/api-layer.md`.
 
 ## Status
 
-Current state worth knowing before using it:
+Honest state of the system:
 
-- the core runtime and append-only write path are the most mature parts
-- the Python service layer is richer than the REST read models
-- the FastAPI layer currently uses a default admin `ActorCtx` — not multi-tenant auth yet
+- the ledger — append-only write path, tick loop, time travel, fork lineage —
+  is the most mature part, and the most heavily contract-tested
+- `archetype.experiments` (runs, results, trajectories) is young but real;
+  the AutoResearch loop controller is early
+- the FastAPI layer runs a default admin `ActorCtx` — not multi-tenant auth
+  yet; the four-role model is enforced at the gate but identities are
+  developer-mode
+- a Rust core implementing the same engine semantics (arrow-rs, append-only
+  Parquet, Arrow C Data Interface) is in progress on a separate branch
 
-Start with `src/archetype/runtime` (`ArchetypeRuntime`) to use the system. Read `src/archetype/core` and `src/archetype/app` to understand how it works underneath.
+Start with `src/archetype/runtime` (`ArchetypeRuntime`) to use the system.
+Read `src/archetype/core` and `src/archetype/app` to understand how it works
+underneath.
 
 ## Repository Map
 
 ```text
 archetype/
 ├── src/archetype/runtime/   # ArchetypeRuntime — recommended top-level API
-├── src/archetype/core/      # ECS runtime and storage contracts
-├── src/archetype/app/       # Gated service layer (lower-level)
-├── src/archetype/api/       # FastAPI server
-├── src/archetype/cli/       # Typer CLI
+├── src/archetype/core/      # The ledger: ECS runtime and storage contracts
+├── src/archetype/app/       # The gate: command service, broker, audit
+├── src/archetype/api/       # FastAPI server (reference deployment)
+├── src/archetype/cli/       # Typer CLI (thin client)
+├── src/archetype/experiments/ # Runs, results, trajectories as components
 ├── examples/                # Runnable examples
-├── tests/                   # Test suite
+├── tests/                   # Test suite (contract tests pin the spec)
 ├── docs/                    # MkDocs site
 ├── AGENTS.md                # Repo-specific collaborator guidance
 └── LEARNINGS.md             # Architecture notes
@@ -312,29 +289,25 @@ archetype/
 
 ## Examples
 
-Run the examples directly:
-
 ```bash
 uv run python examples/01_world_mutations.py
 uv run python examples/02_fork_counterfactual.py
-uv run python examples/03_time_travel.py
+uv run python examples/03_time_travel.py      # historical reads + fork-and-diff
 uv run python examples/04_messaging.py
 uv run python examples/05_llm_agents.py
 uv run python examples/06_trajectory_analysis.py
 uv run python examples/07_hooks.py
 ```
 
-`examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py` require `OPENAI_API_KEY`.
+`examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`
+require `OPENAI_API_KEY`.
 
 ## Observability
 
-Archetype ships with [Logfire](https://pydantic.dev/logfire) integration at three levels:
-
-**Gate spans** — every `CommandService` method is instrumented with `@logfire.instrument`. You see operation type, world_id, actor_id, and duration for every gated call.
-
-**Step phases** — inside each tick, four spans cover query/materialize/execute/update. This tells you whether time is in store I/O or processor compute.
-
-**Simulation hooks** — opt-in per-tick and per-entity event tracing:
+Archetype ships with [Logfire](https://pydantic.dev/logfire) integration at
+three levels: gate spans on every `CommandService` method, step-phase spans
+inside each tick (query / materialize / execute / update), and opt-in
+per-tick/per-entity hooks:
 
 ```python
 from archetype.contrib.logfire_observer import logfire_hooks
@@ -342,9 +315,8 @@ from archetype.contrib.logfire_observer import logfire_hooks
 world = runtime.world("demo", processors=[...], hooks=logfire_hooks())
 ```
 
-The runtime calls `logfire.configure()` automatically. Python stdlib logging is bridged into Logfire via `LogfireLoggingHandler`, so all `logger.*` calls throughout the codebase appear as Logfire events.
-
-For the FastAPI server, `logfire.instrument_fastapi` auto-traces every route.
+The runtime calls `logfire.configure()` automatically, and stdlib logging is
+bridged in, so `logger.*` calls appear as Logfire events.
 
 ## Development
 
@@ -361,7 +333,10 @@ make docs        # build docs
 - Docs site: `https://archetype-docs.pages.dev`
 - Examples index: `examples/README.md`
 - Architecture notes: `LEARNINGS.md`
-- Specifications: `docs/guide/runtime.md`, `docs/guide/service-protocols.md`, `docs/guide/command-gate.md`, `docs/guide/execution-hierarchy.md`, `docs/guide/world-lifecycle.md`, `docs/guide/audit-log.md`
+- Specifications: `docs/guide/specification.md`, `docs/guide/runtime.md`,
+  `docs/guide/service-protocols.md`, `docs/guide/command-gate.md`,
+  `docs/guide/execution-hierarchy.md`, `docs/guide/world-lifecycle.md`,
+  `docs/guide/audit-log.md`
 
 ## License
 
