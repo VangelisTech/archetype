@@ -34,6 +34,11 @@ class UpdateManager(iUpdateManager):
         Update the store with the given DataFrame.
         Returns the DataFrame with stamped metadata for live snapshots.
         """
+        # A schemaless frame (no columns) cannot be stamped and carries
+        # nothing to persist — a legitimate no-op, distinct from a failure.
+        if not df.column_names:
+            logger.info(f"Update skipped (empty schema): archetype={Archetype.get_name(sig)}")
+            return df
         df = df.with_columns(
             {
                 "tick": lit(tick).cast(daft.DataType.uint32()),
@@ -45,5 +50,9 @@ class UpdateManager(iUpdateManager):
         try:
             self.store.append(sig, df)
         except Exception as e:
+            # Same contract as AsyncUpdateManager: persistence failure must be
+            # observable, so a failed append raises instead of returning a
+            # stamped-but-uncommitted frame.
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
+            raise
         return df

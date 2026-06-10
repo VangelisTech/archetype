@@ -38,8 +38,13 @@ async def test_async_store_append_skips_on_empty_df(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_store_append_handles_collect_failure(tmp_path, caplog):
-    """AsyncStore.append should catch collect() failures and return without raising."""
+async def test_async_store_append_raises_on_collect_failure(tmp_path, caplog):
+    """A frame that cannot materialize must fail the append, not no-op.
+
+    Persistence failure is observable to callers (specification.md, updater
+    contracts): a swallowed collect failure would let a tick 'succeed' while
+    persisting nothing.
+    """
     session, cfg = _build_session_and_config(tmp_path)
     store = AsyncStore(session, io_config=cfg.io_config)
     sig = Archetype.sig_from_components([Demo(v=1)])
@@ -49,13 +54,16 @@ async def test_async_store_append_handles_collect_failure(tmp_path, caplog):
             raise RuntimeError("boom")
 
     with caplog.at_level("ERROR"):
-        await store.append(sig, BadDf())
+        with pytest.raises(RuntimeError, match="boom"):
+            await store.append(sig, BadDf())
     assert any("Append collect failed" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_async_store_append_bad_schema_raises_and_is_caught(tmp_path, caplog):
-    """AsyncStore.get_archetype_df/_ensure_table should create schema, but appending with incompatible schema should be handled by update path. Here we simulate a mismatch by passing wrong columns and verify updater logs error."""
+async def test_async_updater_raises_on_bad_schema(tmp_path, caplog):
+    """An append with an incompatible schema must raise out of the updater."""
+    from daft.exceptions import DaftCoreException
+
     session, cfg = _build_session_and_config(tmp_path)
     store = AsyncStore(session, io_config=cfg.io_config)
     updater = AsyncUpdateManager(store)
@@ -67,14 +75,18 @@ async def test_async_store_append_bad_schema_raises_and_is_caught(tmp_path, capl
     bad = daft.from_arrow(pa.Table.from_pylist([{"not_entity_id": 1}]))
 
     with caplog.at_level("ERROR"):
-        # Should log an error from updater when append fails in backend
-        await updater.update(bad, sig, tick=0, world_id="w", run_id="r")
+        with pytest.raises(DaftCoreException):
+            await updater.update(bad, sig, tick=0, world_id="w", run_id="r")
     assert any("Error updating table" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
-async def test_async_updater_logs_error_on_store_failure(tmp_path, caplog):
-    """AsyncUpdateManager should catch store.append exceptions and log them, returning the original df."""
+async def test_async_updater_raises_on_store_failure(tmp_path, caplog):
+    """AsyncUpdateManager must surface store.append failures to its caller.
+
+    The old contract (log and return a stamped frame) made durability
+    unobservable — a world could advance past a hole in its own history.
+    """
     session, cfg = _build_session_and_config(tmp_path)
     store = FailingStore(session, io_config=cfg.io_config)
     updater = AsyncUpdateManager(store)
@@ -95,8 +107,7 @@ async def test_async_updater_logs_error_on_store_failure(tmp_path, caplog):
             schema=schema,
         )
     )
-    # Force a failure path by raising in store.append
     with caplog.at_level("ERROR"):
-        out = await updater.update(df, sig, tick=1, world_id="w", run_id="r")
-    assert out.count_rows() == df.count_rows()
+        with pytest.raises(RuntimeError, match="append failed"):
+            await updater.update(df, sig, tick=1, world_id="w", run_id="r")
     assert any("Error updating table" in rec.message for rec in caplog.records)

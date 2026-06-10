@@ -137,8 +137,10 @@ class AsyncStore(iAsyncStore):
                 )
                 return
         except Exception as e:
+            # A frame that cannot materialize cannot be persisted; the caller
+            # must see that, not a silent no-op.
             logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
-            return
+            raise
 
         table = self._ensure_table(sig)
 

@@ -241,7 +241,11 @@ def test_sync_update_manager_appends_stamped_rows_to_store():
     ]
 
 
-def test_sync_update_manager_stamps_metadata_and_swallows_store_errors(caplog):
+def test_sync_update_manager_raises_on_store_errors(caplog):
+    """Persistence failure is observable: a failed append raises instead of
+    returning a stamped-but-uncommitted frame (specification.md, updater
+    contracts)."""
+
     class ExplodingStore:
         def append(self, sig, df):
             raise RuntimeError("append failed")
@@ -250,13 +254,8 @@ def test_sync_update_manager_stamps_metadata_and_swallows_store_errors(caplog):
     updater = UpdateManager(store=ExplodingStore())
     df = _df_from_rows(sig, [Archetype.to_row_dict(3, 0, [Position(x=4, y=5)], "old", "old")])
 
-    stamped = updater.update(df, sig, tick=7, world_id="world-z", run_id="run-z")
-    rows = stamped.collect().to_pylist()
-
-    assert rows[0]["tick"] == 7
-    assert rows[0]["world_id"] == "world-z"
-    assert rows[0]["run_id"] == "run-z"
-    assert rows[0]["entity_id"] == 3
+    with pytest.raises(RuntimeError, match="append failed"):
+        updater.update(df, sig, tick=7, world_id="world-z", run_id="run-z")
     assert "append failed" in caplog.text
 
 

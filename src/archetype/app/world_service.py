@@ -203,6 +203,9 @@ class WorldOrchestrator:
 
         fork_config = WorldConfig(
             name=name,
+            # Minted here, not at first step: persist_lineage keys the fork's
+            # provenance rows by run_id, so the id must exist at fork time.
+            run_id=str(uuid7()),
             tick=source.tick,
             next_entity_id=source.next_entity_id,
             entity2sig=dict(source.entity2sig),
@@ -284,6 +287,17 @@ class WorldService:
     def get_world(self, world_id: UUID) -> iWorld:
         return self._orchestrator.get_world(world_id)
 
+    def storage_record(
+        self, world_id: str | UUID
+    ) -> tuple[StorageConfig, CacheConfig | None] | None:
+        """The storage/cache config backing a world, or None if unknown.
+
+        This is how readers locate a world's rows without being told the
+        storage config out of band. Records outlive destroy_world: storage is
+        append-only and destroyed worlds remain queryable.
+        """
+        return self._storage_configs.get(str(world_id))
+
     def get_world_by_name(self, name: str) -> iWorld:
         return self._orchestrator.get_world_by_name(name)
 
@@ -306,14 +320,26 @@ class WorldService:
         same physical store as the source by default; an explicit
         ``storage_config`` argument routes the fork to a different store.
         """
+        source_record = self._storage_configs.get(str(source_world_id))
         if storage_config is None:
-            source_record = self._storage_configs.get(str(source_world_id))
             if source_record is not None:
                 storage_config, source_cache = source_record
                 if cache_config is None:
                     cache_config = source_cache
             else:
                 storage_config = StorageConfig()
+        elif source_record is not None and storage_config != source_record[0]:
+            source = self._orchestrator.get_world(UUID(str(source_world_id)))
+            if getattr(source, "tick", 0) > 0:
+                # Lineage segments name rows in the source's store; a fork on
+                # a different store cannot read them (world-lifecycle.md § 4.5).
+                logger.warning(
+                    "fork_world: explicit storage_config differs from source's; "
+                    "the fork will not see the source's persisted history "
+                    "(world %s, tick %d)",
+                    source_world_id,
+                    source.tick,
+                )
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
@@ -329,9 +355,13 @@ class WorldService:
         return fork
 
     async def destroy_world(self, world_id: UUID | str) -> None:
-        """Destroy a world. In-memory cleanup only. Storage is preserved."""
+        """Destroy a world. In-memory cleanup only. Storage is preserved.
+
+        The storage record is retained: destroyed worlds' rows are still in
+        the store (append-only), and readers resolve them through
+        storage_record().
+        """
         await self._orchestrator.destroy_world(world_id)
-        self._storage_configs.pop(str(world_id), None)
 
     async def add_resource(self, world_id: str | UUID, resource: object) -> None:
         """Attach a resource to a world's Resources container."""

@@ -46,7 +46,7 @@ class _RuntimeWorldState:
         *,
         runtime: ArchetypeRuntime,
         name: str,
-        storage_config: StorageConfig,
+        storage_config: StorageConfig | None,
         cache_config: CacheConfig | None,
         init_processors: list,
         init_resources: list,
@@ -250,22 +250,28 @@ class RuntimeWorld:
         """Fork this world. Returns a new handle."""
         from archetype.runtime._config import coerce_cache, coerce_storage
 
+        # None means "inherit the source's storage" (world-lifecycle.md § 4.5):
+        # the gate resolves it to the source's store, and the fork handle keeps
+        # the source handle's config so its own reads hit the same store.
+        fork_storage = coerce_storage(storage)
+        fork_cache = coerce_cache(cache)
+
         async with self._state.op_lock:
             wid = await self._ensure_id()
             info = await self._gate.fork_world(
                 self._ctx,
                 wid,
                 name,
-                storage_config=coerce_storage(storage),
-                cache_config=coerce_cache(cache),
+                storage_config=fork_storage,
+                cache_config=fork_cache,
             )
 
             # Build a pre-activated state for the fork
             fork_state = _RuntimeWorldState(
                 runtime=self._state.runtime,
                 name=info.name or name or "fork",
-                storage_config=coerce_storage(storage),
-                cache_config=coerce_cache(cache),
+                storage_config=fork_storage if storage is not None else self._state.storage_config,
+                cache_config=fork_cache if cache is not None else self._state.cache_config,
                 init_processors=[],
                 init_resources=[],
                 init_hooks=[],
