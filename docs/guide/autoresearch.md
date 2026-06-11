@@ -2,7 +2,7 @@
 
 AutoResearch is a pattern for autonomous software optimization: track a single branch head, evaluate candidate commits against it, and advance the head only when a run improves a user-defined metric. The shape — experiment, run, result, keep / discard / crash — follows Andrej Karpathy's framing of autonomous software optimization as a research direction.
 
-**Status: in development.** The ECS-native lifecycle components are implemented. The loop controller that advances the branch head is not yet in this repo.
+**Status: the loop runs on the ledger.** The lifecycle components are implemented, and `AutoResearchService` records its own state as entities in a lab world — the loop is itself an archetype simulation.
 
 ## What's Implemented
 
@@ -30,17 +30,41 @@ await ingest_runner_state(world_id, rows, container)
 
 After ingestion, runs are queryable as entities in the world — filter by `experiment_name`, join with `Result`, time-travel to a historical snapshot, or fork the world to explore "what if run X had won instead."
 
-## What's In Development
+## The Loop
 
-The loop orchestration itself. A controller that:
+`AutoResearchService.run(world_id, config, evaluator)` is the controller:
+each iteration forks the base world, runs a rollout, hands the result to
+your evaluator, and advances the head when the score beats the incumbent.
+The service stays scoring-agnostic — the evaluator is yours: scalar,
+Pareto, LLM judge, tournament, human vote.
 
-- reads the current `BranchHead` for an experiment
-- launches a bounded run against that commit
-- waits for the user-defined evaluator to emit a `Result`
-- compares the result to the incumbent using user-defined logic
-- updates the `BranchHead` on improvement, otherwise leaves it
+**The loop's own state lives on the ledger.** Each experiment gets a lab
+world named `autoresearch:{experiment_name}`, sharing the base world's
+storage:
 
-This is deliberately the last piece. The primitives are intentionally scoring-agnostic so the loop can be built against any comparison — scalar, Pareto, LLM judge, tournament, human vote — without the components having to encode a preference.
+- **tick 0** — genesis: the `Experiment` and a seed `BranchHead`, persisted
+  as raw initial conditions
+- **every subsequent tick** — one iteration: a `Run` row, a `Result` row
+  (score, episode world ids, full provenance), and the `BranchHead`
+  advance when the iteration improved
+- **resume is a read** — a second `run()` of the same experiment reads the
+  incumbent from the latest `BranchHead` row and continues iteration
+  numbering from the lab tick. There is no in-memory loop state to lose.
+
+```python
+result = await container.autoresearch_service.run(
+    base_world_id,
+    AutoResearchConfig(experiment_name="exp", max_iterations=10),
+    evaluator=my_score_fn,
+)
+
+lab = container.world_service.get_world(result.lab_world_id)
+heads = await lab.query_archetype(sig=(BranchHead,), ticks=[t])  # head at any tick
+```
+
+Because the lab world is an ordinary world, the experiment itself is
+forkable: fork the lab at any tick and replay "what if a different run had
+advanced the head." Contract tests: `tests/app/test_autoresearch_ledger.py`.
 
 ## Why ECS-Native
 
