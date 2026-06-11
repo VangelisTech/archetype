@@ -469,7 +469,9 @@ async def test_fork_after_step_processes_parent_state(tmp_path):
         source = await c.world_service.create_world(WorldConfig(name="src"), storage)
         source.system.processors = [Inc()]
         await c.mutation_service.create_entity(source.world_id, [Score(value=0.0)])
-        await c.simulation_service.step(source.world_id, RunConfig())  # value -> 1.0
+        # Initial conditions persist raw at tick 0; the transition applies next tick.
+        await c.simulation_service.step(source.world_id, RunConfig())  # 0.0 at tick 0
+        await c.simulation_service.step(source.world_id, RunConfig())  # 1.0 at tick 1
 
         fork = await c.world_service.fork_world(
             source.world_id, name="fork", storage_config=storage

@@ -136,9 +136,9 @@ The fork half of the example stages a divergent component value on the fork
 of ticks, and prints the source-vs-fork diff at the same tick — plus the
 fork's view of its pre-fork history, read through lineage.
 
-One subtlety worth knowing: tick 0 is persisted *after* processors run, so
-spawn-time component values are never queryable as a row — tick 0 already
-reflects one processor pass.
+Initial conditions are part of the ledger: an entity's first persisted row
+is its raw spawn values at the tick it materializes, and processors first
+apply on the following tick — the table contains `x_0, f(x_0), f^2(x_0), ...`.
 
 ---
 

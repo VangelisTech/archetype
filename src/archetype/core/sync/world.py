@@ -138,11 +138,18 @@ class SyncWorld(iWorld):
             components=None,
         )
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self._materialize_mutations(df, sig, run_config)
+        # 2. Despawns apply to the existing population; spawns are held aside.
+        df = self._apply_despawns(df, sig)
+        spawns_df = self._spawn_frame(df, sig)
 
         # 3. Execute Processors for this archetype via system
         df = self.execute(df, sig, run_config, **input_kwargs)
+
+        # Initial conditions are part of the ledger: a newborn's first row is
+        # its raw spawn values at this tick; processors first apply on the
+        # next tick (x_0 is given, x_{t+1} = f(x_t)).
+        if spawns_df is not None:
+            df = df.concat(spawns_df)
 
         # 4. Update
         df_mat = self.update(df, sig, run_config, self.tick)
@@ -160,8 +167,8 @@ class SyncWorld(iWorld):
         despawn_sigs = set(self.despawn_cache.keys())
         return active_sigs | spawned_sigs | despawn_sigs
 
-    def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
-        # Handle Despawns
+    def _apply_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
+        """Flip is_active for pending despawns. Cache cleanup stays in _clear_caches."""
         if self.despawn_cache.get(sig):
             # Grab despawn list of dicts and dedupe by most recent mutation command
             self.despawn_cache[sig] = list(dict.fromkeys(reversed(self.despawn_cache[sig])))
@@ -184,29 +191,41 @@ class SyncWorld(iWorld):
                 )
                 .select(*df.column_names)
             )
-
-        # Handle Spawns
-        if self.spawn_cache.get(sig):
-            # Grab spawn list of dicts
-            rows = self.spawn_cache[sig]
-
-            # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
-            rows = list({row["entity_id"]: row for row in rows}.values())
-
-            # Convert list of dicts to arrow table and eventually daft df
-            pyarrow_schema = Archetype.get_archetype_schema(sig)
-            arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
-            spawns_df = daft.from_arrow(arrow_table)
-            target_schema = df.schema()
-            spawns_df = spawns_df.with_columns(
-                {
-                    "entity_id": col("entity_id").cast(target_schema["entity_id"].dtype),
-                    "tick": col("tick").cast(target_schema["tick"].dtype),
-                }
-            )
-            df = df.concat(spawns_df)
-
         return df
+
+    def _spawn_frame(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame | None:
+        """Pending spawns as a raw frame (initial conditions), cast to df's dtypes.
+
+        Cache cleanup stays in _clear_caches.
+        """
+        if not self.spawn_cache.get(sig):
+            return None
+        # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
+        rows = list({row["entity_id"]: row for row in self.spawn_cache[sig]}.values())
+
+        # Convert list of dicts to arrow table and eventually daft df
+        pyarrow_schema = Archetype.get_archetype_schema(sig)
+        arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
+        spawns_df = daft.from_arrow(arrow_table)
+        target_schema = df.schema()
+        return spawns_df.with_columns(
+            {
+                "entity_id": col("entity_id").cast(target_schema["entity_id"].dtype),
+                "tick": col("tick").cast(target_schema["tick"].dtype),
+            }
+        )
+
+    def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
+        """Apply pending despawns and concat pending spawns onto df.
+
+        Diagnostic/compatibility surface (exercised directly by sync contract
+        tests). The step path applies despawns before processors and concats
+        spawns after them, so newborn rows persist their initial conditions
+        (see _run_archetype).
+        """
+        df = self._apply_despawns(df, sig)
+        spawns_df = self._spawn_frame(df, sig)
+        return df.concat(spawns_df) if spawns_df is not None else df
 
     def _move_entity(
         self,

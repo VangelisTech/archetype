@@ -76,17 +76,17 @@ async def test_runtime_fork_step_continues_parent_state(tmp_path):
     async with ArchetypeRuntime() as rt:
         world = rt.world("src", storage=_storage(tmp_path), processors=[Inc()])
         await world.spawn(Meter(value=0.0))
-        await world.step()  # value -> 1.0 at tick 0
-        await world.step()  # value -> 2.0 at tick 1
+        await world.step()  # initial conditions persist: 0.0 at tick 0
+        await world.step()  # value -> 1.0 at tick 1
 
         fork = await world.fork("fork")
-        await fork.step()  # must read 2.0, write 3.0 at tick 2
+        await fork.step()  # must read 1.0, write 2.0 at tick 2
 
         df = await fork.query(Meter)
         by_tick = {r["tick"]: r["meter__value"] for r in df.to_pylist()}
-        assert by_tick[2] == 3.0, f"fork did not continue source state: {by_tick}"
+        assert by_tick[2] == 2.0, f"fork did not continue source state: {by_tick}"
         # Pre-fork history still visible alongside the fork's own row
-        assert by_tick[0] == 1.0 and by_tick[1] == 2.0
+        assert by_tick[0] == 0.0 and by_tick[1] == 1.0
 
 
 @pytest.mark.asyncio

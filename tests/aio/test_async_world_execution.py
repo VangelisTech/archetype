@@ -86,18 +86,24 @@ async def test_processors_run_in_priority_and_filter_kwargs(world, store_backend
     sig = Archetype.sig_from_components([Position(x=2, y=3)])
     _ = await world.create_entity([Position(x=2, y=3)])
 
-    # After one step with scale=4:
+    # The spawn tick persists raw initial conditions (2, 3); processors first
+    # apply on the following tick. After the second step with scale=4:
     # P1: x *= 4  → 8
     # P2: y += 1  → 4
     # (A raising processor fails the step — see
     #  tests/core/test_async_world_error_propagation.py)
     rc = RunConfig()
     await world.step(rc, scale=4)
+    await world.step(rc, scale=4)
 
     df = await store_backend.get_archetype_df(sig, world.world_id, world.run_id)
-    out = df.collect().to_pylist()
-    assert len(out) == 1
-    row = out[0]
+    out = sorted(df.collect().to_pylist(), key=lambda r: r["tick"])
+    assert len(out) == 2
+    # Tick 0: initial conditions, untouched by processors
+    assert out[0]["position__x"] == 2
+    assert out[0]["position__y"] == 3
+    # Tick 1: P1 (priority 5) scales x before P2 (priority 10) bumps y
+    row = out[1]
     assert row["position__x"] == 8
     assert row["position__y"] == 4
 
