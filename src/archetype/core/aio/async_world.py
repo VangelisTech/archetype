@@ -184,10 +184,17 @@ class AsyncWorld(iAsyncWorld):
             )
 
         with logfire.span("world.materialize", sig=sig_name, tick=self.tick):
-            df = self.materialize_mutations(df, sig)
+            df = self._apply_despawns(df, sig)
+            spawns_df = self._spawn_frame(sig)
 
         with logfire.span("world.execute", sig=sig_name, tick=self.tick):
             df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
+
+        # Initial conditions are part of the ledger: a newborn's first row is
+        # its raw spawn values at this tick; processors first apply on the
+        # next tick (x_0 is given, x_{t+1} = f(x_t)).
+        if spawns_df is not None:
+            df = df.concat(spawns_df)
 
         with logfire.span("world.update", sig=sig_name, tick=self.tick):
             df_mat = await self.update(df, sig, run_config)
@@ -206,8 +213,8 @@ class AsyncWorld(iAsyncWorld):
         despawn_sigs = set(self.despawn_cache.keys())
         return active_sigs | spawned_sigs | despawn_sigs
 
-    def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
-        # Handle Despawns
+    def _apply_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
+        """Flip is_active for pending despawns. Clears the despawn cache."""
         if self.despawn_cache.get(sig):
             entities_to_despawn = list(
                 set(self.despawn_cache[sig])
@@ -220,22 +227,34 @@ class AsyncWorld(iAsyncWorld):
             )
             # Clear Cache
             self.despawn_cache[sig] = []
-
-        # Handle Spawns
-        if self.spawn_cache.get(sig):
-            # Dedupe duplicate spawns, prioritizing "most recent cmd" (last write wins)
-            # Dict keeps last value per key, so iterate forward to keep latest
-            rows = list({row["entity_id"]: row for row in self.spawn_cache[sig]}.values())
-
-            # Convert list of dicts to arrow table and eventually daft df
-            pyarrow_schema = Archetype.get_archetype_schema(sig)
-            arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
-            spawns_df = daft.from_arrow(arrow_table)
-
-            df = df.concat(spawns_df)
-            self.spawn_cache[sig] = []
-
         return df
+
+    def _spawn_frame(self, sig: ArchetypeSignature) -> DataFrame | None:
+        """Pending spawns as a raw frame (initial conditions). Clears the cache."""
+        if not self.spawn_cache.get(sig):
+            return None
+        # Dedupe duplicate spawns, prioritizing "most recent cmd" (last write wins)
+        # Dict keeps last value per key, so iterate forward to keep latest
+        rows = list({row["entity_id"]: row for row in self.spawn_cache[sig]}.values())
+
+        # Convert list of dicts to arrow table and eventually daft df
+        pyarrow_schema = Archetype.get_archetype_schema(sig)
+        arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
+        spawns_df = daft.from_arrow(arrow_table)
+        self.spawn_cache[sig] = []
+        return spawns_df
+
+    def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
+        """Apply pending despawns and concat pending spawns onto df.
+
+        Diagnostic/compatibility surface. The step path does NOT use this
+        combined form: it applies despawns before processors and concats
+        spawns after them, so newborn rows persist their initial conditions
+        (see _run_archetype).
+        """
+        df = self._apply_despawns(df, sig)
+        spawns_df = self._spawn_frame(sig)
+        return df.concat(spawns_df) if spawns_df is not None else df
 
     async def _move_entity(
         self,

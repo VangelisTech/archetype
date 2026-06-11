@@ -573,11 +573,19 @@ async def main():
             print("OPENAI_API_KEY not set; running sampling/score pipeline without LLM labeling.\n")
 
         print("Running pipeline (sample -> label -> score)...")
+        # The spawn tick persists each trajectory's raw initial conditions —
+        # the ledger keeps what was ingested. Processors first apply on the
+        # following tick (x_0 is given, x_{t+1} = f(x_t)), so the second step
+        # runs the sample -> label -> score pipeline.
+        await world.step()
         await world.step()
         print("  -> Pipeline completed\n")
 
         print("Results:")
-        rows = (await world.query(Trajectory, Label)).collect().to_pylist()
+        # query() returns the full append-only history; show the latest tick.
+        info = await world.info()
+        df = await world.query(Trajectory, Label)
+        rows = df.where(col("tick") == info.tick - 1).collect().to_pylist()
         for row in rows:
             if not row.get("is_active", True):
                 continue

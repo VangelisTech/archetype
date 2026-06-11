@@ -248,12 +248,26 @@ One tick MUST follow this order:
 2. determine active signatures from live state plus staged mutations
 3. for each signature:
    - load previous state
-   - materialize staged mutations
-   - execute processors
+   - apply staged despawns to the existing population
+   - execute processors over the existing population
+   - concat staged spawn rows, raw
    - persist through the updater
 4. replace the live snapshot with active rows only
 5. increment the world tick
 6. fire `PostTick` hooks
+
+### Initial conditions
+
+- An entity's first persisted row is its raw spawn values at the tick it
+  materializes. Processors first apply on the following tick.
+- Formally: `x_0` is given; `x_{t+1} = f(x_t)`. The ledger contains the full
+  sequence `x_0, f(x_0), f^2(x_0), ...` — initial conditions included.
+- The same semantics apply to staged overlays: `update_entity`,
+  `add_components`, and `remove_components` re-insert the mutated row, so
+  the mutated values persist raw at their materialization tick and are
+  first transformed on the following tick. An overlay is new given state:
+  the engine records what was set before the dynamics resume.
+- Contract tests: `tests/core/test_initial_conditions_contract.py`.
 
 ### Previous-state reads
 

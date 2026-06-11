@@ -408,13 +408,19 @@ Tick N:
   1. PreTick hook fires (tick=N)
   2. For each archetype (parallel):
      a. Query previous state (tick N-1)
-     b. Materialize mutations (spawn/despawn)
-     c. Execute processors (priority order, lower first)
-     d. Persist to store (tick=N)
-  3. Update _live snapshots
-  4. Increment tick → N+1
-  5. PostTick hook fires (tick=N+1)
+     b. Apply staged despawns (flip is_active=False on the existing population)
+     c. Execute processors over the existing population (priority order, lower first)
+     d. Concat staged spawns as raw initial conditions (x_0 given; first transformed at N+1)
+     e. Persist to store (tick=N)
+  3. Increment tick → N+1
+  4. PostTick hook fires (tick=N+1)
 ```
+
+Initial-conditions semantics apply to every staged insert, not just brand-new
+entities: `update_entity`, `add_components`, and `remove_components` re-insert
+the mutated row through the despawn+spawn mechanism, so the mutated values land
+raw at tick N and processors first see them at tick N+1. An overlay is new
+given state — the engine records what you set before the dynamics resume.
 
 ---
 

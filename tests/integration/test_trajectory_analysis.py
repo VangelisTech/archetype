@@ -145,6 +145,9 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
             )
             await container.command_service.submit(ctx, str(world.world_id), cmd)
 
+        # First step materializes the spawns with raw initial conditions;
+        # SamplingProcessor first applies on the following tick.
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
@@ -190,6 +193,9 @@ async def test_scoring_processor_clamps_score(tmp_path):
         )
         await container.command_service.submit(ctx, str(world.world_id), cmd)
 
+        # First step materializes the spawn with raw initial conditions
+        # (score=5.0); ScoringProcessor clamps on the following tick.
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
@@ -235,6 +241,9 @@ async def test_full_pipeline_without_llm(tmp_path):
             )
             await container.command_service.submit(ctx, str(world.world_id), cmd)
 
+        # First step materializes the spawns with raw initial conditions;
+        # the sample -> score pipeline applies on the following tick.
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
         df = await world.get_components([Trajectory, Label])
