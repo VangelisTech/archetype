@@ -15,7 +15,9 @@ new score beats the incumbent.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -23,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype.app.models import EpisodeConfig, RolloutConfig, RolloutResult
+from archetype.core.config import RunConfig, WorldConfig
+from archetype.experiments.components import BranchHead, Experiment, Result, Run, RunStatus
 
 if TYPE_CHECKING:
     from archetype.app.simulation_service import SimulationService
@@ -52,6 +56,9 @@ class AutoResearchConfig:
     max_iterations: int = 100
     improvement_threshold: float = 0.0
     destroy_forks_on_complete: bool = True
+    # The loop's own state lives on the ledger: a lab world named
+    # "autoresearch:{experiment_name}" whose ticks are the loop's iterations.
+    record_to_ledger: bool = True
 
 
 @dataclass(frozen=True)
@@ -74,6 +81,10 @@ class AutoResearchResult:
     final_score: float
     initial_score: float
     iterations: list[IterationResult] = field(default_factory=list)
+    # World id of the experiment's ledger (lab world); "" when recording
+    # was disabled. Query it like any other world: Experiment at tick 0,
+    # one tick per iteration, BranchHead history at every tick.
+    lab_world_id: str = ""
 
     @property
     def improved(self) -> bool:
@@ -131,17 +142,33 @@ class AutoResearchService:
         The base world is NOT mutated by the loop. Each iteration forks
         from the base, runs episodes on the forks, and optionally destroys
         them. The base world's state is the "seed" for every iteration.
+
+        The loop's own state lives on the ledger (unless
+        config.record_to_ledger is False): a lab world named
+        "autoresearch:{experiment_name}" whose tick 0 is the genesis
+        (Experiment + seed BranchHead as initial conditions) and whose
+        every subsequent tick is one iteration — a Run row, a Result row,
+        and the BranchHead advance when the iteration improved. The
+        incumbent is read from the ledger, never from memory, so a second
+        run of the same experiment resumes from the last declared best.
         """
         # Validate the base world exists (raises if not); the loop forks
         # from world_id rather than mutating this instance.
         self._world_service.get_world(UUID(str(world_id)))
 
-        # Track the incumbent score
+        lab = None
+        head_entity_id: int | None = None
         incumbent_score = float("-inf")
+        start_iteration = 0
+        if config.record_to_ledger:
+            lab, head_entity_id, incumbent_score, start_iteration = await self._attach_ledger(
+                world_id, config
+            )
+
         initial_score = float("-inf")
         iterations: list[IterationResult] = []
 
-        for i in range(config.max_iterations):
+        for i in range(start_iteration, start_iteration + config.max_iterations):
             # Build rollout config
             rollout_config = RolloutConfig(
                 episode_config=config.episode_config,
@@ -152,20 +179,34 @@ class AutoResearchService:
             )
 
             # Run the rollout
+            started_at_ms = int(time.time() * 1000)
             rollout_result = await self._simulation_service.run_rollout(world_id, rollout_config)
 
             # Evaluate
             score = evaluator(rollout_result)
             if hasattr(score, "__await__"):
                 score = await score
+            score = float(score)
 
-            if i == 0:
+            if i == start_iteration:
                 initial_score = score
 
             # Compare to incumbent
             improved = score > incumbent_score + config.improvement_threshold
             if improved:
                 incumbent_score = score
+
+            if lab is not None:
+                await self._record_iteration(
+                    lab,
+                    head_entity_id,
+                    config,
+                    iteration=i,
+                    rollout=rollout_result,
+                    score=score,
+                    improved=improved,
+                    started_at_ms=started_at_ms,
+                )
 
             iteration_result = IterationResult(
                 iteration=i,
@@ -197,7 +238,131 @@ class AutoResearchService:
             final_score=incumbent_score,
             initial_score=initial_score,
             iterations=iterations,
+            lab_world_id=str(lab.world_id) if lab is not None else "",
         )
+
+    # ── Ledger: the loop's own state as world rows ─────────────────────────
+
+    async def _attach_ledger(
+        self,
+        base_world_id: str | UUID,
+        config: AutoResearchConfig,
+    ) -> tuple[Any, int, float, int]:
+        """Create or resume the experiment's lab world.
+
+        Returns (lab_world, head_entity_id, incumbent_score, start_iteration).
+
+        Genesis (new lab world): spawn Experiment + a seed BranchHead and
+        step once, so tick 0 holds the experiment's initial conditions. The
+        lab world inherits the base world's storage — the record lives next
+        to the data it is about.
+
+        Resume (existing lab world): the latest BranchHead row IS the
+        incumbent; the next iteration index is derived from the lab tick
+        (one iteration per tick, genesis at tick 0).
+        """
+        name = f"autoresearch:{config.experiment_name}"
+        try:
+            lab = self._world_service.get_world_by_name(name)
+        except KeyError:
+            record = self._world_service.storage_record(base_world_id)
+            storage_config = record[0] if record is not None else None
+            cache_config = record[1] if record is not None else None
+            lab = await self._world_service.create_world(
+                WorldConfig(name=name), storage_config, cache_config
+            )
+
+        head_row = await self._read_head(lab)
+        if head_row is None:
+            await lab.create_entity(
+                [
+                    Experiment.make(
+                        config.experiment_name,
+                        "",
+                        metadata={"base_world_id": str(base_world_id)},
+                    )
+                ]
+            )
+            head_entity_id = await lab.create_entity(
+                [BranchHead.make(config.experiment_name, "", descriptor={"score": None})]
+            )
+            await lab.step(RunConfig())  # genesis: initial conditions at tick 0
+            return lab, head_entity_id, float("-inf"), max(lab.tick - 1, 0)
+
+        descriptor = json.loads(head_row["branchhead__descriptor_json"])
+        score = descriptor.get("score")
+        incumbent = float(score) if score is not None else float("-inf")
+        return lab, int(head_row["entity_id"]), incumbent, max(lab.tick - 1, 0)
+
+    async def _read_head(self, lab) -> dict | None:
+        """The latest persisted BranchHead row, or None for a fresh world."""
+        if lab.tick == 0:
+            return None
+        df = await lab.query_archetype(sig=(BranchHead,), ticks=[lab.tick - 1])
+        rows = df.to_pylist()
+        return rows[0] if rows else None
+
+    async def _record_iteration(
+        self,
+        lab,
+        head_entity_id: int | None,
+        config: AutoResearchConfig,
+        *,
+        iteration: int,
+        rollout: RolloutResult,
+        score: float,
+        improved: bool,
+        started_at_ms: int,
+    ) -> None:
+        """Append one tick of loop history to the lab world.
+
+        One iteration = one tick: a Run row (the attempt), a Result row
+        (the evaluation), and — when the iteration improved on the
+        incumbent — the BranchHead advance. Every advance is an append;
+        the head's full history stays queryable at every tick.
+        """
+        run_id = f"{config.experiment_name}:iter{iteration}"
+        await lab.create_entity(
+            [
+                Run(
+                    run_id=run_id,
+                    experiment_name=config.experiment_name,
+                    status=RunStatus.STOPPED.value,
+                    task="rollout",
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=int(time.time() * 1000),
+                )
+            ]
+        )
+        await lab.create_entity(
+            [
+                Result.make(
+                    run_id,
+                    outputs={
+                        "score": score,
+                        "improved": improved,
+                        "iteration": iteration,
+                        "num_episodes": rollout.num_episodes,
+                        "total_duration_steps": rollout.total_duration_steps,
+                        "episode_world_ids": [str(ep.world_id) for ep in rollout.episodes],
+                    },
+                    evaluator="autoresearch",
+                )
+            ]
+        )
+        if improved and head_entity_id is not None:
+            await lab.update_entity(
+                head_entity_id,
+                [
+                    BranchHead.make(
+                        config.experiment_name,
+                        "",
+                        run_id=run_id,
+                        descriptor={"score": score, "iteration": iteration},
+                    )
+                ],
+            )
+        await lab.step(RunConfig())
 
     async def sweep(
         self,
