@@ -79,3 +79,7 @@ eval-results.json
 # mutmut: working tree of generated mutants and its on-disk cache
 mutants/
 .mutmut-cache
+
+# session reflection artifacts (local corpus analysis)
+session_data/
+session_reflection_report.md
