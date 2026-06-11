@@ -81,6 +81,11 @@ What you get for keeping everything:
 
 The intended user of this system is an agent.
 
+Archetype is the harness: the agent supplies the intelligence; the engine
+supplies the attachment points, the constraints, and the record. And
+because the record is data, it is a harness the wearer can train on — an
+agent improving itself from its own ledger.
+
 Everything is arranged so that an agent can build here and a human can
 trust the result by reviewing code, not by re-running it:
 
