@@ -114,21 +114,32 @@ class SyncWorld(iWorld):
 
         self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
-        results: dict[ArchetypeSignature, DataFrame] = {}
-        for sig in sorted(self.active_signatures, key=Archetype.get_name):
-            results[sig] = self._run_archetype(sig, run_config, **input_kwargs)
+        sigs = sorted(self.active_signatures, key=Archetype.get_name)
 
-        # Finalize tick
-        self._clear_caches()
+        # Phase 1 — compute. No store writes, no cache consumption: a
+        # processor failure leaves the world untouched and the tick retryable.
+        computed: dict[ArchetypeSignature, DataFrame] = {}
+        for sig in sigs:
+            computed[sig] = self._compute_archetype(sig, run_config, **input_kwargs)
+
+        # Phase 2 — commit. Each archetype's caches are consumed only after
+        # its rows are appended; a store failure preserves exactly the
+        # uncommitted mutations.
+        results: dict[ArchetypeSignature, DataFrame] = {}
+        for sig, df in computed.items():
+            results[sig] = self.update(df, sig, run_config, self.tick)
+            self.spawn_cache.pop(sig, None)
+            self.despawn_cache.pop(sig, None)
+
         self.tick += 1
 
         self.hooks.fire(PostTick(world_id=self.world_id, tick=self.tick, results=results))
 
-    def _run_archetype(
+    def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
-    ) -> tuple[DataFrame, ArchetypeSignature]:
-        """
-        Process a single archetype through the full pipeline.
+    ) -> DataFrame:
+        """Build one archetype's tick-N frame. Pure with respect to world
+        state: reads the caches without consuming them and writes nothing.
         """
         df = self.query_archetype(
             sig=sig,
@@ -151,9 +162,7 @@ class SyncWorld(iWorld):
         if spawns_df is not None:
             df = df.concat(spawns_df)
 
-        # 4. Update
-        df_mat = self.update(df, sig, run_config, self.tick)
-        return df_mat
+        return df
 
     # ---------------------------------------------------------------------
     #  Step Planning
@@ -168,7 +177,8 @@ class SyncWorld(iWorld):
         return active_sigs | spawned_sigs | despawn_sigs
 
     def _apply_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
-        """Flip is_active for pending despawns. Cache cleanup stays in _clear_caches."""
+        """Flip is_active for pending despawns. Non-destructive apart from
+        idempotent dedupe; caches are consumed in step's commit phase."""
         if self.despawn_cache.get(sig):
             # Grab despawn list of dicts and dedupe by most recent mutation command
             self.despawn_cache[sig] = list(dict.fromkeys(reversed(self.despawn_cache[sig])))
@@ -196,7 +206,7 @@ class SyncWorld(iWorld):
     def _spawn_frame(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame | None:
         """Pending spawns as a raw frame (initial conditions), cast to df's dtypes.
 
-        Cache cleanup stays in _clear_caches.
+        Non-destructive: caches are consumed in step's commit phase.
         """
         if not self.spawn_cache.get(sig):
             return None
@@ -221,7 +231,7 @@ class SyncWorld(iWorld):
         Diagnostic/compatibility surface (exercised directly by sync contract
         tests). The step path applies despawns before processors and concats
         spawns after them, so newborn rows persist their initial conditions
-        (see _run_archetype).
+        (see _compute_archetype and step's commit phase).
         """
         df = self._apply_despawns(df, sig)
         spawns_df = self._spawn_frame(df, sig)
