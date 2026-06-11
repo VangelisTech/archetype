@@ -2,8 +2,8 @@
 
 # Archetype
 
-**Two primitives — components and processors — on a dataframe engine.
-The rest of the data stack is derived.**
+**An opinion about what data engineering should be:
+composable, declarative, and data-centric.**
 
 [![CI](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml/badge.svg)](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
@@ -14,10 +14,15 @@ The rest of the data stack is derived.**
 ![Archetype Architecture Diagram](assets/archetype_diagram2.png)
 
 Archetype is a state machine that uses big-data technology to run itself,
-built for the AI-native world. You define data as `Component` classes and
-behavior as `Processor` transforms. The engine derives the rest of what a
-data stack normally makes you build by hand: schemas, columnar tables,
-partitioning, queries, history, audit.
+built for the AI-native world.
+
+- **Composable** — two primitives only: components (data) and processors
+  (behavior). Archetypes, worlds, and forks are compositions of them.
+- **Declarative** — you declare shapes and transforms; the engine derives
+  what a data stack normally makes you build by hand: schemas, columnar
+  tables, partitioning, dispatch, queries, history, audit.
+- **Data-centric** — nothing is deleted. State, history, and the engine's
+  own operation are rows in the same store.
 
 ```python
 class Position(Component):        # a component is a schema

@@ -1,6 +1,6 @@
 # Archetype
 
-## A forkable, append-only world ledger for simulations and AI agents
+## An opinion about what data engineering should be: composable, declarative, and data-centric
 
 Every tick of a running world persists as queryable Arrow rows keyed
 `(world_id, run_id, tick)`. Nothing is ever overwritten — there is no update

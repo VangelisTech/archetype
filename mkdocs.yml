@@ -1,5 +1,5 @@
 site_name: Archetype
-site_description: A forkable, append-only world ledger for simulations and AI agents
+site_description: An opinion about what data engineering should be — composable, declarative, and data-centric
 site_url: https://archetype-docs.pages.dev
 repo_url: https://github.com/VangelisTech/archetype
 repo_name: VangelisTech/archetype
