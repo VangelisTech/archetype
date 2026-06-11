@@ -30,7 +30,13 @@ class Component(LanceModel):
         Walks the full subclass tree — ``__subclasses__()`` only returns
         direct subclasses, so a naive lookup misses components defined as
         subclasses of intermediate base classes.
+
+        Raises on ambiguity: two Component classes sharing a name would
+        make name-addressed payloads (CLI/API spawn commands) land rows in
+        whichever archetype import order happened to favor — a silent
+        wrong-table write. Ambiguity must be loud.
         """
+        matches: list[type[Component]] = []
         stack: list[type[Component]] = [cls]
         seen: set[type[Component]] = set()
         while stack:
@@ -40,9 +46,17 @@ class Component(LanceModel):
                     continue
                 seen.add(subclass)
                 if subclass.__name__ == name:
-                    return subclass
+                    matches.append(subclass)
                 stack.append(subclass)
-        raise ValueError(f"Component type '{name}' not found.")
+        if not matches:
+            raise ValueError(f"Component type '{name}' not found.")
+        if len(matches) > 1:
+            modules = ", ".join(sorted(f"{m.__module__}.{m.__name__}" for m in matches))
+            raise ValueError(
+                f"Component type name '{name}' is ambiguous ({modules}); "
+                "name-addressed payloads require unique component class names."
+            )
+        return matches[0]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Component":
