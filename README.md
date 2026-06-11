@@ -46,6 +46,17 @@ archetypes at once — one pass over the entire matching population, not a
 loop over objects. That collapse — component set → signature → schema →
 table → query — is the core of the system. Everything below is consequence.
 
+Big data's founding move was decoupling storage from compute — that is
+where Iceberg and Daft come from. The decoupling bought scale but severed
+provenance: the code that produces a table and the knowledge of how to
+read it became separate artifacts. Archetype keeps the physical decoupling
+and restores the connection where it belongs, in the declaration: whatever
+you process — a simulation, a training run, an agent population — the
+results are managed for you and queryable **with the same code that
+created them**. The component that wrote the rows is the schema you filter
+on; the processor that transformed them is the lineage. Provenance is
+derivation, not a catalog.
+
 ## Data is the point
 
 Nothing is deleted. There is no update path and no delete path in the
@@ -90,6 +101,11 @@ trust the result by reviewing code, not by re-running it:
   order. The audit trail this produces is the raw material for
   auto-research loops — the engine improving things that run on the
   engine.
+
+The design is meant to scale with its user. The more capable the model,
+the more it can do with two orthogonal primitives — richer components,
+sharper processors, deeper experiment loops. Frameworks built as
+scaffolding depreciate as models improve; primitives appreciate.
 
 ## Quickstart
 
