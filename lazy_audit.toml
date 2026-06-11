@@ -33,7 +33,7 @@ reason = "Storage write boundary: defensive empty-frame probe before delegating 
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 281
+line = 315
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -51,7 +51,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 262
+line = 272
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 

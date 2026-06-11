@@ -213,12 +213,18 @@ Failure observability:
 Failure policy:
 
 - Processor failures MUST NOT silently corrupt world bookkeeping.
-- A processor failure fails its archetype's tick: the error is logged,
-  `step()` raises, the tick counter does not advance, and nothing is
-  appended for that tick. The engine does not append a frame the failed
-  processor never transformed.
-- Contract test:
-  `tests/core/test_async_world_error_propagation.py::test_async_world_processor_error_fails_the_step`.
+- The step is two-phase: every archetype's tick frame is computed (no
+  writes, no cache consumption) before any archetype appends. A processor
+  failure therefore fails the WHOLE tick: the error is logged, `step()`
+  raises, the tick counter does not advance, nothing is appended for any
+  archetype, and staged mutations survive for retry.
+- A store failure during the commit phase preserves the failed archetype's
+  staged mutations; archetypes whose appends committed consume their caches
+  with the append.
+- Contract tests: `tests/core/test_async_world_error_propagation.py`
+  (`test_async_world_processor_error_fails_the_step`,
+  `test_failed_tick_commits_nothing_and_is_retryable`,
+  `test_one_failing_archetype_blocks_all_appends`).
 
 Idempotency:
 

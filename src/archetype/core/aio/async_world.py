@@ -143,7 +143,10 @@ class AsyncWorld(iAsyncWorld):
 
             sigs = sorted(self.active_signatures, key=Archetype.get_name)
 
-            futures = [self._run_archetype(sig, run_config, **input_kwargs) for sig in sigs]
+            # Phase 1 — compute. No store writes, no cache consumption: a
+            # processor failure here leaves the world exactly as it was, so
+            # the failed tick is retryable and nothing half-commits.
+            futures = [self._compute_archetype(sig, run_config, **input_kwargs) for sig in sigs]
             results = await asyncio.gather(*futures, return_exceptions=True)
             errors = {
                 sig: r for sig, r in zip(sigs, results, strict=False) if isinstance(r, Exception)
@@ -154,7 +157,23 @@ class AsyncWorld(iAsyncWorld):
                     "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
                 )
 
-            result_frames = dict(zip(sigs, results, strict=False))
+            # Phase 2 — commit. Appends run concurrently; each archetype's
+            # mutation caches clear only after its rows are durably appended,
+            # so a store failure preserves exactly the uncommitted mutations.
+            commits = [
+                self._commit_archetype(sig, df, run_config)
+                for sig, df in zip(sigs, results, strict=False)
+            ]
+            committed = await asyncio.gather(*commits, return_exceptions=True)
+            errors = {
+                sig: r for sig, r in zip(sigs, committed, strict=False) if isinstance(r, Exception)
+            }
+            if errors:
+                raise RuntimeError(
+                    "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
+                )
+
+            result_frames = dict(zip(sigs, committed, strict=False))
 
             self.tick += 1
 
@@ -166,10 +185,11 @@ class AsyncWorld(iAsyncWorld):
             for handle in debug_handles:
                 self.remove_hook(handle)
 
-    async def _run_archetype(
+    async def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
     ) -> DataFrame:
-        "Atomic sequence of a world step with a dedicated execution and materialization helper for future remote operators."
+        """Build one archetype's tick-N frame. Pure with respect to world
+        state: reads the caches without consuming them and writes nothing."""
         import logfire
 
         sig_name = Archetype.get_name(sig)
@@ -196,9 +216,22 @@ class AsyncWorld(iAsyncWorld):
         if spawns_df is not None:
             df = df.concat(spawns_df)
 
-        with logfire.span("world.update", sig=sig_name, tick=self.tick):
+        return df
+
+    async def _commit_archetype(
+        self, sig: ArchetypeSignature, df: DataFrame, run_config: RunConfig
+    ) -> DataFrame:
+        """Append one archetype's computed frame and consume its caches.
+
+        The updater raises on failed persistence, in which case the caches
+        survive for retry."""
+        import logfire
+
+        with logfire.span("world.update", sig=Archetype.get_name(sig), tick=self.tick):
             df_mat = await self.update(df, sig, run_config)
 
+        self.spawn_cache.pop(sig, None)
+        self.despawn_cache.pop(sig, None)
         return df_mat
 
     # ---------------------------------------------------------------------
@@ -214,7 +247,8 @@ class AsyncWorld(iAsyncWorld):
         return active_sigs | spawned_sigs | despawn_sigs
 
     def _apply_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
-        """Flip is_active for pending despawns. Clears the despawn cache."""
+        """Flip is_active for pending despawns. Non-destructive: the cache is
+        consumed by _commit_archetype after a successful append."""
         if self.despawn_cache.get(sig):
             entities_to_despawn = list(
                 set(self.despawn_cache[sig])
@@ -225,12 +259,11 @@ class AsyncWorld(iAsyncWorld):
                     col("is_active")
                 ),
             )
-            # Clear Cache
-            self.despawn_cache[sig] = []
         return df
 
     def _spawn_frame(self, sig: ArchetypeSignature) -> DataFrame | None:
-        """Pending spawns as a raw frame (initial conditions). Clears the cache."""
+        """Pending spawns as a raw frame (initial conditions). Non-destructive:
+        the cache is consumed by _commit_archetype after a successful append."""
         if not self.spawn_cache.get(sig):
             return None
         # Dedupe duplicate spawns, prioritizing "most recent cmd" (last write wins)
@@ -240,20 +273,21 @@ class AsyncWorld(iAsyncWorld):
         # Convert list of dicts to arrow table and eventually daft df
         pyarrow_schema = Archetype.get_archetype_schema(sig)
         arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
-        spawns_df = daft.from_arrow(arrow_table)
-        self.spawn_cache[sig] = []
-        return spawns_df
+        return daft.from_arrow(arrow_table)
 
     def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
-        """Apply pending despawns and concat pending spawns onto df.
+        """Apply pending despawns and concat pending spawns onto df, consuming
+        both caches.
 
         Diagnostic/compatibility surface. The step path does NOT use this
-        combined form: it applies despawns before processors and concats
-        spawns after them, so newborn rows persist their initial conditions
-        (see _run_archetype).
+        combined form: it applies despawns before processors, concats spawns
+        after them (initial conditions), and consumes the caches only after
+        the append commits (see _compute_archetype/_commit_archetype).
         """
         df = self._apply_despawns(df, sig)
         spawns_df = self._spawn_frame(sig)
+        self.spawn_cache.pop(sig, None)
+        self.despawn_cache.pop(sig, None)
         return df.concat(spawns_df) if spawns_df is not None else df
 
     async def _move_entity(
