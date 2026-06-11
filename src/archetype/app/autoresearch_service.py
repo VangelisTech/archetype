@@ -413,6 +413,7 @@ class AutoResearchService:
                 max_iterations=config.max_iterations,
                 improvement_threshold=config.improvement_threshold,
                 destroy_forks_on_complete=config.destroy_forks_on_complete,
+                record_to_ledger=config.record_to_ledger,
             )
 
             result = await self.run(fork.world_id, sweep_config, evaluator)
