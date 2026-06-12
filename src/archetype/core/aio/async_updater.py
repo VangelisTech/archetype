@@ -32,6 +32,11 @@ class AsyncUpdateManager(iAsyncUpdateManager):
     async def update(
         self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
     ) -> DataFrame:
+        # A schemaless frame (no columns) cannot be stamped and carries
+        # nothing to persist — a legitimate no-op, distinct from a failure.
+        if not df.column_names:
+            logger.info(f"Update skipped (empty schema): archetype={Archetype.get_name(sig)}")
+            return df
         try:
             df = df.with_columns(
                 {
@@ -51,5 +56,9 @@ class AsyncUpdateManager(iAsyncUpdateManager):
             )
 
         except Exception as e:
+            # Persistence failure must be observable: a tick that did not
+            # commit its rows did not happen. Swallowing here would let the
+            # world advance past a hole in the ledger.
             logger.error(f"Error updating table {Archetype.get_name(sig)}: {e}")
+            raise
         return df

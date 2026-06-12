@@ -129,7 +129,7 @@ Append-only record of accepted-and-applied commands. Schema is fixed in [Audit L
 async def record(row: AuditRow) -> None
 async def flush() -> None
 async def query(world_id=None, *, tick_range=None, actor_id=None,
-                 signer_address=None, idempotency_key=None, limit=None) -> DataFrame
+                 idempotency_key=None, limit=None) -> DataFrame
 async def shutdown() -> None
 ```
 
@@ -210,7 +210,7 @@ async def list_processors(ctx, world_id) -> list[ProcessorInfo]
 async def list_hooks(ctx, world_id) -> list[HookInfo]
 async def list_resources(ctx, world_id) -> list[ResourceInfo]
 async def get_audit_history(ctx, world_id=None, *, tick_range=None, actor_id=None,
-                             signer_address=None, idempotency_key=None, limit=None) -> DataFrame
+                             idempotency_key=None, limit=None) -> DataFrame
 ```
 
 #### Tick-deferred path (queued submit)

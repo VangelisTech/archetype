@@ -21,7 +21,8 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
-| [`tests/app/test_sugar_runtime.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_sugar_runtime.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
+| [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
+| [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
 | [`tests/app/test_services.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_services.py) | Service-layer execution contracts | Covers simulation service boundaries, processor metadata, and read-service expectations. |
@@ -150,11 +151,12 @@ Idempotency:
 - Store `get_archetype_df()` is idempotent for the same persisted data.
 - Cached-store shutdown MUST be idempotent even if called multiple times.
 
-CURRENT GAP:
+Failure observability:
 
-- `AsyncUpdateManager` currently logs append failures and still returns a
-  stamped DataFrame. Durability success is therefore ambiguous. The contract
-  should be hardened so failed persistence is observable to callers.
+- A failed append MUST raise to the caller. Stores log the failure and
+  re-raise; they MUST NOT return as if the write happened. Empty appends
+  (zero rows or empty schema) remain safe no-ops.
+- Contract tests: `tests/core/test_async_store_updater_failures.py`.
 
 ## Querier Contracts
 
@@ -188,10 +190,13 @@ Idempotency:
 - Idempotency for world mutation replay must therefore be provided by world or
   command semantics, not by the updater.
 
-CURRENT GAP:
+Failure observability:
 
-- Failed appends are currently swallowed and logged. The updater contract should
-  distinguish successful persistence from a stamped-but-uncommitted DataFrame.
+- The updater MUST raise when the store append fails. Persistence success is
+  observable: a returned DataFrame means the rows were committed. A
+  schemaless empty frame is skipped as a no-op before stamping.
+- Contract tests: `tests/core/test_async_store_updater_failures.py`,
+  `tests/sync/test_sync_stack_contracts.py::test_sync_update_manager_raises_on_store_errors`.
 
 ## System and Processor Contracts
 
@@ -208,13 +213,12 @@ CURRENT GAP:
 Failure policy:
 
 - Processor failures MUST NOT silently corrupt world bookkeeping.
-- If the engine continues after a processor failure, that continuation policy
-  MUST be explicit and tested.
-
-Current behavior:
-
-- Processor errors are logged and execution continues with the last good
-  DataFrame.
+- A processor failure fails its archetype's tick: the error is logged,
+  `step()` raises, the tick counter does not advance, and nothing is
+  appended for that tick. The engine does not append a frame the failed
+  processor never transformed.
+- Contract test:
+  `tests/core/test_async_world_error_propagation.py::test_async_world_processor_error_fails_the_step`.
 
 Idempotency:
 

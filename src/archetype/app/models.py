@@ -247,11 +247,7 @@ class ResourceInfo(BaseModel):
 
 
 class AuditRow(BaseModel):
-    """One row in the append-only audit log.
-
-    Schema matches platform spec § 3.3 Appendix A.5. Payment-bearing
-    columns are nullable for non-paid commands.
-    """
+    """One row in the append-only audit log."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
 
@@ -270,10 +266,5 @@ class AuditRow(BaseModel):
     accepted_at: str = Field(default_factory=lambda: "")
     applied_at: str = Field(default_factory=lambda: "")
 
-    # Payment (Tier 2, nullable)
-    signer_address: str | None = None
-    tx_hash: str | None = None
-    price_paid_atomic: int | None = None
-    asset: str | None = None
-    chain_id: int | None = None
+    # Deduplication (nullable)
     idempotency_key: str | None = None

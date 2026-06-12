@@ -113,7 +113,9 @@ Forks share resource instances by default; attach replacement resources through 
 
 ## 3. Time-Travel Queries
 
-Run 10 ticks, then query any point in history. Every tick is preserved.
+Run ticks, rewind to any past tick by filtering the `tick` column, then fork
+a counterfactual branch and diff it against the source at the same tick.
+Every tick is preserved.
 
 ```bash
 uv run python examples/03_time_travel.py
@@ -121,56 +123,22 @@ uv run python examples/03_time_travel.py
 
 Source: [`examples/03_time_travel.py`](https://github.com/VangelisTech/archetype/blob/main/examples/03_time_travel.py)
 
-This example uses lower-level service calls for historical storage queries, but
-external reads still enter through `CommandService` so viewer permissions and
-audit behavior apply.
+`world.query(...)` returns the full append-only history, so a point-in-time
+view is a Daft filter:
 
 ```python
-import asyncio
-
-from uuid_utils import uuid7
-
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-
-
-async def main():
-    container = ServiceContainer()
-    ctx = ActorCtx(id=uuid7(), roles={"admin"})
-
-    info = await container.command_service.create_world(
-        ctx, WorldConfig(name="time-travel-demo"), StorageConfig(),
-    )
-
-    # Spawn 3 entities and run 5 ticks
-    for _ in range(3):
-        cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(ctx, info.world_id, cmd)
-    await container.command_service.run(ctx, info.world_id, RunConfig(num_steps=5))
-
-    # Spawn 2 more and run 5 more ticks
-    for _ in range(2):
-        cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-        await container.command_service.submit(ctx, info.world_id, cmd)
-    await container.command_service.run(ctx, info.world_id, RunConfig(num_steps=5))
-
-    # Query state at different ticks
-    for tick in [1, 5, 10]:
-        state = await container.command_service.query_archetype(
-            ctx, (), str(info.world_id), str(info.run_id or ""), ticks=[tick]
-        )
-        print(f"tick {tick:>2}: {len(state.collect().to_pylist())} rows")
-
-    # Full command audit trail
-    history = await container.command_service.get_audit_history(ctx, info.world_id)
-    print(history)
-
-    await container.shutdown()
-
-asyncio.run(main())
+df = await world.query(Position, Velocity)
+at_tick_2 = df.where(col("tick") == 2)
 ```
+
+The fork half of the example stages a divergent component value on the fork
+(`fork.update(entity, Velocity(vx=10.0))`), steps both worlds the same number
+of ticks, and prints the source-vs-fork diff at the same tick — plus the
+fork's view of its pre-fork history, read through lineage.
+
+One subtlety worth knowing: tick 0 is persisted *after* processors run, so
+spawn-time component values are never queryable as a row — tick 0 already
+reflects one processor pass.
 
 ---
 

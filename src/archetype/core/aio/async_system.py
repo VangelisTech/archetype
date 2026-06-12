@@ -86,8 +86,9 @@ class AsyncSystem(iAsyncSystem):
                         f"(priority={proc_instance.priority}, archetype={archetype_name})"
                     )
 
-                # Gracefully handle errors in processors.
-                # Dataframes are immutable so we are continuously returning an updated variant of the original.
+                # A processor failure fails the archetype's tick: the world
+                # step surfaces it (gather → RuntimeError) instead of
+                # appending a frame the failed processor never transformed.
                 try:
                     assert isinstance(proc_instance, AsyncProcessor)
                     # Filter kwargs to what the processor accepts; pass all if it has **kwargs.
@@ -112,5 +113,6 @@ class AsyncSystem(iAsyncSystem):
                     logger.error(
                         f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}"
                     )
+                    raise
 
         return df

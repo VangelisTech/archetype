@@ -377,6 +377,7 @@ class CommandService:
     ) -> DataFrame:
         """Query entities by component subset. Gated read."""
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        storage_config = self._resolve_storage(world_id, storage_config)
         result = await self._queries.query_components(
             components=components,
             world_id=world_id,
@@ -388,6 +389,22 @@ class CommandService:
         )
         await self._emit(ctx, "query_world", world_id)
         return result
+
+    def _resolve_storage(
+        self,
+        world_id: str | UUID,
+        storage_config: StorageConfig | None,
+    ) -> StorageConfig | None:
+        """Resolve which store holds a world's rows.
+
+        An explicit storage_config is an override and wins. Otherwise the
+        world's recorded storage is used, so readers find the rows wherever
+        the world actually wrote them — forks included.
+        """
+        if storage_config is not None:
+            return storage_config
+        record = self._worlds.storage_record(world_id)
+        return record[0] if record is not None else None
 
     async def _resolve_lineage(
         self,
@@ -423,6 +440,7 @@ class CommandService:
         components: list[type[Component]] | None = None,
     ) -> DataFrame:
         self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        storage_config = self._resolve_storage(world_id, storage_config)
         result = await self._queries.query_archetype(
             sig,
             world_id,
@@ -547,7 +565,6 @@ class CommandService:
         *,
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
-        signer_address: str | None = None,
         idempotency_key: str | None = None,
         limit: int | None = None,
     ):
@@ -558,7 +575,6 @@ class CommandService:
             world_id=world_id,
             tick_range=tick_range,
             actor_id=actor_id,
-            signer_address=signer_address,
             idempotency_key=idempotency_key,
             limit=limit,
         )

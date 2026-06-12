@@ -235,7 +235,6 @@ class iAuditLog(Protocol):
         *,
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
-        signer_address: str | None = None,
         idempotency_key: str | None = None,
         limit: int | None = None,
     ) -> DataFrame: ...
@@ -348,7 +347,6 @@ class iCommandService(Protocol):
         *,
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
-        signer_address: str | None = None,
         idempotency_key: str | None = None,
         limit: int | None = None,
     ) -> DataFrame: ...

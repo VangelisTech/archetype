@@ -42,11 +42,6 @@ _AUDIT_COLUMNS = (
     "payload_json",
     "accepted_at",
     "applied_at",
-    "signer_address",
-    "tx_hash",
-    "price_paid_atomic",
-    "asset",
-    "chain_id",
     "idempotency_key",
 )
 
@@ -63,11 +58,6 @@ def _audit_schema() -> pa.Schema:
             ("payload_json", pa.string()),
             ("accepted_at", pa.string()),
             ("applied_at", pa.string()),
-            ("signer_address", pa.string()),
-            ("tx_hash", pa.string()),
-            ("price_paid_atomic", pa.int64()),
-            ("asset", pa.string()),
-            ("chain_id", pa.int64()),
             ("idempotency_key", pa.string()),
         ]
     )
@@ -84,11 +74,6 @@ def _row_to_dict(row: AuditRow) -> dict:
         "payload_json": row.payload_json,
         "accepted_at": row.accepted_at,
         "applied_at": row.applied_at,
-        "signer_address": row.signer_address,
-        "tx_hash": row.tx_hash,
-        "price_paid_atomic": row.price_paid_atomic,
-        "asset": row.asset,
-        "chain_id": row.chain_id,
         "idempotency_key": row.idempotency_key,
     }
 
@@ -203,7 +188,6 @@ class AuditLog:
         *,
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
-        signer_address: str | None = None,
         idempotency_key: str | None = None,
         limit: int | None = None,
     ) -> daft.DataFrame:
@@ -230,9 +214,6 @@ class AuditLog:
         if actor_id is not None:
             aid = str(actor_id)
             predicates.append(lambda row, aid=aid: row["actor_id"] == aid)
-
-        if signer_address is not None:
-            predicates.append(lambda row: row["signer_address"] == signer_address)
 
         if idempotency_key is not None:
             predicates.append(lambda row: row["idempotency_key"] == idempotency_key)

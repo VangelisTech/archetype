@@ -42,14 +42,6 @@ class P2IncY(AsyncProcessor):
         return df.with_column("position__y", col("position__y") + lit(1))
 
 
-class PBug(AsyncProcessor):
-    components = (Position,)
-    priority = 7
-
-    async def process(self, df, **kwargs):
-        raise RuntimeError("boom")
-
-
 @pytest_asyncio.fixture(params=["async", "async_cached"], scope="function")
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
@@ -85,7 +77,6 @@ async def world(store_backend):
         hooks=HookRegistry(),
     )
     await w.add_processor(P1ScaleX())
-    await w.add_processor(PBug())
     await w.add_processor(P2IncY())
     return w
 
@@ -97,8 +88,9 @@ async def test_processors_run_in_priority_and_filter_kwargs(world, store_backend
 
     # After one step with scale=4:
     # P1: x *= 4  → 8
-    # PBug: raises but should be swallowed
     # P2: y += 1  → 4
+    # (A raising processor fails the step — see
+    #  tests/core/test_async_world_error_propagation.py)
     rc = RunConfig()
     await world.step(rc, scale=4)
 

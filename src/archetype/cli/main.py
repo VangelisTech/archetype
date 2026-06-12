@@ -598,7 +598,6 @@ def history(
     world_id: str = typer.Argument(..., help="World ID"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max audit rows to show"),
     actor_id: str | None = typer.Option(None, "--actor-id", help="Actor ID filter"),
-    signer_address: str | None = typer.Option(None, "--signer-address", help="Signer filter"),
     idempotency_key: str | None = typer.Option(None, "--idempotency-key", help="Idempotency key"),
     tick_from: int | None = typer.Option(None, "--tick-from", help="Reserved for API v2"),
     tick_to: int | None = typer.Option(None, "--tick-to", help="Reserved for API v2"),
@@ -611,7 +610,6 @@ def history(
     params = {
         "limit": limit,
         "actor_id": actor_id,
-        "signer_address": signer_address,
         "idempotency_key": idempotency_key,
         "tick_from": tick_from,
         "tick_to": tick_to,

@@ -104,6 +104,14 @@ For users who want isolated resources per fork, they instantiate new resource in
 
 The fork writes to the same physical store as the source by default, with rows partitioned by `world_id`. The optional `storage_config` argument allows the fork to write to a different store entirely.
 
+Routing a fork to a different store severs read lineage (§ 4.6): ancestor
+segments name rows in the source's store, and the fork's reads only see its
+own store. A cross-store fork therefore starts from transferred pending
+state (un-materialized spawns/despawns), not from the source's persisted
+history. Forking with an explicit `storage_config` on a stepped source logs
+a warning for this reason. Same-store forks — the default — get full
+history continuation.
+
 ### 4.6 — Read lineage (copy-on-write history)
 
 A fork does not copy the source's materialized rows. Instead it carries a `lineage` — an ascending list of `(world_id, run_id, up_to_tick)` segments: the source's own lineage plus, if the source has stepped, one segment covering the source's rows for ticks `0..tick-1`.
