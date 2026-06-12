@@ -180,6 +180,55 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.create_entity(self._ctx, wid, list(components))
 
+    async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
+        """Batch-spawn entities. Fires one OnSpawn per entity, one batch per archetype.
+
+        All entities obey the initial-conditions contract: each entity's first
+        persisted row is its raw spawn values at the materialization tick;
+        processors first apply on the following tick (x_0 is given,
+        x_{t+1} = f(x_t)).
+
+        Args:
+            entities: A list of component lists, one per entity to spawn.
+
+        Returns:
+            A list of entity IDs in the same order as ``entities``.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.create_entities(self._ctx, wid, entities)
+
+    async def reserve_ids(self, n: int) -> list[int]:
+        """Reserve *n* entity IDs without spawning.
+
+        The returned IDs are drawn from the same monotonic counter as
+        ``spawn`` / ``spawn_many``, so interleaved calls produce disjoint
+        ranges. Use ``spawn_reserved`` to materialise a reserved ID.
+
+        Args:
+            n: Number of IDs to reserve (must be >= 1).
+
+        Returns:
+            A sorted list of *n* reserved entity IDs.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return self._gate.reserve_entity_ids(self._ctx, wid, n)
+
+    async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
+        """Materialise a previously reserved entity ID.
+
+        Args:
+            entity_id: A previously reserved ID (from ``reserve_ids``).
+            *components: Initial component values.
+
+        Raises:
+            ValueError: If *entity_id* is already registered.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            await self._gate.spawn_with_reserved_id(self._ctx, wid, entity_id, list(components))
+
     async def despawn(self, entity_id: int) -> None:
         """Remove an entity."""
         async with self._state.op_lock:
@@ -411,6 +460,15 @@ class SyncRuntimeWorld:
 
     def spawn(self, *components: Component) -> int:
         return self._run(lambda: self._world.spawn(*components))
+
+    def spawn_many(self, entities: list[list[Component]]) -> list[int]:
+        return self._run(lambda: self._world.spawn_many(entities))
+
+    def reserve_ids(self, n: int) -> list[int]:
+        return self._run(lambda: self._world.reserve_ids(n))
+
+    def spawn_reserved(self, entity_id: int, *components: Component) -> None:
+        self._run(lambda: self._world.spawn_reserved(entity_id, *components))
 
     def despawn(self, entity_id: int) -> None:
         self._run(lambda: self._world.despawn(entity_id))

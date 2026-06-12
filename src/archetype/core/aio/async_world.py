@@ -377,6 +377,87 @@ class AsyncWorld(iAsyncWorld):
         await self._register_entity(entity_id, components)
         return entity_id
 
+    async def create_entities(self, entities: list[list[Component]]) -> list[int]:
+        """Spawn multiple entities in one batch. Fires one ``OnSpawn`` per entity.
+
+        All spawn rows are appended in a single cache operation per archetype
+        signature, preserving the initial-conditions contract: every entity's
+        first row is its raw spawn values at the materialization tick;
+        processors first apply on the following tick (x_0 is given,
+        x_{t+1} = f(x_t)).
+
+        Args:
+            entities: A list of component lists, one per entity to spawn.
+
+        Returns:
+            A list of entity IDs in the same order as ``entities``.
+        """
+        ids: list[int] = []
+        for components in entities:
+            entity_id = self.next_entity_id
+            self.next_entity_id += 1
+            ids.append(entity_id)
+            await self._register_entity(entity_id, components)
+        return ids
+
+    def reserve_entity_ids(self, n: int) -> list[int]:
+        """Reserve *n* entity IDs without spawning.
+
+        The returned IDs are guaranteed never to collide with auto-assigned
+        ones: they are drawn from the same monotonic counter as
+        ``create_entity`` / ``create_entities``, so interleaved calls produce
+        disjoint ranges.
+
+        Reserved IDs must be materialised via ``spawn_with_reserved_id``
+        before the next ``step()`` that processes their archetype, otherwise
+        they remain invisible (no spawn_cache row, no entity2sig entry).
+
+        Use this when external systems need to reference an entity by ID
+        before the spawn lands on the ledger (e.g. to break a circular
+        dependency between two entities that reference each other).
+
+        Args:
+            n: Number of IDs to reserve (must be >= 1).
+
+        Returns:
+            A sorted list of *n* reserved entity IDs.
+
+        Raises:
+            ValueError: If *n* is less than 1.
+        """
+        if n < 1:
+            raise ValueError(f"reserve_entity_ids requires n >= 1, got {n}")
+        start = self.next_entity_id
+        self.next_entity_id += n
+        return list(range(start, start + n))
+
+    async def spawn_with_reserved_id(self, entity_id: int, components: list[Component]) -> None:
+        """Materialise a previously reserved entity ID.
+
+        Registers the entity in ``entity2sig`` and ``spawn_cache`` exactly as
+        ``create_entity`` would, then fires ``OnSpawn``. The entity will appear
+        as a raw spawn row at the next materialization tick.
+
+        Cancellation contract: if you want to cancel a reserved spawn before
+        it materialises, call ``remove_entity(entity_id)`` — it will find the
+        pending spawn_cache row and remove it cleanly, matching the semantics
+        of cancelling a same-tick spawn from ``create_entity``.
+
+        Args:
+            entity_id: A previously reserved ID (from ``reserve_entity_ids``).
+            components: Initial component values.
+
+        Raises:
+            ValueError: If *entity_id* is already registered (double-spawn
+                guard — prevents silent overwrites of live entities).
+        """
+        if entity_id in self.entity2sig:
+            raise ValueError(
+                f"Entity {entity_id} is already registered. "
+                "Use update_entity to change component values on a live entity."
+            )
+        await self._register_entity(entity_id, components)
+
     async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so

@@ -311,6 +311,67 @@ class SyncWorld(iWorld):
         self._register_entity(entity_id, components)
         return entity_id
 
+    def create_entities(self, entities: list[list[Component]]) -> list[int]:
+        """Spawn multiple entities in one batch. Fires one ``OnSpawn`` per entity.
+
+        Sync mirror of ``AsyncWorld.create_entities``. All entities share the
+        same materialization tick and obey the initial-conditions contract:
+        each entity's first row is its raw spawn values; processors first apply
+        on the following tick.
+
+        Args:
+            entities: A list of component lists, one per entity to spawn.
+
+        Returns:
+            A list of entity IDs in the same order as ``entities``.
+        """
+        ids: list[int] = []
+        for components in entities:
+            entity_id = self.next_entity_id
+            self.next_entity_id += 1
+            ids.append(entity_id)
+            self._register_entity(entity_id, components)
+        return ids
+
+    def reserve_entity_ids(self, n: int) -> list[int]:
+        """Reserve *n* entity IDs without spawning.
+
+        Sync mirror of ``AsyncWorld.reserve_entity_ids``.
+
+        Args:
+            n: Number of IDs to reserve (must be >= 1).
+
+        Returns:
+            A sorted list of *n* reserved entity IDs.
+
+        Raises:
+            ValueError: If *n* is less than 1.
+        """
+        if n < 1:
+            raise ValueError(f"reserve_entity_ids requires n >= 1, got {n}")
+        start = self.next_entity_id
+        self.next_entity_id += n
+        return list(range(start, start + n))
+
+    def spawn_with_reserved_id(self, entity_id: int, components: list[Component]) -> None:
+        """Materialise a previously reserved entity ID.
+
+        Sync mirror of ``AsyncWorld.spawn_with_reserved_id``.
+
+        Args:
+            entity_id: A previously reserved ID (from ``reserve_entity_ids``).
+            components: Initial component values.
+
+        Raises:
+            ValueError: If *entity_id* is already registered.
+        """
+        if entity_id in self.entity2sig:
+            raise ValueError(
+                f"Entity {entity_id} is already registered. "
+                "Use update_entity to change component values on a live entity."
+            )
+        self._register_entity(entity_id, components)
+
     def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
