@@ -1,3 +1,28 @@
+//! Tick lifecycle (per table, per `step_table_profiled` call):
+//!
+//! ```text
+//! Tick N:
+//!   1. Read prior active rows (live snapshot from tick N-1, or store).
+//!   2. Apply despawns: drain despawn buffer, tombstone matching rows in prior.
+//!      Result = processor_input (only previously-live rows, with despawned ones
+//!      marked is_active=false).
+//!   3. Execute processors over processor_input.  Spawns queued this tick are NOT
+//!      visible to processors — they land raw.
+//!   4. Drain spawn buffer: deduplicate (last-write-wins, first-seen order), concat
+//!      raw spawn rows AFTER processor output.
+//!      Invariant: x₀ is the raw spawn value; x_{t+1} = f(x_t).
+//!   5. Stamp tick/world/run metadata on the full concatenated batch.
+//!   6. Persist the stamped batch.
+//!   7. Update live snapshot = active_snapshot(stamped), which includes raw spawn
+//!      rows (is_active=true) so they are transformed for the first time on tick N+1.
+//! ```
+//!
+//! Same-tick spawn-cancel (despawn while spawn is still pending) removes the
+//! spawn row entirely without writing a tombstone — the entity is never observed.
+//! Despawn of a previously-live entity produces a tombstone row (is_active=false)
+//! that is processed and persisted on the despawn tick, then excluded from the
+//! live snapshot.
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -184,7 +209,14 @@ impl WorldState {
         Ok(cancelled)
     }
 
-    pub fn materialize_table(
+    /// Phase 1 of the tick lifecycle: apply queued despawns to `prior` and
+    /// return the batch that processors will run on.
+    ///
+    /// Drains the despawn buffer for `table_name`.  If any entity IDs are
+    /// pending despawn, their rows in `prior` are tombstoned (is_active=false);
+    /// all other rows pass through unchanged.  The returned batch is the
+    /// processor input for the current tick.
+    pub fn apply_despawns_to_prior(
         &mut self,
         table_name: &str,
         table_schema: SchemaRef,
@@ -195,54 +227,82 @@ impl WorldState {
                 table_name: table_name.to_string(),
             });
         }
-
-        let mut batches = Vec::new();
         let despawns = self
             .mutations
             .despawns
             .remove(table_name)
             .unwrap_or_default();
         if despawns.is_empty() {
-            batches.push(prior);
+            Ok(prior)
         } else {
-            batches.push(apply_despawns(prior, &despawns)?);
+            apply_despawns(prior, &despawns)
         }
+    }
 
-        if let Some(spawns) = self.mutations.spawns.remove(table_name) {
-            // Dedupe same-entity rows last-write-wins while keeping first-seen
-            // entity order, matching the Python dict-based spawn dedupe.
-            let mut order = Vec::<EntityId>::new();
-            let mut latest_by_entity = HashMap::<EntityId, RecordBatchRow>::new();
-            let mut total_rows = 0usize;
-            for batch in &spawns {
-                let entities = entity_column(batch)?;
-                for row_idx in 0..batch.num_rows() {
-                    let entity_id = entities.value(row_idx);
-                    if latest_by_entity
-                        .insert(
-                            entity_id,
-                            RecordBatchRow {
-                                batch: batch.clone(),
-                                row_idx,
-                            },
-                        )
-                        .is_none()
-                    {
-                        order.push(entity_id);
-                    }
-                    total_rows += 1;
+    /// Phase 2 of the tick lifecycle: drain the spawn buffer for `table_name`
+    /// and return the deduplicated raw spawn rows that will be concatenated
+    /// AFTER processor output.
+    ///
+    /// Deduplication is last-write-wins within the same entity, preserving
+    /// first-seen insertion order — matching the Python dict-based spawn
+    /// dedupe.  Returns an empty `Vec` if nothing was queued.
+    pub fn drain_spawn_frames(&mut self, table_name: &str) -> Result<Vec<RecordBatch>> {
+        let Some(spawns) = self.mutations.spawns.remove(table_name) else {
+            return Ok(Vec::new());
+        };
+        // Dedupe: last-write-wins for duplicate entity IDs, first-seen order.
+        let mut order = Vec::<EntityId>::new();
+        let mut latest_by_entity = HashMap::<EntityId, RecordBatchRow>::new();
+        let mut total_rows = 0usize;
+        for batch in &spawns {
+            let entities = entity_column(batch)?;
+            for row_idx in 0..batch.num_rows() {
+                let entity_id = entities.value(row_idx);
+                if latest_by_entity
+                    .insert(
+                        entity_id,
+                        RecordBatchRow {
+                            batch: batch.clone(),
+                            row_idx,
+                        },
+                    )
+                    .is_none()
+                {
+                    order.push(entity_id);
                 }
+                total_rows += 1;
             }
-            if latest_by_entity.len() == total_rows {
-                batches.extend(spawns);
-            } else {
-                for entity_id in order {
+        }
+        if latest_by_entity.len() == total_rows {
+            Ok(spawns)
+        } else {
+            order
+                .into_iter()
+                .map(|entity_id| {
                     let row = &latest_by_entity[&entity_id];
-                    batches.push(take_single_row(&row.batch, row.row_idx)?);
-                }
-            }
+                    take_single_row(&row.batch, row.row_idx)
+                })
+                .collect()
         }
+    }
 
+    /// Convenience wrapper used by unit tests and migration helpers: applies
+    /// despawns then drains spawns into a single concatenated batch.
+    ///
+    /// In the full tick path (`step_table_profiled`) these two phases are
+    /// called separately so that processors run only on prior rows and spawns
+    /// land raw after processor output.
+    pub fn materialize_table(
+        &mut self,
+        table_name: &str,
+        table_schema: SchemaRef,
+        prior: RecordBatch,
+    ) -> Result<RecordBatch> {
+        let processor_input =
+            self.apply_despawns_to_prior(table_name, table_schema.clone(), prior)?;
+        let spawn_frames = self.drain_spawn_frames(table_name)?;
+        let mut batches = vec![processor_input];
+        batches.extend(spawn_frames);
         concat_batches(&table_schema, &batches).map_err(Into::into)
     }
 
@@ -394,23 +454,39 @@ where
         &mut self,
         table_name: &str,
     ) -> Result<(RecordBatch, TableStepProfile)> {
+        // ── Tick lifecycle for one table ─────────────────────────────────────
+        // See module-level docs for the full ordered description.
+        //
+        // Phase 1: read prior active rows.
+        // Phase 2: apply despawns (tombstone in prior, not in spawns).
+        // Phase 3: execute processors over the despawn-filtered prior.
+        //           Spawns queued this tick are NOT visible here.
+        // Phase 4: drain spawn buffer; concat raw spawn rows AFTER processed.
+        //           Invariant: x₀ lands raw, f applied first on tick N+1.
+        // Phase 5: stamp metadata, persist, update live snapshot.
         let table_start = Instant::now();
         let schema = self
             .tables
             .get(table_name)
             .cloned()
             .ok_or_else(|| ArchetypeCoreError::UnknownTable(table_name.to_string()))?;
+
+        // Phase 1 — read prior
         let read_prior_start = Instant::now();
         let prior = self.read_prior_table(table_name, schema.clone()).await?;
         let read_prior_sec = read_prior_start.elapsed().as_secs_f64();
+
+        // Phase 2 — apply despawns (pre-processor)
         let materialize_start = Instant::now();
-        let materialized = self
-            .state
-            .materialize_table(table_name, schema.clone(), prior)?;
+        let processor_input =
+            self.state
+                .apply_despawns_to_prior(table_name, schema.clone(), prior)?;
         let materialize_sec = materialize_start.elapsed().as_secs_f64();
+
+        // Phase 3 — run processors over the despawn-filtered prior rows
         let process_start = Instant::now();
         let processed = self.system.execute(
-            materialized,
+            processor_input,
             &ProcessorContext::new(
                 self.state.world_id().to_string(),
                 self.state.run_id().to_string(),
@@ -418,8 +494,20 @@ where
             ),
         )?;
         let process_sec = process_start.elapsed().as_secs_f64();
+
+        // Phase 4 — drain spawn buffer, concat raw spawn rows after processed
+        let spawn_frames = self.state.drain_spawn_frames(table_name)?;
+        let combined = if spawn_frames.is_empty() {
+            processed
+        } else {
+            let mut batches = vec![processed];
+            batches.extend(spawn_frames);
+            concat_batches(&schema, &batches)?
+        };
+
+        // Phase 5 — stamp, persist, update live snapshot
         let stamped = stamp_batch_metadata(
-            processed,
+            combined,
             self.state.tick(),
             self.state.world_id(),
             self.state.run_id(),
@@ -1052,6 +1140,10 @@ mod tests {
         ));
     }
 
+    // Tick-zero contract: spawn x=1.5 at tick 0.  The processor (AddOne) runs
+    // over the empty prior — no rows processed.  The raw spawn row is
+    // concatenated AFTER processor output and persisted unchanged at tick 0.
+    // x₀ = 1.5 (given); x₁ = f(x₀) = 2.5 on the next step.
     #[tokio::test]
     async fn async_world_steps_spawned_table_through_system_and_store() {
         let table = position_table();
@@ -1088,7 +1180,8 @@ mod tests {
             .downcast_ref::<Int32Array>()
             .unwrap();
 
-        assert_eq!(x.value(0), 2.5);
+        // Spawn lands raw at its materialization tick — x₀ is preserved.
+        assert_eq!(x.value(0), 1.5);
         assert_eq!(tick.value(0), 0);
     }
 
@@ -1162,6 +1255,9 @@ mod tests {
         assert_eq!(world.state().tick(), 2);
     }
 
+    // Tick-zero contract: spawn x=1.5 at tick 0 → lands raw (x=1.5, tick 0).
+    // Despawn entity 1.  Tick 1: prior x=1.5 is tombstoned (is_active=false),
+    // then processor AddOne runs → x=2.5.  Tombstone persisted at tick 1.
     #[tokio::test]
     async fn despawn_only_tick_processes_signature_and_persists_tombstone() {
         let table = position_table();
@@ -1206,7 +1302,9 @@ mod tests {
 
         assert_eq!(tombstone.num_rows(), 1);
         assert!(!active.value(0));
-        assert_eq!(x.value(0), 3.5);
+        // Tick 0: spawn x=1.5 raw.  Tick 1: prior x=1.5 tombstoned then
+        // AddOne applied → x=2.5 (tombstone carries the f(x) value).
+        assert_eq!(x.value(0), 2.5);
         assert_eq!(ticks.value(0), 1);
     }
 
@@ -1316,6 +1414,9 @@ mod tests {
         assert_eq!(entity_column(&appended[0]).unwrap().value(0), ids[0]);
     }
 
+    // Tick-zero contract: tick 0 spawns x=1.5 raw into the ledger (processor
+    // ran on the empty prior).  The live snapshot carries x=1.5 so tick 1
+    // reads from memory (no store read).  Tick 1 applies AddOne → x=2.5.
     #[tokio::test]
     async fn async_world_uses_live_snapshot_after_first_step() {
         let table = position_table();
@@ -1339,6 +1440,8 @@ mod tests {
         world.run(2).await.unwrap();
 
         assert_eq!(world.state().tick(), 2);
+        // Tick 0 reads from store (no live snapshot yet); tick 1 uses the
+        // live snapshot from tick 0 — exactly one store read total.
         assert_eq!(*read_calls.lock().unwrap(), 1);
 
         let appended = appends.lock().unwrap();
@@ -1355,7 +1458,8 @@ mod tests {
             .downcast_ref::<Int32Array>()
             .unwrap();
 
-        assert_eq!(x.value(0), 3.5);
+        // Tick 0: spawn x=1.5 raw; tick 1: AddOne → x=2.5.
+        assert_eq!(x.value(0), 2.5);
         assert_eq!(tick.value(0), 1);
     }
 
@@ -1444,5 +1548,256 @@ mod tests {
         assert_eq!(filters[0].1.run_id.as_deref(), Some("run-a"));
         assert_eq!(filters[0].1.ticks.as_deref(), Some(&[-1][..]));
         assert!(filters[0].1.active_only);
+    }
+
+    // ── Tick-zero contract tests ──────────────────────────────────────────────
+    //
+    // These mirror tests/core/test_initial_conditions_contract.py.
+    // Contract: x₀ is given; x_{t+1} = f(x_t).
+    // The ledger contains the full sequence x₀, f(x₀), f²(x₀), …
+    // Initial conditions are preserved because spawns land raw AFTER the
+    // processor runs on the prior rows, not before.
+
+    /// A store that persists all appended batches in memory and filters them
+    /// by tick / active status on read, mirroring the ledger semantics needed
+    /// to verify the initial-conditions contract without touching disk.
+    #[derive(Clone, Default)]
+    struct LedgerStore {
+        ledger: Arc<Mutex<Vec<(String, RecordBatch)>>>,
+    }
+
+    #[async_trait]
+    impl Store for LedgerStore {
+        async fn append(&self, table_name: &str, batch: &RecordBatch) -> Result<()> {
+            self.ledger
+                .lock()
+                .unwrap()
+                .push((table_name.to_string(), batch.clone()));
+            Ok(())
+        }
+
+        async fn read_table(
+            &self,
+            table_name: &str,
+            filter: ReadFilter,
+        ) -> Result<Vec<RecordBatch>> {
+            let ledger = self.ledger.lock().unwrap();
+            let mut result = Vec::new();
+            for (tname, batch) in ledger.iter() {
+                if tname != table_name {
+                    continue;
+                }
+                // Tick filter
+                if let Some(ticks) = &filter.ticks {
+                    let tick_col = batch
+                        .column(batch.schema().index_of(TICK).unwrap())
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap();
+                    // Check if any row in the batch matches one of the
+                    // requested ticks.
+                    let has_tick =
+                        (0..batch.num_rows()).any(|idx| ticks.contains(&tick_col.value(idx)));
+                    if !has_tick {
+                        continue;
+                    }
+                }
+                // Active-only filter
+                if filter.active_only {
+                    let active_col = batch
+                        .column(batch.schema().index_of(IS_ACTIVE).unwrap())
+                        .as_any()
+                        .downcast_ref::<BooleanArray>()
+                        .unwrap();
+                    let keep = BooleanArray::from_iter(
+                        (0..batch.num_rows()).map(|idx| Some(active_col.value(idx))),
+                    );
+                    let filtered =
+                        filter_record_batch(batch, &keep).expect("ledger store filter failed");
+                    if filtered.num_rows() > 0 {
+                        result.push(filtered);
+                    }
+                } else {
+                    result.push(batch.clone());
+                }
+            }
+            Ok(result)
+        }
+    }
+
+    /// Reads all rows for a given tick from the ledger and returns a map of
+    /// entity_id → position__x, used in contract assertions.
+    async fn ledger_x_at_tick(
+        world: &AsyncWorld<LedgerStore>,
+        table_name: &str,
+        tick: i32,
+    ) -> HashMap<EntityId, f64> {
+        let batches = world
+            .query_table(
+                table_name,
+                ReadFilter {
+                    ticks: Some(vec![tick]),
+                    active_only: false,
+                    ..ReadFilter::default()
+                },
+            )
+            .await
+            .unwrap();
+        let mut map = HashMap::new();
+        for batch in &batches {
+            let entities = entity_column(batch).unwrap();
+            let x_col = batch
+                .column(batch.schema().index_of("position__x").unwrap())
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            let tick_col = batch
+                .column(batch.schema().index_of(TICK).unwrap())
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            for idx in 0..batch.num_rows() {
+                if tick_col.value(idx) == tick {
+                    map.insert(entities.value(idx), x_col.value(idx));
+                }
+            }
+        }
+        map
+    }
+
+    // Mirrors test_initial_conditions_persist_at_spawn_tick from
+    // tests/core/test_initial_conditions_contract.py.
+    //
+    // Spawn entity with x=5.0.  Run 3 steps.
+    // Expected ledger:  tick 0 → x=5.0  (raw, x₀)
+    //                   tick 1 → x=6.0  (f(x₀))
+    //                   tick 2 → x=7.0  (f²(x₀))
+    #[tokio::test]
+    async fn tick_zero_contract_first_spawn_persists_raw() {
+        let table = position_table();
+        let components = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "position__x",
+                DataType::Float64,
+                false,
+            )])),
+            vec![Arc::new(Float64Array::from(vec![5.0]))],
+        )
+        .unwrap();
+        let mut system = AsyncSystem::new();
+        system.add_processor(AddOne);
+        let mut world = AsyncWorld::from_ids("world-a", "run-a", LedgerStore::default(), system);
+
+        world.queue_spawn_batch(&table, components).unwrap();
+        world.run(3).await.unwrap();
+
+        let by_tick: HashMap<i32, f64> = {
+            let mut m = HashMap::new();
+            for t in 0..3i32 {
+                let rows = ledger_x_at_tick(&world, table.table_name(), t).await;
+                // Exactly one entity per tick.
+                assert_eq!(
+                    rows.len(),
+                    1,
+                    "tick {t}: expected 1 row, got {}",
+                    rows.len()
+                );
+                m.insert(t, *rows.values().next().unwrap());
+            }
+            m
+        };
+
+        // Strict equality — x₀ preserved, f applied on subsequent ticks.
+        assert_eq!(
+            by_tick[&0], 5.0,
+            "tick 0 must be raw spawn (x₀=5.0); got {}",
+            by_tick[&0]
+        );
+        assert_eq!(
+            by_tick[&1], 6.0,
+            "tick 1 must be f(x₀)=6.0; got {}",
+            by_tick[&1]
+        );
+        assert_eq!(
+            by_tick[&2], 7.0,
+            "tick 2 must be f²(x₀)=7.0; got {}",
+            by_tick[&2]
+        );
+    }
+
+    // Mirrors test_mid_run_spawn_persists_initial_conditions from
+    // tests/core/test_initial_conditions_contract.py.
+    //
+    // Entity "first" spawned with x=0.0 before tick 0; run 2 steps
+    // (tick 0 raw, tick 1 f applied).  Then "second" spawned with x=100.0;
+    // run 2 more steps.
+    // Expected:
+    //   tick 2: first→2.0  (f²(0))  second→100.0  (raw, x₀)
+    //   tick 3: first→3.0  (f³(0))  second→101.0  (f(x₀))
+    #[tokio::test]
+    async fn tick_zero_contract_mid_run_spawn_lands_raw_older_entities_keep_advancing() {
+        let table = position_table();
+        let store = LedgerStore::default();
+        let mut system = AsyncSystem::new();
+        system.add_processor(AddOne);
+        let mut world = AsyncWorld::from_ids("world-a", "run-a", store, system);
+
+        // Spawn "first" entity (x=0.0)
+        let first_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "position__x",
+                DataType::Float64,
+                false,
+            )])),
+            vec![Arc::new(Float64Array::from(vec![0.0]))],
+        )
+        .unwrap();
+        let first_ids = world.queue_spawn_batch(&table, first_batch).unwrap();
+        let first_id = first_ids[0];
+
+        // Run 2 steps: tick 0 (x=0.0 raw), tick 1 (x=1.0)
+        world.run(2).await.unwrap();
+
+        // Spawn "second" entity (x=100.0) mid-run
+        let second_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "position__x",
+                DataType::Float64,
+                false,
+            )])),
+            vec![Arc::new(Float64Array::from(vec![100.0]))],
+        )
+        .unwrap();
+        let second_ids = world.queue_spawn_batch(&table, second_batch).unwrap();
+        let second_id = second_ids[0];
+
+        // Run 2 more steps: tick 2 and tick 3
+        world.run(2).await.unwrap();
+
+        // Verify tick 2: first at 2.0 (f²(0)), second at 100.0 (raw x₀)
+        let t2 = ledger_x_at_tick(&world, table.table_name(), 2).await;
+        assert_eq!(
+            t2[&first_id], 2.0,
+            "tick 2: first entity must be at f²(0)=2.0; got {}",
+            t2[&first_id]
+        );
+        assert_eq!(
+            t2[&second_id], 100.0,
+            "tick 2: mid-run spawn must land raw (x₀=100.0); got {}",
+            t2[&second_id]
+        );
+
+        // Verify tick 3: first at 3.0 (f³(0)), second at 101.0 (f(x₀))
+        let t3 = ledger_x_at_tick(&world, table.table_name(), 3).await;
+        assert_eq!(
+            t3[&first_id], 3.0,
+            "tick 3: first entity must be at f³(0)=3.0; got {}",
+            t3[&first_id]
+        );
+        assert_eq!(
+            t3[&second_id], 101.0,
+            "tick 3: second entity must be at f(x₀)=101.0; got {}",
+            t3[&second_id]
+        );
     }
 }

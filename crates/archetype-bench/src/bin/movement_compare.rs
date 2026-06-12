@@ -118,9 +118,15 @@ async fn main() {
         .map(|batch| float64_sum(batch, "position__y"))
         .sum::<f64>();
     let query_sec = query_start.elapsed().as_secs_f64();
+    // Tick-zero contract: entities spawn raw at tick 0 (no movement applied).
+    // Movement processor first runs at tick 1, so at tick (ticks-1) each
+    // entity has had (ticks-1) movement steps applied.
+    // expected_x[i] = i + (ticks-1)*dt,  sum = Σi + n*(ticks-1)*dt
+    // expected_y[i] = (ticks-1)*dy,       sum = n*(ticks-1)*dy
+    let applied_steps = ticks.saturating_sub(1) as f64;
     let expected_sum_position_x =
-        (entities * entities.saturating_sub(1)) as f64 / 2.0 + entities as f64 * ticks as f64;
-    let expected_sum_position_y = entities as f64 * ticks as f64 * -0.5;
+        (entities * entities.saturating_sub(1)) as f64 / 2.0 + entities as f64 * applied_steps;
+    let expected_sum_position_y = entities as f64 * applied_steps * -0.5;
     let sum_position_x_abs_error = (sum_position_x - expected_sum_position_x).abs();
     let sum_position_y_abs_error = (sum_position_y - expected_sum_position_y).abs();
     let correct =
