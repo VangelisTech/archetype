@@ -27,7 +27,7 @@ from archetype.core.hooks import (
 from .async_cached_store import AsyncCachedStore
 from .async_lancedb_store import AsyncLancedbStore
 from .async_processor import AsyncProcessor
-from .async_querier import AsyncQueryManager
+from .async_querier import AsyncQueryManager, UnknownSignatureError
 from .async_store import AsyncStore
 from .async_system import AsyncSystem
 from .async_updater import AsyncUpdateManager
@@ -42,6 +42,7 @@ __all__ = [
     "AsyncSystem",
     "AsyncUpdateManager",
     "AsyncWorld",
+    "UnknownSignatureError",
     "AsyncHookHandler",
     "HookEvent",
     "HookHandle",

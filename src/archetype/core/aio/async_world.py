@@ -23,6 +23,7 @@ from daft import DataFrame, col
 from daft.functions import when
 from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
+from archetype.core.aio.async_querier import UnknownSignatureError, _canonicalize
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
@@ -604,9 +605,18 @@ class AsyncWorld(iAsyncWorld):
     ) -> DataFrame:
         """Facade Method to query an archetype table by signature.
 
+        The signature is canonicalized (sorted by class name) before lookup,
+        so callers may supply types in any order.  If the canonical signature
+        has never been active in this world (not in the live registry AND not
+        in the store's durable record) an ``UnknownSignatureError`` is raised —
+        a distinct failure from 'the signature exists but has zero rows at
+        this tick' which returns an empty DataFrame.
+
         Defaults to the world's most recent run_id when not provided. Accepts an optional
         run_config for instrumentation; ignored by the base querier.
         """
+        # Canonicalize the input sig so unsorted tuples resolve correctly.
+        sig = _canonicalize(sig)
 
         # Back-compat: tests sometimes pass RunConfig as the 2nd positional arg
         if run_config_or_ticks is not None and not isinstance(run_config_or_ticks, list):
@@ -622,6 +632,29 @@ class AsyncWorld(iAsyncWorld):
             effective_run_id = str(run_config.run_id)
         else:
             effective_run_id = ""
+
+        # Existence check: the sig must either be currently active (live entities
+        # or pending spawns/despawns) OR have been committed to the durable store.
+        # We skip the check when the world has no knowledge at all (brand-new
+        # world that has never spawned anything) — that is indistinguishable from
+        # an incorrect sig, so we let the store return an empty frame naturally.
+        # Internal tick-loop calls always pass sigs from active_signatures, so
+        # they will always pass this guard.
+        # Also skip when the querier does not implement list_signatures (test
+        # fakes, InMemory queriers) — the check is best-effort at the API boundary.
+        all_known_sigs = self.active_signatures  # live + pending
+        if all_known_sigs and hasattr(self.querier, "list_signatures"):
+            # Also consult the durable store for despawned-but-historical sigs.
+            store_sigs = {_canonicalize(s) for s in await self.querier.list_signatures()}
+            live_sigs = {_canonicalize(s) for s in all_known_sigs}
+            if sig not in (live_sigs | store_sigs):
+                component_names = ", ".join(t.__name__ for t in sig)
+                raise UnknownSignatureError(
+                    f"Archetype signature ({component_names}) has never been registered in this world. "
+                    "No entity carrying exactly these component types has been spawned. "
+                    "If you want to query entities that CONTAIN these components (possibly alongside others), "
+                    "use world.query() / query_components() instead of query_archetype()."
+                )
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
             # Prefer to pass run_config if the querier supports it (instrumented);
