@@ -15,7 +15,7 @@
 import asyncio
 import json
 from logging import getLogger
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import daft
 import pyarrow as pa
@@ -163,12 +163,15 @@ class AsyncWorld(iAsyncWorld):
                     "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
                 )
 
-# Phase 2 — commit. Appends run concurrently; each archetype's
+            # Phase 2 — commit. Appends run concurrently; each archetype's
             # mutation caches clear only after its rows are durably appended,
             # so a store failure preserves exactly the uncommitted mutations.
+            # The guard above propagated/raised every exception, so each
+            # remaining result is a computed DataFrame.
+            frames = cast("list[DataFrame]", results)
             commits = [
                 self._commit_archetype(sig, df, run_config)
-                for sig, df in zip(sigs, results, strict=False)
+                for sig, df in zip(sigs, frames, strict=False)
             ]
             committed = await asyncio.gather(*commits, return_exceptions=True)
             errors = {}
