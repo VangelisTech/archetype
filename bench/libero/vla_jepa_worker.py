@@ -17,10 +17,11 @@ Setup:
     modal deploy bench/libero/vla_jepa_worker.py
     modal run bench/libero/vla_jepa_worker.py      # smoke: one inference
 
-STATUS: scaffold pending first GPU run. The websocket payload keys below
-follow examples/LIBERO/eval_libero.py + model2libero_interface.py
-(M1Inference) and must be confirmed against the live server on the first
-smoke; flash-attn build time is the other known unknown.
+STATUS: verified 2026-06-11 — `modal run` smoke returns a real 7-step x
+7-dim un-normalized action chunk from the released checkpoint on an
+L40S. Payload contract confirmed against the live server: batch_images
+(rotated 180 + resized 224), instructions, unnorm_key, state shaped
+(1, 1, 8); response under data.normalized_actions.
 """
 
 # NOTE: no `from __future__ import annotations` — modal.parameter()
@@ -41,15 +42,21 @@ SERVER_PORT = 15084
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.10")
     .apt_install("git", "libgl1", "libglib2.0-0")
-    .pip_install("torch>=2.4,<2.6", "packaging", "ninja", "wheel", "huggingface_hub")
+    .pip_install("torch==2.5.1", "packaging", "ninja", "wheel", "huggingface_hub")
+    # Their deployment/ websocket server+client deps are not in requirements.txt.
+    .pip_install("websockets", "msgpack", "msgpack-numpy")
     .run_commands(
         f"git clone --depth 1 {REPO} /opt/VLA-JEPA",
         "pip install -r /opt/VLA-JEPA/requirements.txt",
         "pip install -e /opt/VLA-JEPA",
     )
-    # flash-attn last: it needs torch present at build time, and this layer
-    # is the slow one — keep everything else cached above it.
-    .run_commands("pip install flash-attn --no-build-isolation")
+    # flash-attn from the release wheel that exactly matches
+    # torch 2.5 / cu12 / cxx11abiFALSE / cp310 — pip's sdist path guesses
+    # the ABI wrong and produces undefined C10 symbols at import.
+    .pip_install(
+        "https://github.com/Dao-AILab/flash-attention/releases/download/"
+        "v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.5cxx11abiFALSE-cp310-cp310-linux_x86_64.whl"
+    )
     .env({"HF_HOME": f"{CKPT_DIR}/hf-cache", "PYTHONPATH": "/opt/VLA-JEPA"})
 )
 
@@ -69,9 +76,19 @@ class VlaJepaPolicy:
 
     @modal.enter()
     def start_server(self):
-        from huggingface_hub import hf_hub_download
+        # from_pretrained expects the full run directory (config.yaml +
+        # dataset_statistics.json beside checkpoints/), not just the .pt.
+        # Drop previously-patched config files first so the snapshot always
+        # starts from pristine upstream copies (patching must see originals).
+        from pathlib import Path
 
-        ckpt_path = hf_hub_download(repo_id=CKPT_REPO, filename=CKPT_FILE, local_dir=CKPT_DIR)
+        from huggingface_hub import snapshot_download
+
+        for cfg in Path(f"{CKPT_DIR}/LIBERO").glob("config.*"):
+            cfg.unlink()
+        snapshot_download(repo_id=CKPT_REPO, allow_patterns=["LIBERO/**"], local_dir=CKPT_DIR)
+        ckpt_path = f"{CKPT_DIR}/{CKPT_FILE}"
+        self._patch_base_model_paths()
         ckpt_volume.commit()
 
         cmd = [
@@ -106,6 +123,30 @@ class VlaJepaPolicy:
                 time.sleep(5.0)
         raise RuntimeError(f"policy server never came up: {last_err}")
 
+    @staticmethod
+    def _patch_base_model_paths():
+        """The released config.yaml/config.json reference the author's local
+        disk for the Qwen3-VL and V-JEPA2 base models; rewrite those paths to
+        HF repo ids so transformers downloads them into the volume cache."""
+        from pathlib import Path
+
+        replacements = {
+            "Qwen3-VL-2B-Instruct": "Qwen/Qwen3-VL-2B-Instruct",
+            "vjepa2-vitl-fpc64-256": "facebook/vjepa2-vitl-fpc64-256",
+        }
+        for cfg in Path(f"{CKPT_DIR}/LIBERO").glob("config.*"):
+            text = cfg.read_text()
+            patched = text
+            for marker, repo_id in replacements.items():
+                import re
+
+                # Anchored to the author's /home/... prefix: idempotent, can
+                # never re-match an already-substituted HF repo id.
+                patched = re.sub(rf"/home/[\w./-]*{re.escape(marker)}[\w./-]*", repo_id, patched)
+            if patched != text:
+                cfg.write_text(patched)
+                print(f"patched base-model paths in {cfg.name}")
+
     @modal.method()
     def infer(
         self,
@@ -113,27 +154,55 @@ class VlaJepaPolicy:
         wrist_png: str,
         instruction: str,
         state: list[float],
+        unnorm_key: str = "franka",
     ) -> list[list[float]]:
-        """One policy inference -> an action chunk (list of 7-dim actions).
+        """One policy inference -> an un-normalized action chunk.
 
-        Payload keys mirror examples/LIBERO/eval_libero.py; confirm on
-        first live smoke.
+        Payload and response shape follow upstream M1Inference
+        (examples/LIBERO/model2libero_interface.py): the server returns
+        normalized actions (B, chunk, D) in [-1, 1]; we un-normalize here
+        with the checkpoint's dataset_statistics.json, gripper binarized,
+        exactly as their LIBERO eval does.
         """
+        import json
+
         import cv2
         import numpy as np
 
         def decode(b64: str) -> "np.ndarray":
             buf = np.frombuffer(base64.b64decode(b64), dtype=np.uint8)
-            return cv2.cvtColor(cv2.imdecode(buf, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+            rgb = cv2.cvtColor(cv2.imdecode(buf, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+            # Inputs are raw LIBERO frames; rotate 180 degrees to match the
+            # model's train-time preprocessing (their eval does [::-1, ::-1]).
+            rgb = np.ascontiguousarray(rgb[::-1, ::-1])
+            return cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
 
         payload: dict[str, Any] = {
-            "observation/image": decode(agentview_png),
-            "observation/wrist_image": decode(wrist_png),
-            "observation/state": np.asarray(state, dtype=np.float32),
-            "prompt": instruction,
+            "batch_images": [[decode(agentview_png), decode(wrist_png)]],
+            "instructions": [instruction],
+            "unnorm_key": unnorm_key,
+            "do_sample": False,
+            "use_ddim": True,
+            "num_ddim_steps": 10,
+            # Upstream wraps an already-batched (1, 8) state in a list, so the
+            # server sees (1, 1, 8); state = eef_pos(3) + axis-angle(3) +
+            # gripper_qpos(2).
+            "state": [np.asarray(state, dtype=np.float32)[None, :]],
         }
-        result = self._client.infer(payload)
-        actions = np.asarray(result["actions"])
+        response = self._client.infer(payload)
+        normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
+
+        with open(f"{CKPT_DIR}/LIBERO/dataset_statistics.json") as f:
+            norm_stats = json.load(f)
+        if unnorm_key not in norm_stats:
+            (unnorm_key,) = norm_stats.keys()
+        stats = norm_stats[unnorm_key]["action"]
+        low = np.asarray(stats["min"])
+        high = np.asarray(stats["max"])
+        mask = np.asarray(stats.get("mask", np.ones_like(low, dtype=bool)))
+
+        normalized[:, 6] = np.where(normalized[:, 6] < 0.5, 0, 1)
+        actions = np.where(mask, 0.5 * (normalized + 1) * (high - low) + low, normalized)
         return [[float(v) for v in row] for row in actions]
 
 
