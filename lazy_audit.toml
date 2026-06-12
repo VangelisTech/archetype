@@ -90,3 +90,57 @@ path = "src/archetype/experiments/mujoco_cartpole.py"
 line = 102
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (pole_vel input column); same batch-UDF executor boundary as line 99."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 133
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_key input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 134
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (action input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 136
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_pos input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 137
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_quat input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 138
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (gripper input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 139
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (reward input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 140
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (done input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 141
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (success input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 142
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_step input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
