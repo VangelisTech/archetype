@@ -110,6 +110,47 @@ col("result")["field"]  # ✓ Use indexing
 
 ---
 
+## UDF column args resolve to the column's FINAL value (read-then-overwrite footgun)
+
+Daft folds a `@daft.func`'s column arguments to that column's **final definition in
+the plan**, not its value at the `with_column` call site. So a processor that reads a
+column with a UDF and then overwrites that same column later in the chain feeds the UDF
+the **post-overwrite** value — even across separate `with_column`/`with_columns` calls,
+and even through an intermediate snapshot column.
+
+```python
+# ✗ BROKEN: append reads seq_next, then seq_next is bumped -> append sees the BUMPED value
+df = df.with_column("plan", append_plan(col("plan"), col("seq_next"), ...))   # reads seq_next=1, not 0!
+df = df.with_column("seq_next", col("seq_next") + 1)
+# A plain projection snapshot does NOT save you once a UDF consumes it:
+df = df.with_column("snap", col("seq_next"))   # snap also folds to the bumped value
+df = df.with_column("out",  some_udf(col("snap")))
+```
+
+This silently corrupts any "read the pre-mutation value" logic — e.g. a state-hash taken
+*before* applying an effect, or a sequence counter — and the bug is invisible until you
+assert on exact values.
+
+**Fix:** consolidate every read-then-overwrite into **one** struct-returning UDF that
+reads each input once and returns all results as struct fields, then split the struct
+back into columns. Because the output columns derive *from* the UDF, Daft cannot fold the
+UDF's own inputs to those outputs (that would be a cycle), so it reads the genuine
+pre-mutation values.
+
+```python
+# ✓ CORRECT: one UDF reads originals, returns a struct; split it back out
+df = df.with_column("eff", apply_effect(col("atoms_json"), col("plan_json"), col("seq_next"), ...))
+for f in ("atoms_json", "plan_json", "seq_next", "pre_state_sig"):
+    df = df.with_column(f, col("eff")[f])
+df = df.exclude("eff")
+```
+
+Plain projections (no UDF, e.g. a column swap via `with_columns({"a": col("b"), "b": col("a")})`)
+*do* read input values atomically — the folding hazard is specific to UDF arguments.
+Discovered building `src/archetype/htn/` (see `EffectProcessor` / `udfs.apply_effect`).
+
+---
+
 ## Archetype ECS Pattern
 
 ### Components = Data Bags

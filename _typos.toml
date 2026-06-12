@@ -31,6 +31,11 @@ DAG = "DAG"
 pylist = "pylist"
 unnest = "unnest"
 semver = "semver"
+# Deliberate user-typo phrase matched against session transcripts
+youre = "youre"
+
+# HTN: negative-precondition column, paired with `pp` (positive)
+pn = "pn"
 
 [default.extend-identifiers]
 AsyncAnthropic = "AsyncAnthropic"

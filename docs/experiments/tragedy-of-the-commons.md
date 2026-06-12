@@ -41,7 +41,7 @@ heterogeneous populations.
 The commons is a single resource pool with carrying capacity `K = 1000` and
 logistic regeneration:
 
-```
+```text
 growth = r * R_t * (1 - R_t / K)
 ```
 

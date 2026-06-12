@@ -122,7 +122,7 @@ def load_claude_session(
     """Transcribe one session transcript.
 
     Returns None for sessions with no dialogue turns (queue noise,
-    empty files, unparseable transcripts).
+    empty files, unparsable transcripts).
     """
     path = Path(path)
     turns: list[Turn] = []
