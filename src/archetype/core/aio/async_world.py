@@ -15,7 +15,7 @@
 import asyncio
 import json
 from logging import getLogger
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import daft
 import pyarrow as pa
@@ -23,7 +23,6 @@ from daft import DataFrame, col
 from daft.functions import when
 from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
-from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
@@ -42,6 +41,7 @@ from archetype.core.hooks import (
 from archetype.core.interfaces import (
     ArchetypeSignature,
     iAsyncHookBus,
+    iAsyncProcessor,
     iAsyncQueryManager,
     iAsyncSystem,
     iAsyncUpdateManager,
@@ -59,7 +59,7 @@ class AsyncWorld(iAsyncWorld):
         self,
         *,
         world_id: str,
-        name: str,
+        name: str | None,
         querier: iAsyncQueryManager,
         updater: iAsyncUpdateManager,
         system: iAsyncSystem,
@@ -148,9 +148,15 @@ class AsyncWorld(iAsyncWorld):
             # the failed tick is retryable and nothing half-commits.
             futures = [self._compute_archetype(sig, run_config, **input_kwargs) for sig in sigs]
             results = await asyncio.gather(*futures, return_exceptions=True)
-            errors = {
-                sig: r for sig, r in zip(sigs, results, strict=False) if isinstance(r, Exception)
-            }  # from asyncio.gather docs: The order of result values corresponds to the order of awaitables in aws.
+            # Order corresponds to `sigs` (per asyncio.gather docs). Collect ordinary
+            # Exceptions to surface together; propagate non-Exception BaseExceptions
+            # (e.g. CancelledError) directly so task cancellation is never masked.
+            errors: dict[ArchetypeSignature, Exception] = {}
+            for sig, r in zip(sigs, results, strict=False):
+                if isinstance(r, Exception):
+                    errors[sig] = r
+                elif isinstance(r, BaseException):
+                    raise r
 
             if errors:
                 raise RuntimeError(
@@ -160,20 +166,33 @@ class AsyncWorld(iAsyncWorld):
             # Phase 2 — commit. Appends run concurrently; each archetype's
             # mutation caches clear only after its rows are durably appended,
             # so a store failure preserves exactly the uncommitted mutations.
+            # The guard above propagated/raised every exception, so each
+            # remaining result is a computed DataFrame.
+            frames = cast("list[DataFrame]", results)
             commits = [
                 self._commit_archetype(sig, df, run_config)
-                for sig, df in zip(sigs, results, strict=False)
+                for sig, df in zip(sigs, frames, strict=False)
             ]
             committed = await asyncio.gather(*commits, return_exceptions=True)
-            errors = {
-                sig: r for sig, r in zip(sigs, committed, strict=False) if isinstance(r, Exception)
-            }
+            errors = {}
+            for sig, r in zip(sigs, committed, strict=False):
+                if isinstance(r, Exception):
+                    errors[sig] = r
+                elif isinstance(r, BaseException):
+                    # Never mask cancellation behind the aggregate RuntimeError.
+                    raise r
             if errors:
                 raise RuntimeError(
                     "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
                 )
 
-            result_frames = dict(zip(sigs, committed, strict=False))
+            # Every remaining commit result is a DataFrame, keeping
+            # PostTick.results exception-free per its contract (spec §320).
+            result_frames: dict[ArchetypeSignature, DataFrame] = {
+                sig: r
+                for sig, r in zip(sigs, committed, strict=False)
+                if not isinstance(r, BaseException)
+            }
 
             self.tick += 1
 
@@ -482,10 +501,10 @@ class AsyncWorld(iAsyncWorld):
             )
         )
 
-    async def add_processor(self, processor: "AsyncProcessor"):
+    async def add_processor(self, processor: iAsyncProcessor):
         await self.system.add_processor(processor)
 
-    async def remove_processor(self, processor: type["AsyncProcessor"]):
+    async def remove_processor(self, processor: type[iAsyncProcessor]):
         await self.system.remove_processor(processor)
 
     # ---------------------------------------------------------------------
@@ -498,7 +517,7 @@ class AsyncWorld(iAsyncWorld):
         *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
+        components: list[type[Component]] | None = None,
         run_id: str | None = None,
         run_config: RunConfig | None = None,
     ) -> DataFrame:
@@ -514,12 +533,14 @@ class AsyncWorld(iAsyncWorld):
         elif isinstance(run_config_or_ticks, list) and ticks is None:
             ticks = run_config_or_ticks
 
-        effective_run_id = (
-            run_id
-            or (self.run_id and str(self.run_id))
-            or (run_config and str(run_config.run_id))
-            or ""
-        )
+        if run_id:
+            effective_run_id = run_id
+        elif self.run_id:
+            effective_run_id = str(self.run_id)
+        elif run_config is not None:
+            effective_run_id = str(run_config.run_id)
+        else:
+            effective_run_id = ""
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
             # Prefer to pass run_config if the querier supports it (instrumented);
@@ -532,8 +553,8 @@ class AsyncWorld(iAsyncWorld):
                     ticks=target_ticks,
                     entity_ids=entity_ids,
                     components=components,
-                    run_config=run_config,
-                )  # type: ignore[call-arg]
+                    run_config=run_config,  # ty: ignore[unknown-argument]  # probed; TypeError-guarded below
+                )
             except TypeError:
                 return await self.querier.query_archetype(
                     sig=sig,

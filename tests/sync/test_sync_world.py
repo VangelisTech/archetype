@@ -40,8 +40,18 @@ class TestSyncSystem:
         proc = SyncProcessor()
         system.add_processor(proc)
         assert proc in system.processors
-        system.remove_processor(proc)
+        # Removal is type-based: removes every registered instance of the type.
+        system.remove_processor(SyncProcessor)
         assert proc not in system.processors
+
+    def test_remove_processor_of_absent_type_is_noop(self):
+        system = SyncSystem()
+
+        class _Unregistered(SyncProcessor):
+            pass
+
+        system.remove_processor(_Unregistered)
+        assert system.processors == []
 
     def test_execute_calls_processor(self):
         calls = []

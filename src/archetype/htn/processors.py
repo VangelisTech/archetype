@@ -1,5 +1,16 @@
-# Copyright 2026 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 HTN Processors
@@ -20,10 +31,13 @@ structural fan-out is the driver's job — so the module is lazy-audit clean in 
 
 from __future__ import annotations
 
-from daft import col, lit
+from typing import cast
+
+from daft import Expression, col, lit
 from daft.functions import when
 
 from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.component import Component
 from archetype.htn import udfs
 
 _LIVE = lit("live")
@@ -44,7 +58,8 @@ class FrontierProcessor(AsyncProcessor):
     """Priority 10. Pick the ready node and denormalize its op-spec into in-row
     columns. Pure value columns — zero archetype migration per step (Inv HTN-V2.9)."""
 
-    components = (None,)  # rebound to (Branch,) after the class bodies
+    # Rebound to (Branch,) after the class bodies (keeps imports linear).
+    components: tuple[type[Component], ...] = ()
     priority = 10
 
     async def process(self, df, **kw):
@@ -59,12 +74,13 @@ class ApplicabilityProcessor(AsyncProcessor):
     ``applicable = pre+ ⊆ atoms ∧ pre- ∩ atoms = ∅``. Compound: the COMPLETE set of
     methods whose precondition holds in CURRENT atoms (Inv HTN-V2.7)."""
 
-    components = (None,)
+    components: tuple[type[Component], ...] = ()
     priority = 20
 
     async def process(self, df, **kw):
         prim = col("branch__ready_kind") == "primitive"
-        comp = col("branch__ready_kind") == "compound"
+        # Daft stubs type str-literal == as bool; runtime returns Expression.
+        comp = cast(Expression, col("branch__ready_kind") == "compound")
         df = df.with_column(
             "branch__applicable",
             when(
@@ -116,7 +132,7 @@ class EffectProcessor(AsyncProcessor):
     witness and the seq (see ``udfs.apply_effect``). Reading every input once and splitting
     the struct back out is aliasing-proof (cycle-prevention reads the pre-mutation values)."""
 
-    components = (None,)
+    components: tuple[type[Component], ...] = ()
     priority = 30
 
     async def process(self, df, **kw):
@@ -151,14 +167,21 @@ class TerminationProcessor(AsyncProcessor):
     MANDATORY every tick (Inv HTN-V2.11); ``open_count == 0`` => solved; a ready compound
     with no applicable method, or a stalled branch with no ready node, => failed."""
 
-    components = (None,)
+    components: tuple[type[Component], ...] = ()
     priority = 40
 
     async def process(self, df, **kw):
+        # Daft stubs type Expression.__eq__ as bool; cast records the real
+        # Expression type so downstream &-chains type-check.
         live = col("branch__status") == _LIVE
         over_depth = col("branch__depth") > col("branch__max_depth")
-        none_ready = col("branch__ready_kind") == "none"
-        dead_compound = (col("branch__ready_kind") == "compound") & ~col("branch__needs_expansion")
+        # ty: int-literal comparison hits no stub overload; runtime returns Expression.
+        open_count = col("branch__open_count")
+        open_positive = cast(Expression, open_count > 0)  # ty: ignore[unsupported-operator]
+        none_ready = cast(Expression, col("branch__ready_kind") == "none")
+        dead_compound = cast(Expression, col("branch__ready_kind") == "compound") & ~col(
+            "branch__needs_expansion"
+        )
 
         # (a) authoritative post-resolution open count, same row.
         df = df.with_column("branch__open_count", udfs.count_open(col("branch__network_json")))
@@ -166,22 +189,22 @@ class TerminationProcessor(AsyncProcessor):
         df = df.with_column(
             "branch__status",
             when(over_depth & live, then=lit("failed"))
-            .when((col("branch__open_count") == 0) & live, then=lit("solved"))
+            .when(cast(Expression, col("branch__open_count") == 0) & live, then=lit("solved"))
             .when(dead_compound & live, then=lit("failed"))
-            .when(none_ready & (col("branch__open_count") > 0) & live, then=lit("failed"))
+            .when(none_ready & open_positive & live, then=lit("failed"))
             .otherwise(col("branch__status")),
         )
         # (c) fail reason for the transition that just fired.
-        failed = col("branch__status") == "failed"
+        failed = cast(Expression, col("branch__status") == "failed")
         df = df.with_column(
             "branch__fail_reason",
             when(over_depth & failed, then=lit("depth_exceeded"))
             .when(
-                dead_compound & failed & (col("branch__fail_reason") == ""),
+                dead_compound & failed & cast(Expression, col("branch__fail_reason") == ""),
                 then=lit("no_applicable_method"),
             )
             .when(
-                none_ready & failed & (col("branch__fail_reason") == ""),
+                none_ready & failed & cast(Expression, col("branch__fail_reason") == ""),
                 then=lit("stalled"),
             )
             .otherwise(col("branch__fail_reason")),

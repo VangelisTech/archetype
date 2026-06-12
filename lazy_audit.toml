@@ -15,174 +15,174 @@
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 22
+line = 33
 method = "collect"
 reason = "HTTP JSON response boundary: FastAPI must receive concrete row dictionaries for response encoding; a Daft lazy DataFrame cannot be represented as JSON without executing the query."
 
 [[entries]]
 path = "src/archetype/api/models.py"
-line = 22
+line = 33
 method = "to_pylist"
 reason = "HTTP JSON response boundary: convert the already-collected Daft result into row dictionaries for FastAPI's JSON encoder at the terminal REST boundary."
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 133
+line = 140
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 315
+line = 334
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
 path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 140
+line = 162
 method = "collect"
 reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
 
 [[entries]]
 path = "src/archetype/core/sync/store.py"
-line = 130
+line = 132
 method = "collect"
 reason = "Debug-mode-only logging: materialise so count_rows and df.show emit diagnostics; gated on self.debug and never reached in production execution paths."
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 272
+line = 270
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
 [[entries]]
 path = "src/archetype/core/lineage.py"
-line = 94
+line = 105
 method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
 [[entries]]
 path = "src/archetype/app/autoresearch_service.py"
-line = 302
+line = 313
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow (incumbent score comparison, head entity id for the next update) at the autoresearch loop boundary; the comparison drives imperative orchestration, not a further dataframe computation."
 
 [[entries]]
 path = "src/archetype/experiments/mujoco_cartpole.py"
-line = 99
+line = 116
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary: the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; MuJoCo's mj_step is a stateful C call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/mujoco_cartpole.py"
-line = 100
+line = 117
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (pole_angle input column); same batch-UDF executor boundary as line 99."
 
 [[entries]]
 path = "src/archetype/experiments/mujoco_cartpole.py"
-line = 101
+line = 118
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (cart_vel input column); same batch-UDF executor boundary as line 99."
 
 [[entries]]
 path = "src/archetype/experiments/mujoco_cartpole.py"
-line = 102
+line = 119
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (pole_vel input column); same batch-UDF executor boundary as line 99."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 133
+line = 144
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_key input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 134
+line = 145
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (action input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 136
+line = 147
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_pos input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 137
+line = 148
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_quat input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 138
+line = 149
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (gripper input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 139
+line = 150
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (reward input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 140
+line = 151
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (done input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 141
+line = 152
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (success input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 142
+line = 153
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_step input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 80
+line = 91
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (env_key input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 81
+line = 92
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (instruction input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 82
+line = 93
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (eef_pos input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 83
+line = 94
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (eef_quat input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 84
+line = 95
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (gripper input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 85
+line = 96
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (done input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 86
+line = 97
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the policy-inference boundary (prev_action input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference is a remote stateful call that cannot be expressed as a Daft expression."

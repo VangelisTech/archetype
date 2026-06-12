@@ -1,5 +1,16 @@
-# Copyright 2026 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Cartpole-on-the-ledger: MuJoCo dynamics as an Archetype processor.
 
@@ -82,9 +93,12 @@ class _CartpoleStepper:
     def __init__(self, xml: str, substeps: int):
         import mujoco
 
+        # mujoco binds its members at runtime; alias once for the type checker.
+        mj_model = mujoco.MjModel  # ty: ignore[unresolved-attribute]
+        mj_data = mujoco.MjData  # ty: ignore[unresolved-attribute]
         self._mujoco = mujoco
-        self._model = mujoco.MjModel.from_xml_string(xml)
-        self._data = mujoco.MjData(self._model)
+        self._model = mj_model.from_xml_string(xml)
+        self._data = mj_data(self._model)
         self._substeps = substeps
 
     @daft.method.batch(return_dtype=_STATE_STRUCT)
@@ -96,6 +110,9 @@ class _CartpoleStepper:
         pole_vel: Series,
     ) -> Series:
         mujoco, model, data = self._mujoco, self._model, self._data
+        # Runtime-bound members, aliased once for the type checker.
+        mj_reset = mujoco.mj_resetData  # ty: ignore[unresolved-attribute]
+        mj_step = mujoco.mj_step  # ty: ignore[unresolved-attribute]
         cp = cart_pos.to_pylist()
         pa = pole_angle.to_pylist()
         cv = cart_vel.to_pylist()
@@ -106,13 +123,13 @@ class _CartpoleStepper:
             # The model has no contacts or constraints, so stepping is a pure
             # function of (qpos, qvel): resetting scratch MjData per row is
             # exactly equivalent to a continuous rollout.
-            mujoco.mj_resetData(model, data)
+            mj_reset(model, data)
             data.qpos[0] = cp[i]
             data.qpos[1] = pa[i]
             data.qvel[0] = cv[i]
             data.qvel[1] = pv[i]
             for _ in range(self._substeps):
-                mujoco.mj_step(model, data)
+                mj_step(model, data)
             out.append(
                 {
                     "cart_pos": float(data.qpos[0]),
@@ -166,15 +183,20 @@ def raw_rollout(
     """
     import mujoco
 
-    model = mujoco.MjModel.from_xml_string(xml)
+    # mujoco binds its members at runtime; alias once for the type checker.
+    mj_model_cls = mujoco.MjModel  # ty: ignore[unresolved-attribute]
+    mj_data_cls = mujoco.MjData  # ty: ignore[unresolved-attribute]
+    mj_step = mujoco.mj_step  # ty: ignore[unresolved-attribute]
+
+    model = mj_model_cls.from_xml_string(xml)
     trajectories = []
     for state in initial_states:
-        data = mujoco.MjData(model)
+        data = mj_data_cls(model)
         data.qpos[0], data.qpos[1], data.qvel[0], data.qvel[1] = state
         trajectory = [state]
         for _ in range(ticks - 1):
             for _ in range(substeps):
-                mujoco.mj_step(model, data)
+                mj_step(model, data)
             trajectory.append(
                 (
                     float(data.qpos[0]),

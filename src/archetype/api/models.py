@@ -1,11 +1,22 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Request/response schemas and wire helpers for the API."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from daft import DataFrame
 from pydantic import BaseModel, Field
@@ -15,11 +26,12 @@ from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 
 
-def dataframe_to_rows(df: DataFrame | list) -> list[dict[str, Any]]:
+def dataframe_to_rows(df: DataFrame | list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return a JSON-serializable row list from a Daft DataFrame-like result."""
-    if isinstance(df, list):
-        return df
-    return df.collect().to_pylist()
+    # Daft's to_pylist() is stubbed as list[Any], and isinstance(list) erases the
+    # element type; rows are JSON objects in both branches.
+    rows = df if isinstance(df, list) else df.collect().to_pylist()
+    return cast("list[dict[str, Any]]", rows)
 
 
 def hydrate_components(payloads: list[dict[str, Any]]) -> list[Component]:

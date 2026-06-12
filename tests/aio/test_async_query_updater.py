@@ -9,7 +9,7 @@ from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.core.config import CacheConfig, StorageConfig
+from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.runtime.session import configure_session
 
 
@@ -21,7 +21,11 @@ class Position(Component):
 @pytest_asyncio.fixture(params=["async", "async_cached", "lancedb"], scope="function")
 async def store_backend(request, tmp_path):
     uri = str(tmp_path)
-    storage = StorageConfig(uri=uri, namespace="test", use_lancedb=(request.param == "lancedb"))
+    storage = StorageConfig(
+        uri=uri,
+        namespace="test",
+        backend=StorageBackend.LANCEDB if request.param == "lancedb" else StorageBackend.ICEBERG,
+    )
     session = configure_session(storage)
 
     if request.param == "async":

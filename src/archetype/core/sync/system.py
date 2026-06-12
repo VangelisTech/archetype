@@ -17,22 +17,22 @@ import logging
 from daft import DataFrame
 
 from archetype.core.config import RunConfig
-from archetype.core.interfaces import ArchetypeSignature, iSystem
+from archetype.core.interfaces import ArchetypeSignature, iProcessor, iSystem
 from archetype.core.resources import Resources
-from archetype.core.sync.processor import SyncProcessor
 
 logger = logging.getLogger(__name__)
 
 
 class SyncSystem(iSystem):
     def __init__(self):
-        self.processors: list[SyncProcessor] = []
+        self.processors: list[iProcessor] = []
 
-    def add_processor(self, proc: SyncProcessor):
-        self.processors.append(proc)
+    def add_processor(self, processor: iProcessor):
+        self.processors.append(processor)
 
-    def remove_processor(self, proc: SyncProcessor):
-        self.processors.remove(proc)
+    def remove_processor(self, proc_type: type[iProcessor]):
+        """Remove all processors of the given type; no-op if none are registered."""
+        self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
     def execute(
         self,
@@ -61,7 +61,6 @@ class SyncSystem(iSystem):
             # Build the modified archetype list if the processor has the components to matching the archetype signature
             if set(proc_instance.components).issubset(set(sig)):
                 try:
-                    assert isinstance(proc_instance, SyncProcessor)
                     df = proc_instance.process(df, **input_kwargs)
                 except Exception as e:
                     logger.error(

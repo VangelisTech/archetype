@@ -37,6 +37,7 @@ from archetype.core.hooks import (
 )
 from archetype.core.interfaces import (
     ArchetypeSignature,
+    iProcessor,
     iQueryManager,
     iResourceContainer,
     iSyncHookBus,
@@ -44,7 +45,6 @@ from archetype.core.interfaces import (
     iUpdateManager,
     iWorld,
 )
-from archetype.core.sync.processor import SyncProcessor
 
 logger = getLogger(__name__)
 
@@ -56,7 +56,7 @@ class SyncWorld(iWorld):
         self,
         *,
         world_id: str,
-        name: str,
+        name: str | None,
         querier: iQueryManager,
         updater: iUpdateManager,
         system: iSystem,
@@ -102,9 +102,7 @@ class SyncWorld(iWorld):
         for _ in range(run_config.num_steps):
             self.step(run_config, **input_kwargs)
 
-    def step(
-        self, run_config: RunConfig, **input_kwargs
-    ) -> list[tuple[DataFrame, ArchetypeSignature]]:
+    def step(self, run_config: RunConfig, **input_kwargs) -> None:
         """
         Executes one full simulation tick.
         """
@@ -409,10 +407,10 @@ class SyncWorld(iWorld):
             )
         )
 
-    def add_processor(self, processor: "SyncProcessor"):
+    def add_processor(self, processor: iProcessor):
         self.system.add_processor(processor)
 
-    def remove_processor(self, processor: type["SyncProcessor"]):
+    def remove_processor(self, processor: type[iProcessor]):
         self.system.remove_processor(processor)
 
     # ---------------------------------------------------------------------
@@ -425,7 +423,7 @@ class SyncWorld(iWorld):
         run_config: RunConfig | None = None,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
+        components: list[type[Component]] | None = None,
     ) -> DataFrame:
         """Get an archetype by signature and tick. Esper equivalent of get_component for Archetype"""
         return self.querier.query_archetype(

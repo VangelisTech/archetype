@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 World Service
@@ -26,7 +37,7 @@ from archetype.core.aio import (
 )
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
-from archetype.core.interfaces import iAsyncStore, iAsyncSystem, iWorld
+from archetype.core.interfaces import iAsyncStore, iAsyncSystem
 from archetype.core.lineage import persist_lineage
 from archetype.core.resources import Resources
 
@@ -81,22 +92,22 @@ class WorldRegistry:
     """Holds live worlds. Lookup by ID or name, insert, remove, list."""
 
     def __init__(self) -> None:
-        self._worlds: dict[str, iWorld] = {}
+        self._worlds: dict[str, AsyncWorld] = {}
         self._names: dict[str, str] = {}
 
-    def insert(self, world: iWorld) -> None:
+    def insert(self, world: AsyncWorld) -> None:
         wid = str(world.world_id)
         self._worlds[wid] = world
         if world.name:
             self._names[world.name] = wid
 
-    def get(self, world_id: UUID | str) -> iWorld:
+    def get(self, world_id: UUID | str) -> AsyncWorld:
         wid = str(world_id)
         if wid not in self._worlds:
             raise KeyError(f"World with ID '{world_id}' not found.")
         return self._worlds[wid]
 
-    def get_by_name(self, name: str) -> iWorld:
+    def get_by_name(self, name: str) -> AsyncWorld:
         if name not in self._names:
             raise KeyError(f"World with name '{name}' not found.")
         return self.get(self._names[name])
@@ -107,7 +118,7 @@ class WorldRegistry:
         if world and world.name:
             self._names.pop(world.name, None)
 
-    def list(self) -> list[iWorld]:
+    def all(self) -> list[AsyncWorld]:
         return list(self._worlds.values())
 
     def has(self, world_id: UUID | str) -> bool:
@@ -162,17 +173,17 @@ class WorldOrchestrator:
         self._registry.insert(world)
         return world
 
-    def get_world(self, world_id: UUID) -> iWorld:
+    def get_world(self, world_id: UUID) -> AsyncWorld:
         return self._registry.get(world_id)
 
-    def get_world_by_name(self, name: str) -> iWorld:
+    def get_world_by_name(self, name: str) -> AsyncWorld:
         return self._registry.get_by_name(name)
 
     def has_world(self, world_id: str | UUID) -> bool:
         return self._registry.has(world_id)
 
-    def list_worlds(self) -> list[iWorld]:
-        return self._registry.list()
+    def list_worlds(self) -> list[AsyncWorld]:
+        return self._registry.all()
 
     def fork_world(
         self,
@@ -221,9 +232,8 @@ class WorldOrchestrator:
         fork.system.processors = list(source.system.processors)
 
         # Deep-copy hooks registry (independent post-fork)
-        for event_type, entries in source.hooks._by_type.items():
-            for _handle, fn, mode in entries:
-                fork.hooks.add(event_type, fn, mode=mode)
+        for event_type, _handle, fn, mode in source.hooks.items():
+            fork.hooks.add(event_type, fn, mode=mode)
 
         self._registry.insert(fork)
         return fork
@@ -274,7 +284,7 @@ class WorldService:
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
         system: iAsyncSystem | None = None,
-    ) -> iWorld:
+    ) -> AsyncWorld:
         """Resolve storage, then delegate world creation to the orchestrator."""
         if storage_config is None:
             storage_config = StorageConfig()
@@ -284,7 +294,7 @@ class WorldService:
         self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
         return world
 
-    def get_world(self, world_id: UUID) -> iWorld:
+    def get_world(self, world_id: UUID) -> AsyncWorld:
         return self._orchestrator.get_world(world_id)
 
     def storage_record(
@@ -298,13 +308,13 @@ class WorldService:
         """
         return self._storage_configs.get(str(world_id))
 
-    def get_world_by_name(self, name: str) -> iWorld:
+    def get_world_by_name(self, name: str) -> AsyncWorld:
         return self._orchestrator.get_world_by_name(name)
 
     def has_world(self, world_id: str | UUID) -> bool:
         return self._orchestrator.has_world(world_id)
 
-    def list_worlds(self) -> list[iWorld]:
+    def list_worlds(self) -> list[AsyncWorld]:
         return self._orchestrator.list_worlds()
 
     async def fork_world(
@@ -313,7 +323,7 @@ class WorldService:
         name: str | None = None,
         storage_config: StorageConfig | None = None,
         cache_config: CacheConfig | None = None,
-    ) -> iWorld:
+    ) -> AsyncWorld:
         """Fork a world. Inherits source's storage when no override is given.
 
         Per ``docs/guide/world-lifecycle.md`` § 4.5, the fork writes to the
@@ -371,19 +381,12 @@ class WorldService:
     def list_processors(self, world_id: str | UUID) -> list:
         """Return the world's registered processor instances."""
         world = self._orchestrator.get_world(UUID(str(world_id)))
-        if hasattr(world, "system") and hasattr(world.system, "processors"):
-            return list(world.system.processors)
-        return []
+        return list(world.system.processors)
 
     def list_hooks(self, world_id: str | UUID) -> list:
-        """Return the world's registered hook handles."""
+        """Return registered hooks as (event_type, handle, fn, mode) rows."""
         world = self._orchestrator.get_world(UUID(str(world_id)))
-        if hasattr(world, "hooks") and hasattr(world.hooks, "_by_type"):
-            handles = []
-            for entries in world.hooks._by_type.values():
-                handles.extend(entries)
-            return handles
-        return []
+        return list(world.hooks.items())
 
     def list_resources(self, world_id: str | UUID) -> list:
         """Return (type, instance) pairs from the world's Resources container."""

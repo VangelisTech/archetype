@@ -116,7 +116,9 @@ class SyncStore(iStore):
             df.limit(5).show()
 
         # stored as strings; ensure filter values are strings
-        return df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
+        # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
+        df = df.where(df["world_id"] == str(world_id))  # ty: ignore[invalid-argument-type]
+        return df.where(df["run_id"] == str(run_id))  # ty: ignore[invalid-argument-type]
 
     def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """

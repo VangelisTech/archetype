@@ -1,5 +1,16 @@
-# Copyright 2026 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+# Copyright 2025 Vangelis Technologies Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """RuntimeWorld — the user-facing world handle.
 
@@ -72,10 +83,12 @@ class _RuntimeWorldState:
     async def ensure_init(self, ctx: ActorCtx) -> str | UUID:
         """Single-flight activation. Returns world_id."""
         if self.initialized:
+            assert self.world_id is not None  # set before `initialized` flips true
             return self.world_id
 
         async with self.init_lock:
             if self.initialized:
+                assert self.world_id is not None
                 return self.world_id
 
             gate = self.runtime._container.command_service
@@ -102,6 +115,7 @@ class _RuntimeWorldState:
 
             self.initialized = True
 
+        assert self.world_id is not None
         return self.world_id
 
     async def shutdown(self, *, from_runtime: bool) -> None:

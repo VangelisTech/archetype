@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Archetype CLI.
 
@@ -129,8 +140,8 @@ def _request(
     role: Role | None = None,
     token: str | None = None,
     **kwargs,
-) -> dict | list:
-    """Make one HTTP request against the Archetype server."""
+) -> Any:
+    """Make one HTTP request against the Archetype server; returns parsed JSON."""
     client = _client(url)
     try:
         _check_server(client, url)
@@ -142,6 +153,26 @@ def _request(
         return _handle_response(resp, role=role)
     finally:
         client.close()
+
+
+def _request_obj(method: str, path: str, **kwargs) -> dict[str, Any]:
+    """_request for endpoints that return a single JSON object."""
+    result = _request(method, path, **kwargs)
+    if not isinstance(result, dict):
+        typer.echo(
+            f"unexpected response: expected an object, got {type(result).__name__}", err=True
+        )
+        raise typer.Exit(code=1)
+    return result
+
+
+def _request_list(method: str, path: str, **kwargs) -> list[dict[str, Any]]:
+    """_request for endpoints that return a JSON array of objects."""
+    result = _request(method, path, **kwargs)
+    if not isinstance(result, list):
+        typer.echo(f"unexpected response: expected an array, got {type(result).__name__}", err=True)
+        raise typer.Exit(code=1)
+    return result
 
 
 def _parse_json_array(value: str) -> list[dict[str, Any]]:
@@ -229,7 +260,7 @@ def status(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Show all worlds and their state."""
-    worlds = _request("get", "/worlds", **_common_request_kwargs(url, role, token))
+    worlds = _request_list("get", "/worlds", **_common_request_kwargs(url, role, token))
     if json_output:
         _print_json(worlds)
         return
@@ -256,7 +287,7 @@ def world_create(
     }
     if cache:
         body["cache_config"] = {}
-    data = _request("post", "/worlds", json=body, **_common_request_kwargs(url, role, token))
+    data = _request_obj("post", "/worlds", json=body, **_common_request_kwargs(url, role, token))
     typer.echo(f"Created world: {data['world_id']} (name={data.get('name')})")
 
 
@@ -268,7 +299,7 @@ def world_list(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """List live worlds."""
-    worlds = _request("get", "/worlds", **_common_request_kwargs(url, role, token))
+    worlds = _request_list("get", "/worlds", **_common_request_kwargs(url, role, token))
     if json_output:
         _print_json(worlds)
         return
@@ -284,7 +315,7 @@ def world_inspect(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """Show world details."""
-    data = _request("get", f"/worlds/{world_id}", **_common_request_kwargs(url, role, token))
+    data = _request_obj("get", f"/worlds/{world_id}", **_common_request_kwargs(url, role, token))
     if json_output:
         _print_json(data)
         return
@@ -308,7 +339,7 @@ def world_fork(
         body["storage_config"] = {"uri": storage, "namespace": namespace}
     if cache:
         body["cache_config"] = {}
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/fork",
         json=body,
@@ -352,7 +383,7 @@ def entity_spawn(
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
 ):
     """Spawn an entity from component payloads."""
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/entities",
         json={"components": _parse_json_array(components)},
@@ -447,7 +478,7 @@ def run(
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
 ):
     """Run simulation for N steps."""
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/run",
         json={"num_steps": steps},
@@ -467,7 +498,7 @@ def step(
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
 ):
     """Execute a single tick."""
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/step",
         json={},
@@ -494,7 +525,7 @@ def episode(
     body: dict[str, Any] = {"max_steps": max_steps}
     if terminal_component:
         body["terminal_component"] = terminal_component
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/episode",
         json=body,
@@ -540,7 +571,7 @@ def rollout(
         "destroy_forks_on_complete": destroy_forks_on_complete,
         "episode_config": episode_config,
     }
-    data = _request(
+    data = _request_obj(
         "post",
         f"/worlds/{world_id}/rollout",
         json=body,
@@ -581,7 +612,7 @@ def query(
         params["tick"] = tick
     elif ticks:
         params["tick"] = _csv(ticks)[0]
-    data = _request(
+    data = _request_list(
         "get",
         f"/worlds/{world_id}/state",
         params=params,
@@ -614,7 +645,7 @@ def history(
         "tick_from": tick_from,
         "tick_to": tick_to,
     }
-    data = _request(
+    data = _request_list(
         "get",
         f"/worlds/{world_id}/history",
         params={key: value for key, value in params.items() if value is not None},
@@ -638,7 +669,7 @@ def processors_list(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """List deployment-configured processors."""
-    data = _request(
+    data = _request_list(
         "get",
         f"/worlds/{world_id}/processors",
         **_common_request_kwargs(url, role, token),
@@ -658,7 +689,9 @@ def hooks_list(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """List deployment-configured hooks."""
-    data = _request("get", f"/worlds/{world_id}/hooks", **_common_request_kwargs(url, role, token))
+    data = _request_list(
+        "get", f"/worlds/{world_id}/hooks", **_common_request_kwargs(url, role, token)
+    )
     if json_output:
         _print_json(data)
         return
@@ -674,7 +707,7 @@ def resources_list(
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
     """List deployment-configured resources."""
-    data = _request(
+    data = _request_list(
         "get",
         f"/worlds/{world_id}/resources",
         **_common_request_kwargs(url, role, token),

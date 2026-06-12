@@ -517,6 +517,15 @@ class _FakeHookHandle:
     _event_type = _FakeEvent
     _id = 101
 
+    # Public accessors mirroring core HookHandle's contract.
+    @property
+    def id(self):
+        return self._id
+
+    @property
+    def event_type(self):
+        return self._event_type
+
 
 def _fake_handler() -> None:
     pass
@@ -545,7 +554,8 @@ class _FakeWorldService:
         return [_FakeProcessor()]
 
     def list_hooks(self, world_id):
-        return [(_FakeHookHandle(), _fake_handler, "blocking")]
+        # Hook-bus items() rows: (event_type, handle, fn, mode)
+        return [(_FakeEvent, _FakeHookHandle(), _fake_handler, "blocking")]
 
     def list_resources(self, world_id):
         return [(_FakeResource, _FakeResource())]

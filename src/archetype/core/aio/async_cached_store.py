@@ -170,9 +170,10 @@ class AsyncCachedStore(iAsyncStore):
         target_schema = Archetype.get_archetype_schema(sig)
         mem_table = mt.to_table().select(target_schema.names).cast(target_schema)
         mem_df = daft.from_arrow(mem_table)
-        mem_df = mem_df.where(mem_df["world_id"] == str(world_id)).where(
-            mem_df["run_id"] == str(run_id)
-        )
+        # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
+        wid, rid = str(world_id), str(run_id)
+        mem_df = mem_df.where(mem_df["world_id"] == wid)  # ty: ignore[invalid-argument-type]
+        mem_df = mem_df.where(mem_df["run_id"] == rid)  # ty: ignore[invalid-argument-type]
 
         if active_only:
             mem_df = mem_df.where(mem_df["is_active"])
