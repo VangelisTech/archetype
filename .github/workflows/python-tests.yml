@@ -72,9 +72,11 @@ jobs:
       - name: Run regression evals
         run: make eval-reg
 
-      - name: Run capability evals (non-blocking)
+      # Capability evals are deterministic and credential-free; they gate the
+      # merge so behavior regressions (e.g. tick-semantics changes) can't slip
+      # through eval-reg alone.
+      - name: Run capability evals
         run: make eval-cap
-        continue-on-error: true
 
   format:
     runs-on: ubuntu-latest
