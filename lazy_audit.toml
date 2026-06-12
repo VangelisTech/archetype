@@ -66,3 +66,27 @@ path = "src/archetype/app/autoresearch_service.py"
 line = 302
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow (incumbent score comparison, head entity id for the next update) at the autoresearch loop boundary; the comparison drives imperative orchestration, not a further dataframe computation."
+
+[[entries]]
+path = "src/archetype/experiments/mujoco_cartpole.py"
+line = 99
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary: the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; MuJoCo's mj_step is a stateful C call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/mujoco_cartpole.py"
+line = 100
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (pole_angle input column); same batch-UDF executor boundary as line 99."
+
+[[entries]]
+path = "src/archetype/experiments/mujoco_cartpole.py"
+line = 101
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (cart_vel input column); same batch-UDF executor boundary as line 99."
+
+[[entries]]
+path = "src/archetype/experiments/mujoco_cartpole.py"
+line = 102
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoCo C-library boundary (pole_vel input column); same batch-UDF executor boundary as line 99."
