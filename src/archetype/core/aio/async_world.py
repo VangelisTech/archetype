@@ -635,19 +635,25 @@ class AsyncWorld(iAsyncWorld):
 
         # Existence check: the sig must either be currently active (live entities
         # or pending spawns/despawns) OR have been committed to the durable store.
-        # We skip the check when the world has no knowledge at all (brand-new
-        # world that has never spawned anything) — that is indistinguishable from
-        # an incorrect sig, so we let the store return an empty frame naturally.
-        # Internal tick-loop calls always pass sigs from active_signatures, so
-        # they will always pass this guard.
-        # Also skip when the querier does not implement list_signatures (test
-        # fakes, InMemory queriers) — the check is best-effort at the API boundary.
-        all_known_sigs = self.active_signatures  # live + pending
-        if all_known_sigs and hasattr(self.querier, "list_signatures"):
-            # Also consult the durable store for despawned-but-historical sigs.
+        # We always consult the durable store when the querier supports
+        # list_signatures — including when active_signatures is empty (e.g. all
+        # entities despawned, or brand-new world with no pending spawns).  Skipping
+        # the durable-store check when active_signatures is empty would allow an
+        # unknown signature to bypass the guard and silently return an empty
+        # DataFrame, violating the loud unknown-signature criterion.
+        # When the querier does not implement list_signatures (test fakes, InMemory
+        # queriers) the check is best-effort at the API boundary and is skipped.
+        if hasattr(self.querier, "list_signatures"):
+            # Consult the durable store for committed sigs and also include live
+            # sigs (pending spawns/despawns) that haven't been flushed yet.
             store_sigs = {_canonicalize(s) for s in await self.querier.list_signatures()}
-            live_sigs = {_canonicalize(s) for s in all_known_sigs}
-            if sig not in (live_sigs | store_sigs):
+            live_sigs = {_canonicalize(s) for s in self.active_signatures}
+            all_known = live_sigs | store_sigs
+            # Only raise when we have at least one committed or live sig — a truly
+            # brand-new world that has never spawned anything (empty store, no
+            # pending spawns) cannot yet distinguish a valid future sig from an
+            # incorrect one, so we let the store return an empty frame naturally.
+            if all_known and sig not in all_known:
                 component_names = ", ".join(t.__name__ for t in sig)
                 raise UnknownSignatureError(
                     f"Archetype signature ({component_names}) has never been registered in this world. "
@@ -658,7 +664,10 @@ class AsyncWorld(iAsyncWorld):
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
             # Prefer to pass run_config if the querier supports it (instrumented);
-            # otherwise omit.
+            # otherwise omit.  Also pass _world_validated=True so that the
+            # querier's own existence check is bypassed — the world-level guard
+            # above has already verified the sig against live + store sigs,
+            # including sigs that are in the spawn cache but not yet committed.
             try:
                 return await self.querier.query_archetype(
                     sig=sig,
@@ -668,6 +677,7 @@ class AsyncWorld(iAsyncWorld):
                     entity_ids=entity_ids,
                     components=components,
                     run_config=run_config,  # ty: ignore[unknown-argument]  # probed; TypeError-guarded below
+                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
                 )
             except TypeError:
                 return await self.querier.query_archetype(
@@ -677,6 +687,7 @@ class AsyncWorld(iAsyncWorld):
                     ticks=target_ticks,
                     entity_ids=entity_ids,
                     components=components,
+                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
                 )
 
         requested_ticks = ticks or [self.tick]

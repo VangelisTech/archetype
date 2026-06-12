@@ -58,6 +58,9 @@ class AsyncLancedbStore(iAsyncStore):
         self.namespace: str = namespace
         self.lancedb = None
         self._known_sigs: dict[str, ArchetypeSignature] = {}
+        # Tracks only signatures that have been durably committed via append();
+        # excludes tables opened/created by get_archetype_df (create-on-read).
+        self._committed_sigs: set[str] = set()
 
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
@@ -157,6 +160,14 @@ class AsyncLancedbStore(iAsyncStore):
     async def list_signatures(self) -> list[ArchetypeSignature]:
         return list(self._known_sigs.values())
 
+    async def list_committed_signatures(self) -> list[ArchetypeSignature]:
+        """List only signatures that have been durably committed via append().
+
+        Excludes signatures that were only auto-created by get_archetype_df
+        (create-on-read).
+        """
+        return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
+
     async def append(self, sig, df: DataFrame) -> None:
         try:
             df.collect()
@@ -172,6 +183,8 @@ class AsyncLancedbStore(iAsyncStore):
             raise
 
         async_table = await self._ensure_table(sig)
+        # Record this sig as durably committed for list_committed_signatures().
+        self._committed_sigs.add(Archetype.get_name(sig))
         table_name = async_table.name
         try:
             start_time = time.time()

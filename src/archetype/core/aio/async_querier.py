@@ -54,12 +54,22 @@ class AsyncQueryManager(iAsyncQueryManager):
         entity_ids: list[int] | None = None,
         components: list[type["Component"]] | None = None,
         run_id: str | None = None,
+        **kwargs,  # ty: ignore[unknown-parameter]  # absorbs world-internal keys (e.g. run_config)
     ) -> DataFrame:
         """Query active entities for the provided archetype signature.
 
         The signature is canonicalized (sorted by class name) before table
         resolution, so callers may supply types in any order and will always
         find the same table.
+
+        Raises ``UnknownSignatureError`` when the canonical signature has never
+        been registered in the durable store — distinct from 'the signature
+        exists but has zero rows at this tick', which returns an empty DataFrame.
+
+        ``_world_validated=True`` may be passed by the world's ``query_archetype``
+        facade after it has already verified the sig against live and store sigs.
+        When set, the querier skips its own redundant check so that sigs that are
+        live (in spawn cache) but not yet committed do not cause a false positive.
         """
         if run_id is None:
             # Reads MUST be scoped by world_id and run_id (spec §137). A missing
@@ -70,6 +80,38 @@ class AsyncQueryManager(iAsyncQueryManager):
         # as its sorted counterpart.  Internals always produce sorted sigs; this
         # guard makes the public API lenient while keeping the storage layer pure.
         sig = _canonicalize(sig)
+
+        # Existence check: the sig must appear in the store's committed-signature
+        # registry.  An unknown sig must raise UnknownSignatureError distinctly
+        # rather than silently returning an empty create-on-read table.
+        #
+        # We use list_committed_signatures() so that auto-created tables from
+        # concurrent get_archetype_df calls in the same tick batch do not
+        # pollute the check.  Only sigs durably committed via append() are
+        # considered "known" here.  When the committed registry is empty (brand-
+        # new world, nothing flushed yet, or in-memory store without persistence),
+        # the check is skipped — an empty registry cannot distinguish "not yet
+        # committed" from "truly unknown", so we let the store return an empty
+        # frame naturally.
+        #
+        # Skip the check when the world-level guard has already validated the sig
+        # (``_world_validated=True``).  The world guard also considers live/pending
+        # sigs in the spawn cache, which are not yet reflected in
+        # list_committed_signatures(); without this bypass, newly-spawned sigs
+        # that haven't been flushed would produce false-positive errors.
+        world_validated: bool = kwargs.pop("_world_validated", False)
+        if not world_validated and hasattr(self._store, "list_committed_signatures"):
+            committed_sigs = {
+                _canonicalize(s) for s in await self._store.list_committed_signatures()
+            }
+            if committed_sigs and sig not in committed_sigs:
+                component_names = ", ".join(t.__name__ for t in sig)
+                raise UnknownSignatureError(
+                    f"Archetype signature ({component_names}) has never been registered in this world. "
+                    "No entity carrying exactly these component types has been spawned. "
+                    "If you want to query entities that CONTAIN these components (possibly alongside others), "
+                    "use world.query() / query_components() instead of query_archetype()."
+                )
 
         df = await self._store.get_archetype_df(
             sig=sig,
