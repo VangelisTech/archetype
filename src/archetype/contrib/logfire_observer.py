@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Logfire observability hooks for Archetype simulations.
 
@@ -21,6 +32,8 @@ This gives you per-tick spans in Logfire showing:
 
 from __future__ import annotations
 
+from typing import Any
+
 import logfire
 
 from archetype.core.hooks import (
@@ -33,7 +46,9 @@ from archetype.core.hooks import (
     PreTick,
 )
 
-_tick_spans: dict[str, object] = {}
+# Open logfire spans keyed by world_id (LogfireSpan; Any avoids a hard
+# dependency on logfire's stub types in this optional contrib module).
+_tick_spans: dict[str, Any] = {}
 
 
 async def _on_pre_tick(event: PreTick) -> None:

@@ -1,11 +1,23 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 from __future__ import annotations
 
 import logging
 import os
 import time
+from typing import Protocol
 
 import daft
 import lancedb
@@ -13,29 +25,39 @@ from daft import DataFrame
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.archetype import Archetype
-from archetype.core.interfaces import iAsyncStore
+from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
 
 logger = logging.getLogger(__name__)
+
+
+class _StorageContextLike(Protocol):
+    """Legacy runtime storage context: anything carrying uri + namespace."""
+
+    uri: str
+    namespace: str
 
 
 class AsyncLancedbStore(iAsyncStore):
     def __init__(
         self,
-        uri: str | object,
+        uri: str | _StorageContextLike,
         namespace: str | None = None,
     ):
-        if namespace is None and not isinstance(uri, str):
-            legacy_storage = uri
-            uri = legacy_storage.uri
-            namespace = legacy_storage.namespace
+        if isinstance(uri, str):
+            resolved_uri = uri
+        else:
+            # Legacy path: unpack a storage-context object.
+            resolved_uri = uri.uri
+            if namespace is None:
+                namespace = uri.namespace
 
         if namespace is None:
             raise TypeError("AsyncLancedbStore requires a namespace")
 
-        self.uri = uri
-        self.namespace = namespace
+        self.uri: str = resolved_uri
+        self.namespace: str = namespace
         self.lancedb = None
-        self._known_sigs: dict[str, tuple[type, ...]] = {}
+        self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
@@ -132,7 +154,7 @@ class AsyncLancedbStore(iAsyncStore):
 
         return df
 
-    async def list_signatures(self) -> list[tuple[type, ...]]:
+    async def list_signatures(self) -> list[ArchetypeSignature]:
         return list(self._known_sigs.values())
 
     async def append(self, sig, df: DataFrame) -> None:

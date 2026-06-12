@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# These Protocols are the typed surface of the contracts in
+# docs/guide/specification.md. Each section cites the normative spec it mirrors;
+# signatures are kept in lockstep with the concrete sync/async implementations.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from collections.abc import Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from daft import DataFrame  # type: ignore[import-not-found]
 
@@ -44,6 +47,8 @@ _HookEventT = TypeVar("_HookEventT", bound="HookEvent")
 
 
 class iResourceContainer(Protocol):
+    """Type-safe DI container for shared world resources (spec §206)."""
+
     def insert(self, resource: T) -> None: ...
     def get(self, resource_type: type[T]) -> T | None: ...
     def require(self, resource_type: type[T]) -> T: ...
@@ -59,7 +64,7 @@ class iResourceContainer(Protocol):
 
 class iProcessor(Protocol):
     """
-    Transforms entity data for a specific archetype.
+    Transforms entity data for a specific archetype (spec §196–§223).
 
     Processors are the behavioral building blocks of a simulation.
     Each processor declares which Components it operates on and a priority
@@ -69,29 +74,33 @@ class iProcessor(Protocol):
     matching the archetype signature and returns a transformed DataFrame.
     """
 
-    components: tuple[type[Component], ...] = None
+    # A processor MUST declare its component set (spec §200). The default is the
+    # empty tuple — matches every signature — never None (concrete bases use ()).
+    components: tuple[type[Component], ...] = ()
     priority: int = 0
 
-    def process(self, df: DataFrame, *args, **kwargs) -> DataFrame:
+    def process(self, df: DataFrame, **kwargs) -> DataFrame:
         """Transform entity data. Pure function: df in → df out."""
         ...
 
 
 class iSystem(Protocol):
     """
-    Orchestrates Processor execution in priority order.
+    Orchestrates Processor execution in priority order (spec §196–§223).
 
     The System manages a collection of Processors and executes them
     on matching archetypes during each simulation step. Lower priority
     values execute first.
     """
 
+    processors: list[iProcessor]
+
     def add_processor(self, processor: iProcessor) -> None:
-        """Register a processor with the system."""
+        """Register a processor instance with the system."""
         ...
 
-    def remove_processor(self, processor: iProcessor) -> None:
-        """Unregister a processor from the system."""
+    def remove_processor(self, proc_type: type[iProcessor]) -> None:
+        """Remove all processors of the given type; no-op if none are registered."""
         ...
 
     def execute(self, df: DataFrame, sig: ArchetypeSignature, *args, **kwargs) -> DataFrame:
@@ -101,39 +110,38 @@ class iSystem(Protocol):
 
 class iStore(Protocol):
     """
-    Persistent storage backend for archetype tables.
+    Persistent storage backend for archetype tables (spec §132–§157).
 
-    The Store manages physical storage of entity data, typically backed
-    by LanceDB. It provides append-only semantics for time-travel queries
-    and efficient columnar storage.
+    The Store manages physical storage of entity data. It provides
+    append-only semantics for time-travel queries and efficient columnar
+    storage. Reads are scoped by world_id/run_id; tick/world/run stamping is
+    the updater's responsibility, not the store's.
     """
 
-    def get_archetype_df(self, sig: ArchetypeSignature) -> DataFrame:
-        """Get the full DataFrame for an archetype signature."""
+    def get_archetype_df(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
+        """Get the DataFrame for an archetype, scoped by world_id and run_id (spec §137)."""
         ...
 
     def list_signatures(self) -> list[ArchetypeSignature]:
         """List archetype signatures registered in the catalog."""
         ...
 
-    def append(
-        self, sig: ArchetypeSignature, df: DataFrame, tick: int, world_id: str, run_id: str
-    ) -> None:
-        """Append new entity states to storage."""
+    def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+        """Append new entity states. The updater stamps tick/world/run (spec §141, §177)."""
         ...
 
     def shutdown(self) -> None:
-        """Clean up storage resources."""
+        """Clean up storage resources. Safe to call more than once (spec §144)."""
         ...
 
 
 class iQueryManager(Protocol):
     """
-    Read facade for the Store.
+    Active-state read facade over the Store (spec §159–§173).
 
-    The Querier abstracts read operations from the underlying storage,
-    providing filtered access to entity data by tick, entity_id, or
-    component projections.
+    The Querier reads through the store and applies is_active, optional tick
+    filters, optional entity filters, and optional component projection. It is
+    read-only.
     """
 
     def get_archetype(self, sig: ArchetypeSignature, world_id: str, run_id: str) -> DataFrame:
@@ -144,12 +152,17 @@ class iQueryManager(Protocol):
         self,
         sig: ArchetypeSignature,
         world_id: str,
-        run_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
+        components: list[type[Component]] | None = None,
+        run_config: RunConfig | None = None,
+        run_id: str | None = None,
     ) -> DataFrame:
-        """Query archetype data with optional filters."""
+        """Query active archetype data with optional filters.
+
+        ``components`` selects the projection by component type; the canonical
+        schema column list is derived from the types (spec §165).
+        """
         ...
 
     def list_signatures(self) -> list[ArchetypeSignature]:
@@ -159,20 +172,22 @@ class iQueryManager(Protocol):
 
 class iUpdateManager(Protocol):
     """
-    Write facade for the Store.
+    Write facade for the Store (spec §175–§194).
 
-    The Updater handles all write operations, stamping tick/world/run
-    metadata and appending to persistent storage.
+    The Updater normalizes rows, stamps tick/world/run metadata, appends
+    through the store, and returns a DataFrame matching the persisted shape.
     """
 
     def update(
         self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
-    ) -> None:
-        """Persist entity state changes to storage."""
+    ) -> DataFrame:
+        """Persist entity state changes; return the stamped, persisted-shape DataFrame (spec §181)."""
         ...
 
 
 class iSyncHookBus(Protocol):
+    """Synchronous lifecycle hook bus (spec §318–§327)."""
+
     def add(
         self,
         event_type: type[_HookEventT],
@@ -180,15 +195,18 @@ class iSyncHookBus(Protocol):
     ) -> HookHandle: ...
     def remove(self, handle: HookHandle) -> None: ...
     def clear(self) -> None: ...
+    def items(
+        self,
+    ) -> Iterable[tuple[type[HookEvent], HookHandle, Callable[..., None], FireMode]]: ...
     def fire(self, event: HookEvent) -> None: ...
 
 
 class iWorld(Protocol):
     """
-    Central simulation coordinator.
+    Central simulation coordinator (spec §225–§316).
 
-    The World owns entity-to-archetype mappings, live state snapshots,
-    and orchestrates the step() cycle:
+    The World owns entity-to-archetype mappings, staged mutation caches, and
+    orchestrates the step() cycle:
 
         1. Query previous state from Querier
         2. Materialize spawn/despawn mutations
@@ -199,98 +217,136 @@ class iWorld(Protocol):
     run in parallel via the WorldService.
     """
 
+    # ── State ownership (spec §229–§237) ────────────────────────────────────
+    world_id: str
+    name: str | None
+    run_id: str
+    tick: int
+    next_entity_id: int
+    entity2sig: dict[int, ArchetypeSignature]
+    spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]]
+    despawn_cache: dict[ArchetypeSignature, list[int]]
+    # System / querier / updater / resources / hooks integration (spec §237)
+    system: iSystem
+    querier: iQueryManager
+    updater: iUpdateManager
+    resources: iResourceContainer
+    hooks: iSyncHookBus
+
     def run(self, run_config: RunConfig, **input_kwargs) -> None:
-        """Run multiple steps according to config."""
+        """Run multiple steps according to config, preserving run_id (spec §269)."""
         ...
 
     def step(self, run_config: RunConfig, **input_kwargs) -> None:
-        """Execute one complete simulation tick."""
+        """Execute one complete simulation tick (spec §239)."""
         ...
 
-    def _compute_archetype(self, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
+    def _compute_archetype(
+        self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
+    ) -> DataFrame:
         """Build one archetype's tick frame without writes or cache consumption."""
         ...
 
     def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
-        """Apply pending spawn/despawn operations to the DataFrame."""
+        """Apply pending spawn/despawn operations to the DataFrame (spec §302)."""
         ...
 
     @property
-    def active_signatures(self) -> tuple[type[Component], ...]:
-        """Get all archetype signatures with active entities."""
+    def active_signatures(self) -> set[ArchetypeSignature]:
+        """Get all archetype signatures with active entities (spec §244)."""
         ...
 
     def create_entity(self, components: list[Component]) -> int:
-        """Create a new entity with the given components."""
+        """Create a new entity with the given components (spec §279)."""
         ...
 
     def remove_entity(self, entity_id: int) -> None:
-        """Mark an entity for removal."""
+        """Mark an entity for removal (spec §287)."""
         ...
 
     def add_components(self, entity_id: int, components: list[Component]) -> None:
-        """Add components to an existing entity (changes archetype)."""
+        """Add components to an existing entity (changes archetype) (spec §291)."""
         ...
 
     def remove_components(self, entity_id: int, component_types: list[type[Component]]) -> None:
-        """Remove components from an entity (changes archetype)."""
+        """Remove components from an entity (changes archetype) (spec §291)."""
         ...
 
-    def add_processor(self, proc: iProcessor) -> None:
-        """Add a processor to this world's system."""
+    def add_processor(self, processor: iProcessor) -> None:
+        """Add a processor instance to this world's system."""
         ...
 
-    def remove_processor(self, proc_type: type[iProcessor]) -> None:
-        """Remove a processor from this world's system."""
+    def remove_processor(self, processor: type[iProcessor]) -> None:
+        """Remove all processors of the given type from this world's system."""
         ...
 
     def add_hook(
-        self, event_type: type[HookEvent], fn: SyncHookHandler, /, *args, **kwargs
+        self, event_type: type[_HookEventT], fn: SyncHookHandler[_HookEventT]
     ) -> HookHandle:
-        """Register a lifecycle hook."""
+        """Register a lifecycle hook (spec §318)."""
         ...
 
     def remove_hook(self, handle: HookHandle) -> None:
-        """Unregister a lifecycle hook."""
+        """Unregister a lifecycle hook (idempotent, spec §325)."""
         ...
 
     def query_archetype(
         self,
         sig: ArchetypeSignature,
+        run_config: RunConfig | None = None,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
-        run_config: RunConfig | None = None,
+        components: list[type[Component]] | None = None,
     ) -> DataFrame:
         """Query entity data from this world."""
         ...
 
     def get_components(
-        self, components: list[Component], entity_ids: list[int] | None = None
+        self, components: list[type[Component]], entity_ids: list[int] | None = None
     ) -> DataFrame:
-        """Get specific components for entities."""
+        """Get specific components for entities; live-snapshot API (spec §259)."""
         ...
 
-    def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
+    def execute(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        run_config: RunConfig | None = None,
+        **input_kwargs,
+    ) -> DataFrame:
         """Execute system processors on the DataFrame."""
         ...
 
-    def update(self, df: DataFrame, sig: ArchetypeSignature, tick: int | None = None) -> None:
-        """Persist DataFrame changes via the Updater."""
+    def update(
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        run_config: RunConfig,
+        tick: int | None = None,
+    ) -> DataFrame:
+        """Persist DataFrame changes via the Updater (spec §249)."""
         ...
 
 
-# ---------------------------------------
-# Asynchronous interfaces
-# --------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASYNCHRONOUS INTERFACES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 class iAsyncProcessor(Protocol):
-    components: tuple[type[Component], ...] = None
+    """Async processor (spec §196–§223)."""
+
+    components: tuple[type[Component], ...] = ()
     priority: int = 0
 
     async def process(self, df: DataFrame, **input_kwargs) -> DataFrame: ...
 
 
 class iAsyncSystem(Protocol):
+    """Async system; removes processors by type, not identity (spec §196)."""
+
+    processors: list[iAsyncProcessor]
+
     async def add_processor(self, proc: iAsyncProcessor) -> None: ...
     async def remove_processor(self, proc_type: type[iAsyncProcessor]) -> None: ...
     async def execute(
@@ -299,6 +355,8 @@ class iAsyncSystem(Protocol):
 
 
 class iAsyncStore(Protocol):
+    """Async append-only store (spec §132–§157)."""
+
     async def get_archetype_df(
         self,
         sig: ArchetypeSignature,
@@ -315,6 +373,8 @@ class iAsyncStore(Protocol):
 
 
 class iAsyncQueryManager(Protocol):
+    """Async active-state read facade (spec §159–§173)."""
+
     async def get_archetype(
         self, sig: ArchetypeSignature, world_id: str, run_id: str
     ) -> DataFrame: ...
@@ -322,21 +382,34 @@ class iAsyncQueryManager(Protocol):
         self,
         sig: ArchetypeSignature,
         world_id: str,
-        run_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
+        components: list[type[Component]] | None = None,
+        run_id: str | None = None,
+    ) -> DataFrame: ...
+    async def query_components(
+        self,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
     ) -> DataFrame: ...
     async def list_signatures(self) -> list[ArchetypeSignature]: ...
 
 
 class iAsyncUpdateManager(Protocol):
+    """Async write facade; returns the persisted-shape DataFrame (spec §181)."""
+
     async def update(
         self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
     ) -> DataFrame: ...
 
 
 class iAsyncHookBus(Protocol):
+    """Async lifecycle hook bus with fire modes (spec §318–§327)."""
+
     def add(
         self,
         event_type: type[_HookEventT],
@@ -346,45 +419,77 @@ class iAsyncHookBus(Protocol):
     ) -> HookHandle: ...
     def remove(self, handle: HookHandle) -> None: ...
     def clear(self) -> None: ...
+    def items(
+        self,
+    ) -> Iterable[tuple[type[HookEvent], HookHandle, Callable[..., Awaitable[None]], FireMode]]: ...
     async def fire(self, event: HookEvent) -> None: ...
 
 
 class iAsyncWorld(Protocol):
+    """Central async simulation coordinator (spec §225–§316)."""
+
+    # ── State ownership (spec §229–§237) ────────────────────────────────────
+    world_id: str
+    name: str | None
+    run_id: str
+    tick: int
+    next_entity_id: int
+    entity2sig: dict[int, ArchetypeSignature]
+    spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]]
+    despawn_cache: dict[ArchetypeSignature, list[int]]
+    # Ancestor read segments (world_id, run_id, up_to_tick) for fork lineage.
+    lineage: list[tuple[str, str, int]]
+    # System / querier / updater / resources / hooks integration (spec §237)
+    system: iAsyncSystem
+    querier: iAsyncQueryManager
+    updater: iAsyncUpdateManager
+    resources: iResourceContainer
+    hooks: iAsyncHookBus
+
     async def run(self, run_config: RunConfig, **input_kwargs) -> None: ...
     async def step(self, run_config: RunConfig, **input_kwargs) -> None: ...
-    async def _compute_archetype(self, sig: ArchetypeSignature, **input_kwargs) -> DataFrame: ...
+    async def _compute_archetype(
+        self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
+    ) -> DataFrame: ...
     def materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame: ...
     @property
-    def active_signatures(self) -> tuple[type[Component], ...]: ...
+    def active_signatures(self) -> set[ArchetypeSignature]: ...
     async def create_entity(self, components: list[Component]) -> int: ...
     async def remove_entity(self, entity_id: int) -> None: ...
     async def add_components(self, entity_id: int, components: list[Component]) -> None: ...
     async def remove_components(
         self, entity_id: int, component_types: list[type[Component]]
     ) -> None: ...
-    async def add_processor(self, proc: iAsyncProcessor) -> None: ...
-    async def remove_processor(self, proc_type: type[iAsyncProcessor]) -> None: ...
+    async def add_processor(self, processor: iAsyncProcessor) -> None: ...
+    async def remove_processor(self, processor: type[iAsyncProcessor]) -> None: ...
     async def query_archetype(
         self,
         sig: ArchetypeSignature,
+        run_config_or_ticks: RunConfig | list[int] | None = None,
+        *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list[Component] | None = None,
+        components: list[type[Component]] | None = None,
+        run_id: str | None = None,
         run_config: RunConfig | None = None,
     ) -> DataFrame: ...
     async def get_components(
-        self, components: list[Component], entity_ids: list[int] | None = None
+        self, components: list[type[Component]], entity_ids: list[int] | None = None
     ) -> DataFrame: ...
     async def execute(
         self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs
     ) -> DataFrame: ...
     async def update(
-        self, df: DataFrame, sig: ArchetypeSignature, tick: int | None = None
-    ) -> None: ...
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        run_config: RunConfig,
+        tick: int | None = None,
+    ) -> DataFrame: ...
     def add_hook(
         self,
-        event_type: type[HookEvent],
-        fn: AsyncHookHandler,
+        event_type: type[_HookEventT],
+        fn: AsyncHookHandler[_HookEventT],
         *,
         mode: FireMode = "blocking",
     ) -> HookHandle: ...

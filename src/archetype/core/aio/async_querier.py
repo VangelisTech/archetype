@@ -38,13 +38,17 @@ class AsyncQueryManager(iAsyncQueryManager):
         world_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list["Component"] | None = None,
-        run_id: str = None,
+        components: list[type["Component"]] | None = None,
+        run_id: str | None = None,
     ) -> DataFrame:
         """
         Queries all active entities for the provided archetype signature, world_id, run_id.
         Filters for ticks, entities, and components are provided.
         """
+        if run_id is None:
+            # Reads MUST be scoped by world_id and run_id (spec §137). A missing
+            # run_id would otherwise stringify to "None" and silently match nothing.
+            raise ValueError("query_archetype requires run_id to scope the read")
         df = await self._store.get_archetype_df(
             sig=sig,
             world_id=world_id,
@@ -55,9 +59,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         )
 
         if components:
-            a = Archetype(components)
-            # PyArrow Schema.names is a list property, not a callable
-            df = df.select(*a.schema.names)
+            df = df.select(*Archetype.projection_columns(components))
 
         return df
 

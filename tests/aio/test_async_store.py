@@ -7,6 +7,7 @@ from daft import DataFrame
 from archetype import StorageConfig
 from archetype.core import Archetype, Component
 from archetype.core.aio import AsyncCachedStore, AsyncStore
+from archetype.core.config import StorageBackend
 from archetype.runtime.session import configure_session
 
 
@@ -27,7 +28,7 @@ class Stats(Component):
 
 @pytest_asyncio.fixture
 async def inner_store(tmp_path):
-    storage = StorageConfig(uri=str(tmp_path), namespace="test", use_lancedb=False)
+    storage = StorageConfig(uri=str(tmp_path), namespace="test", backend=StorageBackend.ICEBERG)
     session = configure_session(storage)
     store = AsyncStore(session, io_config=storage.io_config)
     try:

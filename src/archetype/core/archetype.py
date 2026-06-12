@@ -52,6 +52,19 @@ class Archetype:
         return sig
 
     @staticmethod
+    def projection_columns(
+        components: list[type[Component]] | list[Component],
+    ) -> list[str]:
+        """Canonical schema column list for a component projection (spec §165).
+
+        Projection is type-level — only the schema matters — so this accepts
+        component types directly. Instances are accepted for back-compat and
+        normalized to their types.
+        """
+        component_types = tuple({c if isinstance(c, type) else type(c) for c in components})
+        return list(Archetype.get_archetype_schema(component_types).names)
+
+    @staticmethod
     def add_components(
         sig: ArchetypeSignature, component_types: list[type[Component]]
     ) -> ArchetypeSignature:

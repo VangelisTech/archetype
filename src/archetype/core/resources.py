@@ -23,7 +23,7 @@ Resources are not entity data—they're the scaffolding around it:
 In RL terms: MDP parameters, hyperparameters, shared infrastructure.
 """
 
-from typing import TypeVar
+from typing import TypeVar, cast
 
 T = TypeVar("T")
 
@@ -52,17 +52,18 @@ class Resources:
 
     def get(self, resource_type: type[T]) -> T | None:
         """Get a resource, or None if not present."""
-        return self._store.get(resource_type)
+        # _store is keyed by type(resource), so the value is a resource_type instance.
+        return cast("T | None", self._store.get(resource_type))
 
     def require(self, resource_type: type[T]) -> T:
         """Get a resource, raising KeyError if not present."""
         if resource_type not in self._store:
             raise KeyError(f"Resource {resource_type.__name__} not registered")
-        return self._store[resource_type]
+        return cast("T", self._store[resource_type])
 
     def remove(self, resource_type: type[T]) -> T | None:
         """Remove and return a resource, or None if not present."""
-        return self._store.pop(resource_type, None)
+        return cast("T | None", self._store.pop(resource_type, None))
 
     def contains(self, resource_type: type[T]) -> bool:
         """Check if a resource type is registered."""

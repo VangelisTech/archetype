@@ -17,9 +17,8 @@ import logging
 
 from daft import DataFrame
 
-from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
-from archetype.core.interfaces import ArchetypeSignature, iAsyncSystem
+from archetype.core.interfaces import ArchetypeSignature, iAsyncProcessor, iAsyncSystem
 from archetype.core.resources import Resources
 
 logger = logging.getLogger(__name__)
@@ -38,13 +37,13 @@ class AsyncSystem(iAsyncSystem):
     """
 
     def __init__(self):
-        self.processors: list[AsyncProcessor] = []
+        self.processors: list[iAsyncProcessor] = []
 
-    async def add_processor(self, proc: "AsyncProcessor"):
+    async def add_processor(self, proc: iAsyncProcessor):
         """Add an async processor to the system."""
         self.processors.append(proc)
 
-    async def remove_processor(self, proc_type: type["AsyncProcessor"]):
+    async def remove_processor(self, proc_type: type[iAsyncProcessor]):
         """Remove all processors of the given type."""
         self.processors = [p for p in self.processors if not isinstance(p, proc_type)]
 
@@ -90,7 +89,6 @@ class AsyncSystem(iAsyncSystem):
                 # step surfaces it (gather → RuntimeError) instead of
                 # appending a frame the failed processor never transformed.
                 try:
-                    assert isinstance(proc_instance, AsyncProcessor)
                     # Filter kwargs to what the processor accepts; pass all if it has **kwargs.
                     sig_params = inspect.signature(proc_instance.process).parameters
                     accepts_var_keyword = any(

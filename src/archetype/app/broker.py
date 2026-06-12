@@ -34,7 +34,8 @@ Features:
 import asyncio
 import heapq
 import logging
-from uuid import UUID
+
+from uuid_utils import UUID
 
 from archetype.app.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.auth.models import ActorCtx

@@ -207,6 +207,10 @@ Failure observability:
   of the archetype signature.
 - Within one archetype, processors MUST execute in ascending `priority`.
 - Across different archetypes, execution MAY proceed concurrently.
+- Processor registration is instance-based; removal is type-based.
+  `remove_processor(ProcessorType)` removes every registered instance of that
+  type, and removing a type with no registered instances is a no-op. Sync and
+  async stacks share this contract.
 - Only kwargs explicitly accepted by a processor should be passed through.
 - Shared resources MAY be injected through the world resource container.
 

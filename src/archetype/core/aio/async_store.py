@@ -14,6 +14,7 @@
 
 # Standard Python Libraries
 from logging import getLogger
+from typing import cast
 
 # Technologies
 from daft import DataFrame, Schema, read_iceberg
@@ -43,8 +44,12 @@ class AsyncStore(iAsyncStore):
     """
 
     def __init__(self, session: Session | object, io_config: IOConfig | None = None):
-        self.session = getattr(session, "session", session)
-        self.io_config = io_config if io_config is not None else getattr(session, "io_config", None)
+        # Accepts a Session, a wrapper carrying `.session`, or any Session-like
+        # duck type (tests pass fakes); the cast records the resolved contract.
+        self.session: Session = cast("Session", getattr(session, "session", session))
+        self.io_config: IOConfig | None = (
+            io_config if io_config is not None else getattr(session, "io_config", None)
+        )
         self._known_sigs: dict[str, ArchetypeSignature] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
@@ -105,7 +110,9 @@ class AsyncStore(iAsyncStore):
         df: DataFrame = self._read_table(table)  # Cheap, Lazy
 
         # stored as strings; ensure filter values are strings
-        df = df.where(df["world_id"] == str(world_id)).where(df["run_id"] == str(run_id))
+        # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
+        df = df.where(df["world_id"] == str(world_id))  # ty: ignore[invalid-argument-type]
+        df = df.where(df["run_id"] == str(run_id))  # ty: ignore[invalid-argument-type]
 
         if active_only:
             df = df.where(df["is_active"])

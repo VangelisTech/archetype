@@ -40,8 +40,8 @@ class QueryManager(iQueryManager):
         world_id: str,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-        components: list["Component"] | None = None,
-        run_config: RunConfig = None,
+        components: list[type["Component"]] | None = None,
+        run_config: RunConfig | None = None,
         run_id: str | None = None,
     ) -> DataFrame:
         """
@@ -52,7 +52,16 @@ class QueryManager(iQueryManager):
         so callers that pin a stable run_id at the world layer can pass it through
         without rebuilding a frozen RunConfig.
         """
-        effective_run_id = run_id if run_id is not None else run_config.run_id
+        if run_id is not None:
+            effective_run_id = run_id
+        elif run_config is not None:
+            # RunConfig.run_id may be a UUID; storage stamps run_id as str.
+            effective_run_id = str(run_config.run_id)
+        else:
+            # Reads MUST be scoped by world_id and run_id (spec §137).
+            raise ValueError(
+                "query_archetype requires either run_id or run_config to scope the read"
+            )
         df = self.get_archetype(sig, world_id, effective_run_id)
         df = df.where(df["is_active"])
 
@@ -64,8 +73,7 @@ class QueryManager(iQueryManager):
             df = df.where(df["entity_id"].is_in(entity_ids))
 
         if components:
-            a = Archetype(components)
-            df = df.select(*a.schema.names)
+            df = df.select(*Archetype.projection_columns(components))
 
         if run_config and run_config.debug:
             logger.info(f"Querying {Archetype.get_name(sig)} with {df.count_rows()} rows")

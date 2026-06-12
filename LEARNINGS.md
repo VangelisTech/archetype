@@ -56,11 +56,11 @@ class ModelInference:
     def __init__(self):
         # Runs ONCE per worker
         self.model = load_expensive_model()
-    
+
     # Default: row-by-row (like @daft.func)
     def predict(self, x: str) -> str:
         return self.model(x)
-    
+
     # Explicit batch (like @daft.func.batch)
     @daft.method.batch
     def predict_batch(self, xs: Series) -> Series:
@@ -175,7 +175,7 @@ from archetype import Processor
 class PhysicsProcessor(Processor):
     components = (EnvironmentComponent,)  # Declares dependencies
     priority = 10  # Lower = runs first
-    
+
     def process(self, df: daft.DataFrame, **kwargs) -> daft.DataFrame:
         # Transform and return
         return df.with_column("result", col("environmentcomponent__gravity") * 2)
@@ -535,7 +535,7 @@ class SuperjectiveInnerWorldProcessor(AsyncProcessor):
     async def process(self, df, tick: int = 0, **kwargs):
         if tick != 2:  # Only run on final round
             return df
-        
+
         # Expensive inner simulation only happens once
         df = df.with_column("scenarios", prompt(...))
         return df

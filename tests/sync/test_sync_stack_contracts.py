@@ -645,7 +645,8 @@ def test_sync_world_add_processor_and_remove_processor_delegate(tmp_path):
     world.add_processor(proc)
     assert proc in world.system.processors
 
-    world.remove_processor(proc)
+    # Removal is type-based, matching the async stack and the app layer.
+    world.remove_processor(SyncProcessor)
     assert proc not in world.system.processors
 
 

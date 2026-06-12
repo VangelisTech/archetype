@@ -115,7 +115,7 @@ def _extract_name_imports(filepath: Path, names: frozenset[str]) -> list[tuple[s
 
     results: list[tuple[str, int, bool]] = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.ImportFrom, ast.Import)):
+        if isinstance(node, ast.ImportFrom | ast.Import):
             imported: list[str] = []
             if isinstance(node, ast.ImportFrom) and node.names:
                 imported = [alias.name for alias in node.names]

@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """Typed lifecycle hooks for Archetype worlds.
 
@@ -26,11 +37,9 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
-
-from uuid_utils import UUID
 
 if TYPE_CHECKING:
     from daft import DataFrame
@@ -48,7 +57,9 @@ logger = logging.getLogger(__name__)
 class HookEvent:
     """Base type for all world lifecycle hook events."""
 
-    world_id: UUID
+    # world_id is the world's identity as stamped by the factory: always a str
+    # at runtime (spec §231; World.world_id is str). Not a UUID object.
+    world_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +132,12 @@ E = TypeVar("E", bound=HookEvent)
 
 class AsyncHookHandler(Protocol[E]):
     """Async hook handler. Takes a single event argument of the matching
-    event type and returns an awaitable."""
+    event type and returns an awaitable. Declared as returning Awaitable
+    (rather than an async method) so both ``async def`` handlers and sync
+    callables returning an awaitable satisfy the protocol — the bus only
+    ever awaits the result."""
 
-    async def __call__(self, event: E, /) -> None: ...
+    def __call__(self, event: E, /) -> Awaitable[None]: ...
 
 
 class SyncHookHandler(Protocol[E]):
@@ -154,6 +168,16 @@ class HookHandle:
     _id: int
     _event_type: type[HookEvent]
     _registry_token: object = field(repr=False)
+
+    @property
+    def id(self) -> int:
+        """Registry-local identifier (stable for the handle's lifetime)."""
+        return self._id
+
+    @property
+    def event_type(self) -> type[HookEvent]:
+        """The event type this handle's handler is registered for."""
+        return self._event_type
 
 
 class HookRegistry:
@@ -192,6 +216,14 @@ class HookRegistry:
 
     def clear(self) -> None:
         self._by_type.clear()
+
+    def items(
+        self,
+    ) -> Iterator[tuple[type[HookEvent], HookHandle, Callable[..., Awaitable[None]], FireMode]]:
+        """Iterate registered hooks as (event_type, handle, fn, mode) rows."""
+        for event_type, bucket in self._by_type.items():
+            for handle, fn, mode in bucket:
+                yield event_type, handle, fn, mode
 
     async def fire(self, event: HookEvent) -> None:
         for _handle, fn, mode in self._by_type.get(type(event), ()):
@@ -243,6 +275,18 @@ class SyncHookRegistry:
 
     def clear(self) -> None:
         self._by_type.clear()
+
+    def items(
+        self,
+    ) -> Iterator[tuple[type[HookEvent], HookHandle, Callable[..., None], FireMode]]:
+        """Iterate registered hooks as (event_type, handle, fn, mode) rows.
+
+        Sync hooks always fire inline, so mode is always "blocking"; the
+        4-tuple shape is kept uniform with the async registry.
+        """
+        for event_type, bucket in self._by_type.items():
+            for handle, fn in bucket:
+                yield event_type, handle, fn, "blocking"
 
     def fire(self, event: HookEvent) -> None:
         for _handle, fn in self._by_type.get(type(event), ()):

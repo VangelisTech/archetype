@@ -167,3 +167,23 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+# ty follows imports from a project root rather than honoring pre-commit's
+# `files:` filter, so scope the checked source set here. This keeps ty off
+# bench/evals/experiments/examples/scripts and the vendored .venv/stdlib stubs.
+include = ["src"]
+respect-ignore-files = true
+
+[tool.ty.rules]
+# Optional deps imported lazily inside functions (e.g. matplotlib in periphery).
+unresolved-import = "ignore"
+
+# Every other rule runs at its default ("error") level — the codebase is clean.
+# Known false positives carry a targeted inline `# ty: ignore[rule]` with a
+# comment naming the cause (mostly Daft stubs typing Expression.__eq__/__gt__
+# as bool, plus a few deliberate hasattr/duck-typing probes). Suppress new
+# findings inline the same way — do not down-level rules here.

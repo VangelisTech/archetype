@@ -8,6 +8,16 @@ repos:
       - id: ruff-format
         files: "^(src|tests)/.*\\.py$"
 
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.48
+    hooks:
+      - id: ty
+        # Scope is controlled by [tool.ty.src] in pyproject.toml (ty follows
+        # imports from the project root, not pre-commit's file list), so run a
+        # full configured check rather than per-file. Trigger on src/ + config.
+        files: '^(src/.*\.py|pyproject\.toml)$'
+        pass_filenames: false
+
   - repo: local
     hooks:
       - id: uv-lock-check
@@ -36,5 +46,8 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # mkdocs.yml uses the python/name custom tag (mermaid2 fence); --unsafe
+        # syntax-checks without constructing tagged objects.
+        args: [--unsafe]
       - id: check-added-large-files
       - id: check-merge-conflict

@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 Simulation Service
@@ -11,7 +22,7 @@ Internal forks go through WorldService directly — not gated.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sized
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
@@ -54,7 +65,7 @@ class SimulationService:
         commands_applied = 0
         if self._drain_commands is not None:
             applied = await self._drain_commands(world_id, getattr(world, "tick", 0))
-            commands_applied = len(applied) if hasattr(applied, "__len__") else 0
+            commands_applied = len(applied) if isinstance(applied, Sized) else 0
         if isinstance(world, AsyncWorld):
             await world.step(run_config, **input_kwargs)
         return commands_applied

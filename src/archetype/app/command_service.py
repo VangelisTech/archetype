@@ -1,5 +1,16 @@
 # Copyright 2025 Vangelis Technologies Inc.
-# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 """
 Command Service — the gate.
@@ -530,18 +541,14 @@ class CommandService:
         self._gate(Command(type=CommandType.LIST_HOOKS), ctx)
         entries = self._worlds.list_hooks(world_id)
         result: list[HookInfo] = []
-        for entry in entries:
-            # Async registry entries are (HookHandle, fn, FireMode)
-            # Sync registry entries are (HookHandle, fn)
-            handle = entry[0]
-            fn = entry[1]
-            mode = entry[2] if len(entry) > 2 else "blocking"
+        # Hook bus items() yields uniform (event_type, handle, fn, mode) rows.
+        for event_type, handle, fn, mode in entries:
             result.append(
                 HookInfo(
-                    event_type=handle._event_type.__name__,
+                    event_type=event_type.__name__,
                     handler_qualname=getattr(fn, "__qualname__", str(fn)),
                     mode=mode,
-                    handle_id=handle._id,
+                    handle_id=handle.id,
                 )
             )
         await self._emit(ctx, "list_hooks", world_id)
