@@ -81,6 +81,11 @@ What you get for keeping everything:
 
 The intended user of this system is an agent.
 
+Archetype is the harness: the agent supplies the intelligence; the engine
+supplies the attachment points, the constraints, and the record. And
+because the record is data, it is a harness the wearer can train on — an
+agent improving itself from its own ledger.
+
 Everything is arranged so that an agent can build here and a human can
 trust the result by reviewing code, not by re-running it:
 
@@ -187,7 +192,8 @@ the `await`s. Component columns are prefixed `componentname__field`
 
 - the engine — append-only write path, tick loop, time travel, fork
   lineage — is the most mature part and the most heavily contract-tested
-- `archetype.experiments` and the auto-research loop are young but real
+- the auto-research loop runs on the ledger: each experiment is a lab
+  world whose ticks are the loop's iterations, resumable from its own rows
 - the FastAPI layer runs developer-mode auth (a default admin `ActorCtx`)
 - a Rust core implementing the same engine semantics is in progress on a
   separate branch

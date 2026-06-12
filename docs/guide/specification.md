@@ -213,12 +213,18 @@ Failure observability:
 Failure policy:
 
 - Processor failures MUST NOT silently corrupt world bookkeeping.
-- A processor failure fails its archetype's tick: the error is logged,
-  `step()` raises, the tick counter does not advance, and nothing is
-  appended for that tick. The engine does not append a frame the failed
-  processor never transformed.
-- Contract test:
-  `tests/core/test_async_world_error_propagation.py::test_async_world_processor_error_fails_the_step`.
+- The step is two-phase: every archetype's tick frame is computed (no
+  writes, no cache consumption) before any archetype appends. A processor
+  failure therefore fails the WHOLE tick: the error is logged, `step()`
+  raises, the tick counter does not advance, nothing is appended for any
+  archetype, and staged mutations survive for retry.
+- A store failure during the commit phase preserves the failed archetype's
+  staged mutations; archetypes whose appends committed consume their caches
+  with the append.
+- Contract tests: `tests/core/test_async_world_error_propagation.py`
+  (`test_async_world_processor_error_fails_the_step`,
+  `test_failed_tick_commits_nothing_and_is_retryable`,
+  `test_one_failing_archetype_blocks_all_appends`).
 
 Idempotency:
 
@@ -248,12 +254,26 @@ One tick MUST follow this order:
 2. determine active signatures from live state plus staged mutations
 3. for each signature:
    - load previous state
-   - materialize staged mutations
-   - execute processors
+   - apply staged despawns to the existing population
+   - execute processors over the existing population
+   - concat staged spawn rows, raw
    - persist through the updater
 4. replace the live snapshot with active rows only
 5. increment the world tick
 6. fire `PostTick` hooks
+
+### Initial conditions
+
+- An entity's first persisted row is its raw spawn values at the tick it
+  materializes. Processors first apply on the following tick.
+- Formally: `x_0` is given; `x_{t+1} = f(x_t)`. The ledger contains the full
+  sequence `x_0, f(x_0), f^2(x_0), ...` — initial conditions included.
+- The same semantics apply to staged overlays: `update_entity`,
+  `add_components`, and `remove_components` re-insert the mutated row, so
+  the mutated values persist raw at their materialization tick and are
+  first transformed on the following tick. An overlay is new given state:
+  the engine records what was set before the dynamics resume.
+- Contract tests: `tests/core/test_initial_conditions_contract.py`.
 
 ### Previous-state reads
 

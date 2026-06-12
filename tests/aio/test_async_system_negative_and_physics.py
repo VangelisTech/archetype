@@ -76,6 +76,9 @@ async def test_processor_skipped_when_components_do_not_match(world):
 
     eid = await world.create_entity([Position(x=3.0, y=0.0)])
     rc = RunConfig()
+    # Spawn tick persists raw initial conditions (x=3.0); processors first
+    # apply on the following tick, so step twice to observe IncX.
+    await world.step(rc)
     await world.step(rc)
 
     df = await world.get_components([Position], entity_ids=[eid])
@@ -107,6 +110,9 @@ async def test_priority_and_removal_affect_results(world):
 
     eid = await world.create_entity([Position(x=2.0, y=0.0)])
     rc = RunConfig()
+    # Spawn tick persists initial conditions (x=2.0); both processors first
+    # apply on the following tick: x -> (x*2)+1.
+    await world.step(rc)
     await world.step(rc)
     df = await world.get_components([Position], entity_ids=[eid])
     val1 = df.collect().to_pylist()[0]["position__x"]
@@ -183,6 +189,10 @@ async def test_physics_dag_position_velocity_accel(world):
     e2 = await world.create_entity([Position(x=0.0, y=0.0), Velocity(dx=1.0, dy=0.0)])
 
     rc = RunConfig()
+    # Spawn tick persists initial conditions; the integrators first apply on
+    # the following tick (x_0 is given, x_{t+1} = f(x_t)), so the second step
+    # is the first integration step.
+    await world.step(rc, dt=1.0, g=9.8, k=0.1)
     await world.step(rc, dt=1.0, g=9.8, k=0.1)
 
     # Check E1 under P,V,A
@@ -191,7 +201,7 @@ async def test_physics_dag_position_velocity_accel(world):
     assert len(rows1) == 1
     pos_y = rows1[0]["position__y"]
     vel_y = rows1[0]["velocity__dy"]
-    # After one step (dt=1):
+    # After one integration step (dt=1):
     # vel_y = 0 + (0 - g)*1 = -9.8, then drag => -9.8 * 0.9 = -8.82
     # pos_y = 10 + (-9.8) = 0.2 (uses pre-drag velocity in this simple integrator)
     assert math.isclose(pos_y, 0.2, rel_tol=1e-6, abs_tol=1e-6)

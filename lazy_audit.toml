@@ -33,7 +33,7 @@ reason = "Storage write boundary: defensive empty-frame probe before delegating 
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 262
+line = 315
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -51,7 +51,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 243
+line = 272
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
@@ -60,3 +60,9 @@ path = "src/archetype/core/lineage.py"
 line = 94
 method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
+
+[[entries]]
+path = "src/archetype/app/autoresearch_service.py"
+line = 302
+method = "to_pylist"
+reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow (incumbent score comparison, head entity id for the next update) at the autoresearch loop boundary; the comparison drives imperative orchestration, not a further dataframe computation."

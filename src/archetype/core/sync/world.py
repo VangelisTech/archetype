@@ -114,21 +114,32 @@ class SyncWorld(iWorld):
 
         self.hooks.fire(PreTick(world_id=self.world_id, tick=self.tick))
 
-        results: dict[ArchetypeSignature, DataFrame] = {}
-        for sig in sorted(self.active_signatures, key=Archetype.get_name):
-            results[sig] = self._run_archetype(sig, run_config, **input_kwargs)
+        sigs = sorted(self.active_signatures, key=Archetype.get_name)
 
-        # Finalize tick
-        self._clear_caches()
+        # Phase 1 — compute. No store writes, no cache consumption: a
+        # processor failure leaves the world untouched and the tick retryable.
+        computed: dict[ArchetypeSignature, DataFrame] = {}
+        for sig in sigs:
+            computed[sig] = self._compute_archetype(sig, run_config, **input_kwargs)
+
+        # Phase 2 — commit. Each archetype's caches are consumed only after
+        # its rows are appended; a store failure preserves exactly the
+        # uncommitted mutations.
+        results: dict[ArchetypeSignature, DataFrame] = {}
+        for sig, df in computed.items():
+            results[sig] = self.update(df, sig, run_config, self.tick)
+            self.spawn_cache.pop(sig, None)
+            self.despawn_cache.pop(sig, None)
+
         self.tick += 1
 
         self.hooks.fire(PostTick(world_id=self.world_id, tick=self.tick, results=results))
 
-    def _run_archetype(
+    def _compute_archetype(
         self, sig: ArchetypeSignature, run_config: RunConfig, **input_kwargs
-    ) -> tuple[DataFrame, ArchetypeSignature]:
-        """
-        Process a single archetype through the full pipeline.
+    ) -> DataFrame:
+        """Build one archetype's tick-N frame. Pure with respect to world
+        state: reads the caches without consuming them and writes nothing.
         """
         df = self.query_archetype(
             sig=sig,
@@ -138,15 +149,20 @@ class SyncWorld(iWorld):
             components=None,
         )
 
-        # 2. Materialize Mutations (Spawns/Despawns)
-        df = self._materialize_mutations(df, sig, run_config)
+        # 2. Despawns apply to the existing population; spawns are held aside.
+        df = self._apply_despawns(df, sig)
+        spawns_df = self._spawn_frame(df, sig)
 
         # 3. Execute Processors for this archetype via system
         df = self.execute(df, sig, run_config, **input_kwargs)
 
-        # 4. Update
-        df_mat = self.update(df, sig, run_config, self.tick)
-        return df_mat
+        # Initial conditions are part of the ledger: a newborn's first row is
+        # its raw spawn values at this tick; processors first apply on the
+        # next tick (x_0 is given, x_{t+1} = f(x_t)).
+        if spawns_df is not None:
+            df = df.concat(spawns_df)
+
+        return df
 
     # ---------------------------------------------------------------------
     #  Step Planning
@@ -160,8 +176,9 @@ class SyncWorld(iWorld):
         despawn_sigs = set(self.despawn_cache.keys())
         return active_sigs | spawned_sigs | despawn_sigs
 
-    def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
-        # Handle Despawns
+    def _apply_despawns(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame:
+        """Flip is_active for pending despawns. Non-destructive apart from
+        idempotent dedupe; caches are consumed in step's commit phase."""
         if self.despawn_cache.get(sig):
             # Grab despawn list of dicts and dedupe by most recent mutation command
             self.despawn_cache[sig] = list(dict.fromkeys(reversed(self.despawn_cache[sig])))
@@ -184,29 +201,41 @@ class SyncWorld(iWorld):
                 )
                 .select(*df.column_names)
             )
-
-        # Handle Spawns
-        if self.spawn_cache.get(sig):
-            # Grab spawn list of dicts
-            rows = self.spawn_cache[sig]
-
-            # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
-            rows = list({row["entity_id"]: row for row in rows}.values())
-
-            # Convert list of dicts to arrow table and eventually daft df
-            pyarrow_schema = Archetype.get_archetype_schema(sig)
-            arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
-            spawns_df = daft.from_arrow(arrow_table)
-            target_schema = df.schema()
-            spawns_df = spawns_df.with_columns(
-                {
-                    "entity_id": col("entity_id").cast(target_schema["entity_id"].dtype),
-                    "tick": col("tick").cast(target_schema["tick"].dtype),
-                }
-            )
-            df = df.concat(spawns_df)
-
         return df
+
+    def _spawn_frame(self, df: DataFrame, sig: ArchetypeSignature) -> DataFrame | None:
+        """Pending spawns as a raw frame (initial conditions), cast to df's dtypes.
+
+        Non-destructive: caches are consumed in step's commit phase.
+        """
+        if not self.spawn_cache.get(sig):
+            return None
+        # Dedupe duplicate spawns, prioritizing "most recent cmd" for easy user overwrite
+        rows = list({row["entity_id"]: row for row in self.spawn_cache[sig]}.values())
+
+        # Convert list of dicts to arrow table and eventually daft df
+        pyarrow_schema = Archetype.get_archetype_schema(sig)
+        arrow_table = pa.Table.from_pylist(rows, schema=pyarrow_schema)
+        spawns_df = daft.from_arrow(arrow_table)
+        target_schema = df.schema()
+        return spawns_df.with_columns(
+            {
+                "entity_id": col("entity_id").cast(target_schema["entity_id"].dtype),
+                "tick": col("tick").cast(target_schema["tick"].dtype),
+            }
+        )
+
+    def _materialize_mutations(self, df: DataFrame, sig: ArchetypeSignature, run_config: RunConfig):
+        """Apply pending despawns and concat pending spawns onto df.
+
+        Diagnostic/compatibility surface (exercised directly by sync contract
+        tests). The step path applies despawns before processors and concats
+        spawns after them, so newborn rows persist their initial conditions
+        (see _compute_archetype and step's commit phase).
+        """
+        df = self._apply_despawns(df, sig)
+        spawns_df = self._spawn_frame(df, sig)
+        return df.concat(spawns_df) if spawns_df is not None else df
 
     def _move_entity(
         self,

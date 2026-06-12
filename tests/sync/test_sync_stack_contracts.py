@@ -499,6 +499,10 @@ def test_sync_world_reads_previous_tick_from_store(tmp_path):
     world.create_entity([Position(x=0, y=0)])
     rc = RunConfig(num_steps=1)
 
+    # Spawn tick persists initial conditions (x=0); IncX first applies on the
+    # following tick. Two processed ticks (0 -> 1 -> 2) prove each step reads
+    # the previous tick's committed rows from the store.
+    world.step(rc)
     world.step(rc)
     world.step(rc)
 
@@ -558,6 +562,9 @@ def test_sync_world_execute_passes_resources_and_kwargs(tmp_path):
     sig = Archetype.sig_from_components([Position(x=0, y=0)])
     world.create_entity([Position(x=1, y=1)])
 
+    # Spawn tick persists initial conditions (x=1); the processor applies on
+    # the following tick: 1 + offset(3) + bonus(2) = 6.
+    world.step(RunConfig(num_steps=1))
     world.step(RunConfig(num_steps=1), bonus=2)
 
     rows = _committed_rows(world, sig)
