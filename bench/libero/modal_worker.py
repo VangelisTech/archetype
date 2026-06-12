@@ -141,6 +141,9 @@ class LiberoEnvBatch:
             "eef_pos": [float(v) for v in obs["robot0_eef_pos"]],
             "eef_quat": [float(v) for v in obs["robot0_eef_quat"]],
             "gripper": float(obs["robot0_gripper_qpos"][0]),
+            # Both gripper joint values: the VLA state vector wants the full
+            # robot0_gripper_qpos, not just the first finger.
+            "gripper_qpos": [float(v) for v in obs["robot0_gripper_qpos"]],
         }
         if with_frames:
             import base64

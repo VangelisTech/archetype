@@ -83,3 +83,4 @@ mutants/
 # session reflection artifacts (local corpus analysis)
 session_data/
 session_reflection_report.md
+bench/libero/out/
