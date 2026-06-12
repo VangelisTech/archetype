@@ -136,15 +136,32 @@ class LiberoEnvBatch:
         )
 
     @staticmethod
-    def _proprio(obs: dict) -> dict[str, Any]:
-        return {
+    def _proprio(obs: dict, with_frames: bool = False) -> dict[str, Any]:
+        out = {
             "eef_pos": [float(v) for v in obs["robot0_eef_pos"]],
             "eef_quat": [float(v) for v in obs["robot0_eef_quat"]],
             "gripper": float(obs["robot0_gripper_qpos"][0]),
         }
+        if with_frames:
+            import base64
+
+            import cv2
+
+            def encode(rgb) -> str:
+                ok, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                if not ok:
+                    raise RuntimeError("png encode failed")
+                return base64.b64encode(buf.tobytes()).decode()
+
+            # NOTE: LIBERO renders frames upside down; upstream eval code
+            # rotates 180 degrees before the policy sees them. We ship raw
+            # pixels and leave orientation to the policy client.
+            out["agentview_png"] = encode(obs["agentview_image"])
+            out["wrist_png"] = encode(obs["robot0_eye_in_hand_image"])
+        return out
 
     @modal.method()
-    def reset(self, env_id: int, seed: int) -> dict[str, Any]:
+    def reset(self, env_id: int, seed: int, with_frames: bool = False) -> dict[str, Any]:
         env = self._envs.get(env_id)
         if env is None:
             env = self._make_env()
@@ -152,16 +169,21 @@ class LiberoEnvBatch:
         env.seed(seed)
         env.reset()
         obs = env.set_init_state(self._init_states[seed % len(self._init_states)])
-        return self._proprio(obs)
+        return self._proprio(obs, with_frames)
 
     @modal.method()
-    def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
+    def step(
+        self,
+        env_ids: list[int],
+        actions: list[list[float]],
+        with_frames: bool = False,
+    ) -> list[dict[str, Any]]:
         results = []
         for env_id, action in zip(env_ids, actions, strict=True):
             env = self._envs[env_id]
             obs, reward, done, info = env.step(action)
             success = bool(env.check_success())
-            result = self._proprio(obs)
+            result = self._proprio(obs, with_frames)
             result.update(
                 {"reward": float(reward), "done": bool(done) or success, "success": success}
             )
@@ -184,9 +206,10 @@ class ModalEnvClient:
     serializable.
     """
 
-    def __init__(self, suite: str = "libero_spatial", task_id: int = 0):
+    def __init__(self, suite: str = "libero_spatial", task_id: int = 0, with_frames: bool = False):
         self._suite = suite
         self._task_id = task_id
+        self._with_frames = with_frames
         self._worker = None
 
     def _get_worker(self):
@@ -196,18 +219,23 @@ class ModalEnvClient:
         return self._worker
 
     def __getstate__(self) -> dict[str, Any]:
-        return {"suite": self._suite, "task_id": self._task_id}
+        return {
+            "suite": self._suite,
+            "task_id": self._task_id,
+            "with_frames": self._with_frames,
+        }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self._suite = state["suite"]
         self._task_id = state["task_id"]
+        self._with_frames = state["with_frames"]
         self._worker = None
 
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
-        return self._get_worker().reset.remote(env_id, seed)
+        return self._get_worker().reset.remote(env_id, seed, with_frames=self._with_frames)
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
-        return self._get_worker().step.remote(env_ids, actions)
+        return self._get_worker().step.remote(env_ids, actions, with_frames=self._with_frames)
 
 
 @app.local_entrypoint()
