@@ -75,3 +75,7 @@ coverage.xml
 .wrangler/
 bench-results.json
 eval-results.json
+
+# Rust
+target/
+**/target/
