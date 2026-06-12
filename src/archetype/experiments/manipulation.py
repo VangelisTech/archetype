@@ -229,13 +229,47 @@ class _EnvStepper:
 
 
 class EnvStepProcessor(AsyncProcessor):
+    """Step the env and write observations back to the ledger.
+
+    Supports two construction modes:
+
+    1. Constructor injection (existing tests, unchanged)::
+
+           EnvStepProcessor(client=my_env_client)
+
+    2. Resources-spec construction (no live handle at construction time)::
+
+           EnvStepProcessor()  # client=None
+           # Resources must carry an EnvClientSpec at process() time.
+
+    See ``PolicyActionProcessor`` in policy.py for the full
+    driver/worker boundary rationale.
+    """
+
     components = (ManipProprio, ManipAction, ManipStatus, ManipTask)
     priority = 10  # after any policy processor writes actions
 
-    def __init__(self, client: EnvClient):
+    def __init__(self, client: EnvClient | None = None):
+        self._stepper: _EnvStepper | None = None
+        if client is not None:
+            self._stepper = _EnvStepper(client)
+
+    def _ensure_stepper(self, resources: Any) -> None:
+        if self._stepper is not None:
+            return
+        if resources is None:
+            raise RuntimeError(
+                "EnvStepProcessor has no client and no Resources were passed. "
+                "Either pass a client to the constructor or register an EnvClientSpec."
+            )
+        from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
+
+        spec: EnvClientSpec = resources.require(EnvClientSpec)
+        client = _build_env_client_from_spec(spec)
         self._stepper = _EnvStepper(client)
 
-    async def process(self, df, **kwargs):
+    async def process(self, df, resources: Any = None, **kwargs):
+        self._ensure_stepper(resources)
         nxt = self._stepper.step(
             col("maniptask__env_key"),
             col("manipaction__values"),
@@ -250,18 +284,14 @@ class EnvStepProcessor(AsyncProcessor):
         )
         return (
             df.with_column("_env_next", nxt)
-            .with_columns(
-                {
-                    "manipproprio__eef_pos": col("_env_next")["eef_pos"],
-                    "manipproprio__eef_quat": col("_env_next")["eef_quat"],
-                    "manipproprio__gripper": col("_env_next")["gripper"],
-                    "manipproprio__gripper_qpos": col("_env_next")["gripper_qpos"],
-                    "manipstatus__reward": col("_env_next")["reward"],
-                    "manipstatus__done": col("_env_next")["done"],
-                    "manipstatus__success": col("_env_next")["success"],
-                    "manipstatus__env_step": col("_env_next")["env_step"],
-                }
-            )
+            .with_column("manipproprio__eef_pos", col("_env_next")["eef_pos"])
+            .with_column("manipproprio__eef_quat", col("_env_next")["eef_quat"])
+            .with_column("manipproprio__gripper", col("_env_next")["gripper"])
+            .with_column("manipproprio__gripper_qpos", col("_env_next")["gripper_qpos"])
+            .with_column("manipstatus__reward", col("_env_next")["reward"])
+            .with_column("manipstatus__done", col("_env_next")["done"])
+            .with_column("manipstatus__success", col("_env_next")["success"])
+            .with_column("manipstatus__env_step", col("_env_next")["env_step"])
             .exclude("_env_next")
         )
 
@@ -348,15 +378,36 @@ class FramedEnvStepProcessor(AsyncProcessor):
     a shared volume mounted at ``/frames``).  The existing
     ``EnvStepProcessor`` is unchanged — tests that do not use the volume
     continue to work against it.
+
+    Supports constructor injection and Resources-spec construction
+    (``EnvClientSpec`` in Resources).
     """
 
     components = (ManipProprio, ManipAction, ManipStatus, ManipTask, ManipFrameRef)
     priority = 10
 
-    def __init__(self, client: EnvClient):
+    def __init__(self, client: EnvClient | None = None):
+        self._stepper: _FramedEnvStepper | None = None
+        if client is not None:
+            self._stepper = _FramedEnvStepper(client)
+
+    def _ensure_stepper(self, resources: Any) -> None:
+        if self._stepper is not None:
+            return
+        if resources is None:
+            raise RuntimeError(
+                "FramedEnvStepProcessor has no client and no Resources were passed. "
+                "Either pass a client to the constructor or register an EnvClientSpec "
+                "with with_frames=True."
+            )
+        from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
+
+        spec: EnvClientSpec = resources.require(EnvClientSpec)
+        client = _build_env_client_from_spec(spec)
         self._stepper = _FramedEnvStepper(client)
 
-    async def process(self, df, **kwargs):
+    async def process(self, df, resources: Any = None, **kwargs):
+        self._ensure_stepper(resources)
         nxt = self._stepper.step(
             col("maniptask__env_key"),
             col("manipaction__values"),
@@ -373,22 +424,46 @@ class FramedEnvStepProcessor(AsyncProcessor):
         )
         return (
             df.with_column("_env_next", nxt)
-            .with_columns(
-                {
-                    "manipproprio__eef_pos": col("_env_next")["eef_pos"],
-                    "manipproprio__eef_quat": col("_env_next")["eef_quat"],
-                    "manipproprio__gripper": col("_env_next")["gripper"],
-                    "manipproprio__gripper_qpos": col("_env_next")["gripper_qpos"],
-                    "manipstatus__reward": col("_env_next")["reward"],
-                    "manipstatus__done": col("_env_next")["done"],
-                    "manipstatus__success": col("_env_next")["success"],
-                    "manipstatus__env_step": col("_env_next")["env_step"],
-                    "manipframeref__agentview_ref": col("_env_next")["agentview_ref"],
-                    "manipframeref__wrist_ref": col("_env_next")["wrist_ref"],
-                }
-            )
+            .with_column("manipproprio__eef_pos", col("_env_next")["eef_pos"])
+            .with_column("manipproprio__eef_quat", col("_env_next")["eef_quat"])
+            .with_column("manipproprio__gripper", col("_env_next")["gripper"])
+            .with_column("manipproprio__gripper_qpos", col("_env_next")["gripper_qpos"])
+            .with_column("manipstatus__reward", col("_env_next")["reward"])
+            .with_column("manipstatus__done", col("_env_next")["done"])
+            .with_column("manipstatus__success", col("_env_next")["success"])
+            .with_column("manipstatus__env_step", col("_env_next")["env_step"])
+            .with_column("manipframeref__agentview_ref", col("_env_next")["agentview_ref"])
+            .with_column("manipframeref__wrist_ref", col("_env_next")["wrist_ref"])
             .exclude("_env_next")
         )
+
+
+def _build_env_client_from_spec(spec: Any) -> EnvClient:
+    """Build a live EnvClient from a picklable EnvClientSpec.
+
+    Called in the driver process when a processor lazily constructs its
+    client from Resources.  Not called on Daft workers — the spec scalars
+    cross the worker boundary; the client is built after unpickling.
+    """
+    # Avoid circular import: EnvClientSpec lives in policy.py.
+    from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
+
+    if not isinstance(spec, EnvClientSpec):
+        raise TypeError(f"Expected EnvClientSpec, got {type(spec)!r}")
+
+    try:
+        from bench.libero.modal_worker import ModalEnvClient  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "ModalEnvClient could not be imported. "
+            "Ensure 'modal' is installed and bench/libero/modal_worker.py is on the path."
+        ) from exc
+
+    return ModalEnvClient(
+        suite=spec.suite,
+        task_id=spec.task_id,
+        with_frames=spec.with_frames,
+    )
 
 
 class ScriptedReachEnv:
