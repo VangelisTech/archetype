@@ -28,13 +28,14 @@ Deploy for use from the Archetype harness:
     #   client = ModalEnvClient("libero_spatial")
     #   processor = EnvStepProcessor(client)
 
-STATUS: scaffold — follows the standard OpenVLA-style LIBERO eval setup
-(py3.10, LIBERO from git, MUJOCO_GL=egl). Unverified until the first
-`modal run`; expect to iterate on image pins once.
+STATUS: verified 2026-06-11 — `modal run` smoke passes end to end:
+libero_spatial task 0 loads, resets with real proprio obs, and steps
+under EGL offscreen rendering. (Benign EGL teardown noise appears at
+interpreter exit from robosuite's context __del__; harmless.)
 """
 
-from __future__ import annotations
-
+# NOTE: no `from __future__ import annotations` here — modal.parameter()
+# validates real annotation objects, and PEP 563 string annotations break it.
 from typing import Any
 
 import modal
@@ -51,23 +52,52 @@ image = (
         "libosmesa6-dev",
         "libglfw3",
         "patchelf",
+        # LIBERO's requirements pull full opencv-python (not headless),
+        # which links against GUI-adjacent system libs even offscreen.
+        "libglib2.0-0",
+        "libsm6",
+        "libxext6",
+        "libxrender1",
     )
     .pip_install(
-        "torch>=2.2",
+        # <2.6: LIBERO torch.load()s init-state numpy pickles, which the
+        # weights_only=True default introduced in torch 2.6 rejects.
+        "torch>=2.2,<2.6",
         "robosuite==1.4.1",
         "bddl==1.0.1",
+        # The env-path slice of LIBERO's requirements.txt (we skip the
+        # training stack: robomimic, transformers, wandb, thop).
+        "future",
+        "matplotlib",
+        "cloudpickle",
+        "gym==0.25.2",
+        "hydra-core",
+        "einops",
         "easydict",
         "imageio[ffmpeg]",
         "opencv-python-headless",
     )
-    .pip_install("libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git")
+    # LIBERO's top-level package dir has no __init__.py, so find_packages()
+    # produces an empty wheel from a plain `pip install git+...`. The repo's
+    # own recipe — clone + editable install — is the only one that works.
+    .run_commands(
+        "git clone --depth 1 https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO",
+        "pip install -e /opt/LIBERO",
+        # First import interactively prompts for a dataset folder; answer
+        # 'N' (use defaults) once at build time so ~/.libero/config.yaml is
+        # baked into the image and runtime imports never block on stdin.
+        "echo N | python -c 'import libero.libero'",
+    )
     .env({"MUJOCO_GL": "egl", "PYOPENGL_PLATFORM": "egl"})
 )
 
 app = modal.App("archetype-libero-env", image=image)
 
 
-@app.cls(cpu=4, memory=8192, timeout=1800, scaledown_window=300)
+# max_containers=1: env instances live in container memory keyed by env_key;
+# a second container would silently fork that state. One container per
+# parameter set until envs move to a shared store.
+@app.cls(cpu=4, memory=8192, timeout=1800, scaledown_window=300, max_containers=1)
 class LiberoEnvBatch:
     """A batch of LIBERO envs for one task suite, keyed by env_key.
 
@@ -148,17 +178,36 @@ class ModalEnvClient:
 
     Import this from the Archetype (py3.12) process; it only needs the
     `modal` client package, not LIBERO.
+
+    Pickles as just (suite, task_id) and reconnects lazily: Daft batch
+    UDFs serialize their constructor args, and a live Modal handle is not
+    serializable.
     """
 
     def __init__(self, suite: str = "libero_spatial", task_id: int = 0):
-        cls = modal.Cls.from_name("archetype-libero-env", "LiberoEnvBatch")
-        self._worker = cls(suite=suite, task_id=task_id)
+        self._suite = suite
+        self._task_id = task_id
+        self._worker = None
+
+    def _get_worker(self):
+        if self._worker is None:
+            cls = modal.Cls.from_name("archetype-libero-env", "LiberoEnvBatch")
+            self._worker = cls(suite=self._suite, task_id=self._task_id)
+        return self._worker
+
+    def __getstate__(self) -> dict[str, Any]:
+        return {"suite": self._suite, "task_id": self._task_id}
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self._suite = state["suite"]
+        self._task_id = state["task_id"]
+        self._worker = None
 
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
-        return self._worker.reset.remote(env_id, seed)
+        return self._get_worker().reset.remote(env_id, seed)
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
-        return self._worker.step.remote(env_ids, actions)
+        return self._get_worker().step.remote(env_ids, actions)
 
 
 @app.local_entrypoint()
