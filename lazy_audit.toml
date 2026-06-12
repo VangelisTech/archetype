@@ -93,57 +93,136 @@ reason = "Series->Python conversion inside a @daft.method.batch UDF at the MuJoC
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 144
+line = 185
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_key input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 145
+line = 186
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (action input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 147
+line = 188
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_pos input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 148
+line = 189
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (eef_quat input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 149
+line = 190
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (gripper input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 150
+line = 191
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (gripper_qpos input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 192
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (reward input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 151
+line = 193
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (done input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 152
+line = 194
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (success input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 153
+line = 195
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF at the external-simulator RPC boundary (env_step input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; the env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+# _FramedEnvStepper batch UDF — same boundary, same justification, plus frame ref columns.
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 296
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (env_key input column): the executor has already materialised this batch; framed env step is a remote stateful call that cannot be expressed as a Daft expression."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 297
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (action input column): same per-batch Series access pattern as _EnvStepper; the env step and volume write are remote stateful calls."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 299
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (eef_pos input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 300
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (eef_quat input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 301
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (gripper input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 302
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (gripper_qpos input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 303
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (reward input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 304
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (done input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 305
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (success input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 306
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (env_step input column): per-batch Series access at the env/volume boundary."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 307
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (agentview_ref input column): volume path strings must flow through Python to carry the ref from the previous tick to frozen-row passthrough; cannot be expressed lazily."
+
+[[entries]]
+path = "src/archetype/experiments/manipulation.py"
+line = 308
+method = "to_pylist"
+reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (wrist_ref input column): volume path strings must flow through Python to carry the ref from the previous tick to frozen-row passthrough; cannot be expressed lazily."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"

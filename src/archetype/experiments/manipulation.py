@@ -50,11 +50,17 @@ ACTION_DIM = 7  # 6-DoF delta pose + gripper, the LIBERO/OSC convention
 
 
 class ManipProprio(Component):
-    """Proprioceptive observation: end-effector pose and gripper opening."""
+    """Proprioceptive observation: end-effector pose and gripper opening.
+
+    ``gripper_qpos`` carries both finger joint values (the VLA policy's 8-dim
+    state vector needs the full ``robot0_gripper_qpos``, not just the scalar
+    opening). Defaults to ``[0.0, 0.0]`` for backwards compatibility.
+    """
 
     eef_pos: list[float] = [0.0, 0.0, 0.0]
     eef_quat: list[float] = [1.0, 0.0, 0.0, 0.0]
     gripper: float = 0.0
+    gripper_qpos: list[float] = [0.0, 0.0]
 
 
 class ManipAction(Component):
@@ -84,6 +90,24 @@ class ManipStatus(Component):
     env_step: int = 0
 
 
+class ManipFrameRef(Component):
+    """Volume refs to the agentview and wrist camera PNGs for a tick.
+
+    Written by the driver when frames are stored in the shared Modal
+    ``libero-frames`` volume.  Empty strings signal "no frame sidecar"
+    (e.g. in tests that do not mount the volume).
+
+    Ledger contract (mirrors the initial-conditions invariant):
+    - Tick-0 refs are the refs returned by ``env.reset(…, with_frames=True)``
+      — they land raw on the spawn row.
+    - Tick t refs are the refs returned by ``env.step(…)`` — written by
+      ``FramedEnvStepProcessor`` immediately after the env call.
+    """
+
+    agentview_ref: str = ""
+    wrist_ref: str = ""
+
+
 class EnvClient(Protocol):
     """Boundary to an external manipulation simulator.
 
@@ -109,10 +133,26 @@ _STEP_STRUCT = DataType.struct(
         "eef_pos": DataType.list(DataType.float64()),
         "eef_quat": DataType.list(DataType.float64()),
         "gripper": DataType.float64(),
+        "gripper_qpos": DataType.list(DataType.float64()),
         "reward": DataType.float64(),
         "done": DataType.bool(),
         "success": DataType.bool(),
         "env_step": DataType.int64(),
+    }
+)
+
+_FRAMED_STEP_STRUCT = DataType.struct(
+    {
+        "eef_pos": DataType.list(DataType.float64()),
+        "eef_quat": DataType.list(DataType.float64()),
+        "gripper": DataType.float64(),
+        "gripper_qpos": DataType.list(DataType.float64()),
+        "reward": DataType.float64(),
+        "done": DataType.bool(),
+        "success": DataType.bool(),
+        "env_step": DataType.int64(),
+        "agentview_ref": DataType.string(),
+        "wrist_ref": DataType.string(),
     }
 )
 
@@ -136,6 +176,7 @@ class _EnvStepper:
         eef_pos: Series,
         eef_quat: Series,
         gripper: Series,
+        gripper_qpos: Series,
         reward: Series,
         done: Series,
         success: Series,
@@ -147,6 +188,7 @@ class _EnvStepper:
             "eef_pos": eef_pos.to_pylist(),
             "eef_quat": eef_quat.to_pylist(),
             "gripper": gripper.to_pylist(),
+            "gripper_qpos": gripper_qpos.to_pylist(),
             "reward": reward.to_pylist(),
             "done": done.to_pylist(),
             "success": success.to_pylist(),
@@ -169,6 +211,10 @@ class _EnvStepper:
                         "eef_pos": [float(v) for v in obs["eef_pos"]],
                         "eef_quat": [float(v) for v in obs["eef_quat"]],
                         "gripper": float(obs["gripper"]),
+                        "gripper_qpos": [
+                            float(v)
+                            for v in obs.get("gripper_qpos", [obs["gripper"], obs["gripper"]])
+                        ],
                         "reward": float(obs["reward"]),
                         "done": bool(obs["done"]),
                         # Success latches even if the env reports a
@@ -196,6 +242,7 @@ class EnvStepProcessor(AsyncProcessor):
             col("manipproprio__eef_pos"),
             col("manipproprio__eef_quat"),
             col("manipproprio__gripper"),
+            col("manipproprio__gripper_qpos"),
             col("manipstatus__reward"),
             col("manipstatus__done"),
             col("manipstatus__success"),
@@ -208,10 +255,136 @@ class EnvStepProcessor(AsyncProcessor):
                     "manipproprio__eef_pos": col("_env_next")["eef_pos"],
                     "manipproprio__eef_quat": col("_env_next")["eef_quat"],
                     "manipproprio__gripper": col("_env_next")["gripper"],
+                    "manipproprio__gripper_qpos": col("_env_next")["gripper_qpos"],
                     "manipstatus__reward": col("_env_next")["reward"],
                     "manipstatus__done": col("_env_next")["done"],
                     "manipstatus__success": col("_env_next")["success"],
                     "manipstatus__env_step": col("_env_next")["env_step"],
+                }
+            )
+            .exclude("_env_next")
+        )
+
+
+@daft.cls()
+class _FramedEnvStepper:
+    """Framed variant of _EnvStepper: expects the client to return
+    ``agentview_ref`` and ``wrist_ref`` keys in each obs dict alongside
+    the standard proprio fields.  Volume refs are strings (empty string
+    means no frame for that row).
+    """
+
+    def __init__(self, client: EnvClient):
+        self._client = client
+
+    @daft.method.batch(return_dtype=_FRAMED_STEP_STRUCT)
+    def step(
+        self,
+        env_key: Series,
+        action: Series,
+        eef_pos: Series,
+        eef_quat: Series,
+        gripper: Series,
+        gripper_qpos: Series,
+        reward: Series,
+        done: Series,
+        success: Series,
+        env_step: Series,
+        agentview_ref: Series,
+        wrist_ref: Series,
+    ) -> Series:
+        ids = env_key.to_pylist()
+        actions = action.to_pylist()
+        prev = {
+            "eef_pos": eef_pos.to_pylist(),
+            "eef_quat": eef_quat.to_pylist(),
+            "gripper": gripper.to_pylist(),
+            "gripper_qpos": gripper_qpos.to_pylist(),
+            "reward": reward.to_pylist(),
+            "done": done.to_pylist(),
+            "success": success.to_pylist(),
+            "env_step": env_step.to_pylist(),
+            "agentview_ref": agentview_ref.to_pylist(),
+            "wrist_ref": wrist_ref.to_pylist(),
+        }
+
+        live = [i for i in range(len(ids)) if not prev["done"][i]]
+        stepped: dict[int, dict[str, Any]] = {}
+        if live:
+            results = self._client.step([ids[i] for i in live], [actions[i] for i in live])
+            stepped = dict(zip(live, results, strict=True))
+
+        out: list[dict[str, Any]] = []
+        for i in range(len(ids)):
+            if i in stepped:
+                obs = stepped[i]
+                out.append(
+                    {
+                        "eef_pos": [float(v) for v in obs["eef_pos"]],
+                        "eef_quat": [float(v) for v in obs["eef_quat"]],
+                        "gripper": float(obs["gripper"]),
+                        "gripper_qpos": [
+                            float(v)
+                            for v in obs.get("gripper_qpos", [obs["gripper"], obs["gripper"]])
+                        ],
+                        "reward": float(obs["reward"]),
+                        "done": bool(obs["done"]),
+                        "success": bool(obs["success"]) or bool(prev["success"][i]),
+                        "env_step": int(prev["env_step"][i]) + 1,
+                        "agentview_ref": str(obs.get("agentview_ref", "")),
+                        "wrist_ref": str(obs.get("wrist_ref", "")),
+                    }
+                )
+            else:
+                out.append({key: prev[key][i] for key in prev})
+        return Series.from_pylist(out)
+
+
+class FramedEnvStepProcessor(AsyncProcessor):
+    """Like EnvStepProcessor but also carries ``ManipFrameRef`` on the ledger.
+
+    Use this when the env client returns ``agentview_ref`` and ``wrist_ref``
+    alongside proprio (e.g. the ModalEnvClient with ``with_frames=True`` and
+    a shared volume mounted at ``/frames``).  The existing
+    ``EnvStepProcessor`` is unchanged — tests that do not use the volume
+    continue to work against it.
+    """
+
+    components = (ManipProprio, ManipAction, ManipStatus, ManipTask, ManipFrameRef)
+    priority = 10
+
+    def __init__(self, client: EnvClient):
+        self._stepper = _FramedEnvStepper(client)
+
+    async def process(self, df, **kwargs):
+        nxt = self._stepper.step(
+            col("maniptask__env_key"),
+            col("manipaction__values"),
+            col("manipproprio__eef_pos"),
+            col("manipproprio__eef_quat"),
+            col("manipproprio__gripper"),
+            col("manipproprio__gripper_qpos"),
+            col("manipstatus__reward"),
+            col("manipstatus__done"),
+            col("manipstatus__success"),
+            col("manipstatus__env_step"),
+            col("manipframeref__agentview_ref"),
+            col("manipframeref__wrist_ref"),
+        )
+        return (
+            df.with_column("_env_next", nxt)
+            .with_columns(
+                {
+                    "manipproprio__eef_pos": col("_env_next")["eef_pos"],
+                    "manipproprio__eef_quat": col("_env_next")["eef_quat"],
+                    "manipproprio__gripper": col("_env_next")["gripper"],
+                    "manipproprio__gripper_qpos": col("_env_next")["gripper_qpos"],
+                    "manipstatus__reward": col("_env_next")["reward"],
+                    "manipstatus__done": col("_env_next")["done"],
+                    "manipstatus__success": col("_env_next")["success"],
+                    "manipstatus__env_step": col("_env_next")["env_step"],
+                    "manipframeref__agentview_ref": col("_env_next")["agentview_ref"],
+                    "manipframeref__wrist_ref": col("_env_next")["wrist_ref"],
                 }
             )
             .exclude("_env_next")
@@ -235,7 +408,12 @@ class ScriptedReachEnv:
         # Deterministic seed-derived start, no RNG: contract tests replay it.
         start = [0.001 * seed, -0.001 * seed, 0.5]
         self._state[env_id] = list(start)
-        return {"eef_pos": list(start), "eef_quat": [1.0, 0.0, 0.0, 0.0], "gripper": 0.0}
+        return {
+            "eef_pos": list(start),
+            "eef_quat": [1.0, 0.0, 0.0, 0.0],
+            "gripper": 0.0,
+            "gripper_qpos": [0.0, 0.0],
+        }
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
         results = []
@@ -251,9 +429,47 @@ class ScriptedReachEnv:
                     "eef_pos": list(pos),
                     "eef_quat": [1.0, 0.0, 0.0, 0.0],
                     "gripper": 0.0,
+                    "gripper_qpos": [0.0, 0.0],
                     "reward": -dist,
                     "done": success,
                     "success": success,
                 }
             )
+        return results
+
+
+class ScriptedFramedReachEnv(ScriptedReachEnv):
+    """ScriptedReachEnv extended with deterministic fake volume refs.
+
+    Used by contract tests to assert that ``ManipFrameRef`` refs are
+    written to the ledger at every tick without requiring a Modal volume.
+    Refs are deterministic strings: ``<session>/<env_id>/reset-agentview``
+    at reset and ``<session>/<env_id>/step<N>-agentview`` at each step,
+    where ``session`` is a fixed tag for reproducibility.
+    """
+
+    SESSION = "test-session"
+
+    def __init__(
+        self,
+        targets: dict[int, tuple[float, float, float]],
+        tolerance: float = 0.05,
+    ):
+        super().__init__(targets=targets, tolerance=tolerance)
+        self._step_counts: dict[int, int] = {}
+
+    def reset(self, env_id: int, seed: int) -> dict[str, Any]:
+        obs = super().reset(env_id, seed)
+        self._step_counts[env_id] = 0
+        obs["agentview_ref"] = f"{self.SESSION}/{env_id}/reset-agentview.png"
+        obs["wrist_ref"] = f"{self.SESSION}/{env_id}/reset-wrist.png"
+        return obs
+
+    def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
+        results = super().step(env_ids, actions)
+        for obs, env_id in zip(results, env_ids, strict=True):
+            self._step_counts[env_id] = self._step_counts.get(env_id, 0) + 1
+            n = self._step_counts[env_id]
+            obs["agentview_ref"] = f"{self.SESSION}/{env_id}/step{n:05d}-agentview.png"
+            obs["wrist_ref"] = f"{self.SESSION}/{env_id}/step{n:05d}-wrist.png"
         return results
