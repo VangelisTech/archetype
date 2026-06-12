@@ -189,8 +189,12 @@ async def _task_simulation_correctness() -> list[GraderResult]:
             }
 
             # Grader 2: Processor correctness (outcome verification)
-            # After N_STEPS of ApplyVelocity(dx=1, dy=-1):
-            #   x_final = x_init + N_STEPS, y_final = y_init - N_STEPS
+            # Initial-conditions contract (spec World Contracts): the spawn tick
+            # persists raw initial state and processors first apply on the
+            # following tick, so N_STEPS ticks apply ApplyVelocity(dx=1, dy=-1)
+            # exactly N_STEPS - 1 times:
+            #   x_final = x_init + (N_STEPS - 1), y_final = y_init - (N_STEPS - 1)
+            applied_ticks = N_STEPS - 1
             position_checks = {}
             for idx in range(entity_count):
                 eid = entity_ids[idx]
@@ -198,8 +202,8 @@ async def _task_simulation_correctness() -> list[GraderResult]:
                 if x_init is None:
                     position_checks[f"eid_{eid}_found"] = False
                     continue
-                position_checks[f"eid_{eid}_x"] = rows["position__x"][idx] == x_init + N_STEPS
-                position_checks[f"eid_{eid}_y"] = rows["position__y"][idx] == y_init - N_STEPS
+                position_checks[f"eid_{eid}_x"] = rows["position__x"][idx] == x_init + applied_ticks
+                position_checks[f"eid_{eid}_y"] = rows["position__y"][idx] == y_init - applied_ticks
 
             # Grader 3: Untouched data preserved (velocity, health unchanged)
             preservation_checks = {}
