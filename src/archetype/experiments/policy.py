@@ -103,11 +103,24 @@ class PolicyClientSpec:
     Stored in Resources (driver-side) and passed to processors that
     want lazy construction.  The actual client is built in the processor
     (or ``_PolicyCaller.__init__`` on each Daft worker) from these scalars.
+
+    Subclasses may override ``build()`` to return a different client
+    (e.g., a test double).  ``_PolicyCallerNoRefs`` and ``_PolicyCaller``
+    call ``spec.build()`` instead of instantiating ``VlaJepaPolicyClient``
+    directly, so subclasses get the override for free.
     """
 
     suite: str
     task_id: int
     app_name: str = "archetype-vla-jepa"
+
+    def build(self) -> PolicyClient:
+        """Build the live ``PolicyClient`` from this spec's scalar config."""
+        return VlaJepaPolicyClient(
+            suite=self.suite,
+            task_id=self.task_id,
+            app_name=self.app_name,
+        )
 
 
 @dataclass
@@ -116,12 +129,28 @@ class EnvClientSpec:
 
     Same driver/worker boundary rationale as ``PolicyClientSpec``: only
     plain scalars that survive pickle.
+
+    Subclasses may override ``build()`` to return a different client
+    (e.g., a test double registered via ``resources.insert_as``).
     """
 
     suite: str
     task_id: int
     app_name: str = "archetype-libero-env"
     with_frames: bool = False
+
+    def build(self) -> Any:
+        """Build the live ``EnvClient`` from this spec's scalar config.
+
+        Delegates to ``_build_env_client_from_spec`` in manipulation.py
+        so all Modal-import logic stays in one place.  Subclasses override
+        this to return a test double without touching production import paths.
+        """
+        from archetype.experiments.manipulation import (  # noqa: PLC0415
+            _build_env_client_from_spec,
+        )
+
+        return _build_env_client_from_spec(self)
 
 
 # ---------------------------------------------------------------------------
@@ -180,36 +209,18 @@ class VlaJepaPolicyClient:
     array (also from ``ManipProprio``).
 
     Gripper output convention:
-        The VLA-JEPA model emits gripper open probability in {0, 1} (binary,
+        The VLA-JEPA model emits gripper **open** value in {0, 1} (binary,
         after dataset-statistics binarization inside the worker's
         ``_unnormalize``).  Robosuite expects ``{-1: open, +1: close}``.
-        Conversion (applied here before returning, not in the worker)::
+        Upstream reference (``bench/libero/video_rollout.py``,
+        ``_binarize_gripper_open``)::
 
             gripper_robosuite = 1 - 2 * (gripper_model > 0.5)
 
-        A ``gripper_model`` value of 0 (open) maps to +1 — wait, no:
-        ``1 - 2*0 = 1`` (close).  Rechecking: in robosuite convention
-        ``-1`` is open and ``+1`` is close.  The VLA model uses the
-        *bddl/LIBERO* convention where ``0`` is open (fingers apart) and
-        ``1`` is close.  So::
+        Verification::
 
-            0 (open)  → 1 - 2*0 = +1   (close in robosuite) ← WRONG
-
-        Actually the robosuite gripper convention is: the action value is
-        a *delta* applied to the joint, not a set-point.  LIBERO's
-        ``OSC_POSE`` controller maps positive gripper action to *closing*.
-        The VLA binarization emits 1 for "close" and 0 for "open", which
-        maps directly::
-
-            model 0 (open)  → robosuite -1
-            model 1 (close) → robosuite +1
-
-        giving the formula used here::
-
-            gripper_robosuite = (gripper_model > 0.5) * 2 - 1
-
-        This is equivalent to ``1 - 2*(1 - (gripper_model > 0.5))``
-        or more cleanly ``2*(gripper_model > 0.5) - 1``.
+            model 1 (open)  → 1 - 2*1 = -1  (open in robosuite)  ✓
+            model 0 (close) → 1 - 2*0 = +1  (close in robosuite) ✓
 
     Pickling:
         Stored as ``(suite, task_id, app_name)``; the live Modal handle
@@ -274,18 +285,19 @@ class VlaJepaPolicyClient:
     def _convert_gripper(action_row: list[float]) -> list[float]:
         """Convert gripper dim from model space to robosuite space (in-place copy).
 
-        The model emits a binarized open-probability in {0, 1}:
-          - 0 means "open"  → robosuite -1
-          - 1 means "close" → robosuite +1
+        The model emits a binarized **open** value in {0, 1}:
+          - 1 means "open"  → robosuite -1
+          - 0 means "close" → robosuite +1
 
-        Formula (applied to action dim index 6)::
+        Formula (applied to action dim index 6, matching upstream
+        ``bench/libero/video_rollout.py`` / ``_binarize_gripper_open``)::
 
-            gripper_robosuite = 2 * (gripper_model > 0.5) - 1
+            gripper_robosuite = 1 - 2 * (gripper_model > 0.5)
 
         The remaining 6 dims (delta pose) are passed through unchanged.
         """
         out = list(action_row)
-        out[6] = 2.0 * (1.0 if out[6] > 0.5 else 0.0) - 1.0
+        out[6] = 1.0 - 2.0 * (1.0 if out[6] > 0.5 else 0.0)
         return out
 
     def act(
@@ -345,12 +357,9 @@ class _PolicyCaller:
 
     def __init__(self, client: PolicyClient | PolicyClientSpec):
         if isinstance(client, PolicyClientSpec):
-            # Hydrate from spec: build the actual client here (Daft worker).
-            self._client: PolicyClient = VlaJepaPolicyClient(
-                suite=client.suite,
-                task_id=client.task_id,
-                app_name=client.app_name,
-            )
+            # Hydrate from spec: delegate to spec.build() so subclasses can
+            # override (e.g., return a test double via resources.insert_as).
+            self._client: PolicyClient = client.build()
         else:
             self._client = client
 
@@ -409,11 +418,8 @@ class _PolicyCallerNoRefs:
 
     def __init__(self, client: PolicyClient | PolicyClientSpec):
         if isinstance(client, PolicyClientSpec):
-            self._client: PolicyClient = VlaJepaPolicyClient(
-                suite=client.suite,
-                task_id=client.task_id,
-                app_name=client.app_name,
-            )
+            # Delegate to spec.build() so subclasses can return a test double.
+            self._client: PolicyClient = client.build()
         else:
             self._client = client
 

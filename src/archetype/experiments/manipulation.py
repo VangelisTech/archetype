@@ -265,7 +265,9 @@ class EnvStepProcessor(AsyncProcessor):
         from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
 
         spec: EnvClientSpec = resources.require(EnvClientSpec)
-        client = _build_env_client_from_spec(spec)
+        # Delegate to spec.build() so subclasses can return a test double
+        # registered via resources.insert_as(fake_spec, EnvClientSpec).
+        client = spec.build()
         self._stepper = _EnvStepper(client)
 
     async def process(self, df, resources: Any = None, **kwargs):
@@ -403,7 +405,8 @@ class FramedEnvStepProcessor(AsyncProcessor):
         from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
 
         spec: EnvClientSpec = resources.require(EnvClientSpec)
-        client = _build_env_client_from_spec(spec)
+        # Delegate to spec.build() so subclasses can return a test double.
+        client = spec.build()
         self._stepper = _FramedEnvStepper(client)
 
     async def process(self, df, resources: Any = None, **kwargs):

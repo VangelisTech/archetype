@@ -155,73 +155,73 @@ reason = "Series->Python conversion inside a @daft.method.batch UDF at the exter
 # Line numbers updated after _build_env_client_from_spec helper was added above ScriptedReachEnv.
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 326
+line = 328
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (env_key input column): the executor has already materialised this batch; framed env step is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 327
+line = 329
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (action input column): same per-batch Series access pattern as _EnvStepper; the env step and volume write are remote stateful calls."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 329
+line = 331
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (eef_pos input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 330
+line = 332
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (eef_quat input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 331
+line = 333
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (gripper input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 332
+line = 334
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (gripper_qpos input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 333
+line = 335
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (reward input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 334
+line = 336
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (done input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 335
+line = 337
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (success input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 336
+line = 338
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (env_step input column): per-batch Series access at the env/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 337
+line = 339
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (agentview_ref input column): volume path strings must flow through Python to carry the ref from the previous tick to frozen-row passthrough; cannot be expressed lazily."
 
 [[entries]]
 path = "src/archetype/experiments/manipulation.py"
-line = 338
+line = 340
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvStepper) at the external-simulator RPC boundary (wrist_ref input column): volume path strings must flow through Python to carry the ref from the previous tick to frozen-row passthrough; cannot be expressed lazily."
 
@@ -229,103 +229,103 @@ reason = "Series->Python conversion inside a @daft.method.batch UDF (_FramedEnvS
 # New lines from the VlaJepaPolicyClient addition (policy.py rewrite).
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 371
+line = 380
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (env_key input column): the executor has already materialised this batch to invoke the UDF, so this is per-batch Series access, not a DataFrame collect; policy inference (VlaJepaPolicyClient.act / infer_refs) is a remote stateful call that cannot be expressed as a Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 372
+line = 381
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (instruction input column): per-batch Series access at the policy/Modal boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 373
+line = 382
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (eef_pos input column): per-batch Series access at the policy/Modal boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 374
+line = 383
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (eef_quat input column): per-batch Series access at the policy/Modal boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 375
+line = 384
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (gripper input column): per-batch Series access at the policy/Modal boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 376
+line = 385
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (gripper_qpos input column): the 8-dim state vector requires both finger joint values from gripper_qpos; per-batch Series access at the policy/Modal boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 377
+line = 386
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (done input column): per-batch Series access at the policy/Modal boundary; done rows are frozen without calling the policy."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 378
+line = 387
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (prev_action input column): per-batch Series access; frozen rows return the unchanged action."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 379
+line = 388
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (agentview_ref input column): volume path strings forwarded to VlaJepaPolicyClient.act -> infer_refs for volume-based inference; per-batch access at the Modal/volume boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 380
+line = 389
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCaller) at the policy-inference boundary (wrist_ref input column): volume path strings forwarded to VlaJepaPolicyClient.act -> infer_refs; per-batch access at the Modal/volume boundary."
 
 # _PolicyCallerNoRefs batch UDF — legacy no-ref variant, same boundary rationale.
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 431
+line = 437
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (env_key input column): legacy variant without frame refs; same per-batch Series access pattern as _PolicyCaller."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 432
+line = 438
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (instruction input column): per-batch Series access at the policy boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 433
+line = 439
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (eef_pos input column): per-batch Series access at the policy boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 434
+line = 440
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (eef_quat input column): per-batch Series access at the policy boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 435
+line = 441
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (gripper input column): per-batch Series access at the policy boundary."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 436
+line = 442
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (done input column): per-batch Series access; done rows are frozen without calling the policy."
 
 [[entries]]
 path = "src/archetype/experiments/policy.py"
-line = 437
+line = 443
 method = "to_pylist"
 reason = "Series->Python conversion inside a @daft.method.batch UDF (_PolicyCallerNoRefs) at the policy-inference boundary (prev_action input column): per-batch Series access; frozen rows return the unchanged action."

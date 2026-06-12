@@ -29,7 +29,6 @@ from typing import Any
 import pytest
 
 from archetype.core.aio import AsyncSystem
-from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.experiments.manipulation import (
     ACTION_DIM,
@@ -41,7 +40,9 @@ from archetype.experiments.manipulation import (
     ScriptedReachEnv,
 )
 from archetype.experiments.policy import (
+    EnvClientSpec,
     PolicyActionProcessor,
+    PolicyClientSpec,
 )
 from tests.conftest import make_world_service
 
@@ -352,135 +353,40 @@ async def test_done_rows_freeze_action_and_no_refresh(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _InjectedEnvClient:
-    """Thin wrapper that makes ScriptedReachEnv injectable via Resources.
+class _TestPolicySpec(PolicyClientSpec):
+    """Test subclass of PolicyClientSpec.
 
-    The test builds two identical worlds: one using constructor injection,
-    one using a spec stored in Resources.  Both must produce identical ledger rows.
+    Overrides ``build()`` to return a pre-constructed ``FakeChunkPolicy``
+    instead of a live ``VlaJepaPolicyClient``.  Registered in Resources via
+    ``insert_as(spec, PolicyClientSpec)`` so that the production
+    ``PolicyActionProcessor._ensure_callers`` path is exercised without
+    requiring a deployed Modal worker.
     """
 
-    def __init__(self, targets, tolerance=0.02):
-        self._env = ScriptedReachEnv(targets=targets, tolerance=tolerance)
-
-    def reset(self, env_id, seed):
-        return self._env.reset(env_id, seed)
-
-    def step(self, env_ids, actions):
-        return self._env.step(env_ids, actions)
-
-
-class _FakeEnvClientSpec:
-    """Fake EnvClientSpec that the Resources-aware processor can pull out.
-
-    Holds a pre-reset client instance (the spec owns the env in tests).
-    In production, the spec would hold scalars and build the client lazily;
-    here we pre-build to share state across reset/step calls in the test.
-    """
-
-    def __init__(self, client):
-        self._client = client
-
-    def build(self):
-        return self._client
-
-
-class _SpecAwareEnvStepProcessor(AsyncProcessor):
-    """Like EnvStepProcessor but pulls the client from a fake spec in Resources.
-
-    Only used in this test — demonstrates the Resources-spec pattern
-    without requiring a deployed Modal worker.
-    """
-
-    components = (ManipProprio, ManipAction, ManipStatus, ManipTask)
-    priority = 10
-
-    def __init__(self):
-        from archetype.experiments.manipulation import _EnvStepper
-
-        self._EnvStepper = _EnvStepper
-        self._stepper = None
-
-    def _ensure_stepper(self, resources):
-        if self._stepper is not None:
-            return
-        spec = resources.require(_FakeEnvClientSpec)
-        client = spec.build()
-        self._stepper = self._EnvStepper(client)
-
-    async def process(self, df, resources=None, **kwargs):
-        self._ensure_stepper(resources)
-        from daft import col
-
-        nxt = self._stepper.step(
-            col("maniptask__env_key"),
-            col("manipaction__values"),
-            col("manipproprio__eef_pos"),
-            col("manipproprio__eef_quat"),
-            col("manipproprio__gripper"),
-            col("manipproprio__gripper_qpos"),
-            col("manipstatus__reward"),
-            col("manipstatus__done"),
-            col("manipstatus__success"),
-            col("manipstatus__env_step"),
-        )
-        return (
-            df.with_column("_env_next", nxt)
-            .with_column("manipproprio__eef_pos", col("_env_next")["eef_pos"])
-            .with_column("manipproprio__eef_quat", col("_env_next")["eef_quat"])
-            .with_column("manipproprio__gripper", col("_env_next")["gripper"])
-            .with_column("manipproprio__gripper_qpos", col("_env_next")["gripper_qpos"])
-            .with_column("manipstatus__reward", col("_env_next")["reward"])
-            .with_column("manipstatus__done", col("_env_next")["done"])
-            .with_column("manipstatus__success", col("_env_next")["success"])
-            .with_column("manipstatus__env_step", col("_env_next")["env_step"])
-            .exclude("_env_next")
-        )
-
-
-class _SpecAwarePolicyActionProcessor(AsyncProcessor):
-    """Like PolicyActionProcessor but pulls the client from a fake spec in Resources."""
-
-    components = (ManipProprio, ManipAction, ManipStatus, ManipTask)
-    priority = 1
-
-    def __init__(self):
-        self._caller = None
-
-    def _ensure_caller(self, resources):
-        if self._caller is not None:
-            return
-        from archetype.experiments.policy import _PolicyCallerNoRefs
-
-        spec = resources.require(_FakePolicySpec)
-        client = spec.build()
-        self._caller = _PolicyCallerNoRefs(client)
-
-    async def process(self, df, resources=None, **kwargs):
-        self._ensure_caller(resources)
-        from daft import col
-
-        return df.with_column(
-            "manipaction__values",
-            self._caller.act(
-                col("maniptask__env_key"),
-                col("maniptask__instruction"),
-                col("manipproprio__eef_pos"),
-                col("manipproprio__eef_quat"),
-                col("manipproprio__gripper"),
-                col("manipstatus__done"),
-                col("manipaction__values"),
-            ),
-        )
-
-
-class _FakePolicySpec:
-    """Fake PolicyClientSpec that the Resources-aware processor can pull out."""
-
-    def __init__(self, policy):
+    def __init__(self, policy: Any) -> None:
+        # Provide dummy scalar fields required by the dataclass.
+        super().__init__(suite="test", task_id=0)
         self._policy = policy
 
-    def build(self):
+    def build(self) -> Any:  # type: ignore[override]
         return self._policy
+
+
+class _TestEnvSpec(EnvClientSpec):
+    """Test subclass of EnvClientSpec.
+
+    Overrides ``build()`` to return a pre-constructed ``ScriptedReachEnv``
+    instead of a live ``ModalEnvClient``.  Registered via
+    ``insert_as(spec, EnvClientSpec)`` so that the production
+    ``EnvStepProcessor._ensure_stepper`` path is exercised.
+    """
+
+    def __init__(self, client: Any) -> None:
+        super().__init__(suite="test", task_id=0)
+        self._client = client
+
+    def build(self) -> Any:  # type: ignore[override]
+        return self._client
 
 
 @pytest.mark.asyncio
@@ -488,14 +394,19 @@ async def test_resources_spec_produces_identical_results(tmp_path):
     """A processor built from spec (via Resources) produces the same ledger
     rows as one built by constructor injection.
 
-    The driver/worker boundary rationale: ``_FakePolicySpec`` and
-    ``_FakeEnvClientSpec`` represent the driver-side configuration objects
-    (analogous to ``PolicyClientSpec`` / ``EnvClientSpec``).  The actual
-    client is built inside the processor on the first ``process()`` call,
-    which happens in the driver process for ``AsyncProcessor``.  For
-    ``@daft.cls`` UDFs the same pattern applies: the spec (picklable scalars)
-    crosses the Daft worker boundary; the live client is reconstructed in
-    ``_PolicyCaller.__init__`` on each worker.
+    This test exercises the **production** ``_ensure_callers`` /
+    ``_ensure_stepper`` code paths by registering ``_TestPolicySpec`` /
+    ``_TestEnvSpec`` (subclasses of ``PolicyClientSpec`` / ``EnvClientSpec``)
+    in Resources under the base types via ``resources.insert_as``.  The
+    production ``PolicyActionProcessor`` and ``EnvStepProcessor`` are used
+    directly (no test-only processor variants).
+
+    The driver/worker boundary rationale: in production the spec holds
+    picklable scalars; the live client is built in ``spec.build()`` inside the
+    processor (driver process for ``AsyncProcessor``, Daft worker process for
+    ``@daft.cls`` UDFs).  Here ``_TestPolicySpec.build()`` returns a
+    ``FakeChunkPolicy`` and ``_TestEnvSpec.build()`` returns a
+    ``ScriptedReachEnv`` so the test remains CI-safe with no Modal deployment.
     """
     TICKS_SPEC = CHUNK_LEN + 1
 
@@ -518,9 +429,11 @@ async def test_resources_spec_produces_identical_results(tmp_path):
     finally:
         await ws_a.shutdown()
 
-    # --- World B: Resources-spec construction ---
-    # env_b and policy_b are the *same type* but fresh instances (not the same
-    # objects as world A) — the spec builds them on first process() call.
+    # --- World B: Resources-spec construction via production processors ---
+    # env_b and policy_b are fresh instances of the same types as world A.
+    # _TestPolicySpec.build() / _TestEnvSpec.build() return them on first
+    # process() call, exercising PolicyActionProcessor._ensure_callers and
+    # EnvStepProcessor._ensure_stepper.
     env_b = ScriptedReachEnv(targets=TARGETS, tolerance=0.02)
     policy_b = FakeChunkPolicy(chunk_len=CHUNK_LEN)
 
@@ -528,17 +441,16 @@ async def test_resources_spec_produces_identical_results(tmp_path):
     try:
         storage_b = StorageConfig(uri=str(tmp_path / "store_b"), namespace="spec_b")
         system_b = AsyncSystem()
-        await system_b.add_processor(_SpecAwarePolicyActionProcessor())
-        await system_b.add_processor(_SpecAwareEnvStepProcessor())
+        # Production processors — no test-only variants.
+        await system_b.add_processor(PolicyActionProcessor())
+        await system_b.add_processor(EnvStepProcessor())
         world_b = await ws_b.create_world(
             WorldConfig(name="spec-inject-b"), storage_config=storage_b, system=system_b
         )
-        # Register specs in Resources (driver side).
-        # In production these would be PolicyClientSpec / EnvClientSpec holding
-        # scalars; here we use fake specs that wrap the already-constructed
-        # clients so reset() state carries over correctly.
-        world_b.resources.insert(_FakePolicySpec(policy_b))
-        world_b.resources.insert(_FakeEnvClientSpec(env_b))
+        # Register specs under their base types so the production require()
+        # lookups in _ensure_callers / _ensure_stepper find them.
+        world_b.resources.insert_as(_TestPolicySpec(policy_b), PolicyClientSpec)
+        world_b.resources.insert_as(_TestEnvSpec(env_b), EnvClientSpec)
         eids_b = await _spawn_envs(world_b, env_b, TARGETS)
         await world_b.run(RunConfig(num_steps=TICKS_SPEC))
         history_b = await _fetch_history(world_b, TICKS_SPEC)
