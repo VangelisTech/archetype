@@ -28,7 +28,7 @@ sys.modules[_spec.name] = traj_mod
 _spec.loader.exec_module(traj_mod)
 
 Turn = traj_mod.Turn
-Trajectory = traj_mod.Trajectory
+SessionTrajectory = traj_mod.SessionTrajectory
 Label = traj_mod.Label
 SamplingProcessor = traj_mod.SamplingProcessor
 ScoringProcessor = traj_mod.ScoringProcessor
@@ -81,7 +81,7 @@ class TestTrajectoryComponent:
             Turn(role="user", content="hi", tokens=5, duration_ms=100),
             Turn(role="assistant", content="hey", tokens=8, duration_ms=200),
         ]
-        t = Trajectory.from_turns("t1", turns, source="test", outcome="ok", tags=["a"])
+        t = SessionTrajectory.from_turns("t1", turns, source="test", outcome="ok", tags=["a"])
         assert t.total_turns == 2
         assert t.total_tokens == 13
         assert t.duration_seconds == pytest.approx(0.3)
@@ -89,7 +89,7 @@ class TestTrajectoryComponent:
 
     def test_get_turns_round_trip(self):
         turns = [Turn(role="user", content="x", tokens=1)]
-        t = Trajectory.from_turns("t2", turns)
+        t = SessionTrajectory.from_turns("t2", turns)
         restored = t.get_turns()
         assert len(restored) == 1
         assert restored[0].role == "user"
@@ -114,13 +114,13 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
 
         ctx = ActorCtx(id=uuid7(), roles={"operator"})
 
-        short_traj = Trajectory.from_turns(
+        short_traj = SessionTrajectory.from_turns(
             "short",
             [Turn(role="user", content="hi", tokens=1)],
             source="test",
             outcome="ok",
         )
-        long_traj = Trajectory.from_turns(
+        long_traj = SessionTrajectory.from_turns(
             "long",
             [
                 Turn(role="user", content="a", tokens=1),
@@ -138,7 +138,7 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
                 type=CommandType.SPAWN,
                 payload={
                     "components": [
-                        {"type": "Trajectory", **traj.model_dump()},
+                        {"type": "SessionTrajectory", **traj.model_dump()},
                         {"type": "Label", **label.model_dump()},
                     ],
                 },
@@ -150,10 +150,10 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
-        df = await world.get_components([Trajectory, Label])
+        df = await world.get_components([SessionTrajectory, Label])
         assert df is not None
         rows = df.collect().to_pylist()
-        sampled_by_id = {r["trajectory__trajectory_id"]: r["label__sampled"] for r in rows}
+        sampled_by_id = {r["sessiontrajectory__trajectory_id"]: r["label__sampled"] for r in rows}
         assert sampled_by_id["short"] is False
         assert sampled_by_id["long"] is True
     finally:
@@ -175,7 +175,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
 
         ctx = ActorCtx(id=uuid7(), roles={"operator"})
 
-        traj = Trajectory.from_turns(
+        traj = SessionTrajectory.from_turns(
             "t1",
             [Turn(role="user", content="hi", tokens=1)],
             source="test",
@@ -186,7 +186,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
             type=CommandType.SPAWN,
             payload={
                 "components": [
-                    {"type": "Trajectory", **traj.model_dump()},
+                    {"type": "SessionTrajectory", **traj.model_dump()},
                     {"type": "Label", **label.model_dump()},
                 ],
             },
@@ -198,7 +198,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
-        df = await world.get_components([Trajectory, Label])
+        df = await world.get_components([SessionTrajectory, Label])
         assert df is not None
         rows = df.collect().to_pylist()
         assert len(rows) == 1
@@ -234,7 +234,7 @@ async def test_full_pipeline_without_llm(tmp_path):
                 type=CommandType.SPAWN,
                 payload={
                     "components": [
-                        {"type": "Trajectory", **trajectory.model_dump()},
+                        {"type": "SessionTrajectory", **trajectory.model_dump()},
                         {"type": "Label", **label.model_dump()},
                     ],
                 },
@@ -246,7 +246,7 @@ async def test_full_pipeline_without_llm(tmp_path):
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
-        df = await world.get_components([Trajectory, Label])
+        df = await world.get_components([SessionTrajectory, Label])
         assert df is not None
         rows = df.collect().to_pylist()
         assert len(rows) == 3

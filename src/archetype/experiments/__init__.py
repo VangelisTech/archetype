@@ -12,6 +12,10 @@ Ingestion from archetype-runner's SQLite registry is provided by
 :func:`load_runner_state_db` and :func:`ingest_runner_state`.
 """
 
+from archetype.experiments.claude_sessions import (
+    load_claude_session,
+    load_claude_sessions,
+)
 from archetype.experiments.components import (
     BranchHead,
     Experiment,
@@ -23,6 +27,16 @@ from archetype.experiments.loaders import (
     ingest_runner_state,
     load_runner_state_db,
 )
+from archetype.experiments.trajectories import (
+    Trajectory,
+    TrajectoryAction,
+    TrajectoryCommandEvent,
+    TrajectoryObservation,
+    TrajectoryReward,
+    TrajectoryTurn,
+    Turn,
+    turns_to_components,
+)
 
 __all__ = [
     "BranchHead",
@@ -30,6 +44,16 @@ __all__ = [
     "Result",
     "Run",
     "RunStatus",
+    "Trajectory",
+    "TrajectoryAction",
+    "TrajectoryCommandEvent",
+    "TrajectoryObservation",
+    "TrajectoryReward",
+    "TrajectoryTurn",
+    "Turn",
     "ingest_runner_state",
+    "load_claude_session",
+    "load_claude_sessions",
     "load_runner_state_db",
+    "turns_to_components",
 ]

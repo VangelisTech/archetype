@@ -80,7 +80,7 @@ class Turn:
 # ── Components ──────────────────────────────────────────────────────
 
 
-class Trajectory(Component):
+class SessionTrajectory(Component):
     """A complete agent trajectory stored as JSON-encoded turns."""
 
     trajectory_id: str = ""
@@ -103,7 +103,7 @@ class Trajectory(Component):
         outcome: str = "",
         tags: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
-    ) -> Trajectory:
+    ) -> SessionTrajectory:
         total_tokens = sum(t.tokens for t in turns)
         duration = sum(t.duration_ms for t in turns) / 1000.0
         return cls(
@@ -212,7 +212,7 @@ def extract_rationale(response: str) -> str:
 class SamplingProcessor(AsyncProcessor):
     """Selects which trajectories to evaluate based on SamplingConfig."""
 
-    components = (Trajectory, Label)
+    components = (SessionTrajectory, Label)
     priority = 10
 
     async def process(
@@ -224,18 +224,22 @@ class SamplingProcessor(AsyncProcessor):
         sampled = daft.lit(True)
 
         if config.min_turns > 0:
-            sampled = sampled & (col("trajectory__total_turns") >= config.min_turns)
+            sampled = sampled & (col("sessiontrajectory__total_turns") >= config.min_turns)
         if config.max_turns > 0:
-            sampled = sampled & (col("trajectory__total_turns") <= config.max_turns)
+            sampled = sampled & (col("sessiontrajectory__total_turns") <= config.max_turns)
         if config.outcome_filter:
             matcher = _make_outcome_matcher(config.outcome_filter)
-            sampled = sampled & matcher(col("trajectory__outcome"))
+            sampled = sampled & matcher(col("sessiontrajectory__outcome"))
         if config.require_tags:
             for tag in config.require_tags:
-                sampled = sampled & _tags_contain(col("trajectory__tags_json"), daft.lit(tag))
+                sampled = sampled & _tags_contain(
+                    col("sessiontrajectory__tags_json"), daft.lit(tag)
+                )
         if config.exclude_tags:
             for tag in config.exclude_tags:
-                sampled = sampled & ~_tags_contain(col("trajectory__tags_json"), daft.lit(tag))
+                sampled = sampled & ~_tags_contain(
+                    col("sessiontrajectory__tags_json"), daft.lit(tag)
+                )
 
         df = df.with_columns({"label__sampled": sampled})
 
@@ -254,7 +258,7 @@ class SamplingProcessor(AsyncProcessor):
 class LabelingProcessor(AsyncProcessor):
     """Applies a labeling technique to sampled trajectories via LLM."""
 
-    components = (Trajectory, Label)
+    components = (SessionTrajectory, Label)
     priority = 20
 
     async def process(
@@ -276,15 +280,15 @@ class LabelingProcessor(AsyncProcessor):
             + col("label__description")
             + "\n\n## Trajectory\n"
             "Source: "
-            + col("trajectory__source")
+            + col("sessiontrajectory__source")
             + "\nOutcome: "
-            + col("trajectory__outcome")
+            + col("sessiontrajectory__outcome")
             + "\nTotal turns: "
-            + col("trajectory__total_turns").cast(daft.DataType.string())
+            + col("sessiontrajectory__total_turns").cast(daft.DataType.string())
             + "\nDuration: "
-            + col("trajectory__duration_seconds").cast(daft.DataType.string())
+            + col("sessiontrajectory__duration_seconds").cast(daft.DataType.string())
             + "s\n\nTurns:\n"
-            + col("trajectory__turns_json")
+            + col("sessiontrajectory__turns_json")
             + "\n\n## Instructions\n"
             "Evaluate this trajectory according to the technique above.\n"
             "Respond in EXACTLY this format (no other text):\n"
@@ -313,7 +317,7 @@ class LabelingProcessor(AsyncProcessor):
 class ScoringProcessor(AsyncProcessor):
     """Clamps scores to [0, 1]."""
 
-    components = (Trajectory, Label)
+    components = (SessionTrajectory, Label)
     priority = 30
 
     async def process(self, df: DataFrame, **kwargs: Any) -> DataFrame:
@@ -327,10 +331,10 @@ class ScoringProcessor(AsyncProcessor):
 # ── Synthetic Data ──────────────────────────────────────────────────
 
 
-def make_trajectories() -> list[Trajectory]:
+def make_trajectories() -> list[SessionTrajectory]:
     """Build synthetic agent trajectories for demonstration."""
 
-    efficient = Trajectory.from_turns(
+    efficient = SessionTrajectory.from_turns(
         trajectory_id="traj-001",
         source="claude-code",
         outcome="success: implemented feature correctly on first attempt",
@@ -370,7 +374,7 @@ def make_trajectories() -> list[Trajectory]:
         ],
     )
 
-    backtracking = Trajectory.from_turns(
+    backtracking = SessionTrajectory.from_turns(
         trajectory_id="traj-002",
         source="claude-code",
         outcome="success: fixed bug after two wrong approaches",
@@ -463,7 +467,7 @@ def make_trajectories() -> list[Trajectory]:
         ],
     )
 
-    failed = Trajectory.from_turns(
+    failed = SessionTrajectory.from_turns(
         trajectory_id="traj-003",
         source="claude-code",
         outcome="failure: could not resolve circular import",
@@ -584,12 +588,12 @@ async def main():
         print("Results:")
         # query() returns the full append-only history; show the latest tick.
         info = await world.info()
-        df = await world.query(Trajectory, Label)
+        df = await world.query(SessionTrajectory, Label)
         rows = df.where(col("tick") == info.tick - 1).collect().to_pylist()
         for row in rows:
             if not row.get("is_active", True):
                 continue
-            tid = row.get("trajectory__trajectory_id", "")
+            tid = row.get("sessiontrajectory__trajectory_id", "")
             tech = row.get("label__technique", "")
             score = row.get("label__score", 0.0)
             value = row.get("label__value", "")
