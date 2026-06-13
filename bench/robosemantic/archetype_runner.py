@@ -1142,8 +1142,18 @@ class RsbPi05SuiteRunner:
         return _run_pi05_payload_with_policy(payload, self.policy)
 
 
-@app.local_entrypoint()
-def batched_pi05(
+def _pi05_policy_overrides(policy_overrides_json: str) -> dict[str, Any]:
+    policy_overrides = _parse_policy_overrides(policy_overrides_json)
+    policy_overrides.setdefault("train_config_name", DEFAULT_PI05_TRAIN_CONFIG)
+    policy_overrides.setdefault("model_name", DEFAULT_PI05_MODEL_NAME)
+    policy_overrides.setdefault("checkpoint_id", DEFAULT_PI05_CHECKPOINT_ID)
+    policy_overrides.setdefault("pi0_step", 50)
+    policy_overrides.setdefault("serialize_model_load", True)
+    return policy_overrides
+
+
+def _build_batched_pi05_payloads(
+    *,
     suites: str = "RSB-Math-4",
     ckpt_setting: str = "robotwin-pi05",
     policy_overrides_json: str = "",
@@ -1156,16 +1166,10 @@ def batched_pi05(
     max_eval_steps: int = 0,
     ledger_interval: int = 25,
     instruction_type: str = "unseen",
-    warm_containers: int = 0,
-):
-    """Run RSB pi0.5 with Archetype entity batching."""
+    preflight_local_paths: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     suite_names = [suite.strip() for suite in suites.split(",") if suite.strip()]
-    policy_overrides = _parse_policy_overrides(policy_overrides_json)
-    policy_overrides.setdefault("train_config_name", DEFAULT_PI05_TRAIN_CONFIG)
-    policy_overrides.setdefault("model_name", DEFAULT_PI05_MODEL_NAME)
-    policy_overrides.setdefault("checkpoint_id", DEFAULT_PI05_CHECKPOINT_ID)
-    policy_overrides.setdefault("pi0_step", 50)
-    policy_overrides.setdefault("serialize_model_load", True)
+    policy_overrides = _pi05_policy_overrides(policy_overrides_json)
 
     jobs = build_shard_jobs(
         suite_names=suite_names,
@@ -1179,26 +1183,31 @@ def batched_pi05(
         instruction_type=instruction_type,
         policy_overrides=policy_overrides,
     )
-    source_requirements = sorted(
-        {
-            "task_config/_camera_config.yml",
-            "task_config/_embodiment_config.yml",
-            "task_config/_eval_step_limit.yml",
-            *(f"task_config/{job.suite.eval_config}.yml" for job in jobs),
-        }
-    )
-    source_missing = sorted(
-        {
-            missing
-            for missing in missing_local_requirements(RSB_SOURCE_DIR or DEFAULT_RSB_SOURCE, tuple(source_requirements))
-        }
-    )
-    if source_missing:
-        rendered = "\n".join(f"  - {path}" for path in source_missing)
-        raise RuntimeError(
-            "RoboSemanticBench task config files are missing before Modal image build:\n"
-            f"{rendered}"
+
+    if preflight_local_paths:
+        source_requirements = sorted(
+            {
+                "task_config/_camera_config.yml",
+                "task_config/_embodiment_config.yml",
+                "task_config/_eval_step_limit.yml",
+                *(f"task_config/{job.suite.eval_config}.yml" for job in jobs),
+            }
         )
+        source_missing = sorted(
+            {
+                missing
+                for missing in missing_local_requirements(
+                    RSB_SOURCE_DIR or DEFAULT_RSB_SOURCE,
+                    tuple(source_requirements),
+                )
+            }
+        )
+        if source_missing:
+            rendered = "\n".join(f"  - {path}" for path in source_missing)
+            raise RuntimeError(
+                "RoboSemanticBench task config files are missing before Modal image build:\n"
+                f"{rendered}"
+            )
 
     payloads: list[dict[str, Any]] = []
     cell_idx = 0
@@ -1210,15 +1219,20 @@ def batched_pi05(
             episodes=job.episodes,
             batch_size=batch_size,
         ):
-            data_requirements = tuple(
-                path
-                for path in local_requirements_for_job(job, expert_data_num=None, checkpoint_num=None)
-                if not path.startswith("policy/")
-            )
-            missing = missing_local_requirements(RSB_SOURCE_DIR, data_requirements)
-            if missing:
-                rendered = "\n".join(f"  - {path}" for path in missing)
-                raise RuntimeError(f"RoboSemanticBench prerequisites are missing locally:\n{rendered}")
+            if preflight_local_paths:
+                data_requirements = tuple(
+                    path
+                    for path in local_requirements_for_job(
+                        job,
+                        expert_data_num=None,
+                        checkpoint_num=None,
+                    )
+                    if not path.startswith("policy/")
+                )
+                missing = missing_local_requirements(RSB_SOURCE_DIR, data_requirements)
+                if missing:
+                    rendered = "\n".join(f"  - {path}" for path in missing)
+                    raise RuntimeError(f"RoboSemanticBench prerequisites are missing locally:\n{rendered}")
             payloads.append(
                 {
                     "suite": asdict(job.suite),
@@ -1238,7 +1252,19 @@ def batched_pi05(
             )
             cell_idx += 1
             episode_start += len(seed_cell)
+    return policy_overrides, payloads
 
+
+def _run_batched_pi05_payloads(
+    *,
+    payloads: list[dict[str, Any]],
+    policy_overrides: dict[str, Any],
+    ckpt_setting: str,
+    max_eval_steps: int,
+    instruction_type: str,
+    warm_containers: int,
+    run_id: str,
+) -> dict[str, Any]:
     payloads_by_suite: dict[str, list[dict[str, Any]]] = {}
     for payload in payloads:
         suite_key = json.dumps(payload["suite"], sort_keys=True)
@@ -1273,13 +1299,17 @@ def batched_pi05(
             list(runner.run_cell.map(warm_payloads, order_outputs=True))
         summaries.extend(runner.run_cell.map(suite_payloads, order_outputs=True))
     aggregate = aggregate_summaries(summaries)
+    write_aggregate.remote(run_id, aggregate)
+    return aggregate
+
+
+def _print_batched_summary(run_id: str, aggregate: dict[str, Any]) -> None:
     aggregate_path = Path(RESULTS_DIR) / run_id / "aggregate.json"
-    remote_aggregate_path = write_aggregate.remote(run_id, aggregate)
     print("=== RoboSemanticBench batched summary ===")
     print(f"episodes: {aggregate['episodes']}")
     print(f"task_success_rate: {aggregate['task_success_rate']:.4f}")
     print(f"grasp_success_rate: {aggregate['grasp_success_rate']:.4f}")
-    print(f"aggregate_path: {remote_aggregate_path or aggregate_path}")
+    print(f"aggregate_path: {aggregate_path}")
     for suite_summary in aggregate["suites"]:
         nsg = suite_summary["normalized_semantic_grounding"]
         nsg_text = "undefined" if nsg is None else f"{nsg:.4f}"
@@ -1288,6 +1318,161 @@ def batched_pi05(
             f"GSR={suite_summary['grasp_success_rate']:.4f} nSG={nsg_text} "
             f"episodes={suite_summary['episodes']}"
         )
+
+
+@app.function(
+    image=batched_image,
+    volumes={RESULTS_DIR: results_volume},
+    timeout=24 * 3600,
+    secrets=[hf_secret],
+)
+def run_batched_pi05_job(
+    suites: str = "RSB-Math-4",
+    ckpt_setting: str = "robotwin-pi05",
+    policy_overrides_json: str = "",
+    run_name: str = "baseline",
+    run_id: str = "rsb-batched-overnight",
+    episodes_per_suite: int = 500,
+    batch_size: int = 4,
+    seed: int = 0,
+    max_steps: int = 1000,
+    max_eval_steps: int = 0,
+    ledger_interval: int = 100,
+    instruction_type: str = "unseen",
+    warm_containers: int = 4,
+) -> dict[str, Any]:
+    """Modal-side orchestrator for overnight/detached RSB runs."""
+    policy_overrides, payloads = _build_batched_pi05_payloads(
+        suites=suites,
+        ckpt_setting=ckpt_setting,
+        policy_overrides_json=policy_overrides_json,
+        run_name=run_name,
+        run_id=run_id,
+        episodes_per_suite=episodes_per_suite,
+        batch_size=batch_size,
+        seed=seed,
+        max_steps=max_steps,
+        max_eval_steps=max_eval_steps,
+        ledger_interval=ledger_interval,
+        instruction_type=instruction_type,
+        preflight_local_paths=False,
+    )
+    aggregate = _run_batched_pi05_payloads(
+        payloads=payloads,
+        policy_overrides=policy_overrides,
+        ckpt_setting=ckpt_setting,
+        max_eval_steps=max_eval_steps,
+        instruction_type=instruction_type,
+        warm_containers=warm_containers,
+        run_id=run_id,
+    )
+    _print_batched_summary(run_id, aggregate)
+    results_volume.commit()
+    return aggregate
+
+
+@app.local_entrypoint()
+def batched_pi05(
+    suites: str = "RSB-Math-4",
+    ckpt_setting: str = "robotwin-pi05",
+    policy_overrides_json: str = "",
+    run_name: str = "baseline",
+    run_id: str = "rsb-batched-smoke",
+    episodes_per_suite: int = 4,
+    batch_size: int = 4,
+    seed: int = 0,
+    max_steps: int = 1000,
+    max_eval_steps: int = 0,
+    ledger_interval: int = 25,
+    instruction_type: str = "unseen",
+    warm_containers: int = 0,
+):
+    """Run RSB pi0.5 with Archetype entity batching."""
+    policy_overrides, payloads = _build_batched_pi05_payloads(
+        suites=suites,
+        ckpt_setting=ckpt_setting,
+        policy_overrides_json=policy_overrides_json,
+        run_name=run_name,
+        run_id=run_id,
+        episodes_per_suite=episodes_per_suite,
+        batch_size=batch_size,
+        seed=seed,
+        max_steps=max_steps,
+        max_eval_steps=max_eval_steps,
+        ledger_interval=ledger_interval,
+        instruction_type=instruction_type,
+        preflight_local_paths=True,
+    )
+    aggregate = _run_batched_pi05_payloads(
+        payloads=payloads,
+        policy_overrides=policy_overrides,
+        ckpt_setting=ckpt_setting,
+        max_eval_steps=max_eval_steps,
+        instruction_type=instruction_type,
+        warm_containers=warm_containers,
+        run_id=run_id,
+    )
+    _print_batched_summary(run_id, aggregate)
+
+
+@app.local_entrypoint()
+def submit_batched_pi05(
+    suites: str = "RSB-Math-4",
+    ckpt_setting: str = "robotwin-pi05",
+    policy_overrides_json: str = "",
+    run_name: str = "baseline",
+    run_id: str = "rsb-batched-overnight",
+    episodes_per_suite: int = 500,
+    batch_size: int = 4,
+    seed: int = 0,
+    max_steps: int = 1000,
+    max_eval_steps: int = 0,
+    ledger_interval: int = 100,
+    instruction_type: str = "unseen",
+    warm_containers: int = 4,
+):
+    """Submit an overnight-safe Modal-side RSB run and exit."""
+    _build_batched_pi05_payloads(
+        suites=suites,
+        ckpt_setting=ckpt_setting,
+        policy_overrides_json=policy_overrides_json,
+        run_name=run_name,
+        run_id=run_id,
+        episodes_per_suite=episodes_per_suite,
+        batch_size=batch_size,
+        seed=seed,
+        max_steps=max_steps,
+        max_eval_steps=max_eval_steps,
+        ledger_interval=ledger_interval,
+        instruction_type=instruction_type,
+        preflight_local_paths=True,
+    )
+    config = {
+        "suites": suites,
+        "ckpt_setting": ckpt_setting,
+        "policy_overrides_json": policy_overrides_json,
+        "run_name": run_name,
+        "run_id": run_id,
+        "episodes_per_suite": episodes_per_suite,
+        "batch_size": batch_size,
+        "seed": seed,
+        "max_steps": max_steps,
+        "max_eval_steps": max_eval_steps,
+        "ledger_interval": ledger_interval,
+        "instruction_type": instruction_type,
+        "warm_containers": warm_containers,
+    }
+    try:
+        deployed_job = modal.Function.from_name("archetype-robosemantic", "run_batched_pi05_job")
+        call = deployed_job.spawn(**config)
+    except Exception:
+        call = run_batched_pi05_job.spawn(**config)
+    call_id = getattr(call, "object_id", None) or getattr(call, "function_call_id", None) or str(call)
+    print("=== RoboSemanticBench detached submission ===")
+    print(f"run_id: {run_id}")
+    print(f"function_call_id: {call_id}")
+    print("logs: modal app logs archetype-robosemantic -f")
+    print(f"aggregate_path: {Path(RESULTS_DIR) / run_id / 'aggregate.json'}")
 
 
 def _parse_args() -> argparse.Namespace:
