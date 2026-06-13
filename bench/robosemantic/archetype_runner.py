@@ -17,8 +17,6 @@ The old ``runner.py`` remains the compatibility/reference path.
 
 # ruff: noqa: E402
 
-from __future__ import annotations
-
 import argparse
 import json
 import sys
@@ -189,6 +187,432 @@ def _split_seed_cells(*, seed_start: int, episodes: int, batch_size: int) -> lis
         raise ValueError("batch_size must be >= 1")
     seeds = [seed_start + offset for offset in range(episodes)]
     return [seeds[idx : idx + batch_size] for idx in range(0, len(seeds), batch_size)]
+
+
+def _stage(name: str) -> None:
+    print(f"RSB_BATCH_STAGE {name}", flush=True)
+
+
+def _link_volume_dir(target_relative: str, source_dir: str) -> None:
+    import shutil
+
+    target = Path(ROOT) / target_relative
+    source = Path(source_dir)
+    source.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target)
+    target.symlink_to(source, target_is_directory=True)
+
+
+def _with_modal_lock(lock_name: str, fn):
+    import shutil
+    import time
+
+    lock_path = Path(MODEL_CACHE_DIR) / f".{lock_name}.lock"
+    owns_lock = False
+    for _ in range(360):
+        try:
+            lock_path.mkdir()
+            owns_lock = True
+            break
+        except FileExistsError:
+            time.sleep(5)
+    else:
+        raise RuntimeError(f"Timed out waiting for Modal lock {lock_name}")
+    try:
+        return fn()
+    finally:
+        if owns_lock:
+            shutil.rmtree(lock_path, ignore_errors=True)
+
+
+def _ensure_rsb_assets() -> None:
+    import shutil
+    import subprocess
+    import sys
+    import time
+
+    from huggingface_hub import snapshot_download
+
+    cache_dir = Path(ASSET_CACHE_DIR)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ready_path = cache_dir / ".robosemantic-assets-ready"
+    lock_path = cache_dir / ".robosemantic-assets.lock"
+    asset_dirs = ("background_texture", "embodiments", "objects")
+    zip_names = tuple(f"{name}.zip" for name in asset_dirs)
+
+    def cache_is_ready() -> bool:
+        return ready_path.exists() and all((cache_dir / name).exists() for name in asset_dirs)
+
+    owns_lock = False
+    if not cache_is_ready():
+        for _ in range(720):
+            try:
+                lock_path.mkdir()
+                owns_lock = True
+                break
+            except FileExistsError:
+                if cache_is_ready():
+                    break
+                time.sleep(5)
+        else:
+            raise RuntimeError("Timed out waiting for RSB asset cache bootstrap")
+
+    if owns_lock:
+        try:
+            if not cache_is_ready():
+                snapshot_download(
+                    repo_id="TianxingChen/RoboTwin2.0",
+                    allow_patterns=list(zip_names),
+                    local_dir=str(cache_dir),
+                    repo_type="dataset",
+                    resume_download=True,
+                )
+                for zip_name, dir_name in zip(zip_names, asset_dirs, strict=True):
+                    if not (cache_dir / dir_name).exists():
+                        subprocess.run(
+                            ["unzip", "-q", "-o", str(cache_dir / zip_name)],
+                            cwd=cache_dir,
+                            check=True,
+                        )
+                ready_path.write_text("ok\n", encoding="utf-8")
+                asset_cache_volume.commit()
+        finally:
+            shutil.rmtree(lock_path, ignore_errors=True)
+
+    for name in asset_dirs:
+        target = Path(ROOT) / "assets" / name
+        source = cache_dir / name
+        if target.is_symlink():
+            target.unlink()
+        if not target.exists():
+            target.symlink_to(source, target_is_directory=True)
+
+    subprocess.run([sys.executable, "./script/update_embodiment_config_path.py"], check=True)
+
+
+def _patch_pi05_openpi() -> None:
+    import subprocess
+
+    try:
+        import pytest  # noqa: F401
+    except ImportError:
+        subprocess.run(["uv", "pip", "install", "--system", "pytest"], check=True)
+
+    policy_config_path = Path(ROOT) / "policy" / "pi05" / "src" / "openpi" / "policies" / "policy_config.py"
+    text = policy_config_path.read_text(encoding="utf-8")
+    if "data_config.asset_id = robotwin_repo_id" in text:
+        text = text.replace("import logging\n", "import dataclasses\nimport logging\n")
+        text = text.replace(
+            "            data_config.asset_id = robotwin_repo_id\n",
+            "            data_config = dataclasses.replace(data_config, asset_id=robotwin_repo_id)\n",
+        )
+        policy_config_path.write_text(text, encoding="utf-8")
+
+
+def _ensure_pi05_checkpoint_layout(policy_overrides: dict[str, Any]) -> None:
+    train_config_name = str(policy_overrides.get("train_config_name", DEFAULT_PI05_TRAIN_CONFIG))
+    model_name = str(policy_overrides.get("model_name", DEFAULT_PI05_MODEL_NAME))
+    checkpoint_root = Path(ROOT) / "policy" / "pi05" / "checkpoints"
+    legacy_path = checkpoint_root / LEGACY_PI05_CHECKPOINT_LAYOUT_CONFIG / model_name
+    target_path = checkpoint_root / train_config_name / model_name
+    if (
+        train_config_name != LEGACY_PI05_CHECKPOINT_LAYOUT_CONFIG
+        and legacy_path.exists()
+        and not target_path.exists()
+    ):
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.symlink_to(legacy_path, target_is_directory=True)
+
+
+def _prepare_rsb_runtime() -> None:
+    import os
+    import sys
+
+    os.chdir(ROOT)
+    for path in (ROOT, f"{ROOT}/policy", f"{ROOT}/description/utils"):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    _link_volume_dir("data", RSB_DATA_VOLUME_DIR)
+    _link_volume_dir("gsm8k/data", GSM8K_DATA_VOLUME_DIR)
+    _link_volume_dir("mmluqa2/data", MMLUQA2_DATA_VOLUME_DIR)
+    _ensure_rsb_assets()
+    _patch_pi05_openpi()
+
+
+def _load_rsb_config(
+    suite: RsbSuite,
+    max_eval_steps: int,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    import importlib
+
+    import yaml
+
+    eval_policy_mod = importlib.import_module("script.eval_policy")
+    with open(f"{ROOT}/task_config/{suite.eval_config}.yml", encoding="utf-8") as f:
+        args = yaml.safe_load(f)
+    if max_eval_steps > 0:
+        step_limit_path = Path(ROOT) / "task_config" / "_eval_step_limit.yml"
+        step_limits = yaml.safe_load(step_limit_path.read_text(encoding="utf-8"))
+        original_limit = int(step_limits.get(suite.task_name, 1000))
+        step_limits[suite.task_name] = min(original_limit, max_eval_steps)
+        step_limit_path.write_text(yaml.safe_dump(step_limits, sort_keys=False), encoding="utf-8")
+    args.update(
+        {
+            "task_name": suite.task_name,
+            "task_config": suite.eval_config,
+            "ckpt_setting": payload["ckpt_setting"],
+            "policy_name": "pi05",
+            "expert_check": False,
+            "eval_mode": True,
+            "eval_metadata_log": True,
+            "eval_video_log": False,
+            "eval_save_dir": Path(RESULTS_DIR)
+            / payload["run_id"]
+            / suite.task_name
+            / f"cell{payload['cell_idx']}",
+        }
+    )
+    args["eval_save_dir"].mkdir(parents=True, exist_ok=True)
+
+    embodiment_type = args.get("embodiment")
+    with open(f"{ROOT}/task_config/_embodiment_config.yml", encoding="utf-8") as f:
+        embodiment_types = yaml.safe_load(f)
+    with open(f"{ROOT}/task_config/_camera_config.yml", encoding="utf-8") as f:
+        camera_config = yaml.safe_load(f)
+
+    def get_embodiment_file(embodiment: str) -> str:
+        robot_file = embodiment_types[embodiment]["file_path"]
+        if robot_file is None:
+            raise RuntimeError(f"No embodiment file configured for {embodiment}")
+        return robot_file
+
+    head_camera_type = args["camera"]["head_camera_type"]
+    args["head_camera_h"] = camera_config[head_camera_type]["h"]
+    args["head_camera_w"] = camera_config[head_camera_type]["w"]
+    if len(embodiment_type) == 1:
+        args["left_robot_file"] = get_embodiment_file(embodiment_type[0])
+        args["right_robot_file"] = get_embodiment_file(embodiment_type[0])
+        args["dual_arm_embodied"] = True
+    elif len(embodiment_type) == 3:
+        args["left_robot_file"] = get_embodiment_file(embodiment_type[0])
+        args["right_robot_file"] = get_embodiment_file(embodiment_type[1])
+        args["embodiment_dis"] = embodiment_type[2]
+        args["dual_arm_embodied"] = False
+    else:
+        raise RuntimeError("embodiment items should be 1 or 3")
+    args["left_embodiment_config"] = eval_policy_mod.get_embodiment_config(args["left_robot_file"])
+    args["right_embodiment_config"] = eval_policy_mod.get_embodiment_config(args["right_robot_file"])
+
+    usr_args = dict(payload["policy_overrides"])
+    usr_args.update(
+        {
+            "task_name": suite.task_name,
+            "task_config": suite.eval_config,
+            "ckpt_setting": payload["ckpt_setting"],
+            "policy_name": "pi05",
+            "seed": int(payload.get("policy_seed", 0)),
+            "instruction_type": payload.get("instruction_type", "unseen"),
+            "expert_check": False,
+            "left_arm_dim": len(args["left_embodiment_config"]["arm_joints_name"][0]),
+            "right_arm_dim": len(args["right_embodiment_config"]["arm_joints_name"][1]),
+        }
+    )
+    return args, usr_args
+
+
+class ModalRsbEnvBatch:
+    def __init__(self, suite: RsbSuite, args: dict[str, Any], instruction_type: str) -> None:
+        import importlib
+
+        self.suite = suite
+        self.args = args
+        self.instruction_type = instruction_type
+        self.envs: dict[int, Any] = {}
+        self.eval_policy_mod = importlib.import_module("script.eval_policy")
+        self.generate_episode_descriptions = importlib.import_module(
+            "generate_episode_instructions"
+        ).generate_episode_descriptions
+
+    def reset_batch(self, env_keys: list[int], seeds: list[int]) -> list[dict[str, Any]]:
+        import copy
+
+        import numpy as np
+
+        out = []
+        for episode_idx, (env_key, seed) in enumerate(zip(env_keys, seeds, strict=True)):
+            task_env = self.eval_policy_mod.class_decorator(self.suite.task_name)
+            task_args = copy.deepcopy(self.args)
+            task_env.setup_demo(now_ep_num=episode_idx, seed=int(seed), is_test=True, **task_args)
+            if getattr(task_env, "step_lim", None) is None:
+                raise RuntimeError(
+                    "RSB eval setup did not load a step limit. "
+                    f"task={self.suite.task_name} config={self.suite.eval_config} "
+                    "expected eval_mode=True to load task_config/_eval_step_limit.yml"
+                )
+            if hasattr(task_env, "set_episode_info"):
+                episode_info = task_env.set_episode_info()
+            else:
+                episode_info = task_env.info
+            descriptions = self.generate_episode_descriptions(
+                self.suite.task_name,
+                [episode_info["info"]],
+                len(seeds),
+            )
+            instruction = str(np.random.choice(descriptions[0][self.instruction_type]))
+            task_env.set_instruction(instruction=instruction)
+            observation = task_env.get_obs()
+            self.envs[int(env_key)] = task_env
+            out.append(
+                {
+                    "instruction": instruction,
+                    "raw": observation,
+                    "state": observation["joint_action"]["vector"],
+                    "episode_info": episode_info["info"],
+                }
+            )
+        return out
+
+    def step_batch(
+        self,
+        env_keys: list[int],
+        actions: list[list[float]],
+    ) -> list[dict[str, Any]]:
+        out = []
+        for env_key, action in zip(env_keys, actions, strict=True):
+            task_env = self.envs[int(env_key)]
+            task_env.take_action(action)
+            observation = task_env.get_obs()
+            success = bool(task_env.eval_success)
+            step_lim = getattr(task_env, "step_lim", None)
+            done = success or (step_lim is not None and int(task_env.take_action_cnt) >= int(step_lim))
+            grasp_success = bool(getattr(task_env, "any_block_grasp_success", False))
+            if done:
+                task_env.close_env()
+            out.append(
+                {
+                    "raw": observation,
+                    "state": observation["joint_action"]["vector"],
+                    "done": done,
+                    "success": success,
+                    "grasp_success": grasp_success,
+                    "episode_info": task_env.get_eval_metadata()
+                    if hasattr(task_env, "get_eval_metadata")
+                    else {},
+                }
+            )
+        return out
+
+
+class Pi05BatchPolicy:
+    def __init__(self, usr_args: dict[str, Any]) -> None:
+        import importlib
+
+        pi05_mod = importlib.import_module("pi05")
+        self.model = pi05_mod.get_model(usr_args)
+        self.pi0_step = int(usr_args.get("pi0_step", 50))
+
+    @staticmethod
+    def _policy_obs(observation: dict[str, Any], instruction: str) -> dict[str, Any]:
+        import numpy as np
+
+        raw = observation["raw"]
+        img_front = np.transpose(raw["observation"]["head_camera"]["rgb"], (2, 0, 1))
+        img_right = np.transpose(raw["observation"]["right_camera"]["rgb"], (2, 0, 1))
+        img_left = np.transpose(raw["observation"]["left_camera"]["rgb"], (2, 0, 1))
+        return {
+            "state": raw["joint_action"]["vector"],
+            "images": {
+                "cam_high": img_front,
+                "cam_left_wrist": img_left,
+                "cam_right_wrist": img_right,
+            },
+            "prompt": instruction,
+        }
+
+    def _infer_one(self, instruction: str, observation: dict[str, Any]) -> list[list[float]]:
+        return self.model.policy.infer(self._policy_obs(observation, instruction))["actions"][
+            : self.pi0_step
+        ].tolist()
+
+    def infer_batch(
+        self,
+        env_keys: list[int],
+        instructions: list[str],
+        observations: list[dict[str, Any]],
+    ) -> list[list[list[float]]]:
+        return [
+            self._infer_one(instruction, observation)
+            for instruction, observation in zip(instructions, observations, strict=True)
+        ]
+
+
+def _run_pi05_payload_with_policy(payload: dict[str, Any], policy: Pi05BatchPolicy) -> dict[str, Any]:
+    import asyncio
+    import shutil
+    import time
+
+    from archetype.core.config import StorageConfig
+    from bench.robosemantic.batched import run_batched_cell
+
+    suite = RsbSuite(**payload["suite"])
+    args, _ = _load_rsb_config(suite, int(payload.get("max_eval_steps", 0) or 0), payload)
+    env = ModalRsbEnvBatch(suite, args, str(payload.get("instruction_type", "unseen")))
+
+    async def _run() -> dict[str, Any]:
+        from archetype import ArchetypeRuntime
+
+        cell_idx = int(payload["cell_idx"])
+        local_results = Path("/tmp/rsb_archetype") / payload["run_id"] / f"cell{cell_idx}"
+        volume_results = Path(RESULTS_DIR) / payload["run_id"] / "canonical" / f"cell{cell_idx}"
+        if local_results.exists():
+            shutil.rmtree(local_results)
+        local_results.mkdir(parents=True, exist_ok=True)
+        storage = StorageConfig(uri=str(local_results), namespace=CANONICAL_NS)
+        async with ArchetypeRuntime() as runtime:
+            started = time.perf_counter()
+            summary = await run_batched_cell(
+                runtime=runtime,
+                suite=suite,
+                run_name=str(payload.get("run_name", "baseline")),
+                seeds=[int(seed) for seed in payload["seeds"]],
+                env=env,
+                policy=policy,
+                max_steps=int(payload["max_steps"]),
+                storage=storage,
+                ledger_interval=int(payload.get("ledger_interval", 25)),
+            )
+            wall_s = time.perf_counter() - started
+            if volume_results.exists():
+                shutil.rmtree(volume_results)
+            volume_results.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(local_results, volume_results)
+            summary.pop("world", None)
+            summary.update(
+                {
+                    "policy_name": "pi05",
+                    "ckpt_setting": payload["ckpt_setting"],
+                    "cell_idx": cell_idx,
+                    "shard_idx": cell_idx,
+                    "episode_start": int(payload["episode_start"]),
+                    "wall_s": round(wall_s, 1),
+                    "results_path": str(volume_results),
+                }
+            )
+            return summary
+
+    out = asyncio.run(_run())
+    manifest = Path(RESULTS_DIR) / payload["run_id"] / "batched_cells.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({k: v for k, v in out.items() if k != "world"}, sort_keys=True) + "\n")
+    results_volume.commit()
+    print("RSB_BATCH_CELL " + json.dumps(out, sort_keys=True), flush=True)
+    return out
 
 
 @app.function(
@@ -617,6 +1041,81 @@ def run_batched_pi05_cell(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+@app.cls(
+    image=batched_image,
+    gpu="L40S",
+    volumes={
+        RESULTS_DIR: results_volume,
+        MODEL_CACHE_DIR: model_cache_volume,
+        ASSET_CACHE_DIR: asset_cache_volume,
+        RSB_DATA_VOLUME_DIR: data_volume,
+        GSM8K_DATA_VOLUME_DIR: gsm8k_data_volume,
+        MMLUQA2_DATA_VOLUME_DIR: mmluqa2_data_volume,
+        f"{ROOT}/policy/pi05/checkpoints": pi05_checkpoints_volume,
+    },
+    timeout=24 * 3600,
+    secrets=[hf_secret],
+    enable_memory_snapshot=True,
+    scaledown_window=900,
+    max_containers=16,
+)
+class RsbPi05SuiteRunner:
+    """Warm Modal worker for one RSB suite.
+
+    The old function runner pays pi0.5 restore once per cell. This class pays
+    restore once per warm container and, when deployed, lets Modal snapshot the
+    post-restore process so new containers can fan out without reloading the
+    checkpoint from scratch.
+    """
+
+    suite_json: str = modal.parameter(default="")
+    ckpt_setting: str = modal.parameter(default="robotwin-pi05")
+    policy_overrides_json: str = modal.parameter(default="")
+    max_eval_steps: int = modal.parameter(default=0)
+    policy_seed: int = modal.parameter(default=0)
+    instruction_type: str = modal.parameter(default="unseen")
+
+    @modal.enter(snap=True)
+    def load_policy(self) -> None:
+        import faulthandler
+
+        faulthandler.enable()
+        _stage("class-enter-setup")
+        _prepare_rsb_runtime()
+        self.suite = RsbSuite(**json.loads(self.suite_json))
+        self.policy_overrides = _parse_policy_overrides(self.policy_overrides_json)
+        _ensure_pi05_checkpoint_layout(self.policy_overrides)
+        policy_payload = {
+            "suite": asdict(self.suite),
+            "ckpt_setting": self.ckpt_setting,
+            "run_id": "_snapshot",
+            "cell_idx": 0,
+            "policy_seed": int(self.policy_seed),
+            "instruction_type": self.instruction_type,
+            "policy_overrides": self.policy_overrides,
+        }
+        _, usr_args = _load_rsb_config(self.suite, int(self.max_eval_steps or 0), policy_payload)
+        serialize_model_load = bool(self.policy_overrides.get("serialize_model_load", True))
+        _stage("class-enter-load-model")
+        if serialize_model_load:
+            _stage("class-enter-load-model-wait-lock")
+            self.policy = _with_modal_lock("pi05-model-load", lambda: Pi05BatchPolicy(usr_args))
+        else:
+            self.policy = Pi05BatchPolicy(usr_args)
+        _stage("class-enter-model-ready")
+
+    @modal.method()
+    def run_cell(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _stage(f"class-run-cell-{payload['cell_idx']}")
+        _prepare_rsb_runtime()
+        suite = RsbSuite(**payload["suite"])
+        if asdict(suite) != asdict(self.suite):
+            raise RuntimeError(
+                f"Suite runner mismatch: worker={asdict(self.suite)} payload={payload['suite']}"
+            )
+        return _run_pi05_payload_with_policy(payload, self.policy)
+
+
 @app.local_entrypoint()
 def batched_pi05(
     suites: str = "RSB-Math-4",
@@ -713,7 +1212,22 @@ def batched_pi05(
             cell_idx += 1
             episode_start += len(seed_cell)
 
-    summaries = list(run_batched_pi05_cell.map(payloads, order_outputs=True))
+    payloads_by_suite: dict[str, list[dict[str, Any]]] = {}
+    for payload in payloads:
+        suite_key = json.dumps(payload["suite"], sort_keys=True)
+        payloads_by_suite.setdefault(suite_key, []).append(payload)
+
+    summaries: list[dict[str, Any]] = []
+    for suite_key, suite_payloads in payloads_by_suite.items():
+        runner = RsbPi05SuiteRunner(
+            suite_json=suite_key,
+            ckpt_setting=ckpt_setting,
+            policy_overrides_json=json.dumps(policy_overrides, sort_keys=True),
+            max_eval_steps=max_eval_steps,
+            policy_seed=0,
+            instruction_type=instruction_type,
+        )
+        summaries.extend(runner.run_cell.map(suite_payloads, order_outputs=True))
     aggregate = aggregate_summaries(summaries)
     aggregate_path = Path(RESULTS_DIR) / run_id / "aggregate.json"
     remote_aggregate_path = write_aggregate.remote(run_id, aggregate)
