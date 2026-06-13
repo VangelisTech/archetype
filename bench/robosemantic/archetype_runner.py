@@ -1082,7 +1082,6 @@ def run_batched_pi05_cell(payload: dict[str, Any]) -> dict[str, Any]:
     },
     timeout=24 * 3600,
     secrets=[hf_secret],
-    enable_memory_snapshot=True,
     scaledown_window=900,
     max_containers=16,
 )
