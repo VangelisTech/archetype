@@ -24,10 +24,17 @@ Scaling:
     Horizontal (World axis)  → Modal .starmap over (suite, task) cells
     Batch     (Entity axis)  → world.spawn_many(N seeds) → one env.step([N]) + one GPU forward
 
-Supporting changes this script assumes (the ONLY new code; flagged for the workflow):
-    [S1] ManipTask.run_name field — DONE (added to experiments/manipulation.py). No runtime change.
-    [S2] env worker: reset_batch(env_keys, seeds)       (step([ids],[actions]) is already batched)
-    [S3] policy worker: infer_refs_batch(refs[], instrs[], states[]) → ONE GPU forward over N
+Supporting changes this script builds on (all landed; flagged for provenance):
+    [S1] ManipTask.run_name field — DONE (experiments/manipulation.py). No runtime change.
+    [S2] env worker: reset_batch(env_keys, seeds) → N obs in ONE remote call — DONE
+         (bench/libero/modal_worker.py; step([ids],[actions]) was already batched).
+    [S3] policy worker: infer_refs_batch(refs[], instrs[], states[]) → ONE GPU forward over
+         N live envs — DONE (bench/libero/vla_jepa_worker.py); VlaJepaPolicyClient.act
+         batches the buffer-empty envs into that single forward (experiments/policy.py).
+
+The world carries the two service-layer processors directly (PolicyActionProcessor →
+FramedEnvStepProcessor); both consume only the live (non-done) rows, so a cell's wall
+time is set by its slowest still-running trial, not by N.
 """
 
 from __future__ import annotations
@@ -58,47 +65,70 @@ def run_cell(
     seeds: list[int],  # N trials → N entities, batched
     max_steps: int,
 ) -> dict[str, Any]:
-    """One (arm, task) cell = one batched world. Pure service-layer below."""
+    """One (arm, task) cell = one batched world. Pure service-layer below.
+
+    All N seeds are entities in ONE world: each ``world.step()`` is one batched
+    ``env.step([live])`` (the env worker skips done envs) and one batched GPU
+    forward (``infer_refs_batch`` over the live, buffer-empty envs). Finished
+    trials cost ~0 — the done-row freeze in ``_FramedEnvStepper`` /
+    ``_PolicyCaller`` excludes done rows from both the env call and the GPU
+    batch — so we simply run to ``max_steps`` instead of an async-in-sync
+    termination poll.
+    """
     import asyncio
 
     async def _run() -> dict[str, Any]:
         from daft import col
 
         from archetype import ArchetypeRuntime
-        from archetype.app.models import EpisodeConfig
+        from archetype.app.auth.guard import reset_tick_counters
         from archetype.core.config import StorageConfig
         from archetype.experiments.manipulation import (
-            EnvClientSpec,
+            FramedEnvStepProcessor,
             ManipAction,
             ManipFrameRef,
             ManipProprio,
             ManipStatus,
             ManipTask,
         )
-        from archetype.experiments.policy import PolicyClientSpec
+        from archetype.experiments.policy import (
+            EnvClientSpec,
+            PolicyActionProcessor,
+            PolicyClientSpec,
+        )
 
         store = StorageConfig(uri=f"{RESULTS_DIR}/canonical", namespace=CANONICAL_NS)
         env_spec = EnvClientSpec(suite=suite, task_id=task_id, with_frames=True)
         pol_spec = PolicyClientSpec(suite=suite, task_id=task_id)
 
         async with ArchetypeRuntime() as rt:
+            # Clients built once from the picklable specs (the spec scalars are
+            # what cross the Daft worker boundary; the live handle reconnects
+            # lazily). The processors are the service-layer wiring: policy
+            # (priority 1) writes the action before the framed env step
+            # (priority 10) consumes it — see policy.py and manipulation.py.
+            env_client = env_spec.build()
+            pol_client = pol_spec.build()
+
             # run_id stays canonical uuidv7 (auto). The arm lives in ManipTask.run_name.
             world = rt.world(
                 name=f"{suite}-t{task_id}-{run_name}",
                 storage=store,
-                processors=[],  # built from specs in Resources
-                resources=[env_spec, pol_spec],
+                processors=[
+                    PolicyActionProcessor(pol_client),
+                    FramedEnvStepProcessor(env_client),
+                ],
             )
 
             # Reset-before-spawn so tick-0 = raw initial conditions (x_0 given).
-            # env_key = per-cell trial index; [S2] batched reset over N envs.
-            env = env_spec.build()
+            # env_key = per-cell trial index; [S2] batched reset over N envs in
+            # ONE remote call → N obs (each with distinct frame refs).
             n = len(seeds)
             env_keys = list(range(n))
-            reset_obs = env.reset_batch(env_keys, seeds)  # [S2]
+            reset_obs = env_client.reset_batch(env_keys, seeds)  # [S2]
 
             # Batch spawn: N seeds → N entities → batched ticks (Entity axis).
-            world.spawn_many(
+            await world.spawn_many(
                 [
                     [
                         ManipProprio(
@@ -123,25 +153,37 @@ def run_cell(
                 ]
             )
 
-            # Runtime drives the bounded run with native termination — no hand-rolled
-            # per-tick done-poll. Stop when every entity is done or max_steps hit.
-            def all_done(w: Any) -> bool:
-                rows = (w.query(ManipStatus)).where(col("tick") == w.tick - 1).to_pylist()
-                return bool(rows) and all(r["manipstatus__done"] for r in rows)
+            # Drive the bounded run to max_steps. Step one tick at a time so the
+            # per-tick RBAC quota counter (MAX_CMDS_PER_TICK) is reset each tick,
+            # exactly as eval_driver does; done rows are frozen by the processors,
+            # so finished trials add ~no env/GPU cost. We break early only when
+            # every entity is done (a pure read, not a sim step), bounding wall
+            # time without an async-in-sync termination callable.
+            for _tick in range(max_steps):
+                reset_tick_counters()
+                await world.step()
+                info = await world.info()
+                latest = info.tick - 1
+                rows = (
+                    (await world.query(ManipStatus))
+                    .where(col("tick") == latest)
+                    .to_pylist()
+                )
+                if rows and all(r["manipstatus__done"] for r in rows):
+                    break
 
-            await world.run_episode(EpisodeConfig(max_steps=max_steps, termination=all_done))
-
-            # Outcome read straight from the canonical store, scoped to this arm.
+            # Outcome read straight from the canonical store, scoped to this cell.
+            info = await world.info()
             final = (
-                (await world.query(ManipStatus)).where(col("tick") == world.tick - 1).to_pylist()
+                (await world.query(ManipStatus)).where(col("tick") == info.tick - 1).to_pylist()
             )
             successes = sum(1 for r in final if r["manipstatus__success"])
             return {
                 "suite": suite,
                 "task_id": task_id,
                 "run_name": run_name,
-                "run_id": str(world.run_id),  # canonical uuidv7, for provenance
-                "world_id": str(world.world_id),
+                "run_id": str(info.run_id or ""),  # canonical uuidv7, for provenance
+                "world_id": str(info.world_id),
                 "instruction": instruction,
                 "n": n,
                 "successes": successes,
