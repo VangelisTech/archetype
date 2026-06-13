@@ -73,13 +73,19 @@ class ManipAction(Component):
 class ManipTask(Component):
     """Task identity. ``env_key`` routes rows to the env instance: the driver
     chooses it at ``reset`` time, before the entity id exists, so the raw
-    reset observation can be spawned as the tick-0 row."""
+    reset observation can be spawned as the tick-0 row.
+
+    ``run_name`` is the semantic GEPA-arm label (``baseline`` | ``gepa-v{k}`` |
+    ``test``). It is a queryable field so any arm can be aggregated across all
+    its task-worlds by filtering one column — the canonical ledger ``run_id``
+    stays an immutable uuidv7 and is never overloaded with semantics."""
 
     suite: str = ""
     task_id: int = 0
     instruction: str = ""
     seed: int = 0
     env_key: int = 0
+    run_name: str = ""
 
 
 class ManipStatus(Component):

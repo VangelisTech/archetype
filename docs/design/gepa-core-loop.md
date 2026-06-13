@@ -81,6 +81,23 @@ sweep**, not mined.
 Leakage guard: the reflector/mutator touches val rollouts only; test is evaluated
 once, at the end, with the frozen strategy.
 
+### Arm identity: `run_name` field, canonical `run_id` (locked 2026-06-13)
+
+An **arm** (a GEPA variant: `baseline` / `gepa-v{k}` / `test`) is identified by a
+**queryable component field — `ManipTask.run_name`** — NOT by the ledger `run_id`.
+`run_id` stays an immutable **uuidv7** and is never overloaded with semantics.
+
+- **Aggregate an arm** across all its task-worlds: read the canonical store and
+  filter `maniptask__run_name == arm`. `run_id` still distinguishes individual
+  world-runs for provenance/lineage.
+- **Leakage** is enforced on `run_name`: the mutator queries `run_name ∈ {val arms}`
+  only; the `test` arm is written exactly once at freeze.
+- **No runtime change** (we don't set `run_id`); the only schema change is the one
+  `run_name` field on `ManipTask` (done).
+- Different GEPAs run as different `run_name`s across the same parallelized
+  task-worlds, all landing in one canonical store — "test different GEPAs across
+  parallelized benchmarks."
+
 ---
 
 ## 5. The SCORER (per-rollout feedback) — the crux
