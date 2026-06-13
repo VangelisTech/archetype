@@ -38,19 +38,19 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 140
+line = 156
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 334
+line = 335
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
 path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 162
+line = 173
 method = "collect"
 reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
 

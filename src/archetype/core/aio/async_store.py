@@ -51,6 +51,12 @@ class AsyncStore(iAsyncStore):
             io_config if io_config is not None else getattr(session, "io_config", None)
         )
         self._known_sigs: dict[str, ArchetypeSignature] = {}
+        # Tracks only signatures that have been durably committed via append().
+        # get_archetype_df may create session tables on demand (create-on-read),
+        # but those are NOT included here — only append() populates this set.
+        # This lets query_archetype distinguish an unknown sig (never committed)
+        # from an empty-but-known sig (committed with zero active rows).
+        self._committed_sigs: set[str] = set()
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -131,6 +137,16 @@ class AsyncStore(iAsyncStore):
         """
         return list(self._known_sigs.values())
 
+    async def list_committed_signatures(self) -> list[ArchetypeSignature]:
+        """List only signatures that have been durably committed via append().
+
+        Unlike list_signatures(), this excludes signatures that were only
+        auto-created by get_archetype_df (create-on-read).  Use this when you
+        need to distinguish 'sig was never written' from 'sig exists but has
+        no rows at the queried tick'.
+        """
+        return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
+
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
         Append a table with a new dataframe.
@@ -150,6 +166,10 @@ class AsyncStore(iAsyncStore):
             raise
 
         table = self._ensure_table(sig)
+        # Record that this sig has been durably committed (not just auto-created
+        # by a read).  list_committed_signatures() uses this to give callers a
+        # reliable "was this sig ever written?" answer.
+        self._committed_sigs.add(Archetype.get_name(sig))
 
         # Daft's Table.append is synchronous; do not await
         self._append_table(table, df)
