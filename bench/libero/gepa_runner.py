@@ -101,6 +101,14 @@ def run_cell(
     termination poll.
     """
     import asyncio
+    import sys
+
+    # archetype is installed from src/ (package-dir = {"" = "src"}), so the repo
+    # root is NOT on sys.path by default. EnvClientSpec.build() resolves the env
+    # client via ``from bench.libero.modal_worker import ModalEnvClient``; add
+    # /repo so that dotted import (and the bench.* packages) resolve.
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
 
     async def _run() -> dict[str, Any]:
         from daft import col
