@@ -28,6 +28,12 @@ Risk: the whole timeline hinges on the WF1 scaling gate; if batching is real we 
 
 ## Log
 
+### 2026-06-13 14:20 PDT — ⚠️ SUITE PIVOT: libero_spatial is at ceiling (96.7%)
+- **Baseline result (real, on Modal):** libero_spatial raw-instruction VLA-JEPA = **29/30 = 96.7%**; only task4 sub-100%. **No headroom → GEPA cannot show a gap here.** Must pivot to a harder suite (libero_object / libero_goal / libero_10 / libero_90). The libero_spatial split is moot.
+- **Next action (proposed):** data-driven headroom probe across libero_object/goal/10 (few seeds, batched) → pick the suite with the most room → freeze immutable split there → GEPA.
+- **Substrate built & mostly verified** (workflow wxtim2n1j, 5 branches): para-sweep (instruction fix + GPU max_containers 1→8 + env 1→16 + baseline_sweep, ran live), para-query (ledger read by world_id/run_id, verified on real 80-tick rollout), para-replay (deterministic O(1) replay, ran live), para-vocab, para-scorer (mock only; needs anthropic-api-key for live — now available). 2 small audit fixes pending: para-query strip 3 out-of-scope files; para-replay restrict eval_subgoals to native `_eval_predicate` (grasp isn't a registered predicate).
+- **WF1 (woyq6k1ej) still running:** its scaling table (throughput go/no-go) is still wanted; its libero_spatial baseline is now confirmatory/redundant.
+
 ### 2026-06-13 14:03 PDT — observability triage + logfire secret
 - **WF1 in progress:** S2 (batched env reset) + S3 (batched GPU infer_refs_batch) built & pushed; `wf1-scale` has the finalized batched run_cell + scaling_probe. PENDING: scaling table (go/no-go), replay-determinism, baseline+split. No completion yet.
 - **Observability scope decision:** logfire on Modal workers = DO (highest leverage); Daft logging = fold into the same `@modal.enter` configure; **hosted Daft dashboard = DEFER** (monitor.py already gives a self-refreshing web dashboard; hosting Daft's is real plumbing, momentum risk).
