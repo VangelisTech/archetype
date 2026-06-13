@@ -28,6 +28,11 @@ Risk: the whole timeline hinges on the WF1 scaling gate; if batching is real we 
 
 ## Log
 
+### 2026-06-13 14:40 PDT — libero_10 = 0% but CAP-CONFOUNDED; probing libero_object
+- **libero_10 probe (1 seed, cap 128): 0/9, every task hit the 127-step cap.** libero_10 = LIBERO-LONG (long-horizon, ~500 steps needed) → cap-128 forces 0% regardless of policy. CONFOUNDED, not a capability floor. A true read needs cap ~512 (4x slower episodes → slow GEPA rounds).
+- **Suite hunt:** spatial=96.7% (ceiling), libero_10=confounded-floor. Want a SHORT-horizon suite at a MIDDLE score (~40-80%) — room to climb AND fast episodes for many GEPA rounds.
+- **Firing libero_object probe** (1 seed, cap 256). libero_goal next if needed. (libero_10 viable only at cap~512 — slow; deprioritized.)
+
 ### 2026-06-13 14:20 PDT — ⚠️ SUITE PIVOT: libero_spatial is at ceiling (96.7%)
 - **Baseline result (real, on Modal):** libero_spatial raw-instruction VLA-JEPA = **29/30 = 96.7%**; only task4 sub-100%. **No headroom → GEPA cannot show a gap here.** Must pivot to a harder suite (libero_object / libero_goal / libero_10 / libero_90). The libero_spatial split is moot.
 - **Next action (proposed):** data-driven headroom probe across libero_object/goal/10 (few seeds, batched) → pick the suite with the most room → freeze immutable split there → GEPA.
