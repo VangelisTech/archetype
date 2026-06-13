@@ -76,12 +76,14 @@ image = (
 )
 
 app = modal.App("archetype-scaling-probe", image=image)
-results_volume = modal.Volume.from_name("libero-eval-results", create_if_missing=True)
-RESULTS_DIR = "/results"
+# The probe writes its ledger to local container disk (LanceDB needs POSIX
+# atomic-rename, which a Modal Volume does not give during live writes), and it
+# only reports timing — so no results volume is mounted. The shared frames
+# volume is mounted by the deployed env/policy workers, not by the driver.
 CANONICAL_NS = "libero_para_probe"  # isolated namespace: the probe never pollutes the study store
 
 
-@app.function(volumes={RESULTS_DIR: results_volume}, timeout=3600)
+@app.function(timeout=3600)
 def probe_n(
     suite: str,
     task_id: int,
@@ -126,7 +128,12 @@ def probe_n(
             PolicyClientSpec,
         )
 
-        store = StorageConfig(uri=f"{RESULTS_DIR}/probe", namespace=CANONICAL_NS)
+        # LanceDB needs POSIX atomic-rename semantics that a Modal Volume does
+        # not provide during live writes (it raises "rename ... Operation not
+        # permitted"). Write the ledger to fast local container disk, exactly
+        # like colocated_runner — the probe only needs in-run timing, so the
+        # ledger does not have to survive the container.
+        store = StorageConfig(uri=f"/tmp/probe-n{n}", namespace=CANONICAL_NS)
         env_spec = EnvClientSpec(suite=suite, task_id=task_id, with_frames=True)
         pol_spec = PolicyClientSpec(suite=suite, task_id=task_id)
 
@@ -206,10 +213,7 @@ def probe_n(
                 "world_id": str(info.world_id),
             }
 
-    results_volume.reload()
-    out = asyncio.run(_run())
-    results_volume.commit()
-    return out
+    return asyncio.run(_run())
 
 
 def _verdict(rows: list[dict[str, Any]]) -> tuple[bool, str]:

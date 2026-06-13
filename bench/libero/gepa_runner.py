@@ -111,6 +111,8 @@ def run_cell(
         sys.path.insert(0, _ROOT)
 
     async def _run() -> dict[str, Any]:
+        import uuid
+
         from daft import col
 
         from archetype import ArchetypeRuntime
@@ -130,7 +132,15 @@ def run_cell(
             PolicyClientSpec,
         )
 
-        store = StorageConfig(uri=f"{RESULTS_DIR}/canonical", namespace=CANONICAL_NS)
+        # LanceDB needs POSIX atomic-rename, which a Modal Volume does not give
+        # during live writes ("rename ... Operation not permitted"). Write the
+        # ledger to fast local container disk during the run, then copy this
+        # cell's store into the canonical volume after the run (the colocated_runner
+        # pattern). The cell's store lands under a unique subdir so concurrent
+        # cells never clobber each other, while all cells still share the one
+        # canonical namespace for the study.
+        local_uri = f"/tmp/canonical-{uuid.uuid4().hex}"
+        store = StorageConfig(uri=local_uri, namespace=CANONICAL_NS)
         env_spec = EnvClientSpec(suite=suite, task_id=task_id, with_frames=True)
         pol_spec = PolicyClientSpec(suite=suite, task_id=task_id)
 
@@ -221,11 +231,29 @@ def run_cell(
                 "n": n,
                 "successes": successes,
                 "success_rate": successes / n if n else 0.0,
+                "_local_uri": local_uri,  # popped below; not part of the public row
             }
 
-    results_volume.reload()
+    import shutil
+    from pathlib import Path
+
     out = asyncio.run(_run())
-    results_volume.commit()
+
+    # Persist this cell's ledger to the canonical volume: copy the locally-written
+    # LanceDB store into a unique per-cell subdir (run_id keeps it append-only and
+    # collision-free across concurrent cells), then commit the volume once.
+    local_uri = out.pop("_local_uri")
+    src = Path(local_uri)
+    if src.exists():
+        results_volume.reload()
+        dest = Path(RESULTS_DIR) / "canonical" / out["run_name"] / (
+            f"{out['suite']}-t{out['task_id']}-{out['run_id']}"
+        )
+        if dest.exists():
+            shutil.rmtree(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(src, dest)
+        results_volume.commit()
     return out
 
 
