@@ -150,6 +150,18 @@ def run_cell(
 
     results_volume.reload()
     out = asyncio.run(_run())
+
+    # Cell manifest for the live monitor: one JSONL line per (world_id, run_id)
+    # so bench/libero/monitor.py can query each cell via the Archetype service.
+    import json
+    from pathlib import Path
+
+    manifest = Path(RESULTS_DIR) / "canonical" / "_cells.jsonl"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    cell = {k: out[k] for k in ("world_id", "run_id", "run_name", "suite", "task_id")}
+    with manifest.open("a") as f:
+        f.write(json.dumps(cell) + "\n")
+
     results_volume.commit()
     return out
 
