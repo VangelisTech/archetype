@@ -297,6 +297,121 @@ async def run_episode(
     return success, episode_length
 
 
+async def run_episode_batched(
+    *,
+    env_client: Any,
+    policy_client: Any | None,
+    suite: str,
+    task_id: int,
+    seeds: list[int],
+    env_keys: list[int],
+    max_steps: int,
+    storage: StorageConfig,
+    runtime: ArchetypeRuntime,
+    use_frames: bool = False,
+    instruction: str = "",
+) -> list[tuple[bool, int]]:
+    """Drive ALL trials of one task as N entities in ONE world — batched.
+
+    The proven processors (``PolicyActionProcessor`` / ``FramedEnvStepProcessor``)
+    already issue one ``env.step([live env_keys], [live actions])`` per tick over
+    the whole DataFrame, so N seeds advance together each tick instead of in N
+    serial single-entity worlds. Within an episode the tick sequence stays coupled
+    (step t+1 needs t); across seeds everything is data → one batched tick.
+
+    Returns one ``(success, episode_length)`` per seed, ordered by ``env_key``
+    (== trial index). Success latches, so the per-entity ``max`` over its rows is
+    the verdict even for entities that finished early (mirrors ``monitor.py``).
+    """
+    import daft  # noqa: PLC0415
+    from daft import col as _col  # noqa: PLC0415
+
+    reset_tick_counters()
+    # Per-env reset (one-time); the worker holds N MuJoCo envs keyed by env_id.
+    obs_list = [env_client.reset(env_keys[i], seeds[i]) for i in range(len(seeds))]
+
+    processors: list[Any] = []
+    if policy_client is not None:
+        from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
+
+        processors.append(PolicyActionProcessor(policy_client))
+    processors.append(
+        FramedEnvStepProcessor(env_client) if use_frames else EnvStepProcessor(env_client)
+    )
+
+    world = runtime.world(
+        f"ep-{suite}-t{task_id}-batch{len(seeds)}",
+        storage=storage,
+        processors=processors,
+    )
+
+    spawn_action = [0.0] * ACTION_DIM
+    for i, obs in enumerate(obs_list):
+        components: list[Any] = [
+            ManipProprio(
+                eef_pos=list(obs.get("eef_pos", [0.0, 0.0, 0.0])),
+                eef_quat=list(obs.get("eef_quat", [1.0, 0.0, 0.0, 0.0])),
+                gripper=float(obs.get("gripper", 0.0)),
+                gripper_qpos=list(obs.get("gripper_qpos", [0.0, 0.0])),
+            ),
+            ManipAction(values=list(spawn_action)),
+            ManipStatus(),
+            ManipTask(
+                suite=suite,
+                task_id=task_id,
+                instruction=instruction,
+                seed=seeds[i],
+                env_key=env_keys[i],
+            ),
+        ]
+        if use_frames:
+            components.append(
+                ManipFrameRef(
+                    agentview_ref=str(obs.get("agentview_ref", "")),
+                    wrist_ref=str(obs.get("wrist_ref", "")),
+                )
+            )
+        await world.spawn(*components)
+
+    # Batched control loop: one world.step() advances every live entity via a
+    # single batched env.step. Break only when EVERY entity is done.
+    for _tick in range(max_steps):
+        reset_tick_counters()
+        await world.step()
+        info = await world.info()
+        latest_tick = info.tick - 1
+        rows = (await world.query(ManipStatus)).where(_col("tick") == latest_tick).to_pylist()
+        if rows and all(r.get("manipstatus__done", False) for r in rows):
+            break
+
+    # Per-entity terminal verdict (success latches → max), joined to env_key
+    # (constant per entity) so results come back in trial order.
+    status = (
+        (await world.query(ManipStatus))
+        .groupby("entity_id")
+        .agg(
+            _col("manipstatus__success").cast(daft.DataType.int64()).max().alias("success"),
+            _col("manipstatus__env_step").max().alias("steps"),
+        )
+        .to_pylist()
+    )
+    tasks = (
+        (await world.query(ManipTask))
+        .groupby("entity_id")
+        .agg(_col("maniptask__env_key").max().alias("env_key"))
+        .to_pylist()
+    )
+    await world.destroy()
+
+    key_by_entity = {r["entity_id"]: int(r["env_key"]) for r in tasks}
+    by_env_key: dict[int, tuple[bool, int]] = {}
+    for r in status:
+        ek = key_by_entity.get(r["entity_id"])
+        if ek is not None:
+            by_env_key[ek] = (bool(r["success"]), int(r["steps"] or 0))
+    return [by_env_key.get(ek, (False, 0)) for ek in env_keys]
+
+
 # ---------------------------------------------------------------------------
 # Top-level driver
 # ---------------------------------------------------------------------------
@@ -381,27 +496,33 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
             )
             print(f"  [{config.suite}] task={task_id} instruction={instruction!r}")
 
-            for trial_idx in range(config.trials):
-                seed = task_id * 1000 + trial_idx
-                env_key = trial_idx  # distinct per-trial env instance
+            # Batch ALL trials of this task into ONE world: N seed-entities
+            # stepped by a single batched env.step per tick — not N serial
+            # single-entity episode worlds. Across-task parallelism stays at the
+            # .starmap layer (one Function/container per task).
+            seeds = [task_id * 1000 + i for i in range(config.trials)]
+            env_keys = list(range(config.trials))
 
-                t0 = time.perf_counter()
-                success, episode_length = await run_episode(
-                    env_client=env_client,
-                    policy_client=policy_client,
-                    suite=config.suite,
-                    task_id=task_id,
-                    trial_idx=trial_idx,
-                    seed=seed,
-                    env_key=env_key,
-                    max_steps=config.max_steps,
-                    storage=ep_storage,
-                    runtime=runtime,
-                    use_frames=use_frames,
-                    instruction=instruction,
-                )
-                wall_s = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            per_trial = await run_episode_batched(
+                env_client=env_client,
+                policy_client=policy_client,
+                suite=config.suite,
+                task_id=task_id,
+                seeds=seeds,
+                env_keys=env_keys,
+                max_steps=config.max_steps,
+                storage=ep_storage,
+                runtime=runtime,
+                use_frames=use_frames,
+                instruction=instruction,
+            )
+            wall_total = time.perf_counter() - t0
+            wall_each = wall_total / max(1, len(per_trial))
 
+            for trial_idx, (success, episode_length) in enumerate(per_trial):
+                seed = seeds[trial_idx]
+                env_key = env_keys[trial_idx]
                 trial_result = EvalTrialResult.make(
                     suite=config.suite,
                     task_id=task_id,
@@ -410,14 +531,13 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     env_key=env_key,
                     success=success,
                     episode_length=episode_length,
-                    wall_s=wall_s,
+                    wall_s=wall_each,
                     run_id=run_id,
                 )
                 results.append(trial_result)
 
-                # Append to lab world; step to persist.
-                # Reset quota counter before lab-world operations to avoid
-                # hitting the 500-command limit from accumulated episode operations.
+                # Append to lab world; step to persist. Reset quota counter to
+                # avoid the 500-command-per-tick limit from accumulated ops.
                 reset_tick_counters()
                 await lab.spawn(trial_result)
                 await lab.step()
@@ -425,7 +545,7 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                 print(
                     f"  [{config.suite}] task={task_id} trial={trial_idx} "
                     f"success={success} steps={episode_length} "
-                    f"wall={wall_s:.1f}s seed={seed}"
+                    f"seed={seed} (batched task wall={wall_total:.1f}s)"
                 )
 
         # Mark runs as stopped.

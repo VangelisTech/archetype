@@ -319,6 +319,11 @@ if _HAS_MODAL:
                 "*.mp4",
                 ".venv",
                 "**/*.parquet",
+                # Run logs / outputs are written into bench/libero/out during a
+                # live run; copying them into the image races the active writer
+                # ("modified during build process"). They are never needed remotely.
+                "**/*.log",
+                "**/out/**",
             ],
         )
         .run_commands(
@@ -329,7 +334,7 @@ if _HAS_MODAL:
     app = modal.App("archetype-libero-baseline-sweep", image=image)
     _RESULTS_VOLUME = modal.Volume.from_name("libero-eval-results", create_if_missing=True)
 
-    @app.function(volumes={RESULTS_DIR: _RESULTS_VOLUME}, timeout=3600)
+    @app.function(volumes={RESULTS_DIR: _RESULTS_VOLUME}, timeout=21600)
     def sweep_one_task(
         suite: str,
         task_id: int,
