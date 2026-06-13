@@ -70,7 +70,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from archetype import ArchetypeRuntime  # noqa: E402
 from archetype.app.auth.guard import reset_tick_counters  # noqa: E402
-from archetype.core.config import RunConfig, StorageConfig  # noqa: E402
+from archetype.core.config import StorageConfig  # noqa: E402
 from archetype.experiments.components import (  # noqa: E402
     EvalTrialResult,
     Experiment,
@@ -80,7 +80,9 @@ from archetype.experiments.components import (  # noqa: E402
 from archetype.experiments.manipulation import (  # noqa: E402
     ACTION_DIM,
     EnvStepProcessor,
+    FramedEnvStepProcessor,
     ManipAction,
+    ManipFrameRef,
     ManipProprio,
     ManipStatus,
     ManipTask,
@@ -92,11 +94,17 @@ from archetype.experiments.manipulation import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _make_modal_env_client(suite: str, task_id: int) -> Any:
-    """Build a ModalEnvClient; deferred so scripted path avoids the import."""
+def _make_modal_env_client(suite: str, task_id: int, with_frames: bool = False) -> Any:
+    """Build a ModalEnvClient; deferred so scripted path avoids the import.
+
+    ``with_frames`` must be True whenever the VLA policy is in the loop: that
+    policy consumes ``agentview_ref``/``wrist_ref`` from the ledger, which only
+    exist when the env returns frame refs and the framed step processor carries
+    them.
+    """
     from modal_worker import ModalEnvClient  # type: ignore[import-untyped]  # noqa: PLC0415
 
-    return ModalEnvClient(suite=suite, task_id=task_id, with_frames=False)
+    return ModalEnvClient(suite=suite, task_id=task_id, with_frames=with_frames)
 
 
 def _make_vla_policy_client(suite: str, task_id: int) -> Any:
@@ -149,6 +157,7 @@ async def run_episode(
     max_steps: int,
     storage: StorageConfig,
     runtime: ArchetypeRuntime,
+    use_frames: bool = False,
 ) -> tuple[bool, int]:
     """Drive one episode on an isolated world.
 
@@ -176,7 +185,12 @@ async def run_episode(
         from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
 
         processors.append(PolicyActionProcessor(policy_client))
-    processors.append(EnvStepProcessor(env_client))
+    # The VLA policy consumes frame refs; carry them with the framed step
+    # processor and a ManipFrameRef on the archetype so the policy's ref columns
+    # exist from tick 0 (reset refs land raw, like every other initial value).
+    processors.append(
+        FramedEnvStepProcessor(env_client) if use_frames else EnvStepProcessor(env_client)
+    )
 
     world = runtime.world(
         f"ep-{suite}-t{task_id}-trial{trial_idx}",
@@ -185,7 +199,7 @@ async def run_episode(
     )
 
     spawn_action = [0.0] * ACTION_DIM
-    await world.spawn(
+    spawn_components: list[Any] = [
         ManipProprio(
             eef_pos=list(obs.get("eef_pos", [0.0, 0.0, 0.0])),
             eef_quat=list(obs.get("eef_quat", [1.0, 0.0, 0.0, 0.0])),
@@ -201,7 +215,15 @@ async def run_episode(
             seed=seed,
             env_key=env_key,
         ),
-    )
+    ]
+    if use_frames:
+        spawn_components.append(
+            ManipFrameRef(
+                agentview_ref=str(obs.get("agentview_ref", "")),
+                wrist_ref=str(obs.get("wrist_ref", "")),
+            )
+        )
+    await world.spawn(*spawn_components)
 
     # Run until done or max_steps.  We step one tick at a time so we can
     # break early when all entities are done (single entity here).
@@ -294,11 +316,14 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
 
         for task_id in config.task_ids:
             # Build per-task clients (Modal creates per-task containers).
+            # The VLA policy on the Modal env needs frame refs on the ledger;
+            # the scripted env and the no-policy path do not.
+            use_frames = config.env_client_type != "scripted" and config.use_policy
             if config.env_client_type == "scripted":
                 env_client = _make_scripted_env(task_id)
                 policy_client = None
             else:
-                env_client = _make_modal_env_client(config.suite, task_id)
+                env_client = _make_modal_env_client(config.suite, task_id, with_frames=use_frames)
                 policy_client = (
                     _make_vla_policy_client(config.suite, task_id) if config.use_policy else None
                 )
@@ -319,6 +344,7 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     max_steps=config.max_steps,
                     storage=ep_storage,
                     runtime=runtime,
+                    use_frames=use_frames,
                 )
                 wall_s = time.perf_counter() - t0
 
