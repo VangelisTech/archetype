@@ -243,15 +243,30 @@ an honest finding.
   the deployed `archetype-vla-jepa` worker. No weights touched.
 - **Env:** LIBERO suites on robosuite/MuJoCo, deployed `archetype-libero-env`
   (`LiberoEnvBatch`, N envs per container, batched `step`).
-- **Suites & headroom.** VLA-JEPA is at ceiling on the easy suites under the
-  default instruction (spatial **96.7%**, object **100%**) — no room for an
-  instruction gap there. We therefore select the target suite by a **headroom
-  probe** (below) and report the gap where the default success rate is in a
-  climbable band.
-- **Baseline = the raw default LIBERO task language** (the fair baseline, never an
-  empty string). **Metric = success rate** (sim `check_success`), per task and
-  suite, with seed/episode bootstrap CIs. Optimization is on a val split; the
-  frozen strategy is evaluated once on a held-out test split.
+- **Standard LIBERO is saturated — used only to validate the harness.** VLA-JEPA
+  reports ≈97.2% average across all four standard suites (spatial 96.2%, object
+  99.6%, goal 97.2%, long/LIBERO-10 95.8%); there is no instruction headroom
+  there. We run them only to confirm our batched Archetype harness **reproduces
+  the published numbers** (a systems-validity check), not as the main experiment.
+- **The headroom — and the exact match for our lever — is LIBERO-Plus.**
+  LIBERO-Plus (arXiv 2510.13626) is a standardized robustness *superset* of LIBERO
+  on the **same robosuite/MuJoCo base** (no SAPIEN), with ~10k tasks across seven
+  controlled perturbation dimensions. Its **Language** dimension rewrites the
+  instruction while keeping the scene and goal predicate byte-identical, and
+  VLA-JEPA drops to **85.4%** — ≈12 points of *instruction-induced* headroom that
+  is, by construction, recoverable by re-grounding the instruction. This is the
+  perturbed-instruction setting in standardized, citable form (not a hand-rolled
+  perturbation).
+- **Primary experiment — LIBERO-Plus *Language Instructions*.** Baseline = the
+  benchmark's perturbed instruction (≈85.4%); GEPA re-grounds it (answer-blind,
+  content-preserving); we measure **recovery toward the unperturbed ≈97% ceiling**.
+- **Stretch — non-language dimensions.** Camera (63.3%), Noise (66.3%), Robot-init
+  (67.1%) offer 30+ points; we test whether instruction *grounding cues* (spatial /
+  object descriptors) help a frozen policy survive *non-language* perturbation —
+  the VLA-Grounder grounding-access mechanism. High risk, high reward.
+- **Metric = success rate** (sim `check_success`), per task and dimension, with
+  seed/episode bootstrap CIs. Optimization is on a val split; the frozen strategy
+  is evaluated once on a held-out test split.
 
 ---
 
