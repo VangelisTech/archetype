@@ -16,6 +16,12 @@ rather than accepting inline base64 blobs. Preprocessing is identical to
 ``infer``: rotate 180, resize 224; state shaped (1, 1, 8); gripper
 binarized via dataset_statistics.json.
 
+``infer_refs_batch`` is the throughput primitive: it takes N aligned ref/
+instruction/state lists and runs ONE server forward pass over the whole
+batch (``batch_images`` of length N), returning N action chunks. This is
+what the GEPA runner's batched (Entity-axis) world calls per tick for all
+live envs — one GPU forward instead of a Python loop of N ``infer_refs``.
+
 Checkpoint: ``VLA-JEPA-LIBERO.pt`` from https://huggingface.co/ginwind/VLA-JEPA,
 cached in the ``vla-jepa-ckpts`` Modal volume on first start.
 
@@ -231,19 +237,51 @@ class VlaJepaPolicy:
         state: list[float],
         unnorm_key: str,
     ) -> dict[str, Any]:
+        # Single-row payload is just the N=1 case of the batch builder; keep
+        # one code path so the batched and unbatched forms can never drift in
+        # preprocessing/state shape.
+        return self._build_batch_payload(
+            [[agentview_img, wrist_img]], [instruction], [state], unnorm_key
+        )
+
+    @staticmethod
+    def _build_batch_payload(
+        batch_images: "list[list[Any]]",
+        instructions: list[str],
+        states: list[list[float]],
+        unnorm_key: str,
+    ) -> dict[str, Any]:
+        """Build one server payload for N rows -> ONE forward pass.
+
+        The upstream websocket server batches over the leading axis of every
+        list field (``examples/LIBERO/model2libero_interface.py`` sends N=1 by
+        wrapping each field in a single-element list; here we pass N elements).
+
+        Args:
+            batch_images: N entries, each ``[agentview_img, wrist_img]`` (the
+                per-row camera views, already rotated 180 + resized 224).
+            instructions: N instruction strings, aligned with ``batch_images``.
+            states: N 8-dim state vectors, aligned row-for-row.
+            unnorm_key: dataset_statistics.json key (shared across the batch).
+
+        Returns:
+            The payload dict; ``state`` is a length-N list of ``(1, 8)`` arrays
+            so the server sees ``(N, 1, 8)`` — same per-row shape upstream uses
+            for N=1, just stacked.
+        """
         import numpy as np
 
         return {
-            "batch_images": [[agentview_img, wrist_img]],
-            "instructions": [instruction],
+            "batch_images": batch_images,
+            "instructions": instructions,
             "unnorm_key": unnorm_key,
             "do_sample": False,
             "use_ddim": True,
             "num_ddim_steps": 10,
-            # Upstream wraps an already-batched (1, 8) state in a list, so the
-            # server sees (1, 1, 8); state = eef_pos(3) + axis-angle(3) +
-            # gripper_qpos(2).
-            "state": [np.asarray(state, dtype=np.float32)[None, :]],
+            # Each state is wrapped to (1, 8) exactly as the single-row path;
+            # the list holds one such array per batch row → server sees
+            # (N, 1, 8). state = eef_pos(3) + axis-angle(3) + gripper_qpos(2).
+            "state": [np.asarray(s, dtype=np.float32)[None, :] for s in states],
         }
 
     @modal.method()
@@ -312,6 +350,129 @@ class VlaJepaPolicy:
         response = self._client.infer(payload)
         normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
         return self._unnormalize(normalized, unnorm_key)
+
+    @modal.method()
+    def infer_refs_batch(
+        self,
+        agentview_refs: list[str],
+        wrist_refs: list[str],
+        instructions: list[str],
+        states: list[list[float]],
+        unnorm_key: str = "franka",
+    ) -> list[list[list[float]]]:
+        """Batched volume-ref inference: N rows -> ONE GPU forward -> N chunks.
+
+        This is the throughput primitive ([S3] in gepa_runner.py). The N live
+        (non-done) envs of a batched world are inferred in a *single* server
+        forward pass — ``batch_images`` of length N — instead of a Python loop
+        of N ``infer_refs`` calls. The server batches over the leading axis;
+        the response ``normalized_actions`` is ``(N, chunk, D)``.
+
+        All four list args must be the same length N and are aligned row-for-row
+        (``agentview_refs[i]``, ``wrist_refs[i]``, ``instructions[i]``,
+        ``states[i]`` describe env i). Per-row preprocessing is identical to
+        ``infer_refs``: rotate 180 + resize 224; state wrapped to (1, 8);
+        gripper binarized in ``_unnormalize``.
+
+        Args:
+            agentview_refs: N volume-relative agentview PNG paths.
+            wrist_refs: N volume-relative wrist PNG paths.
+            instructions: N natural-language task instructions.
+            states: N 8-dim robot states [eef_pos(3), axis_angle(3), gripper_qpos(2)].
+            unnorm_key: Key in dataset_statistics.json (default: ``franka``).
+
+        Returns:
+            N un-normalized action chunks; result[i] is a list of
+            (chunk_size, 7) float lists for env i, aligned with the inputs.
+        """
+        import numpy as np
+
+        n = len(agentview_refs)
+        if not (len(wrist_refs) == len(instructions) == len(states) == n):
+            raise ValueError(
+                "infer_refs_batch requires equal-length inputs; got "
+                f"agentview={n}, wrist={len(wrist_refs)}, "
+                f"instructions={len(instructions)}, states={len(states)}"
+            )
+        if n == 0:
+            return []
+
+        # Reload the volume once so we see the env worker's latest commits.
+        frames_volume.reload()
+
+        batch_images = [
+            [self._load_and_preprocess_ref(av), self._load_and_preprocess_ref(wr)]
+            for av, wr in zip(agentview_refs, wrist_refs, strict=True)
+        ]
+        payload = self._build_batch_payload(batch_images, instructions, states, unnorm_key)
+
+        # ONE forward pass over all N rows.
+        response = self._client.infer(payload)
+        batched = np.asarray(response["data"]["normalized_actions"])
+        # Log the batch dim so the smoke can prove a single batched forward.
+        print(f"infer_refs_batch: ONE forward, batch dim = {batched.shape[0]} (requested N={n})")
+
+        chunks: list[list[list[float]]] = []
+        for i in range(n):
+            normalized = np.clip(batched[i], -1, 1)
+            chunks.append(self._unnormalize(normalized, unnorm_key))
+        return chunks
+
+
+@app.function(volumes={FRAMES_MOUNT: frames_volume})
+def _write_synthetic_frames(refs: list[str], color: int = 127) -> None:
+    """Write solid-color synthetic PNGs to the frames volume at ``refs``.
+
+    Used only by ``smoke_batch`` to exercise ``infer_refs_batch`` end-to-end
+    without a live env worker. Mirrors the env worker's volume layout: each ref
+    is a volume-relative path under ``FRAMES_MOUNT``.
+    """
+    import os
+
+    import cv2
+    import numpy as np
+
+    frame = np.full((256, 256, 3), color, dtype=np.uint8)
+    for ref in refs:
+        path = os.path.join(FRAMES_MOUNT, ref)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ok, _ = cv2.imencode(".png", frame)
+        if not ok:
+            raise RuntimeError(f"failed to encode synthetic frame for {ref!r}")
+        cv2.imwrite(path, frame)
+    frames_volume.commit()
+
+
+@app.local_entrypoint()
+def smoke_batch(n: int = 4):
+    """Batched smoke: N synthetic envs -> ONE forward via ``infer_refs_batch``.
+
+    Writes N agentview/wrist PNG pairs to the shared frames volume, then calls
+    ``infer_refs_batch`` with N refs. Asserts N chunks come back (one per env)
+    and the worker logs ``batch dim = N`` proving a single batched forward.
+    """
+    session = "smoke-batch"
+    agentview_refs = [f"{session}/{i}/reset-agentview.png" for i in range(n)]
+    wrist_refs = [f"{session}/{i}/reset-wrist.png" for i in range(n)]
+    _write_synthetic_frames.remote(agentview_refs + wrist_refs)
+
+    instructions = [f"pick up object {i} and place it on the plate" for i in range(n)]
+    states = [[0.0] * 8 for _ in range(n)]
+
+    policy = VlaJepaPolicy()
+    chunks = policy.infer_refs_batch.remote(
+        agentview_refs=agentview_refs,
+        wrist_refs=wrist_refs,
+        instructions=instructions,
+        states=states,
+    )
+    print(f"infer_refs_batch returned {len(chunks)} chunks for N={n}")
+    assert len(chunks) == n, f"expected {n} chunks from one batched forward, got {len(chunks)}"
+    for i, chunk in enumerate(chunks):
+        assert chunk, f"chunk {i} is empty"
+        assert len(chunk[0]) == 7, f"chunk {i}: expected 7-dim actions, got {len(chunk[0])}"
+    print(f"first action of chunk 0: {chunks[0][0]}")
+    print("vla-jepa infer_refs_batch smoke OK")
 
 
 @app.local_entrypoint()
