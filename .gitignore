@@ -84,3 +84,7 @@ mutants/
 session_data/
 session_reflection_report.md
 bench/libero/out/
+
+# Rust
+target/
+**/target/
