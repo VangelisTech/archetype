@@ -57,7 +57,7 @@ Two benchmarks in flight (decoupled, parallel):
 | WS2 | **GEPA core loop** — baseline sweep, split, mutator, loop | Claude | runnable optimizer | `everettVT/libero-para-gepa` |
 | WS3 | **Reflection agent** — agent in the Python REPL loop, integrated into Archetype end-of-rollout (Darin has most of the code) | Darin + Claude | the scorer | `everettVT/libero-para-gepa` |
 | WS4 | **RoboSemanticBench** — second benchmark on the tight-loop pattern | Darin | second result | own branch off `main` |
-| WS5 | **Persist-trajectory episode** (stop destroying episode worlds; retain full ledger for replay) | Claude | replayable rollouts | `everettVT/libero-para-gepa` |
+| WS5 | **Query persisted rollouts** by `(world_id, run_id)` via the query service to feed the scorer. *(Data is already persisted — `destroy_world` is in-memory-only, append-only invariant verified. No "don't destroy" change; destroy/fork are fine. The only orchestration gap was the eval driver not querying the trajectory back.)* | Claude | scorer reads ledger | `everettVT/libero-para-gepa` |
 | WS6 | **Human sanity-check UI** — per-rollout frames + subgoal trace + scorer verdict | Claude | review page | `everettVT/libero-para-gepa` |
 | WS7 | **Reproducibility & packaging** — session/data packaging in Archetype format | Claude | packaged artifact | `everettVT/libero-para-gepa` |
 | WS8 | **Paper + demo video + materials** | all | publishable paper, video | `everettVT/libero-para-gepa` |
@@ -130,7 +130,7 @@ never the rigor of the scorer.
 - Baseline = raw LIBERO instruction, not empty. [core-loop §2]
 - Scorer = agentic REPL, deterministic replay, native subgoal predicates. [core-loop §5]
 - `pass` = sim ground truth, never LLM opinion. [core-loop §5]
-- Episodes persist their trajectory (no destroy). [WS5]
+- Data is already persisted (append-only); scorer queries rollouts by `(world_id, run_id)`. `destroy_world` is in-memory-only — verified. No "don't destroy" change. [WS5]
 - Fast iteration on `everettVT/libero-para-gepa`; only the tight loop merges to main.
 
 ---

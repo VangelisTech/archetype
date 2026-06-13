@@ -188,9 +188,14 @@ baseline sweep (raw instruction) ── pick val (hardest) + test (held-out)
 
 ## 8. Reproducibility (non-negotiable)
 
-Every rollout — baseline, val, test — is recorded **on the Archetype ledger**:
-`(init_state, action_sequence, per-tick proprio/frames/status)`, so any rollout is
-exactly replayable and the whole study is packageable. The scorer's reports and
+Every rollout — baseline, val, test — is **already** recorded on the Archetype
+ledger: `(init_state via seed, action_sequence, per-tick proprio/frames/status)`,
+keyed by `(world_id, run_id)`. This is not something we add — it is the append-only
+invariant. `destroy_world` is **in-memory teardown only; storage is preserved**
+(verified in code + by the persisted episode table surviving destroyed worlds). The
+scorer therefore **queries** any rollout's full trajectory by `(world_id, run_id)`
+via the query service; replay is reconstructable from the persisted seed + actions.
+Any rollout is exactly replayable and the whole study is packageable. The scorer's reports and
 the mutator's strategy lineage are recorded alongside. The paper's numbers come
 from queryable ledger data, not loose logs.
 
