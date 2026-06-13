@@ -142,7 +142,12 @@ def _run_one_language_task(
 
 
 if _HAS_MODAL:
-    from baseline_sweep import aggregate_and_write  # type: ignore[import-not-found]
+    # NOTE: do NOT import ``aggregate_and_write`` at module scope. Modal imports
+    # this file inside the container to locate the app, and at that point
+    # ``bench/libero`` is not on the container's sys.path (the entrypoint is
+    # mounted at /root and baseline_sweep.py is not its sibling), so a top-level
+    # ``from baseline_sweep import ...`` raises ModuleNotFoundError there. It is
+    # imported lazily inside ``main`` instead, which only ever runs locally.
 
     # py3.12 + archetype only — the env (LIBERO-Plus) and policy (VLA-JEPA) live
     # in their own deployed apps; this Function talks to them over the client
@@ -241,8 +246,11 @@ if _HAS_MODAL:
         args = [(suite, t, trials, max_steps, run_id) for t in task_ids_list]
         per_task: list[dict[str, Any]] = list(sweep_one_language_task.starmap(args))
 
-        # Reuse the standard aggregate/split writer, then re-key the output file
-        # to a language-specific name so it never clobbers the standard split.
+        # Lazy import (runs locally only): reuse the standard aggregate/split
+        # writer, then re-key the output file to a language-specific name so it
+        # never clobbers the standard split.
+        from baseline_sweep import aggregate_and_write  # type: ignore[import-not-found]
+
         split = aggregate_and_write(
             per_task,
             suite=suite,
