@@ -73,6 +73,17 @@ import modal
 # → 4976dc30028e805ff8094b55501d532c48fec182
 _LIBERO_PLUS_SHA = "4976dc30028e805ff8094b55501d532c48fec182"
 
+# LIBERO-Plus ships bddl/init_files but NOT the MuJoCo `assets/` tree (scene XMLs,
+# robot/object meshes, textures) — its git repo contains zero assets/ files, so a
+# bare clone raises FileNotFoundError on the first env build (e.g. the missing
+# assets/scenes/libero_tabletop_base_style.xml). The base assets are identical to
+# upstream LIBERO (same robosuite/MuJoCo base; LIBERO-Plus only overrides the
+# bddl/init layer), so we clone upstream LIBERO at the SAME SHA the standard
+# worker pins and copy its assets/ into the LIBERO-Plus install. This stays within
+# the language dimension: no assets.zip (the 6.4GB visual-perturbation download)
+# is involved — only the base scene/robot/object XMLs the simulator always needs.
+_LIBERO_BASE_SHA = "8f1084e3132a39270c3a13ebe37270a43ece2a01"
+
 # The perturbation dimension this worker serves. LIBERO-Plus labels the
 # language-rewrite variants exactly this way in task_classification.json.
 LANGUAGE_CATEGORY = "Language Instructions"
@@ -139,6 +150,14 @@ image = (
         f"git clone https://github.com/sylvestf/LIBERO-plus.git /opt/LIBERO-plus"
         f" && git -C /opt/LIBERO-plus checkout {_LIBERO_PLUS_SHA}",
         "pip install -e /opt/LIBERO-plus",
+        # Backfill the MuJoCo assets/ tree from upstream LIBERO (LIBERO-Plus omits
+        # it from git). Clone the pinned base SHA (same full clone + checkout the
+        # standard worker uses — reliable for arbitrary SHAs), copy assets/ into
+        # the LIBERO-Plus package, then drop the base clone to keep the image lean.
+        f"git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO-base"
+        f" && git -C /opt/LIBERO-base checkout {_LIBERO_BASE_SHA}",
+        "cp -r /opt/LIBERO-base/libero/libero/assets /opt/LIBERO-plus/libero/libero/assets",
+        "rm -rf /opt/LIBERO-base",
         # First import interactively prompts for a dataset folder; answer 'N'
         # (use defaults) once at build time so ~/.libero/config.yaml is baked in
         # and runtime imports never block on stdin.
