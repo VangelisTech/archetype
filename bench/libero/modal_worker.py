@@ -257,8 +257,9 @@ class LiberoEnvBatch:
 
         return out
 
-    @modal.method()
-    def reset(self, env_id: int, seed: int, with_frames: bool = False) -> dict[str, Any]:
+    def _reset_one(self, env_id: int, seed: int, with_frames: bool, commit: bool) -> dict[str, Any]:
+        """Reset a single env in-process (no remote boundary). Shared by
+        ``reset`` and ``reset_batch`` so the per-env logic lives in one place."""
         env = self._envs.get(env_id)
         if env is None:
             env = self._make_env()
@@ -268,8 +269,39 @@ class LiberoEnvBatch:
         obs = env.set_init_state(self._init_states[seed % len(self._init_states)])
         self._step_counts[env_id] = 0
         if with_frames:
-            return self._proprio_with_frames(obs, env_id, "reset", commit=True)
+            # commit per-call for ``reset`` (commit=True); ``reset_batch``
+            # passes commit=False and batch-commits once after the loop.
+            return self._proprio_with_frames(obs, env_id, "reset", commit=commit)
         return self._proprio(obs)
+
+    @modal.method()
+    def reset(self, env_id: int, seed: int, with_frames: bool = False) -> dict[str, Any]:
+        return self._reset_one(env_id, seed, with_frames, commit=True)
+
+    @modal.method()
+    def reset_batch(
+        self,
+        env_keys: list[int],
+        seeds: list[int],
+        with_frames: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Reset N envs (one per env_key) in ONE remote call.
+
+        Mirrors ``step`` on the batch axis: one ``@modal.method()`` round-trip
+        resets all N envs and returns N obs dicts (one per env_key, in order).
+        With ``with_frames=True`` each obs carries distinct ``agentview_ref`` /
+        ``wrist_ref`` keyed by its own ``env_key`` (so refs are distinct across
+        the batch), and the volume is committed once after the whole batch.
+        """
+        results = [
+            # commit=False: batch-commit once after the loop, like step().
+            self._reset_one(env_key, seed, with_frames, commit=False)
+            for env_key, seed in zip(env_keys, seeds, strict=True)
+        ]
+        if with_frames:
+            # One commit per reset_batch() call — not per file — to bound latency.
+            frames_volume.commit()
+        return results
 
     @modal.method()
     def step(
@@ -348,13 +380,23 @@ class ModalEnvClient:
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
         return self._get_worker().reset.remote(env_id, seed, with_frames=self._with_frames)
 
+    def reset_batch(self, env_keys: list[int], seeds: list[int]) -> list[dict[str, Any]]:
+        """Reset N envs (one per env_key) in ONE remote call → N obs dicts."""
+        return self._get_worker().reset_batch.remote(
+            env_keys, seeds, with_frames=self._with_frames
+        )
+
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
         return self._get_worker().step.remote(env_ids, actions, with_frames=self._with_frames)
 
 
 @app.local_entrypoint()
-def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
-    """Reset one env and take a few zero actions with frames; verify refs land in the volume."""
+def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3, n: int = 4):
+    """Smoke: single reset + a few steps, then a batched reset_batch over N envs.
+
+    The reset_batch leg verifies the [S2] contract: ONE remote call resets N
+    envs and returns N obs, each with distinct frame refs (keyed by env_key).
+    """
     worker = LiberoEnvBatch(suite=suite, task_id=task_id)
     print("task:", worker.task_language.remote())
 
@@ -378,11 +420,21 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
         assert "agentview_ref" in result, f"step {step_idx} must return agentview_ref"
         assert "wrist_ref" in result, f"step {step_idx} must return wrist_ref"
 
-    # Verify the files actually exist in the volume.
-    import os
+    # [S2] batched reset over N envs in ONE remote call.
+    env_keys = list(range(n))
+    seeds = list(range(n))
+    batch = worker.reset_batch.remote(env_keys, seeds, with_frames=True)
+    assert len(batch) == n, f"reset_batch must return {n} obs, got {len(batch)}"
+    av_refs = [o.get("agentview_ref", "MISSING") for o in batch]
+    wr_refs = [o.get("wrist_ref", "MISSING") for o in batch]
+    for i, o in enumerate(batch):
+        print(f"reset_batch[{i}]: eef_pos={o['eef_pos']} agentview_ref={av_refs[i]}")
+        assert "agentview_ref" in o, f"reset_batch[{i}] must return agentview_ref"
+        assert "wrist_ref" in o, f"reset_batch[{i}] must return wrist_ref"
+        assert len(o.get("gripper_qpos", [])) == 2, f"reset_batch[{i}] gripper_qpos must be 2-element"
+    # Distinct frame refs: each env_key gets its own ref path.
+    assert len(set(av_refs)) == n, f"reset_batch agentview_refs not distinct: {av_refs}"
+    assert len(set(wr_refs)) == n, f"reset_batch wrist_refs not distinct: {wr_refs}"
 
-    # Re-read the volume from local context (the worker committed).
-    # We can't directly list the modal volume from the local entrypoint,
-    # but we can verify by running a quick lookup in a new function call.
-    print(f"smoke OK — {steps + 1} ref pairs returned (reset + {steps} steps)")
+    print(f"smoke OK — {steps + 1} single ref pairs + reset_batch over N={n} with distinct refs")
     print("smoke: refs are present in obs dicts; volume commit executed inside worker")
