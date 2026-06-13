@@ -135,8 +135,23 @@ def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
 
 
 def reset_tick_counters() -> None:
-    """Reset per-tick command counters. Called at the start of each tick."""
+    """Reset per-tick command counters for ALL actors.
+
+    Test/maintenance helper. The live tick boundary uses
+    ``reset_tick_counter_for`` so one actor's tick does not clear another
+    actor's budget.
+    """
     _tick_counters.clear()
+
+
+def reset_tick_counter_for(actor_id: UUID) -> None:
+    """Reset one actor's per-tick command counter at a tick boundary.
+
+    Called by ``CommandService.step`` once a tick's commands have drained, so
+    the documented per-tick quota actually resets each tick instead of
+    accumulating across an entire episode/run.
+    """
+    _tick_counters.pop(actor_id, None)
 
 
 def reset_daily_tokens() -> None:

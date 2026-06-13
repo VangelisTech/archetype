@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 import logfire
 from uuid_utils import UUID
 
-from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.guard import guardrail_allow, reset_tick_counter_for
 from archetype.app.models import (
     Command,
     CommandType,
@@ -338,6 +338,10 @@ class CommandService:
     ) -> int:
         self._gate(Command(type=CommandType.STEP), ctx)
         commands_applied = await self._simulation.step(world_id, run_config, **input_kwargs)
+        # Tick boundary: a tick's commands have now drained, so clear this
+        # actor's per-tick command budget. Without this the "per-tick" quota
+        # accumulates across an entire episode and trips on long rollouts.
+        reset_tick_counter_for(ctx.id)
         await self._emit(ctx, "step", world_id)
         return commands_applied
 

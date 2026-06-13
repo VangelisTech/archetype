@@ -28,7 +28,7 @@ from bench.robosemantic.protocol import (
 
 DEPLOYED_APP_NAME = "archetype-robosemantic"
 DEFAULT_SUITE_ARG = "RSB-Math-4"
-DEFAULT_PI05_TRAIN_CONFIG = "pi05_base_aloha_lora"
+DEFAULT_PI05_TRAIN_CONFIG = "pi05_aloha_full_base"
 DEFAULT_PI05_MODEL_NAME = "robotwin_pi05_aloha_agilex_randomized_5tasks_step20000"
 DEFAULT_PI05_CHECKPOINT_ID = 20000
 
@@ -53,6 +53,8 @@ def main(
     checkpoint_num: int = 600,
     policy_seed: int = 0,
     policy_overrides_json: str = "",
+    expert_check: bool = False,
+    max_eval_steps: int = 0,
     run_id: str = "rsb-deployed-smoke",
     episodes_per_suite: int = 2,
     shards_per_suite: int = 1,
@@ -72,6 +74,10 @@ def main(
         policy_overrides.setdefault("model_name", DEFAULT_PI05_MODEL_NAME)
         policy_overrides.setdefault("checkpoint_id", DEFAULT_PI05_CHECKPOINT_ID)
         policy_overrides.setdefault("pi0_step", 50)
+        policy_overrides.setdefault("serialize_model_load", True)
+    policy_overrides.setdefault("expert_check", expert_check)
+    if max_eval_steps > 0:
+        policy_overrides.setdefault("max_eval_steps", max_eval_steps)
 
     jobs = build_shard_jobs(
         suite_names=suite_names,
@@ -118,6 +124,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-num", type=int, default=600)
     parser.add_argument("--policy-seed", type=int, default=0)
     parser.add_argument("--policy-overrides-json", default="")
+    parser.add_argument("--expert-check", action="store_true")
+    parser.add_argument("--max-eval-steps", type=int, default=0)
     parser.add_argument("--run-id", default="rsb-deployed-smoke")
     parser.add_argument("--episodes-per-suite", type=int, default=2)
     parser.add_argument("--shards-per-suite", type=int, default=1)
@@ -138,6 +146,8 @@ if __name__ == "__main__":
         checkpoint_num=args.checkpoint_num,
         policy_seed=args.policy_seed,
         policy_overrides_json=args.policy_overrides_json,
+        expert_check=args.expert_check,
+        max_eval_steps=args.max_eval_steps,
         run_id=args.run_id,
         episodes_per_suite=args.episodes_per_suite,
         shards_per_suite=args.shards_per_suite,
