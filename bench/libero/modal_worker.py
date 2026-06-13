@@ -109,15 +109,26 @@ image = (
 app = modal.App("archetype-libero-env", image=image)
 
 
-# max_containers=1: env instances live in container memory keyed by env_key;
-# a second container would silently fork that state. One container per
-# parameter set until envs move to a shared store.
+# Concurrency model: env instances live in *container memory* keyed by env_key,
+# so each (suite, task_id) parameter set must own its own stable container for
+# the full episode — if Modal evicted a container mid-episode (e.g. to serve a
+# different parameter set), the in-memory ``self._envs`` would vanish and the
+# next ``step`` would raise ``KeyError(env_key)``.
+#
+# ``max_containers`` caps the TOTAL container count for this class across all
+# parameter sets, not per parameter set. With max_containers=1 a parallel
+# multi-task sweep would force all (suite, task_id) sets to contend for a single
+# container, evicting one task's env state to serve another → the KeyError
+# above. We raise it to 16 so a full 10-task suite sweep can hold one dedicated
+# container per task simultaneously (the "one env container per task" the
+# baseline sweep requires). Single-container-per-parameter-set is still
+# preserved because each parameter set pins its own container.
 @app.cls(
     cpu=4,
     memory=8192,
     timeout=1800,
     scaledown_window=300,
-    max_containers=1,
+    max_containers=16,
     volumes={FRAMES_MOUNT: frames_volume},
 )
 class LiberoEnvBatch:
@@ -350,6 +361,16 @@ class ModalEnvClient:
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
         return self._get_worker().step.remote(env_ids, actions, with_frames=self._with_frames)
+
+    def task_language(self) -> str:
+        """The raw LIBERO instruction for this (suite, task_id).
+
+        Exposed on the harness-side adapter so the eval driver can thread the
+        canonical task language into ``ManipTask.instruction`` for the honest
+        baseline (core-loop §2). Proxies to the worker's ``task_language``,
+        which reads ``task.language`` from the loaded LIBERO benchmark suite.
+        """
+        return str(self._get_worker().task_language.remote())
 
 
 @app.local_entrypoint()

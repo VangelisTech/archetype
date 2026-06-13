@@ -107,6 +107,42 @@ def _make_modal_env_client(suite: str, task_id: int, with_frames: bool = False) 
     return ModalEnvClient(suite=suite, task_id=task_id, with_frames=with_frames)
 
 
+def _resolve_instruction(
+    *,
+    suite: str,
+    task_id: int,
+    env_client: Any,
+    override_map: dict[tuple[str, int], str] | None,
+) -> str:
+    """Resolve the conditioning instruction for one (suite, task_id).
+
+    Fairness rule (core-loop §2): the baseline is the *raw* LIBERO instruction,
+    never the empty string.  Resolution order:
+
+    1. If ``override_map`` supplies a paraphrase for ``(suite, task_id)``, use it.
+       (This is the GEPA hook — a strategy can swap the conditioning text later.)
+    2. Otherwise, default to the env's native ``task_language()`` (the canonical
+       LIBERO instruction for the task), queried over the EnvClient boundary.
+    3. If neither is available (e.g. a scripted env with no ``task_language``),
+       fall back to the empty string — scripted reach envs ignore the
+       instruction entirely, so this only ever happens off the real-policy path.
+
+    The resolved string flows through ``ManipTask.instruction`` →
+    ``PolicyActionProcessor`` → ``VlaJepaPolicyClient.infer_refs(instruction=...)``.
+    """
+    if override_map is not None:
+        override = override_map.get((suite, task_id))
+        if override:
+            return override
+    task_language = getattr(env_client, "task_language", None)
+    if callable(task_language):
+        try:
+            return str(task_language())
+        except Exception:  # noqa: BLE001 - scripted/test envs may not implement it
+            return ""
+    return ""
+
+
 def _make_vla_policy_client(suite: str, task_id: int) -> Any:
     """Build a VlaJepaPolicyClient; deferred so scripted path avoids Modal."""
     from archetype.experiments.policy import VlaJepaPolicyClient  # noqa: PLC0415
@@ -138,6 +174,11 @@ class DriverConfig:
     run_id: str = ""  # free-form run label
     env_client_type: str = "modal"  # "modal" or "scripted"
     use_policy: bool = True  # False → zero-action policy (scripted path)
+    # Optional per-(suite, task_id) instruction override map. When a key is
+    # present, its paraphrase replaces the env's native task_language() for that
+    # task — the GEPA hook (core-loop §3). Absent keys fall back to the raw
+    # LIBERO instruction (the honest baseline, core-loop §2).
+    instruction_overrides: dict[tuple[str, int], str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +199,7 @@ async def run_episode(
     storage: StorageConfig,
     runtime: ArchetypeRuntime,
     use_frames: bool = False,
+    instruction: str = "",
 ) -> tuple[bool, int]:
     """Drive one episode on an isolated world.
 
@@ -211,7 +253,7 @@ async def run_episode(
         ManipTask(
             suite=suite,
             task_id=task_id,
-            instruction="",
+            instruction=instruction,
             seed=seed,
             env_key=env_key,
         ),
@@ -328,6 +370,17 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     _make_vla_policy_client(config.suite, task_id) if config.use_policy else None
                 )
 
+            # Resolve the conditioning instruction once per task: paraphrase
+            # override if supplied, else the env's native task_language() (the
+            # honest baseline). Empty string only on the scripted path.
+            instruction = _resolve_instruction(
+                suite=config.suite,
+                task_id=task_id,
+                env_client=env_client,
+                override_map=config.instruction_overrides,
+            )
+            print(f"  [{config.suite}] task={task_id} instruction={instruction!r}")
+
             for trial_idx in range(config.trials):
                 seed = task_id * 1000 + trial_idx
                 env_key = trial_idx  # distinct per-trial env instance
@@ -345,6 +398,7 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     storage=ep_storage,
                     runtime=runtime,
                     use_frames=use_frames,
+                    instruction=instruction,
                 )
                 wall_s = time.perf_counter() - t0
 

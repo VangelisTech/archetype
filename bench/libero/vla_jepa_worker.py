@@ -82,12 +82,18 @@ app = modal.App("archetype-vla-jepa", image=image)
 ckpt_volume = modal.Volume.from_name("vla-jepa-ckpts", create_if_missing=True)
 
 
+# max_containers=8: inference is STATELESS — each infer/infer_refs call is a
+# pure function of (frames, instruction, state). The per-env action-chunk
+# buffer lives entirely client-side in VlaJepaPolicyClient, so any container
+# can serve any rollout's request. Lifting the cap from 1 to 8 lets the
+# baseline sweep's per-task rollouts run their inference in parallel across
+# GPUs instead of serializing through a single L40S.
 @app.cls(
     gpu="L40S",
     volumes={CKPT_DIR: ckpt_volume, FRAMES_MOUNT: frames_volume},
     timeout=3600,
     scaledown_window=600,
-    max_containers=1,
+    max_containers=8,
 )
 class VlaJepaPolicy:
     use_bf16: int = modal.parameter(default=1)
