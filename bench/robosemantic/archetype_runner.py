@@ -512,6 +512,33 @@ class Pi05BatchPolicy:
     def __init__(self, usr_args: dict[str, Any]) -> None:
         import importlib
 
+        train_config_name = str(usr_args.get("train_config_name", DEFAULT_PI05_TRAIN_CONFIG))
+        model_name = str(usr_args.get("model_name", DEFAULT_PI05_MODEL_NAME))
+        checkpoint_id = str(usr_args.get("checkpoint_id", DEFAULT_PI05_CHECKPOINT_ID))
+        assets_path = (
+            Path(ROOT)
+            / "policy"
+            / "pi05"
+            / "checkpoints"
+            / train_config_name
+            / model_name
+            / checkpoint_id
+            / "assets"
+        )
+        print(
+            "RSB_PI05_CHECKPOINT "
+            + json.dumps(
+                {
+                    "train_config_name": train_config_name,
+                    "model_name": model_name,
+                    "checkpoint_id": checkpoint_id,
+                    "assets_path": str(assets_path),
+                    "assets_exists": assets_path.exists(),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         pi05_mod = importlib.import_module("pi05")
         self.model = pi05_mod.get_model(usr_args)
         self.pi0_step = int(usr_args.get("pi0_step", 50))
