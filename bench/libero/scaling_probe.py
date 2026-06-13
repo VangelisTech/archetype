@@ -267,8 +267,14 @@ def main(
     instruction = env_cls(suite=suite, task_id=task_id).task_language.remote()
     print(f"task language (instruction held constant across N): {instruction!r}\n")
 
-    # Fan one container per N so the measurements do not share a warm cache or
-    # contend for the GPU — each N gets a clean, isolated batched run.
+    # Fan one driver container per N (.starmap). Note the deployed policy worker
+    # is max_containers=1, so all N share ONE GPU server and their forwards
+    # serialize — this inflates the *absolute* sec/step uniformly but does not
+    # distort the gate, which is the *relative* sec/step across N: shared-GPU
+    # contention can only flatten the curve, never fake sublinearity that batching
+    # must earn. The per-N batched forwards (worker logs "batch dim = N, ONE
+    # forward") are the direct proof. For a clean absolute number, raise the
+    # policy's max_containers or run the Ns sequentially.
     cells = [(suite, task_id, instruction, n, max_steps) for n in n_list]
     rows = list(probe_n.starmap(cells))
     rows.sort(key=lambda r: r["n"])
