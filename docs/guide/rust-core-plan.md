@@ -374,6 +374,11 @@ is specified in `docs/design/split-step-ffi.md`.
 **Intent:** route existing Python async core operations through Rust while
 preserving Python APIs.
 
+The normative ABI for this phase is specified in
+[`docs/design/split-step-ffi.md`](../design/split-step-ffi.md): Rust owns
+materialization, stamping, persistence, and live snapshots; Python processors
+execute between `arct_step_begin` and `arct_step_commit`.
+
 ### Tasks
 
 1. Add an internal adapter under `src/archetype/core/native/`.
