@@ -1156,6 +1156,7 @@ def batched_pi05(
     max_eval_steps: int = 0,
     ledger_interval: int = 25,
     instruction_type: str = "unseen",
+    warm_containers: int = 0,
 ):
     """Run RSB pi0.5 with Archetype entity batching."""
     suite_names = [suite.strip() for suite in suites.split(",") if suite.strip()]
@@ -1253,6 +1254,23 @@ def batched_pi05(
             policy_seed=0,
             instruction_type=instruction_type,
         )
+        if warm_containers > 0:
+            warm_payloads = []
+            for idx in range(warm_containers):
+                warm_payload = dict(suite_payloads[0])
+                warm_payload.update(
+                    {
+                        "run_id": f"{run_id}-warm",
+                        "cell_idx": idx,
+                        "episode_start": idx,
+                        "seeds": [900000 + idx],
+                        "max_steps": 1,
+                        "ledger_interval": 1,
+                    }
+                )
+                warm_payloads.append(warm_payload)
+            print(f"warming {warm_containers} {json.loads(suite_key)['name']} containers")
+            list(runner.run_cell.map(warm_payloads, order_outputs=True))
         summaries.extend(runner.run_cell.map(suite_payloads, order_outputs=True))
     aggregate = aggregate_summaries(summaries)
     aggregate_path = Path(RESULTS_DIR) / run_id / "aggregate.json"
@@ -1286,6 +1304,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eval-steps", type=int, default=0)
     parser.add_argument("--ledger-interval", type=int, default=25)
     parser.add_argument("--instruction-type", default="unseen")
+    parser.add_argument("--warm-containers", type=int, default=0)
     return parser.parse_args()
 
 
@@ -1304,4 +1323,5 @@ if __name__ == "__main__":
         max_eval_steps=args.max_eval_steps,
         ledger_interval=args.ledger_interval,
         instruction_type=args.instruction_type,
+        warm_containers=args.warm_containers,
     )
