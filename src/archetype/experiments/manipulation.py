@@ -45,6 +45,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
+from archetype.experiments.boundary import series_to_rows, unpack_struct
 
 ACTION_DIM = 7  # 6-DoF delta pose + gripper, the LIBERO/OSC convention
 
@@ -182,28 +183,43 @@ class _EnvStepper:
         success: Series,
         env_step: Series,
     ) -> Series:
-        ids = env_key.to_pylist()
-        actions = action.to_pylist()
-        prev = {
-            "eef_pos": eef_pos.to_pylist(),
-            "eef_quat": eef_quat.to_pylist(),
-            "gripper": gripper.to_pylist(),
-            "gripper_qpos": gripper_qpos.to_pylist(),
-            "reward": reward.to_pylist(),
-            "done": done.to_pylist(),
-            "success": success.to_pylist(),
-            "env_step": env_step.to_pylist(),
-        }
+        rows = series_to_rows(
+            [
+                "env_key",
+                "action",
+                "eef_pos",
+                "eef_quat",
+                "gripper",
+                "gripper_qpos",
+                "reward",
+                "done",
+                "success",
+                "env_step",
+            ],
+            env_key,
+            action,
+            eef_pos,
+            eef_quat,
+            gripper,
+            gripper_qpos,
+            reward,
+            done,
+            success,
+            env_step,
+        )
 
         # Done rows are frozen: never step a finished episode.
-        live = [i for i in range(len(ids)) if not prev["done"][i]]
+        live = [i for i, row in enumerate(rows) if not row["done"]]
         stepped: dict[int, dict[str, Any]] = {}
         if live:
-            results = self._client.step([ids[i] for i in live], [actions[i] for i in live])
+            results = self._client.step(
+                [rows[i]["env_key"] for i in live],
+                [rows[i]["action"] for i in live],
+            )
             stepped = dict(zip(live, results, strict=True))
 
         out: list[dict[str, Any]] = []
-        for i in range(len(ids)):
+        for i, row in enumerate(rows):
             if i in stepped:
                 obs = stepped[i]
                 out.append(
@@ -219,12 +235,26 @@ class _EnvStepper:
                         "done": bool(obs["done"]),
                         # Success latches even if the env reports a
                         # post-success regression.
-                        "success": bool(obs["success"]) or bool(prev["success"][i]),
-                        "env_step": int(prev["env_step"][i]) + 1,
+                        "success": bool(obs["success"]) or bool(row["success"]),
+                        "env_step": int(row["env_step"]) + 1,
                     }
                 )
             else:
-                out.append({key: prev[key][i] for key in prev})
+                out.append(
+                    {
+                        k: row[k]
+                        for k in (
+                            "eef_pos",
+                            "eef_quat",
+                            "gripper",
+                            "gripper_qpos",
+                            "reward",
+                            "done",
+                            "success",
+                            "env_step",
+                        )
+                    }
+                )
         return Series.from_pylist(out)
 
 
@@ -284,17 +314,19 @@ class EnvStepProcessor(AsyncProcessor):
             col("manipstatus__success"),
             col("manipstatus__env_step"),
         )
-        return (
-            df.with_column("_env_next", nxt)
-            .with_column("manipproprio__eef_pos", col("_env_next")["eef_pos"])
-            .with_column("manipproprio__eef_quat", col("_env_next")["eef_quat"])
-            .with_column("manipproprio__gripper", col("_env_next")["gripper"])
-            .with_column("manipproprio__gripper_qpos", col("_env_next")["gripper_qpos"])
-            .with_column("manipstatus__reward", col("_env_next")["reward"])
-            .with_column("manipstatus__done", col("_env_next")["done"])
-            .with_column("manipstatus__success", col("_env_next")["success"])
-            .with_column("manipstatus__env_step", col("_env_next")["env_step"])
-            .exclude("_env_next")
+        return unpack_struct(
+            df.with_column("_env_next", nxt),
+            "_env_next",
+            {
+                "eef_pos": "manipproprio__eef_pos",
+                "eef_quat": "manipproprio__eef_quat",
+                "gripper": "manipproprio__gripper",
+                "gripper_qpos": "manipproprio__gripper_qpos",
+                "reward": "manipstatus__reward",
+                "done": "manipstatus__done",
+                "success": "manipstatus__success",
+                "env_step": "manipstatus__env_step",
+            },
         )
 
 
@@ -325,29 +357,46 @@ class _FramedEnvStepper:
         agentview_ref: Series,
         wrist_ref: Series,
     ) -> Series:
-        ids = env_key.to_pylist()
-        actions = action.to_pylist()
-        prev = {
-            "eef_pos": eef_pos.to_pylist(),
-            "eef_quat": eef_quat.to_pylist(),
-            "gripper": gripper.to_pylist(),
-            "gripper_qpos": gripper_qpos.to_pylist(),
-            "reward": reward.to_pylist(),
-            "done": done.to_pylist(),
-            "success": success.to_pylist(),
-            "env_step": env_step.to_pylist(),
-            "agentview_ref": agentview_ref.to_pylist(),
-            "wrist_ref": wrist_ref.to_pylist(),
-        }
+        rows = series_to_rows(
+            [
+                "env_key",
+                "action",
+                "eef_pos",
+                "eef_quat",
+                "gripper",
+                "gripper_qpos",
+                "reward",
+                "done",
+                "success",
+                "env_step",
+                "agentview_ref",
+                "wrist_ref",
+            ],
+            env_key,
+            action,
+            eef_pos,
+            eef_quat,
+            gripper,
+            gripper_qpos,
+            reward,
+            done,
+            success,
+            env_step,
+            agentview_ref,
+            wrist_ref,
+        )
 
-        live = [i for i in range(len(ids)) if not prev["done"][i]]
+        live = [i for i, row in enumerate(rows) if not row["done"]]
         stepped: dict[int, dict[str, Any]] = {}
         if live:
-            results = self._client.step([ids[i] for i in live], [actions[i] for i in live])
+            results = self._client.step(
+                [rows[i]["env_key"] for i in live],
+                [rows[i]["action"] for i in live],
+            )
             stepped = dict(zip(live, results, strict=True))
 
         out: list[dict[str, Any]] = []
-        for i in range(len(ids)):
+        for i, row in enumerate(rows):
             if i in stepped:
                 obs = stepped[i]
                 out.append(
@@ -361,14 +410,30 @@ class _FramedEnvStepper:
                         ],
                         "reward": float(obs["reward"]),
                         "done": bool(obs["done"]),
-                        "success": bool(obs["success"]) or bool(prev["success"][i]),
-                        "env_step": int(prev["env_step"][i]) + 1,
+                        "success": bool(obs["success"]) or bool(row["success"]),
+                        "env_step": int(row["env_step"]) + 1,
                         "agentview_ref": str(obs.get("agentview_ref", "")),
                         "wrist_ref": str(obs.get("wrist_ref", "")),
                     }
                 )
             else:
-                out.append({key: prev[key][i] for key in prev})
+                out.append(
+                    {
+                        k: row[k]
+                        for k in (
+                            "eef_pos",
+                            "eef_quat",
+                            "gripper",
+                            "gripper_qpos",
+                            "reward",
+                            "done",
+                            "success",
+                            "env_step",
+                            "agentview_ref",
+                            "wrist_ref",
+                        )
+                    }
+                )
         return Series.from_pylist(out)
 
 
@@ -425,19 +490,21 @@ class FramedEnvStepProcessor(AsyncProcessor):
             col("manipframeref__agentview_ref"),
             col("manipframeref__wrist_ref"),
         )
-        return (
-            df.with_column("_env_next", nxt)
-            .with_column("manipproprio__eef_pos", col("_env_next")["eef_pos"])
-            .with_column("manipproprio__eef_quat", col("_env_next")["eef_quat"])
-            .with_column("manipproprio__gripper", col("_env_next")["gripper"])
-            .with_column("manipproprio__gripper_qpos", col("_env_next")["gripper_qpos"])
-            .with_column("manipstatus__reward", col("_env_next")["reward"])
-            .with_column("manipstatus__done", col("_env_next")["done"])
-            .with_column("manipstatus__success", col("_env_next")["success"])
-            .with_column("manipstatus__env_step", col("_env_next")["env_step"])
-            .with_column("manipframeref__agentview_ref", col("_env_next")["agentview_ref"])
-            .with_column("manipframeref__wrist_ref", col("_env_next")["wrist_ref"])
-            .exclude("_env_next")
+        return unpack_struct(
+            df.with_column("_env_next", nxt),
+            "_env_next",
+            {
+                "eef_pos": "manipproprio__eef_pos",
+                "eef_quat": "manipproprio__eef_quat",
+                "gripper": "manipproprio__gripper",
+                "gripper_qpos": "manipproprio__gripper_qpos",
+                "reward": "manipstatus__reward",
+                "done": "manipstatus__done",
+                "success": "manipstatus__success",
+                "env_step": "manipstatus__env_step",
+                "agentview_ref": "manipframeref__agentview_ref",
+                "wrist_ref": "manipframeref__wrist_ref",
+            },
         )
 
 

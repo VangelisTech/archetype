@@ -65,6 +65,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
+from archetype.experiments.boundary import series_to_rows
 
 from .manipulation import (
     ACTION_DIM,
@@ -377,31 +378,46 @@ class _PolicyCaller:
         agentview_ref: Series,
         wrist_ref: Series,
     ) -> Series:
-        keys = env_key.to_pylist()
-        instructions = instruction.to_pylist()
-        pos = eef_pos.to_pylist()
-        quat = eef_quat.to_pylist()
-        grip = gripper.to_pylist()
-        grip_qpos = gripper_qpos.to_pylist()
-        finished = done.to_pylist()
-        actions = prev_action.to_pylist()
-        av_refs = agentview_ref.to_pylist()
-        wr_refs = wrist_ref.to_pylist()
+        rows = series_to_rows(
+            [
+                "env_key",
+                "instruction",
+                "eef_pos",
+                "eef_quat",
+                "gripper",
+                "gripper_qpos",
+                "done",
+                "prev_action",
+                "agentview_ref",
+                "wrist_ref",
+            ],
+            env_key,
+            instruction,
+            eef_pos,
+            eef_quat,
+            gripper,
+            gripper_qpos,
+            done,
+            prev_action,
+            agentview_ref,
+            wrist_ref,
+        )
 
         # Done rows are frozen: keep the terminal action unchanged.
-        live = [i for i in range(len(keys)) if not finished[i]]
+        actions = [row["prev_action"] for row in rows]
+        live = [i for i, row in enumerate(rows) if not row["done"]]
         if live:
             chosen = self._client.act(
-                [keys[i] for i in live],
-                [instructions[i] for i in live],
+                [rows[i]["env_key"] for i in live],
+                [rows[i]["instruction"] for i in live],
                 [
                     {
-                        "eef_pos": pos[i],
-                        "eef_quat": quat[i],
-                        "gripper": grip[i],
-                        "gripper_qpos": grip_qpos[i],
-                        "agentview_ref": av_refs[i],
-                        "wrist_ref": wr_refs[i],
+                        "eef_pos": rows[i]["eef_pos"],
+                        "eef_quat": rows[i]["eef_quat"],
+                        "gripper": rows[i]["gripper"],
+                        "gripper_qpos": rows[i]["gripper_qpos"],
+                        "agentview_ref": rows[i]["agentview_ref"],
+                        "wrist_ref": rows[i]["wrist_ref"],
                     }
                     for i in live
                 ],
@@ -434,21 +450,32 @@ class _PolicyCallerNoRefs:
         done: Series,
         prev_action: Series,
     ) -> Series:
-        keys = env_key.to_pylist()
-        instructions = instruction.to_pylist()
-        pos = eef_pos.to_pylist()
-        quat = eef_quat.to_pylist()
-        grip = gripper.to_pylist()
-        finished = done.to_pylist()
-        actions = prev_action.to_pylist()
+        rows = series_to_rows(
+            ["env_key", "instruction", "eef_pos", "eef_quat", "gripper", "done", "prev_action"],
+            env_key,
+            instruction,
+            eef_pos,
+            eef_quat,
+            gripper,
+            done,
+            prev_action,
+        )
 
         # Done rows are frozen: keep the terminal action unchanged.
-        live = [i for i in range(len(keys)) if not finished[i]]
+        actions = [row["prev_action"] for row in rows]
+        live = [i for i, row in enumerate(rows) if not row["done"]]
         if live:
             chosen = self._client.act(
-                [keys[i] for i in live],
-                [instructions[i] for i in live],
-                [{"eef_pos": pos[i], "eef_quat": quat[i], "gripper": grip[i]} for i in live],
+                [rows[i]["env_key"] for i in live],
+                [rows[i]["instruction"] for i in live],
+                [
+                    {
+                        "eef_pos": rows[i]["eef_pos"],
+                        "eef_quat": rows[i]["eef_quat"],
+                        "gripper": rows[i]["gripper"],
+                    }
+                    for i in live
+                ],
             )
             for i, action in zip(live, chosen, strict=True):
                 actions[i] = [float(v) for v in action]
