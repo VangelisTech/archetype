@@ -1102,7 +1102,7 @@ class RsbPi05SuiteRunner:
     policy_seed: int = modal.parameter(default=0)
     instruction_type: str = modal.parameter(default="unseen")
 
-    @modal.enter(snap=True)
+    @modal.enter()
     def load_policy(self) -> None:
         import faulthandler
 
