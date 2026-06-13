@@ -196,10 +196,12 @@ _CHUNK_LEN = 7
 class VlaJepaPolicyClient:
     """``PolicyClient`` wrapping the deployed VLA-JEPA Modal worker.
 
-    Chunk-buffered: ``VlaJepaPolicy.infer_refs`` returns a full action chunk
-    (``_CHUNK_LEN`` steps) per inference call.  This client maintains a
-    per-``env_key`` buffer and pops one action per ``act()`` call, refreshing
-    when the buffer is empty.
+    Chunk-buffered: ``VlaJepaPolicy.infer_refs_batch`` returns a full action
+    chunk (``_CHUNK_LEN`` steps) per env per inference call.  This client
+    maintains a per-``env_key`` buffer and pops one action per ``act()`` call,
+    refreshing only when the buffer is empty.  When several envs need a refresh
+    on the same ``act()`` call, they are batched into ONE GPU forward via
+    ``infer_refs_batch`` rather than a per-env loop.
 
     State vector (8-dim, matches upstream eval convention)::
 
@@ -309,32 +311,44 @@ class VlaJepaPolicyClient:
     ) -> list[list[float]]:
         """Return one action per env, popping from the chunk buffer.
 
-        When a buffer is empty, calls ``infer_refs`` to refresh it with a
-        new chunk.  The chunk length equals the server's response length
-        (currently ``_CHUNK_LEN = 7``).
+        Envs whose buffer is empty are refreshed together in a **single**
+        ``infer_refs_batch`` call — ONE GPU forward over all of them — instead
+        of a per-env ``infer_refs`` loop. The chunk length equals the server's
+        response length (currently ``_CHUNK_LEN = 7``); client-side chunk
+        buffering is unchanged (one action popped per ``act`` call per env, the
+        buffer refreshed only when exhausted).
 
-        Frame refs (``agentview_ref``, ``wrist_ref``) must be present in
-        the observation dicts; they are forwarded to ``infer_refs`` for
+        Frame refs (``agentview_ref``, ``wrist_ref``) must be present in the
+        observation dicts; they are forwarded to ``infer_refs_batch`` for
         volume-based inference.
         """
         worker = self._get_worker()
+
+        # Gather the envs whose buffer is empty: they share ONE batched forward.
+        # Order is preserved so refreshed chunks map back to the right env.
+        refresh_idx = [i for i, env_key in enumerate(env_keys) if not self._buffers.get(env_key)]
+        if refresh_idx:
+            agentview_refs = [observations[i]["agentview_ref"] for i in refresh_idx]
+            wrist_refs = [observations[i]["wrist_ref"] for i in refresh_idx]
+            batch_instructions = [instructions[i] for i in refresh_idx]
+            states = [self._build_state(observations[i]) for i in refresh_idx]
+
+            chunks: list[list[list[float]]] = worker.infer_refs_batch.remote(
+                agentview_refs=agentview_refs,
+                wrist_refs=wrist_refs,
+                instructions=batch_instructions,
+                states=states,
+            )
+            for j, i in enumerate(refresh_idx):
+                # Convert gripper dim for every action before buffering.
+                # See the class docstring for the model→robosuite mapping.
+                self._buffers[env_keys[i]] = [self._convert_gripper(a) for a in chunks[j]]
+
         actions = []
-        for env_key, instruction, obs in zip(env_keys, instructions, observations, strict=True):
-            buf = self._buffers.get(env_key, [])
-            if not buf:
-                state = self._build_state(obs)
-                chunk: list[list[float]] = worker.infer_refs.remote(
-                    agentview_ref=obs["agentview_ref"],
-                    wrist_ref=obs["wrist_ref"],
-                    instruction=instruction,
-                    state=state,
-                )
-                # Convert gripper dim for every action in the chunk before
-                # buffering.  See docstring for the model→robosuite mapping.
-                buf = [self._convert_gripper(a) for a in chunk]
-            action = buf.pop(0)
+        for env_key in env_keys:
+            buf = self._buffers[env_key]
+            actions.append(buf.pop(0))
             self._buffers[env_key] = buf
-            actions.append(action)
         return actions
 
 
