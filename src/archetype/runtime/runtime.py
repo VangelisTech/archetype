@@ -38,15 +38,23 @@ class ArchetypeRuntime:
     """Process-level runtime. Owns the container and default identity."""
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None) -> None:
-        import logfire
-        from logfire.exceptions import LogfireConfigError
+        import os
 
-        try:
-            logfire.configure(service_name="archetype-runtime")
-        except LogfireConfigError:
-            # No Logfire credentials on this machine — degrade to
-            # local-only instrumentation instead of refusing to start.
-            logfire.configure(service_name="archetype-runtime", send_to_logfire=False)
+        import logfire
+
+        # Never block on an interactive logfire setup prompt.  Send to logfire
+        # only when the user has explicitly configured it via one of:
+        #   - LOGFIRE_TOKEN / LOGFIRE_API_KEY environment variable
+        #   - LOGFIRE_SEND_TO_LOGFIRE=true environment variable
+        # Without explicit opt-in, degrade to local-only instrumentation so
+        # ArchetypeRuntime() works in CI and offline environments without an
+        # EOFError or a blocking interactive prompt.
+        _has_token = bool(os.environ.get("LOGFIRE_TOKEN") or os.environ.get("LOGFIRE_API_KEY"))
+        _send_env = os.environ.get("LOGFIRE_SEND_TO_LOGFIRE", "").lower()
+        _send_explicit = _send_env in ("1", "true", "yes")
+        _send_to_logfire = _has_token or _send_explicit
+
+        logfire.configure(service_name="archetype-runtime", send_to_logfire=_send_to_logfire)
 
         self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or default_actor_ctx()

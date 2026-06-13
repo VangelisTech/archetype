@@ -10,6 +10,12 @@ the container launches VLA-JEPA's own websocket model server
 That keeps us bit-compatible with their published LIBERO evaluation —
 same server, same action un-normalization, same chunking.
 
+``infer_refs`` is the volume-based variant: it reads agentview and wrist
+PNGs from the shared ``libero-frames`` volume (written by the env worker)
+rather than accepting inline base64 blobs. Preprocessing is identical to
+``infer``: rotate 180, resize 224; state shaped (1, 1, 8); gripper
+binarized via dataset_statistics.json.
+
 Checkpoint: ``VLA-JEPA-LIBERO.pt`` from https://huggingface.co/ginwind/VLA-JEPA,
 cached in the ``vla-jepa-ckpts`` Modal volume on first start.
 
@@ -33,11 +39,22 @@ from typing import Any
 
 import modal
 
+# SHA pinned 2026-06-12 via:
+#   git ls-remote https://github.com/ginwind/VLA-JEPA.git HEAD
+# → ec8c70f6e155e2377bbd4d787004c14179c00c7c
+_VLA_JEPA_SHA = "ec8c70f6e155e2377bbd4d787004c14179c00c7c"
+
 REPO = "https://github.com/ginwind/VLA-JEPA.git"
 CKPT_REPO = "ginwind/VLA-JEPA"
 CKPT_FILE = "LIBERO/checkpoints/VLA-JEPA-LIBERO.pt"
 CKPT_DIR = "/ckpts"
 SERVER_PORT = 15084
+
+# Shared volume for frame sidecars — same volume the env worker writes to.
+FRAMES_VOLUME_NAME = "libero-frames"
+FRAMES_MOUNT = "/frames"
+
+frames_volume = modal.Volume.from_name(FRAMES_VOLUME_NAME, create_if_missing=True)
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.1-devel-ubuntu22.04", add_python="3.10")
@@ -45,8 +62,9 @@ image = (
     .pip_install("torch==2.5.1", "packaging", "ninja", "wheel", "huggingface_hub")
     # Their deployment/ websocket server+client deps are not in requirements.txt.
     .pip_install("websockets", "msgpack", "msgpack-numpy")
+    # SHA pinned 2026-06-12: git ls-remote VLA-JEPA HEAD → ec8c70f6...
     .run_commands(
-        f"git clone --depth 1 {REPO} /opt/VLA-JEPA",
+        f"git clone {REPO} /opt/VLA-JEPA && git -C /opt/VLA-JEPA checkout {_VLA_JEPA_SHA}",
         "pip install -r /opt/VLA-JEPA/requirements.txt",
         "pip install -e /opt/VLA-JEPA",
     )
@@ -66,7 +84,7 @@ ckpt_volume = modal.Volume.from_name("vla-jepa-ckpts", create_if_missing=True)
 
 @app.cls(
     gpu="L40S",
-    volumes={CKPT_DIR: ckpt_volume},
+    volumes={CKPT_DIR: ckpt_volume, FRAMES_MOUNT: frames_volume},
     timeout=3600,
     scaledown_window=600,
     max_containers=1,
@@ -147,50 +165,49 @@ class VlaJepaPolicy:
                 cfg.write_text(patched)
                 print(f"patched base-model paths in {cfg.name}")
 
-    @modal.method()
-    def infer(
-        self,
-        agentview_png: str,
-        wrist_png: str,
-        instruction: str,
-        state: list[float],
-        unnorm_key: str = "franka",
-    ) -> list[list[float]]:
-        """One policy inference -> an un-normalized action chunk.
+    @staticmethod
+    def _decode_and_preprocess(b64: str) -> "Any":
+        """Decode a base64 PNG and preprocess for the policy:
+        rotate 180 + resize 224, as the upstream eval does."""
+        import cv2
+        import numpy as np
 
-        Payload and response shape follow upstream M1Inference
-        (examples/LIBERO/model2libero_interface.py): the server returns
-        normalized actions (B, chunk, D) in [-1, 1]; we un-normalize here
-        with the checkpoint's dataset_statistics.json, gripper binarized,
-        exactly as their LIBERO eval does.
+        buf = np.frombuffer(base64.b64decode(b64), dtype=np.uint8)
+        rgb = cv2.cvtColor(cv2.imdecode(buf, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+        # Raw LIBERO frames are upside down; rotate to match train-time preprocessing.
+        rgb = np.ascontiguousarray(rgb[::-1, ::-1])
+        return cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def _load_and_preprocess_ref(ref: str) -> "Any":
+        """Read a PNG from the shared volume by its ref path and preprocess it.
+
+        The ref is volume-relative (e.g. ``<session>/<env>/<step>-agentview.png``);
+        we prepend the FRAMES_MOUNT to get the local path.
         """
-        import json
+        import os
 
         import cv2
         import numpy as np
 
-        def decode(b64: str) -> "np.ndarray":
-            buf = np.frombuffer(base64.b64decode(b64), dtype=np.uint8)
-            rgb = cv2.cvtColor(cv2.imdecode(buf, cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
-            # Inputs are raw LIBERO frames; rotate 180 degrees to match the
-            # model's train-time preprocessing (their eval does [::-1, ::-1]).
-            rgb = np.ascontiguousarray(rgb[::-1, ::-1])
-            return cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
+        full_path = os.path.join(FRAMES_MOUNT, ref)
+        bgr = cv2.imread(full_path, cv2.IMREAD_COLOR)
+        if bgr is None:
+            raise FileNotFoundError(f"frame not found in volume: {full_path!r}")
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        # Raw LIBERO frames are upside down; rotate to match train-time preprocessing.
+        rgb = np.ascontiguousarray(rgb[::-1, ::-1])
+        return cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_AREA)
 
-        payload: dict[str, Any] = {
-            "batch_images": [[decode(agentview_png), decode(wrist_png)]],
-            "instructions": [instruction],
-            "unnorm_key": unnorm_key,
-            "do_sample": False,
-            "use_ddim": True,
-            "num_ddim_steps": 10,
-            # Upstream wraps an already-batched (1, 8) state in a list, so the
-            # server sees (1, 1, 8); state = eef_pos(3) + axis-angle(3) +
-            # gripper_qpos(2).
-            "state": [np.asarray(state, dtype=np.float32)[None, :]],
-        }
-        response = self._client.infer(payload)
-        normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
+    def _unnormalize(
+        self,
+        normalized: "Any",
+        unnorm_key: str,
+    ) -> "list[list[float]]":
+        """Un-normalize a (chunk, D) array using dataset_statistics.json."""
+        import json
+
+        import numpy as np
 
         with open(f"{CKPT_DIR}/LIBERO/dataset_statistics.json") as f:
             norm_stats = json.load(f)
@@ -201,9 +218,100 @@ class VlaJepaPolicy:
         high = np.asarray(stats["max"])
         mask = np.asarray(stats.get("mask", np.ones_like(low, dtype=bool)))
 
+        # Gripper binarized (upstream eval convention).
         normalized[:, 6] = np.where(normalized[:, 6] < 0.5, 0, 1)
         actions = np.where(mask, 0.5 * (normalized + 1) * (high - low) + low, normalized)
         return [[float(v) for v in row] for row in actions]
+
+    def _build_payload(
+        self,
+        agentview_img: "Any",
+        wrist_img: "Any",
+        instruction: str,
+        state: list[float],
+        unnorm_key: str,
+    ) -> dict[str, Any]:
+        import numpy as np
+
+        return {
+            "batch_images": [[agentview_img, wrist_img]],
+            "instructions": [instruction],
+            "unnorm_key": unnorm_key,
+            "do_sample": False,
+            "use_ddim": True,
+            "num_ddim_steps": 10,
+            # Upstream wraps an already-batched (1, 8) state in a list, so the
+            # server sees (1, 1, 8); state = eef_pos(3) + axis-angle(3) +
+            # gripper_qpos(2).
+            "state": [np.asarray(state, dtype=np.float32)[None, :]],
+        }
+
+    @modal.method()
+    def infer(
+        self,
+        agentview_png: str,
+        wrist_png: str,
+        instruction: str,
+        state: list[float],
+        unnorm_key: str = "franka",
+    ) -> list[list[float]]:
+        """One policy inference from inline base64 PNGs -> an un-normalized action chunk.
+
+        Payload and response shape follow upstream M1Inference
+        (examples/LIBERO/model2libero_interface.py): the server returns
+        normalized actions (B, chunk, D) in [-1, 1]; we un-normalize here
+        with the checkpoint's dataset_statistics.json, gripper binarized,
+        exactly as their LIBERO eval does.
+        """
+        import numpy as np
+
+        agentview_img = self._decode_and_preprocess(agentview_png)
+        wrist_img = self._decode_and_preprocess(wrist_png)
+
+        payload = self._build_payload(agentview_img, wrist_img, instruction, state, unnorm_key)
+        response = self._client.infer(payload)
+        normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
+        return self._unnormalize(normalized, unnorm_key)
+
+    @modal.method()
+    def infer_refs(
+        self,
+        agentview_ref: str,
+        wrist_ref: str,
+        instruction: str,
+        state: list[float],
+        unnorm_key: str = "franka",
+    ) -> list[list[float]]:
+        """One policy inference from volume refs -> un-normalized action chunk.
+
+        Reads PNGs from the shared ``libero-frames`` volume (mounted at
+        ``/frames``) using the ref paths written by the env worker.  All
+        preprocessing is identical to ``infer``: rotate 180 + resize 224;
+        state shaped (1, 1, 8); gripper binarized.
+
+        Args:
+            agentview_ref: Volume-relative path to the agentview PNG
+                (e.g. ``<session>/<env>/reset-agentview.png``).
+            wrist_ref: Volume-relative path to the wrist PNG.
+            instruction: Natural language task instruction.
+            state: 8-dim robot state [eef_pos(3), axis_angle(3), gripper_qpos(2)].
+            unnorm_key: Key in dataset_statistics.json (default: ``franka``).
+
+        Returns:
+            Un-normalized action chunk: list of (chunk_size, 7) float lists.
+        """
+        import numpy as np
+
+        # Reload the volume so we see the env worker's latest commits.
+        frames_volume.reload()
+
+        agentview_img = self._load_and_preprocess_ref(agentview_ref)
+        wrist_img = self._load_and_preprocess_ref(wrist_ref)
+
+        payload = self._build_payload(agentview_img, wrist_img, instruction, state, unnorm_key)
+        response = self._client.infer(payload)
+        normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
+        return self._unnormalize(normalized, unnorm_key)
 
 
 @app.local_entrypoint()
@@ -228,6 +336,7 @@ def smoke():
         instruction="pick up the black bowl and place it on the plate",
         state=[0.0] * 8,
     )
-    print(f"action chunk: {len(chunk)} steps x {len(chunk[0])} dims")
+    print(f"action chunk (infer): {len(chunk)} steps x {len(chunk[0])} dims")
     print(f"first action: {chunk[0]}")
-    print("vla-jepa smoke OK")
+    assert len(chunk[0]) == 7, f"expected 7-dim actions, got {len(chunk[0])}"
+    print("vla-jepa infer smoke OK")

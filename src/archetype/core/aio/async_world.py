@@ -23,6 +23,7 @@ from daft import DataFrame, col
 from daft.functions import when
 from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
+from archetype.core.aio.async_querier import UnknownSignatureError, _canonicalize
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
@@ -377,6 +378,87 @@ class AsyncWorld(iAsyncWorld):
         await self._register_entity(entity_id, components)
         return entity_id
 
+    async def create_entities(self, entities: list[list[Component]]) -> list[int]:
+        """Spawn multiple entities in one batch. Fires one ``OnSpawn`` per entity.
+
+        All spawn rows are appended in a single cache operation per archetype
+        signature, preserving the initial-conditions contract: every entity's
+        first row is its raw spawn values at the materialization tick;
+        processors first apply on the following tick (x_0 is given,
+        x_{t+1} = f(x_t)).
+
+        Args:
+            entities: A list of component lists, one per entity to spawn.
+
+        Returns:
+            A list of entity IDs in the same order as ``entities``.
+        """
+        ids: list[int] = []
+        for components in entities:
+            entity_id = self.next_entity_id
+            self.next_entity_id += 1
+            ids.append(entity_id)
+            await self._register_entity(entity_id, components)
+        return ids
+
+    def reserve_entity_ids(self, n: int) -> list[int]:
+        """Reserve *n* entity IDs without spawning.
+
+        The returned IDs are guaranteed never to collide with auto-assigned
+        ones: they are drawn from the same monotonic counter as
+        ``create_entity`` / ``create_entities``, so interleaved calls produce
+        disjoint ranges.
+
+        Reserved IDs must be materialised via ``spawn_with_reserved_id``
+        before the next ``step()`` that processes their archetype, otherwise
+        they remain invisible (no spawn_cache row, no entity2sig entry).
+
+        Use this when external systems need to reference an entity by ID
+        before the spawn lands on the ledger (e.g. to break a circular
+        dependency between two entities that reference each other).
+
+        Args:
+            n: Number of IDs to reserve (must be >= 1).
+
+        Returns:
+            A sorted list of *n* reserved entity IDs.
+
+        Raises:
+            ValueError: If *n* is less than 1.
+        """
+        if n < 1:
+            raise ValueError(f"reserve_entity_ids requires n >= 1, got {n}")
+        start = self.next_entity_id
+        self.next_entity_id += n
+        return list(range(start, start + n))
+
+    async def spawn_with_reserved_id(self, entity_id: int, components: list[Component]) -> None:
+        """Materialise a previously reserved entity ID.
+
+        Registers the entity in ``entity2sig`` and ``spawn_cache`` exactly as
+        ``create_entity`` would, then fires ``OnSpawn``. The entity will appear
+        as a raw spawn row at the next materialization tick.
+
+        Cancellation contract: if you want to cancel a reserved spawn before
+        it materialises, call ``remove_entity(entity_id)`` — it will find the
+        pending spawn_cache row and remove it cleanly, matching the semantics
+        of cancelling a same-tick spawn from ``create_entity``.
+
+        Args:
+            entity_id: A previously reserved ID (from ``reserve_entity_ids``).
+            components: Initial component values.
+
+        Raises:
+            ValueError: If *entity_id* is already registered (double-spawn
+                guard — prevents silent overwrites of live entities).
+        """
+        if entity_id in self.entity2sig:
+            raise ValueError(
+                f"Entity {entity_id} is already registered. "
+                "Use update_entity to change component values on a live entity."
+            )
+        await self._register_entity(entity_id, components)
+
     async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
@@ -523,9 +605,18 @@ class AsyncWorld(iAsyncWorld):
     ) -> DataFrame:
         """Facade Method to query an archetype table by signature.
 
+        The signature is canonicalized (sorted by class name) before lookup,
+        so callers may supply types in any order.  If the canonical signature
+        has never been active in this world (not in the live registry AND not
+        in the store's durable record) an ``UnknownSignatureError`` is raised —
+        a distinct failure from 'the signature exists but has zero rows at
+        this tick' which returns an empty DataFrame.
+
         Defaults to the world's most recent run_id when not provided. Accepts an optional
         run_config for instrumentation; ignored by the base querier.
         """
+        # Canonicalize the input sig so unsorted tuples resolve correctly.
+        sig = _canonicalize(sig)
 
         # Back-compat: tests sometimes pass RunConfig as the 2nd positional arg
         if run_config_or_ticks is not None and not isinstance(run_config_or_ticks, list):
@@ -542,9 +633,41 @@ class AsyncWorld(iAsyncWorld):
         else:
             effective_run_id = ""
 
+        # Existence check: the sig must either be currently active (live entities
+        # or pending spawns/despawns) OR have been committed to the durable store.
+        # We always consult the durable store when the querier supports
+        # list_signatures — including when active_signatures is empty (e.g. all
+        # entities despawned, or brand-new world with no pending spawns).  Skipping
+        # the durable-store check when active_signatures is empty would allow an
+        # unknown signature to bypass the guard and silently return an empty
+        # DataFrame, violating the loud unknown-signature criterion.
+        # When the querier does not implement list_signatures (test fakes, InMemory
+        # queriers) the check is best-effort at the API boundary and is skipped.
+        if hasattr(self.querier, "list_signatures"):
+            # Consult the durable store for committed sigs and also include live
+            # sigs (pending spawns/despawns) that haven't been flushed yet.
+            store_sigs = {_canonicalize(s) for s in await self.querier.list_signatures()}
+            live_sigs = {_canonicalize(s) for s in self.active_signatures}
+            all_known = live_sigs | store_sigs
+            # Only raise when we have at least one committed or live sig — a truly
+            # brand-new world that has never spawned anything (empty store, no
+            # pending spawns) cannot yet distinguish a valid future sig from an
+            # incorrect one, so we let the store return an empty frame naturally.
+            if all_known and sig not in all_known:
+                component_names = ", ".join(t.__name__ for t in sig)
+                raise UnknownSignatureError(
+                    f"Archetype signature ({component_names}) has never been registered in this world. "
+                    "No entity carrying exactly these component types has been spawned. "
+                    "If you want to query entities that CONTAIN these components (possibly alongside others), "
+                    "use world.query() / query_components() instead of query_archetype()."
+                )
+
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
             # Prefer to pass run_config if the querier supports it (instrumented);
-            # otherwise omit.
+            # otherwise omit.  Also pass _world_validated=True so that the
+            # querier's own existence check is bypassed — the world-level guard
+            # above has already verified the sig against live + store sigs,
+            # including sigs that are in the spawn cache but not yet committed.
             try:
                 return await self.querier.query_archetype(
                     sig=sig,
@@ -554,6 +677,7 @@ class AsyncWorld(iAsyncWorld):
                     entity_ids=entity_ids,
                     components=components,
                     run_config=run_config,  # ty: ignore[unknown-argument]  # probed; TypeError-guarded below
+                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
                 )
             except TypeError:
                 return await self.querier.query_archetype(
@@ -563,6 +687,7 @@ class AsyncWorld(iAsyncWorld):
                     ticks=target_ticks,
                     entity_ids=entity_ids,
                     components=components,
+                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
                 )
 
         requested_ticks = ticks or [self.tick]

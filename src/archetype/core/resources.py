@@ -50,6 +50,18 @@ class Resources:
         """Insert a resource, keyed by its type."""
         self._store[type(resource)] = resource
 
+    def insert_as(self, resource: object, key_type: type) -> None:
+        """Insert a resource keyed by an explicit type rather than ``type(resource)``.
+
+        Useful in tests when a subclass should be looked up as its base type::
+
+            world.resources.insert_as(FakeSpec(client), PolicyClientSpec)
+
+        Production processors that call ``resources.require(PolicyClientSpec)``
+        will then find ``FakeSpec(client)`` transparently.
+        """
+        self._store[key_type] = resource
+
     def get(self, resource_type: type[T]) -> T | None:
         """Get a resource, or None if not present."""
         # _store is keyed by type(resource), so the value is a resource_type instance.

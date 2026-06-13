@@ -133,6 +133,43 @@ class CommandService:
         await self._emit(ctx, "spawn", world_id)
         return result
 
+    @logfire.instrument("gate.create_entities")
+    async def create_entities(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entities: list[list[Component]],
+    ) -> list[int]:
+        """Batch-spawn entities. Applies one RBAC gate check for the batch."""
+        self._gate(Command(type=CommandType.SPAWN), ctx)
+        result = await self._mutations.create_entities(world_id, entities)
+        await self._emit(ctx, "spawn_batch", world_id, count=len(entities))
+        return result
+
+    @logfire.instrument("gate.reserve_entity_ids")
+    def reserve_entity_ids(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        n: int,
+    ) -> list[int]:
+        """Reserve *n* entity IDs without spawning. Synchronous — no round-trip."""
+        self._gate(Command(type=CommandType.SPAWN), ctx)
+        return self._mutations.reserve_entity_ids(world_id, n)
+
+    @logfire.instrument("gate.spawn_with_reserved_id")
+    async def spawn_with_reserved_id(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        entity_id: int,
+        components: list[Component],
+    ) -> None:
+        """Materialise a previously reserved entity ID."""
+        self._gate(Command(type=CommandType.SPAWN), ctx)
+        await self._mutations.spawn_with_reserved_id(world_id, entity_id, components)
+        await self._emit(ctx, "spawn_reserved", world_id, entity_id=entity_id)
+
     @logfire.instrument("gate.remove_entity")
     async def remove_entity(
         self,

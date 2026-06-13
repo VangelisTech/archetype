@@ -395,6 +395,50 @@ df = df.with_column("outbox__messages", agent.respond(col("agent__name"), ...))
 
 ---
 
+## Lazy-Audit UDF-Boundary Exemption (Jun 2026)
+
+``scripts/check_lazy_audit.py`` gates every ``.collect()`` and
+``.to_pylist()`` call in ``src/`` against ``lazy_audit.toml``.  There is
+**one sanctioned exception** that does not require an allowlist entry:
+
+> ``Series.to_pylist()`` called on a *parameter* of a function decorated
+> with ``@daft.method.batch`` or ``@daft.func.batch``.
+
+When Daft invokes such a function the batch is already materialised by the
+executor — the function receives concrete ``Series`` objects.  Converting
+those parameters to Python lists is the expected interface at the C-library
+or RPC boundary, not premature materialisation.  The checker detects this
+pattern via AST analysis and reports these sites as
+*"udf-boundary (sanctioned)"*.
+
+```python
+# ✅ SANCTIONED — no lazy_audit.toml entry needed
+@daft.cls()
+class Stepper:
+    @daft.method.batch(return_dtype=_STATE_STRUCT)
+    def step(self, cart_pos: Series, pole_angle: Series) -> Series:
+        cp = cart_pos.to_pylist()   # ← sanctioned: param of @daft.method.batch
+        pa = pole_angle.to_pylist() # ← sanctioned: param of @daft.method.batch
+        ...
+
+# ❌ GATED — requires a lazy_audit.toml entry with a specific technical reason
+def query_rows(df):
+    return df.to_pylist()  # ← DataFrame-level; still audited
+```
+
+Rules:
+
+- ``Series.to_pylist()`` on a **batch-UDF parameter** → exempt, no entry.
+- ``DataFrame.to_pylist()`` anywhere → requires entry.
+- ``DataFrame.collect()`` anywhere → requires entry.
+- ``Series.to_pylist()`` **outside** a batch-UDF → requires entry.
+- ``collect()`` inside a batch-UDF on a DataFrame (not a parameter) → requires entry.
+
+See ``lazy_audit.toml`` for the authoritative policy header and
+``tests/scripts/test_check_lazy_audit.py`` for positive/negative coverage.
+
+---
+
 ## Agent Communication: Messaging Pipeline (Mar 2026)
 
 Agent-to-agent messaging is processor-driven, not broker-driven.

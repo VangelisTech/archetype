@@ -190,6 +190,12 @@ class AsyncCachedStore(iAsyncStore):
         """Delegate to inner store."""
         return await self._inner.list_signatures()
 
+    async def list_committed_signatures(self) -> list[ArchetypeSignature]:
+        """Delegate committed-sigs check to inner store."""
+        if hasattr(self._inner, "list_committed_signatures"):
+            return await self._inner.list_committed_signatures()
+        return await self._inner.list_signatures()
+
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
         """
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.

@@ -43,6 +43,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
+from archetype.experiments.boundary import series_to_rows, unpack_struct
 
 CARTPOLE_XML = """
 <mujoco model="cartpole">
@@ -113,21 +114,24 @@ class _CartpoleStepper:
         # Runtime-bound members, aliased once for the type checker.
         mj_reset = mujoco.mj_resetData  # ty: ignore[unresolved-attribute]
         mj_step = mujoco.mj_step  # ty: ignore[unresolved-attribute]
-        cp = cart_pos.to_pylist()
-        pa = pole_angle.to_pylist()
-        cv = cart_vel.to_pylist()
-        pv = pole_vel.to_pylist()
+        rows = series_to_rows(
+            ["cart_pos", "pole_angle", "cart_vel", "pole_vel"],
+            cart_pos,
+            pole_angle,
+            cart_vel,
+            pole_vel,
+        )
 
         out: list[dict[str, float]] = []
-        for i in range(len(cp)):
+        for row in rows:
             # The model has no contacts or constraints, so stepping is a pure
             # function of (qpos, qvel): resetting scratch MjData per row is
             # exactly equivalent to a continuous rollout.
             mj_reset(model, data)
-            data.qpos[0] = cp[i]
-            data.qpos[1] = pa[i]
-            data.qvel[0] = cv[i]
-            data.qvel[1] = pv[i]
+            data.qpos[0] = row["cart_pos"]
+            data.qpos[1] = row["pole_angle"]
+            data.qvel[0] = row["cart_vel"]
+            data.qvel[1] = row["pole_vel"]
             for _ in range(self._substeps):
                 mj_step(model, data)
             out.append(
@@ -155,17 +159,15 @@ class CartpoleStepProcessor(AsyncProcessor):
             col("cartpolestate__cart_vel"),
             col("cartpolestate__pole_vel"),
         )
-        return (
-            df.with_column("_mj_next", nxt)
-            .with_columns(
-                {
-                    "cartpolestate__cart_pos": col("_mj_next")["cart_pos"],
-                    "cartpolestate__pole_angle": col("_mj_next")["pole_angle"],
-                    "cartpolestate__cart_vel": col("_mj_next")["cart_vel"],
-                    "cartpolestate__pole_vel": col("_mj_next")["pole_vel"],
-                }
-            )
-            .exclude("_mj_next")
+        return unpack_struct(
+            df.with_column("_mj_next", nxt),
+            "_mj_next",
+            {
+                "cart_pos": "cartpolestate__cart_pos",
+                "pole_angle": "cartpolestate__pole_angle",
+                "cart_vel": "cartpolestate__cart_vel",
+                "pole_vel": "cartpolestate__pole_vel",
+            },
         )
 
 

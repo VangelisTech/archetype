@@ -230,6 +230,68 @@ class Result(Component):
         return json.loads(self.outputs_json)
 
 
+class EvalTrialResult(Component):
+    """One trial of a LIBERO eval episode on the ledger.
+
+    Each trial = one environment reset with a specific seed, run to
+    ``done`` or ``max_steps``.  The driver records one ``EvalTrialResult``
+    entity per trial in the lab world so the full sweep is queryable with
+    time-travel semantics.
+
+    Fields:
+        suite:          LIBERO suite name (e.g. "libero_spatial")
+        task_id:        Integer task index within the suite
+        trial_idx:      0-based trial index within (suite, task_id)
+        seed:           Random seed used to reset the environment
+        env_key:        Routing key used for this trial's env instance
+        success:        Whether the episode terminated with ``success=True``
+        episode_length: Number of env steps executed (ticks since tick-1)
+        wall_s:         Wall-clock duration in seconds (0.0 if unknown)
+        run_id:         Parent run identifier (free-form label)
+        recorded_at_ms: Unix milliseconds when the row was written
+    """
+
+    suite: str = ""
+    task_id: int = 0
+    trial_idx: int = 0
+    seed: int = 0
+    env_key: int = 0
+    success: bool = False
+    episode_length: int = 0
+    wall_s: float = 0.0
+    run_id: str = ""
+    recorded_at_ms: int = 0
+
+    @classmethod
+    def make(
+        cls,
+        suite: str,
+        task_id: int,
+        trial_idx: int,
+        *,
+        seed: int,
+        env_key: int,
+        success: bool,
+        episode_length: int,
+        wall_s: float = 0.0,
+        run_id: str = "",
+        recorded_at_ms: int | None = None,
+    ) -> EvalTrialResult:
+        """Convenience constructor with defaults for optional fields."""
+        return cls(
+            suite=suite,
+            task_id=task_id,
+            trial_idx=trial_idx,
+            seed=seed,
+            env_key=env_key,
+            success=success,
+            episode_length=episode_length,
+            wall_s=wall_s,
+            run_id=run_id,
+            recorded_at_ms=recorded_at_ms if recorded_at_ms is not None else _now_ms(),
+        )
+
+
 class BranchHead(Component):
     """Persisted 'current best commit' for an experiment.
 

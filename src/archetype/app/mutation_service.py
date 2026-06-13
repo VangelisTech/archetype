@@ -59,6 +59,34 @@ class MutationService:
         world = self._get_async_world(world_id)
         return await world.create_entity(components)
 
+    async def create_entities(
+        self, world_id: str | UUID, entities: list[list[Component]]
+    ) -> list[int]:
+        """Spawn multiple entities in one batch. Returns their IDs in order.
+
+        All entities obey the initial-conditions contract: each entity's first
+        row is its raw spawn values at the materialization tick; processors
+        first apply on the following tick.
+        """
+        world = self._get_async_world(world_id)
+        return await world.create_entities(entities)
+
+    def reserve_entity_ids(self, world_id: str | UUID, n: int) -> list[int]:
+        """Reserve *n* entity IDs without spawning. Returns the reserved IDs.
+
+        IDs are drawn from the same monotonic counter as ``create_entity``;
+        interleaved calls produce disjoint ranges.
+        """
+        world = self._get_async_world(world_id)
+        return world.reserve_entity_ids(n)
+
+    async def spawn_with_reserved_id(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None:
+        """Materialise a previously reserved entity ID."""
+        world = self._get_async_world(world_id)
+        await world.spawn_with_reserved_id(entity_id, components)
+
     async def remove_entity(self, world_id: str | UUID, entity_id: int) -> None:
         """Despawn an entity."""
         world = self._get_async_world(world_id)

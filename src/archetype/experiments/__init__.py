@@ -29,6 +29,7 @@ from archetype.experiments.claude_sessions import (
 )
 from archetype.experiments.components import (
     BranchHead,
+    EvalTrialResult,
     Experiment,
     Result,
     Run,
@@ -51,6 +52,7 @@ from archetype.experiments.trajectories import (
 
 __all__ = [
     "BranchHead",
+    "EvalTrialResult",
     "Experiment",
     "Result",
     "Run",
