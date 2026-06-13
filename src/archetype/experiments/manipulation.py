@@ -533,6 +533,7 @@ def _build_env_client_from_spec(spec: Any) -> EnvClient:
         suite=spec.suite,
         task_id=spec.task_id,
         with_frames=spec.with_frames,
+        frame_commit_every=spec.frame_commit_every,
     )
 
 

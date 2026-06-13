@@ -25,6 +25,7 @@ Smoke (1 task x 2 trials, builds the image on first run):
 Throughput-tuning knobs are CLI flags on the entrypoint below.
 """
 
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -63,21 +64,19 @@ app = modal.App("archetype-libero-eval", image=image)
 results_volume = modal.Volume.from_name("libero-eval-results", create_if_missing=True)
 
 
-@app.function(volumes={RESULTS_DIR: results_volume}, timeout=3600)
-def run_eval_remote(
+def _run_one_task_eval(
     suite: str,
-    task_ids: list[int],
+    task_id: int,
     trials: int,
     max_steps: int,
     use_policy: bool,
     run_id: str,
 ) -> dict[str, Any]:
-    """Run the eval driver in-region and return a throughput summary."""
+    """Run one task's eval in-region and return a throughput summary."""
     import asyncio
     import shutil
     import sys
     import time
-    from pathlib import Path
 
     # bench/libero is a directory of loose scripts, not a package; the eval
     # driver imports modal_worker by name, so it must be on the path.
@@ -88,16 +87,17 @@ def run_eval_remote(
     # Storage on fast local disk; only the final parquet is copied to the
     # network volume. Writing the ledger directly to a Modal Volume would
     # reintroduce per-write network latency — the very thing we removed.
-    local_out = Path("/tmp") / f"eval-{run_id}"
+    task_run_id = f"{run_id}:task{task_id}"
+    local_out = Path("/tmp") / f"eval-{run_id}-task{task_id}"
     local_out.mkdir(parents=True, exist_ok=True)
 
     config = DriverConfig(
         suite=suite,
-        task_ids=task_ids,
+        task_ids=[task_id],
         trials=trials,
         max_steps=max_steps,
         out=str(local_out),
-        run_id=run_id,
+        run_id=task_run_id,
         env_client_type="modal",
         use_policy=use_policy,
     )
@@ -109,7 +109,7 @@ def run_eval_remote(
     total_steps = sum(getattr(r, "episode_length", 0) or 0 for r in results)
     successes = sum(1 for r in results if getattr(r, "success", False))
 
-    dest = Path(RESULTS_DIR) / run_id
+    dest = Path(RESULTS_DIR) / run_id / f"task{task_id}"
     if dest.exists():
         shutil.rmtree(dest)
     shutil.copytree(local_out, dest)
@@ -117,7 +117,7 @@ def run_eval_remote(
 
     return {
         "suite": suite,
-        "task_ids": task_ids,
+        "task_id": task_id,
         "trials": trials,
         "episodes": len(results),
         "successes": successes,
@@ -125,6 +125,67 @@ def run_eval_remote(
         "wall_s": round(wall_s, 1),
         "sec_per_step": round(wall_s / total_steps, 3) if total_steps else None,
         "results_path": str(dest),
+    }
+
+
+@app.function(volumes={RESULTS_DIR: results_volume}, timeout=3600)
+def run_task_eval_remote(
+    suite: str,
+    task_id: int,
+    trials: int,
+    max_steps: int,
+    use_policy: bool,
+    run_id: str,
+) -> dict[str, Any]:
+    """Run one task's eval in its own Modal invocation."""
+    return _run_one_task_eval(suite, task_id, trials, max_steps, use_policy, run_id)
+
+
+@app.function(volumes={RESULTS_DIR: results_volume}, timeout=3600)
+def run_eval_remote(
+    suite: str,
+    task_ids: list[int],
+    trials: int,
+    max_steps: int,
+    use_policy: bool,
+    run_id: str,
+) -> dict[str, Any]:
+    """Compatibility wrapper: run all requested tasks serially in one container."""
+    summaries = [
+        _run_one_task_eval(
+            suite,
+            task_id,
+            trials,
+            max_steps,
+            use_policy,
+            run_id,
+        )
+        for task_id in task_ids
+    ]
+    return _combine_summaries(suite, task_ids, trials, summaries, run_id)
+
+
+def _combine_summaries(
+    suite: str,
+    task_ids: list[int],
+    trials: int,
+    summaries: list[dict[str, Any]],
+    run_id: str,
+) -> dict[str, Any]:
+    """Aggregate per-task summaries into the old top-level shape."""
+    total_steps = sum(int(s.get("total_steps", 0) or 0) for s in summaries)
+    wall_s = max((float(s.get("wall_s", 0.0) or 0.0) for s in summaries), default=0.0)
+    return {
+        "suite": suite,
+        "task_ids": task_ids,
+        "trials": trials,
+        "episodes": sum(int(s.get("episodes", 0) or 0) for s in summaries),
+        "successes": sum(int(s.get("successes", 0) or 0) for s in summaries),
+        "total_steps": total_steps,
+        "wall_s": round(wall_s, 1),
+        "sec_per_step": round(wall_s / total_steps, 3) if total_steps else None,
+        "results_path": str(Path(RESULTS_DIR) / run_id),
+        "tasks": summaries,
     }
 
 
@@ -143,16 +204,36 @@ def main(
     from the a3 eval smoke) to read the co-location speedup.
     """
     ids = [int(x) for x in str(task_ids).split(",") if x != ""]
-    summary = run_eval_remote.remote(
-        suite=suite,
-        task_ids=ids,
-        trials=trials,
-        max_steps=max_steps,
-        use_policy=use_policy,
-        run_id=run_id,
+    task_args = [
+        (
+            suite,
+            task_id,
+            trials,
+            max_steps,
+            use_policy,
+            run_id,
+        )
+        for task_id in ids
+    ]
+    summaries = list(
+        run_task_eval_remote.starmap(
+            task_args,
+            order_outputs=True,
+        )
     )
+    summary = _combine_summaries(suite, ids, trials, summaries, run_id)
     print("=== co-located eval throughput ===")
     for key, value in summary.items():
+        if key == "tasks":
+            print("  tasks:")
+            for task_summary in value:
+                print(
+                    "    "
+                    f"task={task_summary['task_id']} episodes={task_summary['episodes']} "
+                    f"steps={task_summary['total_steps']} wall={task_summary['wall_s']}s "
+                    f"sec_per_step={task_summary['sec_per_step']}"
+                )
+            continue
         print(f"  {key}: {value}")
     baseline = 7.3
     if summary.get("sec_per_step"):

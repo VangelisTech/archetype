@@ -139,6 +139,7 @@ class EnvClientSpec:
     task_id: int
     app_name: str = "archetype-libero-env"
     with_frames: bool = False
+    frame_commit_every: int = 1
 
     def build(self) -> Any:
         """Build the live ``EnvClient`` from this spec's scalar config.

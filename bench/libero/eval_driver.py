@@ -104,7 +104,13 @@ def _make_modal_env_client(suite: str, task_id: int, with_frames: bool = False) 
     """
     from modal_worker import ModalEnvClient  # type: ignore[import-untyped]  # noqa: PLC0415
 
-    return ModalEnvClient(suite=suite, task_id=task_id, with_frames=with_frames)
+    frame_commit_every = 7 if with_frames else 1
+    return ModalEnvClient(
+        suite=suite,
+        task_id=task_id,
+        with_frames=with_frames,
+        frame_commit_every=frame_commit_every,
+    )
 
 
 def _make_vla_policy_client(suite: str, task_id: int) -> Any:
@@ -119,6 +125,114 @@ def _make_scripted_env(task_id: int) -> ScriptedReachEnv:
     # One fixed target per task_id — enough to make success deterministic.
     target: tuple[float, float, float] = (0.5 + 0.05 * task_id, 0.0, 0.5)
     return ScriptedReachEnv(targets={i: target for i in range(64)}, tolerance=0.5)
+
+
+def _task_language(env_client: Any) -> str:
+    """Return the env's task instruction when the client exposes it."""
+    task_language = getattr(env_client, "task_language", None)
+    if callable(task_language):
+        return str(task_language())
+    return ""
+
+
+async def _task_language_async(env_client: Any) -> str:
+    """Return task language via an async client hook when available."""
+    task_language_async = getattr(env_client, "task_language_async", None)
+    if callable(task_language_async):
+        return str(await task_language_async())
+    return _task_language(env_client)
+
+
+async def _reset_many_async(
+    env_client: Any,
+    env_keys: list[int],
+    seeds: list[int],
+) -> list[dict[str, Any]]:
+    """Reset many env instances through a batched async hook when available."""
+    reset_many_async = getattr(env_client, "reset_many_async", None)
+    if callable(reset_many_async):
+        return list(await reset_many_async(env_keys, seeds))
+    return [env_client.reset(env_key, seed) for env_key, seed in zip(env_keys, seeds, strict=True)]
+
+
+async def _latest_status_rows(world: Any, *, use_frames: bool) -> list[dict[str, Any]]:
+    """Read only the latest ManipStatus tick for the episode world."""
+    info = await world.info()
+    latest_tick = info.tick - 1
+    sig = (
+        (ManipAction, ManipFrameRef, ManipProprio, ManipStatus, ManipTask)
+        if use_frames
+        else (ManipAction, ManipProprio, ManipStatus, ManipTask)
+    )
+    df = await world._gate.query_archetype(  # noqa: SLF001 - bench hot-path escape hatch
+        world._ctx,  # noqa: SLF001
+        sig,
+        str(info.world_id),
+        str(info.run_id or ""),
+        storage_config=world._state.storage_config,  # noqa: SLF001
+        ticks=[latest_tick],
+        components=[ManipStatus],
+    )
+    return df.to_pylist()
+
+
+def _episode_components(
+    *,
+    obs: dict[str, Any],
+    suite: str,
+    task_id: int,
+    instruction: str,
+    seed: int,
+    env_key: int,
+    use_frames: bool,
+) -> list[Any]:
+    """Build the initial components for one manipulation episode entity."""
+    spawn_action = [0.0] * ACTION_DIM
+    components: list[Any] = [
+        ManipProprio(
+            eef_pos=list(obs.get("eef_pos", [0.0, 0.0, 0.0])),
+            eef_quat=list(obs.get("eef_quat", [1.0, 0.0, 0.0, 0.0])),
+            gripper=float(obs.get("gripper", 0.0)),
+            gripper_qpos=list(obs.get("gripper_qpos", [0.0, 0.0])),
+        ),
+        ManipAction(values=list(spawn_action)),
+        ManipStatus(),
+        ManipTask(
+            suite=suite,
+            task_id=task_id,
+            instruction=instruction,
+            seed=seed,
+            env_key=env_key,
+        ),
+    ]
+    if use_frames:
+        components.append(
+            ManipFrameRef(
+                agentview_ref=str(obs.get("agentview_ref", "")),
+                wrist_ref=str(obs.get("wrist_ref", "")),
+            )
+        )
+    return components
+
+
+def _flush_frames(env_client: Any, *, use_frames: bool) -> None:
+    """Commit deferred frame sidecars if the env client supports it."""
+    if not use_frames:
+        return
+    commit_frames = getattr(env_client, "commit_frames", None)
+    if callable(commit_frames):
+        commit_frames()
+
+
+async def _flush_frames_async(env_client: Any, *, use_frames: bool) -> None:
+    """Commit deferred frame sidecars through async hook when available."""
+    if not use_frames:
+        return
+    commit_frames_async = getattr(env_client, "commit_frames_async", None)
+    if callable(commit_frames_async):
+        await commit_frames_async()
+        return
+    _flush_frames(env_client, use_frames=use_frames)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +293,7 @@ async def run_episode(
     reset_tick_counters()
 
     obs = env_client.reset(env_key, seed)
+    instruction = await _task_language_async(env_client)
 
     processors: list[Any] = []
     if policy_client is not None:
@@ -198,37 +313,20 @@ async def run_episode(
         processors=processors,
     )
 
-    spawn_action = [0.0] * ACTION_DIM
-    spawn_components: list[Any] = [
-        ManipProprio(
-            eef_pos=list(obs.get("eef_pos", [0.0, 0.0, 0.0])),
-            eef_quat=list(obs.get("eef_quat", [1.0, 0.0, 0.0, 0.0])),
-            gripper=float(obs.get("gripper", 0.0)),
-            gripper_qpos=list(obs.get("gripper_qpos", [0.0, 0.0])),
-        ),
-        ManipAction(values=list(spawn_action)),
-        ManipStatus(),
-        ManipTask(
+    await world.spawn(
+        *_episode_components(
+            obs=obs,
             suite=suite,
             task_id=task_id,
-            instruction="",
+            instruction=instruction,
             seed=seed,
             env_key=env_key,
-        ),
-    ]
-    if use_frames:
-        spawn_components.append(
-            ManipFrameRef(
-                agentview_ref=str(obs.get("agentview_ref", "")),
-                wrist_ref=str(obs.get("wrist_ref", "")),
-            )
+            use_frames=use_frames,
         )
-    await world.spawn(*spawn_components)
+    )
 
     # Run until done or max_steps.  We step one tick at a time so we can
     # break early when all entities are done (single entity here).
-    from daft import col as _col  # noqa: PLC0415
-
     success = False
     episode_length = 0
     for _tick in range(max_steps):
@@ -236,13 +334,10 @@ async def run_episode(
         # with one episode control step rather than the entire episode duration.
         reset_tick_counters()
         await world.step()
-        info = await world.info()
-        # Filter to latest tick (tick = info.tick - 1 after step).
-        latest_tick = info.tick - 1
-        df = await world.query(ManipStatus)
-        # lazy_audit: single-row done-check at episode-loop boundary — the Python bool
-        # drives the break decision; cannot remain lazy.
-        rows = df.where(_col("tick") == latest_tick).to_pylist()
+        # lazy_audit: single-row done-check at episode-loop boundary. Query
+        # only the latest archetype tick; RuntimeWorld.query() returns the
+        # full append-only history, which is quadratic inside long rollouts.
+        rows = await _latest_status_rows(world, use_frames=use_frames)
         if not rows:
             break
         row = rows[0]
@@ -251,8 +346,112 @@ async def run_episode(
             success = bool(row.get("manipstatus__success", False))
             break
 
+    _flush_frames(env_client, use_frames=use_frames)
     await world.destroy()
     return success, episode_length
+
+
+async def run_task_batch(
+    *,
+    env_client: Any,
+    policy_client: Any | None,
+    suite: str,
+    task_id: int,
+    trials: int,
+    max_steps: int,
+    storage: StorageConfig,
+    runtime: ArchetypeRuntime,
+    use_frames: bool = False,
+) -> list[tuple[int, int, int, int, bool, int, float]]:
+    """Drive all trials for one task in one batched episode world.
+
+    Returns tuples of ``(trial_idx, seed, env_key, entity_id, success,
+    episode_length, wall_s)``.
+    """
+    reset_tick_counters()
+    instruction = await _task_language_async(env_client)
+
+    processors: list[Any] = []
+    if policy_client is not None:
+        from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
+
+        processors.append(PolicyActionProcessor(policy_client))
+    processors.append(
+        FramedEnvStepProcessor(env_client) if use_frames else EnvStepProcessor(env_client)
+    )
+
+    world = runtime.world(
+        f"ep-{suite}-t{task_id}-batch",
+        storage=storage,
+        processors=processors,
+    )
+
+    trial_meta: list[tuple[int, int, int]] = []
+    entities: list[list[Any]] = []
+    env_keys: list[int] = []
+    seeds: list[int] = []
+    for trial_idx in range(trials):
+        seed = task_id * 1000 + trial_idx
+        env_key = trial_idx
+        trial_meta.append((trial_idx, seed, env_key))
+        env_keys.append(env_key)
+        seeds.append(seed)
+
+    reset_observations = await _reset_many_async(env_client, env_keys, seeds)
+    for (_trial_idx, seed, env_key), obs in zip(
+        trial_meta,
+        reset_observations,
+        strict=True,
+    ):
+        entities.append(
+            _episode_components(
+                obs=obs,
+                suite=suite,
+                task_id=task_id,
+                instruction=instruction,
+                seed=seed,
+                env_key=env_key,
+                use_frames=use_frames,
+            )
+        )
+
+    entity_ids = await world.spawn_many(entities)
+    started_at = {entity_id: time.perf_counter() for entity_id in entity_ids}
+    latest_by_entity: dict[int, dict[str, Any]] = {}
+    finished: set[int] = set()
+
+    for _tick in range(max_steps):
+        reset_tick_counters()
+        await world.step()
+        rows = await _latest_status_rows(world, use_frames=use_frames)
+        for row in rows:
+            entity_id = int(row["entity_id"])
+            latest_by_entity[entity_id] = row
+            if row.get("manipstatus__done", False):
+                finished.add(entity_id)
+        if len(finished) == len(entity_ids):
+            break
+
+    await _flush_frames_async(env_client, use_frames=use_frames)
+
+    out: list[tuple[int, int, int, int, bool, int, float]] = []
+    now = time.perf_counter()
+    for (trial_idx, seed, env_key), entity_id in zip(trial_meta, entity_ids, strict=True):
+        row = latest_by_entity.get(entity_id, {})
+        out.append(
+            (
+                trial_idx,
+                seed,
+                env_key,
+                entity_id,
+                bool(row.get("manipstatus__success", False)),
+                int(row.get("manipstatus__env_step", 0)),
+                now - started_at[entity_id],
+            )
+        )
+
+    await world.destroy()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -328,26 +527,28 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     _make_vla_policy_client(config.suite, task_id) if config.use_policy else None
                 )
 
-            for trial_idx in range(config.trials):
-                seed = task_id * 1000 + trial_idx
-                env_key = trial_idx  # distinct per-trial env instance
+            batch_results = await run_task_batch(
+                env_client=env_client,
+                policy_client=policy_client,
+                suite=config.suite,
+                task_id=task_id,
+                trials=config.trials,
+                max_steps=config.max_steps,
+                storage=ep_storage,
+                runtime=runtime,
+                use_frames=use_frames,
+            )
 
-                t0 = time.perf_counter()
-                success, episode_length = await run_episode(
-                    env_client=env_client,
-                    policy_client=policy_client,
-                    suite=config.suite,
-                    task_id=task_id,
-                    trial_idx=trial_idx,
-                    seed=seed,
-                    env_key=env_key,
-                    max_steps=config.max_steps,
-                    storage=ep_storage,
-                    runtime=runtime,
-                    use_frames=use_frames,
-                )
-                wall_s = time.perf_counter() - t0
-
+            trial_results: list[EvalTrialResult] = []
+            for (
+                trial_idx,
+                seed,
+                env_key,
+                _entity_id,
+                success,
+                episode_length,
+                wall_s,
+            ) in batch_results:
                 trial_result = EvalTrialResult.make(
                     suite=config.suite,
                     task_id=task_id,
@@ -360,19 +561,18 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                     run_id=run_id,
                 )
                 results.append(trial_result)
-
-                # Append to lab world; step to persist.
-                # Reset quota counter before lab-world operations to avoid
-                # hitting the 500-command limit from accumulated episode operations.
-                reset_tick_counters()
-                await lab.spawn(trial_result)
-                await lab.step()
+                trial_results.append(trial_result)
 
                 print(
                     f"  [{config.suite}] task={task_id} trial={trial_idx} "
                     f"success={success} steps={episode_length} "
                     f"wall={wall_s:.1f}s seed={seed}"
                 )
+
+            # Append task result rows as one batch; step once to persist.
+            reset_tick_counters()
+            await lab.spawn_many([[trial_result] for trial_result in trial_results])
+            await lab.step()
 
         # Mark runs as stopped.
         print(f"Eval complete. Lab world at {out_dir!r}")

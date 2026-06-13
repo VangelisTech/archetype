@@ -29,8 +29,11 @@ _BENCH_LIBERO = str(Path(__file__).parents[2] / "bench" / "libero")
 if _BENCH_LIBERO not in sys.path:
     sys.path.insert(0, _BENCH_LIBERO)
 
+from archetype import ArchetypeRuntime  # noqa: E402
+from archetype.core.config import StorageConfig  # noqa: E402
 from archetype.experiments.components import EvalTrialResult  # noqa: E402
-from bench.libero.eval_driver import DriverConfig, run_eval  # noqa: E402
+from archetype.experiments.manipulation import ScriptedReachEnv  # noqa: E402
+from bench.libero.eval_driver import DriverConfig, run_episode, run_eval  # noqa: E402
 from bench.libero.report import generate_report, report_from_components  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -49,6 +52,31 @@ class FakeChunkPolicy:
     ) -> list[list[float]]:
         # Zero action on all envs — ScriptedReachEnv converges on its own.
         return [[0.0] * 7 for _ in env_keys]
+
+
+class TaskLanguageReachEnv(ScriptedReachEnv):
+    """Scripted env with the same task_language hook as ModalEnvClient."""
+
+    def task_language(self) -> str:
+        return "reach the scripted target"
+
+
+class InstructionAssertingPolicy:
+    """Moves only when the episode driver supplies the task text."""
+
+    def act(
+        self,
+        env_keys: list[int],
+        instructions: list[str],
+        observations: list[dict[str, Any]],
+    ) -> list[list[float]]:
+        actions = []
+        for instruction in instructions:
+            if instruction == "reach the scripted target":
+                actions.append([0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+            else:
+                actions.append([0.0] * 7)
+        return actions
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +214,33 @@ async def test_success_accounting(tmp_path):
     n_success = sum(1 for r in results if r.success)
     rate = n_success / len(results)
     assert 0.0 <= rate <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_run_episode_uses_env_task_language_for_policy_instruction(tmp_path):
+    """Live VLA evals must pass the LIBERO task text to the policy."""
+    env = TaskLanguageReachEnv(targets={0: (0.05, 0.0, 0.5)}, tolerance=0.01)
+    policy = InstructionAssertingPolicy()
+
+    async with ArchetypeRuntime() as runtime:
+        success, episode_length = await run_episode(
+            env_client=env,
+            policy_client=policy,
+            suite="scripted_suite",
+            task_id=0,
+            trial_idx=0,
+            seed=0,
+            env_key=0,
+            # The first world step materializes the raw spawn row; the policy
+            # action is visible on the next tick.
+            max_steps=2,
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="instruction"),
+            runtime=runtime,
+            use_frames=False,
+        )
+
+    assert success is True
+    assert episode_length == 1
 
 
 # ---------------------------------------------------------------------------

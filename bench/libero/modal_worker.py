@@ -218,7 +218,12 @@ class LiberoEnvBatch:
         }
 
     def _proprio_with_frames(
-        self, obs: dict, env_key: int, step_label: str, commit: bool = True
+        self,
+        obs: dict,
+        env_key: int,
+        step_label: str,
+        commit: bool = True,
+        inline_frames: bool = True,
     ) -> dict[str, Any]:
         """Extract proprio and write frame PNGs to the volume.
 
@@ -226,24 +231,25 @@ class LiberoEnvBatch:
         180 degrees before the policy sees them. We ship raw pixels and let
         the policy client handle orientation.
         """
-        import base64
-
-        import cv2
-
         out = self._proprio(obs)
 
         agentview_rgb = obs["agentview_image"]
         wrist_rgb = obs["robot0_eye_in_hand_image"]
 
-        # Inline base64 path (kept for backwards compat with video_rollout.py).
-        def encode_b64(rgb) -> str:
-            ok, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            if not ok:
-                raise RuntimeError("png encode failed")
-            return base64.b64encode(buf.tobytes()).decode()
+        if inline_frames:
+            import base64
 
-        out["agentview_png"] = encode_b64(agentview_rgb)
-        out["wrist_png"] = encode_b64(wrist_rgb)
+            import cv2
+
+            # Inline base64 path (kept for backwards compat with video_rollout.py).
+            def encode_b64(rgb) -> str:
+                ok, buf = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+                if not ok:
+                    raise RuntimeError("png encode failed")
+                return base64.b64encode(buf.tobytes()).decode()
+
+            out["agentview_png"] = encode_b64(agentview_rgb)
+            out["wrist_png"] = encode_b64(wrist_rgb)
 
         # Volume sidecar.
         av_ref, wr_ref = self._write_frames(env_key, step_label, agentview_rgb, wrist_rgb)
@@ -257,8 +263,13 @@ class LiberoEnvBatch:
 
         return out
 
-    @modal.method()
-    def reset(self, env_id: int, seed: int, with_frames: bool = False) -> dict[str, Any]:
+    def _reset_one(
+        self,
+        env_id: int,
+        seed: int,
+        with_frames: bool = False,
+        inline_frames: bool = True,
+    ) -> dict[str, Any]:
         env = self._envs.get(env_id)
         if env is None:
             env = self._make_env()
@@ -268,8 +279,47 @@ class LiberoEnvBatch:
         obs = env.set_init_state(self._init_states[seed % len(self._init_states)])
         self._step_counts[env_id] = 0
         if with_frames:
-            return self._proprio_with_frames(obs, env_id, "reset", commit=True)
+            return self._proprio_with_frames(
+                obs,
+                env_id,
+                "reset",
+                commit=True,
+                inline_frames=inline_frames,
+            )
         return self._proprio(obs)
+
+    @modal.method()
+    def reset(
+        self,
+        env_id: int,
+        seed: int,
+        with_frames: bool = False,
+        inline_frames: bool = True,
+    ) -> dict[str, Any]:
+        return self._reset_one(
+            env_id,
+            seed,
+            with_frames=with_frames,
+            inline_frames=inline_frames,
+        )
+
+    @modal.method()
+    def reset_many(
+        self,
+        env_ids: list[int],
+        seeds: list[int],
+        with_frames: bool = False,
+        inline_frames: bool = True,
+    ) -> list[dict[str, Any]]:
+        return [
+            self._reset_one(
+                env_id,
+                seed,
+                with_frames=with_frames,
+                inline_frames=inline_frames,
+            )
+            for env_id, seed in zip(env_ids, seeds, strict=True)
+        ]
 
     @modal.method()
     def step(
@@ -277,8 +327,12 @@ class LiberoEnvBatch:
         env_ids: list[int],
         actions: list[list[float]],
         with_frames: bool = False,
+        commit_every_n: int = 1,
+        inline_frames: bool = True,
     ) -> list[dict[str, Any]]:
+        commit_every_n = max(1, int(commit_every_n))
         results = []
+        should_commit = False
         for env_id, action in zip(env_ids, actions, strict=True):
             env = self._envs[env_id]
             obs, reward, done, info = env.step(action)
@@ -289,7 +343,14 @@ class LiberoEnvBatch:
 
             if with_frames:
                 # commit=False: we batch-commit once after the loop.
-                result = self._proprio_with_frames(obs, env_id, step_label, commit=False)
+                result = self._proprio_with_frames(
+                    obs,
+                    env_id,
+                    step_label,
+                    commit=False,
+                    inline_frames=inline_frames,
+                )
+                should_commit = should_commit or n % commit_every_n == 0 or done or success
             else:
                 result = self._proprio(obs)
 
@@ -298,8 +359,10 @@ class LiberoEnvBatch:
             )
             results.append(result)
 
-        if with_frames:
-            # One commit per step() call — not per file — to bound latency.
+        if with_frames and should_commit:
+            # Commit only when callers need the refs to be visible across
+            # containers. VLA-JEPA consumes one 7-step action chunk at a time,
+            # so eval can defer commits until the next chunk boundary.
             frames_volume.commit()
 
         return results
@@ -307,6 +370,11 @@ class LiberoEnvBatch:
     @modal.method()
     def task_language(self) -> str:
         return str(self._task.language)
+
+    @modal.method()
+    def commit_frames(self) -> None:
+        """Flush pending frame sidecars to the shared volume."""
+        frames_volume.commit()
 
 
 class ModalEnvClient:
@@ -320,10 +388,19 @@ class ModalEnvClient:
     handle is not serializable.
     """
 
-    def __init__(self, suite: str = "libero_spatial", task_id: int = 0, with_frames: bool = False):
+    def __init__(
+        self,
+        suite: str = "libero_spatial",
+        task_id: int = 0,
+        with_frames: bool = False,
+        frame_commit_every: int = 1,
+        inline_frames: bool = False,
+    ):
         self._suite = suite
         self._task_id = task_id
         self._with_frames = with_frames
+        self._frame_commit_every = max(1, int(frame_commit_every))
+        self._inline_frames = inline_frames
         self._worker = None
 
     def _get_worker(self):
@@ -337,19 +414,58 @@ class ModalEnvClient:
             "suite": self._suite,
             "task_id": self._task_id,
             "with_frames": self._with_frames,
+            "frame_commit_every": self._frame_commit_every,
+            "inline_frames": self._inline_frames,
         }
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self._suite = state["suite"]
         self._task_id = state["task_id"]
         self._with_frames = state.get("with_frames", False)
+        self._frame_commit_every = state.get("frame_commit_every", 1)
+        self._inline_frames = state.get("inline_frames", False)
         self._worker = None
 
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
-        return self._get_worker().reset.remote(env_id, seed, with_frames=self._with_frames)
+        return self._get_worker().reset.remote(
+            env_id,
+            seed,
+            with_frames=self._with_frames,
+            inline_frames=self._inline_frames,
+        )
+
+    async def reset_many_async(self, env_ids: list[int], seeds: list[int]) -> list[dict[str, Any]]:
+        return await self._get_worker().reset_many.remote.aio(
+            env_ids,
+            seeds,
+            with_frames=self._with_frames,
+            inline_frames=self._inline_frames,
+        )
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
-        return self._get_worker().step.remote(env_ids, actions, with_frames=self._with_frames)
+        return self._get_worker().step.remote(
+            env_ids,
+            actions,
+            with_frames=self._with_frames,
+            commit_every_n=self._frame_commit_every,
+            inline_frames=self._inline_frames,
+        )
+
+    def task_language(self) -> str:
+        """Return the natural-language LIBERO instruction for this task."""
+        return self._get_worker().task_language.remote()
+
+    async def task_language_async(self) -> str:
+        """Return the natural-language LIBERO instruction without blocking the event loop."""
+        return await self._get_worker().task_language.remote.aio()
+
+    def commit_frames(self) -> None:
+        """Flush pending frame sidecars from the env worker."""
+        self._get_worker().commit_frames.remote()
+
+    async def commit_frames_async(self) -> None:
+        """Flush pending frame sidecars without blocking the event loop."""
+        await self._get_worker().commit_frames.remote.aio()
 
 
 @app.local_entrypoint()
@@ -377,9 +493,6 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
         )
         assert "agentview_ref" in result, f"step {step_idx} must return agentview_ref"
         assert "wrist_ref" in result, f"step {step_idx} must return wrist_ref"
-
-    # Verify the files actually exist in the volume.
-    import os
 
     # Re-read the volume from local context (the worker committed).
     # We can't directly list the modal volume from the local entrypoint,
