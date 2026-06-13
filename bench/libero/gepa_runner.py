@@ -47,8 +47,33 @@ import modal
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 
-# Reuse the co-located driver image (py3.12 archetype, no [sim] extra).
-from colocated_runner import image  # noqa: E402
+# The co-located driver image (py3.12 archetype, no [sim] extra), defined inline
+# rather than imported from colocated_runner: Modal auto-mounts only the entrypoint
+# module on the remote container, so a top-level cross-file import of `image` would
+# fail there with ModuleNotFoundError. The image copies the whole repo to /repo and
+# installs archetype editable, so the function bodies' archetype imports resolve.
+_ROOT = "/repo"
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("uv")
+    .add_local_dir(
+        ".",
+        _ROOT,
+        copy=True,
+        ignore=[
+            ".git",
+            "**/__pycache__",
+            ".claude",
+            "target",
+            "*.mp4",
+            ".venv",
+            "**/*.parquet",
+        ],
+    )
+    .run_commands(
+        f"cd {_ROOT} && uv pip install --system -e . && uv pip install --system pillow numpy"
+    )
+)
 
 app = modal.App("archetype-gepa-runner", image=image)
 results_volume = modal.Volume.from_name("libero-eval-results", create_if_missing=True)
