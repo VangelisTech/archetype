@@ -107,6 +107,22 @@ def _make_modal_env_client(suite: str, task_id: int, with_frames: bool = False) 
     return ModalEnvClient(suite=suite, task_id=task_id, with_frames=with_frames)
 
 
+def _make_libero_plus_env_client(suite: str, task_id: int, with_frames: bool = False) -> Any:
+    """Build a LiberoPlusEnvClient for the LANGUAGE-perturbation dimension.
+
+    Drop-in for ``ModalEnvClient`` (same reset/step/task_language surface); here
+    ``task_id`` is the *ordinal within the suite's Language Instructions list*,
+    and ``task_language()`` returns the PERTURBED instruction — the honest
+    LIBERO-Plus baseline. Deferred import so the scripted/standard paths never
+    import the LIBERO-Plus worker module.
+    """
+    from libero_plus_worker import (
+        LiberoPlusEnvClient,  # type: ignore[import-untyped]  # noqa: PLC0415
+    )
+
+    return LiberoPlusEnvClient(suite=suite, task_id=task_id, with_frames=with_frames)
+
+
 def _resolve_instruction(
     *,
     suite: str,
@@ -172,7 +188,7 @@ class DriverConfig:
     max_steps: int = 600
     out: str = ""  # output directory for lab-world parquet
     run_id: str = ""  # free-form run label
-    env_client_type: str = "modal"  # "modal" or "scripted"
+    env_client_type: str = "modal"  # "modal", "modal_plus" (LIBERO-Plus LANGUAGE), or "scripted"
     use_policy: bool = True  # False → zero-action policy (scripted path)
     # Optional per-(suite, task_id) instruction override map. When a key is
     # present, its paraphrase replaces the env's native task_language() for that
@@ -480,7 +496,14 @@ async def run_eval(config: DriverConfig) -> list[EvalTrialResult]:
                 env_client = _make_scripted_env(task_id)
                 policy_client = None
             else:
-                env_client = _make_modal_env_client(config.suite, task_id, with_frames=use_frames)
+                if config.env_client_type == "modal_plus":
+                    env_client = _make_libero_plus_env_client(
+                        config.suite, task_id, with_frames=use_frames
+                    )
+                else:
+                    env_client = _make_modal_env_client(
+                        config.suite, task_id, with_frames=use_frames
+                    )
                 policy_client = (
                     _make_vla_policy_client(config.suite, task_id) if config.use_policy else None
                 )
@@ -574,9 +597,13 @@ def _parse_args() -> DriverConfig:
     parser.add_argument("--run-id", default="", help="Run identifier label")
     parser.add_argument(
         "--env-client",
-        choices=["modal", "scripted"],
+        choices=["modal", "modal_plus", "scripted"],
         default="modal",
-        help="'modal' uses the deployed Modal env; 'scripted' uses the in-process scripted env",
+        help=(
+            "'modal' uses the deployed standard-LIBERO env; 'modal_plus' uses the "
+            "LIBERO-Plus LANGUAGE-perturbation env (task-id = language ordinal); "
+            "'scripted' uses the in-process scripted env"
+        ),
     )
     parser.add_argument(
         "--no-policy",
