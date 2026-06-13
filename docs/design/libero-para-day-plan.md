@@ -139,3 +139,21 @@ never the rigor of the scorer.
 
 - Darin (`darinkishore`, they/them) — added as a write collaborator (invite
   pending acceptance). Owns RoboSemanticBench + the reflection-agent code.
+
+## 10. Scope (deletion pass, 13:38) — must win
+
+Advance gate to GEPA = **idempotent runs**: batched (scaling proven, <1 s/step) ∧
+replay-deterministic ∧ cleanly partitioned ledger. Live status tracked in
+`docs/status/delivery-log.md` (pushed on every update).
+
+WF1 (trimmed to the hard requirements):
+```
+batch env + batch GPU → scaling table N=1/4/16/32 (HARD GATE)
+  → baseline → immutable split manifest → replay determinism → report
+```
+Deleted from WF1, deferred to the GEPA workflow (earn their place by helping
+mutation): programmatic scorer + subgoal work, Pareto search (→ **bounded top-k**),
+and a **tiny strategy genome** only — `prefix · paraphrase rule · failure-recovery
+suffix · maybe temperature/ensemble`. No per-task strings, no coordinate leakage
+(= benchmark gaming). Kill criterion: a component that doesn't raise success,
+throughput, or trust within the hour is cut from today's path.
