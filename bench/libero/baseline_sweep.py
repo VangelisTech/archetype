@@ -362,6 +362,7 @@ if _HAS_MODAL:
     def main(
         suite: str = "libero_spatial",
         n_tasks: int = 10,
+        task_ids: str = "",
         trials: int = 3,
         max_steps: int = 256,
         val_size: int = 4,
@@ -373,20 +374,27 @@ if _HAS_MODAL:
         Defaults match the locked contract: ``libero_spatial`` (all 10 tasks),
         the raw instruction, 3 seeds each, max 256 steps. The split JSON is
         written to ``bench/libero/out/<suite>_split.json`` and printed.
+
+        ``task_ids`` (comma-separated) overrides ``n_tasks`` to target a
+        specific subset — useful for retrying a flaked task without re-running
+        the whole suite.
         """
         import time
 
         run_id = run_id or f"baseline-{suite}-{int(time.time())}"
-        task_ids = list(range(n_tasks))
+        if task_ids:
+            task_ids_list = [int(x) for x in str(task_ids).split(",") if x != ""]
+        else:
+            task_ids_list = list(range(n_tasks))
 
         print(
-            f"=== baseline sweep === suite={suite} tasks={task_ids} "
+            f"=== baseline sweep === suite={suite} tasks={task_ids_list} "
             f"trials={trials} max_steps={max_steps} run_id={run_id}"
         )
 
         # Fan out one Function per task — each owns its own env container;
         # VLA-JEPA inference parallelizes across the lifted GPU pool.
-        args = [(suite, t, trials, max_steps, run_id) for t in task_ids]
+        args = [(suite, t, trials, max_steps, run_id) for t in task_ids_list]
         per_task: list[dict[str, Any]] = list(sweep_one_task.starmap(args))
 
         aggregate_and_write(
@@ -395,7 +403,7 @@ if _HAS_MODAL:
             run_id=run_id,
             trials=trials,
             max_steps=max_steps,
-            n_tasks=n_tasks,
+            n_tasks=len(task_ids_list),
             val_size=val_size,
             test_size=test_size,
         )

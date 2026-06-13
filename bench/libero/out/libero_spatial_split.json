@@ -1,0 +1,97 @@
+{
+  "suite": "libero_spatial",
+  "split_policy": "val = hardest (lowest baseline success, most room to climb); test = held-out subset sampled at even strides across the remaining difficulty ordering (distribution-matched, not all-easy)",
+  "val_task_ids": [
+    0,
+    1,
+    2,
+    4
+  ],
+  "test_task_ids": [
+    3,
+    6,
+    9
+  ],
+  "per_task": {
+    "4": {
+      "success_rate": 0.6667,
+      "successes": 2,
+      "n": 3
+    },
+    "0": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "1": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "2": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "3": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "5": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "6": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "7": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "8": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    },
+    "9": {
+      "success_rate": 1.0,
+      "successes": 3,
+      "n": 3
+    }
+  },
+  "baseline": {
+    "all_task_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "overall_success_rate": 0.9667
+  },
+  "run_id": "baseline-spatial-v2+retry17",
+  "config": {
+    "trials": 3,
+    "max_steps": 256,
+    "n_tasks": 10,
+    "val_size": 4,
+    "test_size": 3
+  },
+  "provenance": {
+    "note": "Merged from two Modal runs: baseline-spatial-v2 (tasks 0,2,3,4,5,6,8,9) and baseline-spatial-retry17 (tasks 1,7 \u2014 re-run after transient Modal infra flakes in v2). All rollouts on the libero-eval-results volume, queryable by world_id/run_id.",
+    "runs": [
+      "baseline-spatial-v2",
+      "baseline-spatial-retry17"
+    ]
+  }
+}
