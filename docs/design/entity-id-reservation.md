@@ -27,7 +27,7 @@ Both engines maintain a single monotonically increasing counter:
 `create_entity`, `create_entities`, or `reserve_entity_ids` — is drawn from
 this counter by advancing it forward. The counter never decrements.
 
-```
+```text
                          ┌──────────────────────────────┐
                          │   next_entity_id counter       │
                          │   (monotonically increasing)   │
@@ -54,7 +54,7 @@ this counter by advancing it forward. The counter never decrements.
 
 ## 3. Reservation Lifecycle
 
-```
+```text
 reserve_entity_ids(n) → [id₁, id₂, …, idₙ]
                                │
                      (external system uses the IDs

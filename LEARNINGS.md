@@ -427,6 +427,7 @@ def query_rows(df):
 ```
 
 Rules:
+
 - ``Series.to_pylist()`` on a **batch-UDF parameter** → exempt, no entry.
 - ``DataFrame.to_pylist()`` anywhere → requires entry.
 - ``DataFrame.collect()`` anywhere → requires entry.

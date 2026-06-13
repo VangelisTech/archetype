@@ -324,7 +324,7 @@ async def test_query_components_wrong_combination_raises_with_hint(tmp_path):
 
     Entity has ManipProprio. Another entity has ManipAction. Querying
     (ManipProprio, ManipAction) together should fail with a hint naming the
-    mis-matched component.
+    mismatched component.
     """
     ws = make_world_service()
     try:
