@@ -77,3 +77,9 @@ path = "src/archetype/app/autoresearch_service.py"
 line = 313
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow (incumbent score comparison, head entity id for the next update) at the autoresearch loop boundary; the comparison drives imperative orchestration, not a further dataframe computation."
+
+[[entries]]
+path = "src/archetype/experiments/boundary.py"
+line = 119
+method = "to_pylist"
+reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
