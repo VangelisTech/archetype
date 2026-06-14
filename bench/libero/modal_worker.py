@@ -291,7 +291,22 @@ class LiberoEnvBatch:
     ) -> list[dict[str, Any]]:
         results = []
         for env_id, action in zip(env_ids, actions, strict=True):
-            env = self._envs[env_id]
+            env = self._envs.get(env_id)
+            if env is None:
+                # The env for this key was reset on a *different* container than
+                # the one serving this step() — the parameter set's pool scaled
+                # to >1 container and split its in-memory env state. Re-resetting
+                # here would silently restart mid-episode (wrong observations),
+                # so fail loudly and actionably instead of with a bare KeyError.
+                # Prevention: the harness pins one container per (suite, task_id)
+                # via Cls.with_options(max_containers=1) — see ModalEnvClient.
+                raise RuntimeError(
+                    f"env_id={env_id} not found on this container "
+                    f"(have {sorted(self._envs)}). The env pool for "
+                    f"(suite={self.suite}, task_id={self.task_id}) split across "
+                    f"containers between reset and step. Pin one container per "
+                    f"parameter set (Cls.with_options(max_containers=1))."
+                )
             obs, reward, done, info = env.step(action)
             success = bool(env.check_success())
             self._step_counts[env_id] = self._step_counts.get(env_id, 0) + 1
@@ -340,6 +355,17 @@ class ModalEnvClient:
     def _get_worker(self):
         if self._worker is None:
             cls = modal.Cls.from_name("archetype-libero-env", "LiberoEnvBatch")
+            # Pin this (suite, task_id) parameter set to a SINGLE container so
+            # every reset() and the batched step() in an episode hit the same
+            # in-memory env pool. Without this, the parameter set's autoscaling
+            # pool can grow past one container: reset(env 0) lands on container
+            # A while reset(env 1..N) / step([0..N]) land on B, and B has no
+            # env 0 → KeyError(0) inside step (surfaced as a ledger-append
+            # "collect failed ...: 0"). with_options returns an independently
+            # scaled handle, so DIFFERENT tasks still each get their own pinned
+            # container (the per-task sweep is unaffected; class max_containers
+            # stays the total cap).
+            cls = cls.with_options(max_containers=1)
             self._worker = cls(suite=self._suite, task_id=self._task_id)
         return self._worker
 
@@ -386,7 +412,9 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
 
     assert "agentview_ref" in obs, "reset must return agentview_ref when with_frames=True"
     assert "wrist_ref" in obs, "reset must return wrist_ref when with_frames=True"
-    assert obs["agentview_ref"].endswith("-agentview.png"), f"unexpected ref: {obs['agentview_ref']}"
+    assert obs["agentview_ref"].endswith("-agentview.png"), (
+        f"unexpected ref: {obs['agentview_ref']}"
+    )
     assert len(obs.get("gripper_qpos", [])) == 2, "gripper_qpos must be 2-element"
 
     zero = [0.0] * 7
@@ -400,7 +428,6 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
         assert "wrist_ref" in result, f"step {step_idx} must return wrist_ref"
 
     # Verify the files actually exist in the volume.
-    import os
 
     # Re-read the volume from local context (the worker committed).
     # We can't directly list the modal volume from the local entrypoint,

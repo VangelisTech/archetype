@@ -29,8 +29,15 @@ _BENCH_LIBERO = str(Path(__file__).parents[2] / "bench" / "libero")
 if _BENCH_LIBERO not in sys.path:
     sys.path.insert(0, _BENCH_LIBERO)
 
+from archetype import ArchetypeRuntime  # noqa: E402
+from archetype.core.config import StorageConfig  # noqa: E402
 from archetype.experiments.components import EvalTrialResult  # noqa: E402
-from bench.libero.eval_driver import DriverConfig, run_eval  # noqa: E402
+from archetype.experiments.manipulation import ScriptedReachEnv  # noqa: E402
+from bench.libero.eval_driver import (  # noqa: E402
+    DriverConfig,
+    run_episode_batched,
+    run_eval,
+)
 from bench.libero.report import generate_report, report_from_components  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -49,6 +56,40 @@ class FakeChunkPolicy:
     ) -> list[list[float]]:
         # Zero action on all envs — ScriptedReachEnv converges on its own.
         return [[0.0] * 7 for _ in env_keys]
+
+
+class StaggeredReachEnv(ScriptedReachEnv):
+    """Scripted env where each env_key finishes at a DIFFERENT tick.
+
+    env_key ``k`` reports ``done`` after exactly ``k+1`` steps, so a batch of
+    N entities always carries a MIX of done and live rows for several ticks —
+    the condition the batched step/policy processors must survive when the
+    world spins to ``max_steps`` (done entities skipped, their terminal state
+    carried forward). Regression guard for the ledger-append KeyError seen in
+    batched runs where episodes finish at staggered ticks.
+    """
+
+    def step(self, env_ids, actions):
+        self._step_counts = getattr(self, "_step_counts", {})
+        results = []
+        for env_id, action in zip(env_ids, actions, strict=True):
+            pos = self._state[env_id]
+            for axis in range(3):
+                pos[axis] += action[axis]
+            self._step_counts[env_id] = self._step_counts.get(env_id, 0) + 1
+            done = self._step_counts[env_id] >= (env_id + 1)
+            results.append(
+                {
+                    "eef_pos": list(pos),
+                    "eef_quat": [1.0, 0.0, 0.0, 0.0],
+                    "gripper": 0.0,
+                    "gripper_qpos": [0.0, 0.0],
+                    "reward": -1.0,
+                    "done": done,
+                    "success": done,
+                }
+            )
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +227,77 @@ async def test_success_accounting(tmp_path):
     n_success = sum(1 for r in results if r.success)
     rate = n_success / len(results)
     assert 0.0 <= rate <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# Batched rollout: staggered-done carry-forward (no Modal)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_batched_staggered_done_runs_to_max_steps(tmp_path):
+    """Entities finishing at different ticks must spin to max_steps without the
+    ledger-append failure, with each entity's terminal verdict latched.
+
+    Reproduces the batched-run topology where some episodes are done while
+    others are still live across many ticks: the step processor must skip done
+    rows and carry their state forward (never look a done env_key up in the
+    live-only env), and success must latch for entities that finished early.
+    """
+    n = 3
+    env = StaggeredReachEnv(targets={i: (999.0, 0.0, 0.5) for i in range(64)}, tolerance=0.01)
+    storage = StorageConfig(uri=str(tmp_path / "episodes"), namespace="staggered")
+
+    async with ArchetypeRuntime() as runtime:
+        per_trial = await run_episode_batched(
+            env_client=env,
+            policy_client=None,
+            suite="scripted",
+            task_id=0,
+            seeds=list(range(n)),
+            env_keys=list(range(n)),
+            max_steps=8,  # well past the last finish tick (n) so done rows persist
+            storage=storage,
+            runtime=runtime,
+            use_frames=False,
+            instruction="",
+        )
+
+    # env_key k reports done after k+1 steps; success latches → (True, k+1).
+    assert per_trial == [(True, i + 1) for i in range(n)], per_trial
+
+
+@pytest.mark.asyncio
+async def test_batched_staggered_done_with_policy(tmp_path):
+    """Same as above but with a policy in the loop (policy + env both batched).
+
+    Exercises both the policy action UDF and the env step UDF done-freeze paths
+    simultaneously, the real-rollout topology.
+    """
+    from archetype.experiments.policy import ScriptedReachPolicy
+
+    n = 4
+    env = StaggeredReachEnv(targets={i: (999.0, 0.0, 0.5) for i in range(64)}, tolerance=0.01)
+    # Targets cover only the spawned env_keys, like the real driver.
+    policy = ScriptedReachPolicy(targets={i: (0.5, 0.0, 0.5) for i in range(n)})
+    storage = StorageConfig(uri=str(tmp_path / "episodes"), namespace="staggered_pol")
+
+    async with ArchetypeRuntime() as runtime:
+        per_trial = await run_episode_batched(
+            env_client=env,
+            policy_client=policy,
+            suite="scripted",
+            task_id=0,
+            seeds=list(range(n)),
+            env_keys=list(range(n)),
+            max_steps=10,
+            storage=storage,
+            runtime=runtime,
+            use_frames=False,
+            instruction="",
+        )
+
+    assert per_trial == [(True, i + 1) for i in range(n)], per_trial
 
 
 # ---------------------------------------------------------------------------
