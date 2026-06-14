@@ -144,7 +144,14 @@ def eval_instruction(
         # GEPA's eval is identical to the baseline path except for the instruction.
         env = _make_libero_plus_env_client(suite, task_id, with_frames=True)
         pol = _make_vla_policy_client(suite, task_id)
-        store = StorageConfig(uri=f"{RESULTS_DIR}/{CANONICAL_NS}", namespace=CANONICAL_NS)
+        # LOCAL per-eval Lance store (NOT the Modal Volume): Lance create/
+        # read-after-write is unreliable on the network volume mid-run (the
+        # "Table not found" failures), whereas local disk is the proven baseline
+        # path. GEPA only needs the scalar success + feedback per eval; the final
+        # frozen-arm comparison is what gets persisted to the canonical ledger.
+        import tempfile
+
+        store = StorageConfig(uri=tempfile.mkdtemp(prefix="gepa-eval-"), namespace=CANONICAL_NS)
         n = len(seeds)
         env_keys = list(range(n))
 
