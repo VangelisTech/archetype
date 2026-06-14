@@ -243,8 +243,25 @@ if _HAS_MODAL:
             f"max_steps={max_steps} run_id={run_id}"
         )
 
+        # return_exceptions=True so one preempted/killed container drops to an
+        # errored cell instead of nuking the whole sweep (see baseline_sweep).
         args = [(suite, t, trials, max_steps, run_id) for t in task_ids_list]
-        per_task: list[dict[str, Any]] = list(sweep_one_language_task.starmap(args))
+        raw = list(sweep_one_language_task.starmap(args, return_exceptions=True))
+        per_task: list[dict[str, Any]] = []
+        for (_suite, t, *_rest), res in zip(args, raw, strict=True):
+            if isinstance(res, BaseException):
+                per_task.append(
+                    {
+                        "task_id": t,
+                        "n": 0,
+                        "successes": 0,
+                        "success_rate": 0.0,
+                        "per_seed": [],
+                        "error": f"{type(res).__name__}: {res}",
+                    }
+                )
+            else:
+                per_task.append(res)
 
         # Lazy import (runs locally only): reuse the standard aggregate/split
         # writer, then re-key the output file to a language-specific name so it
