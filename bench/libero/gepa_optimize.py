@@ -49,10 +49,36 @@ import modal
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 
-from colocated_runner import image as _base_image  # noqa: E402
+ROOT = "/repo"
 
-# GEPA + its reflection LM client (litellm) live in the loop container.
-image = _base_image.pip_install("gepa>=0.1.1", "litellm>=1.64.0")
+# Inline image (mirrors baseline_sweep / libero_plus_sweep). We do NOT import
+# colocated_runner: it is not on the remote container's sys.path at module load
+# (the entrypoint is mounted at /root), so a top-level import raises
+# ModuleNotFoundError remotely. py3.12 + archetype + GEPA + litellm.
+image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .pip_install("uv")
+    .add_local_dir(
+        ".",
+        ROOT,
+        copy=True,
+        ignore=[
+            ".git",
+            "**/__pycache__",
+            ".claude",
+            "target",
+            "*.mp4",
+            ".venv",
+            "**/*.parquet",
+            "**/*.log",
+            "**/out/**",
+        ],
+    )
+    .run_commands(
+        f"cd {ROOT} && uv pip install --system -e . "
+        "&& uv pip install --system pillow numpy 'gepa>=0.1.1' 'litellm>=1.64.0'"
+    )
+)
 
 app = modal.App("archetype-gepa-optimize", image=image)
 results_volume = modal.Volume.from_name("libero-eval-results", create_if_missing=True)
