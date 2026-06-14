@@ -399,8 +399,26 @@ if _HAS_MODAL:
 
         # Fan out one Function per task — each owns its own env container;
         # VLA-JEPA inference parallelizes across the lifted GPU pool.
+        # return_exceptions=True so one preempted/killed container drops to an
+        # errored cell instead of nuking the whole sweep (the RemoteError
+        # "function call was cancelled" failure mode that killed earlier runs).
         args = [(suite, t, trials, max_steps, run_id) for t in task_ids_list]
-        per_task: list[dict[str, Any]] = list(sweep_one_task.starmap(args))
+        raw = list(sweep_one_task.starmap(args, return_exceptions=True))
+        per_task: list[dict[str, Any]] = []
+        for (_suite, t, *_rest), res in zip(args, raw, strict=True):
+            if isinstance(res, BaseException):
+                per_task.append(
+                    {
+                        "task_id": t,
+                        "n": 0,
+                        "successes": 0,
+                        "success_rate": 0.0,
+                        "per_seed": [],
+                        "error": f"{type(res).__name__}: {res}",
+                    }
+                )
+            else:
+                per_task.append(res)
 
         aggregate_and_write(
             per_task,

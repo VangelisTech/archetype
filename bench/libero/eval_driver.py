@@ -389,16 +389,15 @@ async def run_episode_batched(
             )
         await world.spawn(*components)
 
-    # Batched control loop: one world.step() advances every live entity via a
-    # single batched env.step. Break only when EVERY entity is done.
-    for _tick in range(max_steps):
-        reset_tick_counters()
-        await world.step()
-        info = await world.info()
-        latest_tick = info.tick - 1
-        rows = (await world.query(ManipStatus)).where(_col("tick") == latest_tick).to_pylist()
-        if rows and all(r.get("manipstatus__done", False) for r in rows):
-            break
+    # Service-layer orchestration: delegate the episode loop to
+    # SimulationService.run_episode (gate.run_episode), which owns the per-tick
+    # quota reset and steps to max_steps through the command broker — no
+    # hand-rolled tick loop. Done entities are skipped by the step processor, so
+    # spinning to max_steps costs no extra env calls. The terminal verdict is
+    # read from the ledger below (success latches → max).
+    from archetype.app.models import EpisodeConfig  # noqa: PLC0415
+
+    await world.run_episode(EpisodeConfig(max_steps=max_steps))
 
     # Per-entity terminal verdict (success latches → max), joined to env_key
     # (constant per entity) so results come back in trial order.

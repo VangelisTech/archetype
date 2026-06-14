@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID
 
+from archetype.app.auth.guard import reset_tick_counters
 from archetype.app.models import EpisodeResult, RolloutResult, RunResult
 from archetype.core.aio import AsyncWorld
 from archetype.core.config import RunConfig
@@ -61,6 +62,12 @@ class SimulationService:
         **input_kwargs,
     ) -> int:
         """Advance a world by one tick."""
+        # Per-tick RBAC quota window: each tick starts fresh. Resetting here —
+        # rather than relying on external callers to do it before every step —
+        # makes step/run/run_episode/run_rollout correct through the service
+        # layer. Previously the loop accumulated commands across ticks and
+        # tripped MAX_CMDS_PER_TICK, which forced drivers to hand-roll the loop.
+        reset_tick_counters()
         world = self._world_service.get_world(UUID(str(world_id)))
         commands_applied = 0
         if self._drain_commands is not None:
