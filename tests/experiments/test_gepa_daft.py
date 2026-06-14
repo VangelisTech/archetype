@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrates that bench/libero/gepa_core.py IS the GEPA algorithm.
+"""Parity eval: archetype.optimize.gepa IS the GEPA algorithm.
 
 These tests inject deterministic mocks for the two effects (eval_fn, reflect_fn)
 so they exercise the pure control logic — no Daft, Modal, LLM, or sim. They assert
@@ -15,14 +15,10 @@ naive beam / top-k-by-mean prompt evolution:
   - The rollout budget is respected (Alg 1, line 8).
 """
 
-import sys
 from collections import Counter
-from pathlib import Path
 from random import Random
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "bench" / "libero"))
-
-from gepa_core import gepa_search, pareto_select  # noqa: E402
+from archetype.optimize.gepa import gepa_search, pareto_select
 
 
 def test_pareto_keeps_specialist_a_beam_would_cull():
@@ -77,20 +73,30 @@ def _mock_reflect(text, _fb):
 
 def test_gepa_search_improves_over_seed_and_respects_budget():
     out = gepa_search(
-        seed_text="rewrite", instance_ids=[0, 1, 2, 3],
-        eval_fn=_mock_eval, reflect_fn=_mock_reflect, budget=40, minibatch=2, rng=Random(0),
+        seed_text="rewrite",
+        instance_ids=[0, 1, 2, 3],
+        eval_fn=_mock_eval,
+        reflect_fn=_mock_reflect,
+        budget=40,
+        minibatch=2,
+        rng=Random(0),
     )
-    assert out["mean_success"] >= 0.66          # climbed well past the 0.0 seed
-    assert out["metric_calls"] <= 40            # budget respected
-    assert out["pool_size"] > 1                 # accepted real improvements
+    assert out["mean_success"] >= 0.66  # climbed well past the 0.0 seed
+    assert out["metric_calls"] <= 40  # budget respected
+    assert out["pool_size"] > 1  # accepted real improvements
     assert any(t["accepted"] for t in out["trace"])
 
 
 def test_acceptance_gate_rejects_non_improving_mutations():
     # A no-op reflect never improves σ → the gate admits nothing; pool stays the seed.
     out = gepa_search(
-        seed_text="rewrite", instance_ids=[0, 1, 2, 3],
-        eval_fn=_mock_eval, reflect_fn=lambda t, _fb: t, budget=40, minibatch=2, rng=Random(0),
+        seed_text="rewrite",
+        instance_ids=[0, 1, 2, 3],
+        eval_fn=_mock_eval,
+        reflect_fn=lambda t, _fb: t,
+        budget=40,
+        minibatch=2,
+        rng=Random(0),
     )
     assert out["pool_size"] == 1
     assert all(not t["accepted"] for t in out["trace"])

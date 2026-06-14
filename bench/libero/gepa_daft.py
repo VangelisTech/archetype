@@ -242,15 +242,15 @@ def run(
         .to_pylist()
     )
 
-    # ---- Tier 2: GEPA — algorithm in gepa_core.gepa_search; effects injected here ----
-    # gepa_core owns faithful Algorithm 1 + Pareto Algorithm 2 (no Daft/Modal dep,
+    # ---- Tier 2: GEPA — algorithm in archetype.optimize.gepa; effects injected here ----
+    # The lib owns faithful Algorithm 1 + Pareto Algorithm 2 (no Daft/Modal dep,
     # unit-tested in tests/experiments/test_gepa_daft.py). run() only supplies the two
     # EFFECTS: eval_fn (prompt-rewrite + sim rollout) and reflect_fn (Claude UpdatePrompt).
     best: dict[str, Any] | None = None
     if do_gepa:
         import random
 
-        from gepa_core import gepa_search
+        from archetype.optimize.gepa import gepa_search
 
         class Strategy(BaseModel):
             strategy_text: str = Field(description="an improved instruction-rewrite strategy")
