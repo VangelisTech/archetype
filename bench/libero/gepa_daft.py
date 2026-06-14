@@ -23,7 +23,7 @@ is the same `evaluate()` in a reflect→select loop. `pass` = sim ground truth.
 
 Run (after archetype-libero-plus-env + archetype-vla-jepa are deployed):
     modal run --detach bench/libero/gepa_daft.py --suite libero_goal \\
-        --n-tasks 8 --n-seeds 5 --max-steps 300 --generations 3 --beam-k 3
+        --n-tasks 8 --n-seeds 5 --max-steps 300 --budget 60 --minibatch 3
 """
 
 import os
@@ -108,9 +108,9 @@ def run(
     sys.path.insert(0, f"{ROOT}/bench/libero")
 
     import daft
-    from daft import col, lit
+    from daft import col
     from daft.functions import format as dfmt
-    from daft.functions import prompt, unnest, when
+    from daft.functions import prompt, unnest
     from pydantic import BaseModel, Field
 
     # ---- Claude as the Daft prompt() provider (OpenAI-compatible) -------------
@@ -145,13 +145,14 @@ def run(
             import tempfile
 
             _sys.path.insert(0, f"{ROOT}/bench/libero")
-            from archetype import ArchetypeRuntime
-            from archetype.core.config import StorageConfig
             from eval_driver import (
                 _make_libero_plus_env_client,
                 _make_vla_policy_client,
                 run_episode_batched,
             )
+
+            from archetype import ArchetypeRuntime
+            from archetype.core.config import StorageConfig
 
             env = self._envs.get(task_id)
             if env is None:
@@ -188,23 +189,29 @@ def run(
     def evaluate(strategies: "daft.DataFrame", tasks: "daft.DataFrame" = None) -> "daft.DataFrame":
         """strategies: [strategy_id, strategy_text(nullable)] × tasks → per-cell scores+feedback."""
         cells = strategies.join(tasks if tasks is not None else tasks_df, how="cross")
-        # rewrite: identity when strategy_text is null, else apply the strategy via Claude.
-        cells = cells.with_column(
+        # Rewrite: identity when strategy_text is null (arm A), else apply the strategy
+        # via Claude. NOTE: daft when().otherwise() evaluates BOTH branches for every row,
+        # so a prompt() in the otherwise branch still runs on null-strategy rows and chokes
+        # on the null message. Split on the predicate → prompt() only runs where a strategy
+        # is present (also avoids wasted LLM calls on identity rows).
+        named = cells.where(~col("strategy_text").is_null()).with_column(
             "grounded",
-            when(col("strategy_text").is_null(), col("perturbed_instr")).otherwise(
-                prompt(
-                    messages=dfmt(
-                        "{}\n\nOriginal instruction:\n{}\n\n"
-                        "Rewritten instruction (one imperative sentence):",
-                        col("strategy_text"),
-                        col("perturbed_instr"),
-                    ),
-                    model=REWRITE_MODEL,
-                    use_chat_completions=True,
-                    max_tokens=200,
-                )
+            prompt(
+                messages=dfmt(
+                    "{}\n\nOriginal instruction:\n{}\n\n"
+                    "Rewritten instruction (one imperative sentence):",
+                    col("strategy_text"),
+                    col("perturbed_instr"),
+                ),
+                model=REWRITE_MODEL,
+                use_chat_completions=True,
+                max_tokens=200,
             ),
         )
+        identity = cells.where(col("strategy_text").is_null()).with_column(
+            "grounded", col("perturbed_instr")
+        )
+        cells = named.concat(identity)
         cells = cells.with_column("res", evaluator.eval(col("suite"), col("task_id"), col("grounded")))
         return cells.select(
             "strategy_id",
