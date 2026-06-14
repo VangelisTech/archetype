@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["daft[openai]>=0.7.9", "pydantic>=2", "archetype-ecs"]
+# dependencies = ["daft[openai]>=0.7.9", "archetype-ecs"]
 # ///
 """GEPA, as a Daft pipeline — reflective prompt optimization in ~one screen.
 
@@ -57,7 +57,6 @@ def make_daft_effects():
     import daft
     from daft import col
     from daft.functions import prompt
-    from pydantic import BaseModel
 
     daft.set_provider(
         "openai",
@@ -65,33 +64,37 @@ def make_daft_effects():
         base_url="https://api.anthropic.com/v1/",
     )
 
-    class Sentiment(BaseModel):
-        label: str  # "positive" | "negative"
+    # Fixed output scaffold so responses parse cleanly; GEPA evolves only the strategy.
+    fmt = "\nRespond with exactly one word: positive or negative."
 
     def eval_fn(sid: str, prompt_text: str, ids: list[int]) -> dict[int, dict]:
         rows = {"id": ids, "text": [DATA[i][0] for i in ids], "gold": [DATA[i][1] for i in ids]}
         df = (
             daft.from_pydict(rows)
             .with_column(
-                "pred",
+                "resp",
                 prompt(
                     col("text"),
-                    system_message=prompt_text,
-                    return_format=Sentiment,
+                    system_message=prompt_text + fmt,
                     model=REWRITE_MODEL,
+                    use_chat_completions=True,  # Anthropic's OAI-compat endpoint has no Responses API
                 ),
             )
-            .with_column("label", col("pred")["label"])
-            .with_column("ok", (col("label") == col("gold")).cast(daft.DataType.float32()))
-            .select("id", "text", "gold", "label", "ok")
+            .with_column("pred_pos", col("resp").lower().contains("positive"))
+            .with_column(
+                "ok",
+                (col("pred_pos") == (col("gold") == "positive")).cast(daft.DataType.float32()),
+            )
+            .select("id", "text", "gold", "pred_pos", "ok")
             .collect()  # one materialization per candidate eval — this IS the metric call
         )
         out: dict[int, dict] = {}
         for r in df.to_pylist():
+            pred = "positive" if r["pred_pos"] else "negative"
             fb = (
                 "correct"
                 if r["ok"]
-                else f"got '{r['label']}', expected '{r['gold']}' for: {r['text']!r}"
+                else f"said '{pred}', expected '{r['gold']}' for: {r['text']!r}"
             )
             out[r["id"]] = {"s": float(r["ok"]), "fb": fb}
         return out
@@ -104,7 +107,7 @@ def make_daft_effects():
         )
         df = (
             daft.from_pydict({"x": [instruction]})
-            .with_column("out", prompt(col("x"), model=REFLECT_MODEL))
+            .with_column("out", prompt(col("x"), model=REFLECT_MODEL, use_chat_completions=True))
             .collect()
         )
         return df.to_pylist()[0]["out"].strip()
