@@ -54,8 +54,17 @@ help:
 	@echo "  make docs-lint      Run doc quality checks (spelling, markdown lint, link check)"
 	@echo ""
 	@echo "Utilities:"
+	@echo "  make status         One-screen sitrep: what we're doing + green/red"
 	@echo "  make clean          Remove build artifacts"
 	@echo "  make clean-all      Remove all generated files"
+
+# ------------------------------------------------------------------------------
+# Status
+# ------------------------------------------------------------------------------
+
+.PHONY: status
+status:
+	@./status.sh
 
 # ------------------------------------------------------------------------------
 # Setup
