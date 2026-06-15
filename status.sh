@@ -26,16 +26,13 @@ echo "git      : branch=${branch}  unpushed=${unpushed}  dirty=${dirty} file(s)"
 running=$(modal app list 2>/dev/null | grep -iE 'archetype-(gepa|libero|vla)' | grep -ci running || true)
 echo "modal    : ${running:-0} archetype app(s) currently running"
 
-# 4) Last smoke verdict (parse the most recent detached log)
-last=$(ls -t /tmp/gepa_smoke*.log 2>/dev/null | head -1)
-if [ -n "${last:-}" ]; then
-  if grep -q '"best"' "$last" 2>/dev/null;          then v="GREEN ✓ completed (has result JSON)"
-  elif grep -qiE 'cancellation|cancelled' "$last";  then v="RED ✗ CANCELLED mid-run (env reaped — not a code bug)"
-  elif grep -q 'Traceback' "$last";                 then v="RED ✗ CODE ERROR (grep the log)"
-  else                                                   v="… running / unknown"; fi
-  echo "last run : $(basename "$last") → $v"
+# 4) Last submitted job (spawn pattern — runs in the cloud, decoupled from this session)
+if [ -f /tmp/gepa_last_call.txt ]; then
+  cid=$(cat /tmp/gepa_last_call.txt)
+  state=$(uv run --with modal python bench/libero/submit_gepa.py --fetch "$cid" 2>/dev/null | grep '^STATUS:' | head -1)
+  echo "last job : ${cid} → ${state:-(could not query — try --fetch directly)}"
 else
-  echo "last run : (no /tmp/gepa_smoke*.log found)"
+  echo "last job : (none submitted via spawn yet — bench/libero/submit_gepa.py)"
 fi
 
 # 5) Recent commits

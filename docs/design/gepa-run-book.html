@@ -220,10 +220,14 @@ arms.groupby(<span class="str">"strategy_id"</span>).agg(daft.col(<span class="s
 modal deploy bench/libero/modal_worker.py         <span class="cm"># archetype-libero-env (standard suites)</span>
 <span class="cm"># archetype-vla-jepa (frozen policy) is already deployed and serving.</span></code></pre>
 
+<div class="note warn"><strong>Always submit via <code>spawn()</code>, never <code>modal run</code>.</strong> <code>modal run --detach</code> keeps your local CLI as the job driver — if the session is reaped, Modal cancels the run mid-flight. <code>modal deploy</code> + <code>spawn()</code> runs the job server-side, fully decoupled (submit returns in ~1s; close your laptop). <code>bench/libero/submit_gepa.py</code> wraps this.</div>
+<h3>Deploy once (and after any gepa_daft.py edit)</h3>
+<pre><code>modal deploy bench/libero/gepa_daft.py   <span class="cm"># registers run() as a persistent cloud function</span></code></pre>
 <h3>Smoke (cheap — proves the whole pipeline)</h3>
-<pre><code>modal run --detach bench/libero/gepa_daft.py \
+<pre><code>python bench/libero/submit_gepa.py \
   --suite libero_goal --n-tasks <span class="num">2</span> --n-seeds <span class="num">2</span> --max-steps <span class="num">40</span> \
-  --budget <span class="num">14</span> --minibatch <span class="num">1</span></code></pre>
+  --budget <span class="num">14</span> --minibatch <span class="num">1</span>
+<span class="cm"># → prints a call id; fetch with: submit_gepa.py --fetch &lt;id&gt;  (or `make status`)</span></code></pre>
 
 <h3>Headroom scan (which suite is worth optimizing)</h3>
 <pre><code><span class="cm"># baseline (perturbed-instruction) success per Language ordinal, per suite</span>
@@ -233,9 +237,11 @@ modal run --detach bench/libero/libero_plus_sweep.py \
 <span class="cm"># Pick the suite with the LOWEST baseline → most room for a real Δ.</span></code></pre>
 
 <h3>The overnight run (#19 — the big one)</h3>
-<pre><code>modal run --detach bench/libero/gepa_daft.py \
+<pre><code>python bench/libero/submit_gepa.py \
   --suite &lt;headroom-suite&gt; --n-tasks <span class="num">8</span> --n-seeds <span class="num">5</span> --max-steps <span class="num">300</span> \
-  --budget <span class="num">60</span> --minibatch <span class="num">3</span></code></pre>
+  --budget <span class="num">60</span> --minibatch <span class="num">3</span>
+<span class="cm"># returns a call id in ~1s; the 6h run executes server-side. close the laptop.</span>
+<span class="cm"># check later: submit_gepa.py --fetch &lt;id&gt;  ·  make status  ·  or read the ledger</span></code></pre>
 <div class="note warn"><strong>Flags map 1:1 to <code>main()</code>.</strong> <code>--n-tasks</code>→<code>n_tasks</code>, <code>--max-steps</code>→<code>max_steps</code>, <code>--budget</code>→GEPA rollout budget (metric calls), <code>--minibatch</code>→the mutate/accept minibatch size. <code>--no-do-gepa</code> runs Tier-1 arms only.</div>
 
 <h2>8 · Cost &amp; scale (overnight config)</h2>

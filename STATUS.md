@@ -7,21 +7,22 @@ sections current; run `./status.sh` for live git/Modal/run signals._
 Prove the **GEPA-on-frozen-VLA** pipeline works (LIBERO-Plus Language, zero weight changes),
 then run the overnight A/B + GEPA experiment (#19). Pre-flight gate before that big run.
 
-## 🚦 Health: YELLOW
-- **Code: GREEN.** Pipeline is contract-correct; the `when().otherwise(prompt)` footgun is
-  fixed + committed (`956bb42`); GEPA lib is parity-tested (5/5).
-- **Runs: BLOCKED.** Long Modal jobs launched from this session keep getting **cancelled
-  ~3–10 min in** (environment reaps the client → Modal cancels). Smoke #2 and #3 both got
-  past the bug into real rollouts with **no code error**, then were killed. So we do **not
-  yet have one cleanly-completed smoke**. This is a *launch-method* problem, not a code problem.
+## 🚦 Health: YELLOW (→ GREEN when the smoke completes)
+- **Code: GREEN.** Pipeline contract-correct; `when().otherwise(prompt)` footgun fixed
+  (`956bb42`); GEPA lib parity-tested (5/5).
+- **Launch: FIXED.** Switched from `modal run --detach` (local CLI drives the job → session
+  reaped → Modal cancels) to **`modal deploy` + `spawn()`**: the job runs server-side, fully
+  decoupled; submit returns in ~1s. Smoke re-submitted this way → running in the cloud.
+- **Pending:** one clean completed smoke result, then #23 → #19.
 
 ## ▶️ Next action
-Re-launch the smoke via **deploy + `spawn()`** (server-side, decoupled from this session — no
-local streamer to kill). Once one smoke completes green → #23 headroom scan → #19 overnight.
+Fetch the in-flight smoke (`make status`, or `submit_gepa.py --fetch <id>`). On green →
+#23 headroom scan → #19 overnight — all via `submit_gepa.py` (spawn), **never** `modal run`.
 
 ## 🧱 Blockers
-- Detached `modal run` from this session does not survive. Fix = `modal deploy` the app, then
-  `run.spawn(...)` and read the result from the ledger / function-call id.
+- None open. Long runs now use `bench/libero/submit_gepa.py` → `spawn()` on the deployed
+  `archetype-gepa-daft` app. **Never launch the overnight via `modal run`** — it ties the job
+  to this session and gets cancelled.
 
 ## ✅ Done recently
 - HTML run-book: `docs/design/gepa-run-book.html` (open it for the full end-to-end).
@@ -31,7 +32,8 @@ local streamer to kill). Once one smoke completes green → #23 headroom scan �
 
 ## 🔑 Key files
 - Pipeline: `bench/libero/gepa_daft.py`  ·  Algorithm: `src/archetype/optimize/gepa.py`
-- Run-book: `docs/design/gepa-run-book.html`  ·  Headroom probe: `bench/libero/libero_plus_sweep.py`
+- Submit/fetch (spawn): `bench/libero/submit_gepa.py`  ·  Run-book: `docs/design/gepa-run-book.html`
+- Headroom probe: `bench/libero/libero_plus_sweep.py`
 
 ## 📌 Standing decisions
 - Zero weight changes (test-time only). Sim `pass` = ground truth (never an LLM judge).
