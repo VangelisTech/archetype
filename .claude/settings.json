@@ -9,6 +9,18 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-modal-run.sh",
+            "statusMessage": "checking modal launch pattern"
+          }
+        ]
+      }
     ]
   }
 }
