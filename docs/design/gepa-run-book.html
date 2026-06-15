@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GEPA × VLA-JEPA — End-to-End Run Book</title>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "base", themeVariables: {
+    primaryColor: "#11203a", primaryTextColor: "#e6edf3", primaryBorderColor: "#3b5bdb",
+    lineColor: "#7c8aa5", fontSize: "14px", fontFamily: "ui-sans-serif, system-ui, sans-serif"
+  }});
+</script>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --ink:#e6edf3; --muted:#9aa7b8;
+          --line:#2a3340; --accent:#5b8cff; --green:#3fb950; --amber:#d29922; --red:#f85149;
+          --code:#0b1020; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 40px 24px 120px; }
+  header.hero { border:1px solid var(--line); border-radius:14px; padding:28px 30px;
+    background: linear-gradient(135deg,#11203a,#161b22); margin-bottom:30px; }
+  h1 { font-size: 30px; margin:0 0 6px; letter-spacing:-0.5px; }
+  h2 { font-size: 22px; margin:46px 0 14px; padding-bottom:8px; border-bottom:1px solid var(--line); }
+  h3 { font-size: 17px; margin:28px 0 10px; color:#cdd9e5; }
+  .sub { color: var(--muted); font-size: 15px; }
+  p { margin: 12px 0; }
+  code { font-family: "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  p code, li code, td code { background:var(--panel2); border:1px solid var(--line);
+    padding: 1px 6px; border-radius:5px; color:#b9c6da; }
+  pre { background: var(--code); border:1px solid var(--line); border-radius:10px;
+    padding: 16px 18px; overflow-x:auto; font-size: 12.5px; line-height:1.55; }
+  pre code { color:#c8d3e0; }
+  .kw { color:#ff7b72; } .fn { color:#d2a8ff; } .str { color:#a5d6ff; }
+  .cm { color:#7d8da3; font-style:italic; } .num{color:#79c0ff;}
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding: 18px 22px; margin: 18px 0; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .card h4 { margin:0 0 6px; font-size:15px; } .card .role { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; margin:16px 0; font-size:14px; }
+  th, td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:#cdd9e5; font-size:13px; text-transform:uppercase; letter-spacing:.4px; }
+  tr:hover td { background:#11161f; }
+  .tag { display:inline-block; padding:2px 9px; border-radius:20px; font-size:12px; font-weight:600; }
+  .t-a{background:#30363d;color:#c9d1d9;} .t-d{background:#1f2d4d;color:#9db4ff;}
+  .t-b{background:#1d3a23;color:#7ee787;} .t-c{background:#3d2f15;color:#e3b341;}
+  .note { border-left:3px solid var(--accent); background:#10192e; padding:12px 16px; border-radius:0 8px 8px 0; margin:16px 0; }
+  .warn { border-left:3px solid var(--amber); background:#241d10; }
+  .ok   { border-left:3px solid var(--green); background:#0f1f14; }
+  .mermaid { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; margin:18px 0; text-align:center; }
+  .step { display:flex; gap:14px; margin:14px 0; }
+  .step .n { flex:0 0 30px; height:30px; border-radius:50%; background:var(--accent); color:#fff;
+    display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px; }
+  .step .body { flex:1; }
+  .muted { color:var(--muted); }
+  .pill { font-size:12px; padding:2px 8px; border-radius:6px; background:var(--panel2); border:1px solid var(--line); color:var(--muted); }
+  a { color:var(--accent); }
+  hr { border:none; border-top:1px solid var(--line); margin:30px 0; }
+  .small { font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>GEPA × VLA-JEPA — End-to-End Run Book</h1>
+  <div class="sub">Reflective <em>test-time</em> instruction optimization over a <strong>frozen</strong> vision-language-action policy on LIBERO-Plus. Zero weight changes — only the conditioning text evolves. Every (strategy, task) cell is written to the append-only ledger.</div>
+  <p class="small muted" style="margin-top:14px">
+    Pipeline: <code>bench/libero/gepa_daft.py</code> &nbsp;·&nbsp; Algorithm: <code>archetype.optimize.gepa</code> &nbsp;·&nbsp; Workers: <code>archetype-libero-plus-env</code>, <code>archetype-vla-jepa</code>
+  </p>
+</header>
+
+<h2>1 · The thesis in one paragraph</h2>
+<p>
+A frozen VLA policy (VLA-JEPA) underperforms on the <strong>LIBERO-Plus Language</strong> dimension — same scene, <em>perturbed instruction</em> (~85% vs. ceiling on clean text). The claim: a lot of that gap is <strong>conditioning quality, not capability</strong>. So we run <strong>GEPA</strong> (Agrawal et&nbsp;al. 2025) to evolve an <em>instruction-rewrite strategy</em> at test time — reflecting on simulator outcomes, never touching a single weight. The simulator's <code>pass</code> is ground truth (no LLM judge). The honest baseline is the perturbed instruction verbatim.
+</p>
+<div class="note">
+  <strong>Why this is a clean result either way.</strong> Tier-1 is a fixed-arm ablation whose <em>ordering</em> is the legitimacy test: <code>A&nbsp;≤&nbsp;D&nbsp;&lt;&nbsp;B-seed&nbsp;&lt;&nbsp;C</code>. If a neutral paraphrase (D) already recovers the gap, the effect is an artifact. If only grounding (B/GEPA) recovers it, the gap was conditioning. Tier-2 (GEPA) then shows how far reflective search pushes it under a fixed rollout budget.
+</div>
+
+<h2>2 · System architecture</h2>
+<p>The whole optimization is <strong>one Modal function</strong> (<code>run</code>) whose body is Daft DataFrame ops. The only <code>.remote()</code> calls leave the box to the two <em>deployed</em> workers — the same proven path as the baseline sweep. Daft gives intra-container parallelism over rollouts.</p>
+
+<div class="mermaid">
+flowchart LR
+  CLI["modal run gepa_daft.py<br/>(local entrypoint)"] -->|run.remote| RUN
+  subgraph BOX["archetype-gepa-daft · one Modal function"]
+    RUN["run()"] --> EVAL["evaluate()<br/>Daft DataFrame<br/>strategies × tasks"]
+    EVAL -->|"prompt() rewrite"| SON["Claude sonnet-4-6"]
+    EVAL -->|"RolloutEvaluator.eval<br/>(@daft.cls, use_process)"| ROLL["run_episode_batched"]
+    RUN -->|"gepa_search()"| LIB["archetype.optimize.gepa<br/>Alg 1 + Pareto Alg 2"]
+    RUN -->|"reflect prompt()"| OPU["Claude opus-4-8"]
+    EVAL -->|write_lance| LED[("Ledger · Lance<br/>/results/gepa_daft")]
+  end
+  ROLL -->|.remote| ENVW[("archetype-libero-plus-env<br/>MuJoCo · perturbed instr")]
+  ROLL -->|.remote| POLW[("archetype-vla-jepa<br/>frozen policy")]
+</div>
+
+<div class="grid">
+  <div class="card"><h4>archetype-libero-plus-env</h4><div class="role">Deployed worker · MuJoCo</div><p class="small">Serves the LIBERO-Plus <strong>Language</strong> split. <code>task_id</code> = language ordinal; <code>task_language()</code> returns the <em>perturbed</em> instruction. Pinned to one container per (suite, task) so reset/step never split across autoscaled containers.</p></div>
+  <div class="card"><h4>archetype-vla-jepa</h4><div class="role">Deployed worker · frozen policy</div><p class="small">The VLA-JEPA policy, weights frozen. Conditioned only on the (possibly rewritten) instruction + frames. Never fine-tuned in this experiment.</p></div>
+  <div class="card"><h4>gepa_daft.py · run()</h4><div class="role">Orchestrator (Daft)</div><p class="small">Builds the tasks frame, runs the Tier-1 arms, then the Tier-2 GEPA loop. Sets Claude as the Daft <code>prompt()</code> provider via Anthropic's OpenAI-compatible endpoint.</p></div>
+  <div class="card"><h4>archetype.optimize.gepa</h4><div class="role">The algorithm (pure)</div><p class="small">Faithful GEPA Algorithm&nbsp;1 + Pareto Algorithm&nbsp;2. No Daft/Modal/LLM dependency — the two effects are injected. Parity-tested in <code>tests/experiments/test_gepa_daft.py</code>.</p></div>
+</div>
+
+<h2>3 · The experiment design</h2>
+<h3>Tier 1 — fixed-arm ablation (gen-0)</h3>
+<p>Four strategies, each evaluated on every task. <code>strategy_text = None</code> means identity (use the perturbed instruction verbatim).</p>
+<table>
+  <thead><tr><th>Arm</th><th>Strategy</th><th>What it tests</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag t-a">A-default</span></td><td>identity — perturbed instruction as-is</td><td>the honest ~85% baseline</td></tr>
+    <tr><td><span class="tag t-d">D-paraphrase</span></td><td>reword, add <em>no</em> grounding</td><td>control: is any rewrite enough? (artifact check)</td></tr>
+    <tr><td><span class="tag t-b">B-seed</span></td><td>the seed grounding strategy, un-evolved</td><td>does grounding (one-shot) help?</td></tr>
+    <tr><td><span class="tag t-c">C-oracle</span></td><td>name the exact correct target/destination</td><td>upper bound (smuggles the answer — diagnostic only)</td></tr>
+  </tbody>
+</table>
+<pre><code><span class="cm"># bench/libero/gepa_daft.py — the seed strategy GEPA evolves (also arm B-seed)</span>
+SEED_STRATEGY = (
+  <span class="str">"You rewrite a robot-manipulation instruction into a clearer, better-grounded "</span>
+  <span class="str">"instruction for a frozen vision-language-action policy. Name the target object "</span>
+  <span class="str">"by its visual appearance and spatial relation to nearby objects; state the goal "</span>
+  <span class="str">"location explicitly. Keep it ONE imperative sentence. Do NOT add information that "</span>
+  <span class="str">"solves the task (no coordinates, no answer) — only re-ground what is already there."</span>
+)
+ARMS = {
+  <span class="str">"A-default"</span>:    None,                <span class="cm"># perturbed instruction verbatim</span>
+  <span class="str">"D-paraphrase"</span>: NEUTRAL_PARAPHRASE,  <span class="cm"># reword, no grounding</span>
+  <span class="str">"B-seed"</span>:       SEED_STRATEGY,       <span class="cm"># grounding, un-evolved</span>
+  <span class="str">"C-oracle"</span>:     ORACLE_SMUGGLE,      <span class="cm"># names the answer (upper bound)</span>
+}</code></pre>
+
+<h3>Tier 2 — GEPA reflective search</h3>
+<p>Same <code>evaluate()</code>, now inside a reflect→select loop. The algorithm lives in the lib; <code>run()</code> only injects the two effects.</p>
+
+<h2>4 · One evaluation cell (the inner loop)</h2>
+<p>A "metric call" = one (strategy, task) cell = <code>n_seeds</code> rollouts. This is the unit the GEPA budget is counted in.</p>
+<div class="mermaid">
+flowchart LR
+  S["strategy_text"] -->|"prompt() · sonnet"| G["grounded instruction"]
+  P["perturbed instruction<br/>(if strategy=None)"] --> G
+  G --> R["run_episode_batched<br/>n_seeds parallel rollouts"]
+  R --> ENV[("env .remote()")]
+  R --> POL[("policy .remote()")]
+  R --> SUM["_summarize"]
+  SUM --> OUT["{success_rate, feedback}"]
+  OUT --> L[("write_lance")]
+</div>
+<pre><code><span class="cm"># evaluate(): rewrite is split on the null predicate so prompt() NEVER runs on the</span>
+<span class="cm"># identity arm (daft when().otherwise() evaluates BOTH branches for every row).</span>
+named = cells.where(~col(<span class="str">"strategy_text"</span>).is_null()).with_column(
+    <span class="str">"grounded"</span>,
+    prompt(messages=dfmt(<span class="str">"{}\n\nOriginal instruction:\n{}\n\n"</span>
+                         <span class="str">"Rewritten instruction (one imperative sentence):"</span>,
+                         col(<span class="str">"strategy_text"</span>), col(<span class="str">"perturbed_instr"</span>)),
+           model=REWRITE_MODEL, use_chat_completions=<span class="kw">True</span>, max_tokens=<span class="num">200</span>),
+)
+identity = cells.where(col(<span class="str">"strategy_text"</span>).is_null()).with_column(
+    <span class="str">"grounded"</span>, col(<span class="str">"perturbed_instr"</span>))
+cells = named.concat(identity)
+cells = cells.with_column(<span class="str">"res"</span>, evaluator.eval(col(<span class="str">"suite"</span>), col(<span class="str">"task_id"</span>), col(<span class="str">"grounded"</span>)))</code></pre>
+<pre><code><span class="cm"># RolloutEvaluator.eval — failure-isolated: one bad cell can't abort the whole search</span>
+<span class="kw">try</span>:
+    <span class="kw">async with</span> ArchetypeRuntime() <span class="kw">as</span> rt:
+        per_trial = <span class="kw">await</span> run_episode_batched(env_client=env, policy_client=pol,
+            suite=suite, task_id=task_id, seeds=seeds, env_keys=env_keys,
+            max_steps=self.max_steps, storage=store, runtime=rt,
+            use_frames=<span class="kw">True</span>, instruction=instruction)
+<span class="kw">except</span> Exception <span class="kw">as</span> exc:
+    <span class="kw">return</span> {<span class="str">"success_rate"</span>: <span class="num">0.0</span>, <span class="str">"successes"</span>: <span class="num">0</span>, <span class="str">"n"</span>: <span class="num">0</span>, <span class="str">"feedback"</span>: <span class="str">f"harness error: {exc}"</span>}
+<span class="kw">return</span> _summarize(per_trial, self.max_steps)</code></pre>
+<p class="small muted"><code>_summarize</code> turns per-seed outcomes into the reflective feedback GEPA reads — distinguishing <em>timeouts</em> ("target likely never grasped — instruction ambiguous") from <em>wrong-outcome</em> failures ("finished but failed the goal — instruction underspecifies the target").</p>
+
+<h2>5 · The GEPA loop, step by step</h2>
+<div class="mermaid">
+flowchart TD
+  SEED["seed strategy → full-eval on ALL tasks"] --> POOL[("candidate pool<br/>per-instance score vectors")]
+  POOL --> SEL["Pareto-select a parent (Alg 2)<br/>sample ∝ #instances won"]
+  SEL --> MB["sample a minibatch of tasks"]
+  MB --> REF["reflect on feedback → child strategy<br/>(Claude opus-4-8)"]
+  REF --> CE["eval child on the minibatch → σ'"]
+  CE --> GATE{"σ' &gt; σ ?"}
+  GATE -->|no| SEL
+  GATE -->|yes| FULL["full-eval child on ALL tasks"]
+  FULL --> POOL
+  POOL -->|budget exhausted| BEST["return best candidate by mean score"]
+</div>
+<div class="step"><div class="n">1</div><div class="body"><strong>Seed.</strong> Full-eval <code>SEED_STRATEGY</code> on every task → the first pool entry, with a <em>per-instance</em> score vector (Pareto needs the vector, not the mean).</div></div>
+<div class="step"><div class="n">2</div><div class="body"><strong>Pareto-select a parent (Algorithm 2).</strong> Per instance, find the best score; a candidate "wins" an instance if it ties that best. Prune strictly-dominated candidates; sample the survivors <em>proportional to #instances won</em>. A specialist that wins one hard task survives even if its mean is low — the diversity beam search throws away.</div></div>
+<div class="step"><div class="n">3</div><div class="body"><strong>Minibatch + reflect.</strong> Sample a minibatch of tasks; build a feedback block from the parent's cached per-instance outcomes; Claude proposes an improved strategy (answer-blind).</div></div>
+<div class="step"><div class="n">4</div><div class="body"><strong>Accept gate.</strong> Eval the child on the minibatch (σ′). Accept iff <code>σ′ &gt; σ</code> (the parent's score on that same minibatch). Only then pay for a full-eval and add it to the pool.</div></div>
+<div class="step"><div class="n">5</div><div class="body"><strong>Budget.</strong> Loop while metric calls remain (1 call = 1 strategy × 1 task = <code>n_seeds</code> rollouts). Return the pool's best by mean score.</div></div>
+<pre><code><span class="cm"># archetype/optimize/gepa.py — the loop (effects injected by gepa_daft)</span>
+pool = [_candidate(<span class="str">"gepa-seed"</span>, seed_text, eval_fn(<span class="str">"gepa-seed"</span>, seed_text, instance_ids), instance_ids)]
+spent = len(instance_ids)
+<span class="kw">while</span> spent + minibatch &lt;= budget:                          <span class="cm"># Alg 1 L8: budget</span>
+    parent = pareto_select(pool, instance_ids, rng)          <span class="cm"># Alg 2</span>
+    mb = rng.sample(instance_ids, min(minibatch, len(instance_ids)))
+    sigma = sum(parent[<span class="str">"scores"</span>][i] <span class="kw">for</span> i <span class="kw">in</span> mb) / len(mb)
+    child_text = reflect_fn(parent[<span class="str">"text"</span>], fb)               <span class="cm"># UpdatePrompt</span>
+    c_res = eval_fn(<span class="str">f"{csid}-mb"</span>, child_text, mb)
+    sigma_prime = sum(c_res[i][<span class="str">"s"</span>] <span class="kw">for</span> i <span class="kw">in</span> mb) / len(mb)
+    <span class="kw">if</span> sigma_prime &gt; sigma <span class="kw">and</span> spent + len(instance_ids) &lt;= budget:  <span class="cm"># accept gate</span>
+        full = eval_fn(csid, child_text, instance_ids)        <span class="cm"># full-eval on D_pareto</span>
+        pool.append(_candidate(csid, child_text, full, instance_ids))</code></pre>
+
+<h2>6 · The ledger (queryable, reproducible)</h2>
+<p>Every cell is appended as Lance under <code>/results/gepa_daft</code> (the <code>libero-eval-results</code> Modal Volume). Tier-1 arms → <code>/arms</code>; every GEPA cell → <code>/gepa</code>. Each row: <code>strategy_id, task_id, grounded, success, feedback</code>. The whole search is replayable from the ledger.</p>
+<pre><code><span class="cm"># after a run, read it back with daft:</span>
+<span class="kw">import</span> daft
+arms = daft.read_lance(<span class="str">"/results/gepa_daft/arms"</span>)
+arms.groupby(<span class="str">"strategy_id"</span>).agg(daft.col(<span class="str">"success"</span>).mean()).sort(<span class="str">"strategy_id"</span>).show()
+<span class="cm"># A ≤ D &lt; B-seed &lt; C  is the legitimacy ordering; GEPA's best should beat B-seed.</span></code></pre>
+
+<h2>7 · How to run it</h2>
+<h3>Prereqs — deploy the two workers (once / after edits)</h3>
+<pre><code>modal deploy bench/libero/libero_plus_worker.py   <span class="cm"># archetype-libero-plus-env</span>
+modal deploy bench/libero/modal_worker.py         <span class="cm"># archetype-libero-env (standard suites)</span>
+<span class="cm"># archetype-vla-jepa (frozen policy) is already deployed and serving.</span></code></pre>
+
+<h3>Smoke (cheap — proves the whole pipeline)</h3>
+<pre><code>modal run --detach bench/libero/gepa_daft.py \
+  --suite libero_goal --n-tasks <span class="num">2</span> --n-seeds <span class="num">2</span> --max-steps <span class="num">40</span> \
+  --budget <span class="num">14</span> --minibatch <span class="num">1</span></code></pre>
+
+<h3>Headroom scan (which suite is worth optimizing)</h3>
+<pre><code><span class="cm"># baseline (perturbed-instruction) success per Language ordinal, per suite</span>
+modal run --detach bench/libero/libero_plus_sweep.py \
+  --suite libero_goal --n-tasks <span class="num">10</span> --trials <span class="num">3</span> --max-steps <span class="num">300</span>
+<span class="cm"># repeat for libero_object, libero_10. Spatial is already confirmed at ceiling.</span>
+<span class="cm"># Pick the suite with the LOWEST baseline → most room for a real Δ.</span></code></pre>
+
+<h3>The overnight run (#19 — the big one)</h3>
+<pre><code>modal run --detach bench/libero/gepa_daft.py \
+  --suite &lt;headroom-suite&gt; --n-tasks <span class="num">8</span> --n-seeds <span class="num">5</span> --max-steps <span class="num">300</span> \
+  --budget <span class="num">60</span> --minibatch <span class="num">3</span></code></pre>
+<div class="note warn"><strong>Flags map 1:1 to <code>main()</code>.</strong> <code>--n-tasks</code>→<code>n_tasks</code>, <code>--max-steps</code>→<code>max_steps</code>, <code>--budget</code>→GEPA rollout budget (metric calls), <code>--minibatch</code>→the mutate/accept minibatch size. <code>--no-do-gepa</code> runs Tier-1 arms only.</div>
+
+<h2>8 · Cost &amp; scale (overnight config)</h2>
+<table>
+  <thead><tr><th>Phase</th><th>Rollouts</th><th>LLM calls</th></tr></thead>
+  <tbody>
+    <tr><td>Tier-1 arms (4 × 8 tasks × 5 seeds)</td><td>160 episodes</td><td>~24 rewrites (3 non-identity arms × 8)</td></tr>
+    <tr><td>Tier-2 GEPA (budget 60 cells × 5 seeds)</td><td>~300 episodes</td><td>~60 rewrites + ~1 reflect / generation</td></tr>
+    <tr><td><strong>Total</strong></td><td><strong>~460 episodes × 300 steps</strong></td><td>~90 Claude calls</td></tr>
+  </tbody>
+</table>
+<p class="small muted">Wall-clock is dominated by GPU rollouts; Daft runs up to <code>min(n_tasks, 8)</code> concurrently (per-process RBAC isolation via <code>use_process=True</code>). LLM calls are cheap relative to rollouts. Timeout on <code>run()</code> is 6&nbsp;h. Episodes are bounded by <code>max_steps</code>; a cell that never grasps just times out and is recorded as a failure (not a crash).</p>
+
+<h2>9 · What to watch</h2>
+<ul>
+  <li><strong>Ordering, not absolute numbers.</strong> <code>A ≤ D &lt; B-seed</code> validates the conditioning hypothesis; <code>D ≈ B</code> would mean "any rewrite helps" (weaker claim).</li>
+  <li><strong>GEPA &gt; B-seed.</strong> The reflective search should beat the un-evolved seed, and approach C-oracle <em>without</em> ever naming the answer (answer-blind is enforced in the reflect prompt).</li>
+  <li><strong>Pool diversity.</strong> The trace records each generation's parent, σ, σ′, accept/reject. Healthy runs accept early then plateau (rejects) as the frontier saturates.</li>
+  <li><strong>No silent zeros.</strong> A cell with <code>feedback="harness error: …"</code> is an isolated failure, not a real 0% — grep the ledger for it before trusting an arm's mean.</li>
+</ul>
+
+<hr>
+<p class="small muted">Algorithm: Agrawal et&nbsp;al., <em>GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning</em>, arXiv:2507.19457. Implementation: <code>archetype.optimize.gepa</code> (parity-tested). Pipeline: <code>bench/libero/gepa_daft.py</code>. <span class="pill">status: smoke validating before #19</span></p>
+
+</div>
+</body>
+</html>
