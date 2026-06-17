@@ -146,6 +146,9 @@ do_not_mutate = [
 # Bump this manually as needed; uv 0.8.x doesn't support relative durations.
 exclude-newer = "2026-04-15T00:00:00Z"
 
+[tool.logfire]
+ignore_no_config = true
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

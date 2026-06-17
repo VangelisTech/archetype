@@ -725,8 +725,13 @@ class CommandService:
             try:
                 await self._apply(world_id, cmd)
                 applied.append(cmd)
-            except Exception:
-                logger.exception("Failed to apply command %s (%s)", cmd.id, cmd.type.value)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to apply command %s (%s): %s",
+                    cmd.id,
+                    cmd.type.value,
+                    exc,
+                )
 
         if applied:
             await self._broker.ack([cmd.id for cmd in applied])
@@ -792,4 +797,4 @@ class CommandService:
                 await self._mutations.remove_processor(world_id, payload["processor_type"])
 
             case _:
-                logger.warning("Unhandled command type in drain: %s", cmd.type.value)
+                logger.debug("Unhandled command type in drain: %s", cmd.type.value)

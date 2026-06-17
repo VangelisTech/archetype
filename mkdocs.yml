@@ -35,6 +35,7 @@ nav:
       - Token Quotas: guide/token-quotas.md
       - Mutation Testing: guide/mutation-testing.md
   - Agent Evaluation:
+      - Evaluation Criteria: guide/evals.md
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md

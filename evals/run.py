@@ -14,6 +14,11 @@ tasks pass, and no capability tasks error out.
 
 from __future__ import annotations
 
+import os
+
+# Evals exercise intentional command failures; keep logfire quiet without config.
+os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
+
 import argparse
 import json
 import sys

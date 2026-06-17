@@ -392,8 +392,11 @@ class SyncWorld(iWorld):
         ``OnDespawn`` iff the entity existed."""
         sig = self.entity2sig.pop(entity_id, None)
         if sig is None:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}"
+            logger.debug(
+                "World %s (%s): despawn ignored, no entity: %s",
+                self.name,
+                self.world_id,
+                entity_id,
             )
             return
 
