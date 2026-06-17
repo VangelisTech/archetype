@@ -83,3 +83,15 @@ path = "src/archetype/experiments/boundary.py"
 line = 119
 method = "to_pylist"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
+
+[[entries]]
+path = "src/archetype/experiments/execution.py"
+line = 175
+method = "collect"
+reason = "External trial backend orchestration boundary: processors must materialise the bounded control-plane archetype for one tick to call the process-local TrialExecutionBackend resource with idempotency keys and global per-tick submission/poll limits; these side-effecting backend calls cannot be expressed as pure Daft expressions."
+
+[[entries]]
+path = "src/archetype/experiments/execution.py"
+line = 177
+method = "to_pylist"
+reason = "External trial backend orchestration boundary: after the bounded control-plane frame is collected, row dictionaries drive process-local submit/poll calls and lifecycle column updates against TrialExecutionBackend; the side-effecting resource boundary and global per-tick caps cannot be represented lazily in a Daft plan."
