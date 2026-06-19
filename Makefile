@@ -39,6 +39,7 @@ help:
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
+	@echo "  make eval-idem      Run idempotency suite only"
 	@echo "  make eval-cap       Run capability suite only"
 	@echo ""
 	@echo "Build & Release:"
@@ -197,6 +198,10 @@ eval:
 .PHONY: eval-reg
 eval-reg:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite regression
+
+.PHONY: eval-idem
+eval-idem:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite idempotency
 
 .PHONY: eval-cap
 eval-cap:

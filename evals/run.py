@@ -4,7 +4,8 @@
 """Run all evals and report results.
 
 Usage:
-    python -m evals.run [--out results.json] [--suite regression|capability] [--trials 3]
+    python -m evals.run [--out results.json] [--suite regression|spec|idempotency|capability]
+        [--trials 3]
 
 Reports pass@k (fraction of k trials that passed) and pass^k (1.0 only
 when every one of the k trials passed, 0.0 otherwise) per task, grouped
@@ -18,11 +19,11 @@ import argparse
 import json
 
 from evals.harness import EvalHarness
-from evals.suites import capability, poison_command, regression, spec_contracts
+from evals.suites import capability, idempotency, poison_command, regression, spec_contracts
 from evals.types import TaskResult
 
-REQUIRED_SUITES = frozenset({"regression", "spec"})
-KNOWN_SUITES = ("regression", "spec", "capability")
+REQUIRED_SUITES = frozenset({"regression", "spec", "idempotency"})
+KNOWN_SUITES = ("regression", "spec", "idempotency", "capability")
 
 
 def _positive_int(value: str) -> int:
@@ -41,6 +42,7 @@ def build_harness(trials: int = 1) -> EvalHarness:
     regression.register(harness)
     poison_command.register(harness)
     spec_contracts.register(harness)
+    idempotency.register(harness)
     capability.register(harness)
     return harness
 
