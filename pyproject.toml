@@ -17,7 +17,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "daft[openai,lance,iceberg]>=0.7.4",
+    "daft[openai,lance,iceberg]>=0.7.15",
     "lancedb>=0.22.0",
     "pyiceberg[daft,sql-sqlite]",
     "uuid-utils>=0.11.0",
@@ -144,7 +144,7 @@ do_not_mutate = [
 [tool.uv]
 # Supply-chain guard: refuse packages released after this date (7-day quarantine).
 # Bump this manually as needed; uv 0.8.x doesn't support relative durations.
-exclude-newer = "2026-04-15T00:00:00Z"
+exclude-newer = "2026-06-12T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
