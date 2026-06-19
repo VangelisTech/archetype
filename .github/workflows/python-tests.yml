@@ -119,6 +119,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Run pyright
-        run: uv run pyright src/archetype/
-        continue-on-error: true  # Don't fail CI on type errors yet
+      # ty is the type gate (config in [tool.ty]); pinned to match the
+      # astral-sh/ty-pre-commit rev in .pre-commit-config.yaml. Blocking.
+      - name: Run ty
+        run: uvx ty@0.0.48 check --python .venv
