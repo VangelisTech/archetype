@@ -84,6 +84,7 @@ orchestrates LIBERO suite × task × trial sweeps on the Archetype ledger:
 
 - One `Experiment` + `Run` entity per eval run as tick-0 initial conditions (genesis tick)
 - One `EvalTrialResult` entity per trial (suite, task, trial index, seed, success, episode length)
+- `bench/libero/eval_harness.py` composes dataframe-backed graders over selected trial rows
 - `bench/libero/report.py` reads the lab world and emits a markdown report with per-task
   success rates, mean episode lengths, wall-clock timing, and the **provenance-tax headline**
   (ledger overhead per tick as % of mean step latency)
@@ -103,10 +104,23 @@ uv run python bench/libero/eval_driver.py \
 
 # Generate the markdown report:
 uv run python bench/libero/report.py --lab-dir /tmp/libero_smoke
+
+# Run dataframe-backed graders over the same persisted rows:
+uv run python bench/libero/eval_harness.py \
+    --lab-dir /tmp/libero_smoke \
+    --suite libero_spatial \
+    --task-ids 0 \
+    --min-trials 2 \
+    --min-success-rate 0.5 \
+    --max-mean-episode-length 80
 ```
 
 The full 2,000-episode benchmark sweep (`--trials 50 --max-steps 600` over all 4 × 10
 task combinations) is **a user-triggered action** (GPU cost); never run it in CI.
+
+`report.py` is a human-readable summary path. `eval_harness.py` is the scoring path:
+it loads or queries `EvalTrialResult` rows as Daft DataFrames, applies suite/task/trial/run
+filters, and returns the existing eval framework's `TaskResult`/`GraderResult` objects.
 
 ### `EvalTrialResult` component
 
@@ -134,4 +148,5 @@ Contract tests: `tests/experiments/test_eval_driver.py`.
 - `src/archetype/experiments/` — the current component implementations
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
 - `bench/libero/eval_driver.py` — LIBERO eval driver (suites × tasks × trials)
+- `bench/libero/eval_harness.py` — dataframe-backed LIBERO grader composition
 - `bench/libero/report.py` — markdown report generator with provenance-tax headline

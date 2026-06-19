@@ -25,6 +25,7 @@ Service dependency graph::
     iWorldService     iQueryService     iAuditLog      (storage-backed)
         ↑
     iMutationService  iSimulationService               (worlds)
+                      iEvalService                     (queries)
         ↑               ↑         ↑         ↑
         └───────────────┴─────────┴─────────┘
                         ↑
@@ -35,6 +36,7 @@ Service dependency graph::
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from daft import DataFrame
@@ -193,11 +195,97 @@ class iQueryService(Protocol):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         components: list[type[Component]] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+    ) -> DataFrame: ...
+
+    async def query_components(
+        self,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        storage_config: StorageConfig | None = None,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
     ) -> DataFrame: ...
 
     async def list_signatures(
         self, storage_config: StorageConfig | None = None
     ) -> list[ArchetypeSignature]: ...
+
+
+class iEvalService(Protocol):
+    """Dataframe-first evaluation over persisted component rows.
+
+    Depends on: ``iQueryService``
+    """
+
+    def __init__(self, query_service: iQueryService) -> None: ...
+
+    async def query_components(
+        self,
+        components: Sequence[type[Component]],
+        *,
+        world_id: str | UUID,
+        run_id: str | UUID,
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+    ) -> DataFrame: ...
+
+    async def query_episode(
+        self,
+        episode: EpisodeResult,
+        *,
+        components: Sequence[type[Component]],
+        run_id: str | UUID | None = None,
+        storage_config: StorageConfig | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+    ) -> DataFrame: ...
+
+    async def query_trajectory_component(
+        self,
+        component: type[Component],
+        *,
+        world_id: str | UUID,
+        run_id: str | UUID,
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+        trajectory_ids: Sequence[str] | None = None,
+        episode_ids: Sequence[str] | None = None,
+        rollout_ids: Sequence[str] | None = None,
+        task_ids: Sequence[str] | None = None,
+        trial_idxs: Sequence[int] | None = None,
+    ) -> DataFrame: ...
+
+    async def run_graders(
+        self,
+        df: DataFrame,
+        graders: Sequence[Callable[[DataFrame], object]],
+    ) -> list[object]: ...
+
+    async def grade_trajectory_component(
+        self,
+        component: type[Component],
+        *,
+        world_id: str | UUID,
+        run_id: str | UUID,
+        graders: Sequence[Callable[[DataFrame], object]],
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+        trajectory_ids: Sequence[str] | None = None,
+        episode_ids: Sequence[str] | None = None,
+        rollout_ids: Sequence[str] | None = None,
+        task_ids: Sequence[str] | None = None,
+        trial_idxs: Sequence[int] | None = None,
+    ) -> list[object]: ...
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -15,6 +15,8 @@ uv run python examples/<filename>.py
 | 5 | [`05_llm_agents.py`](05_llm_agents.py) | LLM-powered agents — each entity gets a parallel LLM call every tick via `daft.functions.prompt` | `OPENAI_API_KEY` |
 | 6 | [`06_trajectory_analysis.py`](06_trajectory_analysis.py) | Trajectory analysis — ingest, label, and compare agent trajectories using world forking | Optional: `OPENAI_API_KEY` |
 | 7 | [`07_hooks.py`](07_hooks.py) | Lifecycle hooks for audit logs, tick metrics, and temporary debug traces | None |
+| 9 | [`09_eval_service_toy.py`](09_eval_service_toy.py) | DataFrame-first trajectory reward scoring with existing eval graders | None |
+| 10 | [`10_eval_service_manipulation.py`](10_eval_service_manipulation.py) | DataFrame-first grading over persisted manipulation processor output | None |
 
 ### Supplementary
 
