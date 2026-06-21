@@ -28,10 +28,8 @@ Services:
 - ServiceContainer: Wires everything together
 """
 
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.eval_service import EvalService
+from archetype.app.gateway import CommandBroker, CommandService
 from archetype.app.models import (
     AuditRow,
     Command,
@@ -42,10 +40,13 @@ from archetype.app.models import (
     RunResult,
     WorldInfo,
 )
-from archetype.app.query_service import QueryService
-from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.services import (
+    EvalService,
+    QueryService,
+    SimulationService,
+    StorageService,
+    WorldService,
+)
 
 # Core config (re-export for convenience)
 from archetype.core import AsyncLancedbStore, CacheConfig, RunConfig, StorageConfig, WorldConfig

@@ -34,11 +34,11 @@ import pyarrow as pa
 from uuid_utils import UUID
 
 from archetype.app.models import AuditRow
-from archetype.app.storage_service import _resolve_uri
+from archetype.app.services.storage_service import _resolve_uri
 from archetype.core.config import StorageConfig
 
 if TYPE_CHECKING:
-    from archetype.app.storage_service import StorageService
+    from archetype.app.services.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
 

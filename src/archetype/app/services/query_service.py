@@ -24,7 +24,7 @@ from __future__ import annotations
 from daft import DataFrame, col
 
 from archetype.app.models import Command, CommandType
-from archetype.app.storage_service import StorageService
+from archetype.app.services.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig

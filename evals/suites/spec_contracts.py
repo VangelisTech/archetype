@@ -25,7 +25,7 @@ from uuid_utils import uuid7
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.auth.permissions import COMMANDS_BY_ROLE
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 from archetype.app.models import (
     CommandType,
     HookInfo,
@@ -98,7 +98,7 @@ _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
 _RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
     {
-        "archetype.app.command_service",
+        "archetype.app.gateway.gate",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.auth.models",
@@ -220,7 +220,10 @@ def _type_checking_ranges(tree: ast.AST) -> list[tuple[int, int]]:
         if not is_type_checking or not node.body:
             continue
         start = min(getattr(child, "lineno", node.lineno) for child in node.body)
-        end = max(getattr(child, "end_lineno", getattr(child, "lineno", node.lineno)) for child in node.body)
+        end = max(
+            getattr(child, "end_lineno", getattr(child, "lineno", node.lineno))
+            for child in node.body
+        )
         ranges.append((start, end))
     return ranges
 
@@ -306,10 +309,7 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {
-        role: frozenset(commands)
-        for role, commands in COMMANDS_BY_ROLE.items()
-    }
+    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
     explicit_non_admin_review = all(
         command in actual["admin"]
         and (
@@ -367,12 +367,10 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
 
 def task_command_service_gate_map() -> list[GraderResult]:
     """Every public gate method has the expected command type and audit emit."""
-    path = SRC / "app" / "command_service.py"
+    path = SRC / "app" / "gateway" / "gate.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
     }
 
     checks: dict[str, bool] = {}

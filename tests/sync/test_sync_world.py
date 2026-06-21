@@ -190,7 +190,7 @@ def _make_sync_world(tmp_path, name="test"):
 def _make_sync_world_with_catalog(tmp_path, name="test"):
     """Helper to construct a SyncWorld backed by a real catalog so
     ``world.step`` can actually persist rows."""
-    from archetype.app.storage_service import _resolve_uri
+    from archetype.app.services.storage_service import _resolve_uri
     from archetype.core.config import StorageConfig
     from archetype.runtime.session import configure_session
 

@@ -20,16 +20,16 @@ Wires all services together. Single point of construction.
 
 from __future__ import annotations
 
-from archetype.app.audit_log import AuditLog
-from archetype.app.autoresearch_service import AutoResearchService
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
-from archetype.app.eval_service import EvalService
-from archetype.app.mutation_service import MutationService
-from archetype.app.query_service import QueryService
-from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.gateway import AuditLog, CommandBroker, CommandService
+from archetype.app.services import (
+    AutoResearchService,
+    EvalService,
+    MutationService,
+    QueryService,
+    SimulationService,
+    StorageService,
+    WorldService,
+)
 
 
 class ServiceContainer:

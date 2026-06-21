@@ -14,9 +14,9 @@ import json
 
 import pytest
 
-from archetype.app.autoresearch_service import AutoResearchConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.models import EpisodeConfig
+from archetype.app.services.autoresearch_service import AutoResearchConfig
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.experiments.components import BranchHead, Experiment, Result, Run

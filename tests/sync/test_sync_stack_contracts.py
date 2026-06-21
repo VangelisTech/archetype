@@ -11,7 +11,7 @@ import pyarrow as pa
 import pytest
 from daft import DataFrame, col
 
-from archetype.app.storage_service import _resolve_uri
+from archetype.app.services.storage_service import _resolve_uri
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig

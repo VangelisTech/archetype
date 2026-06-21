@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from daft import DataFrame, col
 
-from archetype.app.broker import CommandBroker
+from archetype.app.gateway.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem

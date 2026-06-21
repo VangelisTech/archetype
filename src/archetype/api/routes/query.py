@@ -22,7 +22,7 @@ from archetype.api.deps import get_actor_ctx, get_command_service
 from archetype.api.errors import raise_api_error
 from archetype.api.models import dataframe_to_rows, hydrate_component_types
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
 from archetype.core.config import StorageConfig
 

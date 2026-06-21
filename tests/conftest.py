@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.services.storage_service import StorageService
+from archetype.app.services.world_service import WorldService
 
 
 def make_storage_service() -> StorageService:

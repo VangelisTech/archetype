@@ -9,7 +9,7 @@ Tests the command broker and message passing between agents.
 
 import pytest
 
-from archetype.app.broker import CommandBroker
+from archetype.app.gateway.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 

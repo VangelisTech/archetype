@@ -36,7 +36,7 @@ import daft
 from daft import DataFrame, col
 from uuid_utils import UUID
 
-from archetype.app.eval_service import EvalService
+from archetype.app.services.eval_service import EvalService
 from archetype.core.config import StorageConfig
 from archetype.experiments.components import EvalTrialResult
 from evals.graders import state_check, threshold

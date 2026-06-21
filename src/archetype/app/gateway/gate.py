@@ -45,9 +45,9 @@ from archetype.app.models import (
 if TYPE_CHECKING:
     from daft import DataFrame
 
-    from archetype.app.audit_log import AuditLog
     from archetype.app.auth.models import ActorCtx
-    from archetype.app.broker import CommandBroker
+    from archetype.app.gateway.audit_log import AuditLog
+    from archetype.app.gateway.broker import CommandBroker
     from archetype.app.models import (
         EpisodeConfig,
         EpisodeResult,
@@ -56,10 +56,10 @@ if TYPE_CHECKING:
         RunResult,
         WorldInfo,
     )
-    from archetype.app.mutation_service import MutationService
-    from archetype.app.query_service import QueryService
-    from archetype.app.simulation_service import SimulationService
-    from archetype.app.world_service import WorldService
+    from archetype.app.services.mutation_service import MutationService
+    from archetype.app.services.query_service import QueryService
+    from archetype.app.services.simulation_service import SimulationService
+    from archetype.app.services.world_service import WorldService
     from archetype.core.component import Component
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import ArchetypeSignature
@@ -112,7 +112,7 @@ class CommandService:
         if self._audit is None:
             return
         try:
-            from archetype.app.audit_log import make_audit_row
+            from archetype.app.gateway.audit_log import make_audit_row
 
             row = make_audit_row(ctx, command_type, world_id, **kw)
             await self._audit.record(row)

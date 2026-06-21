@@ -6,13 +6,13 @@
 import pytest
 
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
-from archetype.app.query_service import QueryService
-from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.gateway.broker import CommandBroker
+from archetype.app.gateway.gate import CommandService
+from archetype.app.services.query_service import QueryService
+from archetype.app.services.simulation_service import SimulationService
+from archetype.app.services.storage_service import StorageService
+from archetype.app.services.world_service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from tests.conftest import make_world_service

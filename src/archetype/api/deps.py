@@ -20,8 +20,8 @@ from fastapi import Header, HTTPException, Request
 from uuid_utils import uuid7
 
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.gate import CommandService
 
 # Test/development override. The lifespan handler attaches the resolved
 # container to app.state; request dependencies read from app.state.

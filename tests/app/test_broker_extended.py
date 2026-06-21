@@ -17,7 +17,7 @@ from archetype.app.auth.guard import (
     reset_tick_counters,
 )
 from archetype.app.auth.models import ActorCtx
-from archetype.app.broker import CommandBroker
+from archetype.app.gateway.broker import CommandBroker
 from archetype.app.models import Command, CommandType
 
 

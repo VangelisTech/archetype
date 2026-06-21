@@ -20,7 +20,7 @@ from archetype.api.deps import get_actor_ctx, get_command_service
 from archetype.api.errors import raise_api_error
 from archetype.api.models import CreateWorldRequest, ForkWorldRequest
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 from archetype.app.models import WorldInfo
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])

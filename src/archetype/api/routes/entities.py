@@ -26,7 +26,7 @@ from archetype.api.models import (
     hydrate_components,
 )
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 
 router = APIRouter(prefix="/worlds/{world_id}/entities", tags=["entities"])
 

@@ -11,11 +11,11 @@ call it and verify exactly one new audit row was emitted.
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.audit_log import AuditLog, make_audit_row
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
-from archetype.app.storage_service import StorageService
+from archetype.app.gateway.audit_log import AuditLog, make_audit_row
+from archetype.app.services.storage_service import StorageService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 

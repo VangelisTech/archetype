@@ -20,17 +20,17 @@ TARGETS = [
 
 ALLOWED_APP_IMPORTS = {
     "archetype.app.auth.models",
-    "archetype.app.command_service",
+    "archetype.app.gateway.gate",
     "archetype.app.container",
     "archetype.app.models",
 }
 
 FORBIDDEN_APP_IMPORTS = {
-    "archetype.app.broker",
-    "archetype.app.mutation_service",
-    "archetype.app.query_service",
-    "archetype.app.simulation_service",
-    "archetype.app.world_service",
+    "archetype.app.gateway.broker",
+    "archetype.app.services.mutation_service",
+    "archetype.app.services.query_service",
+    "archetype.app.services.simulation_service",
+    "archetype.app.services.world_service",
 }
 
 

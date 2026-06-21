@@ -27,7 +27,7 @@ from archetype.api.models import (
     StepResponse,
 )
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 from archetype.app.models import EpisodeResult, RolloutResult
 
 router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])

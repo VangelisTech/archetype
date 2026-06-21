@@ -40,8 +40,8 @@ from archetype.core.config import RunConfig, WorldConfig
 from archetype.experiments.components import BranchHead, Experiment, Result, Run, RunStatus
 
 if TYPE_CHECKING:
-    from archetype.app.simulation_service import SimulationService
-    from archetype.app.world_service import WorldService
+    from archetype.app.services.simulation_service import SimulationService
+    from archetype.app.services.world_service import WorldService
 
 logger = logging.getLogger(__name__)
 

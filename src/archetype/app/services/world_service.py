@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
-from archetype.app.storage_service import StorageService
+from archetype.app.services.storage_service import StorageService
 from archetype.core.aio import (
     AsyncQueryManager,
     AsyncSystem,

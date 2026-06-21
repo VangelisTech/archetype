@@ -23,7 +23,7 @@ _API_DIR = _ROOT / "api"
 # Modules inside archetype.app that runtime/ may import from.
 _RUNTIME_ALLOWED_APP = frozenset(
     {
-        "archetype.app.command_service",
+        "archetype.app.gateway.gate",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.auth.models",

@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, create_async_store
+from archetype.app.services.storage_service import AsyncLancedbStore, create_async_store
 from archetype.core.aio import AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from tests.conftest import make_storage_service
@@ -156,7 +156,7 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
             seen["session"] = session_arg
             seen["io_config"] = io_config
 
-    monkeypatch.setattr("archetype.app.storage_service.AsyncStore", FakeStore)
+    monkeypatch.setattr("archetype.app.services.storage_service.AsyncStore", FakeStore)
 
     cfg = StorageConfig(
         uri=str(tmp_path / "store"),

@@ -9,8 +9,8 @@ import pytest
 from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
-from archetype.app.eval_service import EvalService
 from archetype.app.models import EpisodeConfig
+from archetype.app.services.eval_service import EvalService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig

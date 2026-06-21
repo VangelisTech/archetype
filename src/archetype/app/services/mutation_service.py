@@ -28,7 +28,7 @@ from archetype.core.aio import AsyncWorld
 from archetype.core.component import Component
 
 if TYPE_CHECKING:
-    from archetype.app.world_service import WorldService
+    from archetype.app.services.world_service import WorldService
 
 
 class MutationService:

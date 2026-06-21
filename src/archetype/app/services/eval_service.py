@@ -29,7 +29,7 @@ from daft import DataFrame, col
 from uuid_utils import UUID
 
 from archetype.app.models import EpisodeResult
-from archetype.app.query_service import QueryService
+from archetype.app.services.query_service import QueryService
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.experiments.trajectories import Trajectory

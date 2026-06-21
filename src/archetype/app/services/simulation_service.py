@@ -33,7 +33,7 @@ from archetype.core.config import RunConfig
 
 if TYPE_CHECKING:
     from archetype.app.models import EpisodeConfig, RolloutConfig
-    from archetype.app.world_service import WorldService
+    from archetype.app.services.world_service import WorldService
 
 
 class SimulationService:

@@ -426,11 +426,11 @@ class TestQueryRoutes:
 def test_route_modules_do_not_import_forbidden_services():
     route_dir = __import__("pathlib").Path("src/archetype/api/routes")
     forbidden = (
-        "archetype.app.mutation_service",
-        "archetype.app.simulation_service",
-        "archetype.app.query_service",
-        "archetype.app.world_service",
-        "archetype.app.broker",
+        "archetype.app.services.mutation_service",
+        "archetype.app.services.simulation_service",
+        "archetype.app.services.query_service",
+        "archetype.app.services.world_service",
+        "archetype.app.gateway.broker",
     )
     offenders = []
     for path in route_dir.glob("*.py"):

@@ -28,7 +28,7 @@ from archetype.api.models import (
     dataframe_to_rows,
 )
 from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.gate import CommandService
 from archetype.app.models import Command, CommandType
 
 router = APIRouter(prefix="/worlds/{world_id}/commands", tags=["commands"])
