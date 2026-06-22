@@ -21,6 +21,7 @@ Wires all services together. Single point of construction.
 from __future__ import annotations
 
 from archetype.app.audit_log import AuditLog
+from archetype.app.auth import reset_tick_counters
 from archetype.app.autoresearch_service import AutoResearchService
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
@@ -76,6 +77,8 @@ class ServiceContainer:
             autoresearch=self.autoresearch_service,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
+        # Per-tick RBAC quota resets at each tick boundary (bug B1).
+        self.simulation_service.set_quota_reset(reset_tick_counters)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

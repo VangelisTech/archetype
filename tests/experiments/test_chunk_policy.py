@@ -32,6 +32,7 @@ from archetype.core.aio import AsyncSystem
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.experiments.manipulation import (
     ACTION_DIM,
+    EnvClientSpec,
     EnvStepProcessor,
     ManipAction,
     ManipProprio,
@@ -40,7 +41,6 @@ from archetype.experiments.manipulation import (
     ScriptedReachEnv,
 )
 from archetype.experiments.policy import (
-    EnvClientSpec,
     PolicyActionProcessor,
     PolicyClientSpec,
 )
@@ -364,8 +364,6 @@ class _TestPolicySpec(PolicyClientSpec):
     """
 
     def __init__(self, policy: Any) -> None:
-        # Provide dummy scalar fields required by the dataclass.
-        super().__init__(suite="test", task_id=0)
         self._policy = policy
 
     def build(self) -> Any:  # type: ignore[override]
@@ -382,7 +380,6 @@ class _TestEnvSpec(EnvClientSpec):
     """
 
     def __init__(self, client: Any) -> None:
-        super().__init__(suite="test", task_id=0)
         self._client = client
 
     def build(self) -> Any:  # type: ignore[override]

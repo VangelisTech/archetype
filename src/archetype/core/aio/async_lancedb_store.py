@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-import time
-from typing import Protocol
+from typing import Any, Protocol
 
 import daft
 import lancedb
@@ -61,9 +60,22 @@ class AsyncLancedbStore(iAsyncStore):
         # Tracks only signatures that have been durably committed via append();
         # excludes tables opened/created by get_archetype_df (create-on-read).
         self._committed_sigs: set[str] = set()
+        # Cache of opened AsyncTable handles by name. _ensure_table used to
+        # re-run list_tables() + open_table() on EVERY append/query; cheap when
+        # serial but it dominated concurrent workloads (50 concurrent spawns:
+        # ~100s of it). A LanceDB handle always reads the current version, so
+        # reusing it is safe — appends and queries see the latest data.
+        self._tables: dict[str, Any] = {}
 
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
+
+        # Reuse an already-opened handle: this turns a per-op list_tables() +
+        # open_table() round-trip into a dict lookup (the concurrent-spawn killer).
+        cached = self._tables.get(table_name)
+        if cached is not None:
+            return cached
+
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
         if self.lancedb is None:
@@ -79,6 +91,7 @@ class AsyncLancedbStore(iAsyncStore):
                 raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
 
             self._known_sigs[table_name] = sig
+            self._tables[table_name] = async_table
             return async_table
 
         try:
@@ -100,6 +113,7 @@ class AsyncLancedbStore(iAsyncStore):
             raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
 
         self._known_sigs[table_name] = sig
+        self._tables[table_name] = async_table
         return async_table
 
     async def _list_table_names(self) -> list[str]:
@@ -169,34 +183,25 @@ class AsyncLancedbStore(iAsyncStore):
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
     async def append(self, sig, df: DataFrame) -> None:
-        try:
-            df.collect()
-            if df.count_rows() == 0 or not df.column_names:
-                logger.info(
-                    f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
-                )
-                return
-        except Exception as e:
-            # A frame that cannot materialize cannot be persisted; the caller
-            # must see that, not a silent no-op.
-            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
-            raise
+        # ONE materialization. Lance rejects zero-row / schemaless frames, so the
+        # empty guard stays — but the row count comes free from the Arrow table we
+        # must build anyway. A separate df.collect() + df.count_rows() re-ran the
+        # Daft plan twice for nothing; this redundancy is a recurring rewrite
+        # regression (perf-fixed before in the predecessor stores) — keep it lean.
+        if not df.column_names:
+            logger.info(f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} empty schema")
+            return
+        arrow_table = df.to_arrow()
+        if arrow_table.num_rows == 0:
+            logger.info(f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0")
+            return
 
         async_table = await self._ensure_table(sig)
         # Record this sig as durably committed for list_committed_signatures().
         self._committed_sigs.add(Archetype.get_name(sig))
-        table_name = async_table.name
-        try:
-            start_time = time.time()
-            arrow_table = df.to_arrow()
-            await async_table.add(arrow_table, mode="append")
-            end_time = time.time()
-            logger.info(
-                f"Appended dataframe to table {table_name} in {end_time - start_time} seconds"
-            )
-        except Exception as e:
-            logger.error(f"Error appending dataframe to table {table_name}: {e}")
-            raise
+        # No local try/except: AsyncUpdateManager.update already logs + re-raises
+        # (the "loud failures" contract), so wrapping here would only double-log.
+        await async_table.add(arrow_table, mode="append")
 
     async def shutdown(self) -> None:
         if self.lancedb is not None:
