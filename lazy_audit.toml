@@ -49,12 +49,6 @@ method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
 [[entries]]
-path = "src/archetype/core/aio/async_lancedb_store.py"
-line = 173
-method = "collect"
-reason = "LanceDB write boundary: defensive empty-frame probe to avoid Lance casting errors on zero-row appends; precedes the actual table.append call."
-
-[[entries]]
 path = "src/archetype/core/sync/store.py"
 line = 132
 method = "collect"
@@ -77,6 +71,12 @@ path = "src/archetype/app/services/autoresearch_service.py"
 line = 313
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow (incumbent score comparison, head entity id for the next update) at the autoresearch loop boundary; the comparison drives imperative orchestration, not a further dataframe computation."
+
+[[entries]]
+path = "src/archetype/app/services/simulation_service.py"
+line = 216
+method = "to_pylist"
+reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 
 [[entries]]
 path = "src/archetype/experiments/boundary.py"

@@ -38,6 +38,7 @@ os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from clients import VlaJepaPolicyClient  # type: ignore[import-untyped]  # noqa: E402
 from modal_worker import ModalEnvClient  # noqa: E402
 
 from archetype import ArchetypeRuntime  # noqa: E402
@@ -51,10 +52,7 @@ from archetype.experiments.manipulation import (  # noqa: E402
     ManipStatus,
     ManipTask,
 )
-from archetype.experiments.policy import (  # noqa: E402
-    PolicyActionProcessor,
-    VlaJepaPolicyClient,
-)
+from archetype.experiments.policy import PolicyActionProcessor  # noqa: E402
 
 # 21 ticks = 3 VLA-JEPA chunks (chunk_len = 7)
 TICKS = 21
@@ -109,7 +107,7 @@ async def main() -> None:
                 ManipTask(
                     suite=SUITE,
                     task_id=TASK_ID,
-                    instruction=f"pick up the black bowl and place it on the plate",
+                    instruction="pick up the black bowl and place it on the plate",
                     seed=0,
                     env_key=0,
                 ),

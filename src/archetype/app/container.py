@@ -20,6 +20,7 @@ Wires all services together. Single point of construction.
 
 from __future__ import annotations
 
+from archetype.app.auth import reset_tick_counters
 from archetype.app.gateway import AuditLog, CommandBroker, CommandService
 from archetype.app.services import (
     AutoResearchService,
@@ -72,6 +73,8 @@ class ServiceContainer:
             audit=self.audit_log,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
+        # Per-tick RBAC quota resets at each tick boundary (bug B1).
+        self.simulation_service.set_quota_reset(reset_tick_counters)
 
         # AutoResearch — depends on WorldService + SimulationService
         self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)

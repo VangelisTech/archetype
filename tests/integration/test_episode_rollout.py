@@ -9,9 +9,11 @@ Verifies termination predicates, fork isolation, registry cleanup, and result sh
 """
 
 import pytest
+from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
 from archetype.app.models import EpisodeConfig, RolloutConfig
+from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig, WorldConfig
 
@@ -26,6 +28,29 @@ class Pos(Component):
 
 class Terminal(Component):
     done: bool = True
+
+
+class Countdown(Component):
+    """Counts up each tick; ``done`` latches once ``step`` reaches ``goal``.
+
+    Lets one episode hold entities that finish at different ticks, so the
+    value-based "all" vs "any" termination reducers can be told apart.
+    """
+
+    step: int = 0
+    goal: int = 1
+    done: bool = False
+
+
+class CountToGoal(AsyncProcessor):
+    components = (Countdown,)
+    priority = 10
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        nxt = col("countdown__step") + 1
+        return df.with_column("countdown__step", nxt).with_column(
+            "countdown__done", (nxt >= col("countdown__goal")) | col("countdown__done")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +154,146 @@ class TestEpisode:
 
             assert result.terminated is False
             assert result.duration_steps == 5
+        finally:
+            await container.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Value-based "all done" termination (bug B2)
+# ---------------------------------------------------------------------------
+
+
+async def _make_countdown_world(container, tmp_path, name="b2"):
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+    world = await container.world_service.create_world(WorldConfig(name=name), storage)
+    await world.add_processor(CountToGoal())
+    return world
+
+
+async def _done_by_entity(world) -> dict[int, bool]:
+    """``done`` at the latest committed frame, keyed by entity id."""
+    rows = (await world.get_components([Countdown])).to_pylist()
+    return {r["entity_id"]: bool(r["countdown__done"]) for r in rows}
+
+
+class TestValueBasedTermination:
+    """``terminal_component`` + ``terminal_field`` = stop when entities latch.
+
+    GIVEN entities whose boolean field flips True after some ticks
+    WHEN run with terminal_field set
+    THEN the episode stops on the data, not at max_steps — and ``terminal_all``
+         decides whether it waits for every entity or stops at the first.
+    """
+
+    @pytest.mark.asyncio
+    async def test_all_done_terminates_early_not_at_max_steps(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            world = await _make_countdown_world(container, tmp_path)
+            await world.create_entity([Countdown(goal=3)])
+
+            config = EpisodeConfig(
+                max_steps=50,
+                terminal_component=Countdown,
+                terminal_field="done",
+                terminal_all=True,
+            )
+            result = await container.simulation_service.run_episode(world.world_id, config)
+
+            assert result.terminated is True
+            assert result.duration_steps < 50  # stopped on the data, not the cap
+            # The reason it stopped: the entity is genuinely done.
+            assert all((await _done_by_entity(world)).values())
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_terminal_field_suppresses_structural_check(self, tmp_path):
+        """With terminal_field set, the entity merely *carrying* Countdown must
+        NOT end the episode at tick 0 (that is the structural path)."""
+        container = ServiceContainer()
+        try:
+            world = await _make_countdown_world(container, tmp_path)
+            await world.create_entity([Countdown(goal=4)])
+
+            config = EpisodeConfig(
+                max_steps=50,
+                terminal_component=Countdown,
+                terminal_field="done",
+            )
+            result = await container.simulation_service.run_episode(world.world_id, config)
+
+            assert result.terminated is True
+            assert result.duration_steps > 1  # ran, did not fire structurally at tick 0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_all_mode_waits_for_the_slowest_entity(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            world = await _make_countdown_world(container, tmp_path)
+            fast = await world.create_entity([Countdown(goal=2)])
+            slow = await world.create_entity([Countdown(goal=6)])
+
+            config = EpisodeConfig(
+                max_steps=50,
+                terminal_component=Countdown,
+                terminal_field="done",
+                terminal_all=True,
+            )
+            result = await container.simulation_service.run_episode(world.world_id, config)
+
+            assert result.terminated is True
+            assert result.duration_steps < 50
+            done = await _done_by_entity(world)
+            # Waited for *both* — including the slow one.
+            assert done[fast] is True
+            assert done[slow] is True
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_any_mode_stops_at_the_first_entity(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            world = await _make_countdown_world(container, tmp_path)
+            fast = await world.create_entity([Countdown(goal=2)])
+            slow = await world.create_entity([Countdown(goal=6)])
+
+            config = EpisodeConfig(
+                max_steps=50,
+                terminal_component=Countdown,
+                terminal_field="done",
+                terminal_all=False,
+            )
+            result = await container.simulation_service.run_episode(world.world_id, config)
+
+            assert result.terminated is True
+            done = await _done_by_entity(world)
+            # Stopped at the first finisher; the slow one is still running.
+            assert done[fast] is True
+            assert done[slow] is False
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_caps_at_max_steps_when_never_done(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            world = await _make_countdown_world(container, tmp_path)
+            await world.create_entity([Countdown(goal=999)])
+
+            config = EpisodeConfig(
+                max_steps=4,
+                terminal_component=Countdown,
+                terminal_field="done",
+                terminal_all=True,
+            )
+            result = await container.simulation_service.run_episode(world.world_id, config)
+
+            assert result.terminated is False
+            assert result.duration_steps == 4
         finally:
             await container.shutdown()
 
