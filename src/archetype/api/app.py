@@ -19,13 +19,14 @@ from logging import basicConfig
 
 import logfire
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from logfire.exceptions import LogfireConfigError
 
 from archetype.api.deps import get_container, set_container
-from archetype.api.routes import commands, entities, query, simulation, worlds
+from archetype.api.routes import commands, entities, inspector, query, simulation, worlds
 
 try:
-    logfire.configure(service_name="archetype-ecs")
+    logfire.configure(service_name="archetype-ecs", send_to_logfire=False)
 except LogfireConfigError:
     # No Logfire credentials on this machine — degrade to local-only
     # instrumentation instead of refusing to import.
@@ -61,6 +62,15 @@ def create_app() -> FastAPI:
     app.include_router(commands.router)
     app.include_router(simulation.router)
     app.include_router(query.router)
+    app.include_router(inspector.router)
+
+    inspector_output = inspector._OUTPUT_DIR
+    inspector_output.mkdir(parents=True, exist_ok=True)
+    app.mount(
+        "/inspector/live-agent/files",
+        StaticFiles(directory=str(inspector_output), html=True),
+        name="live-agent-inspector-files",
+    )
 
     @app.get("/")
     async def root():

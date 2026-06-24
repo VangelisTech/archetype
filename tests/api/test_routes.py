@@ -52,6 +52,44 @@ class TestRootRoute:
         assert resp.json() == {"status": "ok"}
 
 
+class TestInspectorRoutes:
+    def test_inspector_page(self, client):
+        resp = client.get("/inspector")
+        assert resp.status_code == 200
+        assert "Run Inspector" in resp.text
+        assert "/inspector/live-agent/run" in resp.text
+
+    def test_run_live_agent_inspector(self, client):
+        resp = client.post("/inspector/live-agent/run", json={"ticks": 1, "delay": 0})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "complete"
+        assert data["dashboard_url"] == "/inspector/live-agent/files/index.html"
+        assert data["latest_url"] == "/inspector/live-agent/files/latest.json"
+
+        dashboard = client.get(data["dashboard_url"])
+        assert dashboard.status_code == 200
+        assert "MuJoCo" in dashboard.text
+        assert "mujocoDemo" in dashboard.text
+
+    def test_detached_mujoco_job_streams_results(self, client):
+        resp = client.post(
+            "/inspector/mujoco/jobs",
+            json={"backend": "local", "simulations": 2, "ticks": 4, "substeps": 1},
+        )
+        assert resp.status_code == 200
+        job = resp.json()
+        assert job["status"] == "running"
+        assert job["stream_url"].startswith("/inspector/mujoco/jobs/")
+
+        with client.stream("GET", job["stream_url"]) as stream:
+            text = "".join(stream.iter_text())
+
+        assert "event: job_started" in text
+        assert text.count("event: simulation_complete") == 2
+        assert "event: job_complete" in text
+
+
 class TestWorldRoutes:
     def test_list_worlds_empty(self, client):
         resp = client.get("/worlds")

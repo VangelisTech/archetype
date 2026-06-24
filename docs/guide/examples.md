@@ -232,3 +232,25 @@ Source: [`examples/07_hooks.py`](https://github.com/VangelisTech/archetype/blob/
 - **Tick telemetry**: `PreTick` starts a timer and `PostTick` computes metrics from `event.results`
 - **Hook handles**: unregister a temporary debug hook with `world.remove_hook(handle)`
 - **Boundary discipline**: hooks emit side effects; processors keep the simulation state deterministic
+
+---
+
+## 8. Live Agent Inspector
+
+Watch a running multi-agent world in a browser while it records durable
+per-tick snapshots.
+
+```bash
+uv run python examples/08_live_inspector.py
+uv run python examples/08_live_inspector.py --break-at-tick 2
+```
+
+Source: [`examples/08_live_inspector.py`](https://github.com/VangelisTech/archetype/blob/main/examples/08_live_inspector.py)
+
+This example writes `.context/live-agent-inspector/index.html` plus one JSON
+snapshot per completed tick. The dashboard shows current entity state,
+tick-to-tick diffs, mailbox state, audit tail, processors/resources/hooks, and
+source snippets for the components and processors currently shaping the world.
+
+Use `--break-at-tick N` to drop into `pdb` after that snapshot is written. The
+debugger scope includes `runtime`, `world`, `mailbox`, and `snapshot`.
