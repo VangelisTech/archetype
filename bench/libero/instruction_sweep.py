@@ -161,11 +161,25 @@ async def run_instruction_sweep(
     )
     await world.add_processor(processor)
 
+    # Fresh measurement: drop any per-env recurrent state (e.g. a VLA's action
+    # chunk buffer) carried over from a previous sweep that reused these env_keys.
+    policy_reset = getattr(policy_client, "reset", None)
+    if callable(policy_reset):
+        policy_reset()
+
     # Reset-then-spawn: each trial's reset obs lands as its raw tick-0 row.
+    #
+    # Seeding is PAIRED and position-invariant: the trial's init-state is keyed by
+    # its per-variant ``seed_slot`` (0..S-1), NOT by the global ``env_key``. So
+    # every variant's slot-j trial starts from the *same* init-state — the only
+    # difference between variants is the instruction (a clean A/B) — and the same
+    # instruction draws the same seeds regardless of where it sits in the
+    # candidate list across optimizer rounds (reproducible). ``env_key`` stays
+    # globally unique only because it routes rows to env instances.
     env_key = 0
     for variant in unique_variants:
-        for _ in range(seeds_per_variant):
-            seed = task_id * 1000 + env_key
+        for seed_slot in range(seeds_per_variant):
+            seed = task_id * 1000 + seed_slot
             obs = env_client.reset(env_key, seed)
             components: list[Any] = [
                 ManipProprio(
@@ -246,6 +260,17 @@ async def run_instruction_sweep(
                 mean_length=(sum(lengths) / n) if n else 0.0,
             )
         )
+
+    # Loud failure on a shrunk denominator: a missing final row would silently
+    # drop a trial (graded 0/0), deflating success-rate. Every spawned trial must
+    # be graded.
+    graded = sum(v.n_trials for v in report.variants)
+    expected = len(unique_variants) * seeds_per_variant
+    if graded != expected:
+        raise ValueError(
+            f"sweep graded {graded} trials but spawned {expected}; "
+            f"a trajectory is missing from the ledger (corruption or a dropped run)"
+        )
     return report
 
 
@@ -267,27 +292,36 @@ class PerturbationStrategy(Protocol):
 
 @dataclass
 class TemplatePerturbation:
-    """Deterministic single-token toggle neighborhood over a fixed vocabulary.
+    """Deterministic single-occurrence (Hamming-1) toggle over a fixed vocabulary.
 
-    ``propose(base, n)`` returns ``n`` variants, the i-th formed by toggling the
-    presence of ``vocabulary[i % len]`` in ``base``. With ``n == len(vocabulary)``
-    this is the full 1-edit (Hamming-1) neighborhood, so hill-climbing from the
-    incumbent reaches the global optimum (every required keyword named) without
-    randomness — the loop is reproducible bit-for-bit.
+    ``propose(base, n)`` returns ``n`` variants, the i-th formed by toggling
+    ``vocabulary[i % len]`` in ``base``: remove *one* occurrence if present, else
+    append. Single-occurrence (not remove-all) so a repeated-word instruction
+    isn't collapsed and no duplicate candidates are emitted. With
+    ``n == len(vocabulary)`` this is the full 1-edit neighborhood, so hill-climbing
+    from the incumbent reaches the optimum reachable by edits *within the
+    vocabulary*, deterministically and reproducibly.
+
+    NOTE on reachability: the search can only reach instructions expressible by
+    these toggles. If ``vocabulary`` is exactly ``base.split()`` the optimum is
+    ``base`` itself (deletions only) — to let an optimized instruction *beat* the
+    base, the vocabulary must include candidate words not already in ``base``.
+    For a real VLA experiment, supply a paraphrase/keyword-injection or LLM
+    strategy (roadmap H5) rather than this token-toggle stand-in.
     """
 
     vocabulary: Sequence[str]
 
     def propose(self, base: str, n: int) -> list[str]:
         base_tokens = base.split()
-        present = set(base_tokens)
         out: list[str] = []
         for i in range(n):
             word = self.vocabulary[i % len(self.vocabulary)]
-            if word in present:
-                new_tokens = [t for t in base_tokens if t != word]
+            new_tokens = list(base_tokens)
+            if word in new_tokens:
+                new_tokens.remove(word)  # one occurrence (Hamming-1), not all
             else:
-                new_tokens = [*base_tokens, word]
+                new_tokens.append(word)
             out.append(" ".join(new_tokens))
         return out
 

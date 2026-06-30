@@ -134,6 +134,17 @@ class VlaJepaPolicyClient:
         self._worker = None
         self._buffers = {}
 
+    def reset(self) -> None:
+        """Drop all per-``env_key`` chunk buffers.
+
+        Buffers are keyed by ``env_key`` only, and a sweep restarts ``env_key``
+        at 0, so without this a new sweep's ``env_key`` 0 would pop the *previous*
+        sweep's leftover action chunk before its own instruction is ever sent to
+        the VLA — corrupting the exact instruction-conditioning signal under
+        measurement. ``run_instruction_sweep`` calls this at each sweep boundary.
+        """
+        self._buffers = {}
+
     def _get_worker(self):
         """Lazy Modal handle construction (reconnects after unpickling)."""
         if self._worker is None:

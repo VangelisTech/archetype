@@ -40,6 +40,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import uuid_utils as uuid
+
 from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.experiments.manipulation import (
@@ -116,8 +118,10 @@ async def run_task_eval(
     ``ManipStatus.done`` latches (or ``max_steps``), then the eval service
     grades the persisted rows.
     """
+    # Unique per call: the registry enforces name uniqueness, so a retry / a
+    # second variance run on the same (suite, task_id) would otherwise crash.
     world = await world_service.create_world(
-        WorldConfig(name=f"eval:{suite}:t{task_id}"), storage
+        WorldConfig(name=f"eval:{suite}:t{task_id}:{uuid.uuid7()}"), storage
     )
     if policy_client is not None:
         from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
