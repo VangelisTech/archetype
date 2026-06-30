@@ -3,23 +3,22 @@
 
 """Instruction-perturbation eval + self-improving optimizer (bench/libero).
 
-The research claim, made executable without a GPU: *prompt optimization that
-works for coding agents also lifts a physical-AI policy's success rate.* The
-instruction is a per-entity ``ManipTask`` field that flows to the policy
-(``PolicyClient.act`` receives it; the real ``VlaJepaPolicyClient`` forwards it
-into the VLA), so optimizing it is just sweeping variants on the batched eval
-substrate and grading per variant.
+SCOPE — this is a MECHANISM CHECK, not evidence for the scientific claim.
+``InstructionConditionedReachPolicy`` defines its effective gain *as*
+``instruction_quality(instruction)``, and the replay oracle here recomputes that
+same function, so success-rate is monotone in the optimized metric BY
+CONSTRUCTION. These tests therefore prove only that the machinery is correct —
+the sweep grades per-variant from the ledger, the seeds are paired, the
+optimizer hill-climbs and never regresses, no per-env state leaks. They do NOT
+demonstrate that prompt optimization lifts a *real* VLA's success rate; that
+requires running ``optimize_task`` on real LIBERO against an objective the
+optimizer does not define (roadmap A3/H5, and the Limitations section).
 
-``InstructionConditionedReachPolicy`` is a faithful, fully-replayable stand-in
-for an instruction-conditioned VLA: its effective gain scales with how well the
-instruction names the task (``instruction_quality``), so a vague instruction
-under-actuates and times out while a precise one reaches. Per-seed target
-distances spread the success threshold, so success-rate is *graded* in
-instruction quality — the optimizer climbs it one keyword at a time.
-
-Swap ``ScriptedReachEnv`` -> ``InProcessLiberoEnvClient`` and
-``InstructionConditionedReachPolicy`` -> ``VlaJepaPolicyClient`` and the exact
-same sweep + optimizer run on real LIBERO on a Modal GPU container.
+The plumbing under test is real: the instruction is a per-entity ``ManipTask``
+field that flows to the policy (``PolicyClient.act`` receives it; the real
+``VlaJepaPolicyClient`` forwards it into the VLA). Swap ``ScriptedReachEnv`` ->
+``InProcessLiberoEnvClient`` and the stand-in policy -> ``VlaJepaPolicyClient``
+and the same sweep + optimizer run on real LIBERO on a Modal GPU container.
 """
 
 from __future__ import annotations
@@ -74,7 +73,7 @@ def _targets(n_env_keys: int = 64) -> dict[int, tuple[float, float, float]]:
     """
     targets: dict[int, tuple[float, float, float]] = {}
     for env_key in range(n_env_keys):
-        seed = TASK_ID * 1000 + env_key
+        seed = TASK_ID * 1000 + (env_key % SEEDS)  # paired seed-slot, not position
         start_x = 0.001 * seed
         start_y = -0.001 * seed
         dist = DISTS[env_key % SEEDS]
@@ -86,7 +85,7 @@ def _simulate(env_key: int, eff_gain: float, targets: dict[int, tuple[float, flo
     """Independent ground truth: replay the proportional controller + env in
     pure Python at a given effective gain. Returns whether the trial reaches the
     target within ``MAX_STEPS``. Never touches the ledger."""
-    seed = TASK_ID * 1000 + env_key
+    seed = TASK_ID * 1000 + (env_key % SEEDS)  # paired seed-slot, not position
     pos = [0.001 * seed, -0.001 * seed, 0.5]
     target = targets[env_key]
     for _step in range(1, CONTROL_STEPS + 1):
@@ -228,5 +227,86 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
         # It found the task's real keywords (>= 2 of 3), not just distractors.
         assert instruction_quality(result.best_instruction, REQUIRED) >= 2 / 3
         assert result.best_instruction.split(), "the optimized instruction is non-empty"
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sweep_is_paired_and_position_invariant(tmp_path):
+    """An instruction's success-rate must be identical regardless of where it
+    sits in the candidate list — variants are graded on the SAME paired
+    init-states (slot-keyed seeds), not on disjoint position-keyed ones. This is
+    the A/B-pairing the thesis depends on; locks seed = task*1000 + seed_slot."""
+    container = ServiceContainer()
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ipair")
+    targets = _targets()
+    try:
+        env = ScriptedReachEnv(targets=targets, tolerance=TOL)
+        policy = InstructionConditionedReachPolicy(
+            targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
+        )
+
+        async def sweep(variants):
+            report = await run_instruction_sweep(
+                world_service=container.world_service,
+                simulation_service=container.simulation_service,
+                eval_service=container.eval_service,
+                env_client=env,
+                policy_client=policy,
+                suite="scripted",
+                task_id=TASK_ID,
+                variants=variants,
+                seeds_per_variant=SEEDS,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            )
+            return report.scores
+
+        forward = await sweep(["reach", "reach red", "reach red block"])
+        reversed_ = await sweep(["reach red block", "reach red", "reach"])
+        for instruction in forward:
+            assert forward[instruction] == reversed_[instruction], (
+                f"{instruction!r} graded differently by position: "
+                f"{forward[instruction]} vs {reversed_[instruction]}"
+            )
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sweep_resets_policy_state_between_runs(tmp_path):
+    """``run_instruction_sweep`` must drop a stateful policy's per-env buffers at
+    each sweep boundary, so a reused env_key never replays a prior sweep's
+    recurrent state (the VlaJepaPolicyClient chunk-leak). Locks the reset() call."""
+    container = ServiceContainer()
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ireset")
+    targets = _targets()
+
+    class _SpyPolicy(InstructionConditionedReachPolicy):
+        resets = 0
+
+        def reset(self):
+            type(self).resets += 1
+
+    try:
+        env = ScriptedReachEnv(targets=targets, tolerance=TOL)
+        policy = _SpyPolicy(
+            targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
+        )
+        for _ in range(2):
+            await run_instruction_sweep(
+                world_service=container.world_service,
+                simulation_service=container.simulation_service,
+                eval_service=container.eval_service,
+                env_client=env,
+                policy_client=policy,
+                suite="scripted",
+                task_id=TASK_ID,
+                variants=["reach red"],
+                seeds_per_variant=SEEDS,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            )
+        assert _SpyPolicy.resets == 2, "each sweep must reset the policy's per-env state"
     finally:
         await container.shutdown()
