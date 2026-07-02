@@ -11,19 +11,11 @@ on:
       - "src/archetype/api/**"
       - "src/archetype/cli/**"
       - ".github/workflows/docs.yml"
+  # No path filter on pull_request: Spelling, Markdown lint, and Build docs
+  # are required status checks on main, and a required check that never runs
+  # blocks the merge forever. The jobs cost ~30s combined per PR.
   pull_request:
     branches: [main]
-    paths:
-      - "docs/**"
-      - "**/*.md"
-      - "mkdocs.yml"
-      - "scripts/generate_*.py"
-      - "src/archetype/api/**"
-      - "src/archetype/cli/**"
-      - ".markdownlint.yaml"
-      - "_typos.toml"
-      - "lychee.toml"
-      - ".github/workflows/docs.yml"
 
 concurrency:
   group: docs-${{ github.ref }}
