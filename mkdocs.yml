@@ -29,6 +29,7 @@ nav:
       - Execution Hierarchy: guide/execution-hierarchy.md
       - World Lifecycle: guide/world-lifecycle.md
       - Audit Log: guide/audit-log.md
+      - Dataset & Eval Ontology: guide/dataset-eval-ontology.md
   - Building:
       - Building Simulations: guide/building-simulations.md
       - Custom Commands: guide/custom-commands.md

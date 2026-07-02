@@ -21,6 +21,7 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
+| [Dataset & Eval Ontology](dataset-eval-ontology.md) | Physical-AI dataset and eval vocabulary | Benchmark/suite/task/episode/trial/check nouns, dataset-vs-runtime coordinates, reader conformance. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
