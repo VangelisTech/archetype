@@ -74,123 +74,123 @@ The full runnable catalog is in
 It prints each provider banner without opening network connections, and
 `--smoke-local` runs a local world through the same runtime storage API.
 
-!!! abstract "AWS S3"
+### AWS S3
 
-    ```python
-    from daft.io import IOConfig, S3Config
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import IOConfig, S3Config
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="s3://your-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            s3=S3Config(region_name="us-east-1", profile_name="default")
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="s3://your-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        s3=S3Config(region_name="us-east-1", profile_name="default")
+    ),
+)
+```
 
-!!! abstract "Google Cloud Storage"
+### Google Cloud Storage
 
-    ```python
-    from daft.io import GCSConfig, IOConfig
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import GCSConfig, IOConfig
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="gs://your-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            gcs=GCSConfig(project_id="your-project")
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="gs://your-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        gcs=GCSConfig(project_id="your-project")
+    ),
+)
+```
 
-!!! abstract "Azure Blob or ADLS"
+### Azure Blob or ADLS
 
-    ```python
-    from daft.io import AzureConfig, IOConfig
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import AzureConfig, IOConfig
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="az://container/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            azure=AzureConfig(storage_account="account-name")
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="az://container/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        azure=AzureConfig(storage_account="account-name")
+    ),
+)
+```
 
-!!! abstract "Cloudflare R2"
+### Cloudflare R2
 
-    ```python
-    from daft.io import IOConfig, S3Config
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import IOConfig, S3Config
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="s3://your-r2-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            s3=S3Config(
-                endpoint_url="https://<account-id>.r2.cloudflarestorage.com",
-                region_name="auto",
-            )
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="s3://your-r2-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        s3=S3Config(
+            endpoint_url="https://<account-id>.r2.cloudflarestorage.com",
+            region_name="auto",
+        )
+    ),
+)
+```
 
-!!! abstract "MinIO"
+### MinIO
 
-    ```python
-    from daft.io import IOConfig, S3Config
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import IOConfig, S3Config
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="s3://your-minio-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            s3=S3Config(
-                endpoint_url="http://localhost:9000",
-                region_name="us-east-1",
-            )
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="s3://your-minio-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        s3=S3Config(
+            endpoint_url="http://localhost:9000",
+            region_name="us-east-1",
+        )
+    ),
+)
+```
 
-!!! abstract "Tencent COS"
+### Tencent COS
 
-    ```python
-    from daft.io import CosConfig, IOConfig
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import CosConfig, IOConfig
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="cos://your-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            cos=CosConfig(region="ap-guangzhou")
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="cos://your-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        cos=CosConfig(region="ap-guangzhou")
+    ),
+)
+```
 
-!!! abstract "Volcengine TOS"
+### Volcengine TOS
 
-    ```python
-    from daft.io import IOConfig, TosConfig
-    from archetype.core.config import StorageBackend, StorageConfig
+```python
+from daft.io import IOConfig, TosConfig
+from archetype.core.config import StorageBackend, StorageConfig
 
-    storage = StorageConfig(
-        uri="tos://your-bucket/archetype/warehouse",
-        namespace="product_demo",
-        backend=StorageBackend.ICEBERG,
-        io_config=IOConfig(
-            tos=TosConfig(region="cn-beijing")
-        ),
-    )
-    ```
+storage = StorageConfig(
+    uri="tos://your-bucket/archetype/warehouse",
+    namespace="product_demo",
+    backend=StorageBackend.ICEBERG,
+    io_config=IOConfig(
+        tos=TosConfig(region="cn-beijing")
+    ),
+)
+```
 
 ### Store Inputs
 
