@@ -92,6 +92,27 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
         task_id="spec.append_only_protocols",
     ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.1",
+        source="dataset-eval-ontology.md",
+        anchors=("datasets are frozen trials", "exactly one episode"),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.2",
+        source="dataset-eval-ontology.md",
+        anchors=(
+            "zero-based, dataset-scoped integer",
+            "a dataset records; a benchmark judges",
+        ),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.3",
+        source="dataset-eval-ontology.md",
+        anchors=("A suite is only ever a set of tasks", "the skeleton of graders"),
+        task_id="spec.dataset_eval_ontology",
+    ),
 )
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
@@ -220,7 +241,10 @@ def _type_checking_ranges(tree: ast.AST) -> list[tuple[int, int]]:
         if not is_type_checking or not node.body:
             continue
         start = min(getattr(child, "lineno", node.lineno) for child in node.body)
-        end = max(getattr(child, "end_lineno", getattr(child, "lineno", node.lineno)) for child in node.body)
+        end = max(
+            getattr(child, "end_lineno", getattr(child, "lineno", node.lineno))
+            for child in node.body
+        )
         ranges.append((start, end))
     return ranges
 
@@ -306,10 +330,7 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {
-        role: frozenset(commands)
-        for role, commands in COMMANDS_BY_ROLE.items()
-    }
+    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
     explicit_non_admin_review = all(
         command in actual["admin"]
         and (
@@ -370,9 +391,7 @@ def task_command_service_gate_map() -> list[GraderResult]:
     path = SRC / "app" / "command_service.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
     }
 
     checks: dict[str, bool] = {}
@@ -566,6 +585,43 @@ class _UnusedService:
         raise AssertionError(f"unexpected call to unused fake service: {name}")
 
 
+def task_dataset_eval_ontology() -> list[GraderResult]:
+    """The definitions module matches the ontology's identity and cardinality laws."""
+    from dataclasses import fields, is_dataclass
+    from typing import get_type_hints
+
+    from archetype.datasets import definitions as defs
+
+    task_hints = get_type_hints(defs.TaskRef)
+    episode_hints = get_type_hints(defs.EpisodeRef)
+    eval_hints = get_type_hints(defs.Eval)
+    trial_hints = get_type_hints(defs.Trial)
+    rubric_hints = get_type_hints(defs.Rubric)
+    vocabulary = (defs.TaskRef, defs.EpisodeRef, defs.Grader, defs.Rubric, defs.Eval, defs.Trial)
+
+    checks = {
+        "task_identity_fields": [f.name for f in fields(defs.TaskRef)]
+        == ["benchmark", "suite", "task_key"],
+        "task_identity_is_strings": all(
+            task_hints[name] is str for name in ("benchmark", "suite", "task_key")
+        ),
+        "episode_identity_fields": [f.name for f in fields(defs.EpisodeRef)]
+        == ["benchmark", "episode_id"],
+        "episode_id_is_int": episode_hints["episode_id"] is int,
+        "eval_binds_single_task": eval_hints["task"] is defs.TaskRef,
+        "eval_composes_rubric": eval_hints["rubric"] is defs.Rubric,
+        "rubric_composes_graders": rubric_hints["graders"] == tuple[defs.Grader, ...],
+        "grader_kinds_exact": {kind.value for kind in defs.GraderKind}
+        == {"check", "test", "judge"},
+        "trial_produces_single_episode": trial_hints["episode"] is defs.EpisodeRef,
+        "trial_is_seeded": trial_hints["seed"] is int,
+        "vocabulary_frozen": all(
+            is_dataclass(cls) and cls.__dataclass_params__.frozen for cls in vocabulary
+        ),
+    }
+    return [state_check(checks, name="ontology_vocabulary_shape")]
+
+
 def _registered_task_ids() -> list[str]:
     harness = EvalHarness()
     register(harness)
@@ -596,6 +652,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_command_service_gate_map,
         desc="CommandService public methods use the documented gate and audit shape.",
+    )
+    harness.add(
+        "spec.dataset_eval_ontology",
+        suite=SUITE,
+        fn=task_dataset_eval_ontology,
+        desc="Dataset/eval vocabulary matches the ontology's identity and cardinality laws.",
     )
     harness.add(
         "spec.append_only_protocols",

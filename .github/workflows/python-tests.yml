@@ -78,6 +78,12 @@ jobs:
       - name: Run capability evals
         run: make eval-cap
 
+      # Spec-contract evals bind normative docs/guide clauses to executable
+      # guardrails (see evals/suites/spec_contracts.py). Previously this suite
+      # never ran in CI — it gates the merge now.
+      - name: Run spec-contract evals
+        run: make eval-spec
+
   format:
     runs-on: ubuntu-latest
     steps:

@@ -40,6 +40,7 @@ help:
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
 	@echo "  make eval-cap       Run capability suite only"
+	@echo "  make eval-spec      Run spec-contract suite only"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
@@ -200,6 +201,10 @@ eval-reg:
 .PHONY: eval-cap
 eval-cap:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite capability
+
+.PHONY: eval-spec
+eval-spec:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite spec
 
 # ------------------------------------------------------------------------------
 # Build & Release
