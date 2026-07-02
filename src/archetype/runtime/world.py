@@ -44,6 +44,36 @@ if TYPE_CHECKING:
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
 
 
+def _clone_components(components: tuple[Component, ...]) -> list[Component]:
+    return [component.model_copy(deep=True) for component in components]
+
+
+def _parse_spawn_batch_args(
+    args: tuple[Component | int, ...],
+    count: int | None,
+) -> tuple[tuple[Component, ...], int]:
+    if count is None:
+        if not args or not isinstance(args[-1], int):
+            raise TypeError("spawn_batch requires a count, e.g. spawn_batch(component, 10000)")
+        count = args[-1]
+        components = args[:-1]
+    else:
+        components = args
+
+    if count < 1:
+        raise ValueError("spawn_batch count must be >= 1")
+    if not components:
+        raise ValueError("spawn_batch requires at least one component template")
+
+    templates: list[Component] = []
+    for component in components:
+        if not isinstance(component, Component):
+            raise TypeError("spawn_batch component templates must be Component instances")
+        templates.append(component)
+
+    return tuple(templates), count
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared state (behind potentially multiple aliased handles)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,6 +227,30 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.create_entities(self._ctx, wid, entities)
+
+    async def spawn_batch(
+        self, *components_or_count: Component | int, count: int | None = None
+    ) -> list[int]:
+        """Spawn many copies of one component template.
+
+        ``spawn_batch(foo, 10000)`` is shorthand for building 10,000
+        component lists and sending them through the existing gated
+        ``spawn_many`` batch path. The template components are deep-copied
+        per entity so later mutation of one component instance cannot alias
+        another spawned row.
+
+        Args:
+            *components_or_count: Component templates, followed by a positional
+                count; e.g. ``spawn_batch(Position(x=1), 10000)``.
+            count: Keyword count for multi-component archetypes; e.g.
+                ``spawn_batch(Position(), Velocity(), count=10000)``.
+
+        Returns:
+            A list of entity IDs in spawn order.
+        """
+        components, batch_count = _parse_spawn_batch_args(components_or_count, count)
+        entities = [_clone_components(components) for _ in range(batch_count)]
+        return await self.spawn_many(entities)
 
     async def reserve_ids(self, n: int) -> list[int]:
         """Reserve *n* entity IDs without spawning.
@@ -463,6 +517,11 @@ class SyncRuntimeWorld:
 
     def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         return self._run(lambda: self._world.spawn_many(entities))
+
+    def spawn_batch(
+        self, *components_or_count: Component | int, count: int | None = None
+    ) -> list[int]:
+        return self._run(lambda: self._world.spawn_batch(*components_or_count, count=count))
 
     def reserve_ids(self, n: int) -> list[int]:
         return self._run(lambda: self._world.reserve_ids(n))
