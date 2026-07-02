@@ -54,7 +54,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         entity_ids: list[int] | None = None,
         components: list[type["Component"]] | None = None,
         run_id: str | None = None,
-        **kwargs,  # ty: ignore[unknown-parameter]  # absorbs world-internal keys (e.g. run_config)
+        **kwargs,  # absorbs world-internal keys (e.g. run_config, _world_validated)
     ) -> DataFrame:
         """Query active entities for the provided archetype signature.
 

@@ -280,7 +280,9 @@ class EnvStepProcessor(AsyncProcessor):
     priority = 10  # after any policy processor writes actions
 
     def __init__(self, client: EnvClient | None = None):
-        self._stepper: _EnvStepper | None = None
+        # @daft.cls() instances aren't statically typeable (the decorator returns
+        # a UDF wrapper, not the class); annotate the slot as Any.
+        self._stepper: Any = None
         if client is not None:
             self._stepper = _EnvStepper(client)
 
@@ -454,7 +456,8 @@ class FramedEnvStepProcessor(AsyncProcessor):
     priority = 10
 
     def __init__(self, client: EnvClient | None = None):
-        self._stepper: _FramedEnvStepper | None = None
+        # @daft.cls() instances aren't statically typeable; annotate as Any.
+        self._stepper: Any = None
         if client is not None:
             self._stepper = _FramedEnvStepper(client)
 

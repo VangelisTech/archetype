@@ -135,6 +135,8 @@ world = runtime.world(name, storage=..., cache=..., processors=..., resources=..
 
 # Mutations
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
+ids = await world.spawn_batch(Position(x=0), 10_000)
+ids = await world.spawn_many([[Position(x=float(i))] for i in range(100)])
 await world.despawn(eid)
 await world.update(eid, Position(x=10))                  # OVERLAY values
 await world.add_components(eid, Health(hp=100))          # EXTEND schema
@@ -191,6 +193,19 @@ world.query(Position, Velocity)                      # types
 ```
 
 The verbose service-layer signatures (`components: list[Component]`, `component_types: list[type[Component]]`) end at the gate.
+
+`spawn_batch(template, count)` repeats one archetype template:
+
+```python
+ids = await world.spawn_batch(Position(x=0), 10_000)
+ids = await world.spawn_batch(Position(x=0), Velocity(dx=1), count=10_000)
+```
+
+Use `spawn_many(...)` when each entity has distinct initial values:
+
+```python
+ids = await world.spawn_many([[Position(x=float(i))] for i in range(10_000)])
+```
 
 ### 3.2 — `update` vs. `add_components` are distinct
 

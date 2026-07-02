@@ -528,8 +528,10 @@ class PolicyActionProcessor(AsyncProcessor):
 
     def __init__(self, client: PolicyClient | PolicyClientSpec | None = None):
         self._client_or_spec = client
-        # Lazily built on first process() when client is None.
-        self._caller: _PolicyCaller | _PolicyCallerNoRefs | None = None
+        # Lazily built on first process() when client is None. @daft.cls()
+        # instances aren't statically typeable (decorator returns a UDF
+        # wrapper, not the class), so the slot is annotated Any.
+        self._caller: Any = None
         if client is not None:
             self._caller_no_refs = _PolicyCallerNoRefs(client)
             self._caller = _PolicyCaller(client)

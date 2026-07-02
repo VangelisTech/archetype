@@ -28,6 +28,11 @@ class Pos(Component):
     y: float = 0.0
 
 
+class Vel(Component):
+    dx: float = 0.0
+    dy: float = 0.0
+
+
 @pytest.fixture(autouse=True)
 def _reset_quotas():
     reset_tick_counters()
@@ -142,6 +147,54 @@ class TestDefaultAdminIdentity:
 
             # Double-check the runtime's actor ctx
             assert "admin" in rt._actor_ctx.roles
+
+
+# ── 3.5. Batch spawn sugar ─────────────────────────────────────────────
+
+
+class TestSpawnBatchSugar:
+    @pytest.mark.asyncio
+    async def test_spawn_batch_repeats_component_template(self, tmp_path):
+        async with ArchetypeRuntime() as rt:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = rt.world("spawn-batch", storage=storage)
+
+            entity_ids = await world.spawn_batch(Pos(x=1.0, y=2.0), 25)
+            await world.step()
+            rows = (await world.query(Pos)).collect().to_pylist()
+
+            assert len(entity_ids) == 25
+            assert len(set(entity_ids)) == 25
+            assert len(rows) == 25
+            assert {row["pos__x"] for row in rows} == {1.0}
+            assert {row["pos__y"] for row in rows} == {2.0}
+
+    @pytest.mark.asyncio
+    async def test_spawn_batch_supports_multi_component_template(self, tmp_path):
+        async with ArchetypeRuntime() as rt:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = rt.world("spawn-batch-multi", storage=storage)
+
+            entity_ids = await world.spawn_batch(Pos(x=3.0), Vel(dx=4.0), count=10)
+            await world.step()
+            rows = (await world.query(Pos, Vel)).collect().to_pylist()
+
+            assert len(entity_ids) == 10
+            assert len(rows) == 10
+            assert {row["pos__x"] for row in rows} == {3.0}
+            assert {row["vel__dx"] for row in rows} == {4.0}
+
+    @pytest.mark.asyncio
+    async def test_spawn_batch_rejects_missing_or_invalid_count(self, tmp_path):
+        async with ArchetypeRuntime() as rt:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            world = rt.world("spawn-batch-invalid", storage=storage)
+
+            with pytest.raises(TypeError, match="requires a count"):
+                await world.spawn_batch(Pos())
+
+            with pytest.raises(ValueError, match="count must be >= 1"):
+                await world.spawn_batch(Pos(), 0)
 
 
 # ── 4. Shutdown idempotency ─────────────────────────────────────────────
