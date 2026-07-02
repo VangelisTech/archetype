@@ -165,6 +165,174 @@ Forks share resource instances by default. For a strict-vs-lenient comparison, s
 
 Both worlds persist to the same storage by default, partitioned by `world_id`. Query either one at any tick.
 
+## Single Ego Trajectories
+
+A single ego trajectory is a normalized path through attention, pressure,
+agency, and commitment. It is useful when the source is not only a chat log:
+a screen capture stream, browser session, robot episode, or desktop observer
+can all emit the same row shape.
+
+The ego surface lives in `archetype.experiments.ego` and is re-exported from
+`archetype.experiments`. Capture libraries stay outside this module: adapters
+only need to implement the `EgoObservationSource` protocol and return
+normalized `EgoObservation` rows.
+
+```python
+from archetype.experiments import (
+    EgoObservation,
+    EgoObservationSource,
+    derive_ego_labels,
+    derive_ego_trajectory_pattern,
+)
+
+observations = [
+    EgoObservation.from_screen_frame(
+        "ego-1",
+        0,
+        "frames/000.png",
+        focus="watching",
+        salience=0.7,
+        agency=0.2,
+    ),
+    EgoObservation.from_screen_frame(
+        "ego-1",
+        1,
+        "frames/001.png",
+        focus="metric",
+        salience=0.8,
+        effort=0.9,
+        agency=0.2,
+        external_pressure=0.9,
+    ),
+    EgoObservation.from_screen_frame(
+        "ego-1",
+        2,
+        "frames/002.png",
+        focus="question",
+        salience=0.8,
+        effort=0.7,
+        agency=0.55,
+        external_pressure=0.7,
+    ),
+]
+
+labels = derive_ego_labels(observations)
+pattern = derive_ego_trajectory_pattern(observations, labels)
+```
+
+### EgoObservation
+
+`EgoObservation` is a primitive, Arrow-friendly row:
+
+| Field | Meaning |
+|-------|---------|
+| `trajectory_id`, `seq` | Sequence identity |
+| `subject_id` | Optional ego / actor identity |
+| `modality` | Source channel, for example `"screen"` |
+| `frame_uri` | URI or path to the captured artifact |
+| `focus`, `context` | Human-readable attention fields |
+| `salience`, `valence`, `arousal` | Perceptual / affective scores |
+| `effort`, `agency`, `external_pressure` | Humanism-oriented control scores |
+
+Scores are clamped to stable ranges: unit scores in `[0, 1]`, valence in
+`[-1, 1]`.
+
+### Canonical Labels
+
+`derive_ego_label()` maps each observation into an `EgoLabel`:
+
+| Phase | Meaning |
+|-------|---------|
+| `witness` | The ego is seeing the field |
+| `orient` | Attention has found a salient object |
+| `strain` | External pressure is high while agency is low |
+| `question` | Agency rises inside pressure |
+| `commit` | Agency and effort align |
+| `depart` | Agency remains high after pressure drops |
+
+The key pattern is `instrumentalized_intelligence`: high effort under high
+external pressure with low agency. Archetype treats that as a captured
+trajectory, not as a better optimization path.
+
+### Canonical Patterns
+
+`derive_ego_trajectory_pattern()` summarizes the path:
+
+| Pattern | Meaning |
+|---------|---------|
+| `captured_dream` | Instrumentalized intelligence remains low-agency |
+| `reclaimed_dream` | The trajectory passes through capture and agency rises |
+| `self_authored_dream` | Agency is high and pressure no longer dominates |
+| `observed_trajectory` | The path has not crossed a stronger boundary |
+
+This is the derivation behind the question "if a dream forces you to game
+your own intelligence, are you human anymore?" In Archetype terms, the answer
+is not a binary type check. The label asks whether the trajectory is still
+self-authored.
+
+### Structured Output Prompt
+
+Use the structured-output contract when an LLM or capture adapter needs to
+turn a scene, screen recording, or trace into ego observations:
+
+```python
+from archetype.experiments import (
+    EGO_OBSERVATION_JSON_SCHEMA,
+    EGO_OBSERVATION_OUTPUT_GRAMMAR,
+    EGO_OBSERVATION_PROMPT,
+    derive_ego_trajectory_pattern,
+    ego_observations_from_structured_output,
+)
+```
+
+The grammar root is `ego_trajectory_output`:
+
+```ebnf
+ego_trajectory_output ::= {
+  "trajectory_id": string,
+  "subject_id": string,
+  "source": {
+    "modality": "screen" | "conversation" | "browser" | "robot" | "desktop" | "text",
+    "artifact_uri": string,
+    "description": string
+  },
+  "observations": [
+    {
+      "seq": integer,
+      "frame_uri": string,
+      "focus": string,
+      "context": string,
+      "captured_at_ms": integer,
+      "salience": 0.0..1.0,
+      "valence": -1.0..1.0,
+      "arousal": 0.0..1.0,
+      "effort": 0.0..1.0,
+      "agency": 0.0..1.0,
+      "external_pressure": 0.0..1.0
+    }
+  ]
+}
+```
+
+The prompt deliberately asks the model to emit observations only. It must not
+emit labels, phases, or final patterns:
+
+```python
+structured = call_model(
+    prompt=EGO_OBSERVATION_PROMPT,
+    schema=EGO_OBSERVATION_JSON_SCHEMA,
+    grammar=EGO_OBSERVATION_OUTPUT_GRAMMAR,
+    input=scene_or_trace,
+)
+
+observations = ego_observations_from_structured_output(structured)
+pattern = derive_ego_trajectory_pattern(observations)
+```
+
+That split is the replication boundary: the model scores perception; Archetype
+derives whether the path is `captured_dream`, `reclaimed_dream`, or
+`self_authored_dream`.
+
 ## When to Use
 
 | Scenario | Trajectory analysis? |

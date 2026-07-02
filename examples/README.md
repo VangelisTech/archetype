@@ -17,6 +17,8 @@ uv run python examples/<filename>.py
 | 7 | [`07_hooks.py`](07_hooks.py) | Lifecycle hooks for audit logs, tick metrics, and temporary debug traces | None |
 | 8 | [`08_htn_resolution.py`](08_htn_resolution.py) | HTN plan resolution as a fan-out AND/OR forest | None |
 | 9 | [`09_cloud_storage.py`](09_cloud_storage.py) | Cloud storage configurations through `StorageConfig` and the runtime API | Optional cloud credentials |
+| 10 | [`10_ego_trajectory.py`](10_ego_trajectory.py) | Ego trajectory derivation from structured-output observations | None |
+| 11 | [`11_product_surface_archetype.py`](11_product_surface_archetype.py) | Structured prompt archetype for repeatable product-facing examples | None |
 
 ### Supplementary
 

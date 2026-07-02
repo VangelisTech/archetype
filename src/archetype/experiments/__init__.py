@@ -35,6 +35,21 @@ from archetype.experiments.components import (
     Run,
     RunStatus,
 )
+from archetype.experiments.ego import (
+    EgoLabel,
+    EgoObservation,
+    EgoObservationSource,
+    EgoTrajectoryPattern,
+    derive_ego_label,
+    derive_ego_labels,
+    derive_ego_trajectory_pattern,
+)
+from archetype.experiments.ego_prompt import (
+    EGO_OBSERVATION_JSON_SCHEMA,
+    EGO_OBSERVATION_OUTPUT_GRAMMAR,
+    EGO_OBSERVATION_PROMPT,
+    ego_observations_from_structured_output,
+)
 from archetype.experiments.loaders import (
     ingest_runner_state,
     load_runner_state_db,
@@ -52,6 +67,13 @@ from archetype.experiments.trajectories import (
 
 __all__ = [
     "BranchHead",
+    "EGO_OBSERVATION_JSON_SCHEMA",
+    "EGO_OBSERVATION_OUTPUT_GRAMMAR",
+    "EGO_OBSERVATION_PROMPT",
+    "EgoLabel",
+    "EgoObservation",
+    "EgoObservationSource",
+    "EgoTrajectoryPattern",
     "EvalTrialResult",
     "Experiment",
     "Result",
@@ -64,6 +86,10 @@ __all__ = [
     "TrajectoryReward",
     "TrajectoryTurn",
     "Turn",
+    "derive_ego_label",
+    "derive_ego_labels",
+    "derive_ego_trajectory_pattern",
+    "ego_observations_from_structured_output",
     "ingest_runner_state",
     "load_claude_session",
     "load_claude_sessions",
