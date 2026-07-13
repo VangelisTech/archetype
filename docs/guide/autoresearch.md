@@ -2,7 +2,7 @@
 
 AutoResearch is a pattern for autonomous software optimization: track a single branch head, evaluate candidate commits against it, and advance the head only when a run improves a user-defined metric. The shape — experiment, run, result, keep / discard / crash — follows Andrej Karpathy's framing of autonomous software optimization as a research direction.
 
-**Status: the loop runs on the ledger.** The lifecycle components are implemented, and `AutoResearchService` records its own state as entities in a lab world — the loop is itself an archetype simulation.
+**Status: attempts run on the ledger.** `AutoResearchService` records a `RUNNING` row before candidate preparation or rollout, then records `STOPPED` with an evaluation or `CRASHED` with failure metadata. The loop is itself an archetype simulation.
 
 ## What's Implemented
 
@@ -32,39 +32,102 @@ After ingestion, runs are queryable as entities in the world — filter by `expe
 
 ## The Loop
 
-`AutoResearchService.run(world_id, config, evaluator)` is the controller:
-each iteration forks the base world, runs a rollout, hands the result to
-your evaluator, and advances the head when the score beats the incumbent.
-The service stays scoring-agnostic — the evaluator is yours: scalar,
-Pareto, LLM judge, tournament, human vote.
+`AutoResearchService.run(world_id, config, evaluator)` is the controller. A
+caller supplies a stable `experiment_id`; the human-readable
+`experiment_name` is not used as an identity key. The caller also supplies
+stable evaluator and rollout contract IDs; callable names are recorded only as
+diagnostics, not treated as semantic identities. Each iteration optionally
+prepares a candidate world, runs a rollout from that world, hands the result to
+the caller's evaluator, and advances the head when the finite score beats the
+incumbent.
+
+Evaluators should return `EvaluationResult`, which carries a score, evaluator
+identity, evidence metadata, and optional additional metadata. The result's
+evaluator must equal the config's stable `evaluator_id`, so scores from
+different contracts cannot be compared. Returning a plain `float` remains
+supported and is persisted with the configured evaluator identity.
 
 **The loop's own state lives on the ledger.** Each experiment gets a lab
-world named `autoresearch:{experiment_name}`, sharing the base world's
+world named `autoresearch:{experiment_id}`, sharing the base world's
 storage:
 
-- **tick 0** — genesis: the `Experiment` and a seed `BranchHead`, persisted
-  as raw initial conditions
-- **every subsequent tick** — one iteration: a `Run` row, a `Result` row
-  (score, episode world ids, full provenance), and the `BranchHead`
-  advance when the iteration improved
-- **resume is a read** — a second `run()` of the same experiment reads the
-  incumbent from the latest `BranchHead` row and continues iteration
-  numbering from the lab tick. There is no in-memory loop state to lose.
+- **tick 0** — genesis: the `Experiment`, semantic configuration digest, and a
+  seed `BranchHead`, persisted as raw initial conditions
+- **first attempt tick** — a `Run` in `RUNNING` state, written before candidate
+  preparation or rollout
+- **terminal attempt tick** — the same `Run` transitions to `STOPPED` or
+  `CRASHED`; a stopped attempt adds the typed `Result` and any `BranchHead`
+  advance
+- **resume validates identity** — the stored experiment id, base world, display
+  name, evaluator contract, and semantic configuration must match before
+  another attempt is recorded; `max_iterations` is invocation-local and may
+  change when extending an experiment; an active attempt must be reconciled
+  before resume
 
 ```python
+from archetype.app.autoresearch_service import AutoResearchConfig, EvaluationResult
+
+
+async def prepare_candidate(context):
+    candidate = await container.world_service.fork_world(
+        context.base_world_id,
+        name=f"candidate-{context.iteration}",
+    )
+    # Apply this iteration's candidate changes to the fork here.
+    return candidate.world_id
+
+
+def evaluate(rollout):
+    return EvaluationResult(
+        score=my_score(rollout),
+        evaluator="task-success-v1",
+        evidence={"manifest": "sha256:..."},
+    )
+
+
+config = AutoResearchConfig(
+    experiment_id="exp-2026-001",
+    experiment_name="exp",
+    evaluator_id="task-success-v1",
+    rollout_contract_id="candidate-rollout-v1",
+    max_iterations=10,
+)
 result = await container.autoresearch_service.run(
     base_world_id,
-    AutoResearchConfig(experiment_name="exp", max_iterations=10),
-    evaluator=my_score_fn,
+    config,
+    evaluator=evaluate,
+    prepare_candidate=prepare_candidate,
 )
 
 lab = container.world_service.get_world(result.lab_world_id)
 heads = await lab.query_archetype(sig=(BranchHead,), ticks=[t])  # head at any tick
+
+# Explicitly reattach the same registered lab instead of relying on name lookup.
+resumed = await container.autoresearch_service.run(
+    base_world_id,
+    config,
+    evaluator=evaluate,
+    lab_world_id=result.lab_world_id,
+)
 ```
 
-Because the lab world is an ordinary world, the experiment itself is
-forkable: fork the lab at any tick and replay "what if a different run had
-advanced the head." Contract tests: `tests/app/test_autoresearch_ledger.py`.
+`prepare_candidate` receives a `CandidateContext` with deterministic
+experiment, iteration, and run identities. Returning `None` evaluates the
+original base world. Candidate worlds remain caller-owned.
+
+Because the lab world is an ordinary world, the experiment itself is forkable:
+fork the lab at any tick and replay "what if a different run had advanced the
+head." Contract tests: `tests/app/test_autoresearch_ledger.py`.
+
+### Boundary
+
+This service does not generate candidates, mutate Git, merge or promote a
+winner, coordinate messages, or provide exactly-once/concurrent attempt
+claims. `lab_world_id` reattaches a world already registered with the current
+`WorldService`; it does not reconstruct a destroyed process's world catalog.
+Those are outer orchestration concerns. A float comparison and a
+`BranchHead` update mean only that this caller's configured evaluator selected
+a better recorded result.
 
 ## Why ECS-Native
 
