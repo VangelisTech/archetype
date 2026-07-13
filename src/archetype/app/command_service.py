@@ -27,7 +27,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Any
 
 import logfire
 from uuid_utils import UUID
@@ -43,10 +44,20 @@ from archetype.app.models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from daft import DataFrame
 
     from archetype.app.audit_log import AuditLog
     from archetype.app.auth.models import ActorCtx
+    from archetype.app.autoresearch_service import (
+        AutoResearchConfig,
+        AutoResearchResult,
+        AutoResearchService,
+        CandidatePreparer,
+        Evaluator,
+        IterationResult,
+    )
     from archetype.app.broker import CommandBroker
     from archetype.app.models import (
         EpisodeConfig,
@@ -82,6 +93,7 @@ class CommandService:
         queries: QueryService,
         broker: CommandBroker,
         audit: AuditLog | None = None,
+        autoresearch: AutoResearchService | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -89,6 +101,7 @@ class CommandService:
         self._queries = queries
         self._broker = broker
         self._audit = audit
+        self._autoresearch = autoresearch
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
@@ -406,6 +419,57 @@ class CommandService:
                     "num_episodes": result.num_episodes,
                     "total_duration_steps": result.total_duration_steps,
                     "episode_world_ids": [str(ep.world_id) for ep in result.episodes],
+                }
+            ),
+        )
+        return result
+
+    @logfire.instrument("gate.autoresearch")
+    async def autoresearch(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        config: AutoResearchConfig,
+        evaluator: Evaluator,
+        *,
+        prepare_candidate: CandidatePreparer | None = None,
+        lab_world_id: str | UUID | None = None,
+        on_iteration: Callable[[IterationResult], Any] | None = None,
+    ) -> AutoResearchResult:
+        """Gate, then delegate to AutoResearchService.run.
+
+        Emits ONE loop-level audit row. Candidate forks, rollouts, and
+        lab-world lifecycle ticks are AutoResearchService's mechanics; the
+        experiment's own ledger is the fine-grained record of every attempt.
+        """
+        if self._autoresearch is None:
+            raise RuntimeError("CommandService was constructed without an AutoResearchService")
+        self._gate(Command(type=CommandType.AUTORESEARCH), ctx)
+        result = await self._autoresearch.run(
+            world_id,
+            config,
+            evaluator,
+            prepare_candidate=prepare_candidate,
+            lab_world_id=lab_world_id,
+            on_iteration=on_iteration,
+        )
+        await self._emit(
+            ctx,
+            "autoresearch",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "experiment_id": config.experiment_id,
+                    "iterations_completed": result.iterations_completed,
+                    # -inf baselines (fresh ledger) are not JSON values.
+                    "initial_score": (
+                        result.initial_score if math.isfinite(result.initial_score) else None
+                    ),
+                    "final_score": (
+                        result.final_score if math.isfinite(result.final_score) else None
+                    ),
+                    "improved": result.improved,
+                    "lab_world_id": result.lab_world_id,
                 }
             ),
         )

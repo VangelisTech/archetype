@@ -102,6 +102,10 @@ _RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.auth.models",
+        # Type-only signature references; the operations themselves route
+        # through the gate (CommandType.AUTORESEARCH, QUERY_WORLD).
+        "archetype.app.autoresearch_service",
+        "archetype.app.eval_service",
     }
 )
 
@@ -161,6 +165,7 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.RUN,
             CommandType.RUN_EPISODE,
             CommandType.RUN_ROLLOUT,
+            CommandType.AUTORESEARCH,
             CommandType.FORK_WORLD,
             CommandType.DESTROY_WORLD,
         }
@@ -185,6 +190,7 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "run": CommandType.RUN,
     "run_episode": CommandType.RUN_EPISODE,
     "run_rollout": CommandType.RUN_ROLLOUT,
+    "autoresearch": CommandType.AUTORESEARCH,
     "query_components": CommandType.QUERY_WORLD,
     "query_archetype": CommandType.QUERY_WORLD,
     "list_signatures": CommandType.LIST_SIGNATURES,

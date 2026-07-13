@@ -39,6 +39,16 @@ from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldCo
 from archetype.core.hooks import HookEvent
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from archetype.app.autoresearch_service import (
+        AutoResearchConfig,
+        AutoResearchResult,
+        CandidatePreparer,
+        Evaluator,
+        IterationResult,
+    )
+    from archetype.app.eval_service import GraderOutput, TrajectoryGrader
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
@@ -94,6 +104,9 @@ class _RuntimeWorldState:
         init_hooks: list[tuple[type[HookEvent], Any]],
         # Pre-activated fork state (set when forking from an existing world)
         world_id: str | UUID | None = None,
+        # Attached handles (runtime.attach) reference a world they did not
+        # create; shutdown must not destroy it.
+        owns_world: bool = True,
     ) -> None:
         self.runtime = runtime
         self.name = name
@@ -102,6 +115,7 @@ class _RuntimeWorldState:
         self.init_processors = init_processors
         self.init_resources = init_resources
         self.init_hooks = init_hooks
+        self.owns_world = owns_world
 
         self.world_id: str | UUID | None = world_id
         self.initialized: bool = world_id is not None
@@ -154,7 +168,7 @@ class _RuntimeWorldState:
             return
         self.closed = True
 
-        if not from_runtime and self.initialized and self.world_id is not None:
+        if not from_runtime and self.owns_world and self.initialized and self.world_id is not None:
             gate = self.runtime._container.command_service
             # Use a default admin ctx for shutdown
             from archetype.runtime._actor import default_actor_ctx
@@ -348,6 +362,57 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.run_rollout(self._ctx, wid, config, **kw)
+
+    async def autoresearch(
+        self,
+        config: AutoResearchConfig,
+        evaluator: Evaluator,
+        *,
+        prepare_candidate: CandidatePreparer | None = None,
+        lab_world_id: str | UUID | None = None,
+        on_iteration: Callable[[IterationResult], Any] | None = None,
+    ) -> AutoResearchResult:
+        """Run an autoresearch loop with this world as the base save state.
+
+        Each iteration optionally prepares a candidate world (a fork of this
+        one), runs a rollout, scores it with ``evaluator``, and advances the
+        experiment's BranchHead on improvement. This world is never mutated.
+        Loop state lives on the experiment's lab world, so rerunning with the
+        same ``config.experiment_id`` resumes from the persisted incumbent.
+        Episode worlds are kept by default — load them with
+        ``runtime.attach`` to inspect or grade what happened.
+
+        The op lock is held only for activation: ``evaluator``,
+        ``prepare_candidate``, and ``on_iteration`` may call back into this
+        handle (e.g. ``query``) without deadlocking.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+        return await self._gate.autoresearch(
+            self._ctx,
+            wid,
+            config,
+            evaluator,
+            prepare_candidate=prepare_candidate,
+            lab_world_id=lab_world_id,
+            on_iteration=on_iteration,
+        )
+
+    async def grade(
+        self,
+        *component_types: type[Component],
+        graders: Sequence[TrajectoryGrader],
+        entity_ids: list[int] | None = None,
+    ) -> list[GraderOutput]:
+        """Query this world's rows and execute graders over the result.
+
+        The query is gated and lineage-resolved exactly like ``query``;
+        graders receive one lazy Daft DataFrame of the full append-only
+        history and decide what to compute. Durable scores remain components
+        the caller writes back.
+        """
+        df = await self.query(*component_types, entity_ids=entity_ids)
+        return await self._state.runtime._container.eval_service.run_graders(df, graders)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -560,6 +625,35 @@ class SyncRuntimeWorld:
 
     def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
         return self._run(lambda: self._world.run_rollout(config, **kw))
+
+    def autoresearch(
+        self,
+        config: AutoResearchConfig,
+        evaluator: Evaluator,
+        *,
+        prepare_candidate: CandidatePreparer | None = None,
+        lab_world_id: str | UUID | None = None,
+        on_iteration: Callable[[IterationResult], Any] | None = None,
+    ) -> AutoResearchResult:
+        return self._run(
+            lambda: self._world.autoresearch(
+                config,
+                evaluator,
+                prepare_candidate=prepare_candidate,
+                lab_world_id=lab_world_id,
+                on_iteration=on_iteration,
+            )
+        )
+
+    def grade(
+        self,
+        *component_types: type[Component],
+        graders: Sequence[TrajectoryGrader],
+        entity_ids: list[int] | None = None,
+    ) -> list[GraderOutput]:
+        return self._run(
+            lambda: self._world.grade(*component_types, graders=graders, entity_ids=entity_ids)
+        )
 
     def info(self) -> WorldInfo:
         return self._run(lambda: self._world.info())

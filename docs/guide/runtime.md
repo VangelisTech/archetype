@@ -125,6 +125,15 @@ Field access on info objects is sync; the fetch is async (gated). See `world-lif
 - `world.fork(name?)` returns a new world handle bound to the same `ActorCtx`. Fork goes through `iCommandService.fork_world`. The new handle is registered for shutdown.
 - `world.destroy()` calls `iCommandService.destroy_world`. The handle becomes invalid; subsequent operations raise. Storage and audit rows are NEVER deleted.
 
+### R14 — Attached handles do not own their world
+
+`runtime.attach(world_id)` returns a handle for a world that already exists in this runtime — an episode world left behind by a rollout, an autoresearch lab world, or any world created elsewhere in the process. The id is validated on first operation. Shutting the handle down never destroys the world; only an explicit, gated `destroy()` can. Reads resolve the world's recorded storage through the gate, so an attached handle finds rows wherever the world actually wrote them.
+
+### R15 — AutoResearch and grading route through the gate
+
+- `world.autoresearch(config, evaluator, ...)` is gated as `CommandType.AUTORESEARCH` (operator+) and emits one loop-level audit row; per-attempt provenance lives on the experiment's lab world. The base world is never mutated. The handle's op lock is held only for activation, so `evaluator`, `prepare_candidate`, and `on_iteration` may call back into runtime handles (`query`, `attach`, `grade`) without deadlocking.
+- `world.grade(*components, graders=[...])` composes the gated, lineage-resolved `query` with `EvalService.run_graders`. Graders receive one lazy Daft DataFrame of the full append-only history and decide what to compute; the runtime materializes nothing. Empty grader lists and empty grader outputs are rejected, never vacuous successes.
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:
@@ -132,6 +141,7 @@ The full canonical surface, async and sync:
 ```python
 # Construction (factory on runtime)
 world = runtime.world(name, storage=..., cache=..., processors=..., resources=..., hooks=...)
+world = runtime.attach(world_id)   # handle for an existing world (episode/lab worlds)
 
 # Mutations
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
@@ -153,6 +163,7 @@ await world.run(steps=10)
 await world.run(config=RunConfig(...))
 await world.run_episode(EpisodeConfig(...))
 await world.run_rollout(RolloutConfig(...))
+await world.autoresearch(AutoResearchConfig(...), evaluator)  # optimization loop
 
 # Lifecycle
 await world.fork(name="branch_a")                        # → new handle
@@ -160,6 +171,7 @@ await world.destroy()                                    # in-memory only
 
 # Reads
 df = await world.query(Position, Velocity)
+outs = await world.grade(Position, graders=[my_grader])  # query + graders
 info = await world.info()                                # WorldInfo snapshot
 df = await world.history(limit=100)
 procs = await world.list_processors()

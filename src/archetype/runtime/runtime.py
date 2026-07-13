@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakSet
 
+from uuid_utils import UUID
+
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.core.config import CacheConfig, StorageConfig
@@ -120,6 +122,36 @@ class ArchetypeRuntime:
         self._handles.add(handle)
         return handle
 
+    def attach(self, world_id: str | UUID, *, name: str = "attached") -> RuntimeWorld:
+        """Return a handle for a world that already exists in this runtime.
+
+        The save-slot loader: episode worlds left behind by a rollout, an
+        autoresearch lab world, or any world created outside this handle's
+        scope can be queried and driven through the same gated surface. The
+        id is validated on first operation, and the handle does not own the
+        world — shutting it down never destroys the world (``destroy()``
+        still can, explicitly).
+        """
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+
+        state = _RuntimeWorldState(
+            runtime=self,
+            name=name,
+            # None → the gate resolves the world's recorded storage on read.
+            storage_config=None,
+            cache_config=None,
+            init_processors=[],
+            init_resources=[],
+            init_hooks=[],
+            world_id=world_id,
+            owns_world=False,
+        )
+        handle = RuntimeWorld(state=state, actor_ctx=self._actor_ctx)
+        state.aliases.add(handle)
+        self._handles.add(handle)
+        return handle
+
     @classmethod
     def sync(cls, *, actor_ctx: ActorCtx | None = None) -> SyncArchetypeRuntime:
         """Factory for the synchronous runtime facade."""
@@ -180,6 +212,10 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
+
+    def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
+        """Handle for an existing world. See ArchetypeRuntime.attach."""
+        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
 
 
 def run_sync(coro) -> Any:

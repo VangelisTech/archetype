@@ -98,6 +98,11 @@ __all__ = [
     # Models
     "Command",
     "CommandType",
+    # AutoResearch
+    "AutoResearchConfig",
+    "AutoResearchResult",
+    "CandidateContext",
+    "EvaluationResult",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -153,6 +158,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ServiceContainer": ("archetype.app", "ServiceContainer"),
     "Command": ("archetype.app", "Command"),
     "CommandType": ("archetype.app", "CommandType"),
+    # AutoResearch
+    "AutoResearchConfig": ("archetype.app.autoresearch_service", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.app.autoresearch_service", "AutoResearchResult"),
+    "CandidateContext": ("archetype.app.autoresearch_service", "CandidateContext"),
+    "EvaluationResult": ("archetype.app.autoresearch_service", "EvaluationResult"),
 }
 
 

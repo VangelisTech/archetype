@@ -59,6 +59,7 @@ class CommandType(StrEnum):
     RUN = "run"
     RUN_ROLLOUT = "run_rollout"
     RUN_EPISODE = "run_episode"
+    AUTORESEARCH = "autoresearch"  # Optimization loop over rollouts
 
     # Reads / introspection
     QUERY_WORLD = "query_world"
