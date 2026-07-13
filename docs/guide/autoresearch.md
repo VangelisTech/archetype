@@ -4,6 +4,26 @@ AutoResearch is a pattern for autonomous software optimization: track a single b
 
 **Status: attempts run on the ledger.** `AutoResearchService` records a `RUNNING` row before candidate preparation or rollout, then records `STOPPED` with an evaluation or `CRASHED` with failure metadata. The loop is itself an archetype simulation.
 
+## Runtime quick path
+
+Think of worlds as save states. `world.autoresearch(...)` replays candidate lines from a base save, scores each one, and keeps the best route; every attempt — including crashes — lands on the experiment's own ledger. Episode worlds are kept by default so you can load any of them afterward and inspect what actually happened.
+
+```python
+from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
+
+async with ArchetypeRuntime() as runtime:
+    base = runtime.world("base", storage="./data")
+    # ... spawn initial state, run once ...
+
+    result = await base.autoresearch(config, evaluate, prepare_candidate=prepare)
+
+    lab = runtime.attach(result.lab_world_id)     # the experiment's ledger
+    episode = runtime.attach(result.iterations[0].rollout.episodes[0].world_id)
+    outputs = await episode.grade(MyComponent, graders=[my_grader])
+```
+
+`examples/10_autoresearch.py` is the full runnable version. `ServiceContainer.autoresearch_service` remains the lower-level interface; the runtime path routes through the command gate (`CommandType.AUTORESEARCH`, operator+) and emits one audit row per loop.
+
 ## What's Implemented
 
 `archetype.experiments` models the lifecycle state as ordinary Components, so runs become entities in an archetype world — forkable, time-travelable, and queryable with the same tools as any other simulation state.

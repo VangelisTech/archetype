@@ -27,6 +27,10 @@ _RUNTIME_ALLOWED_APP = frozenset(
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.auth.models",
+        # Type-only signature references for world.autoresearch / world.grade;
+        # the operations themselves route through the gate.
+        "archetype.app.autoresearch_service",
+        "archetype.app.eval_service",
     }
 )
 

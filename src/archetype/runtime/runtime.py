@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakSet
 
+from uuid_utils import UUID
+
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.core.config import CacheConfig, StorageConfig
@@ -120,6 +122,36 @@ class ArchetypeRuntime:
         self._handles.add(handle)
         return handle
 
+    def attach(self, world_id: str | UUID, *, name: str = "attached") -> RuntimeWorld:
+        """Return a handle for a world that already exists in this runtime.
+
+        The save-slot loader: episode worlds left behind by a rollout, an
+        autoresearch lab world, or any world created outside this handle's
+        scope can be queried and driven through the same gated surface. The
+        id is validated on first operation, and the handle does not own the
+        world — shutting it down never destroys the world (``destroy()``
+        still can, explicitly).
+        """
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+
+        state = _RuntimeWorldState(
+            runtime=self,
+            name=name,
+            # None → the gate resolves the world's recorded storage on read.
+            storage_config=None,
+            cache_config=None,
+            init_processors=[],
+            init_resources=[],
+            init_hooks=[],
+            world_id=world_id,
+            owns_world=False,
+        )
+        handle = RuntimeWorld(state=state, actor_ctx=self._actor_ctx)
+        state.aliases.add(handle)
+        self._handles.add(handle)
+        return handle
+
     @classmethod
     def sync(cls, *, actor_ctx: ActorCtx | None = None) -> SyncArchetypeRuntime:
         """Factory for the synchronous runtime facade."""
@@ -161,6 +193,30 @@ class SyncArchetypeRuntime:
             raise RuntimeError("SyncArchetypeRuntime is not active")
         return self._runner
 
+    def _dispatch(self, coro) -> Any:
+        """Run *coro* to completion from any thread.
+
+        Sync autoresearch executes user callbacks in a worker thread while
+        the runner's loop keeps running in the owning thread; sync handle
+        methods called from those callbacks must schedule onto the running
+        loop instead of re-entering Runner.run.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            coro.close()
+            raise RuntimeError(
+                "sync handle methods cannot be called from the event-loop thread; "
+                "use async handles (ArchetypeRuntime) inside async callbacks"
+            )
+        runner = self._require_runner()
+        loop = runner.get_loop()
+        if loop.is_running():
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        return runner.run(coro)
+
     def world(
         self,
         name: str = "world",
@@ -180,6 +236,10 @@ class SyncArchetypeRuntime:
             hooks=hooks,
         )
         return SyncRuntimeWorld(rw, self)
+
+    def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
+        """Handle for an existing world. See ArchetypeRuntime.attach."""
+        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
 
 
 def run_sync(coro) -> Any:

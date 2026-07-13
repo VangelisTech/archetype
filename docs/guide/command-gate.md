@@ -87,6 +87,7 @@ Processors define behavior. Hooks observe lifecycle. Resources hold shared state
 | `run` | — | — | ✓ | ✓ |
 | `run_episode` | — | — | ✓ | ✓ |
 | `run_rollout` | — | — | ✓ | ✓ |
+| `autoresearch` | — | — | ✓ | ✓ |
 
 A `player` does not advance the world — they participate in the world that something else is advancing.
 
@@ -153,6 +154,7 @@ _OPERATOR_ADDS = frozenset({
     CommandType.RUN,
     CommandType.RUN_EPISODE,
     CommandType.RUN_ROLLOUT,
+    CommandType.AUTORESEARCH,
     CommandType.FORK_WORLD,
     CommandType.DESTROY_WORLD,
 })
@@ -250,6 +252,8 @@ tracked as audit-log hardening.)
 Multi-step gate methods (e.g. `destroy_world` orchestrating broker.clear + audit.flush + world_service.destroy_world) emit ONE audit row, not one per step. The row's `payload_json` captures sub-operation outcomes.
 
 `run_rollout` emits ONE row, not one per fork. The row's payload captures the fork world_ids and aggregate stats.
+
+`autoresearch` emits ONE row for the whole loop. The experiment's lab world is the fine-grained record: every attempt appends `RUNNING` and terminal lifecycle ticks there, so per-iteration provenance is queryable simulation state rather than audit noise.
 
 ## 7. Migration from earlier role sets
 

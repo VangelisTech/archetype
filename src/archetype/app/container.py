@@ -62,6 +62,9 @@ class ServiceContainer:
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
 
+        # AutoResearch — depends on WorldService + SimulationService
+        self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
+
         # The gate — depends on everything
         self.command_service = CommandService(
             mutations=self.mutation_service,
@@ -70,11 +73,9 @@ class ServiceContainer:
             queries=self.query_service,
             broker=self.broker,
             audit=self.audit_log,
+            autoresearch=self.autoresearch_service,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
-
-        # AutoResearch — depends on WorldService + SimulationService
-        self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

@@ -79,7 +79,10 @@ class AutoResearchConfig:
     parallel: bool = False
     max_iterations: int = 100
     improvement_threshold: float = 0.0
-    destroy_forks_on_complete: bool = True
+    # Episode worlds are save states: keep them by default so evaluators and
+    # post-hoc analysis can query what actually happened. Opt in to destruction
+    # when fork volume is a real constraint.
+    destroy_forks_on_complete: bool = False
     # The loop's own state lives on the ledger: a lab world named
     # "autoresearch:{experiment_id}" with explicit attempt lifecycle ticks.
     record_to_ledger: bool = True

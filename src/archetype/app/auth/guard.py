@@ -50,6 +50,7 @@ _TOKEN_COSTS: dict[str, int] = {
     "destroy_world": 10,
     "fork_world": 100,
     "run_rollout": 200,
+    "autoresearch": 200,  # per iteration; see estimate_token_cost
     "run_episode": 500,
     "run": 50,
     "step": 10,
@@ -77,8 +78,18 @@ _last_reset_date: date = datetime.now(UTC).date()
 
 
 def estimate_token_cost(cmd: Command) -> int:
-    """Estimate token cost for a command."""
-    return _TOKEN_COSTS.get(cmd.type.value, 10)
+    """Estimate token cost for a command.
+
+    ``autoresearch`` is one command that performs up to ``max_iterations``
+    rollouts (the loop's internal rollouts are not gated individually), so
+    it is charged at the rollout rate per iteration rather than as one
+    flat command.
+    """
+    cost = _TOKEN_COSTS.get(cmd.type.value, 10)
+    if cmd.type.value == "autoresearch":
+        iterations = cmd.payload.get("max_iterations", 1)
+        cost *= max(int(iterations), 1)
+    return cost
 
 
 def guardrail_check(

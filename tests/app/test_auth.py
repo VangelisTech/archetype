@@ -109,3 +109,29 @@ class TestActorCtx:
     def test_default_roles(self):
         ctx = ActorCtx(id=uuid7())
         assert "viewer" in ctx.roles
+
+
+class TestAutoresearchTokenCost:
+    """One autoresearch command performs max_iterations rollouts; the budget
+    must charge it accordingly, not as one flat command."""
+
+    def test_cost_scales_with_iterations(self):
+        flat = Command(type=CommandType.AUTORESEARCH, payload={})
+        assert _guard.estimate_token_cost(flat) == _guard._TOKEN_COSTS["autoresearch"]
+
+        loop = Command(type=CommandType.AUTORESEARCH, payload={"max_iterations": 100})
+        assert _guard.estimate_token_cost(loop) == _guard._TOKEN_COSTS["run_rollout"] * 100, (
+            "the loop is charged at the rollout rate per iteration"
+        )
+
+    def test_large_loop_exceeds_budget_where_one_rollout_would_not(self):
+        ctx = ActorCtx(id=uuid7(), roles={"operator"})
+        _guard._daily_tokens[ctx.id] = MAX_TOKENS_PER_DAY - 300
+
+        guardrail_allow(Command(type=CommandType.RUN_ROLLOUT, payload={}), ctx)
+
+        with pytest.raises(GuardrailError, match="daily token budget"):
+            guardrail_allow(
+                Command(type=CommandType.AUTORESEARCH, payload={"max_iterations": 100}),
+                ctx,
+            )

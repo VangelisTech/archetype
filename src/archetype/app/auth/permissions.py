@@ -67,6 +67,7 @@ _OPERATOR_ADDS = frozenset(
         CommandType.RUN,
         CommandType.RUN_EPISODE,
         CommandType.RUN_ROLLOUT,
+        CommandType.AUTORESEARCH,
         CommandType.FORK_WORLD,
         CommandType.DESTROY_WORLD,
     }
