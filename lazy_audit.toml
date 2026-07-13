@@ -74,19 +74,19 @@ reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork 
 
 [[entries]]
 path = "src/archetype/app/autoresearch_service.py"
-line = 542
+line = 581
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: the persisted identity and JSON configuration digest must enter Python control flow for exact collision rejection before the service records a resumed attempt; this is an imperative lifecycle gate, not a downstream dataframe computation."
 
 [[entries]]
 path = "src/archetype/app/autoresearch_service.py"
-line = 550
+line = 589
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow for incumbent score comparison and entity-id routing of the next append; these values drive imperative orchestration, not a further dataframe computation."
 
 [[entries]]
 path = "src/archetype/app/autoresearch_service.py"
-line = 562
+line = 601
 method = "to_pylist"
 reason = "Bounded control-plane history extract: deterministic Run ids and terminal statuses must enter Python control flow to reject active, corrupt, duplicate, or non-contiguous attempts before resume; the result chooses whether any new work may start rather than feeding a dataframe computation."
 

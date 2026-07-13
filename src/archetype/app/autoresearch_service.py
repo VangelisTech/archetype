@@ -36,6 +36,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
+from pydantic_core import to_jsonable_python
 from uuid_utils import UUID
 
 from archetype.app.models import EpisodeConfig, RolloutConfig, RolloutResult
@@ -208,6 +209,31 @@ def _callable_identity(value: Any) -> str | None:
     return f"{module}.{qualname}"
 
 
+def _jsonable_run_metadata(metadata: dict[str, Any] | None) -> Any:
+    """Normalize run metadata to JSON-native values for identity hashing.
+
+    The digest and its payload are persisted in the Experiment row and
+    compared against their JSON round-trip on resume, so every value must
+    encode deterministically. Types with value-based encodings (stdlib UUID,
+    Path, datetime, ...) are normalized by pydantic; ``uuid_utils`` UUIDs
+    follow the ``JsonUUID`` convention. Anything else fails closed — a
+    ``str()`` fallback would embed memory addresses, making the digest
+    unstable across processes.
+    """
+    if metadata is None:
+        return None
+
+    def reject_unknown(value: Any) -> str:
+        if isinstance(value, UUID):
+            return str(value)
+        raise ValueError(
+            "run metadata is part of the experiment identity and must be "
+            f"JSON-encodable; got {type(value).__module__}.{type(value).__qualname__}"
+        )
+
+    return to_jsonable_python(metadata, fallback=reject_unknown)
+
+
 def _config_identity(config: AutoResearchConfig) -> tuple[str, dict[str, Any]]:
     """Hash semantic loop configuration, excluding invocation-only fields.
 
@@ -230,7 +256,7 @@ def _config_identity(config: AutoResearchConfig) -> tuple[str, dict[str, Any]]:
                 "num_steps": run.num_steps,
                 "debug": run.debug,
                 "show_rows": run.show_rows,
-                "metadata": run.metadata,
+                "metadata": _jsonable_run_metadata(run.metadata),
             },
         },
         "num_episodes": config.num_episodes,
@@ -238,7 +264,14 @@ def _config_identity(config: AutoResearchConfig) -> tuple[str, dict[str, Any]]:
         "improvement_threshold": config.improvement_threshold,
         "destroy_forks_on_complete": config.destroy_forks_on_complete,
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    try:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except ValueError as exc:
+        # A non-finite float would round-trip as NaN != NaN and poison resume.
+        raise ValueError(
+            "run metadata is part of the experiment identity and must be "
+            f"strict-JSON encodable: {exc}"
+        ) from exc
     return hashlib.sha256(encoded.encode()).hexdigest(), payload
 
 
@@ -311,9 +344,11 @@ class AutoResearchService:
                 world_id, config, lab_world_id=lab_world_id
             )
 
-        # The result baseline is the incumbent at invocation start. This keeps
-        # aggregate ``improved`` semantics correct for both fresh and resumed
-        # runs; the first candidate score is not itself the baseline.
+        # The result baseline is the incumbent at invocation start, keeping
+        # aggregate ``improved`` semantics correct for fresh and resumed
+        # ledger runs alike. Without a ledger there is no incumbent to resume;
+        # the baseline is the first evaluated score, as before the ledger
+        # existed.
         initial_score = incumbent_score
         iterations: list[IterationResult] = []
 
@@ -388,6 +423,8 @@ class AutoResearchService:
                 raise
 
             score = evaluation.score
+            if lab is None and i == start_iteration:
+                initial_score = score
 
             # Compare to incumbent
             improved = score > incumbent_score + config.improvement_threshold
@@ -468,6 +505,16 @@ class AutoResearchService:
         Run ids.  A caller may attach by explicit ``lab_world_id`` instead of
         relying on the process-local name index.
         """
+        # Digest first: a configuration that cannot serve as a stable identity
+        # fails closed before any lab world exists.
+        config_digest, config_payload = _config_identity(config)
+        expected_metadata = {
+            "experiment_id": config.experiment_id,
+            "base_world_id": str(base_world_id),
+            "config_digest": config_digest,
+            "config": config_payload,
+        }
+
         name = f"autoresearch:{config.experiment_id}"
         if lab_world_id is not None:
             lab = self._world_service.get_world(UUID(str(lab_world_id)))
@@ -484,14 +531,6 @@ class AutoResearchService:
             lab = await self._world_service.create_world(
                 WorldConfig(name=name), storage_config, cache_config
             )
-
-        config_digest, config_payload = _config_identity(config)
-        expected_metadata = {
-            "experiment_id": config.experiment_id,
-            "base_world_id": str(base_world_id),
-            "config_digest": config_digest,
-            "config": config_payload,
-        }
 
         if lab.tick == 0:
             await lab.create_entity(

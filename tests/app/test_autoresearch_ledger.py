@@ -12,8 +12,10 @@ experiment resumes from the last declared best.
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
+from uuid_utils import UUID
 
 from archetype.app.autoresearch_service import AutoResearchConfig, EvaluationResult
 from archetype.app.container import ServiceContainer
@@ -194,6 +196,125 @@ async def test_record_to_ledger_opt_out(tmp_path):
         assert result.lab_world_id == ""
         with pytest.raises(KeyError):
             c.world_service.get_world_by_name("autoresearch:ephemeral-id")
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_no_ledger_baseline_is_first_score_not_neg_inf(tmp_path):
+    """Without a ledger the baseline is the first evaluated score: a flat or
+    declining search must not report aggregate improvement."""
+    c = ServiceContainer()
+    try:
+        base = await _base_world(c, tmp_path)
+
+        def config(name: str) -> AutoResearchConfig:
+            return AutoResearchConfig(
+                experiment_name=name,
+                experiment_id=f"{name}-id",
+                evaluator_id="scripted-score-v1",
+                rollout_contract_id="single-step-rollout-v1",
+                episode_config=EpisodeConfig(max_steps=1),
+                max_iterations=2,
+                record_to_ledger=False,
+            )
+
+        flat = await c.autoresearch_service.run(
+            base.world_id, config("flat"), _scripted_evaluator([1.0, 0.5])
+        )
+        assert flat.initial_score == 1.0
+        assert flat.final_score == 1.0
+        assert flat.improved is False, "nothing improved after the first candidate"
+
+        rising = await c.autoresearch_service.run(
+            base.world_id, config("rising"), _scripted_evaluator([1.0, 2.0])
+        )
+        assert rising.initial_score == 1.0
+        assert rising.final_score == 2.0
+        assert rising.improved is True
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_run_metadata_with_uuid_and_path_hashes_and_resumes(tmp_path):
+    """RunConfig metadata with non-JSON-native but value-encodable types
+    (uuid_utils UUID, Path) must hash deterministically and round-trip the
+    persisted identity so an equal-valued config can resume."""
+    c = ServiceContainer()
+    try:
+        base = await _base_world(c, tmp_path)
+
+        def config(max_iterations: int) -> AutoResearchConfig:
+            # Fresh objects each call: identity must be value-based.
+            return AutoResearchConfig(
+                experiment_name="meta",
+                experiment_id="meta-id",
+                evaluator_id="scripted-score-v1",
+                rollout_contract_id="single-step-rollout-v1",
+                episode_config=EpisodeConfig(
+                    max_steps=1,
+                    run_config=RunConfig(
+                        metadata={
+                            "trace_id": UUID("019625d2-6e70-7000-8000-000000000000"),
+                            "artifacts": Path("/tmp/meta-artifacts"),
+                        }
+                    ),
+                ),
+                max_iterations=max_iterations,
+            )
+
+        first = await c.autoresearch_service.run(
+            base.world_id, config(max_iterations=1), _scripted_evaluator([1.0])
+        )
+        lab = c.world_service.get_world(first.lab_world_id)
+        exp_rows = (await lab.query_archetype(sig=(Experiment,), ticks=[0])).to_pylist()
+        stored = json.loads(exp_rows[0]["experiment__metadata_json"])
+        assert stored["config"]["episode"]["run"]["metadata"] == {
+            "trace_id": "019625d2-6e70-7000-8000-000000000000",
+            "artifacts": "/tmp/meta-artifacts",
+        }
+
+        resumed = await c.autoresearch_service.run(
+            base.world_id,
+            config(max_iterations=1),
+            _scripted_evaluator([2.0]),
+            lab_world_id=first.lab_world_id,
+        )
+        assert resumed.iterations[0].iteration == 1, "equal-valued config resumes"
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_run_metadata_that_cannot_identify_the_experiment_fails_closed(tmp_path):
+    """Unknown metadata types and non-finite floats cannot serve as a stable
+    identity; the loop must fail before creating a lab world."""
+    c = ServiceContainer()
+    try:
+        base = await _base_world(c, tmp_path)
+
+        def config(name: str, metadata: dict) -> AutoResearchConfig:
+            return AutoResearchConfig(
+                experiment_name=name,
+                experiment_id=f"{name}-id",
+                evaluator_id="scripted-score-v1",
+                rollout_contract_id="single-step-rollout-v1",
+                episode_config=EpisodeConfig(max_steps=1, run_config=RunConfig(metadata=metadata)),
+                max_iterations=1,
+            )
+
+        with pytest.raises(ValueError, match="JSON-encodable"):
+            await c.autoresearch_service.run(
+                base.world_id, config("opaque", {"handle": object()}), _scripted_evaluator([1.0])
+            )
+        with pytest.raises(ValueError, match="strict-JSON"):
+            await c.autoresearch_service.run(
+                base.world_id, config("nonjson", {"x": float("nan")}), _scripted_evaluator([1.0])
+            )
+        for name in ("opaque", "nonjson"):
+            with pytest.raises(KeyError):
+                c.world_service.get_world_by_name(f"autoresearch:{name}-id")
     finally:
         await c.shutdown()
 
