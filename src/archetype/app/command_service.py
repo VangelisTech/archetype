@@ -444,7 +444,18 @@ class CommandService:
         """
         if self._autoresearch is None:
             raise RuntimeError("CommandService was constructed without an AutoResearchService")
-        self._gate(Command(type=CommandType.AUTORESEARCH), ctx)
+        # The payload drives quota accounting: the loop is charged per
+        # iteration at the rollout rate (see guard.estimate_token_cost).
+        self._gate(
+            Command(
+                type=CommandType.AUTORESEARCH,
+                payload={
+                    "max_iterations": config.max_iterations,
+                    "num_episodes": config.num_episodes,
+                },
+            ),
+            ctx,
+        )
         result = await self._autoresearch.run(
             world_id,
             config,

@@ -148,3 +148,46 @@ async def test_attach_unknown_world_fails_on_first_operation():
         ghost = runtime.attach(uuid7(), name="ghost")
         with pytest.raises(LookupError):
             await ghost.info()
+
+
+def test_sync_autoresearch_callbacks_reenter_sync_handles(tmp_path):
+    """Sync parity: a sync evaluator may attach episode saves and grade them
+    with sync handle methods while the loop is running (callbacks execute in
+    a worker thread; handle calls schedule onto the running loop)."""
+    from archetype import ArchetypeRuntime as _RT
+
+    with _RT.sync() as runtime:
+        base = runtime.world(
+            "base", storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        )
+        base.spawn(Knob(x=0.0))
+        base.run(steps=1)
+
+        def prepare(ctx):
+            fork = base.fork(f"candidate-{ctx.iteration}")
+            rows = fork.query(Knob).to_pylist()
+            fork.update(int(rows[0]["entity_id"]), Knob(x=float(ctx.iteration)))
+            fork.run(steps=1)
+            return fork.world_id
+
+        def evaluate(rollout) -> EvaluationResult:
+            xs = []
+            for ep in rollout.episodes:
+                episode = runtime.attach(ep.world_id)
+                final_tick = episode.info().tick - 1
+
+                def final_x(df, t=final_tick):
+                    latest = df.where(col("tick") == t)
+                    return latest.agg(col("knob__x").mean().alias("x")).to_pylist()[0]["x"]
+
+                xs.append(episode.grade(Knob, graders=[final_x])[0])
+            score = -sum((x - TARGET) ** 2 for x in xs) / len(xs)
+            return EvaluationResult(score=score, evaluator="knob-distance-v1", evidence={"xs": xs})
+
+        result = base.autoresearch(
+            _config("sync-exp", max_iterations=4), evaluate, prepare_candidate=prepare
+        )
+
+        assert [it.score for it in result.iterations] == [-9.0, -4.0, -1.0, 0.0]
+        assert result.final_score == 0.0
+        assert result.improved

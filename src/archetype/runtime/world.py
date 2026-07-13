@@ -20,6 +20,7 @@ Holds world_id (not iWorld). Routes every operation through iCommandService.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
@@ -559,6 +560,22 @@ class RuntimeWorld:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _callback_in_thread(fn):
+    """Adapt a sync user callback to run off the event-loop thread.
+
+    Sync callbacks re-enter sync handle methods; running them on the loop
+    thread would deadlock the dispatch that schedules onto the running
+    loop. Async callbacks pass through untouched.
+    """
+    if fn is None or inspect.iscoroutinefunction(fn):
+        return fn
+
+    async def _in_thread(arg):
+        return await asyncio.to_thread(fn, arg)
+
+    return _in_thread
+
+
 class SyncRuntimeWorld:
     """Synchronous facade. Mirrors RuntimeWorld without await."""
 
@@ -567,7 +584,7 @@ class SyncRuntimeWorld:
         self._runtime = runtime
 
     def _run(self, factory) -> Any:
-        return self._runtime._require_runner().run(factory())
+        return self._runtime._dispatch(factory())
 
     @property
     def world_id(self):
@@ -635,13 +652,19 @@ class SyncRuntimeWorld:
         lab_world_id: str | UUID | None = None,
         on_iteration: Callable[[IterationResult], Any] | None = None,
     ) -> AutoResearchResult:
+        """Sync mirror of RuntimeWorld.autoresearch.
+
+        Sync callbacks are executed in a worker thread so they may call
+        sync handle methods (attach, grade, query) while the loop runs;
+        async callbacks are passed through and must use async handles.
+        """
         return self._run(
             lambda: self._world.autoresearch(
                 config,
-                evaluator,
-                prepare_candidate=prepare_candidate,
+                _callback_in_thread(evaluator),
+                prepare_candidate=_callback_in_thread(prepare_candidate),
                 lab_world_id=lab_world_id,
-                on_iteration=on_iteration,
+                on_iteration=_callback_in_thread(on_iteration),
             )
         )
 
