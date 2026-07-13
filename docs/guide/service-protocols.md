@@ -12,19 +12,13 @@ The gate (`iCommandService`) sits in front of the other services and applies aut
 ## 2. Service dependency graph
 
 ```text
-iStorageService                                                   (leaf)
-    ↑             ↑                              ↑
-iWorldService     iQueryService           iAuditLog               (storage)
-    ↑               ↑                              ↑
-iMutationService    iSimulationService            (worlds)
-    ↑               ↑              ↑              ↑
-    └───────────────┴──────────────┴──────────────┘
-                          ↑
-                   iCommandBroker  (queue, no service deps)
-                          ↑
-                   iCommandService (the gate — ActorCtx-aware,
-                                    delegates to all of the above,
-                                    emits audit rows)
+iStorageService -> iWorldService -> iMutationService
+                              +---> iSimulationService
+                -> iQueryService -> iEvalService
+                -> iAuditLog
+
+iWorldService + iMutationService + iSimulationService + iQueryService
+    + iAuditLog + iCommandBroker -> iCommandService (the ActorCtx-aware gate)
 ```
 
 A tier MUST depend only on tiers strictly below it. Circular dependencies are forbidden.
@@ -98,9 +92,40 @@ Direct read path to storage. Independent of `iWorldService`.
 
 ```python
 async def query_archetype(sig, world_id, run_id, storage_config=None,
-                           *, ticks=None, entity_ids=None, components=None) -> DataFrame
+                           *, ticks=None, entity_ids=None, components=None,
+                           lineage=None) -> DataFrame
+async def query_components(components, world_id, run_id, storage_config=None,
+                           *, ticks=None, entity_ids=None, lineage=None) -> DataFrame
 async def list_signatures(storage_config=None) -> list[ArchetypeSignature]
 ```
+
+### `iEvalService`
+
+Dataframe-first evaluation over rows already persisted by Archetype. It
+depends only on `iQueryService`: it does not run simulations, own experiment
+lifecycle, choose a scoring schema, or persist scores on the caller's behalf.
+
+```python
+async def query_components(components, *, world_id, run_id,
+                           storage_config=None, ticks=None,
+                           entity_ids=None, lineage=None) -> DataFrame
+async def query_episode(episode, *, components, run_id=None,
+                        storage_config=None, entity_ids=None,
+                        lineage=None) -> DataFrame
+async def query_trajectory_component(component, *, world_id, run_id,
+                                     trajectory_ids=None, episode_ids=None,
+                                     rollout_ids=None, task_ids=None,
+                                     trial_idxs=None, **query_options) -> DataFrame
+async def run_graders(df, graders) -> list[object]
+async def grade_trajectory_component(component, *, world_id, run_id,
+                                     graders, **query_options) -> list[object]
+```
+
+`run_graders` MUST reject an empty grader set and any grader that returns no
+outputs. Such an evaluation is undefined; it must not be representable as a
+vacuous success through Python's `all([])` behavior. Grader outputs are returned
+to the caller and remain opaque to Archetype. If a score should be durable, the
+caller writes it as a component.
 
 ### `iCommandBroker`
 
@@ -269,6 +294,7 @@ class ServiceContainer:
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
         self.query_service = QueryService(self.storage_service)
+        self.eval_service = EvalService(self.query_service)
         self.command_service = CommandService(
             mutations=self.mutation_service,
             worlds=self.world_service,
