@@ -1,0 +1,35 @@
+# Arm auto-merge (squash) on maintainer PRs the moment they open or leave
+# draft. The merge itself still waits on every required check and on
+# review-conversation resolution — this only removes the manual
+# `gh pr merge --auto --squash` step.
+#
+# Token note: if AUTOMERGE_PAT (a fine-grained PAT with contents:write +
+# pull-requests:write) is present, it is preferred. With the default
+# GITHUB_TOKEN the merge is attributed to github-actions, and pushes made
+# by GITHUB_TOKEN do not trigger `on: push` workflows — the docs deploy to
+# Cloudflare Pages on main would be skipped for auto-merged PRs.
+
+name: Auto-merge
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    name: Arm auto-merge for maintainer PRs
+    if: >-
+      github.event.pull_request.user.login == 'everettVT' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable auto-merge (squash)
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
