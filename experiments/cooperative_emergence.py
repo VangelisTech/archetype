@@ -16,7 +16,6 @@ Usage:
 from __future__ import annotations
 
 import asyncio
-import json
 
 from daft import DataFrame, col
 from daft.functions import when
@@ -26,7 +25,6 @@ from archetype.app.autoresearch_service import AutoResearchConfig
 from archetype.app.models import EpisodeConfig, RolloutResult
 from archetype.core.config import RunConfig
 from archetype.core.hooks import PostTick
-
 
 # ── Components ────────────────────────────────────────────────────────────
 
@@ -102,11 +100,8 @@ class RegrowthProcessor(AsyncProcessor):
     priority = 20
 
     async def process(self, df: DataFrame, **kw) -> DataFrame:
-        regrowth = (
-            col("pool__current")
-            + col("pool__regen_rate")
-            * col("pool__current")
-            * (1.0 - col("pool__current") / col("pool__capacity"))
+        regrowth = col("pool__current") + col("pool__regen_rate") * col("pool__current") * (
+            1.0 - col("pool__current") / col("pool__capacity")
         )
         return df.with_columns(
             {
@@ -252,6 +247,9 @@ async def main():
 
             config = AutoResearchConfig(
                 experiment_name=f"commons-regen-{regen}",
+                experiment_id=f"commons-regen-{regen}",
+                evaluator_id="cooperation-score-v1",
+                rollout_contract_id="commons-dynamics-v1",
                 episode_config=EpisodeConfig(
                     run_config=RunConfig(),
                     max_steps=max_steps,
@@ -314,14 +312,18 @@ async def main():
 
         print()
         if boundary:
-            print(f"Phase boundary detected: between regen={boundary[0]:.2f} and regen={boundary[1]:.2f}")
+            print(
+                f"Phase boundary detected: between regen={boundary[0]:.2f} and regen={boundary[1]:.2f}"
+            )
             print("Cooperation transitions from collapse to sustainability in this range.")
         else:
             all_scores = [s for _, s in sorted_results]
             if all(s >= 0.5 for s in all_scores):
                 print("All parameter points sustained — try lower regen rates to find collapse.")
             else:
-                print("All parameter points collapsed — try higher regen rates to find sustainability.")
+                print(
+                    "All parameter points collapsed — try higher regen rates to find sustainability."
+                )
 
         print()
         print("Done. All results queryable via QueryService (append-only).")
