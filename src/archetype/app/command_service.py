@@ -372,6 +372,8 @@ class CommandService:
             payload_json=json.dumps(
                 {
                     "episode_id": str(result.episode_id),
+                    "run_id": str(result.run_id) if result.run_id is not None else None,
+                    "start_tick": result.start_tick,
                     "final_tick": result.final_tick,
                     "terminated": result.terminated,
                     "duration_steps": result.duration_steps,

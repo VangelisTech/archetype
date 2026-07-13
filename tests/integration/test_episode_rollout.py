@@ -98,6 +98,8 @@ class TestEpisode:
             result = await container.simulation_service.run_episode(world.world_id, config)
 
             assert result.duration_steps == 10
+            assert result.run_id == world.run_id
+            assert result.start_tick == 0
             assert result.final_tick == 10
         finally:
             await container.shutdown()
@@ -114,6 +116,7 @@ class TestEpisode:
             result = await container.simulation_service.run_episode(world.world_id, config)
 
             assert str(result.world_id) == str(wid_before)
+            assert result.run_id is not None
         finally:
             await container.shutdown()
 

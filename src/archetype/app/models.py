@@ -197,6 +197,8 @@ class EpisodeResult(BaseModel):
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
     episode_id: str | JsonUUID
     world_id: str | JsonUUID
+    run_id: str | JsonUUID | None = None
+    start_tick: int = 0
     final_tick: int = 0
     terminated: bool = False
     duration_steps: int = 0

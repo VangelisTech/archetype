@@ -119,6 +119,9 @@ class SimulationService:
         if not isinstance(world, AsyncWorld):
             raise TypeError("run_episode requires AsyncWorld")
 
+        if not world.run_id:
+            world.run_id = str(config.run_config.run_id)
+
         start_tick = world.tick
         terminated = False
         step_count = 0
@@ -144,6 +147,8 @@ class SimulationService:
         return EpisodeResult(
             episode_id=config.episode_id,
             world_id=world_id,
+            run_id=world.run_id,
+            start_tick=start_tick,
             final_tick=world.tick,
             terminated=terminated,
             duration_steps=world.tick - start_tick,
