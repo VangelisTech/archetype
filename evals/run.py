@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 
 from evals.harness import EvalHarness
 from evals.suites import capability, poison_command, regression, spec_contracts
@@ -147,4 +146,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
