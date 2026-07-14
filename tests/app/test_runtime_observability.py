@@ -41,12 +41,17 @@ def test_configure_wires_package_logger_idempotently():
     pkg = logging.getLogger("archetype")
     before_handlers = list(pkg.handlers)
     before_level = pkg.level
+    before_propagate = pkg.propagate
     try:
         _configure_archetype_logging(logging.INFO)
         _configure_archetype_logging(logging.DEBUG)
         added = [h for h in pkg.handlers if h not in before_handlers]
         assert len(added) <= 1, "repeat configuration must not stack handlers"
         assert pkg.level == logging.DEBUG
+        if added:
+            # Our handler owns the records: without stopping propagation, a
+            # host with root logging configured would double-emit every line.
+            assert pkg.propagate is False
         # Root logging stays untouched: libraries and the runtime never
         # reconfigure logging that isn't theirs.
         assert logging.getLogger().level == logging.WARNING or not logging.getLogger().handlers
@@ -54,3 +59,4 @@ def test_configure_wires_package_logger_idempotently():
         for h in [h for h in pkg.handlers if h not in before_handlers]:
             pkg.removeHandler(h)
         pkg.setLevel(before_level)
+        pkg.propagate = before_propagate

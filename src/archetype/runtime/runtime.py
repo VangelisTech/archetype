@@ -64,6 +64,10 @@ def _configure_archetype_logging(level: int) -> None:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(levelname).1s %(name)s: %(message)s"))
         pkg_logger.addHandler(handler)
+        # This handler now owns archetype records. Without this, a host that
+        # configured root logging (basicConfig, a Logfire root handler, ...)
+        # would emit every record a second time through the root sinks.
+        pkg_logger.propagate = False
 
 
 class ArchetypeRuntime:
