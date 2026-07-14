@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from daft.session import Session
 
+from archetype.app._catalog import SqliteControlCatalog, catalog_path_for
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
@@ -104,6 +105,21 @@ class StorageService:
         self._session = session
         self._instances: dict[str, iAsyncStore] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        # Control catalogs, pooled by resolved catalog path (issue #272).
+        # The catalog is an implementation resource of this service — it is
+        # authoritative for discovery, and its location is a pure function
+        # of the storage identity (see app/_catalog.py).
+        self._catalogs: dict[str, SqliteControlCatalog] = {}
+
+    def get_control_catalog(self, storage_config: StorageConfig) -> SqliteControlCatalog:
+        """The durable control catalog for a storage location (pooled)."""
+        path = catalog_path_for(storage_config)
+        key = str(path)
+        catalog = self._catalogs.get(key)
+        if catalog is None:
+            catalog = SqliteControlCatalog(path)
+            self._catalogs[key] = catalog
+        return catalog
 
     @staticmethod
     def _pool_key(
@@ -171,8 +187,16 @@ class StorageService:
                 logger.exception("Failed to shut down store %r", store)
                 errors.append(e)
 
+        for catalog in self._catalogs.values():
+            try:
+                await catalog.close()
+            except Exception as e:
+                logger.exception("Failed to close control catalog %r", catalog.path)
+                errors.append(e)
+
         self._instances.clear()
         self._locks.clear()
+        self._catalogs.clear()
 
         if errors:
             raise RuntimeError(

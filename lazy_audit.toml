@@ -38,7 +38,7 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 156
+line = 198
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
@@ -86,7 +86,7 @@ reason = "Bounded control-plane history extract: deterministic Run ids and termi
 
 [[entries]]
 path = "src/archetype/app/simulation_service.py"
-line = 216
+line = 221
 method = "to_pylist"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 

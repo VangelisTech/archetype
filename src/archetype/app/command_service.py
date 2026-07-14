@@ -339,6 +339,35 @@ class CommandService:
         await self._emit(ctx, "list_worlds")
         return worlds
 
+    @instrument("gate.discover_worlds")
+    async def discover_worlds(
+        self, ctx: ActorCtx, storage_config: StorageConfig
+    ) -> list[WorldInfo]:
+        """Durable discovery (issue #272): worlds recorded in a store's catalog.
+
+        Unlike list_worlds (live registry), this answers cold — a fresh
+        process pointed at the same storage identity sees every world ever
+        registered there. Read-gated as LIST_WORLDS.
+        """
+        self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
+        infos = await self._worlds.discover_worlds(storage_config)
+        await self._emit(ctx, "discover_worlds")
+        return infos
+
+    @instrument("gate.open_world_readonly")
+    async def open_world_readonly(
+        self, ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
+    ) -> WorldInfo:
+        """Cold read-only open (issue #272): the world's durable descriptor.
+
+        Never constructs a live mutable world; queryability flows through
+        the ordinary gated query path. Read-gated as GET_WORLD_INFO.
+        """
+        self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
+        info = await self._worlds.open_world_readonly(storage_config, world_id)
+        await self._emit(ctx, "open_world_readonly", world_id)
+        return info
+
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
     @instrument("gate.step")

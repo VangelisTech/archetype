@@ -23,11 +23,19 @@ WorldService  — facade (bridges StorageService into the orchestrator)
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
+from archetype.app._catalog import (
+    SignatureRecord,
+    WorldRecord,
+    arrow_schema_descriptor,
+    schema_fingerprint,
+)
+from archetype.app.models import WorldInfo
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import (
     AsyncQueryManager,
@@ -35,6 +43,7 @@ from archetype.core.aio import (
     AsyncUpdateManager,
     AsyncWorld,
 )
+from archetype.core.archetype import Archetype
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem
@@ -45,6 +54,16 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _world_info_from_record(record: WorldRecord) -> WorldInfo:
+    """Catalog record → the existing gate boundary descriptor."""
+    return WorldInfo(
+        world_id=record.world_id,
+        name=record.name,
+        tick=record.tick_head,
+        run_id=record.run_id,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,6 +296,9 @@ class WorldService:
         # Records the storage/cache config that backs each world so fork_world
         # can default to "same store as source" per world-lifecycle.md § 4.5.
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
+        # Per-world memo of signature table_ids already registered in the
+        # catalog, keeping record_step at one catalog transaction per tick.
+        self._registered_sigs: dict[str, set[str]] = {}
 
     async def create_world(
         self,
@@ -292,6 +314,19 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         world = self._orchestrator.create_world(store, config, system=system)
         self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
+        # Durable identity is authoritative (issue #272): registration failure
+        # fails the create, loudly — a world the catalog cannot describe would
+        # be undiscoverable after this process exits.
+        await self._storage_service.get_control_catalog(storage_config).register_world(
+            WorldRecord(
+                world_id=str(world.world_id),
+                name=world.name,
+                run_id=str(world.run_id) if world.run_id else None,
+                parent_world_id=None,
+                status="active",
+                tick_head=world.tick,
+            )
+        )
         return world
 
     def get_world(self, world_id: UUID) -> AsyncWorld:
@@ -353,6 +388,16 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
+        await self._storage_service.get_control_catalog(storage_config).register_world(
+            WorldRecord(
+                world_id=str(fork.world_id),
+                name=fork.name,
+                run_id=str(fork.run_id) if fork.run_id else None,
+                parent_world_id=str(source_world_id),
+                status="active",
+                tick_head=fork.tick,
+            )
+        )
         # Persist the fork's ancestor chain (append-only): provenance must
         # survive the fork being destroyed or the process restarting.
         await persist_lineage(
@@ -369,9 +414,81 @@ class WorldService:
 
         The storage record is retained: destroyed worlds' rows are still in
         the store (append-only), and readers resolve them through
-        storage_record().
+        storage_record(). The catalog marks status — append-only holds in
+        the control plane too; nothing is deleted.
         """
         await self._orchestrator.destroy_world(world_id)
+        record = self._storage_configs.get(str(world_id))
+        if record is not None:
+            catalog = self._storage_service.get_control_catalog(record[0])
+            await catalog.set_world_status(str(world_id), "destroyed")
+
+    # ── Durable discovery (issue #272) ───────────────────────────────────────
+
+    async def discover_worlds(self, storage_config: StorageConfig) -> list[WorldInfo]:
+        """Worlds recorded in a store's control catalog — works cold.
+
+        Unlike ``list_worlds`` (live process registry), this answers from the
+        durable catalog: a fresh process pointed at the same storage identity
+        sees every world ever registered there, including destroyed ones
+        (their rows are still queryable; append-only).
+        """
+        catalog = self._storage_service.get_control_catalog(storage_config)
+        return [_world_info_from_record(record) for record in await catalog.list_worlds()]
+
+    async def open_world_readonly(
+        self, storage_config: StorageConfig, world_id: str | UUID
+    ) -> WorldInfo:
+        """Cold, read-only open: the world's durable descriptor.
+
+        Returns the existing ``WorldInfo`` boundary type — identity, name,
+        run, and (advisory until A2 manifests) tick head. Queryability comes
+        through the ordinary gated query path with this info plus the same
+        ``storage_config``. This never constructs a live mutable world:
+        fenced mutable resume is a separate, A2-gated capability.
+        """
+        catalog = self._storage_service.get_control_catalog(storage_config)
+        record = await catalog.get_world(str(world_id))
+        if record is None:
+            raise KeyError(f"world {world_id} is not recorded in catalog for {storage_config.uri}")
+        return _world_info_from_record(record)
+
+    async def record_step(self, world_id: str | UUID) -> None:
+        """Advance the world's advisory catalog head after a step.
+
+        Called by SimulationService post-step. Advisory in A1-read (the
+        cached store may not have flushed; the true durable head arrives
+        with A2 manifests), so failures log loudly rather than failing a
+        tick whose data-plane writes already succeeded. New signatures are
+        registered once (process-local memo keeps the hot loop at one
+        catalog transaction per step).
+        """
+        record = self._storage_configs.get(str(world_id))
+        if record is None:
+            return
+        world = self._orchestrator.get_world(UUID(str(world_id)))
+        catalog = self._storage_service.get_control_catalog(record[0])
+        try:
+            registered = self._registered_sigs.setdefault(str(world_id), set())
+            for sig in set(world.entity2sig.values()):
+                table_id = Archetype.get_name(sig)
+                if table_id in registered:
+                    continue
+                schema = Archetype.get_archetype_schema(sig)
+                await catalog.register_signature(
+                    SignatureRecord(
+                        table_id=table_id,
+                        component_names=tuple(c.__name__ for c in sig),
+                        schema_json=json.dumps(arrow_schema_descriptor(schema)),
+                        fingerprint=schema_fingerprint(schema),
+                    )
+                )
+                registered.add(table_id)
+            await catalog.set_tick_head(
+                str(world_id), world.tick, str(world.run_id) if world.run_id else None
+            )
+        except Exception:
+            logger.exception("catalog head update failed for world %s", world_id)
 
     async def add_resource(self, world_id: str | UUID, resource: object) -> None:
         """Attach a resource to a world's Resources container."""

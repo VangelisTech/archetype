@@ -21,15 +21,20 @@ including worlds that no longer exist in memory.
 
 from __future__ import annotations
 
+import logging
+
 from daft import DataFrame, col
 
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.lineage import load_lineage
+
+logger = logging.getLogger(__name__)
 
 
 class QueryService:
@@ -107,26 +112,111 @@ class QueryService:
         When `lineage` is provided (a fork's ancestor segments), pre-fork
         ticks are read from the owning ancestor's run and unioned in.
         """
-        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        effective_config = storage_config or StorageConfig()
+        store = await self._storage_service.get_or_create_store(effective_config, None)
         querier = AsyncQueryManager(store=store)
-        result = await querier.query_components(
-            components=components,
-            world_id=world_id,
-            run_id=run_id,
-            ticks=ticks,
-            entity_ids=entity_ids,
-        )
+        catalog_records = await self._catalog_candidates(effective_config, components)
 
-        async def _segment(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
-            return await querier.query_components(
-                components=components,
-                world_id=seg_world,
-                run_id=seg_run,
+        async def _read(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
+            return await self._components_frame(
+                querier,
+                store,
+                catalog_records,
+                components,
+                seg_world,
+                seg_run,
                 ticks=seg_ticks,
                 entity_ids=entity_ids,
             )
 
-        return await self._union_lineage(result, lineage, ticks, _segment)
+        result = await _read(world_id, run_id, ticks)
+        return await self._union_lineage(result, lineage, ticks, _read)
+
+    async def _catalog_candidates(
+        self, storage_config: StorageConfig, components: list[type[Component]]
+    ):
+        """Durable signature records whose component sets cover the request.
+
+        The control catalog (issue #272) is the durable complement to the
+        store's process-local signature registry: a fresh process discovers
+        every table ever committed against this storage identity.
+        """
+        requested = {c.__name__ for c in components}
+        try:
+            catalog = self._storage_service.get_control_catalog(storage_config)
+            records = await catalog.list_signatures()
+        except Exception:
+            logger.exception("control catalog unavailable for %s", storage_config.uri)
+            return []
+        return [r for r in records if requested.issubset(set(r.component_names))]
+
+    async def _components_frame(
+        self,
+        querier: AsyncQueryManager,
+        store,
+        catalog_records,
+        components: list[type[Component]],
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None,
+        entity_ids: list[int] | None,
+    ) -> DataFrame:
+        """Live subset query unioned with catalog-discovered tables.
+
+        The live path is unchanged. Catalog tables not already covered by a
+        live signature are read through the open-never-create store seam and
+        projected from their durable schema — no Python classes required
+        beyond the ones the caller asked for. A fingerprint mismatch between
+        the catalog descriptor and the physical table fails closed.
+        """
+        import daft
+        import pyarrow as pa
+
+        from archetype.app._catalog import CatalogSchemaMismatchError, schema_fingerprint
+
+        output_sig = tuple(sorted(components, key=lambda t: t.__name__))
+        schema = Archetype.get_archetype_schema(output_sig)
+        proj_cols = schema.names
+
+        live_sigs = await querier.list_signatures()
+        live_tables = {Archetype.get_name(sig) for sig in live_sigs}
+        extra_records = [r for r in catalog_records if r.table_id not in live_tables]
+
+        try:
+            result = await querier.query_components(
+                components=components,
+                world_id=world_id,
+                run_id=run_id,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+        except KeyError:
+            # The live registry has signatures but none satisfy the request.
+            # Durable tables may still: fall through to the catalog union,
+            # re-raising only when the catalog cannot help either.
+            if not extra_records:
+                raise
+            result = daft.from_arrow(pa.Table.from_batches([], schema=schema))
+
+        for record in extra_records:
+            physical = await store.get_existing_table_schema(record.table_id)
+            if record.fingerprint != schema_fingerprint(physical):
+                raise CatalogSchemaMismatchError(
+                    f"catalog descriptor for table {record.table_id} does not match "
+                    "the physical schema; refusing to read (fail closed)"
+                )
+            df = await store.get_existing_table_df(
+                record.table_id,
+                world_id,
+                run_id,
+                ticks=ticks,
+                entity_ids=entity_ids,
+                active_only=True,
+            )
+            result = result.concat(df.select(*proj_cols))
+
+        return result
 
     @staticmethod
     async def _union_lineage(result, lineage, ticks, segment_query) -> DataFrame:

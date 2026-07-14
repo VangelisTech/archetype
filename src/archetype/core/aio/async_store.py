@@ -131,6 +131,48 @@ class AsyncStore(iAsyncStore):
 
         return df
 
+    # ── Durable-discovery seam (issue #272) ─────────────────────────────────
+    # Open-never-create reads by persisted physical table identity, so a cold
+    # process holding a catalog descriptor can read without Python component
+    # classes. Signature caches are untouched: they remain caches, not
+    # discovery authority.
+
+    def _get_existing_table(self, table_id: str) -> Table:
+        if not self.session.has_table(table_id):
+            raise KeyError(f"Iceberg table {table_id!r} does not exist")
+        try:
+            return self.session.get_table(table_id)
+        except Exception as exc:
+            raise RuntimeError(f"Error opening Iceberg table {table_id}: {exc}") from exc
+
+    async def get_existing_table_schema(self, table_id: str):
+        """Return an existing table's Arrow schema without creating it."""
+        table = self._get_existing_table(table_id)
+        return self._read_table(table).schema().to_pyarrow_schema()
+
+    async def get_existing_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame:
+        """Read an existing table by durable physical identity (never creates)."""
+        table = self._get_existing_table(table_id)
+        df = self._read_table(table)
+        df = df.where(df["world_id"] == str(world_id))  # ty: ignore[invalid-argument-type]
+        df = df.where(df["run_id"] == str(run_id))  # ty: ignore[invalid-argument-type]
+        if active_only:
+            df = df.where(df["is_active"])
+        if ticks is not None:
+            df = df.where(df["tick"].is_in(ticks))
+        if entity_ids is not None:
+            df = df.where(df["entity_id"].is_in(entity_ids))
+        return df
+
     async def list_signatures(self) -> list[ArchetypeSignature]:
         """
         List all archetype signatures that have been registered via _ensure_table.

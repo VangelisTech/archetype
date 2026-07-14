@@ -28,6 +28,7 @@ nav:
       - Command Gate: guide/command-gate.md
       - Execution Hierarchy: guide/execution-hierarchy.md
       - World Lifecycle: guide/world-lifecycle.md
+      - Durable Discovery: guide/durable-discovery.md
       - Audit Log: guide/audit-log.md
   - Building:
       - Building Simulations: guide/building-simulations.md
