@@ -294,26 +294,48 @@ class TestPreActivationHookRaises:
                 await world.add_hook(PreTick, handler)
 
 
-# ── Logfire degradation ──────────────────────────────────────────────────
+# ── Observability vendor neutrality ──────────────────────────────────────
 
 
-class TestLogfireDegradation:
-    """ArchetypeRuntime must construct without Logfire credentials."""
+class TestVendorNeutralObservability:
+    """ArchetypeRuntime must construct with no telemetry vendor configured.
 
-    def test_runtime_constructs_when_logfire_unauthenticated(self, monkeypatch):
-        import logfire
-        from logfire.exceptions import LogfireConfigError
+    Without LOGFIRE_*/OTEL_* opt-in the runtime never touches logfire (it
+    may not even be installed for package consumers); spans ride the no-op
+    OTel API.
+    """
+
+    def test_runtime_never_calls_logfire_without_opt_in(self, monkeypatch):
+        logfire = pytest.importorskip("logfire")
+        for var in (
+            "LOGFIRE_TOKEN",
+            "LOGFIRE_API_KEY",
+            "LOGFIRE_SEND_TO_LOGFIRE",
+            "ARCHETYPE_LOG",
+        ):
+            monkeypatch.delenv(var, raising=False)
 
         calls: list[dict] = []
-
-        def fake_configure(**kwargs):
-            calls.append(kwargs)
-            if "send_to_logfire" not in kwargs:
-                raise LogfireConfigError("You are not logged into Logfire.")
-
-        monkeypatch.setattr(logfire, "configure", fake_configure)
+        monkeypatch.setattr(logfire, "configure", lambda **kw: calls.append(kw))
 
         runtime = ArchetypeRuntime()
         asyncio.run(runtime.shutdown())
 
-        assert calls[-1]["send_to_logfire"] is False
+        assert calls == [], "no vendor SDK configuration without explicit opt-in"
+
+    def test_runtime_uses_logfire_when_opted_in(self, monkeypatch):
+        logfire = pytest.importorskip("logfire")
+        from archetype import _obs
+
+        monkeypatch.setattr(_obs, "_configured", False)
+        monkeypatch.setenv("LOGFIRE_SEND_TO_LOGFIRE", "1")
+        monkeypatch.delenv("ARCHETYPE_LOG", raising=False)
+
+        calls: list[dict] = []
+        monkeypatch.setattr(logfire, "configure", lambda **kw: calls.append(kw))
+
+        runtime = ArchetypeRuntime()
+        asyncio.run(runtime.shutdown())
+
+        assert calls and calls[-1]["send_to_logfire"] is True
+        assert calls[-1]["console"] is False, "console verbosity belongs to ARCHETYPE_LOG"

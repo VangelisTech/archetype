@@ -29,6 +29,7 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
+from archetype import _obs
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.core.config import CacheConfig, StorageConfig
@@ -74,20 +75,6 @@ class ArchetypeRuntime:
     """Process-level runtime. Owns the container and default identity."""
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
-        import logfire
-
-        # Never block on an interactive logfire setup prompt.  Send to logfire
-        # only when the user has explicitly configured it via one of:
-        #   - LOGFIRE_TOKEN / LOGFIRE_API_KEY environment variable
-        #   - LOGFIRE_SEND_TO_LOGFIRE=true environment variable
-        # Without explicit opt-in, degrade to local-only instrumentation so
-        # ArchetypeRuntime() works in CI and offline environments without an
-        # EOFError or a blocking interactive prompt.
-        _has_token = bool(os.environ.get("LOGFIRE_TOKEN") or os.environ.get("LOGFIRE_API_KEY"))
-        _send_env = os.environ.get("LOGFIRE_SEND_TO_LOGFIRE", "").lower()
-        _send_explicit = _send_env in ("1", "true", "yes")
-        _send_to_logfire = _has_token or _send_explicit
-
         # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
         # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
         # logger hierarchy, and at debug it also turns on console span output.
@@ -96,12 +83,13 @@ class ArchetypeRuntime:
         level = _resolve_log_level(log)
         if level is not None:
             _configure_archetype_logging(level)
-        console = None if level == logging.DEBUG else False
 
-        logfire.configure(
+        # Tracing is vendor-neutral OpenTelemetry (see archetype._obs):
+        # a host-registered provider is respected, LOGFIRE_*/OTEL_* env vars
+        # select a backend, and with neither the API stays a no-op.
+        _obs.configure_tracing(
             service_name="archetype-runtime",
-            send_to_logfire=_send_to_logfire,
-            console=console,
+            debug_console=level == logging.DEBUG,
         )
 
         self._container = ServiceContainer()

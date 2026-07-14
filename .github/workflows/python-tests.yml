@@ -54,6 +54,10 @@ jobs:
 
   evals:
     runs-on: ubuntu-latest
+    env:
+      # Real workload jobs report to Logfire when the org token is set;
+      # absent secret -> empty var -> archetype._obs stays vendor-free.
+      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,6 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DO_NOT_TRACK: "1"
+      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

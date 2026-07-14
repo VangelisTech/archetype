@@ -72,7 +72,7 @@ image = (
     .apt_install("git", "libgl1", "libglib2.0-0")
     .pip_install("torch==2.5.1", "packaging", "ninja", "wheel", "huggingface_hub")
     # Their deployment/ websocket server+client deps are not in requirements.txt.
-    .pip_install("websockets", "msgpack", "msgpack-numpy")
+    .pip_install("websockets", "msgpack", "msgpack-numpy", "logfire")
     # SHA pinned 2026-06-12: git ls-remote VLA-JEPA HEAD → ec8c70f6...
     .run_commands(
         f"git clone {REPO} /opt/VLA-JEPA && git -C /opt/VLA-JEPA checkout {_VLA_JEPA_SHA}",
@@ -99,12 +99,19 @@ ckpt_volume = modal.Volume.from_name("vla-jepa-ckpts", create_if_missing=True)
     timeout=3600,
     scaledown_window=600,
     max_containers=1,
+    secrets=[modal.Secret.from_name("logfire")],
 )
 class VlaJepaPolicy:
     use_bf16: int = modal.parameter(default=1)
 
     @modal.enter()
     def start_server(self):
+        import os as _os
+
+        if _os.environ.get("LOGFIRE_TOKEN"):
+            import logfire
+
+            logfire.configure(service_name="archetype-vla-jepa", console=False)
         # from_pretrained expects the full run directory (config.yaml +
         # dataset_statistics.json beside checkpoints/), not just the .pt.
         # Drop previously-patched config files first so the snapshot always

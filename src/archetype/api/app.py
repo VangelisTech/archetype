@@ -17,20 +17,16 @@
 from contextlib import asynccontextmanager
 from logging import basicConfig
 
-import logfire
 from fastapi import FastAPI
-from logfire.exceptions import LogfireConfigError
 
+from archetype import _obs
 from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, query, simulation, worlds
 
-try:
-    logfire.configure(service_name="archetype-ecs")
-except LogfireConfigError:
-    # No Logfire credentials on this machine — degrade to local-only
-    # instrumentation instead of refusing to import.
-    logfire.configure(service_name="archetype-ecs", send_to_logfire=False)
-basicConfig(handlers=[logfire.LogfireLoggingHandler()])
+# Vendor-neutral tracing: backend selection (host provider, LOGFIRE_* opt-in,
+# OTEL_* endpoint, or no-op) lives in archetype._obs. Logfire is optional.
+_obs.configure_tracing(service_name="archetype-ecs")
+basicConfig()
 
 
 @asynccontextmanager
@@ -54,7 +50,14 @@ def create_app() -> FastAPI:
         version="0.1.1",
         lifespan=lifespan,
     )
-    logfire.instrument_fastapi(app)
+    # Route-level tracing is optional: use it when logfire is installed,
+    # skip it otherwise — the gate spans below the routes always exist.
+    try:
+        import logfire
+
+        logfire.instrument_fastapi(app)
+    except ImportError:
+        pass
 
     app.include_router(worlds.router)
     app.include_router(entities.router)
