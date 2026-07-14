@@ -175,9 +175,7 @@ async def main() -> None:
 
             # 4. Refs are distinct across ticks (each step writes new PNGs)
             av_refs = [row["manipframeref__agentview_ref"] for row in rows]
-            assert len(set(av_refs)) == len(rows), (
-                "each tick must produce a distinct agentview_ref"
-            )
+            assert len(set(av_refs)) == len(rows), "each tick must produce a distinct agentview_ref"
 
             # 5. Actions are non-zero after tick 0 (VLA policy wrote them)
             for row in rows[1:]:

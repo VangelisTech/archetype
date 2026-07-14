@@ -662,3 +662,40 @@ def test_empty_or_regressive_search_config_fails_closed(overrides, message):
     values.update(overrides)
     with pytest.raises(ValueError, match=message):
         AutoResearchConfig(**values)
+
+
+@pytest.mark.asyncio
+async def test_termination_contract_is_part_of_experiment_identity(tmp_path):
+    """terminal_field/terminal_all are semantic episode-termination fields:
+    an experiment resumed with a different value-based termination contract
+    must fail closed instead of comparing scores across different rollout
+    semantics."""
+    c = ServiceContainer()
+    try:
+        base = await _base_world(c, tmp_path)
+
+        def config(terminal_field: str | None) -> AutoResearchConfig:
+            return AutoResearchConfig(
+                experiment_name="term",
+                experiment_id="term-id",
+                evaluator_id="scripted-score-v1",
+                rollout_contract_id="single-step-rollout-v1",
+                episode_config=EpisodeConfig(
+                    max_steps=1, terminal_component=Tag, terminal_field=terminal_field
+                ),
+                max_iterations=1,
+            )
+
+        first = await c.autoresearch_service.run(
+            base.world_id, config(terminal_field=None), _scripted_evaluator([1.0])
+        )
+
+        with pytest.raises(ValueError, match="experiment identity collision"):
+            await c.autoresearch_service.run(
+                base.world_id,
+                config(terminal_field="label"),
+                _scripted_evaluator([2.0]),
+                lab_world_id=first.lab_world_id,
+            )
+    finally:
+        await c.shutdown()

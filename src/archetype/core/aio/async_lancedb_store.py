@@ -189,7 +189,9 @@ class AsyncLancedbStore(iAsyncStore):
         # Daft plan twice for nothing; this redundancy is a recurring rewrite
         # regression (perf-fixed before in the predecessor stores) — keep it lean.
         if not df.column_names:
-            logger.info(f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} empty schema")
+            logger.info(
+                f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} empty schema"
+            )
             return
         arrow_table = df.to_arrow()
         if arrow_table.num_rows == 0:

@@ -81,7 +81,9 @@ def _targets(n_env_keys: int = 64) -> dict[int, tuple[float, float, float]]:
     return targets
 
 
-def _simulate(env_key: int, eff_gain: float, targets: dict[int, tuple[float, float, float]]) -> bool:
+def _simulate(
+    env_key: int, eff_gain: float, targets: dict[int, tuple[float, float, float]]
+) -> bool:
     """Independent ground truth: replay the proportional controller + env in
     pure Python at a given effective gain. Returns whether the trial reaches the
     target within ``MAX_STEPS``. Never touches the ledger."""

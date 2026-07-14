@@ -5,7 +5,6 @@ import string
 from daft import col, lit
 
 from archetype.app.world_service import WorldService
-from archetype.app.storage_service import StorageService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig

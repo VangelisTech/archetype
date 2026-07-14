@@ -66,6 +66,7 @@ def _local_repo_root() -> str:
             return str(ancestor)
     return _REPO_MOUNT
 
+
 # Exclude local runtime state from the image snapshot. ``add_local_dir(copy=True)``
 # hashes every file; live LanceDB/audit writes under ``archetype_data/`` change
 # mid-build and Modal aborts with "modified during build process" (crash loop).
@@ -511,7 +512,11 @@ def vla_smoke() -> dict:
     (action,) = policy.act([0], ["pick up the black bowl and place it on the plate"], [obs])
     assert len(action) == 7, f"expected 7-dim action, got {len(action)}"
     print(f"VLA_SMOKE ok — in-process action (no Modal RPC): {action}")
-    return {"rpc": "none (in-process localhost server)", "action_dim": len(action), "action": action}
+    return {
+        "rpc": "none (in-process localhost server)",
+        "action_dim": len(action),
+        "action": action,
+    }
 
 
 @app.function(
@@ -584,7 +589,9 @@ def colocated_eval_task(
                 "control_steps_total": control_steps,
                 "inference_calls": inf_n,
                 "inference_total_s": round(policy.infer_seconds, 2),
-                "inference_mean_ms": round(policy.infer_seconds / inf_n * 1000, 1) if inf_n else 0.0,
+                "inference_mean_ms": round(policy.infer_seconds / inf_n * 1000, 1)
+                if inf_n
+                else 0.0,
                 "inference_fraction_of_steady": round(policy.infer_seconds / steady_s, 3),
                 "wall_per_trial_s": round(steady_s / trials, 2) if trials else 0.0,
                 "wall_per_control_step_ms": round(steady_s / control_steps * 1000, 1)

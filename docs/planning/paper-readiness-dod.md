@@ -139,6 +139,7 @@ suite is in `REQUIRED_SUITES` but never gates the build.
   tests (nightly GPU job) so their normative assertions gate the real path.
 
 **Required new evals (DoD).**
+
 - Register `vla_instruction_optimization` as a first-class pass@k eval through
   `optimize_instruction` (scripted stand-in in CI; real-VLA variant behind a
   GPU/credential gate through ONE code path) — closes roadmap A3/H5.

@@ -247,13 +247,18 @@ def _config_identity(config: AutoResearchConfig) -> tuple[str, dict[str, Any]]:
     episode = config.episode_config
     run = episode.run_config
     payload = {
-        "schema_version": 1,
+        # v2: episode identity gained terminal_field/terminal_all — the
+        # value-based termination contract is semantic, so two experiments
+        # differing only there must not resume each other's ledgers.
+        "schema_version": 2,
         "experiment_name": config.experiment_name,
         "evaluator_id": config.evaluator_id,
         "rollout_contract_id": config.rollout_contract_id,
         "episode": {
             "max_steps": episode.max_steps,
             "terminal_component": _callable_identity(episode.terminal_component),
+            "terminal_field": episode.terminal_field,
+            "terminal_all": episode.terminal_all,
             "termination": _callable_identity(episode.termination),
             "run": {
                 "num_steps": run.num_steps,

@@ -83,7 +83,9 @@ class TaskEvalReport:
 
     @property
     def mean_length(self) -> float:
-        return (sum(t.episode_length for t in self.trials) / len(self.trials)) if self.trials else 0.0
+        return (
+            (sum(t.episode_length for t in self.trials) / len(self.trials)) if self.trials else 0.0
+        )
 
 
 def _instruction_for(env_client: Any, fallback: str) -> str:
@@ -127,9 +129,7 @@ async def run_task_eval(
         from archetype.experiments.policy import PolicyActionProcessor  # noqa: PLC0415
 
         await world.add_processor(PolicyActionProcessor(policy_client))
-    processor = (
-        FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
-    )
+    processor = FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
     await world.add_processor(processor)
 
     task_instruction = _instruction_for(env_client, instruction)

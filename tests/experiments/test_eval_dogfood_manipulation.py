@@ -146,7 +146,9 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
         final = _final_per_entity(df)
 
         # Direct cross-check: eval's view of the raw rows == the replay.
-        assert {eid: bool(r["manipstatus__success"]) for eid, r in final.items()} == expected_success
+        assert {
+            eid: bool(r["manipstatus__success"]) for eid, r in final.items()
+        } == expected_success
         assert {eid: int(r["manipstatus__env_step"]) for eid, r in final.items()} == expected_length
 
         # And again through the grader path, the way a real eval is scored.
@@ -180,7 +182,9 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
     container = ServiceContainer()
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="dogfood_fail")
     try:
-        world = await container.world_service.create_world(WorldConfig(name="dogfood-fail"), storage)
+        world = await container.world_service.create_world(
+            WorldConfig(name="dogfood-fail"), storage
+        )
         await world.add_processor(EnvStepProcessor(client))
         eids = {k: await _spawn_trial(world, client, k) for k in targets}
 
@@ -205,7 +209,9 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
         final = _final_per_entity(df)
 
         # Eval reproduces the per-trial outcome, including the failure.
-        assert {eid: bool(r["manipstatus__success"]) for eid, r in final.items()} == expected_success
+        assert {
+            eid: bool(r["manipstatus__success"]) for eid, r in final.items()
+        } == expected_success
         assert expected_rate == pytest.approx(2 / 3)
 
         def grade_rate(frame: DataFrame) -> GraderResult:

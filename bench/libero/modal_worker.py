@@ -365,7 +365,9 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
 
     assert "agentview_ref" in obs, "reset must return agentview_ref when with_frames=True"
     assert "wrist_ref" in obs, "reset must return wrist_ref when with_frames=True"
-    assert obs["agentview_ref"].endswith("-agentview.png"), f"unexpected ref: {obs['agentview_ref']}"
+    assert obs["agentview_ref"].endswith("-agentview.png"), (
+        f"unexpected ref: {obs['agentview_ref']}"
+    )
     assert len(obs.get("gripper_qpos", [])) == 2, "gripper_qpos must be 2-element"
 
     zero = [0.0] * 7

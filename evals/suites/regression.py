@@ -349,7 +349,9 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
             # only 2 per tick. A per-tick quota that resets each tick never trips.
             try:
                 for _ in range(8):
-                    await container.command_service.create_entity(ctx, info.world_id, [Tag(label="x")])
+                    await container.command_service.create_entity(
+                        ctx, info.world_id, [Tag(label="x")]
+                    )
                     await container.command_service.step(ctx, info.world_id, RunConfig())
             except Exception:
                 blocked = True
@@ -380,9 +382,7 @@ async def _task_episode_value_termination() -> list[GraderResult]:
         container = ServiceContainer()
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_term")
-            world = await container.world_service.create_world(
-                WorldConfig(name="term"), storage
-            )
+            world = await container.world_service.create_world(WorldConfig(name="term"), storage)
             await world.add_processor(CountToGoal())
             await world.create_entity([Countdown(goal=3)])
 

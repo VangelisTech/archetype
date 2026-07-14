@@ -156,9 +156,7 @@ async def run_instruction_sweep(
         WorldConfig(name=f"isweep:{suite}:t{task_id}:{uuid.uuid7()}"), storage
     )
     await world.add_processor(PolicyActionProcessor(policy_client))
-    processor = (
-        FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
-    )
+    processor = FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
     await world.add_processor(processor)
 
     # Fresh measurement: drop any per-env recurrent state (e.g. a VLA's action
