@@ -234,33 +234,27 @@ def test_runtime_construction_non_interactive_repeated(monkeypatch):
 
 
 def test_runtime_send_to_logfire_with_token_env(monkeypatch):
-    """When LOGFIRE_TOKEN is set, the runtime should attempt to send to logfire.
+    """When LOGFIRE_TOKEN is set (and logfire is installed), the first runtime
+    of the process routes tracing to logfire with send_to_logfire=True.
 
-    We can't actually connect in CI, but we verify the path through the code
-    that inspects the env var — no EOFError is the passing criterion here too,
-    since the actual send would fail at network level, not at init time.
+    Backend selection runs once per process (archetype._obs.configure_tracing),
+    so the guard is reset here to simulate being that first runtime; logfire
+    is imported inside the selection path, so monkeypatching logfire.configure
+    needs no module reload.
     """
+    logfire = pytest.importorskip("logfire")
+
+    from archetype import _obs
+
     monkeypatch.setenv("LOGFIRE_TOKEN", "test-fake-token-for-unit-test")
     monkeypatch.delenv("LOGFIRE_API_KEY", raising=False)
     monkeypatch.delenv("LOGFIRE_SEND_TO_LOGFIRE", raising=False)
+    monkeypatch.delenv("ARCHETYPE_LOG", raising=False)
+    monkeypatch.setattr(_obs, "_configured", False)
 
-    import logfire
-
-    # Patch logfire.configure so we can observe the call arguments without
-    # actually connecting to logfire's API.
     captured: dict = {}
+    monkeypatch.setattr(logfire, "configure", lambda **kwargs: captured.update(kwargs))
 
-    def fake_configure(**kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(logfire, "configure", fake_configure)
-
-    import importlib
-
-    from archetype.runtime import runtime as rt_module
-
-    # Force re-import so monkeypatched logfire.configure is used.
-    importlib.reload(rt_module)
     from archetype.runtime.runtime import ArchetypeRuntime
 
     ArchetypeRuntime()
