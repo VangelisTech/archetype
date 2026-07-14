@@ -69,6 +69,16 @@ def _patch_torch_load_for_libero() -> None:
 _ENV_POOLS: dict[tuple[str, int, int], _EnvPool] = {}
 
 
+def _frame_rel_dir(session: str, env_key: int, episode: int) -> str:
+    """Relative frame directory for one episode of one env.
+
+    Unique per (client session, env_key, reset ordinal): a later episode or
+    a later sweep round can never overwrite PNGs that earlier ledger rows
+    reference.
+    """
+    return os.path.join(session, str(env_key), f"ep{episode:04d}")
+
+
 class _EnvPool:
     """Live LIBERO state for one (suite, task_id): the benchmark suite, the task,
     its init-states, and the per-env_key ``OffScreenRenderEnv`` instances."""
@@ -79,6 +89,11 @@ class _EnvPool:
         self.init_states: Any = None
         self.envs: dict[int, Any] = {}
         self.step_counts: dict[int, int] = {}
+        # Per-env_key episode ordinal, bumped on every reset. Frame paths
+        # include it so a later episode can never overwrite PNGs that earlier
+        # ledger rows reference — frame artifacts stay append-only like the
+        # rows that point at them.
+        self.episode_counts: dict[int, int] = {}
 
 
 class InProcessLiberoEnvClient:
@@ -109,7 +124,11 @@ class InProcessLiberoEnvClient:
         self._camera_size = camera_size
         self._with_frames = with_frames
         self._frames_dir = frames_dir
-        self._session = f"{suite}-t{task_id}"
+        # Unique per client construction (computed before @daft.cls pickling,
+        # so driver and worker copies agree): a fresh process or a fresh
+        # client can never collide with frame refs persisted by an earlier
+        # run into the same frames_dir.
+        self._session = f"{suite}-t{task_id}-{os.urandom(4).hex()}"
 
     @property
     def _pool(self) -> _EnvPool:
@@ -164,7 +183,8 @@ class InProcessLiberoEnvClient:
     def _write_frames(self, env_key: int, label: str, obs: dict) -> dict[str, str]:
         import cv2  # noqa: PLC0415
 
-        rel_dir = os.path.join(self._session, str(env_key))
+        episode = self._pool.episode_counts.get(env_key, 0)
+        rel_dir = _frame_rel_dir(self._session, env_key, episode)
         abs_dir = os.path.join(self._frames_dir, rel_dir)
         os.makedirs(abs_dir, exist_ok=True)
         refs: dict[str, str] = {}
@@ -189,6 +209,7 @@ class InProcessLiberoEnvClient:
         env.reset()
         obs = env.set_init_state(pool.init_states[seed % len(pool.init_states)])
         pool.step_counts[env_id] = 0
+        pool.episode_counts[env_id] = pool.episode_counts.get(env_id, 0) + 1
         out = self._proprio(obs)
         if self._with_frames:
             out.update(self._write_frames(env_id, "reset", obs))
