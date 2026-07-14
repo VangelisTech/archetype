@@ -120,6 +120,9 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.LIST_PROCESSORS,
             CommandType.LIST_HOOKS,
             CommandType.LIST_RESOURCES,
+            CommandType.GET_LEDGER_HEAD,
+            CommandType.LIST_LEDGERS,
+            CommandType.GET_LEDGER_MANIFEST,
         }
     ),
     "player": frozenset(
@@ -132,6 +135,9 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.LIST_PROCESSORS,
             CommandType.LIST_HOOKS,
             CommandType.LIST_RESOURCES,
+            CommandType.GET_LEDGER_HEAD,
+            CommandType.LIST_LEDGERS,
+            CommandType.GET_LEDGER_MANIFEST,
             CommandType.SPAWN,
             CommandType.DESPAWN,
             CommandType.UPDATE,
@@ -149,6 +155,9 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.LIST_PROCESSORS,
             CommandType.LIST_HOOKS,
             CommandType.LIST_RESOURCES,
+            CommandType.GET_LEDGER_HEAD,
+            CommandType.LIST_LEDGERS,
+            CommandType.GET_LEDGER_MANIFEST,
             CommandType.SPAWN,
             CommandType.DESPAWN,
             CommandType.UPDATE,
@@ -168,6 +177,7 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.AUTORESEARCH,
             CommandType.FORK_WORLD,
             CommandType.DESTROY_WORLD,
+            CommandType.CREATE_LEDGER,
         }
     ),
     "admin": frozenset(CommandType),
@@ -186,6 +196,10 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "destroy_world": CommandType.DESTROY_WORLD,
     "get_world_info": CommandType.GET_WORLD_INFO,
     "list_worlds": CommandType.LIST_WORLDS,
+    "create_ledger": CommandType.CREATE_LEDGER,
+    "get_ledger_head": CommandType.GET_LEDGER_HEAD,
+    "list_ledgers": CommandType.LIST_LEDGERS,
+    "get_ledger_manifest": CommandType.GET_LEDGER_MANIFEST,
     "step": CommandType.STEP,
     "run": CommandType.RUN,
     "run_episode": CommandType.RUN_EPISODE,
@@ -226,7 +240,10 @@ def _type_checking_ranges(tree: ast.AST) -> list[tuple[int, int]]:
         if not is_type_checking or not node.body:
             continue
         start = min(getattr(child, "lineno", node.lineno) for child in node.body)
-        end = max(getattr(child, "end_lineno", getattr(child, "lineno", node.lineno)) for child in node.body)
+        end = max(
+            getattr(child, "end_lineno", getattr(child, "lineno", node.lineno))
+            for child in node.body
+        )
         ranges.append((start, end))
     return ranges
 
@@ -312,10 +329,7 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {
-        role: frozenset(commands)
-        for role, commands in COMMANDS_BY_ROLE.items()
-    }
+    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
     explicit_non_admin_review = all(
         command in actual["admin"]
         and (
@@ -376,9 +390,7 @@ def task_command_service_gate_map() -> list[GraderResult]:
     path = SRC / "app" / "command_service.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
     }
 
     checks: dict[str, bool] = {}

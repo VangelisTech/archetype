@@ -22,11 +22,12 @@ Service dependency graph (providers point to consumers)::
 
     iStorageService -> iWorldService -> iMutationService
                                   +---> iSimulationService
+                    -> iLedgerService
                     -> iQueryService -> iEvalService
                     -> iAuditLog
 
     iWorldService + iMutationService + iSimulationService + iQueryService
-        + iAuditLog + iCommandBroker -> iCommandService (the gate)
+        + iLedgerService + iAuditLog + iCommandBroker -> iCommandService (the gate)
 """
 
 from __future__ import annotations
@@ -62,6 +63,15 @@ if TYPE_CHECKING:
         iAsyncSystem,
         iWorld,
     )
+    from archetype.ledger.models import (
+        LedgerIdentity,
+        LedgerInfo,
+        LedgerManifest,
+        LedgerRef,
+        StorageRef,
+    )
+    from archetype.ledger.records import iAsyncAtomicRecordStore, iAsyncReadExistingStore
+    from archetype.ledger.registry import ComponentRegistry
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -78,7 +88,67 @@ class iStorageService(Protocol):
         cache_config: CacheConfig | None = None,
     ) -> iAsyncStore: ...
 
+    @staticmethod
+    def storage_ref(storage_config: StorageConfig) -> StorageRef: ...
+
+    @classmethod
+    def verify_storage_ref(
+        cls,
+        reference: StorageRef,
+        storage_config: StorageConfig,
+    ) -> None: ...
+
+    async def get_or_create_atomic_record_store(
+        self,
+        storage_config: StorageConfig,
+    ) -> iAsyncAtomicRecordStore: ...
+
+    async def get_read_existing_store(
+        self,
+        storage_config: StorageConfig,
+    ) -> iAsyncReadExistingStore: ...
+
     async def shutdown(self) -> None: ...
+
+
+class iLedgerService(Protocol):
+    """Durable ledger discovery and exact immutable manifest reads.
+
+    Depends on: ``iStorageService``
+    """
+
+    def __init__(self, storage_service: iStorageService) -> None: ...
+
+    async def create_ledger(
+        self,
+        *,
+        name: str | None,
+        storage_config: StorageConfig,
+        world_id: str | UUID | None = None,
+        run_id: str | UUID | None = None,
+    ) -> LedgerRef: ...
+
+    async def get_head(
+        self,
+        identity: LedgerIdentity,
+        *,
+        storage_config: StorageConfig,
+    ) -> LedgerRef: ...
+
+    async def list_ledgers(
+        self,
+        storage: StorageRef,
+        *,
+        storage_config: StorageConfig,
+        name: str | None = None,
+    ) -> list[LedgerInfo]: ...
+
+    async def get_manifest(
+        self,
+        ref: LedgerRef,
+        *,
+        storage_config: StorageConfig,
+    ) -> LedgerManifest: ...
 
 
 class iWorldService(Protocol):
@@ -208,6 +278,25 @@ class iQueryService(Protocol):
     async def list_signatures(
         self, storage_config: StorageConfig | None = None
     ) -> list[ArchetypeSignature]: ...
+
+    async def describe_ledger(
+        self,
+        ref: LedgerRef,
+        *,
+        storage_config: StorageConfig,
+        component_registry: ComponentRegistry | None = None,
+    ) -> LedgerInfo: ...
+
+    async def query_ledger(
+        self,
+        ref: LedgerRef,
+        components: list[type[Component]],
+        *,
+        storage_config: StorageConfig,
+        component_registry: ComponentRegistry,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame: ...
 
 
 class iEvalService(Protocol):
@@ -356,6 +445,7 @@ class iCommandService(Protocol):
         queries: iQueryService,
         broker: iCommandBroker,
         audit: iAuditLog,
+        ledgers: iLedgerService | None = None,
     ) -> None: ...
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
@@ -405,6 +495,38 @@ class iCommandService(Protocol):
     async def destroy_world(self, ctx: ActorCtx, world_id: str | UUID) -> None: ...
     async def get_world_info(self, ctx: ActorCtx, world_id: str | UUID) -> WorldInfo: ...
     async def list_worlds(self, ctx: ActorCtx) -> list[WorldInfo]: ...
+
+    # ── Durable ledgers (gated, process-level) ─────────────────────────────────
+
+    async def create_ledger(
+        self,
+        ctx: ActorCtx,
+        name: str | None,
+        storage_config: StorageConfig,
+        *,
+        world_id: str | UUID | None = None,
+        run_id: str | UUID | None = None,
+    ) -> LedgerRef: ...
+    async def get_ledger_head(
+        self,
+        ctx: ActorCtx,
+        identity: LedgerIdentity,
+        storage_config: StorageConfig,
+    ) -> LedgerRef: ...
+    async def list_ledgers(
+        self,
+        ctx: ActorCtx,
+        storage_ref: StorageRef,
+        storage_config: StorageConfig,
+        *,
+        name: str | None = None,
+    ) -> list[LedgerInfo]: ...
+    async def get_ledger_manifest(
+        self,
+        ctx: ActorCtx,
+        ref: LedgerRef,
+        storage_config: StorageConfig,
+    ) -> LedgerManifest: ...
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 

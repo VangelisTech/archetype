@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.app.broker import CommandBroker
+    from archetype.app.ledger_service import LedgerService
     from archetype.app.models import (
         EpisodeConfig,
         EpisodeResult,
@@ -74,6 +75,13 @@ if TYPE_CHECKING:
     from archetype.core.component import Component
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import ArchetypeSignature
+    from archetype.ledger.models import (
+        LedgerIdentity,
+        LedgerInfo,
+        LedgerManifest,
+        LedgerRef,
+        StorageRef,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +102,7 @@ class CommandService:
         broker: CommandBroker,
         audit: AuditLog | None = None,
         autoresearch: AutoResearchService | None = None,
+        ledgers: LedgerService | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -102,10 +111,17 @@ class CommandService:
         self._broker = broker
         self._audit = audit
         self._autoresearch = autoresearch
+        self._ledgers = ledgers
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
+
+    def _require_ledger_service(self) -> LedgerService:
+        """Return the durable-ledger service or fail without bypassing policy."""
+        if self._ledgers is None:
+            raise RuntimeError("CommandService was constructed without a LedgerService")
+        return self._ledgers
 
     def _require_world(self, world_id: str | UUID) -> None:
         """Reject submissions to worlds not in the registry.
@@ -338,6 +354,92 @@ class CommandService:
         ]
         await self._emit(ctx, "list_worlds")
         return worlds
+
+    # ── Durable ledgers (gated, process-level) ─────────────────────────────────
+
+    @logfire.instrument("gate.create_ledger")
+    async def create_ledger(
+        self,
+        ctx: ActorCtx,
+        name: str | None,
+        storage_config: StorageConfig,
+        *,
+        world_id: str | UUID | None = None,
+        run_id: str | UUID | None = None,
+    ) -> LedgerRef:
+        """Create or replay a generation-zero durable ledger."""
+        self._gate(Command(type=CommandType.CREATE_LEDGER), ctx)
+        result = await self._require_ledger_service().create_ledger(
+            name=name,
+            storage_config=storage_config,
+            world_id=world_id,
+            run_id=run_id,
+        )
+        await self._emit(
+            ctx,
+            "create_ledger",
+            result.identity.world_id,
+            payload_json=json.dumps(
+                {
+                    "manifest_digest": result.manifest_digest,
+                    "manifest_generation": result.manifest_generation,
+                    "run_id": result.identity.run_id,
+                },
+                sort_keys=True,
+            ),
+        )
+        return result
+
+    @logfire.instrument("gate.get_ledger_head")
+    async def get_ledger_head(
+        self,
+        ctx: ActorCtx,
+        identity: LedgerIdentity,
+        storage_config: StorageConfig,
+    ) -> LedgerRef:
+        """Read the latest committed manifest head for an exact identity."""
+        self._gate(Command(type=CommandType.GET_LEDGER_HEAD), ctx)
+        result = await self._require_ledger_service().get_head(
+            identity,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "get_ledger_head", identity.world_id)
+        return result
+
+    @logfire.instrument("gate.list_ledgers")
+    async def list_ledgers(
+        self,
+        ctx: ActorCtx,
+        storage_ref: StorageRef,
+        storage_config: StorageConfig,
+        *,
+        name: str | None = None,
+    ) -> list[LedgerInfo]:
+        """List durable ledgers in one explicit, credential-free storage scope."""
+        self._gate(Command(type=CommandType.LIST_LEDGERS), ctx)
+        result = await self._require_ledger_service().list_ledgers(
+            storage_ref,
+            storage_config=storage_config,
+            name=name,
+        )
+        await self._emit(ctx, "list_ledgers")
+        return result
+
+    @logfire.instrument("gate.get_ledger_manifest")
+    async def get_ledger_manifest(
+        self,
+        ctx: ActorCtx,
+        ref: LedgerRef,
+        storage_config: StorageConfig,
+    ) -> LedgerManifest:
+        """Load the exact immutable manifest pinned by ``ref``."""
+        self._gate(Command(type=CommandType.GET_LEDGER_MANIFEST), ctx)
+        result = await self._require_ledger_service().get_manifest(
+            ref,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "get_ledger_manifest", ref.identity.world_id)
+        return result
 
     # ── Simulation (gated, direct) ────────────────────────────────────────
 

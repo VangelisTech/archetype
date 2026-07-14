@@ -61,6 +61,10 @@ class CommandType(StrEnum):
     RUN_EPISODE = "run_episode"
     AUTORESEARCH = "autoresearch"  # Optimization loop over rollouts
 
+    # Durable ledger lifecycle.  These are process-level operations: they
+    # intentionally do not manufacture RuntimeWorld handles.
+    CREATE_LEDGER = "create_ledger"
+
     # Reads / introspection
     QUERY_WORLD = "query_world"
     GET_WORLD_INFO = "get_world_info"
@@ -70,6 +74,9 @@ class CommandType(StrEnum):
     LIST_PROCESSORS = "list_processors"
     LIST_HOOKS = "list_hooks"
     LIST_RESOURCES = "list_resources"
+    GET_LEDGER_HEAD = "get_ledger_head"
+    LIST_LEDGERS = "list_ledgers"
+    GET_LEDGER_MANIFEST = "get_ledger_manifest"
 
     # Resource management
     ADD_RESOURCE = "add_resource"

@@ -42,6 +42,8 @@ class AsyncLancedbStore(iAsyncStore):
         self,
         uri: str | _StorageContextLike,
         namespace: str | None = None,
+        *,
+        subdir: str | None = None,
     ):
         if isinstance(uri, str):
             resolved_uri = uri
@@ -56,25 +58,43 @@ class AsyncLancedbStore(iAsyncStore):
 
         self.uri: str = resolved_uri
         self.namespace: str = namespace
+        resolved_subdir = (
+            os.environ.get("ARCT_LANCEDB_SUBDIR", "lance") if subdir is None else subdir
+        )
+        subdir_path = os.path.normpath(resolved_subdir)
+        if (
+            not resolved_subdir
+            or os.path.isabs(resolved_subdir)
+            or subdir_path in {".", ".."}
+            or os.path.basename(subdir_path) != subdir_path
+            or resolved_subdir != subdir_path
+            or "\\" in resolved_subdir
+        ):
+            raise ValueError("LanceDB subdir must be one safe relative path segment")
+        self.subdir = subdir_path
         self.lancedb = None
         self._known_sigs: dict[str, ArchetypeSignature] = {}
         # Tracks only signatures that have been durably committed via append();
         # excludes tables opened/created by get_archetype_df (create-on-read).
         self._committed_sigs: set[str] = set()
 
+    async def _connect(self):
+        """Open the database lazily without creating any user table."""
+        if self.lancedb is None:
+            self.lancedb = await lancedb.connect_async(
+                os.path.join(self.uri, self.namespace, self.subdir)
+            )
+        return self.lancedb
+
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
-        if self.lancedb is None:
-            subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
-            self.lancedb = await lancedb.connect_async(
-                os.path.join(self.uri, self.namespace, subdir)
-            )
+        db = await self._connect()
 
         if table_name in await self._list_table_names():
             try:
-                async_table = await self.lancedb.open_table(table_name)
+                async_table = await db.open_table(table_name)
             except Exception as e:
                 raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
 
@@ -82,7 +102,7 @@ class AsyncLancedbStore(iAsyncStore):
             return async_table
 
         try:
-            async_table = await self.lancedb.create_table(
+            async_table = await db.create_table(
                 name=table_name,
                 schema=pyarrow_schema,
                 exist_ok=True,
@@ -101,6 +121,85 @@ class AsyncLancedbStore(iAsyncStore):
 
         self._known_sigs[table_name] = sig
         return async_table
+
+    async def _open_existing_table(self, table_id: str):
+        """Open an existing physical table without create-on-read behavior.
+
+        Durable ledger discovery starts from a persisted ``table_id`` rather
+        than an in-process Python signature.  This path deliberately does not
+        mutate ``_known_sigs`` or ``_committed_sigs``: those registries remain
+        compatibility caches, never durable discovery authority.
+        """
+        db = await self._connect()
+        if table_id not in await self._list_table_names():
+            raise KeyError(f"LanceDB table {table_id!r} does not exist")
+        try:
+            return await db.open_table(table_id)
+        except Exception as exc:
+            raise RuntimeError(f"Error opening LanceDB table {table_id}: {exc}") from exc
+
+    async def get_table_schema(self, table_id: str):
+        """Return an existing table's Arrow schema without creating it."""
+        table = await self._open_existing_table(table_id)
+        return await table.schema()
+
+    async def table_exists(self, table_id: str) -> bool:
+        """Check physical existence without creating or registering a table."""
+        await self._connect()
+        return table_id in await self._list_table_names()
+
+    async def list_existing_table_ids(self) -> list[str]:
+        """List physical table identities without changing signature caches."""
+        await self._connect()
+        return sorted(await self._list_table_names())
+
+    async def get_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame:
+        """Read an existing table by durable physical identity.
+
+        Unlike ``get_archetype_df``, this method never calls ``_ensure_table``
+        and therefore cannot turn a read into a committed-looking table.
+        """
+        table = await self._open_existing_table(table_id)
+        safe_world = str(world_id).replace("'", "''")
+        safe_run = str(run_id).replace("'", "''")
+        clauses = [
+            f"world_id = '{safe_world}'",
+            f"run_id = '{safe_run}'",
+        ]
+
+        if active_only:
+            clauses.append("is_active = true")
+
+        if ticks is not None:
+            if not ticks:
+                clauses.append("false")
+            else:
+                tick_list = ", ".join(str(int(tick)) for tick in ticks)
+                clauses.append(f"tick IN ({tick_list})")
+
+        if entity_ids is not None:
+            if not entity_ids:
+                clauses.append("false")
+            else:
+                id_list = ", ".join(str(int(entity_id)) for entity_id in entity_ids)
+                clauses.append(f"entity_id IN ({id_list})")
+
+        where_str = " AND ".join(clauses)
+        try:
+            arrow = await table.query().where(where_str).to_arrow()
+        except Exception as exc:
+            logger.error("Error reading durable table %s: %s", table_id, exc)
+            raise
+        return daft.from_arrow(arrow)
 
     async def _list_table_names(self) -> list[str]:
         if self.lancedb is None:

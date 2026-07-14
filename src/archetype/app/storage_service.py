@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pathlib
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlsplit
 
 from daft.session import Session
 
@@ -32,19 +33,47 @@ from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
 from archetype.core.sync import SyncStore
+from archetype.ledger.errors import (
+    StorageRefMismatchError,
+    UnsupportedAtomicInsertError,
+)
+from archetype.ledger.models import StorageRef
+from archetype.ledger.sqlite_control import SQLiteAtomicRecordStore
 
 logger = logging.getLogger(__name__)
 
 
+def _local_path(uri: str) -> pathlib.Path | None:
+    """Return the canonical local path for a plain path or ``file://`` URI.
+
+    ``Path("file:///tmp/db")`` is a relative path whose first segment happens
+    to contain a colon.  Parse file URIs explicitly so equivalent relative,
+    absolute, and URI spellings resolve to one durable storage identity.
+    """
+    if not uri:
+        raise ValueError("local storage URI must not be empty")
+    parsed = urlsplit(uri)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("", "file"):
+        return None
+    if scheme == "file":
+        if parsed.netloc not in ("", "localhost"):
+            raise ValueError("local LanceDB file URIs must not name a remote host")
+        if parsed.query or parsed.fragment:
+            raise ValueError("local LanceDB file URIs must not contain query or fragment data")
+        if not parsed.path or not parsed.path.startswith("/"):
+            raise ValueError("local LanceDB file URIs must contain an absolute path")
+        path = pathlib.Path(unquote(parsed.path))
+    else:
+        path = pathlib.Path(uri)
+    return path.expanduser().resolve(strict=False)
+
+
 def _resolve_uri(uri: str) -> str:
     """Resolve local storage paths to absolute. Remote URIs pass through."""
-    scheme = urlparse(uri).scheme.lower()
-    if scheme not in ("", "file"):
+    base_path = _local_path(uri)
+    if base_path is None:
         return uri
-
-    base_path = pathlib.Path(uri)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
     base_path.mkdir(parents=True, exist_ok=True)
     return str(base_path)
 
@@ -104,6 +133,66 @@ class StorageService:
         self._session = session
         self._instances: dict[str, iAsyncStore] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._atomic_instances: dict[str, SQLiteAtomicRecordStore] = {}
+        self._atomic_locks: dict[str, asyncio.Lock] = {}
+
+    @staticmethod
+    def storage_ref(storage_config: StorageConfig) -> StorageRef:
+        """Build the credential-free identity for a supported durable store.
+
+        The v1 atomic control catalog is intentionally scoped to a local
+        LanceDB root.  Iceberg and remote LanceDB locators need a separately
+        supplied shared CAS implementation before they can claim this
+        restart/concurrency contract.
+        """
+        if storage_config.backend != StorageBackend.LANCEDB:
+            raise UnsupportedAtomicInsertError(
+                "durable ledger catalogs currently require local LanceDB storage"
+            )
+        root = _local_path(str(storage_config.uri))
+        if root is None:
+            raise UnsupportedAtomicInsertError(
+                "durable ledger catalogs currently require a local LanceDB path"
+            )
+        subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
+        if subdir != "lance":
+            raise UnsupportedAtomicInsertError(
+                "durable ledger storage requires the canonical LanceDB subdirectory 'lance'"
+            )
+        namespace_path = pathlib.Path(storage_config.namespace)
+        if (
+            len(namespace_path.parts) != 1
+            or storage_config.namespace in {"", ".", ".."}
+            or namespace_path.is_absolute()
+            or namespace_path.name != storage_config.namespace
+            or "/" in storage_config.namespace
+            or "\\" in storage_config.namespace
+        ):
+            raise ValueError("durable ledger namespace must use one canonical local path segment")
+        catalog_path = root / storage_config.namespace / ".archetype" / "catalog-v1.sqlite3"
+        return StorageRef.create(
+            backend=StorageBackend.LANCEDB,
+            data_uri=root.as_uri(),
+            namespace=storage_config.namespace,
+            catalog_uri=catalog_path.as_uri(),
+        )
+
+    # Naming retained for protocol-oriented callers and documentation drafts.
+    resolve_storage_ref = storage_ref
+
+    @classmethod
+    def verify_storage_ref(
+        cls,
+        reference: StorageRef,
+        storage_config: StorageConfig,
+    ) -> None:
+        """Fail closed unless caller credentials locate the referenced store."""
+        actual = cls.storage_ref(storage_config)
+        if actual != reference:
+            raise StorageRefMismatchError(
+                f"storage reference {reference.storage_id} does not match "
+                f"caller storage {actual.storage_id}"
+            )
 
     @staticmethod
     def _pool_key(
@@ -156,6 +245,64 @@ class StorageService:
 
         return self._instances[key]
 
+    async def get_or_create_atomic_record_store(
+        self,
+        storage_config: StorageConfig,
+    ) -> SQLiteAtomicRecordStore:
+        """Return the local SQLite catalog for one durable storage identity."""
+        reference = self.storage_ref(storage_config)
+        key = reference.storage_id
+        if key not in self._atomic_instances:
+            if key not in self._atomic_locks:
+                self._atomic_locks[key] = asyncio.Lock()
+            async with self._atomic_locks[key]:
+                if key not in self._atomic_instances:
+                    if reference.catalog_uri is None:
+                        raise UnsupportedAtomicInsertError(
+                            "storage reference has no atomic control catalog"
+                        )
+                    catalog_path = _local_path(reference.catalog_uri)
+                    if catalog_path is None:
+                        raise UnsupportedAtomicInsertError(
+                            "SQLite control catalog must use a local file URI"
+                        )
+                    catalog = SQLiteAtomicRecordStore(catalog_path)
+                    await catalog.initialize()
+                    self._atomic_instances[key] = catalog
+        return self._atomic_instances[key]
+
+    async def get_read_existing_store(
+        self,
+        storage_config: StorageConfig,
+    ) -> AsyncLancedbStore:
+        """Return a physical-table reader whose calls cannot create tables."""
+        # Validate the capability before touching the data store.  In
+        # particular, never let Iceberg or a remote URI fall through to the
+        # ordinary compatibility path here.
+        reference = self.storage_ref(storage_config)
+        key = f"ledger-read::{reference.storage_id}"
+        if key not in self._instances:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
+            async with self._locks[key]:
+                if key not in self._instances:
+                    root = _local_path(reference.data_uri)
+                    if root is None:
+                        raise UnsupportedAtomicInsertError(
+                            "read-existing ledger queries require a local LanceDB path"
+                        )
+                    self._instances[key] = AsyncLancedbStore(
+                        str(root),
+                        reference.namespace,
+                        subdir="lance",
+                    )
+        store = self._instances[key]
+        if not isinstance(store, AsyncLancedbStore):
+            raise UnsupportedAtomicInsertError(
+                "read-existing ledger queries currently require local LanceDB storage"
+            )
+        return store
+
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
         errors: list[Exception] = []
@@ -171,8 +318,21 @@ class StorageService:
                 logger.exception("Failed to shut down store %r", store)
                 errors.append(e)
 
+        for store in self._atomic_instances.values():
+            try:
+                shutdown = getattr(store, "shutdown", None)
+                if shutdown is not None:
+                    result = shutdown()
+                    if hasattr(result, "__await__"):
+                        await result
+            except Exception as e:
+                logger.exception("Failed to shut down atomic record store %r", store)
+                errors.append(e)
+
         self._instances.clear()
         self._locks.clear()
+        self._atomic_instances.clear()
+        self._atomic_locks.clear()
 
         if errors:
             raise RuntimeError(

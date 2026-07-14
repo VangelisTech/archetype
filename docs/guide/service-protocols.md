@@ -14,10 +14,11 @@ The gate (`iCommandService`) sits in front of the other services and applies aut
 ```text
 iStorageService -> iWorldService -> iMutationService
                               +---> iSimulationService
+                -> iLedgerService
                 -> iQueryService -> iEvalService
                 -> iAuditLog
 
-iWorldService + iMutationService + iSimulationService + iQueryService
+iWorldService + iMutationService + iSimulationService + iQueryService + iLedgerService
     + iAuditLog + iCommandBroker -> iCommandService (the ActorCtx-aware gate)
 ```
 
@@ -35,7 +36,25 @@ Creates and pools async stores. Multiton on `(uri, namespace, backend, cache)`. 
 
 ```python
 async def get_or_create_store(storage_config, cache_config=None) -> iAsyncStore
+def storage_ref(storage_config) -> StorageRef
+async def get_or_create_atomic_record_store(storage_config) -> iAsyncAtomicRecordStore
 async def shutdown() -> None
+```
+
+The durable control catalog is a separate capability from `iAsyncStore`; third-party stores are not
+forced to implement CAS. The A1 implementation supports local LanceDB and rejects unsupported
+backends explicitly.
+
+### `iLedgerService`
+
+Generation-zero ledger creation and immutable manifest discovery. Depends only on
+`iStorageService`; it never owns or registers a live world.
+
+```python
+async def create_ledger(*, name, storage_config, world_id=None, run_id=None) -> LedgerRef
+async def get_head(identity, *, storage_config) -> LedgerRef
+async def list_ledgers(storage_ref, *, storage_config, name=None) -> list[LedgerInfo]
+async def get_manifest(ref, *, storage_config) -> LedgerManifest
 ```
 
 ### `iWorldService`
@@ -97,7 +116,14 @@ async def query_archetype(sig, world_id, run_id, storage_config=None,
 async def query_components(components, world_id, run_id, storage_config=None,
                            *, ticks=None, entity_ids=None, lineage=None) -> DataFrame
 async def list_signatures(storage_config=None) -> list[ArchetypeSignature]
+async def describe_ledger(ref, *, storage_config, component_registry=None) -> LedgerInfo
+async def query_ledger(ref, components, *, storage_config,
+                       component_registry, ticks=None, entity_ids=None) -> DataFrame
 ```
+
+The existing world/run methods remain compatibility reads. The ledger path requires explicit
+storage and trusted component resolution. In A1 it authoritatively answers generation-zero queries
+and rejects nonempty pinned reads until transactional batch visibility lands in A2.
 
 ### `iEvalService`
 
@@ -175,6 +201,7 @@ def __init__(
     queries: iQueryService,
     broker: iCommandBroker,
     audit: iAuditLog,
+    ledgers: iLedgerService | None = None,
 ) -> None: ...
 ```
 
@@ -197,6 +224,15 @@ async def fork_world(ctx, source_world_id, name=None, *, storage_config=None, ca
 async def destroy_world(ctx, world_id) -> None
 async def get_world_info(ctx, world_id) -> WorldInfo
 async def list_worlds(ctx) -> list[WorldInfo]
+```
+
+#### Durable ledgers (process-level; no world handle)
+
+```python
+async def create_ledger(ctx, name, storage_config, *, world_id=None, run_id=None) -> LedgerRef
+async def get_ledger_head(ctx, identity, storage_config) -> LedgerRef
+async def list_ledgers(ctx, storage_ref, storage_config, *, name=None) -> list[LedgerInfo]
+async def get_ledger_manifest(ctx, ref, storage_config) -> LedgerManifest
 ```
 
 #### Simulation
@@ -289,11 +325,15 @@ class ServiceContainer:
     def __init__(self):
         self.broker = CommandBroker()
         self.storage_service = StorageService()
+        self.ledger_service = LedgerService(self.storage_service)
         self.audit = AuditLog(self.storage_service)
         self.world_service = WorldService(self.storage_service)
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
-        self.query_service = QueryService(self.storage_service)
+        self.query_service = QueryService(
+            self.storage_service,
+            ledger_service=self.ledger_service,
+        )
         self.eval_service = EvalService(self.query_service)
         self.command_service = CommandService(
             mutations=self.mutation_service,
@@ -302,6 +342,7 @@ class ServiceContainer:
             queries=self.query_service,
             broker=self.broker,
             audit=self.audit,
+            ledgers=self.ledger_service,
         )
 
     async def shutdown(self) -> None:

@@ -25,6 +25,7 @@ from archetype.app.autoresearch_service import AutoResearchService
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.eval_service import EvalService
+from archetype.app.ledger_service import LedgerService
 from archetype.app.mutation_service import MutationService
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
@@ -51,11 +52,16 @@ class ServiceContainer:
 
         # Leaf services
         self.storage_service = StorageService()
+        self.ledger_service = LedgerService(self.storage_service)
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
         self.audit_log = AuditLog(self.storage_service)
-        self.query_service = QueryService(self.storage_service, self.audit_log)
+        self.query_service = QueryService(
+            self.storage_service,
+            self.audit_log,
+            ledger_service=self.ledger_service,
+        )
         self.eval_service = EvalService(self.query_service)
 
         # Services that depend on WorldService
@@ -74,6 +80,7 @@ class ServiceContainer:
             broker=self.broker,
             audit=self.audit_log,
             autoresearch=self.autoresearch_service,
+            ledgers=self.ledger_service,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
 

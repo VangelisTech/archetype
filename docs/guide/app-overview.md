@@ -68,7 +68,12 @@ The factory constructs. The core executes.
 
 **SimulationService** owns step, run, episode, and rollout. Rollout-internal forks are implementation details; the gated rollout call is the audit unit.
 
-**QueryService** is the internal storage-backed read path. It has no `ActorCtx`; external reads go through `iCommandService`.
+**StorageService** pools data stores and owns the optional local SQLite control catalog lifecycle.
+
+**LedgerService** creates and discovers durable ledger manifests without registering a live world.
+
+**QueryService** is the internal storage-backed read path. Cataloged reads additionally depend on
+`LedgerService`; it has no `ActorCtx`, and external reads go through `iCommandService`.
 
 **CommandBroker** is a pure queue for tick-deferred commands. It does not own RBAC or audit history.
 
@@ -84,7 +89,7 @@ Direct operation:
 Runtime / API
   -> CommandService.<method>(ctx, ...)
   -> guardrail_allow
-  -> delegate to WorldService / MutationService / SimulationService / QueryService
+  -> delegate to WorldService / LedgerService / MutationService / SimulationService / QueryService
   -> AuditLog.record
   -> return result or info snapshot
 ```

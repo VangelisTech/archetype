@@ -24,6 +24,7 @@ nav:
   - Specifications:
       - Overview: guide/specification.md
       - Runtime: guide/runtime.md
+      - Durable Ledgers: guide/durable-ledgers.md
       - Service Protocols: guide/service-protocols.md
       - Command Gate: guide/command-gate.md
       - Execution Hierarchy: guide/execution-hierarchy.md

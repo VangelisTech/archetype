@@ -24,6 +24,7 @@ Services:
 - CommandService: Auth routing + command dispatch
 - SimulationService: Execution (step/run with broker drain)
 - QueryService: Time-travel reads
+- LedgerService: Durable ledger discovery and exact manifest reads
 - EvalService: Query-backed evaluation over persisted components
 - ServiceContainer: Wires everything together
 """
@@ -32,6 +33,7 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.eval_service import EvalService
+from archetype.app.ledger_service import LedgerService
 from archetype.app.models import (
     AuditRow,
     Command,
@@ -56,6 +58,7 @@ __all__ = [
     "WorldService",
     "SimulationService",
     "QueryService",
+    "LedgerService",
     "EvalService",
     "StorageService",
     "ServiceContainer",

@@ -36,6 +36,9 @@ _READS = frozenset(
         CommandType.LIST_PROCESSORS,
         CommandType.LIST_HOOKS,
         CommandType.LIST_RESOURCES,
+        CommandType.GET_LEDGER_HEAD,
+        CommandType.LIST_LEDGERS,
+        CommandType.GET_LEDGER_MANIFEST,
     }
 )
 
@@ -70,6 +73,7 @@ _OPERATOR_ADDS = frozenset(
         CommandType.AUTORESEARCH,
         CommandType.FORK_WORLD,
         CommandType.DESTROY_WORLD,
+        CommandType.CREATE_LEDGER,
     }
 )
 

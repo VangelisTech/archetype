@@ -16,6 +16,7 @@ The current contract set is split across design docs and executable tests.
 |---|---|---|
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
 | [Runtime](runtime.md) | Script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, gate-only access. |
+| [Durable Ledgers](durable-ledgers.md) | Restart-safe catalog | Credential-free references, generation-zero manifests, atomic control records, and A1 boundaries. |
 | [Service Protocols](service-protocols.md) | Application service interfaces | `iCommandService` and the services it gates. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |

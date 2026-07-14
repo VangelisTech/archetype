@@ -21,27 +21,107 @@ including worlds that no longer exist in memory.
 
 from __future__ import annotations
 
-from daft import DataFrame, col
+import pyarrow as pa
+from daft import DataFrame, col, from_arrow
 
+from archetype.app.ledger_service import LedgerService
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import ArchetypeSignature
 from archetype.core.lineage import load_lineage
+from archetype.ledger.errors import LedgerMetadataUnavailableError
+from archetype.ledger.models import LedgerInfo, LedgerRef
+from archetype.ledger.registry import ComponentRegistry
 
 
 class QueryService:
     """Direct read path to storage.
 
-    Depends only on StorageService. Resolves a store per query via
-    get_or_create_store, so any historical storage location is reachable.
+    Legacy reads depend only on StorageService. Cataloged reads additionally
+    require the optional LedgerService injected by ServiceContainer.
     """
 
-    def __init__(self, storage_service: StorageService, audit=None) -> None:
+    def __init__(
+        self,
+        storage_service: StorageService,
+        audit=None,
+        *,
+        ledger_service: LedgerService | None = None,
+    ) -> None:
         self._storage_service = storage_service
         self._audit = audit
+        self._ledger_service = ledger_service
+
+    def _ledgers(self) -> LedgerService:
+        if self._ledger_service is None:
+            raise LedgerMetadataUnavailableError(
+                "cataloged ledger queries require QueryService ledger_service wiring"
+            )
+        return self._ledger_service
+
+    async def describe_ledger(
+        self,
+        ref: LedgerRef,
+        *,
+        storage_config: StorageConfig,
+        component_registry: ComponentRegistry | None = None,
+    ) -> LedgerInfo:
+        """Describe one exact durable generation without opening data tables."""
+        info = await self._ledgers().describe_ledger(ref, storage_config=storage_config)
+        if component_registry is not None:
+            for signature in info.signatures:
+                component_registry.resolve_signature(signature)
+        return info
+
+    async def query_ledger(
+        self,
+        ref: LedgerRef,
+        components: list[type[Component]],
+        *,
+        storage_config: StorageConfig,
+        component_registry: ComponentRegistry,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Query an exact durable ledger generation.
+
+        A1 can authoritatively answer a generation-zero query: the manifest
+        proves there are no visible rows, so the result is a correctly typed
+        empty frame and no physical table is opened.  Nonempty visibility is
+        intentionally unavailable until A2's commit-tagged ``BatchRef`` read
+        protocol lands; falling back to raw world/run rows would falsely label
+        orphan or partial writes as pinned.
+        """
+        if not components:
+            raise ValueError("query_ledger requires at least one component type")
+        if len(components) != len(set(components)):
+            raise ValueError("query_ledger component types must be unique")
+        if ticks is not None and any(tick < 0 for tick in ticks):
+            raise ValueError("query_ledger ticks must be nonnegative")
+        if entity_ids is not None and any(entity_id < 0 for entity_id in entity_ids):
+            raise ValueError("query_ledger entity_ids must be nonnegative")
+        for component_type in components:
+            component_registry.component_ref(component_type)
+
+        manifest = await self._ledgers().get_manifest(ref, storage_config=storage_config)
+        for signature in manifest.signatures:
+            component_registry.resolve_signature(signature)
+
+        if manifest.committed_through_tick is not None or manifest.batches:
+            raise LedgerMetadataUnavailableError(
+                "nonempty pinned reads require A2 commit-tagged batch visibility"
+            )
+
+        # Selectors cannot add rows to a manifest that proves its visible set
+        # is empty, but constructing through Arrow preserves exact nullability
+        # and component projection types.
+        del ticks, entity_ids
+        schema = Archetype.get_archetype_schema(tuple(components))
+        return from_arrow(pa.Table.from_pylist([], schema=schema))
 
     async def query_archetype(
         self,

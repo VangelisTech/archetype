@@ -54,6 +54,9 @@ Roles are flat. A user with `{operator}` is NOT also `viewer` — they get whate
 | `list_processors` | ✓ | ✓ | ✓ | ✓ |
 | `list_hooks` | ✓ | ✓ | ✓ | ✓ |
 | `list_resources` | ✓ | ✓ | ✓ | ✓ |
+| `get_ledger_head` | ✓ | ✓ | ✓ | ✓ |
+| `list_ledgers` | ✓ | ✓ | ✓ | ✓ |
+| `get_ledger_manifest` | ✓ | ✓ | ✓ | ✓ |
 
 ### Entity mutations
 
@@ -101,6 +104,15 @@ A `player` does not advance the world — they participate in the world that som
 
 The asymmetry is intentional. `create_world` establishes new platform-level identity → admin-only. `fork_world` and `destroy_world` are operator-territory because operators routinely fork (rollouts) and destroy (cleanup). Forks and destroys never delete persistent data (append-only invariant), so this is safe.
 
+### Durable ledger catalog
+
+| Method | viewer | player | operator | admin |
+|---|---|---|---|---|
+| `create_ledger` | — | — | ✓ | ✓ |
+
+Creating an empty durable catalog identity is available to operators. It does not create or attach a
+live world. Ledger lookup operations are read-only and appear in the reads table above.
+
 ### Generic submission
 
 | Method | viewer | player | operator | admin |
@@ -132,6 +144,9 @@ _READS = frozenset({
     CommandType.LIST_PROCESSORS,
     CommandType.LIST_HOOKS,
     CommandType.LIST_RESOURCES,
+    CommandType.GET_LEDGER_HEAD,
+    CommandType.LIST_LEDGERS,
+    CommandType.GET_LEDGER_MANIFEST,
 })
 
 _PLAYER_ADDS = frozenset({
@@ -157,6 +172,7 @@ _OPERATOR_ADDS = frozenset({
     CommandType.AUTORESEARCH,
     CommandType.FORK_WORLD,
     CommandType.DESTROY_WORLD,
+    CommandType.CREATE_LEDGER,
 })
 
 COMMANDS_BY_ROLE: dict[str, frozenset[CommandType]] = {

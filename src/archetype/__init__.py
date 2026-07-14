@@ -94,6 +94,7 @@ __all__ = [
     "CommandService",
     "SimulationService",
     "QueryService",
+    "LedgerService",
     "ServiceContainer",
     # Models
     "Command",
@@ -103,6 +104,16 @@ __all__ = [
     "AutoResearchResult",
     "CandidateContext",
     "EvaluationResult",
+    # Durable ledger contracts
+    "StorageRef",
+    "ComponentRef",
+    "SignatureRef",
+    "LedgerIdentity",
+    "LedgerManifest",
+    "LedgerRef",
+    "LedgerInfo",
+    "ManifestHead",
+    "ComponentRegistry",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -155,6 +166,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CommandService": ("archetype.app", "CommandService"),
     "SimulationService": ("archetype.app", "SimulationService"),
     "QueryService": ("archetype.app", "QueryService"),
+    "LedgerService": ("archetype.app", "LedgerService"),
     "ServiceContainer": ("archetype.app", "ServiceContainer"),
     "Command": ("archetype.app", "Command"),
     "CommandType": ("archetype.app", "CommandType"),
@@ -163,6 +175,16 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AutoResearchResult": ("archetype.app.autoresearch_service", "AutoResearchResult"),
     "CandidateContext": ("archetype.app.autoresearch_service", "CandidateContext"),
     "EvaluationResult": ("archetype.app.autoresearch_service", "EvaluationResult"),
+    # Durable ledger contracts
+    "StorageRef": ("archetype.ledger", "StorageRef"),
+    "ComponentRef": ("archetype.ledger", "ComponentRef"),
+    "SignatureRef": ("archetype.ledger", "SignatureRef"),
+    "LedgerIdentity": ("archetype.ledger", "LedgerIdentity"),
+    "LedgerManifest": ("archetype.ledger", "LedgerManifest"),
+    "LedgerRef": ("archetype.ledger", "LedgerRef"),
+    "LedgerInfo": ("archetype.ledger", "LedgerInfo"),
+    "ManifestHead": ("archetype.ledger", "ManifestHead"),
+    "ComponentRegistry": ("archetype.ledger", "ComponentRegistry"),
 }
 
 

@@ -9,6 +9,7 @@ archetype.app
   ServiceContainer          Wires everything
     |
     +-- StorageService       Multiton storage pool
+    +-- LedgerService        Durable catalog + exact manifests
     +-- CommandBroker        Pure priority queue
     +-- AuditLog             Append-only audit rows
     |
@@ -38,16 +39,14 @@ Services depend only on lower tiers:
 
 ```text
 iStorageService
-    ↑             ↑                              ↑
-iWorldService     iQueryService           iAuditLog
-    ↑               ↑                              ↑
-iMutationService    iSimulationService            |
-    ↑               ↑              ↑              ↑
-    └───────────────┴──────────────┴──────────────┘
-                          ↑
-                   iCommandBroker
-                          ↑
-                   iCommandService
+    ├──> iWorldService ──> iMutationService / iSimulationService
+    ├──> iLedgerService
+    ├──> iQueryService ──> iEvalService
+    └──> iAuditLog
+
+iWorldService + iLedgerService + iQueryService + iMutationService
+    + iSimulationService + iAuditLog + iCommandBroker
+        └──> iCommandService
 ```
 
 `iCommandService` is the only `ActorCtx`-aware service. It is also the only service the runtime calls.
@@ -64,6 +63,14 @@ store = await container.storage_service.get_or_create_store(
 ```
 
 See [Stores](stores.md) for backend behavior.
+
+## LedgerService
+
+`LedgerService` owns restart-safe ledger discovery and exact immutable manifest reads. In A1 it
+creates generation-zero ledgers and uses `StorageService`'s colocated SQLite capability for true
+cross-process uniqueness and CAS. It never registers or mutates a live world.
+
+See [Durable Ledgers](durable-ledgers.md) for the authority and A1/A2 boundary.
 
 ## WorldService
 
@@ -115,6 +122,9 @@ External reads go through `iCommandService`:
 - `list_processors`
 - `list_hooks`
 - `list_resources`
+
+Cataloged ledger descriptions and generation-zero pinned queries additionally use `LedgerService`
+and an explicit trusted component registry.
 
 The `viewer` role is meaningful at the gate. See [Command Gate](command-gate.md).
 
@@ -170,4 +180,5 @@ The CLI is a thin HTTP client.
 - Mutation service: `src/archetype/app/mutation_service.py`
 - Simulation service: `src/archetype/app/simulation_service.py`
 - Query service: `src/archetype/app/query_service.py`
+- Ledger service: `src/archetype/app/ledger_service.py`
 - Storage service: `src/archetype/app/storage_service.py`

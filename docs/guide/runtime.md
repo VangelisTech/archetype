@@ -134,6 +134,13 @@ Field access on info objects is sync; the fetch is async (gated). See `world-lif
 - `world.autoresearch(config, evaluator, ...)` is gated as `CommandType.AUTORESEARCH` (operator+) and emits one loop-level audit row; per-attempt provenance lives on the experiment's lab world. The base world is never mutated. The handle's op lock is held only for activation, so `evaluator`, `prepare_candidate`, and `on_iteration` may call back into runtime handles (`query`, `attach`, `grade`) without deadlocking.
 - `world.grade(*components, graders=[...])` composes the gated, lineage-resolved `query` with `EvalService.run_graders`. Graders receive one lazy Daft DataFrame of the full append-only history and decide what to compute; the runtime materializes nothing. Empty grader lists and empty grader outputs are rejected, never vacuous successes.
 
+### R16 — Durable ledgers are process-level and explicit
+
+Ledger create/head/list/manifest operations live on `ArchetypeRuntime`, not `RuntimeWorld`. Every
+operation requires explicit `storage=` and routes through `iCommandService`. Ledger reads never add
+an entry to the live-handle registry, and `runtime.attach()` retains its same-process world meaning;
+it does not accept a `LedgerRef` in A1.
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:
@@ -142,6 +149,12 @@ The full canonical surface, async and sync:
 # Construction (factory on runtime)
 world = runtime.world(name, storage=..., cache=..., processors=..., resources=..., hooks=...)
 world = runtime.attach(world_id)   # handle for an existing world (episode/lab worlds)
+
+# Durable ledger catalog (process-level; explicit storage required)
+ledger = await runtime.create_ledger("lab", storage="./data")
+latest = await runtime.get_ledger_head(ledger.identity, storage="./data")
+manifest = await runtime.get_ledger_manifest(latest, storage="./data")
+ledgers = await runtime.list_ledgers(storage="./data", name="lab")
 
 # Mutations
 eid = await world.spawn(Position(x=0), Velocity(dx=1))

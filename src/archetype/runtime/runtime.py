@@ -31,9 +31,18 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
+from archetype.ledger.models import LedgerIdentity, LedgerInfo, LedgerManifest, LedgerRef
 from archetype.runtime._actor import default_actor_ctx
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
+
+
+def _require_ledger_storage(value: str | Path | StorageConfig | None) -> StorageConfig:
+    """Ledger APIs never guess which durable catalog the caller intended."""
+    storage = coerce_storage(value)
+    if storage is None:
+        raise TypeError("durable ledger operations require explicit storage=")
+    return storage
 
 
 class ArchetypeRuntime:
@@ -152,6 +161,69 @@ class ArchetypeRuntime:
         self._handles.add(handle)
         return handle
 
+    async def create_ledger(
+        self,
+        name: str | None,
+        *,
+        storage: str | Path | StorageConfig,
+        world_id: str | UUID | None = None,
+        run_id: str | UUID | None = None,
+    ) -> LedgerRef:
+        """Create a durable ledger without creating a live world handle."""
+        self._ensure_open()
+        return await self._container.command_service.create_ledger(
+            self._actor_ctx,
+            name,
+            _require_ledger_storage(storage),
+            world_id=world_id,
+            run_id=run_id,
+        )
+
+    async def get_ledger_head(
+        self,
+        identity: LedgerIdentity,
+        *,
+        storage: str | Path | StorageConfig,
+    ) -> LedgerRef:
+        """Read the latest committed head for a durable ledger identity."""
+        self._ensure_open()
+        return await self._container.command_service.get_ledger_head(
+            self._actor_ctx,
+            identity,
+            _require_ledger_storage(storage),
+        )
+
+    async def list_ledgers(
+        self,
+        *,
+        storage: str | Path | StorageConfig,
+        name: str | None = None,
+    ) -> list[LedgerInfo]:
+        """List durable ledgers in one explicit storage catalog."""
+        self._ensure_open()
+        storage_config = _require_ledger_storage(storage)
+        storage_ref = self._container.storage_service.storage_ref(storage_config)
+        return await self._container.command_service.list_ledgers(
+            self._actor_ctx,
+            storage_ref,
+            storage_config,
+            name=name,
+        )
+
+    async def get_ledger_manifest(
+        self,
+        ref: LedgerRef,
+        *,
+        storage: str | Path | StorageConfig,
+    ) -> LedgerManifest:
+        """Load the immutable manifest pinned by ``ref``."""
+        self._ensure_open()
+        return await self._container.command_service.get_ledger_manifest(
+            self._actor_ctx,
+            ref,
+            _require_ledger_storage(storage),
+        )
+
     @classmethod
     def sync(cls, *, actor_ctx: ActorCtx | None = None) -> SyncArchetypeRuntime:
         """Factory for the synchronous runtime facade."""
@@ -240,6 +312,47 @@ class SyncArchetypeRuntime:
     def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
         """Handle for an existing world. See ArchetypeRuntime.attach."""
         return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
+
+    def create_ledger(
+        self,
+        name: str | None,
+        *,
+        storage: str | Path | StorageConfig,
+        world_id: str | UUID | None = None,
+        run_id: str | UUID | None = None,
+    ) -> LedgerRef:
+        return self._dispatch(
+            self._runtime.create_ledger(
+                name,
+                storage=storage,
+                world_id=world_id,
+                run_id=run_id,
+            )
+        )
+
+    def get_ledger_head(
+        self,
+        identity: LedgerIdentity,
+        *,
+        storage: str | Path | StorageConfig,
+    ) -> LedgerRef:
+        return self._dispatch(self._runtime.get_ledger_head(identity, storage=storage))
+
+    def list_ledgers(
+        self,
+        *,
+        storage: str | Path | StorageConfig,
+        name: str | None = None,
+    ) -> list[LedgerInfo]:
+        return self._dispatch(self._runtime.list_ledgers(storage=storage, name=name))
+
+    def get_ledger_manifest(
+        self,
+        ref: LedgerRef,
+        *,
+        storage: str | Path | StorageConfig,
+    ) -> LedgerManifest:
+        return self._dispatch(self._runtime.get_ledger_manifest(ref, storage=storage))
 
 
 def run_sync(coro) -> Any:
