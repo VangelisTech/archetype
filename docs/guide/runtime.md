@@ -138,6 +138,10 @@ Field access on info objects is sync; the fetch is async (gated). See `world-lif
 
 Scripts own their stdout: no span or log output unless asked. `ARCHETYPE_LOG=debug|info|warning|error` (or `ArchetypeRuntime(log=...)`) wires the stdlib `archetype` logger hierarchy at the runtime boundary; at `debug` it also enables console span output. Every layer *emits* on module loggers — core included, since processor failures and store writes are exactly what debugging needs — but only the runtime *configures* handlers, levels, and sinks. `RunConfig(debug=True)` remains separate: it is per-run dataframe inspection (it materializes frames) and is never switched by an environment variable.
 
+### R17 — Tracing is vendor-neutral OpenTelemetry
+
+Archetype emits spans through the OpenTelemetry *API* only (`archetype._obs`); installing archetype pulls no telemetry vendor. Backend selection happens once, at the runtime boundary, in this order: a provider the host application already registered is respected untouched; `LOGFIRE_TOKEN`/`LOGFIRE_API_KEY`/`LOGFIRE_SEND_TO_LOGFIRE` select Logfire when the `archetype-ecs[logfire]` extra is installed (Logfire is itself an OTel SDK); `OTEL_EXPORTER_OTLP_ENDPOINT` selects the standard OTLP exporter (`archetype-ecs[otlp]`) and works with any collector; `ARCHETYPE_LOG=debug` gets a terse one-line console exporter on stderr with no extras at all; otherwise the no-op OTel API stays and tracing costs nothing. Nothing under `src/` may import `logfire` except the guarded backend selection and `contrib/logfire_observer`.
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:

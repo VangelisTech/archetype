@@ -23,6 +23,7 @@ from daft import DataFrame, col
 from daft.functions import when
 from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
+from archetype import _obs
 from archetype.core.aio.async_querier import UnknownSignatureError, _canonicalize
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
@@ -210,11 +211,9 @@ class AsyncWorld(iAsyncWorld):
     ) -> DataFrame:
         """Build one archetype's tick-N frame. Pure with respect to world
         state: reads the caches without consuming them and writes nothing."""
-        import logfire
-
         sig_name = Archetype.get_name(sig)
 
-        with logfire.span("world.query", sig=sig_name, tick=self.tick):
+        with _obs.span("world.query", sig=sig_name, tick=self.tick):
             df = await self.query_archetype(
                 sig=sig,
                 run_id=self.run_id,
@@ -223,11 +222,11 @@ class AsyncWorld(iAsyncWorld):
                 components=None,
             )
 
-        with logfire.span("world.materialize", sig=sig_name, tick=self.tick):
+        with _obs.span("world.materialize", sig=sig_name, tick=self.tick):
             df = self._apply_despawns(df, sig)
             spawns_df = self._spawn_frame(sig)
 
-        with logfire.span("world.execute", sig=sig_name, tick=self.tick):
+        with _obs.span("world.execute", sig=sig_name, tick=self.tick):
             df = await self.execute(df, sig, tick=self.tick, debug=run_config.debug, **input_kwargs)
 
         # Initial conditions are part of the ledger: a newborn's first row is
@@ -245,9 +244,7 @@ class AsyncWorld(iAsyncWorld):
 
         The updater raises on failed persistence, in which case the caches
         survive for retry."""
-        import logfire
-
-        with logfire.span("world.update", sig=Archetype.get_name(sig), tick=self.tick):
+        with _obs.span("world.update", sig=Archetype.get_name(sig), tick=self.tick):
             df_mat = await self.update(df, sig, run_config)
 
         self.spawn_cache.pop(sig, None)

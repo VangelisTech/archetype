@@ -36,6 +36,7 @@ interpreter exit from robosuite's context __del__; harmless.)
 
 # NOTE: no `from __future__ import annotations` here — modal.parameter()
 # validates real annotation objects, and PEP 563 string annotations break it.
+import os
 import uuid
 from typing import Any
 
@@ -89,6 +90,9 @@ image = (
         "easydict",
         "imageio[ffmpeg]",
         "opencv-python-headless",
+        # Worker-side observability: archetype's Modal secret `logfire`
+        # provides LOGFIRE_TOKEN; without it configure is skipped entirely.
+        "logfire",
     )
     # LIBERO's top-level package dir has no __init__.py, so find_packages()
     # produces an empty wheel from a plain `pip install git+...`. The repo's
@@ -106,6 +110,12 @@ image = (
     .env({"MUJOCO_GL": "egl", "PYOPENGL_PLATFORM": "egl"})
 )
 
+# Worker-side observability is opt-out per deployer: the named Modal secret
+# is only referenced when configured (default "logfire", Vangelis' secret).
+# Deploying in a workspace without it: ARCHETYPE_MODAL_LOGFIRE_SECRET= modal deploy ...
+_LOGFIRE_SECRET_NAME = os.environ.get("ARCHETYPE_MODAL_LOGFIRE_SECRET", "logfire")
+_worker_secrets = [modal.Secret.from_name(_LOGFIRE_SECRET_NAME)] if _LOGFIRE_SECRET_NAME else []
+
 app = modal.App("archetype-libero-env", image=image)
 
 
@@ -119,6 +129,7 @@ app = modal.App("archetype-libero-env", image=image)
     scaledown_window=300,
     max_containers=1,
     volumes={FRAMES_MOUNT: frames_volume},
+    secrets=_worker_secrets,
 )
 class LiberoEnvBatch:
     """A batch of LIBERO envs for one task suite, keyed by env_key.
@@ -142,7 +153,14 @@ class LiberoEnvBatch:
 
     @modal.enter()
     def load_suite(self):
+        import os
+
         from libero.libero import benchmark
+
+        if os.environ.get("LOGFIRE_TOKEN"):
+            import logfire
+
+            logfire.configure(service_name="archetype-libero-env", console=False)
 
         self._envs: dict[int, Any] = {}
         self._suite = benchmark.get_benchmark_dict()[self.suite]()
