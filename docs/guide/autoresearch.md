@@ -160,61 +160,33 @@ Modeling experiments as ECS state means:
 
 Experiment state gets the same operational properties as any other simulation in Archetype, without a parallel storage layer.
 
-## LIBERO Eval Driver
+## LIBERO on the ledger
 
-The same lab-world pattern extends to robotics benchmarks. `bench/libero/eval_driver.py`
-orchestrates LIBERO suite × task × trial sweeps on the Archetype ledger:
+The same lab-world pattern extends to robotics benchmarks. `bench/libero/eval_run.py`
+runs batched LIBERO evals the Archetype-native way:
 
-- One `Experiment` + `Run` entity per eval run as tick-0 initial conditions (genesis tick)
-- One `EvalTrialResult` entity per trial (suite, task, trial index, seed, success, episode length)
-- `bench/libero/report.py` reads the lab world and emits a markdown report with per-task
-  success rates, mean episode lengths, wall-clock timing, and the **provenance-tax headline**
-  (ledger overhead per tick as % of mean step latency)
+- **One control-plane world per task, N trial entities** keyed by `env_key`. The env
+  client batches by `env_key`, so one tick steps every live trial at once; finished
+  trials freeze on the ledger (`done` latches). Every trial's trajectory is addressable
+  by the single `(world_id, run_id)` and sliced by `ManipTask`.
+- Termination is the value-based "all entities done" contract
+  (`EpisodeConfig(terminal_component=ManipStatus, terminal_field="done")`) — no
+  hand-rolled episode loop.
+- Success and episode length are **graded from raw `ManipStatus` rows by the eval
+  service**, not computed in the driver, so there is no summary component to drift
+  from the ledger. (The old `eval_driver.py` / `EvalTrialResult` stack had exactly
+  that drift problem and was removed.)
+- `bench/libero/in_process.py` runs LIBERO envs in-process (no Modal required);
+  `bench/libero/instruction_sweep.py` layers instruction optimization on top, and
+  `bench/libero/in_process_policy.py` colocates a VLA policy with the env.
 
-The provenance-tax figure is sourced from `bench/mujoco/rollout_overhead.py` (measured 7 ms
-per tick); re-wire when a fresh measurement is available.
-
-### Running a smoke eval (1 task × 2 trials)
-
-```bash
-# Scripted env — CI-safe, no Modal or GPU required:
-uv run python bench/libero/eval_driver.py \
-    --suite libero_spatial --task-ids 0 \
-    --trials 2 --max-steps 80 \
-    --env-client scripted --no-policy \
-    --out /tmp/libero_smoke
-
-# Generate the markdown report:
-uv run python bench/libero/report.py --lab-dir /tmp/libero_smoke
-```
-
-The full 2,000-episode benchmark sweep (`--trials 50 --max-steps 600` over all 4 × 10
-task combinations) is **a user-triggered action** (GPU cost); never run it in CI.
-
-### `EvalTrialResult` component
-
-```python
-from archetype.experiments import EvalTrialResult
-
-result = EvalTrialResult.make(
-    suite="libero_spatial",
-    task_id=0,
-    trial_idx=2,
-    seed=2,
-    env_key=2,
-    success=True,
-    episode_length=74,
-    wall_s=28.3,
-    run_id="my-eval-run",
-)
-```
-
-Contract tests: `tests/experiments/test_eval_driver.py`.
+`docs/guide/libero-recipe.md` is the full recipe. The large benchmark sweeps are
+**user-triggered actions** (GPU cost); never run them in CI.
 
 ## References
 
 - Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
 - `src/archetype/experiments/` — the current component implementations
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
-- `bench/libero/eval_driver.py` — LIBERO eval driver (suites × tasks × trials)
-- `bench/libero/report.py` — markdown report generator with provenance-tax headline
+- `bench/libero/eval_run.py` — batched control-plane LIBERO eval
+- `docs/guide/libero-recipe.md` — the end-to-end LIBERO recipe

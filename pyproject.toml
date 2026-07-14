@@ -1,6 +1,6 @@
 [project]
 name = "archetype-ecs"
-version = "0.1.1"
+version = "0.2.0"
 description = "Dataframe-first, append-only ECS runtime for simulations and AI agents. Built on Daft with LanceDB time-travel storage."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,10 +14,11 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 dependencies = [
-    "daft[openai,lance,iceberg]>=0.7.15",
+    "daft[openai,lance,iceberg]>=0.7.19",
     "lancedb>=0.22.0",
     "pyiceberg[daft,sql-sqlite]",
     "uuid-utils>=0.11.0",
@@ -148,6 +149,11 @@ do_not_mutate = [
 # Supply-chain guard: refuse packages released after this date (7-day quarantine).
 # Bump this manually as needed; uv 0.8.x doesn't support relative durations.
 exclude-newer = "2026-06-12T00:00:00Z"
+# Surgical exceptions to the freeze — one package, one dated ceiling, so the
+# quarantine holds for everything else. daft 0.7.19 released 2026-07-10;
+# admitted explicitly (Everett, 2026-07-14) for the 0.2.0 release.
+[tool.uv.exclude-newer-package]
+daft = "2026-07-11T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"

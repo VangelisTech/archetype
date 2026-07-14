@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Archetype ECS",
         description="Dataframe-first ECS runtime for simulations and AI agents.",
-        version="0.1.1",
+        version="0.2.0",
         lifespan=lifespan,
     )
     # Route-level tracing is optional: use it when logfire is installed,
@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {"name": "archetype-ecs", "version": "0.1.1"}
+        return {"name": "archetype-ecs", "version": "0.2.0"}
 
     @app.get("/healthz")
     async def healthz():
