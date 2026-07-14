@@ -89,6 +89,11 @@ class SimulationService:
             commands_applied = len(applied) if isinstance(applied, Sized) else 0
         if isinstance(world, AsyncWorld):
             await world.step(run_config, **input_kwargs)
+            # Advance the world's advisory catalog head + register any new
+            # signatures (issue #272). One catalog transaction per tick;
+            # advisory until A2 manifests, so failures log, never fail a
+            # tick whose data-plane writes already committed.
+            await self._world_service.record_step(world_id)
         return commands_applied
 
     async def run(

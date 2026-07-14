@@ -78,15 +78,11 @@ class AsyncLancedbStore(iAsyncStore):
 
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
-        if self.lancedb is None:
-            subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
-            self.lancedb = await lancedb.connect_async(
-                os.path.join(self.uri, self.namespace, subdir)
-            )
+        connection = await self._connect()
 
         if table_name in await self._list_table_names():
             try:
-                async_table = await self.lancedb.open_table(table_name)
+                async_table = await connection.open_table(table_name)
             except Exception as e:
                 raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
 
@@ -95,7 +91,7 @@ class AsyncLancedbStore(iAsyncStore):
             return async_table
 
         try:
-            async_table = await self.lancedb.create_table(
+            async_table = await connection.create_table(
                 name=table_name,
                 schema=pyarrow_schema,
                 exist_ok=True,
@@ -115,6 +111,74 @@ class AsyncLancedbStore(iAsyncStore):
         self._known_sigs[table_name] = sig
         self._tables[table_name] = async_table
         return async_table
+
+    async def _connect(self):
+        """Open the database connection without creating any user table.
+
+        Connecting may create the database *directory*; it never creates or
+        registers an archetype table, so read paths stay create-free.
+        """
+        if self.lancedb is None:
+            subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
+            self.lancedb = await lancedb.connect_async(
+                os.path.join(self.uri, self.namespace, subdir)
+            )
+        return self.lancedb
+
+    # ── Durable-discovery seam (issue #272) ─────────────────────────────────
+    # Salvaged from the A1 draft branch: open-never-create reads by persisted
+    # physical table identity. Deliberately does not touch _known_sigs /
+    # _committed_sigs — those stay process-local caches, never discovery
+    # authority — and does not populate the mutable _tables handle cache.
+
+    async def _open_existing_table(self, table_id: str):
+        db = await self._connect()
+        if table_id not in await self._list_table_names():
+            raise KeyError(f"LanceDB table {table_id!r} does not exist")
+        try:
+            return await db.open_table(table_id)
+        except Exception as exc:
+            raise RuntimeError(f"Error opening LanceDB table {table_id}: {exc}") from exc
+
+    async def get_existing_table_schema(self, table_id: str):
+        """Return an existing table's Arrow schema without creating it."""
+        table = await self._open_existing_table(table_id)
+        return await table.schema()
+
+    async def get_existing_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame:
+        """Read an existing table by durable physical identity.
+
+        Unlike ``get_archetype_df``, this never calls ``_ensure_table`` and
+        therefore cannot turn a read into a committed-looking table.
+        """
+        table = await self._open_existing_table(table_id)
+        safe_world = str(world_id).replace("'", "''")
+        safe_run = str(run_id).replace("'", "''")
+        clauses = [f"world_id = '{safe_world}'", f"run_id = '{safe_run}'"]
+        if active_only:
+            clauses.append("is_active = true")
+        if ticks is not None:
+            tick_list = ", ".join(str(int(t)) for t in ticks)
+            clauses.append(f"tick IN ({tick_list})" if ticks else "false")
+        if entity_ids is not None:
+            id_list = ", ".join(str(int(eid)) for eid in entity_ids)
+            clauses.append(f"entity_id IN ({id_list})" if entity_ids else "false")
+        where_str = " AND ".join(clauses)
+        try:
+            arrow = await table.query().where(where_str).to_arrow()
+        except Exception as exc:
+            logger.error("Error reading existing table %s: %s", table_id, exc)
+            raise
+        return daft.from_arrow(arrow)
 
     async def _list_table_names(self) -> list[str]:
         if self.lancedb is None:

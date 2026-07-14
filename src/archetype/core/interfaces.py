@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
+import pyarrow as pa
 from daft import DataFrame  # type: ignore[import-not-found]
 
 from .component import Component
@@ -375,6 +376,25 @@ class iAsyncStore(Protocol):
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None: ...
     async def shutdown(self) -> None: ...
+
+    # ── Durable-discovery seam (issue #272, approved 2026-07-14) ──────────
+    # Reads by persisted physical table identity, for processes that hold a
+    # catalog descriptor but not the Python component classes. Both methods
+    # are open-never-create: a missing table raises KeyError; no read path
+    # may materialize a table (the create-on-read of get_archetype_df is
+    # exactly what these exist to avoid).
+
+    async def get_existing_table_schema(self, table_id: str) -> pa.Schema: ...
+    async def get_existing_table_df(
+        self,
+        table_id: str,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        active_only: bool = False,
+    ) -> DataFrame: ...
 
 
 class iAsyncQueryManager(Protocol):
