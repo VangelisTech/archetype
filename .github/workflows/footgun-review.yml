@@ -31,6 +31,11 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
+          # Grant the tools the review needs; without --allowedTools the
+          # agent has nothing to call and can only reply with text (the
+          # failure mode that made every historical run a silent no-op).
+          claude_args: |
+            --allowedTools "Task,Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),mcp__github_inline_comment__create_inline_comment"
           prompt: |
             You are running in CI on PR #${{ github.event.pull_request.number }}.
 
@@ -42,20 +47,18 @@ jobs:
             After the subagent returns, report its findings so the branch
             ruleset's required-thread-resolution rule enforces them:
 
-            - If it reports one or more footguns, post ONE pull-request
-              review whose inline comments carry the findings — inline
-              review comments create resolvable threads, and the merge is
-              blocked until each is resolved. Build a JSON file and submit:
-              `gh api --method POST repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input review.json`
-              (`--method POST` is required: without it `gh api` GETs and merely lists reviews.)
-              with shape:
-              `{"event":"COMMENT","body":"## Footgun review\n\n<n> finding(s), posted inline. Address and resolve each thread.","comments":[{"path":"<file>","line":<line>,"body":"<full finding incl. its **Fix:** verbatim>"}]}`
-              Every comment's path+line MUST be a line present in the PR
-              diff. If a finding's exact line is not in the diff, anchor it
-              to the nearest changed line in that file; if the file has no
-              changed lines, fold that finding into the review `body`
-              instead. If the review API call fails, fall back to
-              `gh pr comment` with the full findings so nothing is lost.
+            - If it reports one or more footguns, create one inline review
+              comment per finding with the
+              `mcp__github_inline_comment__create_inline_comment` tool (the
+              action batches them and posts a single review when you
+              finish). Each comment carries the full finding including its
+              `**Fix:**` verbatim, anchored to the finding's file and line
+              (the line must be part of the PR diff; anchor to the nearest
+              changed line in that file otherwise). Inline review comments
+              create resolvable threads, and the merge is blocked until
+              each is resolved. If the inline tool fails for a finding,
+              fall back to `gh pr comment` with the full findings so
+              nothing is lost.
             - If it reports "No footguns detected in this diff.", post a
               single short comment via `gh pr comment`:
               `## Footgun review\n\nNo notes.` (No thread — nothing to
