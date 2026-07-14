@@ -37,6 +37,7 @@ nav:
   - Agent Evaluation:
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
+      - LIBERO Recipe: guide/libero-recipe.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - Core Architecture:
       - Overview: guide/architecture.md

@@ -16,6 +16,14 @@ composable, declarative, and data-centric.**
 Archetype is a state machine that uses big-data technology to run itself,
 built for the AI-native world.
 
+It is built the way game engines are built — entities, components,
+processors, ticks, save states — because an operation run by agents and
+humans together *is* a real-time simulation, and its record deserves
+engine-grade physics. Archetype is the physics and the history: what
+happened, in order, forever. What the record *means*, and what is allowed
+to happen next, belongs to the layers you build on top of it — Archetype
+records; your policy decides.
+
 - **Composable** — two primitives only: components (data) and processors
   (behavior). Archetypes, worlds, and forks are compositions of them.
 - **Declarative** — you declare shapes and transforms; the engine derives
@@ -76,6 +84,9 @@ What you get for keeping everything:
 - **The engine's own operation is data** — every gated command lands in an
   append-only audit table on the same substrate that stores world state:
   consistent, partitioned, queryable, trainable
+- **Any altitude is a query** — the same ledger renders the whole
+  operation at command level or a single actor's first-person timeline;
+  views are projections over rows, never separate state to reconcile
 
 ## Built for agents
 
@@ -106,6 +117,10 @@ trust the result by reviewing code, not by re-running it:
   order. The audit trail this produces is the raw material for
   auto-research loops — the engine improving things that run on the
   engine.
+- **Humans and agents are the same `Actor`.** Both act through the same
+  gate under capability bindings (`viewer`/`player`/`operator`/`admin`);
+  a person can drop into a world with exactly one worker's capabilities,
+  and any elevation is explicit and lands in the audit trail.
 
 The design is meant to scale with its user. The more capable the model,
 the more it can do with two orthogonal primitives — richer components,
@@ -157,7 +172,7 @@ async def main():
         await world.run(steps=3)
 
         df = await world.query(Position)  # full append-only history
-        print(df.collect().to_pylist())
+        print(df.to_pylist())
 
 
 asyncio.run(main())
@@ -208,16 +223,30 @@ uv run python examples/04_messaging.py
 uv run python examples/05_llm_agents.py
 uv run python examples/06_trajectory_analysis.py
 uv run python examples/07_hooks.py
+uv run python examples/08_htn_resolution.py
+uv run python examples/09_cloud_storage.py
+uv run python examples/10_autoresearch.py     # save-state optimization on the ledger
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`
-require `OPENAI_API_KEY`.
+require `OPENAI_API_KEY`. Everything else runs credential-free (and does, in CI).
 
 ## Observability
 
-[Logfire](https://pydantic.dev/logfire) spans on every gated call and every
-tick phase (query / materialize / execute / update), plus opt-in
-per-tick/per-entity hooks:
+Quiet by default: your script's stdout is yours. One flag turns the
+machinery visible, and tracing is vendor-neutral OpenTelemetry — installing
+archetype pulls no telemetry vendor.
+
+```bash
+ARCHETYPE_LOG=debug uv run python your_script.py   # logs + one-line spans
+```
+
+Every gated call and tick phase (query / materialize / execute / update)
+emits OTel spans. Point them anywhere: a host app's provider is respected
+as-is; `OTEL_EXPORTER_OTLP_ENDPOINT` sends to any collector
+(`pip install archetype-ecs[otlp]`); `LOGFIRE_TOKEN` sends to
+[Logfire](https://pydantic.dev/logfire) (`pip install archetype-ecs[logfire]`),
+which also unlocks the opt-in per-tick/per-entity hooks:
 
 ```python
 from archetype.contrib.logfire_observer import logfire_hooks

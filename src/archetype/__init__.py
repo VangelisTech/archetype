@@ -51,7 +51,7 @@ from typing import Any
 # `setdefault` honors an explicit `DO_NOT_TRACK=0` if a user wants telemetry on.
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     # Core types
