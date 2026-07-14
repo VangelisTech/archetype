@@ -13,6 +13,10 @@ No external dependencies — runs entirely in-process.
 
 Usage:
     uv run python examples/01_world_mutations.py
+
+The script's own narration is all you see by default. To watch the
+machinery underneath (gated ops, world steps, store writes), set:
+    ARCHETYPE_LOG=debug uv run python examples/01_world_mutations.py
 """
 
 import asyncio

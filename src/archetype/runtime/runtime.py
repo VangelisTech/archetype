@@ -21,6 +21,8 @@ that route every operation through iCommandService.
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from pathlib import Path
 from typing import Any
 from weakref import WeakSet
@@ -35,13 +37,39 @@ from archetype.runtime._actor import default_actor_ctx
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
 
+_LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
+
+
+def _resolve_log_level(env: str | None = None) -> int | None:
+    """Map ARCHETYPE_LOG (or an explicit override) to a stdlib level."""
+    value = (env if env is not None else os.environ.get("ARCHETYPE_LOG", "")).strip().lower()
+    return _LOG_LEVELS.get(value)
+
+
+def _configure_archetype_logging(level: int) -> None:
+    """Wire the ``archetype`` logger hierarchy at the script boundary.
+
+    Every layer emits on module loggers and never configures handlers; the
+    runtime is the application boundary, so the one user-facing flag lives
+    here. Root logging is left untouched.
+    """
+    pkg_logger = logging.getLogger("archetype")
+    pkg_logger.setLevel(level)
+    if not pkg_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname).1s %(name)s: %(message)s"))
+        pkg_logger.addHandler(handler)
+
 
 class ArchetypeRuntime:
     """Process-level runtime. Owns the container and default identity."""
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None) -> None:
-        import os
-
+    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
         import logfire
 
         # Never block on an interactive logfire setup prompt.  Send to logfire
@@ -56,7 +84,21 @@ class ArchetypeRuntime:
         _send_explicit = _send_env in ("1", "true", "yes")
         _send_to_logfire = _has_token or _send_explicit
 
-        logfire.configure(service_name="archetype-runtime", send_to_logfire=_send_to_logfire)
+        # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
+        # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
+        # logger hierarchy, and at debug it also turns on console span output.
+        # Quiet is the default: span walls interleave with script output and
+        # drown the program's own voice — legibility of the script wins.
+        level = _resolve_log_level(log)
+        if level is not None:
+            _configure_archetype_logging(level)
+        console = None if level == logging.DEBUG else False
+
+        logfire.configure(
+            service_name="archetype-runtime",
+            send_to_logfire=_send_to_logfire,
+            console=console,
+        )
 
         self._container = ServiceContainer()
         self._actor_ctx = actor_ctx or default_actor_ctx()
@@ -153,9 +195,11 @@ class ArchetypeRuntime:
         return handle
 
     @classmethod
-    def sync(cls, *, actor_ctx: ActorCtx | None = None) -> SyncArchetypeRuntime:
+    def sync(
+        cls, *, actor_ctx: ActorCtx | None = None, log: str | None = None
+    ) -> SyncArchetypeRuntime:
         """Factory for the synchronous runtime facade."""
-        return SyncArchetypeRuntime(actor_ctx=actor_ctx)
+        return SyncArchetypeRuntime(actor_ctx=actor_ctx, log=log)
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
         self._handles.add(handle)
@@ -171,8 +215,8 @@ class ArchetypeRuntime:
 class SyncArchetypeRuntime:
     """Synchronous facade. Owns its own asyncio.Runner (R6, OQ6)."""
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None) -> None:
-        self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx)
+    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
+        self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx, log=log)
         self._runner: asyncio.Runner | None = None
 
     def __enter__(self) -> SyncArchetypeRuntime:
