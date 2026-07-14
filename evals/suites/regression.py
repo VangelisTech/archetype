@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import tempfile
 
+from daft import DataFrame, col
 from uuid_utils import uuid7
 
+import archetype.app.auth.guard as guard
 from archetype.app.auth.guard import (
     estimate_token_cost,
     guardrail_allow,
@@ -26,7 +28,8 @@ from archetype.app.auth.guard import (
 )
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
-from archetype.app.models import Command, CommandType
+from archetype.app.models import Command, CommandType, EpisodeConfig
+from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -47,6 +50,25 @@ class Health(Component):
 
 class Tag(Component):
     label: str
+
+
+class Countdown(Component):
+    """Counts up each tick; ``done`` latches once ``step`` reaches ``goal``."""
+
+    step: int = 0
+    goal: int = 1
+    done: bool = False
+
+
+class CountToGoal(AsyncProcessor):
+    components = (Countdown,)
+    priority = 10
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        nxt = col("countdown__step") + 1
+        return df.with_column("countdown__step", nxt).with_column(
+            "countdown__done", (nxt >= col("countdown__goal")) | col("countdown__done")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +321,97 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: per-tick RBAC quota resets across ticks (bug B1)
+# ---------------------------------------------------------------------------
+
+
+def task_tick_quota_resets() -> list[GraderResult]:
+    """The per-tick command quota must NOT accumulate process-wide."""
+    return asyncio.run(_task_tick_quota_resets())
+
+
+async def _task_tick_quota_resets() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+
+    saved = guard.MAX_CMDS_PER_TICK
+    guard.MAX_CMDS_PER_TICK = 4  # so a few ticks would blow a process-wide counter
+    blocked = False
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota")
+            ctx = ActorCtx(id=uuid7(), roles={"admin"})
+            info = await container.command_service.create_world(
+                ctx, WorldConfig(name="quota"), storage
+            )
+            # 8 ticks × (spawn + step) = 16 gated commands, 4× the ceiling, but
+            # only 2 per tick. A per-tick quota that resets each tick never trips.
+            try:
+                for _ in range(8):
+                    await container.command_service.create_entity(
+                        ctx, info.world_id, [Tag(label="x")]
+                    )
+                    await container.command_service.step(ctx, info.world_id, RunConfig())
+            except Exception:
+                blocked = True
+        finally:
+            guard.MAX_CMDS_PER_TICK = saved
+            await container.shutdown()
+            reset_tick_counters()
+            reset_daily_tokens()
+
+    return [exact_match(blocked, False, name="quota_resets_across_ticks")]
+
+
+# ---------------------------------------------------------------------------
+# Task: value-based "all done" episode termination (bug B2)
+# ---------------------------------------------------------------------------
+
+
+def task_episode_value_termination() -> list[GraderResult]:
+    """run_episode stops on the data (terminal_field latched), not at max_steps."""
+    return asyncio.run(_task_episode_value_termination())
+
+
+async def _task_episode_value_termination() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_term")
+            world = await container.world_service.create_world(WorldConfig(name="term"), storage)
+            await world.add_processor(CountToGoal())
+            await world.create_entity([Countdown(goal=3)])
+
+            result = await container.simulation_service.run_episode(
+                world.world_id,
+                EpisodeConfig(
+                    max_steps=50,
+                    terminal_component=Countdown,
+                    terminal_field="done",
+                    terminal_all=True,
+                ),
+            )
+            return [
+                exact_match(result.terminated, True, name="value_termination_fires"),
+                state_check(
+                    {
+                        "stopped_before_cap": result.duration_steps < 50,
+                        "ran_past_tick0": result.duration_steps > 1,
+                    },
+                    name="not_capped_not_structural",
+                ),
+            ]
+        finally:
+            await container.shutdown()
+            reset_tick_counters()
+            reset_daily_tokens()
+
+
+# ---------------------------------------------------------------------------
 # Register all regression tasks
 # ---------------------------------------------------------------------------
 
@@ -334,4 +447,16 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_command_pipeline,
         desc="Submit → broker → step → history + RBAC at service boundary",
+    )
+    harness.add(
+        "tick_quota_resets",
+        suite=SUITE,
+        fn=task_tick_quota_resets,
+        desc="Per-tick RBAC command quota resets each tick, not process-wide (B1)",
+    )
+    harness.add(
+        "episode_value_termination",
+        suite=SUITE,
+        fn=task_episode_value_termination,
+        desc="run_episode stops on terminal_field latched, not at max_steps (B2)",
     )

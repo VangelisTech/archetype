@@ -3,6 +3,17 @@
 
 """VLA-JEPA policy worker on Modal — the GPU half of PolicyClient.
 
+SUPERSEDED (2026-06-22) by the COLOCATED in-process path. The VLA-JEPA model now
+runs in the SAME py3.12 container as the env via
+``bench/libero/in_process_policy.py::InProcessVlaJepaPolicy`` (proven: the
+``vla_smoke`` entrypoint returns a real in-process action with no Modal
+``.remote()``). This cross-app worker + the RPC ``VlaJepaPolicyClient`` in
+``clients.py`` only existed to bridge two interpreters; VLA-JEPA's own pins
+(torch 2.6 / numpy 1.26.4 / transformers 4.57, no ``python_requires``) made that
+unnecessary. Kept for reference / fallback only — do not extend; new work uses
+the colocated path (``image.py::vla_smoke`` / ``colocated_eval_task`` /
+``optimize_task``).
+
 Wraps the upstream inference stack whole rather than reimplementing it:
 the container launches VLA-JEPA's own websocket model server
 (``deployment/model_server/server_policy.py``, the same process their
