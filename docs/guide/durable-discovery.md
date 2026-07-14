@@ -33,11 +33,17 @@ Each storage identity gets one SQLite control catalog. The catalog is
 The same `StorageConfig` always resolves to the same catalog file, so
 restarts and crashes converge on one catalog with no coordination:
 
-- Local URIs: `<uri>/<namespace>/.archetype-catalog.db`, beside the data it
-  describes.
+- Local URIs: `<uri>/<namespace>/.archetype-catalog-<backend>.db`, beside
+  the data it describes.
 - Remote URIs (e.g. `s3://`): `~/.archetype/catalogs/<fingerprint>.db`,
   where the fingerprint hashes the normalized storage identity. Override the
   directory with `ARCHETYPE_CATALOG_DIR`.
+
+The storage identity is uri + namespace + backend — the same key
+`StorageService` pools stores by. Two configs that resolve to different
+stores (LanceDB vs Iceberg on the same uri and namespace) never share a
+catalog, so one backend cannot discover descriptors whose rows live in the
+other.
 
 The catalog opens with WAL journaling, `synchronous=FULL`, a busy timeout,
 and `BEGIN IMMEDIATE` transactions. Concurrent processes racing to register

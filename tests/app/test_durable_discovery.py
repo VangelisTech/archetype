@@ -50,9 +50,11 @@ def _storage(tmp_path) -> StorageConfig:
 
 
 def test_catalog_path_is_a_pure_function_of_storage_identity(tmp_path):
+    from archetype.core.config import StorageBackend
+
     local = StorageConfig(uri=str(tmp_path / "s"), namespace="ns")
     assert catalog_path_for(local) == catalog_path_for(local)
-    assert catalog_path_for(local).name == ".archetype-catalog.db"
+    assert catalog_path_for(local).name == f".archetype-catalog-{local.backend.value}.db"
     assert str(tmp_path / "s" / "ns") in str(catalog_path_for(local))
 
     remote = StorageConfig(uri="s3://bucket/prefix", namespace="ns")
@@ -62,6 +64,43 @@ def test_catalog_path_is_a_pure_function_of_storage_identity(tmp_path):
 
     other = StorageConfig(uri="s3://bucket/other", namespace="ns")
     assert catalog_path_for(other) != a
+
+    # The backend is part of the storage identity (it selects a different
+    # physical store): same uri/namespace, different backend → different
+    # catalog, locally and remotely.
+    for cfg in (local, remote):
+        pairs = {
+            catalog_path_for(StorageConfig(uri=cfg.uri, namespace=cfg.namespace, backend=backend))
+            for backend in (StorageBackend.LANCEDB, StorageBackend.ICEBERG)
+        }
+        assert len(pairs) == 2, "backends must never share a catalog"
+
+
+@pytest.mark.asyncio
+async def test_failed_catalog_registration_leaves_no_live_world(tmp_path, monkeypatch):
+    """Identity is authoritative both ways: a world the catalog cannot
+    describe must not survive as a live, mutable world (create or fork)."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        source = await c.world_service.create_world(WorldConfig(name="src"), storage)
+
+        async def _boom(self, record):
+            raise CatalogConflictError("injected registration failure")
+
+        monkeypatch.setattr(SqliteControlCatalog, "register_world", _boom)
+
+        with pytest.raises(CatalogConflictError):
+            await c.world_service.create_world(WorldConfig(name="orphan"), storage)
+        with pytest.raises(CatalogConflictError):
+            await c.world_service.fork_world(source.world_id, name="orphan-fork")
+
+        live = {w.name for w in c.world_service.list_worlds()}
+        assert live == {"src"}, f"failed registrations must unwind, saw {live}"
+        with pytest.raises(KeyError):
+            c.world_service.get_world_by_name("orphan")
+    finally:
+        await c.shutdown()
 
 
 @pytest.mark.asyncio

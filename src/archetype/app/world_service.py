@@ -313,20 +313,25 @@ class WorldService:
 
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         world = self._orchestrator.create_world(store, config, system=system)
-        self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
         # Durable identity is authoritative (issue #272): registration failure
         # fails the create, loudly — a world the catalog cannot describe would
-        # be undiscoverable after this process exits.
-        await self._storage_service.get_control_catalog(storage_config).register_world(
-            WorldRecord(
-                world_id=str(world.world_id),
-                name=world.name,
-                run_id=str(world.run_id) if world.run_id else None,
-                parent_world_id=None,
-                status="active",
-                tick_head=world.tick,
+        # be undiscoverable after this process exits. Unwind the registry so
+        # the failed create leaves no live, mutable world behind.
+        try:
+            await self._storage_service.get_control_catalog(storage_config).register_world(
+                WorldRecord(
+                    world_id=str(world.world_id),
+                    name=world.name,
+                    run_id=str(world.run_id) if world.run_id else None,
+                    parent_world_id=None,
+                    status="active",
+                    tick_head=world.tick,
+                )
             )
-        )
+        except Exception:
+            self._registry.remove(world.world_id)
+            raise
+        self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
         return world
 
     def get_world(self, world_id: UUID) -> AsyncWorld:
@@ -387,17 +392,23 @@ class WorldService:
                 )
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
-        self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
-        await self._storage_service.get_control_catalog(storage_config).register_world(
-            WorldRecord(
-                world_id=str(fork.world_id),
-                name=fork.name,
-                run_id=str(fork.run_id) if fork.run_id else None,
-                parent_world_id=str(source_world_id),
-                status="active",
-                tick_head=fork.tick,
+        # Same authoritative-identity contract as create_world: a fork the
+        # catalog cannot describe must not survive as a live world.
+        try:
+            await self._storage_service.get_control_catalog(storage_config).register_world(
+                WorldRecord(
+                    world_id=str(fork.world_id),
+                    name=fork.name,
+                    run_id=str(fork.run_id) if fork.run_id else None,
+                    parent_world_id=str(source_world_id),
+                    status="active",
+                    tick_head=fork.tick,
+                )
             )
-        )
+        except Exception:
+            self._registry.remove(fork.world_id)
+            raise
+        self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
         # Persist the fork's ancestor chain (append-only): provenance must
         # survive the fork being destroyed or the process restarting.
         await persist_lineage(

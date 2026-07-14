@@ -129,13 +129,20 @@ def schema_fingerprint(schema: pa.Schema) -> str:
 
 
 def storage_fingerprint(config: StorageConfig) -> str:
-    """Stable identity for a storage location (credential-free)."""
+    """Stable identity for a storage location (credential-free).
+
+    Keyed by uri + namespace + backend, matching StorageService's pool
+    identity: two configs that resolve to different stores (LanceDB vs
+    Iceberg on the same uri/namespace) must never share a catalog, or one
+    backend would discover descriptors whose rows live in the other.
+    """
     payload = json.dumps(
         {
             "domain": _DIGEST_DOMAIN,
             "kind": "storage",
             "uri": _normalized_uri(config),
             "namespace": config.namespace,
+            "backend": config.backend.value,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -156,16 +163,17 @@ def catalog_path_for(config: StorageConfig) -> Path:
     """The catalog location as a pure function of the storage identity.
 
     Local stores keep the record beside the data it is about
-    (``<uri>/<namespace>/.archetype-catalog.db``). Remote stores get a
-    deterministic host-local path keyed by the storage fingerprint —
+    (``<uri>/<namespace>/.archetype-catalog-<backend>.db``). Remote stores
+    get a deterministic host-local path keyed by the storage fingerprint —
     the same config always resolves the same catalog on this host
-    (single-host authority is the documented v0.3 limit).
+    (single-host authority is the documented v0.3 limit). The backend is
+    part of the identity in both forms, mirroring storage_fingerprint.
     """
     uri = str(config.uri)
     parsed = urlparse(uri)
     if parsed.scheme in ("", "file"):
         base = Path(parsed.path if parsed.scheme == "file" else uri).expanduser()
-        return base / config.namespace / ".archetype-catalog.db"
+        return base / config.namespace / f".archetype-catalog-{config.backend.value}.db"
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
     return root / f"{storage_fingerprint(config)[:24]}.db"
 
