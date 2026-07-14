@@ -63,10 +63,9 @@ class SyncSystem(iSystem):
                 try:
                     df = proc_instance.process(df, **input_kwargs)
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         f"Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}"
                     )
-                    # Keep world alive; skip failing processor
-                    continue
+                    raise
 
         return df

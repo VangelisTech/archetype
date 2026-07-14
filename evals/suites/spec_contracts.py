@@ -226,7 +226,10 @@ def _type_checking_ranges(tree: ast.AST) -> list[tuple[int, int]]:
         if not is_type_checking or not node.body:
             continue
         start = min(getattr(child, "lineno", node.lineno) for child in node.body)
-        end = max(getattr(child, "end_lineno", getattr(child, "lineno", node.lineno)) for child in node.body)
+        end = max(
+            getattr(child, "end_lineno", getattr(child, "lineno", node.lineno))
+            for child in node.body
+        )
         ranges.append((start, end))
     return ranges
 
@@ -312,10 +315,7 @@ def task_spec_manifest_traceability() -> list[GraderResult]:
 
 def task_role_permission_matrix() -> list[GraderResult]:
     """The code permission matrix exactly matches command-gate.md."""
-    actual = {
-        role: frozenset(commands)
-        for role, commands in COMMANDS_BY_ROLE.items()
-    }
+    actual = {role: frozenset(commands) for role, commands in COMMANDS_BY_ROLE.items()}
     explicit_non_admin_review = all(
         command in actual["admin"]
         and (
@@ -376,9 +376,7 @@ def task_command_service_gate_map() -> list[GraderResult]:
     path = SRC / "app" / "command_service.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
     }
 
     checks: dict[str, bool] = {}
