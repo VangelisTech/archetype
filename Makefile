@@ -124,7 +124,7 @@ complexity:
 
 .PHONY: test
 test:
-	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup
 
 # Narrow test target: run a specific path/file/nodeid.
 # Usage: make test-mod MOD=tests/lifecycle/
@@ -141,6 +141,7 @@ test-mod:
 .PHONY: test-cov
 test-cov:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest \
+		-n auto --dist loadgroup \
 		--cov=archetype \
 		--cov-branch \
 		--cov-report=term-missing:skip-covered \

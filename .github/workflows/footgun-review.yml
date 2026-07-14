@@ -39,18 +39,31 @@ jobs:
             this PR's diff. Pass the PR number so it fetches the diff with
             `gh pr diff ${{ github.event.pull_request.number }}`.
 
-            After the subagent returns, always post exactly one PR comment
-            via `gh pr comment ${{ github.event.pull_request.number }} --body-file <path>`:
-            - If it reports one or more footguns, post its full output. The
-              agent's format already includes a concrete `**Fix:**` per
-              finding — preserve it verbatim, do not summarize. Prefix the
-              comment with `## Footgun review` and a blank line.
+            After the subagent returns, report its findings so the branch
+            ruleset's required-thread-resolution rule enforces them:
+
+            - If it reports one or more footguns, post ONE pull-request
+              review whose inline comments carry the findings — inline
+              review comments create resolvable threads, and the merge is
+              blocked until each is resolved. Build a JSON file and submit:
+              `gh api --method POST repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input review.json`
+              (`--method POST` is required: without it `gh api` GETs and merely lists reviews.)
+              with shape:
+              `{"event":"COMMENT","body":"## Footgun review\n\n<n> finding(s), posted inline. Address and resolve each thread.","comments":[{"path":"<file>","line":<line>,"body":"<full finding incl. its **Fix:** verbatim>"}]}`
+              Every comment's path+line MUST be a line present in the PR
+              diff. If a finding's exact line is not in the diff, anchor it
+              to the nearest changed line in that file; if the file has no
+              changed lines, fold that finding into the review `body`
+              instead. If the review API call fails, fall back to
+              `gh pr comment` with the full findings so nothing is lost.
             - If it reports "No footguns detected in this diff.", post a
-              single short comment: `## Footgun review\n\nNo notes.`
+              single short comment via `gh pr comment`:
+              `## Footgun review\n\nNo notes.` (No thread — nothing to
+              resolve.)
 
             Do not edit any files. Do not run tests. Do not push commits.
-            This job is advisory and must not fail the build, so report
-            cleanly and exit.
+            This job is advisory and must not fail the build on findings —
+            enforcement happens through thread resolution, not job status.
 
       - name: Report footgun-detector failure
         if: steps.footgun-detector.outcome == 'failure'

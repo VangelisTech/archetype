@@ -111,6 +111,7 @@ dev = [
     "pre-commit>=4.0",
     "mutmut>=3.5",
     "mujoco>=3.2",  # physics parity tests (tests/experiments/test_mujoco_rollout.py)
+    "pytest-xdist>=3.8.0",
 ]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full
