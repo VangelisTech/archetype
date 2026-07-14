@@ -38,6 +38,7 @@ physics substeps.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from typing import Any, Protocol
 
 import daft
@@ -126,6 +127,29 @@ class EnvClient(Protocol):
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
         """Step each env with its action. Returns one dict per env with keys:
         eef_pos, eef_quat, gripper, reward, done, success."""
+        ...
+
+
+class EnvClientSpec(ABC):
+    """Picklable, benchmark-supplied recipe for building an ``EnvClient``.
+
+    Registered in a world's ``Resources``; ``EnvStepProcessor`` pulls it and
+    calls ``build()`` to construct the live client — in the driver process or,
+    for ``@daft.cls`` UDFs, once per Daft worker after the spec's scalars cross
+    the pickle boundary (live handles like a Modal stub or a socket do not
+    pickle; the scalars in a concrete spec do).
+
+    The framework defines only this contract. Concrete specs — and the
+    simulators, GPUs, and dependencies they pull in (LIBERO/robosuite/Modal) —
+    live in the benchmark, so nothing under ``src/archetype`` imports a
+    simulator. Register a concrete spec under this base type::
+
+        world.resources.insert_as(LiberoEnvSpec(suite="libero_spatial"), EnvClientSpec)
+    """
+
+    @abstractmethod
+    def build(self) -> EnvClient:
+        """Construct the live ``EnvClient`` from this spec's scalar config."""
         ...
 
 
@@ -294,8 +318,6 @@ class EnvStepProcessor(AsyncProcessor):
                 "EnvStepProcessor has no client and no Resources were passed. "
                 "Either pass a client to the constructor or register an EnvClientSpec."
             )
-        from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
-
         spec: EnvClientSpec = resources.require(EnvClientSpec)
         # Delegate to spec.build() so subclasses can return a test double
         # registered via resources.insert_as(fake_spec, EnvClientSpec).
@@ -470,8 +492,6 @@ class FramedEnvStepProcessor(AsyncProcessor):
                 "Either pass a client to the constructor or register an EnvClientSpec "
                 "with with_frames=True."
             )
-        from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
-
         spec: EnvClientSpec = resources.require(EnvClientSpec)
         # Delegate to spec.build() so subclasses can return a test double.
         client = spec.build()
@@ -509,34 +529,6 @@ class FramedEnvStepProcessor(AsyncProcessor):
                 "wrist_ref": "manipframeref__wrist_ref",
             },
         )
-
-
-def _build_env_client_from_spec(spec: Any) -> EnvClient:
-    """Build a live EnvClient from a picklable EnvClientSpec.
-
-    Called in the driver process when a processor lazily constructs its
-    client from Resources.  Not called on Daft workers — the spec scalars
-    cross the worker boundary; the client is built after unpickling.
-    """
-    # Avoid circular import: EnvClientSpec lives in policy.py.
-    from archetype.experiments.policy import EnvClientSpec  # noqa: PLC0415
-
-    if not isinstance(spec, EnvClientSpec):
-        raise TypeError(f"Expected EnvClientSpec, got {type(spec)!r}")
-
-    try:
-        from bench.libero.modal_worker import ModalEnvClient  # noqa: PLC0415
-    except ImportError as exc:
-        raise RuntimeError(
-            "ModalEnvClient could not be imported. "
-            "Ensure 'modal' is installed and bench/libero/modal_worker.py is on the path."
-        ) from exc
-
-    return ModalEnvClient(
-        suite=spec.suite,
-        task_id=spec.task_id,
-        with_frames=spec.with_frames,
-    )
 
 
 class ScriptedReachEnv:

@@ -170,13 +170,35 @@ class RunResult(BaseModel):
 
 
 class EpisodeConfig(BaseModel):
-    """Configuration for a single episode (bounded simulation run)."""
+    """Configuration for a single episode (bounded simulation run).
+
+    Three termination strategies, checked in this order each tick (first to
+    fire wins), plus the ``max_steps`` cap:
+
+    1. **Structural** — ``terminal_component`` *without* ``terminal_field``:
+       stop as soon as any entity *carries* that component type. Checked
+       before each step (an already-terminal world runs zero steps).
+    2. **Value-based** — ``terminal_component`` *with* ``terminal_field``:
+       stop when entities carrying the component have the boolean field
+       latched. ``terminal_all`` picks the reducer — True (default) waits
+       for *every* such entity, False stops at the *first*. Checked after
+       each step, against persisted rows. This is the "all entities done"
+       contract the LIBERO driver hand-rolled per tick.
+    3. **Callable** — ``termination(world) -> bool`` escape hatch, checked
+       before each step.
+
+    Setting ``terminal_field`` reinterprets ``terminal_component`` as the
+    value-carrier, so the structural check is suppressed (otherwise the
+    component's mere presence would terminate at tick 0).
+    """
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
     episode_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
     run_config: RunConfig = Field(default_factory=RunConfig)
     max_steps: int = 1000
     terminal_component: Any | None = None
+    terminal_field: str | None = None  # boolean field on terminal_component, e.g. "done"
+    terminal_all: bool = True  # True: every entity must latch; False: any one
     termination: Any | None = None  # Callable[[iWorld], bool] | None
 
 

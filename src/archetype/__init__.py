@@ -39,8 +39,17 @@ Quick Start:
 
 from __future__ import annotations
 
+import os
 from importlib import import_module
 from typing import Any
+
+# Daft phones home to Scarf (daft.gateway.scarf.sh + osstelemetry.io) at import
+# and per-runner, via a *blocking* urllib.urlopen. Archetype runs Daft on every
+# world.step, so on a slow or firewalled network that telemetry adds seconds of
+# event-loop stall per operation — it dominated the test suite (one test was 44s,
+# 1.6s with it off) and taxes every real run. Opt out before Daft is imported;
+# `setdefault` honors an explicit `DO_NOT_TRACK=0` if a user wants telemetry on.
+os.environ.setdefault("DO_NOT_TRACK", "1")
 
 __version__ = "0.1.1"
 

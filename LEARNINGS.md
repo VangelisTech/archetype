@@ -663,3 +663,27 @@ df = df.with_columns(
 df = df.with_column("position__x", col("position__x") + col("velocity__vx"))
 df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
 ```
+
+---
+
+## The Blessed LIBERO Run Recipe (Jun 2026)
+
+LIBERO/VLA-JEPA are genuinely broken research code, but re-solving their
+packaging from scratch every deploy is failure-mode **D5**. The recipe is frozen
+once in **`docs/guide/libero-recipe.md`** — read it before touching anything in
+`bench/libero/` or arguing about torch pins / a Modal split. Highlights:
+
+- **LIBERO runs in-process**, one Python 3.12 interpreter shared with Archetype.
+  `bench/libero/image.py` builds the env; `bench/libero/in_process.py`
+  (`InProcessLiberoEnvClient`) drives `OffScreenRenderEnv` directly. **No Modal
+  interpreter split** — `modal_worker.py`/`vla_jepa_worker.py` are legacy.
+- **Two commands:** `modal run bench/libero/image.py` (in-process smoke) and
+  `modal run bench/libero/image.py::eval_task` (batched eval).
+- **One real constraint:** Linux + EGL offscreen rendering + GPU. The pins we
+  removed were laziness, not law — `torch<2.6` (the one `torch.load`
+  `weights_only` flip, patched in-process), Python 3.8–3.10 → 3.12,
+  `robosuite==1.4.1` → `>=1.5` (the one empirical unknown; fallback is 1.4.1 on
+  3.12).
+- **Architecture:** one control-plane world + N trial entities batch-stepped via
+  `SimulationService.run_episode` (B1 quota reset + B2 all-done termination),
+  graded from raw `ManipStatus` by the eval service. No `EvalTrialResult` (E1).

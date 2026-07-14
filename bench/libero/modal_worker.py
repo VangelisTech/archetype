@@ -365,7 +365,9 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
 
     assert "agentview_ref" in obs, "reset must return agentview_ref when with_frames=True"
     assert "wrist_ref" in obs, "reset must return wrist_ref when with_frames=True"
-    assert obs["agentview_ref"].endswith("-agentview.png"), f"unexpected ref: {obs['agentview_ref']}"
+    assert obs["agentview_ref"].endswith("-agentview.png"), (
+        f"unexpected ref: {obs['agentview_ref']}"
+    )
     assert len(obs.get("gripper_qpos", [])) == 2, "gripper_qpos must be 2-element"
 
     zero = [0.0] * 7
@@ -379,7 +381,6 @@ def smoke(suite: str = "libero_spatial", task_id: int = 0, steps: int = 3):
         assert "wrist_ref" in result, f"step {step_idx} must return wrist_ref"
 
     # Verify the files actually exist in the volume.
-    import os
 
     # Re-read the volume from local context (the worker committed).
     # We can't directly list the modal volume from the local entrypoint,
