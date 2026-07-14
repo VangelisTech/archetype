@@ -22,6 +22,7 @@ script), and the run recipe is captured so it can't regress.
 ## Autopsy so far
 
 ### Orchestration layer — `bench/libero/eval_driver.py` (read ☑)
+
 - Hand-rolls the episode loop (`for _tick in range(max_steps): step; query; break`,
   lines 234–255) instead of using `SimulationService.run_episode`. **D1.**
 - Manually calls `reset_tick_counters()` 3× (179, 237, 367) to paper over the
@@ -35,6 +36,7 @@ script), and the run recipe is captured so it can't regress.
 - Lab-world genesis duplicated from `autoresearch_service._attach_ledger`.
 
 ### Compute layer — components & processors (read ☑ for manipulation.py)
+
 - `ManipStatus {reward, done, success, env_step}` (success latches, done freezes);
   `ManipTask {suite, task_id, instruction, seed, env_key}`;
   `ManipProprio`, `ManipAction`, `ManipFrameRef`.
@@ -46,6 +48,7 @@ script), and the run recipe is captured so it can't regress.
   vocabulary in `experiments/trajectories.py`).
 
 ### Compute layer — STILL UNREAD ☐
+
 `modal_worker.py`, `vla_jepa_worker.py`, `colocated_runner.py`, `video_rollout.py`,
 `policy.py`. This is where container-split / env-state-loss (2a/2b),
 lance-on-volume (2g), nested-function lifecycle (2c/2d), and packaging (1a–1k)
@@ -72,6 +75,7 @@ grades it natively.
 ## Work breakdown
 
 ### A — Dogfood eval  ◐ (A1+A2 done; A3 needs the GPU smoke)
+
 - A1 ☑ Self-contained dogfood: scripted manipulation episodes → persist
   `ManipStatus` → eval service queries via `query_episode(world_id, run_id)` →
   graders compute success-rate/length → assert they reproduce an independent
@@ -88,6 +92,7 @@ grades it natively.
   is the only step between here and trustworthy real numbers.
 
 ### B — Core/service fixes the driver papers over
+
 - B1 ☑ Reset the per-tick RBAC quota at each tick boundary (bug #1). **Done** —
   `SimulationService.step` calls an injected `_reset_quota` (wired by the
   container to `auth.reset_tick_counters`), mirroring the `set_command_drain`
@@ -116,10 +121,12 @@ grades it natively.
 TDD (red→green) + a BDD contract test + a CI regression eval.
 
 ### C — LIBERO orchestration redo  ☑ (new clean orchestrator)
+
 Built as `bench/libero/eval_run.py` (`run_task_eval`), superseding the old
 `eval_driver.py`. Proven green by `tests/bench/test_eval_run_batched.py` with the
 scripted env+policy (no Modal/LIBERO needed). The in-process LIBERO client runs
 this orchestration **unchanged**.
+
 - C1 ☑ Thin onto `SimulationService.run_episode` (B1 quota reset + B2 all-done).
 - C2 ☑ One control-plane world + N trial entities, batch-stepped by `env_key`.
   Every trial's trajectory is addressable by one `(world_id, run_id)`, sliced by
@@ -130,10 +137,12 @@ this orchestration **unchanged**.
   via the eval service, no `Experiment`/`Run`/`EvalTrialResult` bookkeeping.
 
 ### D — LIBERO compute redo  ☑ (in-process, one Python 3.12 env)
+
 **The premise was wrong.** LIBERO's "can't share our process" pins are laziness,
 not law (torch<2.6 = one `weights_only` patch; py3.8-3.10 + robosuite 1.4.1 =
 upgradeable). So the compute redo is *not* a better RPC boundary — it's **no RPC
 boundary**: LIBERO runs in the same interpreter as Archetype.
+
 - `bench/libero/in_process.py` — `InProcessLiberoEnvClient` drives
   `OffScreenRenderEnv` directly (mirrors `LiberoEnvBatch` minus Modal); the
   existing `_EnvStepper` `@daft.cls` steps it statefully, exactly like the
@@ -149,6 +158,7 @@ boundary**: LIBERO runs in the same interpreter as Archetype.
   researched; fallback is robosuite 1.4.1 on py3.12 (still one interpreter).
 
 ### E — Experiments cleanup  ◐ (in progress via breadth workflow)
+
 - E1 ◐ `EvalTrialResult` → delete. Proven legacy by A1 *and* by the new
   `eval_run` orchestrator (which grades from raw `ManipStatus`, never writes a
   summary). The old `eval_driver.py` that wrote it is superseded by `eval_run.py`.
@@ -159,15 +169,18 @@ boundary**: LIBERO runs in the same interpreter as Archetype.
 - E4 ☐ `BranchHead` → dies with SearchService (issue #253), not here.
 
 ### F — Relocation  ☐
+
 - `bench/{libero,mujoco}` out of root; `archetype_data`/`archetype_db` default
   paths. Import-heavy (like the services reorg). *Decision: `src/archetype/bench/`
   vs top-level `benchmarks/`?*
 
 ### G — Capture the recipe (D5)  ☐
+
 - A blessed, version-pinned LIBERO/VLA-JEPA run recipe + LEARNINGS so the thrash
   can't recur. The image recipe solved once, frozen.
 
 ### H — Instruction optimization (the research payload)  ☑ (CI-proven; GPU run pending)
+
 **The thesis, made executable:** prompt optimization that lifts a coding agent's
 performance also lifts a VLA's success rate. The instruction is a *per-entity*
 ``ManipTask`` field that already flows untouched to the policy
@@ -175,6 +188,7 @@ performance also lifts a VLA's success rate. The instruction is a *per-entity*
 ``VlaJepaPolicyClient`` → ``infer_refs(instruction=...)``). So optimizing it is
 not a new mechanism — it is the batched eval with the per-entity instruction
 varied.
+
 - H1 ☑ **`run_instruction_sweep`** (`bench/libero/instruction_sweep.py`): V
   instruction variants × S seeds spawned as trial entities in ONE control-plane
   world, batch-stepped, graded **per variant** from the persisted ledger
@@ -205,7 +219,7 @@ documented on `run_instruction_sweep` and accounted for in the CI replay.
 
 ## Dependency order (updated)
 
-```
+```text
 B1, B2 ✓ ──> C1,C2,C3,C4 ✓ ──> A2 ✓ ──┐
                                         ├──> A3 (real numbers) ── needs ──> modal smoke (GPU)
 D (in-process env + image) ✓ ──────────┘
@@ -222,6 +236,7 @@ manipulation) — the in-process path replaced the need to "map then bridge" it.
 ---
 
 ## Open decisions
+
 1. ~~Do B1/B2 land in the eval PR or a separate core PR?~~ **Resolved:** landed
    with the eval work, fully tested (see B above).
 2. Relocation target for `bench/`: `src/archetype/bench/` vs `benchmarks/`?
@@ -229,6 +244,7 @@ manipulation) — the in-process path replaced the need to "map then bridge" it.
 4. Where does this plan doc live / get committed? (currently `docs/planning/`)
 
 ## Session log
+
 - **This pass (A1 + B1 + B2):** the three cheap, well-understood entry points,
   each TDD (red→green) + BDD contract test + CI regression eval, per the request
   to back the core-bug fixes with TDD/BDD/evals.
@@ -260,5 +276,6 @@ manipulation) — the in-process path replaced the need to "map then bridge" it.
   (env-only smoke first).
 
 ## Issues / PRs
+
 - PR #252 — eval service + app reorg (in progress)
 - Issue #253 — SearchService design (deferred, after eval + experiments cleanup)

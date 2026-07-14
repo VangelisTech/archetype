@@ -122,6 +122,7 @@ executed (`import modal` fails in CI). `make ci` runs eval-reg only; the `spec`
 suite is in `REQUIRED_SUITES` but never gates the build.
 
 **Required new tests (DoD).**
+
 - `test_vla_jepa_client.py` — **DONE this session** (13 tests).
 - Frames-path equivalence (no GPU): env-write abs path == policy-read abs path
   under the `optimize_task` config.
