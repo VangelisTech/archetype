@@ -46,7 +46,8 @@ jobs:
               review whose inline comments carry the findings — inline
               review comments create resolvable threads, and the merge is
               blocked until each is resolved. Build a JSON file and submit:
-              `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input review.json`
+              `gh api --method POST repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews --input review.json`
+              (`--method POST` is required: without it `gh api` GETs and merely lists reviews.)
               with shape:
               `{"event":"COMMENT","body":"## Footgun review\n\n<n> finding(s), posted inline. Address and resolve each thread.","comments":[{"path":"<file>","line":<line>,"body":"<full finding incl. its **Fix:** verbatim>"}]}`
               Every comment's path+line MUST be a line present in the PR

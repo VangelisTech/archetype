@@ -1,10 +1,16 @@
 import pathlib
 import shutil
 
+import pytest
 from daft.session import Session
 
 from archetype.core.config import StorageConfig
 from archetype.runtime.session import configure_session
+
+# These tests mutate the repository-relative .archetype_meta/catalog.db; under
+# xdist they must share one worker (--dist loadgroup in the Makefile) so they
+# serialize against each other instead of racing on the shared catalog.
+pytestmark = pytest.mark.xdist_group("archetype-meta")
 
 
 def test_configure_session_remote_uri_uses_meta_dir(tmp_path):
