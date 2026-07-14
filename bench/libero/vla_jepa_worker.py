@@ -44,6 +44,7 @@ L40S. Payload contract confirmed against the live server: batch_images
 # NOTE: no `from __future__ import annotations` — modal.parameter()
 # validates real annotation objects.
 import base64
+import os
 import subprocess
 import time
 from typing import Any
@@ -89,6 +90,12 @@ image = (
     .env({"HF_HOME": f"{CKPT_DIR}/hf-cache", "PYTHONPATH": "/opt/VLA-JEPA"})
 )
 
+# Worker-side observability is opt-out per deployer: the named Modal secret
+# is only referenced when configured (default "logfire", Vangelis' secret).
+# Deploying in a workspace without it: ARCHETYPE_MODAL_LOGFIRE_SECRET= modal deploy ...
+_LOGFIRE_SECRET_NAME = os.environ.get("ARCHETYPE_MODAL_LOGFIRE_SECRET", "logfire")
+_worker_secrets = [modal.Secret.from_name(_LOGFIRE_SECRET_NAME)] if _LOGFIRE_SECRET_NAME else []
+
 app = modal.App("archetype-vla-jepa", image=image)
 ckpt_volume = modal.Volume.from_name("vla-jepa-ckpts", create_if_missing=True)
 
@@ -99,7 +106,7 @@ ckpt_volume = modal.Volume.from_name("vla-jepa-ckpts", create_if_missing=True)
     timeout=3600,
     scaledown_window=600,
     max_containers=1,
-    secrets=[modal.Secret.from_name("logfire")],
+    secrets=_worker_secrets,
 )
 class VlaJepaPolicy:
     use_bf16: int = modal.parameter(default=1)

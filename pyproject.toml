@@ -40,7 +40,7 @@ archetype = "archetype.cli.main:app"
 [project.optional-dependencies]
 benchmark  = ["esper>=2.45"]
 sim        = ["mujoco>=3.2"]
-otel       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
+otlp       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
 logfire    = ["logfire[fastapi]>=4.32.0"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
