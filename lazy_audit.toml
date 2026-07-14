@@ -44,7 +44,7 @@ reason = "Storage write boundary: defensive empty-frame probe before delegating 
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 335
+line = 332
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
