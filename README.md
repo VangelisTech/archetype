@@ -1,137 +1,27 @@
-<div align="center">
-
 # Archetype
-
-**An opinion about what data engineering should be:
-composable, declarative, and data-centric.**
 
 [![CI](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml/badge.svg)](https://github.com/VangelisTech/archetype/actions/workflows/python-tests.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://python.org)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-</div>
+Archetype is a dataframe-first ECS runtime for simulations and agent workflows.
+Define state with components, transform populations with processors, and keep
+each tick as queryable history. Use a fork to continue from an earlier state
+without overwriting the original run.
 
-![Archetype Architecture Diagram](assets/archetype_diagram2.png)
+It is built on [Daft](https://www.daft.ai/) and LanceDB. The default Python
+entry point is `ArchetypeRuntime`; HTTP services and the CLI use the same
+command layer when you need a multi-user host.
 
-Archetype is a state machine that uses big-data technology to run itself,
-built for the AI-native world.
-
-It is built the way game engines are built — entities, components,
-processors, ticks, save states — because an operation run by agents and
-humans together *is* a real-time simulation, and its record deserves
-engine-grade physics. Archetype is the physics and the history: what
-happened, in order, forever. What the record *means*, and what is allowed
-to happen next, belongs to the layers you build on top of it — Archetype
-records; your policy decides.
-
-- **Composable** — two primitives only: components (data) and processors
-  (behavior). Archetypes, worlds, and forks are compositions of them.
-- **Declarative** — you declare shapes and transforms; the engine derives
-  what a data stack normally makes you build by hand: schemas, columnar
-  tables, partitioning, dispatch, queries, history, audit.
-- **Data-centric** — nothing is deleted. State, history, and the engine's
-  own operation are rows in the same store.
-
-```python
-class Position(Component):        # a component is a schema
-    x: float = 0.0
-    y: float = 0.0
-
-
-class MovementProcessor(AsyncProcessor):   # a processor is a transform
-    components = (Position, Velocity)
-
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_columns(
-            {"position__x": col("position__x") + col("velocity__dx")}
-        )
-```
-
-Entities that share an exact component set share an **archetype**: a
-canonical signature that *is* an Arrow schema that *is* a columnar table.
-Processors are [Daft](https://daft.ai) DataFrame transforms over whole
-archetypes at once — one pass over the entire matching population, not a
-loop over objects. That collapse — component set → signature → schema →
-table → query — is the core of the system. Everything below is consequence.
-
-Big data's founding move was decoupling storage from compute — that is
-where Iceberg and Daft come from. The decoupling bought scale but severed
-provenance: the code that produces a table and the knowledge of how to
-read it became separate artifacts. Archetype keeps the physical decoupling
-and restores the connection where it belongs, in the declaration: whatever
-you process — a simulation, a training run, an agent population — the
-results are managed for you and queryable **with the same code that
-created them**. The component that wrote the rows is the schema you filter
-on; the processor that transformed them is the lineage. Provenance is
-derivation, not a catalog.
-
-## Data is the point
-
-Nothing is deleted. There is no update path and no delete path in the
-storage layer; every tick appends rows keyed `(world_id, run_id, tick)`.
-The one-off run you were about to throw away — leave it. Deletion is an
-inductive bias.
-
-What you get for keeping everything:
-
-- **Time travel** — `df.where(col("tick") == t)` is the world at tick `t`
-- **Forking** — branch any moment of any run; forks read pre-fork history
-  through lineage and diverge from there
-- **Experiments over runs** — runs, results, and trajectories are
-  components too (`archetype.experiments`); comparing branches is a query,
-  which is the statistical, experiment-based mindset an AI-native data
-  engine asks of you
-- **The engine's own operation is data** — every gated command lands in an
-  append-only audit table on the same substrate that stores world state:
-  consistent, partitioned, queryable, trainable
-- **Any altitude is a query** — the same ledger renders the whole
-  operation at command level or a single actor's first-person timeline;
-  views are projections over rows, never separate state to reconcile
-
-## Built for agents
-
-The intended user of this system is an agent.
-
-Archetype is the harness: the agent supplies the intelligence; the engine
-supplies the attachment points, the constraints, and the record. And
-because the record is data, it is a harness the wearer can train on — an
-agent improving itself from its own ledger.
-
-Everything is arranged so that an agent can build here and a human can
-trust the result by reviewing code, not by re-running it:
-
-- **Code is the source of truth.** The contracts live in
-  `docs/guide/specification.md` and the focused spec pages, and each one is
-  pinned by named tests. What the spec says, a test enforces.
-- **The primitives are safe to extend.** New capability means a new
-  `Component` or a new `Processor` — small, local, reviewable diffs whose
-  behavior is determined by component presence, not by control flow
-  threaded through a framework.
-- **The invariants will not move under you.** Append-only stores. Canonical
-  archetype signatures. All mutation through one gate. A tick either
-  commits or it didn't happen — failed persistence raises, a failed
-  processor fails its tick.
-- **Recursive operation stays governed.** Agents running simulations
-  inside simulations go through the same gate: authorized, audited,
-  applied at deterministic tick boundaries in `(tick, priority, sequence)`
-  order. The audit trail this produces is the raw material for
-  auto-research loops — the engine improving things that run on the
-  engine.
-- **Humans and agents are the same `Actor`.** Both act through the same
-  gate under capability bindings (`viewer`/`player`/`operator`/`admin`);
-  a person can drop into a world with exactly one worker's capabilities,
-  and any elevation is explicit and lands in the audit trail.
-
-The design is meant to scale with its user. The more capable the model,
-the more it can do with two orthogonal primitives — richer components,
-sharper processors, deeper experiment loops. Frameworks built as
-scaffolding depreciate as models improve; primitives appreciate.
-
-## Quickstart
+## Install
 
 ```bash
 pip install archetype-ecs
 ```
+
+For a checkout, install the development environment with `make sync-dev`.
+
+## Run a simulation
 
 ```python
 import asyncio
@@ -151,11 +41,10 @@ class Velocity(Component):
     dy: float = 0.0
 
 
-class MovementProcessor(AsyncProcessor):
+class Move(AsyncProcessor):
     components = (Position, Velocity)
-    priority = 10
 
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+    async def process(self, df: DataFrame, **_) -> DataFrame:
         return df.with_columns(
             {
                 "position__x": col("position__x") + col("velocity__dx"),
@@ -164,114 +53,75 @@ class MovementProcessor(AsyncProcessor):
         )
 
 
-async def main():
+async def main() -> None:
     async with ArchetypeRuntime() as runtime:
-        world = runtime.world("demo", processors=[MovementProcessor()])
-
-        await world.spawn(Position(x=0, y=0), Velocity(dx=1, dy=2))
+        world = runtime.world("demo", processors=[Move()])
+        await world.spawn(Position(), Velocity(dx=1, dy=2))
         await world.run(steps=3)
 
-        df = await world.query(Position)  # full append-only history
-        print(df.to_pylist())
+        history = await world.query(Position)
+        print(history.collect().to_pylist())
 
 
 asyncio.run(main())
 ```
 
-Fork-and-diff:
+For a regular script without `async`, use `with ArchetypeRuntime.sync() as
+runtime:` and omit `await`.
 
-```python
-fork = await world.fork("counterfactual")  # inherits the source's store
-await fork.step()                          # continues from the source's last tick
+## What it gives you
 
-source_df = await world.query(Position)
-fork_df = await fork.query(Position)       # pre-fork history + its own branch
-```
+- Columnar processors run one DataFrame transform over every matching entity.
+- Every tick is append-only, so historical reads are ordinary queries.
+- Forks inherit source history and create an independent future.
+- The service layer can authorize and audit mutations before a tick applies
+  them.
 
-For sync scripts, use `with ArchetypeRuntime.sync() as runtime:` and drop
-the `await`s. Component columns are prefixed `componentname__field`
-(e.g. `position__x`). `ArchetypeRuntime` is the script boundary; drop to
-`ServiceContainer` only for custom command routing or a non-script host.
+## Documentation
 
-## How it's organized
+Start with the [quickstart](https://archetype.vangelis.tech/docs/guide/quickstart/),
+then use the guides for [components](https://archetype.vangelis.tech/docs/guide/components/),
+[processors](https://archetype.vangelis.tech/docs/guide/processors/), and
+[worlds](https://archetype.vangelis.tech/docs/guide/working-with-worlds/).
 
-| Layer | What it is |
-|---|---|
-| `src/archetype/core` | The engine: components, archetypes, worlds, the tick loop, append-only stores |
-| `src/archetype/app` | The gate: every operation authorized, audited, and applied at tick boundaries |
-| `src/archetype/runtime` | `ArchetypeRuntime` — the recommended script boundary |
-| `src/archetype/api` + `src/archetype/cli` | Reference deployment of the gate over HTTP, plus a thin CLI |
-| `src/archetype/experiments` | Runs, results, trajectories, branch heads — as components |
+The site also includes the current [Python API](https://archetype.vangelis.tech/docs/reference/python-api/),
+[CLI](https://archetype.vangelis.tech/docs/reference/cli/), and
+[REST API](https://archetype.vangelis.tech/docs/reference/rest-api/) references.
 
-## Status
-
-- the engine — append-only write path, tick loop, time travel, fork
-  lineage — is the most mature part and the most heavily contract-tested
-- the auto-research loop runs on the ledger: each experiment is a lab
-  world whose ticks are the loop's iterations, resumable from its own rows
-- the FastAPI layer runs developer-mode auth (a default admin `ActorCtx`)
-- a Rust core implementing the same engine semantics is in progress on a
-  separate branch
-
-## Examples
+Runnable examples live in [`examples/`](examples/README.md). Most run without
+credentials:
 
 ```bash
 uv run python examples/01_world_mutations.py
 uv run python examples/02_fork_counterfactual.py
-uv run python examples/03_time_travel.py      # historical reads + fork-and-diff
+uv run python examples/03_time_travel.py
 uv run python examples/04_messaging.py
-uv run python examples/05_llm_agents.py
-uv run python examples/06_trajectory_analysis.py
 uv run python examples/07_hooks.py
-uv run python examples/08_htn_resolution.py
-uv run python examples/09_cloud_storage.py
-uv run python examples/10_autoresearch.py     # save-state optimization on the ledger
 ```
 
 `examples/05_llm_agents.py` and parts of `examples/06_trajectory_analysis.py`
-require `OPENAI_API_KEY`. Everything else runs credential-free (and does, in CI).
-
-## Observability
-
-Quiet by default: your script's stdout is yours. One flag turns the
-machinery visible, and tracing is vendor-neutral OpenTelemetry — installing
-archetype pulls no telemetry vendor.
-
-```bash
-ARCHETYPE_LOG=debug uv run python your_script.py   # logs + one-line spans
-```
-
-Every gated call and tick phase (query / materialize / execute / update)
-emits OTel spans. Point them anywhere: a host app's provider is respected
-as-is; `OTEL_EXPORTER_OTLP_ENDPOINT` sends to any collector
-(`pip install archetype-ecs[otlp]`); `LOGFIRE_TOKEN` sends to
-[Logfire](https://pydantic.dev/logfire) (`pip install archetype-ecs[logfire]`),
-which also unlocks the opt-in per-tick/per-entity hooks:
-
-```python
-from archetype.contrib.logfire_observer import logfire_hooks
-
-world = runtime.world("demo", processors=[...], hooks=logfire_hooks())
-```
+require `OPENAI_API_KEY`.
 
 ## Development
 
 ```bash
-make test        # fast test suite
-make check       # format + lint
-make ci          # CI gate
-make docs        # build docs
+make sync-dev  # install development dependencies
+make test      # run the fast test suite
+make check     # format and lint
+make docs      # generate references and build the docs site
+make ci        # run the merge gate
 ```
 
-## Documentation
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing the engine. The
+normative contracts are under [`docs/guide/`](docs/guide/specification.md).
 
-- Docs site: `https://archetype-docs.pages.dev`
-- Examples index: `examples/README.md`
-- Architecture notes: `LEARNINGS.md`
-- Specifications: `docs/guide/specification.md` and the focused pages it
-  links (runtime, service protocols, command gate, execution hierarchy,
-  world lifecycle, audit log)
+## Status
+
+Archetype is alpha software. The append-only world, history, and fork paths
+are the most mature parts of the project. The HTTP layer uses development-mode
+authentication by default; supply your own authentication before exposing it
+to untrusted users.
 
 ## License
 
-Apache 2.0 — `LICENSE`
+Apache-2.0. See [LICENSE](LICENSE).

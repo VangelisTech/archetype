@@ -1,13 +1,13 @@
 # Contributing to Archetype
 
-This is the single reference for development workflow, CI, and contribution
-process. CLAUDE.md links here; LEARNINGS.md covers architecture.
+This guide covers the local workflow, CI, and pull requests. Read
+`LEARNINGS.md` before changing engine behavior; the specification pages define
+the contracts that tests enforce.
 
 ## Prerequisites
 
 - **Python 3.12+**
 - **[uv](https://docs.astral.sh/uv/)** (package manager)
-- **Node.js or Bun** (docs only)
 
 ## Setup
 
@@ -82,8 +82,8 @@ exactly what the `ci` job in GitHub Actions runs.
 
 | Target | Command | Purpose |
 |--------|---------|---------|
-| `make docs` | `npx --yes mintlify build` | Build docs (requires Node.js or Bun) |
-| `make docs-serve` | `npx --yes mintlify dev` | Serve docs locally with hot reload |
+| `make docs` | Generate references + `mkdocs build` | Build the docs site |
+| `make docs-serve` | Generate references + `mkdocs serve` | Preview with hot reload |
 | `make docs-lint` | typos + markdownlint-cli2 + lychee | Run all doc quality checks locally |
 
 ### Cleanup
@@ -127,30 +127,30 @@ GitHub Release is auto-created with generated release notes.
 Runs Claude Code via `@claude` mentions in issues and PR comments. Restricted
 to the `everettVT` actor.
 
-### `docs.yml` (Docs) — planned, on PRs touching `docs/**` or `**/*.md`
+### `docs.yml` (Docs) — on every pull request and docs-related push to `main`
 
-> **Note:** This workflow does not exist yet. The checks below can be run
-> locally via `make docs-lint`. See [#65](https://github.com/VangelisTech/archetype/issues/65)
-> for the tracking issue.
+The workflow checks prose, links, and a generated MkDocs build. Pushes to
+`main` deploy the built site to Cloudflare Pages; pull requests get a preview
+when the Cloudflare secret is available.
 
-Documentation quality checks (planned jobs):
+Documentation quality checks:
 
 | Job | What it runs | Required to merge? |
 |-----|--------------|-------------------|
 | `spelling` | typos-cli spell check (config: `_typos.toml`) | **Yes** (Tier 0) |
 | `markdown-lint` | markdownlint-cli2 (config: `.markdownlint.yaml`) | **Yes** (Tier 0) |
 | `link-check` | lychee link validation (config: `lychee.toml`) | **Yes** (Tier 0) |
-| `mintlify-build` | `npx --yes mintlify build` in `docs/` | **Yes** (Tier 0) |
+| `build` | generate references + `mkdocs build` | **Yes** (Tier 0) |
 
-Only triggers when docs-related files change.
+The checks run on every pull request so required status checks are never
+missing.
 
 ### `daily-security-audit.yml` — daily at 09:00 UTC + manual
 
 Runs `pip-audit` against exported dependencies, then uses Claude Code to
 produce a security audit report. Creates/updates a GitHub issue with findings.
 
-Schedule-only — does not run on PRs. (See [#65](https://github.com/VangelisTech/archetype/issues/65)
-for planned PR-triggered doc/security checks.)
+Schedule-only — does not run on pull requests.
 
 ## Make Targets vs CI Jobs
 
@@ -165,7 +165,7 @@ what to run locally to reproduce a CI failure.
 | `spelling` | `typos` (via `make docs-lint`) | Requires typos-cli installed locally |
 | `markdown-lint` | `markdownlint-cli2` (via `make docs-lint`) | Requires markdownlint-cli2 or npx |
 | `link-check` | `lychee` (via `make docs-lint`) | Requires lychee installed locally |
-| `mintlify-build` | `make docs` | Requires Node.js or Bun |
+| `build` | `make docs` | Generates references before building |
 | Release `test` | `make test-all` | Uses `pytest -v --tb=short` |
 | Release `build` | `make build` | Builds sdist + wheel |
 
@@ -209,7 +209,7 @@ tests/
 
 examples/   # Load-bearing documentation — must run against current API.
 bench/      # Benchmarks.
-docs/       # Mintlify docs — deployed to archetype.vangelis.tech
+docs/       # MkDocs site — deployed at archetype.vangelis.tech/docs
 ```
 
 ## Testing
@@ -249,15 +249,18 @@ chore:     Build process, CI, deps
 
 ## Docs
 
-Docs use [Mintlify](https://mintlify.com/) and deploy to
-`archetype.vangelis.tech`.
+Docs use [MkDocs](https://www.mkdocs.org/) with the shadcn theme. The source
+is `docs/`; `mkdocs.yml` defines navigation. The build generates the Python,
+CLI, and REST references before rendering the site.
 
 ```bash
-make docs-serve  # Local preview with hot reload
-make docs        # Build (validates pages compile)
+make docs-serve  # Build and preview the exact Pages artifact at /docs/
+make docs        # Generate references and build the static site
 ```
 
-Config lives in `docs/mint.json`. Navigation is defined there.
+Production documentation lives at `https://archetype.vangelis.tech/docs/`.
+`https://archetype.vangelis.tech/` is a small landing page; it does not redirect.
+Cloudflare Pages project configuration lives in `.github/workflows/docs.yml`.
 
 ## Related Documents
 

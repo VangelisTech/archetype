@@ -1,240 +1,127 @@
-# Writing Processors
+# Processors
 
-A processor is an `AsyncProcessor` subclass that transforms a Daft DataFrame each tick. The system executes a processor on every archetype whose signature is a superset of the processor's declared `components` tuple.
-
-```python
-class AsyncProcessor(iAsyncProcessor):
-    components: tuple[type["Component"], ...] = ()
-    priority: int = 10
-
-    async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
-        return df
-```
-
-## Basic Processor
+A processor transforms all matching entities in one Daft DataFrame operation.
+Declare the component types it needs, then return a new DataFrame from
+`process()`. Archetype runs the processor once per matching archetype.
 
 ```python
 from daft import DataFrame, col
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
 
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
+from archetype import AsyncProcessor
 
-class Velocity(Component):
-    vx: float = 0.0
-    vy: float = 0.0
 
-class MovementProcessor(AsyncProcessor):
-    components = (Position, Velocity)  # Only runs on entities with BOTH
-    priority = 10                       # Lower = runs earlier
+class Move(AsyncProcessor):
+    components = (Position, Velocity)
+    priority = 10
 
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return (
-            df
-            .with_column("position__x", col("position__x") + col("velocity__vx"))
-            .with_column("position__y", col("position__y") + col("velocity__vy"))
+    async def process(self, df: DataFrame, **_) -> DataFrame:
+        return df.with_columns(
+            {
+                "position__x": col("position__x") + col("velocity__dx"),
+                "position__y": col("position__y") + col("velocity__dy"),
+            }
         )
 ```
 
-Key points:
+`Move` receives only archetypes whose entities have both `Position` and
+`Velocity`. It does not loop over Python objects; the DataFrame expression
+updates the matching population together.
 
-- `components` declares required component types — the system only passes entities that have all of them
-- `priority` controls execution order within a tick (lower runs first)
-- `process()` receives a Daft DataFrame and must return a DataFrame
-- Column names are prefixed: `ComponentName__field_name`
+## Run order
 
-## Accessing Resources
+Lower `priority` values run first. Use priorities when one processor consumes
+the rows produced by another.
 
-Processors receive the world's `Resources` container via kwargs:
+```python
+class Integrate(AsyncProcessor):
+    components = (Position, Velocity)
+    priority = 10
+
+
+class ResolveCollisions(AsyncProcessor):
+    components = (Position, Collider)
+    priority = 20
+```
+
+Keep one processor responsible for one transformation. It makes order and
+tests straightforward.
+
+## Add processors to a world
+
+Pass processors when you create the handle for the usual script path:
+
+```python
+world = runtime.world("demo", processors=[Move(), ResolveCollisions()])
+```
+
+You can change a live world through its gated methods:
+
+```python
+await world.add_processor(Move())
+await world.remove_processor(Move)
+```
+
+`remove_processor()` takes the processor type, not an instance.
+
+## Use shared resources
+
+Resources hold shared configuration or services that do not belong to one
+entity. Processors receive them as keyword arguments when they declare them.
 
 ```python
 from dataclasses import dataclass
-from archetype.core.resources import Resources
+
 
 @dataclass
-class SimConfig:
-    gravity: float = 9.8
-    max_speed: float = 100.0
+class Rules:
+    max_speed: float = 5.0
 
-class PhysicsProcessor(AsyncProcessor):
-    components = (Position, Velocity)
-    priority = 5
 
-    async def process(self, df: DataFrame, resources: Resources = None, **kwargs) -> DataFrame:
-        config = resources.require(SimConfig) if resources else SimConfig()
-        return (
-            df
-            .with_column("velocity__vy", col("velocity__vy") - config.gravity)
-            .with_column("position__x", col("position__x") + col("velocity__vx"))
-            .with_column("position__y", col("position__y") + col("velocity__vy"))
+class LimitSpeed(AsyncProcessor):
+    components = (Velocity,)
+
+    async def process(self, df: DataFrame, rules: Rules, **_) -> DataFrame:
+        return df.with_columns(
+            {"velocity__dx": col("velocity__dx").clip(-rules.max_speed, rules.max_speed)}
         )
+
+
+world = runtime.world("demo", processors=[LimitSpeed()], resources=[Rules()])
 ```
 
-Setup:
+See [Resources](resources.md) for lifecycle and fork behavior.
 
-```python
-world = runtime.world(
-    "physics",
-    processors=[PhysicsProcessor()],
-    resources=[SimConfig(gravity=9.8)],
-)
-```
+## Call an LLM for each row
 
-## LLM-Powered Processors
-
-`daft.functions.prompt` executes LLM calls across all rows in the DataFrame concurrently:
+Use Daft's `prompt()` function when a processor needs an LLM call. Daft runs
+the row work in parallel and returns a column you can persist like any other
+state.
 
 ```python
 from daft.functions import prompt
 
-class Agent(Component):
-    name: str = ""
-    role: str = ""
-    last_thought: str = ""
 
-class ThinkProcessor(AsyncProcessor):
+class Think(AsyncProcessor):
     components = (Agent,)
-    priority = 10
 
-    async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
+    async def process(self, df: DataFrame, **_) -> DataFrame:
         return df.with_column(
             "agent__last_thought",
             prompt(
-                col("agent__role") + "\nYou are " + col("agent__name")
-                + ". Tick " + str(tick) + ". What do you do next? One sentence.",
-                system_message="You are an agent in a simulation. Stay in character.",
+                "You are " + col("agent__name") + ". What should you do next?",
                 model="gpt-5-mini",
-                max_output_tokens=60,
             ),
         )
 ```
 
-Daft parallelizes prompt execution across the DataFrame. Batching is handled by the Daft execution engine.
+The component field is part of your history, so keep prompts and outputs small
+enough for the storage and cost profile you want.
 
-### Structured LLM Outputs
+## Test a processor
 
-Use Pydantic models for type-safe LLM responses:
+Test the transformation with a representative DataFrame, then use a small
+world-level test to verify component matching and priority. Do not mutate a
+DataFrame in place; always return the DataFrame that should become the next
+state.
 
-```python
-from pydantic import BaseModel
-
-class Decision(BaseModel):
-    action: str
-    target: str
-    confidence: float
-
-class DecisionProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 20
-
-    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
-        return df.with_column(
-            "decision",
-            prompt(
-                col("agent__role") + ": Choose an action.",
-                return_format=Decision,
-                model="gpt-5-mini",
-            ),
-        ).unnest("decision")
-```
-
-## Tick and Run Context
-
-Processors receive useful context via kwargs:
-
-```python
-async def process(self, df, tick=0, resources=None, **kwargs):
-    # tick: current tick number
-    # resources: world's Resources container
-    # Additional kwargs from RunConfig or world.step()
-    ...
-```
-
-## Processor Ordering
-
-Processors run in `priority` order within each tick. Use this to chain logic:
-
-```python
-class InputProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 1      # Runs first — gather input
-
-class ThinkProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 10     # Runs second — process input
-
-class ActionProcessor(AsyncProcessor):
-    components = (Agent, Position)
-    priority = 20     # Runs third — execute actions
-
-class CleanupProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 100    # Runs last — bookkeeping
-```
-
-## Adding Processors to a World
-
-```python
-# Runtime script surface
-world = runtime.world("agents", processors=[ThinkProcessor()])
-
-# Post-activation gated method
-await world.add_processor(ThinkProcessor())
-```
-
-## Interacting with the Broker
-
-Processors are trusted internal code after registration. If they need delayed scheduling, they may use an internal broker resource or another sanctioned internal path:
-
-```python
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
-
-class SpawnerProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 50
-
-    async def process(self, df, resources=None, tick=0, **kwargs):
-        broker = resources.get(CommandBroker) if resources else None
-        if broker:
-            cmd = Command(
-                type=CommandType.SPAWN,
-                tick=tick,
-                payload={"components": [Agent(name="child").to_payload()]},
-            )
-            await broker.enqueue("my_world", cmd)
-        return df
-```
-
-External user actions should still go through `iCommandService`. Processor-originated queueing is internal simulation mechanics, not a replacement for the command gate.
-
-## Testing Processors
-
-```python
-import pytest
-from archetype.core.aio.async_system import AsyncSystem
-from archetype.core.aio.async_world import AsyncWorld
-from archetype.core.config import WorldConfig, RunConfig
-
-@pytest.fixture
-async def world():
-    # Minimal world setup for testing
-    querier = InMemoryQuerier()
-    updater = InMemoryUpdater(querier)
-    system = AsyncSystem()
-    return AsyncWorld(WorldConfig(name="test"), querier, updater, system)
-
-@pytest.mark.asyncio
-async def test_movement(world):
-    await world.system.add_processor(MovementProcessor())
-    await world.create_entity([Position(x=0, y=0), Velocity(vx=1, vy=2)])
-
-    await world.run(RunConfig(num_steps=3))
-
-    for _sig, df in world._live.items():
-        rows = df.collect().to_pylist()
-        assert rows[0]["position__x"] == 3.0
-        assert rows[0]["position__y"] == 6.0
-```
+For engine-level details, see [system execution](system-execution.md).

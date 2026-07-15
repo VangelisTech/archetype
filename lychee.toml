@@ -15,7 +15,7 @@ exclude = [
     # Localhost / dev servers
     "http://localhost",
     "http://127\\.0\\.0\\.1",
-    # Mintlify internal links (resolved at build time)
+    # Site-relative links are validated by the static build.
     "^/",
     # Email addresses
     "^mailto:",
@@ -23,6 +23,9 @@ exclude = [
     "^#",
     # Own repo blob links — files may exist on the PR branch but 404 on main until merged
     "https://github\\.com/VangelisTech/archetype/blob/main/",
+    # The canonical hostname is attached by the production Pages deployment.
+    # Internal site links are checked by MkDocs before that deployment runs.
+    "https://archetype\\.vangelis\\.tech/",
 ]
 
 # File globs are passed via CLI args, not here.
@@ -33,5 +36,4 @@ exclude_path = [
     "node_modules",
     ".venv",
     "uv.lock",
-    "docs/.mintlify",
 ]
