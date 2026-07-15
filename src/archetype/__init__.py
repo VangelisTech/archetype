@@ -12,29 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Archetype — dataframe-first, append-only ECS runtime for simulations and AI agents.
+"""Dataframe-first simulations and agent workflows.
 
-A data-centric Entity-Component-System (ECS) runtime for agent simulations.
+`ArchetypeRuntime` is the recommended entry point for applications. Lower-level
+engine and service exports remain available for extensions and custom hosts.
 
-Architecture (see assets/archetype_diagram.png):
-
-    ┌─────────┐         ┌─────────┐         ┌─────────┐
-    │ System  │──runs──▶│  World  │◀───────▶│  Store  │──append──▶ LanceDB
-    └─────────┘         │ step()  │         │archetypes│
-         │              └─────────┘         └─────────┘
-         │ priority          │                   ▲
-         ▼                   ▼                   │
-    ┌─────────┐         ┌─────────┐         ┌─────────┐
-    │Processor│         │ Querier │─query──▶│         │
-    │Processor│         │ Updater │─update─▶│         │
-    │   ...   │         └─────────┘         └─────────┘
-    └─────────┘              │
-                          daft df
-
-Quick Start:
-    >>> from archetype.app import ServiceContainer
-    >>> container = ServiceContainer()
+Examples:
+    >>> from archetype import ArchetypeRuntime
+    >>> async with ArchetypeRuntime() as runtime:
+    ...     world = runtime.world("experiment")
+    ...     await world.run(steps=10)
 """
 
 from __future__ import annotations
@@ -96,6 +83,14 @@ __all__ = [
     "SyncRuntimeWorld",
     "run_sync",
     "configure_session",
+    # Runtime configuration and result types
+    "WorldInfo",
+    "RunResult",
+    "EpisodeConfig",
+    "EpisodeResult",
+    "RolloutConfig",
+    "RolloutResult",
+    "FactReceipt",
     # App layer services
     "CommandBroker",
     "WorldService",
@@ -112,6 +107,10 @@ __all__ = [
     "AutoResearchResult",
     "CandidateContext",
     "EvaluationResult",
+    # Durable evaluation types
+    "Outcome",
+    "GraderContract",
+    "EvalReceipt",
 ]
 
 _EXPORTS: dict[str, tuple[str, str]] = {
@@ -157,6 +156,14 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "SyncRuntimeWorld": ("archetype.runtime", "SyncRuntimeWorld"),
     "run_sync": ("archetype.runtime", "run_sync"),
     "configure_session": ("archetype.runtime", "configure_session"),
+    # Runtime configuration and result types
+    "WorldInfo": ("archetype.app.models", "WorldInfo"),
+    "RunResult": ("archetype.app.models", "RunResult"),
+    "EpisodeConfig": ("archetype.app.models", "EpisodeConfig"),
+    "EpisodeResult": ("archetype.app.models", "EpisodeResult"),
+    "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
+    "RolloutResult": ("archetype.app.models", "RolloutResult"),
+    "FactReceipt": ("archetype.app.facts", "FactReceipt"),
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),
@@ -172,6 +179,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "AutoResearchResult": ("archetype.app.autoresearch_service", "AutoResearchResult"),
     "CandidateContext": ("archetype.app.autoresearch_service", "CandidateContext"),
     "EvaluationResult": ("archetype.app.autoresearch_service", "EvaluationResult"),
+    # Durable evaluation types
+    "Outcome": ("archetype.experiments.receipts", "Outcome"),
+    "GraderContract": ("archetype.experiments.receipts", "GraderContract"),
+    "EvalReceipt": ("archetype.experiments.receipts", "EvalReceipt"),
 }
 
 

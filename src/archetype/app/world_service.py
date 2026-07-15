@@ -505,17 +505,14 @@ class WorldService:
     async def open_world_mutable(
         self, storage_config: StorageConfig, world_id: str | UUID
     ) -> AsyncWorld:
-        """Fenced mutable cold resume (issue #273, A1-resume).
+        """Reconstruct a durable world and acquire its writer lease.
 
-        Reconstructs a live, writable world from rows + catalog in a process
-        that shares nothing with the previous writer but the storage config.
-        Acquiring the fence stales that writer: its next publish fails
-        closed. Every step below fails loudly rather than resuming a world
-        it cannot faithfully reconstruct.
+        The previous writer becomes stale and its next publish fails. Resume
+        fails instead of returning a world whose state cannot be reconstructed
+        faithfully.
 
-        Processors, resources, and hooks are NOT restored — code is not
-        rows. The caller reattaches them after resume; until then the world
-        steps as a pure ledger-advancing simulation.
+        Processors, resources, and hooks are code rather than stored state and
+        must be reinstalled by the caller.
         """
         wid = str(world_id)
         if self._orchestrator.has_world(wid):

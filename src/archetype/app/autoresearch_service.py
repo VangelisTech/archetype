@@ -59,9 +59,10 @@ logger = logging.getLogger(__name__)
 class AutoResearchConfig:
     """Configuration for one autoresearch loop.
 
-    Higher scores are better. The loop advances the BranchHead when a finite
-    evaluation score exceeds the incumbent by at least
-    ``improvement_threshold``.
+    `experiment_id`, `evaluator_id`, and `rollout_contract_id` are stable
+    caller-provided identities used for resumption and score comparability.
+    Higher scores are better; a candidate becomes the incumbent when it
+    exceeds the current score by at least `improvement_threshold`.
     """
 
     experiment_name: str
@@ -110,7 +111,7 @@ class AutoResearchConfig:
 
 @dataclass(frozen=True)
 class CandidateContext:
-    """Stable context passed to a per-iteration candidate preparer."""
+    """Context passed to a candidate-preparation callback."""
 
     experiment_id: str
     experiment_name: str
@@ -121,7 +122,7 @@ class CandidateContext:
 
 @dataclass(frozen=True)
 class EvaluationResult:
-    """Typed evaluator output with explicit evaluator and evidence metadata."""
+    """Return a score with evaluator identity and supporting evidence."""
 
     score: float
     evaluator: str
@@ -156,7 +157,7 @@ class IterationResult:
 
 @dataclass(frozen=True)
 class AutoResearchResult:
-    """Result of the full autoresearch loop."""
+    """Summarize a completed or stopped autoresearch loop."""
 
     experiment_name: str
     iterations_completed: int

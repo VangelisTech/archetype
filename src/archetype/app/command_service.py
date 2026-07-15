@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     )
     from archetype.app.broker import CommandBroker
     from archetype.app.eval_service import EvalService
+    from archetype.app.facts import FactReceipt
     from archetype.app.ingestion_service import IngestionService
     from archetype.app.models import (
         EpisodeConfig,
@@ -76,6 +77,7 @@ if TYPE_CHECKING:
     from archetype.core.component import Component
     from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
     from archetype.core.interfaces import ArchetypeSignature
+    from archetype.experiments.receipts import GraderContract
 
 logger = logging.getLogger(__name__)
 
@@ -349,11 +351,10 @@ class CommandService:
     async def discover_worlds(
         self, ctx: ActorCtx, storage_config: StorageConfig
     ) -> list[WorldInfo]:
-        """Durable discovery (issue #272): worlds recorded in a store's catalog.
+        """Return worlds recorded in a storage catalog.
 
-        Unlike list_worlds (live registry), this answers cold — a fresh
-        process pointed at the same storage identity sees every world ever
-        registered there. Read-gated as LIST_WORLDS.
+        Unlike `list_worlds()`, this works in a fresh process and includes
+        worlds that are not currently live.
         """
         self._gate(Command(type=CommandType.LIST_WORLDS), ctx)
         infos = await self._worlds.discover_worlds(storage_config)
@@ -364,10 +365,10 @@ class CommandService:
     async def open_world_readonly(
         self, ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
     ) -> WorldInfo:
-        """Cold read-only open (issue #272): the world's durable descriptor.
+        """Return the durable descriptor for a world without activating it.
 
-        Never constructs a live mutable world; queryability flows through
-        the ordinary gated query path. Read-gated as GET_WORLD_INFO.
+        The returned descriptor can be used with read paths but cannot mutate
+        the world.
         """
         self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
         info = await self._worlds.open_world_readonly(storage_config, world_id)
@@ -384,12 +385,11 @@ class CommandService:
         external_id: str,
         producer: str = "default",
         storage_config: StorageConfig | None = None,
-    ):
-        """Durable external fact (issue #274): exactly one visible per id.
+    ) -> FactReceipt:
+        """Persist an external fact exactly once per external identity.
 
-        Direct gated method, never the deferred broker path — a dropped
-        drain would lose the caller's receipt. Gated as INGEST_FACT
-        (operator+: it writes durable history).
+        This operation completes directly rather than entering the deferred
+        command queue so the caller always receives its durable receipt.
         """
         if self._ingestion is None:
             raise RuntimeError("ingestion service is not wired")
@@ -411,25 +411,19 @@ class CommandService:
         world_id: str | UUID,
         components: list[type[Component]],
         *,
-        contract,
+        contract: GraderContract,
         grader,
         evaluation_id: str,
         producer: str = "evals",
         storage_config: StorageConfig | None = None,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ):
-        """Claim-before-grade (issue #275): one visible receipt per evaluation_id.
+    ) -> FactReceipt:
+        """Persist one evaluation receipt for an evaluation identity.
 
-        The claim is acquired BEFORE the grader runs; a matching COMPLETE
-        claim returns the persisted receipt without re-grading. The subject
-        is pinned by snapshot reference (manifest head + tokens) + canonical
-        selector — never row-content hashing. A versioned GraderContract is
-        required: bare callables get no digest. The receipt is evidence,
-        never authority.
-
-        Composition lives here by design: EvalService stays QueryService-
-        only, IngestionService never grades — the gate wires them together.
+        The identity is claimed before grading. A completed matching claim
+        returns its receipt without running the grader again. The receipt is
+        pinned to a snapshot and requires a versioned `GraderContract`.
         """
         import time as _time
 
@@ -535,12 +529,11 @@ class CommandService:
     async def resume_world(
         self, ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
     ) -> WorldInfo:
-        """Fenced mutable cold resume (issue #273, A1-resume).
+        """Resume a durable world as the active writer.
 
-        Reconstructs a live writable world from rows + catalog and stales
-        the previous writer. Creates a live writer, so it is gated as
-        CREATE_WORLD; the caller receives the WorldInfo descriptor (info-
-        class downgrade) and interacts through the ordinary gated surface.
+        Resuming reconstructs live state from durable rows and invalidates
+        the previous writer. The caller receives a descriptor and continues
+        through the normal command interface.
         """
         self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
         world = await self._worlds.open_world_mutable(storage_config, world_id)

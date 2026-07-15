@@ -39,11 +39,10 @@ OUTCOME_STATUSES = frozenset({"pass", "fail", "invalid", "inconclusive"})
 
 @dataclass(frozen=True)
 class Outcome:
-    """A typed grading conclusion. Persisted receipts accept nothing looser.
+    """Represent a validated grading conclusion.
 
-    ``status`` must be one of pass/fail/invalid/inconclusive; ``score`` is
-    optional but must be finite when present. Constructed by grader code —
-    validation is explicit because the values feed durable evidence.
+    `status` must be `pass`, `fail`, `invalid`, or `inconclusive`. A supplied
+    score must be finite.
     """
 
     status: str
@@ -61,12 +60,11 @@ class Outcome:
 
 @dataclass(frozen=True)
 class GraderContract:
-    """Versioned grader identity. Required for every persisted receipt.
+    """Identify the grader configuration used for a durable receipt.
 
-    A dataclass (not pydantic) by the repo's boundary rule variant for
-    configs that participate in digest identity: no coercion, explicit
-    validation, canonical JSON digest. Two receipts are comparable only
-    when their contract digests match.
+    Two receipts are directly comparable only when their contract digests
+    match. Change `implementation_version`, configuration, thresholds, or
+    seed whenever that comparison should no longer be valid.
     """
 
     grader_id: str
@@ -165,11 +163,11 @@ def evaluation_identity_digest(subject: str, contract: str) -> str:
 
 
 class EvalReceipt(Component):
-    """The persisted receipt row: evidence, never authority.
+    """Persist the evidence produced by one evaluation.
 
-    Non-processable by construction — receipts persist through the durable
-    fact path (issue #274), so they live in the negative id band, never join
-    active simulation, and never re-append per tick.
+    Receipts are historical facts rather than active simulation entities.
+    They record what a grader concluded under a specific contract; callers
+    decide what that conclusion means for policy or promotion.
     """
 
     evaluation_id: str = ""

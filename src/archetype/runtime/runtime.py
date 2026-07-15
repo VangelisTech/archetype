@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ArchetypeRuntime — the script boundary.
-
-Owns the ServiceContainer and default ActorCtx. Produces world handles
-that route every operation through iCommandService.
-"""
+"""Process-level runtime and synchronous facade."""
 
 from __future__ import annotations
 
@@ -73,9 +69,29 @@ def _configure_archetype_logging(level: int) -> None:
 
 
 class ArchetypeRuntime:
-    """Process-level runtime. Owns the container and default identity."""
+    """Own process-level services and create world handles.
+
+    Use one runtime for a related set of worlds and close it with an async
+    context manager. Calling `world()` only creates a handle; the world is
+    activated on its first operation.
+
+    Examples:
+        >>> async with ArchetypeRuntime() as runtime:
+        ...     world = runtime.world("experiment")
+        ...     entity_id = await world.spawn()
+        ...     result = await world.run(steps=10)
+    """
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
+        """Initialize the runtime.
+
+        Args:
+            actor_ctx: Identity, roles, and quotas for operations. The default
+                identity is suitable for local scripts.
+            log: Package log level: `debug`, `info`, `warning`, or `error`.
+                When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
+                if that variable is unset.
+        """
         # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
         # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
         # logger hierarchy, and at debug it also turns on console span output.
@@ -107,7 +123,10 @@ class ArchetypeRuntime:
         await self.shutdown()
 
     async def shutdown(self) -> None:
-        """Shut down all handles then the container. Idempotent."""
+        """Close every world handle and release process-level resources.
+
+        Repeated calls have no effect.
+        """
         if self._closed:
             return
         self._closed = True
@@ -139,7 +158,19 @@ class ArchetypeRuntime:
         resources: list | None = None,
         hooks: list[tuple[type[HookEvent], Any]] | None = None,
     ) -> RuntimeWorld:
-        """Create a world handle. The world is activated on first operation."""
+        """Create a lazy handle for a world.
+
+        Args:
+            name: Human-readable world name.
+            storage: Storage location or explicit storage configuration.
+            cache: Optional write-cache configuration.
+            processors: Processors installed when the world is activated.
+            resources: Resources installed when the world is activated.
+            hooks: `(event type, handler)` pairs installed at activation.
+
+        Returns:
+            A handle that activates the world on its first operation.
+        """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
 
@@ -164,15 +195,18 @@ class ArchetypeRuntime:
         storage: str | Path | StorageConfig | None = None,
         name: str = "resumed",
     ) -> RuntimeWorld:
-        """Fenced mutable cold resume (issue #273): load a save state, live.
+        """Resume a durable world as the active writer.
 
-        Reconstructs a writable world from its durable rows and control
-        catalog — tick, entities, and fork lineage restored — and fences out
-        the previous writer, whose next commit fails closed. Requires the
-        world's component classes to be imported (code is not rows).
-        Processors, resources, and hooks are likewise not restored: reattach
-        them on the returned handle before stepping if the simulation needs
-        them.
+        The resumed world restores its tick, entities, and fork lineage. Its
+        component classes must already be imported. Processors, resources,
+        and hooks are code rather than stored state, so reinstall them before
+        stepping. Resuming also invalidates the previous writer; its next
+        commit fails instead of overwriting the resumed world.
+
+        Args:
+            world_id: Durable identity of the world to resume.
+            storage: Storage containing the world.
+            name: Local name for the returned handle.
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -183,13 +217,16 @@ class ArchetypeRuntime:
         return self.attach(info.world_id, name=name)
 
     async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
-        """Every world ever recorded against a storage identity — works cold.
+        """List every world recorded for a storage identity.
 
-        Durable discovery (issue #272) from the recommended API: a fresh
-        process pointed at existing storage sees each world's descriptor,
-        including destroyed ones (their rows remain queryable). Pair with
-        ``attach(world_id, storage=...)`` for cold reads or ``resume`` for a
-        fenced writer.
+        Discovery works without a live world and includes destroyed worlds,
+        whose durable rows remain queryable.
+
+        Args:
+            storage: Storage whose durable world catalog should be listed.
+
+        Returns:
+            Durable descriptors for every world recorded in that storage.
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -205,16 +242,17 @@ class ArchetypeRuntime:
         name: str = "attached",
         storage: str | Path | StorageConfig | None = None,
     ) -> RuntimeWorld:
-        """Return a handle for an existing world — live, or cold via storage.
+        """Attach a non-owning handle to a live or durable world.
 
-        The save-slot loader: episode worlds left behind by a rollout, an
-        autoresearch lab world, or any world created outside this handle's
-        scope can be queried and driven through the same gated surface. With
-        an explicit ``storage``, the handle also reads worlds that are not
-        live in this process (cold discovery): ``info()`` and ``query()``
-        resolve through the durable catalog. The id is validated on first
-        operation, and the handle does not own the world — shutting it down
-        never destroys the world (``destroy()`` still can, explicitly).
+        With explicit storage, `info()` and `query()` can resolve a world that
+        is not live in this process. The identity is validated on first use.
+        Closing the handle does not destroy the world, although an explicit
+        `RuntimeWorld.destroy()` still does.
+
+        Args:
+            world_id: Durable identity of the world to attach.
+            name: Local name for the returned handle.
+            storage: Storage containing a cold world. Omit it for a live world.
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -241,7 +279,7 @@ class ArchetypeRuntime:
     def sync(
         cls, *, actor_ctx: ActorCtx | None = None, log: str | None = None
     ) -> SyncArchetypeRuntime:
-        """Factory for the synchronous runtime facade."""
+        """Create the synchronous runtime facade."""
         return SyncArchetypeRuntime(actor_ctx=actor_ctx, log=log)
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
@@ -256,7 +294,11 @@ class ArchetypeRuntime:
 
 
 class SyncArchetypeRuntime:
-    """Synchronous facade. Owns its own asyncio.Runner (R6, OQ6)."""
+    """Synchronous facade over `ArchetypeRuntime`.
+
+    Use it as a context manager. New asynchronous applications should use
+    `ArchetypeRuntime` directly.
+    """
 
     def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
         self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx, log=log)
@@ -325,21 +367,21 @@ class SyncArchetypeRuntime:
         return SyncRuntimeWorld(rw, self)
 
     def discover(self, storage=None) -> list[WorldInfo]:
-        """See ArchetypeRuntime.discover (durable discovery, works cold)."""
+        """List durable worlds through the synchronous facade."""
         return self._dispatch(self._runtime.discover(storage))
 
     def attach(self, world_id, *, name: str = "attached", storage=None) -> SyncRuntimeWorld:
-        """Handle for an existing world. See ArchetypeRuntime.attach."""
+        """Attach a synchronous handle to a live or durable world."""
         return SyncRuntimeWorld(self._runtime.attach(world_id, name=name, storage=storage), self)
 
     def resume(self, world_id, *, storage=None, name: str = "resumed") -> SyncRuntimeWorld:
-        """See ArchetypeRuntime.resume (fenced mutable cold resume)."""
+        """Resume a durable world as the active writer."""
         rw = self._dispatch(self._runtime.resume(world_id, storage=storage, name=name))
         return SyncRuntimeWorld(rw, self)
 
 
 def run_sync(coro) -> Any:
-    """One-off escape hatch for running a coroutine synchronously."""
+    """Run one coroutine when no event loop is active in this thread."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:

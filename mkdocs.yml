@@ -15,21 +15,42 @@ not_in_nav: |
   reports/**
 
 theme:
-  name: shadcn
-  custom_dir: docs/overrides
-  icon: https://vangelis.tech/logo.jpg
+  name: material
+  language: en
+  logo: https://vangelis.tech/logo.jpg
   favicon: https://vangelis.tech/logo.jpg
-  pygments_style: bw
+  font: false
+  palette:
+    scheme: default
+    primary: white
+    accent: black
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - search.suggest
+    - search.highlight
 
 extra_css:
-  - stylesheets/shadcn.css
+  - stylesheets/vangelis.css
+
+extra:
+  generator: false
+
+copyright: Copyright &copy; 2026 Vangelis Tech
 
 nav:
-  - Getting Started:
+  - GETTING STARTED:
       - Overview: index.md
       - Quickstart: guide/quickstart.md
       - Choose an Example: guide/examples.md
-  - User Guide:
+  - USER GUIDE:
       - Building Simulations: guide/building-simulations.md
       - Components: guide/components.md
       - Processors: guide/processors.md
@@ -39,7 +60,7 @@ nav:
       - Lifecycle Hooks: guide/hooks.md
       - Storage: guide/stores.md
       - Configuration: guide/run-config.md
-  - Advanced Guides:
+  - ADVANCED GUIDES:
       - Service Hosting: guide/app-overview.md
       - Custom Commands: guide/custom-commands.md
       - Access Control and Audit: guide/command-gate.md
@@ -49,12 +70,25 @@ nav:
       - AutoResearch: guide/autoresearch.md
       - LIBERO Recipe: guide/libero-recipe.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
-  - Reference:
+  - REFERENCE:
+      - PYTHON API:
+          - Overview: reference/python-api.md
+          - Runtime: reference/python/runtime.md
+          - World Handle: reference/python/world-handle.md
+          - Runtime Models: reference/python/runtime-models.md
+          - Building Blocks: reference/python/building-blocks.md
+          - Hooks and Identity: reference/python/hooks.md
+          - Configuration: reference/python/configuration.md
+          - AutoResearch and Evaluation: reference/python/autoresearch.md
+          - Service Integration: reference/python/services.md
+          - Core Engine: reference/python/core.md
+          - Storage Backends: reference/python/storage.md
+          - Compatibility: reference/python/compatibility.md
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
-      - Python API: reference/python-api.md
-  - Development:
+  - DEVELOPMENT:
       - Contributing: guide/contributing.md
+      - API Stability and Docstrings: guide/api-stability.md
       - Architecture Overview: guide/architecture.md
       - Runtime Contract: guide/runtime.md
       - Specifications: guide/specification.md
@@ -65,7 +99,7 @@ nav:
       - Atomic Visibility: guide/atomic-visibility.md
       - Durable Facts: guide/durable-facts.md
       - Audit Log: guide/audit-log.md
-      - Core Internals:
+      - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md
           - World Internals: guide/worlds.md
@@ -79,20 +113,21 @@ nav:
 
 markdown_extensions:
   - admonition
-  - codehilite
+  - attr_list
   - footnotes
+  - md_in_html
   - tables
   - toc:
       permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
   - pymdownx.superfences:
-      css_class: codehilite
       custom_fences:
         - name: mermaid
           class: mermaid
           format: !!python/name:mermaid2.fence_mermaid
-
-hooks:
-  - docs/hooks/copy_page.py
 
 plugins:
   - search
@@ -105,8 +140,16 @@ plugins:
             show_source: false
             show_root_heading: true
             show_root_full_path: false
-            heading_level: 3
+            heading_level: 2
             members_order: source
-            show_if_no_docstring: true
-            docstring_style: google
+            filters:
+              - "!^_"
+            inherited_members: false
+            show_bases: false
+            show_if_no_docstring: false
+            merge_init_into_class: true
+            separate_signature: true
+            signature_crossrefs: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
             docstring_style: google

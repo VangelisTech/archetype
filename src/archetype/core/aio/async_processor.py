@@ -20,11 +20,32 @@ from archetype.core.interfaces import iAsyncProcessor
 
 
 class AsyncProcessor(iAsyncProcessor):
+    """Base class for asynchronous dataframe processors.
+
+    Subclasses declare the component types they require and implement
+    `process()`. Lower priority values run first. Processors return a new Daft
+    DataFrame rather than mutating their input.
+
+    Examples:
+        >>> from daft import col
+        >>> class Health(Component):
+        ...     value: int = 100
+        >>> class Decay(AsyncProcessor):
+        ...     components = (Health,)
+        ...     priority = 10
+        ...
+        ...     async def process(self, df, **kwargs):
+        ...         return df.with_column(
+        ...             "health__value", col("health__value") - 1
+        ...         )
+    """
+
     components: tuple[type["Component"], ...] = ()
     priority: int = 10
 
     async def process(self, df: DataFrame, **input_kwargs) -> DataFrame:
-        """
-        Async version of process method. Override this in subclasses.
+        """Transform one archetype dataframe for a simulation tick.
+
+        Override this method in subclasses and return a new dataframe.
         """
         return df

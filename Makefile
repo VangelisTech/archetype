@@ -50,7 +50,7 @@ help:
 	@echo ""
 	@echo "Docs:"
 	@echo "  make docs           Build docs (MkDocs)"
-	@echo "  make docs-serve     Serve docs locally"
+	@echo "  make docs-serve     Preview the Pages artifact at http://localhost:8788"
 	@echo "  make docs-lint      Run doc quality checks (spelling, markdown lint, link check)"
 	@echo ""
 	@echo "Utilities:"
@@ -253,7 +253,7 @@ publish: build
 	@uv publish
 
 # ------------------------------------------------------------------------------
-# Docs (MkDocs + shadcn)
+# Docs (Material for MkDocs)
 # ------------------------------------------------------------------------------
 
 .PHONY: docs-gen

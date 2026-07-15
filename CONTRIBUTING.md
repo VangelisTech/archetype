@@ -83,7 +83,7 @@ exactly what the `ci` job in GitHub Actions runs.
 | Target | Command | Purpose |
 |--------|---------|---------|
 | `make docs` | Generate references + `mkdocs build` | Build the docs site |
-| `make docs-serve` | Generate references + `mkdocs serve` | Preview with hot reload |
+| `make docs-serve` | Build + `wrangler pages dev site/` | Preview the production Pages artifact |
 | `make docs-lint` | typos + markdownlint-cli2 + lychee | Run all doc quality checks locally |
 
 ### Cleanup
@@ -249,9 +249,13 @@ chore:     Build process, CI, deps
 
 ## Docs
 
-Docs use [MkDocs](https://www.mkdocs.org/) with the shadcn theme. The source
+Docs use [MkDocs](https://www.mkdocs.org/) with the Material theme. The source
 is `docs/`; `mkdocs.yml` defines navigation. The build generates the Python,
 CLI, and REST references before rendering the site.
+
+Public API tiers and the docstring standard are defined in
+[`docs/guide/api-stability.md`](docs/guide/api-stability.md). Review that policy
+before adding an export or documenting a new public workflow.
 
 ```bash
 make docs-serve  # Build and preview the exact Pages artifact at /docs/
