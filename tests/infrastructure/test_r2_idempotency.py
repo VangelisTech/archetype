@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import daft
@@ -36,37 +37,61 @@ class R2Reading(Component):
     value: float = 0.0
 
 
+def _cloudflare_get(url: str, token: str) -> dict | None:
+    request = Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed Cloudflare origin
+            return json.load(response)
+    except HTTPError:
+        return None
+
+
 def _catalog_settings() -> tuple[str, str]:
     """Discover one explicitly selected—or unambiguous—active R2 catalog."""
     assert ACCOUNT_ID is not None
     assert DISCOVERY_TOKEN is not None
-    request = Request(
-        f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/r2-catalog",
-        headers={"Authorization": f"Bearer {DISCOVERY_TOKEN}"},
+    assert TOKEN is not None
+
+    account_ids = [ACCOUNT_ID]
+    accounts = _cloudflare_get(
+        "https://api.cloudflare.com/client/v4/accounts?per_page=50",
+        DISCOVERY_TOKEN,
     )
-    with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed Cloudflare origin
-        payload = json.load(response)
+    if accounts and accounts.get("success"):
+        account_ids.extend(item["id"] for item in accounts.get("result", []))
+    account_ids = list(dict.fromkeys(account_ids))
 
-    if not payload.get("success"):
-        pytest.fail(f"Cloudflare catalog discovery failed: {payload.get('errors', [])}")
+    active: list[tuple[str, dict]] = []
+    for account_id in account_ids:
+        for credential in dict.fromkeys((TOKEN, DISCOVERY_TOKEN)):
+            payload = _cloudflare_get(
+                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/r2-catalog",
+                credential,
+            )
+            if not payload or not payload.get("success"):
+                continue
+            active.extend(
+                (account_id, item)
+                for item in payload.get("result", {}).get("warehouses", [])
+                if item.get("status") == "active"
+            )
+            break
 
-    active = [
-        item
-        for item in payload.get("result", {}).get("warehouses", [])
-        if item.get("status") == "active"
-    ]
     requested_bucket = os.environ.get("R2_CATALOG_BUCKET")
     if requested_bucket:
-        active = [item for item in active if item.get("bucket") == requested_bucket]
+        active = [entry for entry in active if entry[1].get("bucket") == requested_bucket]
         if len(active) != 1:
             pytest.fail(f"No unique active R2 catalog found for bucket {requested_bucket!r}")
     elif len(active) != 1:
         pytest.fail("R2 catalog selection is ambiguous; set repository variable R2_CATALOG_BUCKET")
 
-    selected = active[0]
+    selected_account, selected = active[0]
     bucket = selected["bucket"]
     return (
-        f"https://catalog.cloudflarestorage.com/{ACCOUNT_ID}/{bucket}",
+        f"https://catalog.cloudflarestorage.com/{selected_account}/{bucket}",
         selected["name"],
     )
 
