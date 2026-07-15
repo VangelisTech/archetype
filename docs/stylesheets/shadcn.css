@@ -47,11 +47,36 @@ html {
   background: #ffffff;
 }
 
+/* Keep the previous document painted while the next static docs page loads.
+   Browsers without cross-document View Transitions retain normal navigation. */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 120ms;
+  animation-timing-function: ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*) {
+    animation-duration: 0s;
+  }
+}
+
 body {
   background: #ffffff;
   color: #000000;
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+/* The theme adds two absolute gradient overlays to the left sidebar. They
+   obscure the first links and read as a fade during document navigation. */
+[data-slot="sidebar"] > .absolute.top-8,
+[data-slot="sidebar"] > .absolute.top-12 {
+  display: none;
 }
 
 /* The Vangelis mark is 625 × 245, not a square app glyph. */
