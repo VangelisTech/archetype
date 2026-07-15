@@ -44,7 +44,7 @@ reason = "Storage write boundary: defensive empty-frame probe before delegating 
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 383
+line = 384
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -89,6 +89,12 @@ path = "src/archetype/app/simulation_service.py"
 line = 221
 method = "to_pylist"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
+
+[[entries]]
+path = "src/archetype/app/world_service.py"
+line = 628
+method = "to_pylist"
+reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
 [[entries]]
 path = "src/archetype/experiments/boundary.py"

@@ -23,7 +23,6 @@ WorldService  — facade (bridges StorageService into the orchestrator)
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import socket
@@ -31,12 +30,7 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
-from archetype.app._catalog import (
-    SignatureRecord,
-    WorldRecord,
-    arrow_schema_descriptor,
-    schema_fingerprint,
-)
+from archetype.app._catalog import SignatureRecord, WorldRecord, schema_fingerprint
 from archetype.app._commit import CatalogCommitCoordinator
 from archetype.app.models import WorldInfo
 from archetype.app.storage_service import StorageService
@@ -47,16 +41,37 @@ from archetype.core.aio import (
     AsyncWorld,
 )
 from archetype.core.archetype import Archetype
+from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem
-from archetype.core.lineage import persist_lineage
+from archetype.core.lineage import load_lineage, persist_lineage
 from archetype.core.resources import Resources
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _component_classes_by_name() -> dict[str, list[type[Component]]]:
+    """All importable Component subclasses, keyed by class name.
+
+    Distinct classes may share a name across modules (test doubles, forks of
+    an old component). Resume disambiguates by schema fingerprint — identity
+    is the schema, never the name alone.
+    """
+    classes: dict[str, list[type[Component]]] = {}
+    stack: list[type[Component]] = list(Component.__subclasses__())
+    seen: set[type[Component]] = set()
+    while stack:
+        cls = stack.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        stack.extend(cls.__subclasses__())
+        classes.setdefault(cls.__name__, []).append(cls)
+    return classes
 
 
 def _writer_holder() -> str:
@@ -304,9 +319,6 @@ class WorldService:
         # Records the storage/cache config that backs each world so fork_world
         # can default to "same store as source" per world-lifecycle.md § 4.5.
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
-        # Per-world memo of signature table_ids already registered in the
-        # catalog, keeping record_step at one catalog transaction per tick.
-        self._registered_sigs: dict[str, set[str]] = {}
 
     async def create_world(
         self,
@@ -480,41 +492,245 @@ class WorldService:
             raise KeyError(f"world {world_id} is not recorded in catalog for {storage_config.uri}")
         return _world_info_from_record(record)
 
+    async def open_world_mutable(
+        self, storage_config: StorageConfig, world_id: str | UUID
+    ) -> AsyncWorld:
+        """Fenced mutable cold resume (issue #273, A1-resume).
+
+        Reconstructs a live, writable world from rows + catalog in a process
+        that shares nothing with the previous writer but the storage config.
+        Acquiring the fence stales that writer: its next publish fails
+        closed. Every step below fails loudly rather than resuming a world
+        it cannot faithfully reconstruct.
+
+        Processors, resources, and hooks are NOT restored — code is not
+        rows. The caller reattaches them after resume; until then the world
+        steps as a pure ledger-advancing simulation.
+        """
+        wid = str(world_id)
+        if self._orchestrator.has_world(wid):
+            raise RuntimeError(
+                f"world {wid} is already live in this process; resume is for cold worlds "
+                "(re-fencing a world against itself would stale its own writer)"
+            )
+
+        catalog = self._storage_service.get_control_catalog(storage_config)
+        record = await catalog.get_world(wid)
+        if record is None:
+            raise KeyError(f"world {wid} is not recorded in catalog for {storage_config.uri}")
+        if record.status == "destroyed":
+            raise RuntimeError(
+                f"world {wid} is destroyed: queryable through the read paths, not resumable"
+            )
+        if record.name and self._registry.has_name(record.name):
+            raise RuntimeError(
+                f"a live world already holds the name {record.name!r}; cannot resume {wid}"
+            )
+        run_id = record.run_id
+        if not run_id:
+            raise RuntimeError(f"world {wid} has no recorded run; nothing to resume")
+
+        store = await self._storage_service.get_or_create_store(storage_config, None)
+
+        # Fork integrity: a fork record whose lineage rows are missing is
+        # detectable corruption (atomic-visibility spec §6) — refuse.
+        lineage = await load_lineage(store, world_id=wid, run_id=str(run_id))
+        if record.parent_world_id and not lineage:
+            raise RuntimeError(
+                f"world {wid} records parent {record.parent_world_id} but has no "
+                "persisted lineage rows; refusing to resume (corruption)"
+            )
+
+        # Resume tick comes from manifests, never from rows: unpublished
+        # crashed attempts may have written higher ticks that do not exist.
+        visible = await catalog.visible_tokens(wid, str(run_id))
+        if visible:
+            resume_tick = max(visible) + 1
+            tokens: list[str] | None = sorted(set(visible.values()))
+        elif visible is not None:
+            resume_tick, tokens = 0, []
+        else:
+            # Never-fenced legacy world: no manifests to consult; rows are
+            # implicitly visible and the row head is the true head.
+            resume_tick, tokens = None, None
+
+        directory, next_entity_id, row_head = await self._rebuild_entity_directory(
+            catalog, store, wid, str(run_id), tokens
+        )
+        entity2sig, _live_tables = self._resolve_live_signatures(directory)
+        if resume_tick is None:
+            resume_tick = row_head + 1 if row_head is not None else 0
+
+        world = self._factory.create_async_world(
+            store,
+            WorldConfig(
+                world_id=wid,
+                name=record.name,
+                run_id=str(run_id),
+                tick=resume_tick,
+                next_entity_id=next_entity_id,
+                entity2sig=entity2sig,
+                lineage=lineage or [],
+            ),
+        )
+        epoch = await catalog.acquire_fence(wid, _writer_holder())
+        world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+        self._registry.insert(world)
+        self._storage_configs[wid] = (storage_config, None)
+        logger.info(
+            "resumed world %s at tick %d (epoch %d, %d entities)",
+            wid,
+            resume_tick,
+            epoch,
+            len(entity2sig),
+        )
+        return world
+
+    async def _rebuild_entity_directory(
+        self,
+        catalog,
+        store: iAsyncStore,
+        world_id: str,
+        run_id: str,
+        tokens: list[str] | None,
+    ) -> tuple[dict[int, SignatureRecord], int, int | None]:
+        """Latest visible row per entity across every catalog table.
+
+        Reads through the open-never-create seam on BASE columns only, so no
+        Python component classes are needed to take inventory — classes are
+        demanded later, and only for archetypes that still have LIVE
+        entities in this world (code is not rows, but dead history should
+        not hold a resume hostage).
+
+        Returns ({entity_id: SignatureRecord-of-latest-active-row},
+        next_entity_id, max visible row tick or None).
+        """
+        from daft import col, lit
+
+        directory: dict[int, SignatureRecord] = {}
+        latest_seen: dict[int, int] = {}
+        max_entity_id = 0
+        row_head: int | None = None
+        for rec in await catalog.list_signatures():
+            try:
+                df = await store.get_existing_table_df(rec.table_id, world_id, run_id)
+            except KeyError:
+                continue  # recorded elsewhere, never materialized here
+            if tokens is not None and "commit_token" in df.column_names:
+                visible = df["commit_token"].is_in(tokens) if tokens else lit(False)
+                df = df.where(visible)
+            latest = df.groupby("entity_id").agg(col("tick").max().alias("latest_tick"))
+            current = df.join(
+                latest,
+                left_on=["entity_id", "tick"],
+                right_on=["entity_id", "latest_tick"],
+            ).select("entity_id", "tick", "is_active")
+            rows = current.to_pylist()
+            for row in rows:
+                eid, tick = int(row["entity_id"]), int(row["tick"])
+                if row_head is None or tick > row_head:
+                    row_head = tick
+                if eid < 0:
+                    continue  # lineage/metadata rows, never live entities
+                max_entity_id = max(max_entity_id, eid)
+                # An entity's current sig is wherever its LATEST row lives —
+                # migrations leave inactive rows behind in the old table.
+                # Same-tick ties happen by design: update_entity and
+                # migration write an inactive marker AND the new active row
+                # at one tick, so at a tied tick any active row wins.
+                prior = latest_seen.get(eid)
+                if prior is not None and prior > tick:
+                    continue
+                if prior == tick:
+                    if row["is_active"]:
+                        directory[eid] = rec
+                    continue
+                latest_seen[eid] = tick
+                if row["is_active"]:
+                    directory[eid] = rec
+                else:
+                    directory.pop(eid, None)
+        return directory, max_entity_id + 1, row_head
+
+    def _resolve_live_signatures(
+        self, directory: dict[int, SignatureRecord]
+    ) -> tuple[dict[int, tuple], set[str]]:
+        """Signature records of LIVE entities → Python class signatures.
+
+        Candidate classes are matched by the record's stored schema
+        fingerprint, so same-named classes from different modules cannot be
+        confused with each other — and a class whose fields drifted since
+        the rows were written is refused rather than silently misread.
+        Fails loudly, naming every table it cannot faithfully resolve.
+        """
+        from itertools import product
+
+        available = _component_classes_by_name()
+        resolved: dict[str, tuple] = {}
+        problems: dict[str, str] = {}
+        for rec in directory.values():
+            if rec.table_id in resolved or rec.table_id in problems:
+                continue
+            missing = sorted(n for n in rec.component_names if not available.get(n))
+            if missing:
+                problems[rec.table_id] = (
+                    f"component class(es) {', '.join(missing)} are not imported"
+                )
+                continue
+            matches: list[tuple] = []
+            candidates = (
+                sorted(available[n], key=lambda t: (t.__module__, t.__qualname__))
+                for n in rec.component_names
+            )
+            for combo in product(*candidates):
+                sig = tuple(sorted(set(combo), key=lambda t: t.__name__))
+                try:
+                    fingerprint = schema_fingerprint(Archetype.get_archetype_schema(sig))
+                except Exception:
+                    continue
+                if fingerprint == rec.fingerprint and sig not in matches:
+                    matches.append(sig)
+            if matches:
+                # Multiple matches are interchangeable BY CONSTRUCTION: the
+                # fingerprint covers every column name and type, so any
+                # matching combination reads and writes this table
+                # faithfully. Candidate order makes the pick deterministic.
+                resolved[rec.table_id] = matches[0]
+            else:
+                problems[rec.table_id] = (
+                    "no imported class combination matches the stored schema "
+                    "(the definitions may have drifted since the rows were written)"
+                )
+        if problems:
+            detail = "; ".join(f"table {tid}: {msg}" for tid, msg in sorted(problems.items()))
+            raise RuntimeError(
+                f"cannot resume: {detail} (code is not rows — import the exact component "
+                "definitions before resuming)"
+            )
+        entity2sig = {eid: resolved[rec.table_id] for eid, rec in directory.items()}
+        return entity2sig, set(resolved)
+
     async def record_step(self, world_id: str | UUID) -> None:
-        """Advance the world's advisory catalog head after a step.
+        """Refresh the world's current run in the catalog after a step.
 
         Called by SimulationService post-step. Since #273, the durable tick
         head is maintained transactionally by manifest publication inside
-        world.step — this hook only registers new signatures (once, via a
-        process-local memo) and refreshes the world's current run_id.
-        Failures log loudly rather than failing a tick whose data-plane
-        writes and manifest already succeeded.
+        world.step, and signature registration rides publication in the
+        commit coordinator — so this hook only keeps the world's run_id
+        current. Failures log loudly rather than failing a tick whose
+        data-plane writes and manifest already succeeded.
         """
         record = self._storage_configs.get(str(world_id))
         if record is None:
             return
         world = self._orchestrator.get_world(UUID(str(world_id)))
-        catalog = self._storage_service.get_control_catalog(record[0])
+        if not world.run_id:
+            return
         try:
-            registered = self._registered_sigs.setdefault(str(world_id), set())
-            for sig in set(world.entity2sig.values()):
-                table_id = Archetype.get_name(sig)
-                if table_id in registered:
-                    continue
-                schema = Archetype.get_archetype_schema(sig)
-                await catalog.register_signature(
-                    SignatureRecord(
-                        table_id=table_id,
-                        component_names=tuple(c.__name__ for c in sig),
-                        schema_json=json.dumps(arrow_schema_descriptor(schema)),
-                        fingerprint=schema_fingerprint(schema),
-                    )
-                )
-                registered.add(table_id)
-            if world.run_id:
-                await catalog.set_world_run(str(world_id), str(world.run_id))
+            catalog = self._storage_service.get_control_catalog(record[0])
+            await catalog.set_world_run(str(world_id), str(world.run_id))
         except Exception:
-            logger.exception("catalog signature registration failed for world %s", world_id)
+            logger.exception("catalog run update failed for world %s", world_id)
 
     async def add_resource(self, world_id: str | UUID, resource: object) -> None:
         """Attach a resource to a world's Resources container."""

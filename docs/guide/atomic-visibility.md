@@ -127,5 +127,7 @@ is what makes maintenance safe:
   execution is queryable up to its last published tick, not resumable
   mid-physics.
 - No cross-host fencing: the catalog is single-host authority in v0.3.
-- Mutable cold resume (restoring a live world from rows + manifests) is
-  A1-resume, specified separately and gated on this contract.
+- Mutable cold resume is delivered on top of this contract — see
+  [World Lifecycle](world-lifecycle.md) § Resume: `resume_world`
+  reconstructs a live world from visible rows + manifests and acquires the
+  fence, staling the previous writer.

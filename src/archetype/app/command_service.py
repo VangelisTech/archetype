@@ -368,6 +368,27 @@ class CommandService:
         await self._emit(ctx, "open_world_readonly", world_id)
         return info
 
+    @instrument("gate.resume_world")
+    async def resume_world(
+        self, ctx: ActorCtx, storage_config: StorageConfig, world_id: str | UUID
+    ) -> WorldInfo:
+        """Fenced mutable cold resume (issue #273, A1-resume).
+
+        Reconstructs a live writable world from rows + catalog and stales
+        the previous writer. Creates a live writer, so it is gated as
+        CREATE_WORLD; the caller receives the WorldInfo descriptor (info-
+        class downgrade) and interacts through the ordinary gated surface.
+        """
+        self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
+        world = await self._worlds.open_world_mutable(storage_config, world_id)
+        await self._emit(ctx, "resume_world", world.world_id)
+        return WorldInfo(
+            world_id=str(world.world_id),
+            name=world.name,
+            tick=world.tick,
+            run_id=str(world.run_id) if world.run_id else None,
+        )
+
     # ── Simulation (gated, direct) ────────────────────────────────────────
 
     @instrument("gate.step")

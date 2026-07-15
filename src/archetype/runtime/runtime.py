@@ -156,6 +156,31 @@ class ArchetypeRuntime:
         self._handles.add(handle)
         return handle
 
+    async def resume(
+        self,
+        world_id: str | UUID,
+        *,
+        storage: str | Path | StorageConfig | None = None,
+        name: str = "resumed",
+    ) -> RuntimeWorld:
+        """Fenced mutable cold resume (issue #273): load a save state, live.
+
+        Reconstructs a writable world from its durable rows and control
+        catalog — tick, entities, and fork lineage restored — and fences out
+        the previous writer, whose next commit fails closed. Requires the
+        world's component classes to be imported (code is not rows).
+        Processors, resources, and hooks are likewise not restored: reattach
+        them on the returned handle before stepping if the simulation needs
+        them.
+        """
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+        gate = self._container.command_service
+        info = await gate.resume_world(
+            self._actor_ctx, coerce_storage(storage) or StorageConfig(), world_id
+        )
+        return self.attach(info.world_id, name=name)
+
     def attach(self, world_id: str | UUID, *, name: str = "attached") -> RuntimeWorld:
         """Return a handle for a world that already exists in this runtime.
 
@@ -276,6 +301,11 @@ class SyncArchetypeRuntime:
     def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
         """Handle for an existing world. See ArchetypeRuntime.attach."""
         return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
+
+    def resume(self, world_id, *, storage=None, name: str = "resumed") -> SyncRuntimeWorld:
+        """See ArchetypeRuntime.resume (fenced mutable cold resume)."""
+        rw = self._dispatch(self._runtime.resume(world_id, storage=storage, name=name))
+        return SyncRuntimeWorld(rw, self)
 
 
 def run_sync(coro) -> Any:

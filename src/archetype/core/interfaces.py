@@ -385,7 +385,7 @@ class iCommitCoordinator(Protocol):
         run_id: str,
         tick: int,
         ctx: CommitContext,
-        table_ids: list[str],
+        sigs: list[ArchetypeSignature],
     ) -> None: ...
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
