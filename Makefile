@@ -259,16 +259,19 @@ publish: build
 .PHONY: docs-gen
 docs-gen:
 	@echo "Generating API & CLI reference docs..."
+	@uv run python scripts/generate_python_api_docs.py
 	@uv run python scripts/generate_api_docs.py
 	@uv run python scripts/generate_cli_docs.py
 
 .PHONY: docs
 docs: docs-gen
+	@rm -rf site
 	@uv run --extra docs mkdocs build
+	@uv run python scripts/assemble_docs_site.py
 
 .PHONY: docs-serve
-docs-serve: docs-gen
-	@uv run --extra docs mkdocs serve
+docs-serve: docs
+	@npx --yes wrangler pages dev site/ --port 8788
 
 .PHONY: docs-lint
 docs-lint:

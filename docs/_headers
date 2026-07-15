@@ -11,7 +11,7 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' cloudflareinsights.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' static.cloudflareinsights.com unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://vangelis.tech; font-src 'self'; connect-src 'self' cloudflareinsights.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'
 
 # --------------------------------------------------------------------------
 # HTML pages — short-lived cache, always revalidate
@@ -22,27 +22,31 @@
 /
   Cache-Control: public, max-age=0, must-revalidate
 
-# --------------------------------------------------------------------------
-# Hashed / versioned assets — long cache (MkDocs fingerprints these)
-# --------------------------------------------------------------------------
-/assets/*
-  Cache-Control: public, max-age=31536000, immutable
-
-/search/*
+/docs/*
   Cache-Control: public, max-age=0, must-revalidate
 
 # --------------------------------------------------------------------------
-# CSS & JS — moderate cache with revalidation
+# Hashed / versioned assets — long cache (MkDocs fingerprints these)
 # --------------------------------------------------------------------------
-/stylesheets/*
-  Cache-Control: public, max-age=3600, must-revalidate
+/docs/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/docs/search/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+# --------------------------------------------------------------------------
+# Stylesheets — revalidate. MkDocs leaves custom stylesheet names stable
+# between deploys, so caching one would briefly pair a new page with old styling.
+# --------------------------------------------------------------------------
+/docs/stylesheets/*
+  Cache-Control: public, max-age=0, must-revalidate
 
 # --------------------------------------------------------------------------
 # Early Hints — preload critical assets so the CDN can 103 them
 # --------------------------------------------------------------------------
-/
-  Link: </stylesheets/shadcn.css>; rel=preload; as=style
-/guide/*
-  Link: </stylesheets/shadcn.css>; rel=preload; as=style
-/reference/*
-  Link: </stylesheets/shadcn.css>; rel=preload; as=style
+/docs/
+  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style
+/docs/guide/*
+  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style
+/docs/reference/*
+  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style

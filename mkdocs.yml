@@ -1,69 +1,80 @@
 site_name: Archetype
-site_description: An opinion about what data engineering should be — composable, declarative, and data-centric
-site_url: https://archetype-docs.pages.dev
+site_description: Dataframe-first simulations and agent workflows in Python
+site_url: https://archetype.vangelis.tech/docs
 repo_url: https://github.com/VangelisTech/archetype
 repo_name: VangelisTech/archetype
 
 docs_dir: docs
+site_dir: site/docs
+
+# Design notes, planning records, and historical reports are retained in the
+# published source tree but are not part of the reader-facing documentation.
+not_in_nav: |
+  design/**
+  planning/**
+  reports/**
 
 theme:
   name: shadcn
   custom_dir: docs/overrides
-  icon: assets/logo.png
-  favicon: assets/logo.png
+  icon: https://vangelis.tech/logo.jpg
+  favicon: https://vangelis.tech/logo.jpg
+  pygments_style: bw
 
 extra_css:
   - stylesheets/shadcn.css
 
 nav:
   - Getting Started:
-      - Archetype: index.md
+      - Overview: index.md
       - Quickstart: guide/quickstart.md
-      - Examples: guide/examples.md
-      - Contributing Guide: guide/contributing.md
-  - Specifications:
-      - Overview: guide/specification.md
-      - Runtime: guide/runtime.md
+      - Choose an Example: guide/examples.md
+  - User Guide:
+      - Building Simulations: guide/building-simulations.md
+      - Components: guide/components.md
+      - Processors: guide/processors.md
+      - Worlds: guide/working-with-worlds.md
+      - History and Forks: guide/history-and-forks.md
+      - Resources: guide/resources.md
+      - Lifecycle Hooks: guide/hooks.md
+      - Storage: guide/stores.md
+      - Configuration: guide/run-config.md
+  - Advanced Guides:
+      - Service Hosting: guide/app-overview.md
+      - Custom Commands: guide/custom-commands.md
+      - Access Control and Audit: guide/command-gate.md
+      - Token Quotas: guide/token-quotas.md
+      - Running a Server: guide/api-layer.md
+      - Trajectories: guide/trajectories.md
+      - AutoResearch: guide/autoresearch.md
+      - LIBERO Recipe: guide/libero-recipe.md
+      - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
+  - Reference:
+      - REST API: reference/rest-api.md
+      - CLI: reference/cli.md
+      - Python API: reference/python-api.md
+  - Development:
+      - Contributing: guide/contributing.md
+      - Architecture Overview: guide/architecture.md
+      - Runtime Contract: guide/runtime.md
+      - Specifications: guide/specification.md
       - Service Protocols: guide/service-protocols.md
-      - Command Gate: guide/command-gate.md
       - Execution Hierarchy: guide/execution-hierarchy.md
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
       - Audit Log: guide/audit-log.md
-  - Building:
-      - Building Simulations: guide/building-simulations.md
-      - Custom Commands: guide/custom-commands.md
-      - Token Quotas: guide/token-quotas.md
-      - Mutation Testing: guide/mutation-testing.md
-  - Agent Evaluation:
-      - Trajectories: guide/trajectories.md
-      - AutoResearch: guide/autoresearch.md
-      - LIBERO Recipe: guide/libero-recipe.md
-      - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
-  - Core Architecture:
-      - Overview: guide/architecture.md
-      - Archetypes: guide/archetype.md
-      - Components: guide/components.md
-      - Processors: guide/processors.md
-      - Systems: guide/system-execution.md
-      - Worlds: guide/worlds.md
-      - Lifecycle Hooks: guide/hooks.md
-      - Resources: guide/resources.md
-      - Stores: guide/stores.md
-      - Querier: guide/querier.md
-      - Updater: guide/updater.md
-      - Configuration: guide/run-config.md
-  - App Architecture:
-      - Overview: guide/app-overview.md
-      - Data Flow: guide/data-flow.md
-      - Command Broker: guide/broker.md
-      - Services: guide/services.md
-      - API Layer: guide/api-layer.md
-  - Reference:
-      - REST API: reference/rest-api.md
-      - CLI: reference/cli.md
-      - Python API: reference/python-api.md
+      - Core Internals:
+          - Archetypes: guide/archetype.md
+          - Systems: guide/system-execution.md
+          - World Internals: guide/worlds.md
+          - Queries: guide/querier.md
+          - Updates: guide/updater.md
+          - Data Flow: guide/data-flow.md
+          - Command Broker: guide/broker.md
+          - Services: guide/services.md
+      - Testing: guide/mutation-testing.md
+      - Rust Core Plan: guide/rust-core-plan.md
 
 markdown_extensions:
   - admonition

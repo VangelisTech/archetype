@@ -15,7 +15,6 @@ LanceDB = "LanceDB"
 lancedb = "lancedb"
 ruff = "ruff"
 pyright = "pyright"
-mintlify = "mintlify"
 lychee = "lychee"
 typos = "typos"
 Ollama = "Ollama"
@@ -46,5 +45,4 @@ extend-exclude = [
     "*.svg",
     "*.png",
     "*.ico",
-    "docs/.mintlify/**",
 ]
