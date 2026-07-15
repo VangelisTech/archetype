@@ -87,8 +87,8 @@ jobs:
       - name: Run capability evals
         run: make eval-cap
 
-  # Real object-store gate. The R2 catalog token vends short-lived object-store
-  # credentials, so no local or runner-side Docker service is involved.
+  # Real object-store gate using a disposable prefix and R2's S3 credentials;
+  # no local or runner-side Docker service is involved.
   infrastructure-idempotency:
     if: >-
       github.event_name != 'pull_request' ||
@@ -125,8 +125,11 @@ jobs:
           test -n "$R2_SECRET_ACCESS_KEY"
           test -n "$R2_API_ENDPOINT"
           test -n "$R2_BUCKET"
+          case "$R2_BUCKET" in
+            */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
+          esac
 
-      - name: Run R2 Data Catalog idempotency integration
+      - name: Run R2 Iceberg idempotency integration
         run: make test-infra
 
   format:
