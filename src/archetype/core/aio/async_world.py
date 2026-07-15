@@ -113,7 +113,7 @@ class AsyncWorld(iAsyncWorld):
         self.commit_coordinator = commit_coordinator
         self._commit_ctx: CommitContext | None = None
         self._updater_takes_commit: bool | None = None
-        self._querier_caps: dict[str, bool] | None = None
+        self._querier_caps: dict[str, dict[str, bool]] | None = None
 
     @property
     def _entity2sig(self):
@@ -717,7 +717,7 @@ class AsyncWorld(iAsyncWorld):
             # manifest authorized — the exact failure the atomic-visibility
             # amendment forbids (same reasoning as update()'s commit param).
             tokens = await self._visible_tokens(target_world, target_run, target_ticks)
-            caps = self._querier_query_caps()
+            caps = self._querier_caps_for("query_archetype")
             kwargs: dict[str, Any] = {}
             if caps["_world_validated"]:
                 # Bypass the querier's own existence check — the world-level
@@ -774,21 +774,27 @@ class AsyncWorld(iAsyncWorld):
                 return str(ancestor_world), str(ancestor_run)
         return str(self.world_id), str(own_run_id or self.run_id or "")
 
-    def _querier_query_caps(self) -> dict[str, bool]:
-        """Which optional kwargs this querier's query_archetype accepts.
+    def _querier_caps_for(self, method: str) -> dict[str, bool]:
+        """Which optional kwargs a querier method accepts (memoized per method).
 
-        Inspected once and memoized. A parameter is accepted if it is named
-        in the signature or the signature takes **kwargs (the core querier
-        absorbs world-internal keys that way).
+        A parameter is accepted if it is named in the signature or the
+        signature takes **kwargs (the core querier absorbs world-internal
+        keys that way). Per the iAsyncQueryManager contract, a querier that
+        accepts commit_tokens MUST filter by it — coordinated worlds refuse
+        queriers that cannot accept it at all (fail closed).
         """
         if self._querier_caps is None:
-            params = inspect.signature(self.querier.query_archetype).parameters
+            self._querier_caps = {}
+        caps = self._querier_caps.get(method)
+        if caps is None:
+            params = inspect.signature(getattr(self.querier, method)).parameters
             var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-            self._querier_caps = {
+            caps = {
                 name: var_kw or name in params
                 for name in ("commit_tokens", "run_config", "_world_validated")
             }
-        return self._querier_caps
+            self._querier_caps[method] = caps
+        return caps
 
     async def _visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None
@@ -821,21 +827,24 @@ class AsyncWorld(iAsyncWorld):
         read_tick = max(self.tick - 1, 0)
         source_world, source_run = self._tick_source(read_tick)
         tokens = await self._visible_tokens(source_world, source_run, [read_tick])
-        if tokens is None:
-            return await self.querier.query_components(
-                components=components,
-                world_id=source_world,
-                run_id=source_run,
-                ticks=[read_tick],
-                entity_ids=entity_ids,
-            )
+        kwargs: dict[str, Any] = {}
+        if tokens is not None:
+            # Same fail-closed guard as query_archetype: a querier that
+            # cannot accept the allowlist must not serve a coordinated read.
+            if not self._querier_caps_for("query_components")["commit_tokens"]:
+                raise RuntimeError(
+                    f"querier {type(self.querier).__name__} does not accept "
+                    "commit_tokens; refusing an unfiltered read of a "
+                    "coordinated world (fail closed)"
+                )
+            kwargs["commit_tokens"] = tokens
         return await self.querier.query_components(
             components=components,
             world_id=source_world,
             run_id=source_run,
             ticks=[read_tick],
             entity_ids=entity_ids,
-            commit_tokens=tokens,  # ty: ignore[unknown-argument]  # coordinated queriers accept it
+            **kwargs,
         )
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:

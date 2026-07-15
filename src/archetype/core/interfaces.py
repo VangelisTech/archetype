@@ -468,7 +468,14 @@ class iAsyncStore(Protocol):
 
 
 class iAsyncQueryManager(Protocol):
-    """Async active-state read facade (spec §159–§173)."""
+    """Async active-state read facade (spec §159–§173).
+
+    ``commit_tokens`` (issue #273) is the reader-side visibility allowlist.
+    An implementation that accepts it MUST filter current-generation rows to
+    the allowlisted tokens — accepting and ignoring it silently fails open,
+    which the atomic-visibility amendment forbids. Coordinated worlds refuse
+    queriers whose signatures cannot accept it (fail closed).
+    """
 
     async def get_archetype(
         self, sig: ArchetypeSignature, world_id: str, run_id: str
@@ -481,6 +488,7 @@ class iAsyncQueryManager(Protocol):
         entity_ids: list[int] | None = None,
         components: list[type[Component]] | None = None,
         run_id: str | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame: ...
     async def query_components(
         self,
@@ -490,6 +498,7 @@ class iAsyncQueryManager(Protocol):
         *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame: ...
     async def list_signatures(self) -> list[ArchetypeSignature]: ...
 

@@ -357,12 +357,19 @@ async def test_querier_without_commit_tokens_support_fails_closed(tmp_path):
             ):
                 raise AssertionError("must not be reached for a coordinated world")
 
+            async def query_components(
+                self, components, world_id, run_id, *, ticks=None, entity_ids=None
+            ):
+                raise AssertionError("must not be reached for a coordinated world")
+
         assert isinstance(world, AsyncWorld)
         world.querier = NoTokenQuerier(world.querier)
         world._querier_caps = None  # re-inspect the replaced querier
 
         with pytest.raises(RuntimeError, match="commit_tokens.*fail closed"):
             await world.query_archetype((Counter,), ticks=[0])
+        with pytest.raises(RuntimeError, match="commit_tokens.*fail closed"):
+            await world.get_components([Counter])
     finally:
         await c.shutdown()
 
