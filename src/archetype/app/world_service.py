@@ -612,7 +612,9 @@ class WorldService:
         visible = await catalog.visible_tokens(world_id, run_id)
         if visible:
             resume_tick: int | None = max(visible) + 1
-            tokens: list[str] | None = sorted(set(visible.values()))
+            tokens: list[str] | None = sorted(
+                {token for token_list in visible.values() for token in token_list}
+            )
         elif visible is not None:
             resume_tick = (lineage[-1][2] + 1) if lineage else 0
             tokens = []
@@ -628,7 +630,7 @@ class WorldService:
         for ancestor_world, ancestor_run, up_to_tick in lineage or []:
             ancestor_visible = await catalog.visible_tokens(str(ancestor_world), str(ancestor_run))
             ancestor_tokens = (
-                sorted(set(ancestor_visible.values()))
+                sorted({t for ts in ancestor_visible.values() for t in ts})
                 if ancestor_visible
                 else ([] if ancestor_visible is not None else None)
             )

@@ -47,6 +47,7 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -59,7 +60,7 @@ from archetype.core.interfaces import StaleWriterError
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
@@ -215,6 +216,38 @@ class ManifestRecord:
     created_at: str
 
 
+class ClaimConflictError(RuntimeError):
+    """Same external id claimed/completed with a different payload digest."""
+
+
+class ClaimPendingError(RuntimeError):
+    """A live lease holds this claim; back off — never blind-retry."""
+
+
+@dataclass(frozen=True)
+class ClaimRecord:
+    """One external-fact claim: the exactly-once-visible authority (issue #274).
+
+    A fact is visible iff its claim is COMPLETE — completion publishes the
+    claim's commit token into the visible set, the same mechanism ticks use.
+    """
+
+    scope_key: str
+    world_id: str
+    run_id: str
+    producer: str
+    external_id: str
+    payload_digest: str
+    status: str  # "PENDING" | "COMPLETE"
+    commit_token: str
+    tick: int
+    fact_entity_id: int
+    table_id: str | None
+    claimant: str
+    lease_expires_at: float
+    fence_epoch: int
+
+
 @dataclass(frozen=True)
 class SignatureRecord:
     """Compact durable pointer to one archetype table."""
@@ -279,6 +312,24 @@ CREATE TABLE IF NOT EXISTS writer_fence (
     epoch INTEGER NOT NULL,
     holder TEXT NOT NULL,
     acquired_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS claims (
+    scope_key TEXT PRIMARY KEY,
+    world_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    producer TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    payload_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    commit_token TEXT NOT NULL,
+    tick INTEGER NOT NULL,
+    fact_entity_id INTEGER NOT NULL DEFAULT 0,
+    table_id TEXT,
+    claimant TEXT NOT NULL,
+    lease_expires_at REAL NOT NULL,
+    fence_epoch INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
 );
 INSERT OR IGNORE INTO catalog_meta (key, value) VALUES ('schema_version', '{_SCHEMA_VERSION}');
 """
@@ -413,6 +464,153 @@ class SqliteControlCatalog:
             return [_world_from_row(row) for row in rows]
 
         return await self._run(_list)
+
+    # ── fact claims (issue #274) ─────────────────────────────────────────────
+
+    async def acquire_claim(
+        self,
+        *,
+        world_id: str,
+        run_id: str,
+        producer: str,
+        external_id: str,
+        payload_digest: str,
+        claimant: str,
+        tick: int,
+        lease_seconds: float = 30.0,
+    ) -> tuple[str, ClaimRecord]:
+        """Put-if-absent claim acquisition with lease takeover.
+
+        Returns (outcome, record) where outcome is one of:
+        - "acquired": this claimant owns a fresh PENDING claim (new token).
+        - "recovered": this claimant took over an expired PENDING claim —
+          the ORIGINAL token is kept so recovery can find an already-
+          appended orphan and complete without re-appending.
+        - "duplicate": an identical fact is already COMPLETE — the original
+          record is the receipt; nothing to do.
+        Raises ClaimConflictError on same id + different digest, and
+        ClaimPendingError while another claimant's lease is live.
+        """
+        scope_key = claim_scope_key(world_id, run_id, producer, external_id)
+
+        def _acquire() -> tuple[str, ClaimRecord]:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
+                ).fetchone()
+                now = time.time()
+                if row is not None:
+                    existing = _claim_from_row(row)
+                    if existing.payload_digest != payload_digest:
+                        raise ClaimConflictError(
+                            f"external id {external_id!r} from {producer!r} was "
+                            f"submitted with a different payload digest "
+                            f"(claim {existing.status}); refusing"
+                        )
+                    if existing.status == "COMPLETE":
+                        return ("duplicate", existing)
+                    if existing.lease_expires_at > now:
+                        raise ClaimPendingError(
+                            f"a live lease ({existing.claimant}) holds claim "
+                            f"{external_id!r}; retry after it completes or expires"
+                        )
+                    conn.execute(
+                        "UPDATE claims SET claimant=?, lease_expires_at=? WHERE scope_key=?",
+                        (claimant, now + lease_seconds, scope_key),
+                    )
+                    return (
+                        "recovered",
+                        _claim_from_row(
+                            conn.execute(
+                                "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
+                            ).fetchone()
+                        ),
+                    )
+                fence = conn.execute(
+                    "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+                ).fetchone()
+                epoch = int(fence["epoch"]) if fence is not None else 0
+                token = f"fact-{scope_key[:32]}"
+                cursor = conn.execute(
+                    "INSERT INTO claims (scope_key, world_id, run_id, producer, external_id, "
+                    "payload_digest, status, commit_token, tick, fact_entity_id, table_id, "
+                    "claimant, lease_expires_at, fence_epoch, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, 0, NULL, ?, ?, ?, ?)",
+                    (
+                        scope_key,
+                        world_id,
+                        run_id,
+                        producer,
+                        external_id,
+                        payload_digest,
+                        token,
+                        tick,
+                        claimant,
+                        now + lease_seconds,
+                        epoch,
+                        _utcnow(),
+                    ),
+                )
+                # Catalog-allocated fact entity id: unique per storage identity,
+                # in the negative metadata band, clear of lineage's small ids.
+                # (lastrowid is always set after a successful INSERT.)
+                fact_eid = -(100_000 + int(cursor.lastrowid or 0))
+                conn.execute(
+                    "UPDATE claims SET fact_entity_id=? WHERE scope_key=?",
+                    (fact_eid, scope_key),
+                )
+                return (
+                    "acquired",
+                    _claim_from_row(
+                        conn.execute(
+                            "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
+                        ).fetchone()
+                    ),
+                )
+
+        return await self._run(_acquire)
+
+    async def complete_claim(self, scope_key: str, claimant: str, table_id: str) -> None:
+        """Publish the fact's visibility and complete the claim — one CAS.
+
+        Verifies the caller still holds the claim (PENDING + claimant match);
+        completion puts the claim's commit token into the visible set. A lost
+        lease fails closed: the taker-over owns completion now.
+        """
+
+        def _complete() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT status, claimant FROM claims WHERE scope_key=?", (scope_key,)
+                ).fetchone()
+                if row is None:
+                    raise ClaimConflictError(f"no claim recorded for scope {scope_key}")
+                if row["status"] == "COMPLETE":
+                    return  # idempotent: recovery may race the original claimant
+                if row["claimant"] != claimant:
+                    raise ClaimPendingError(
+                        f"claim {scope_key} was taken over by {row['claimant']}; "
+                        "this claimant no longer owns completion"
+                    )
+                conn.execute(
+                    "UPDATE claims SET status='COMPLETE', table_id=?, completed_at=? "
+                    "WHERE scope_key=?",
+                    (table_id, _utcnow(), scope_key),
+                )
+
+        await self._run(_complete)
+
+    async def get_claim(self, scope_key: str) -> ClaimRecord | None:
+        def _get() -> ClaimRecord | None:
+            conn = self._connect_sync()
+            row = conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()
+            return _claim_from_row(row) if row is not None else None
+
+        return await self._run(_get)
 
     # ── signatures ───────────────────────────────────────────────────────────
 
@@ -568,43 +766,54 @@ class SqliteControlCatalog:
 
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
-    ) -> dict[int, str] | None:
+    ) -> dict[int, list[str]] | None:
         """The reader-side visibility map for one (world, run).
 
-        None when the pair has no manifests at all — an uncoordinated or
-        pre-#273 world whose rows are implicitly visible. Otherwise a
-        {tick: commit_token} map covering the requested ticks; a tick with
-        no entry is invisible (its commit never finished).
+        Unions tick manifests with COMPLETE fact claims (issue #274): a tick
+        may carry one manifest token plus any number of fact tokens. None
+        when the pair has neither manifests nor completed claims AND no
+        fence — an uncoordinated or pre-#273 world whose rows are implicitly
+        visible. A fenced world with nothing published filters everything.
         """
 
-        def _tokens() -> dict[int, str] | None:
+        def _tokens() -> dict[int, list[str]] | None:
             conn = self._connect_sync()
-            any_row = conn.execute(
+            any_manifest = conn.execute(
                 "SELECT 1 FROM manifests WHERE world_id=? AND run_id=? LIMIT 1",
                 (world_id, run_id),
             ).fetchone()
-            if any_row is None:
-                # No manifests: distinguish true pre-#273 history (never
-                # fenced — implicitly visible) from a coordinated world whose
-                # first commit hasn't published (fence exists — nothing is
-                # visible yet; a crashed first tick must not surface).
+            any_claim = conn.execute(
+                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? AND status='COMPLETE' LIMIT 1",
+                (world_id, run_id),
+            ).fetchone()
+            if any_manifest is None and any_claim is None:
+                # Distinguish true pre-#273 history (never fenced — implicitly
+                # visible) from a coordinated world whose first commit hasn't
+                # published (fence exists — nothing is visible yet).
                 fence = conn.execute(
                     "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
                 ).fetchone()
                 return None if fence is None else {}
             if ticks is None:
-                rows = conn.execute(
-                    "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?",
-                    (world_id, run_id),
-                ).fetchall()
+                tick_clause, args = "", []
             else:
                 placeholders = ",".join("?" for _ in ticks)
-                rows = conn.execute(
-                    "SELECT tick, commit_token FROM manifests "
-                    f"WHERE world_id=? AND run_id=? AND tick IN ({placeholders})",
-                    (world_id, run_id, *[int(t) for t in ticks]),
-                ).fetchall()
-            return {int(r["tick"]): r["commit_token"] for r in rows}
+                tick_clause = f" AND tick IN ({placeholders})"
+                args = [int(t) for t in ticks]
+            visible: dict[int, list[str]] = {}
+            for row in conn.execute(
+                "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?"
+                + tick_clause,
+                (world_id, run_id, *args),
+            ).fetchall():
+                visible.setdefault(int(row["tick"]), []).append(row["commit_token"])
+            for row in conn.execute(
+                "SELECT tick, commit_token FROM claims "
+                "WHERE world_id=? AND run_id=? AND status='COMPLETE'" + tick_clause,
+                (world_id, run_id, *args),
+            ).fetchall():
+                visible.setdefault(int(row["tick"]), []).append(row["commit_token"])
+            return visible
 
         return await self._run(_tokens)
 
@@ -637,6 +846,42 @@ class SqliteControlCatalog:
             ]
 
         return await self._run(_list)
+
+
+def claim_scope_key(world_id: str, run_id: str, producer: str, external_id: str) -> str:
+    """Deterministic claim identity: (storage is the catalog itself)."""
+    payload = json.dumps(
+        {
+            "domain": _DIGEST_DOMAIN,
+            "kind": "claim-scope",
+            "world_id": world_id,
+            "run_id": run_id,
+            "producer": producer,
+            "external_id": external_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _claim_from_row(row: sqlite3.Row) -> ClaimRecord:
+    return ClaimRecord(
+        scope_key=row["scope_key"],
+        world_id=row["world_id"],
+        run_id=row["run_id"],
+        producer=row["producer"],
+        external_id=row["external_id"],
+        payload_digest=row["payload_digest"],
+        status=row["status"],
+        commit_token=row["commit_token"],
+        tick=int(row["tick"]),
+        fact_entity_id=int(row["fact_entity_id"]),
+        table_id=row["table_id"],
+        claimant=row["claimant"],
+        lease_expires_at=float(row["lease_expires_at"]),
+        fence_epoch=int(row["fence_epoch"]),
+    )
 
 
 def _utcnow() -> str:

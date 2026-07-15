@@ -92,5 +92,5 @@ class CatalogCommitCoordinator:
 
     async def visible_tokens(
         self, world_id: str, run_id: str, ticks: list[int] | None = None
-    ) -> dict[int, str] | None:
+    ) -> dict[int, list[str]] | None:
         return await self._catalog.visible_tokens(world_id, run_id, ticks)

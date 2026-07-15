@@ -63,6 +63,7 @@ nav:
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
+      - Durable Facts: guide/durable-facts.md
       - Audit Log: guide/audit-log.md
       - Core Internals:
           - Archetypes: guide/archetype.md
