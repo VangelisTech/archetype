@@ -287,11 +287,20 @@ class IngestionService:
                 "(step it at least once before evaluating)"
             )
         head = max(m.tick for m in manifests)
+        # Keep the subject identity manifest-only, but pin every row that is
+        # visible at capture time. Completed fact claims publish their own
+        # commit tokens and may share a tick with a manifest; omitting them
+        # would make durable facts disappear from the grader's exact-token
+        # read even though an ordinary query can see them.
+        visible = await catalog.visible_tokens(wid, str(record.run_id))
+        visibility_tokens = {
+            token for tick, tokens in (visible or {}).items() if tick <= head for token in tokens
+        }
         return PinnedSnapshot(
             run_id=str(record.run_id),
             tick=head,
             head_tokens=tuple(sorted(m.commit_token for m in manifests if m.tick == head)),
-            visibility_tokens=tuple(sorted({m.commit_token for m in manifests if m.tick <= head})),
+            visibility_tokens=tuple(sorted(visibility_tokens)),
             storage_config=effective,
         )
 

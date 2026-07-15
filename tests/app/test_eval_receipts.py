@@ -148,6 +148,38 @@ async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, 
         await c.shutdown()
 
 
+async def test_grader_snapshot_includes_completed_fact_claims(tmp_path):
+    """Pinned reads retain durable facts visible when the snapshot is captured."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(c, storage)
+        await c.ingestion_service.ingest_fact(
+            str(world.world_id),
+            [Telemetry(reading=1.2)],
+            external_id="sensor-reading-1",
+            producer="sensor",
+        )
+        graded_readings: list[float] = []
+
+        def grader(df):
+            graded_readings.extend(float(row["telemetry__reading"]) for row in df.to_pylist())
+            return Outcome(status="pass", score=1.0)
+
+        await c.command_service.evaluate(
+            _ctx(),
+            world.world_id,
+            [Telemetry],
+            contract=_contract(),
+            grader=grader,
+            evaluation_id="fact-aware-snapshot",
+        )
+
+        assert sorted(graded_readings) == [0.8, 1.2]
+    finally:
+        await c.shutdown()
+
+
 async def test_new_trials_of_nondeterministic_graders_are_new_receipts(tmp_path):
     c = ServiceContainer()
     try:

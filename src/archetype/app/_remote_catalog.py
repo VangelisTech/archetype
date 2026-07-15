@@ -56,7 +56,14 @@ class RemoteControlCatalog:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _call(self, method: str, path: str, payload: dict | None = None) -> httpx.Response:
+    async def _call(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        ignore_status: tuple[int, ...] = (),
+    ) -> httpx.Response:
         # GETs retry transient platform errors (Durable Object cold starts
         # surface as one-off 5xx). Writes never blind-retry here — every
         # write in the protocol is CAS/idempotent at the catalog, but the
@@ -67,6 +74,8 @@ class RemoteControlCatalog:
             response = await self._client.request(
                 method, f"{self._base}{path}", json=payload if payload is not None else None
             )
+            if response.status_code in ignore_status:
+                return response
             if response.status_code in (409, 412, 423):
                 body = response.json()
                 error = _ERROR_MAP.get(body.get("error", ""))
@@ -105,10 +114,9 @@ class RemoteControlCatalog:
         await self._call("PATCH", f"/worlds/{world_id}", {"run_id": run_id})
 
     async def get_world(self, world_id: str) -> WorldRecord | None:
-        response = await self._client.get(f"{self._base}/worlds/{world_id}")
+        response = await self._call("GET", f"/worlds/{world_id}", ignore_status=(404,))
         if response.status_code == 404:
             return None
-        response.raise_for_status()
         return _world_from_json(response.json())
 
     async def list_worlds(self) -> list[WorldRecord]:
@@ -248,10 +256,11 @@ class RemoteControlCatalog:
         )
 
     async def get_claim(self, world_id: str, scope_key: str) -> ClaimRecord | None:
-        response = await self._client.get(f"{self._base}/w/{world_id}/claims/{scope_key}")
+        response = await self._call(
+            "GET", f"/w/{world_id}/claims/{scope_key}", ignore_status=(404,)
+        )
         if response.status_code == 404:
             return None
-        response.raise_for_status()
         return _claim_from_json(world_id, response.json())
 
 
