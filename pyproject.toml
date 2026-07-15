@@ -115,6 +115,7 @@ dev = [
     # contrib/logfire_observer (tests/contrib) and the api instrumentation path; the
     # published package depends only on the OTel API + SDK.
     "logfire[fastapi]>=4.32.0",
+    "python-dotenv>=1.2.2",
 ]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full

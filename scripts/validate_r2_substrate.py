@@ -34,14 +34,10 @@ NAMESPACE = "phase1"
 
 
 def _load_env() -> None:
-    """Minimal .env loader (no python-dotenv dependency) + R2→S3 mapping."""
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, _, value = line.partition("=")
-                os.environ.setdefault(key.strip(), value.strip())
+    """Load .env, then map R2 credentials onto the S3 names Lance/Daft read."""
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
     # LanceDB + Daft speak S3; R2 is S3-compatible at the account endpoint.
     endpoint = os.environ.get("R2_API_ENDPOINT", "")
@@ -81,7 +77,7 @@ async def seed() -> None:
     container = ServiceContainer()
     try:
         world = await container.world_service.create_world(
-            WorldConfig(name=f"r2-validation"), _storage()
+            WorldConfig(name="r2-validation"), _storage()
         )
         await container.mutation_service.create_entity(world.world_id, [Beacon(value=1.0)])
         await container.simulation_service.step(world.world_id, RunConfig())
