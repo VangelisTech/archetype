@@ -444,6 +444,8 @@ Run one episode. Requires operator or admin.
 | `run_config` | object | No | — | A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world. Carries configuration for the run, including: - run_id: UUID - The unique identifier for the run sequence, a uuid7 - num_steps: int - The number of steps to execute in the run sequence - debug: bool - Whether or not to enable debug mode - validate: bool - Whether or not to enable validation mode TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True) and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity. |
 | `max_steps` | integer | No | `1000` | Max Steps |
 | `terminal_component` | any \| null | No | — | Terminal Component |
+| `terminal_field` | string \| null | No | — | Terminal Field |
+| `terminal_all` | boolean | No | `true` | Terminal All |
 | `termination` | any \| null | No | — | Termination |
 
 **Response** (`200`):
@@ -452,6 +454,8 @@ Run one episode. Requires operator or admin.
 |-------|------|----------|---------|-------------|
 | `episode_id` | string \| string | Yes | — | Episode Id |
 | `world_id` | string \| string | Yes | — | World Id |
+| `run_id` | string \| string \| null | No | — | Run Id |
+| `start_tick` | integer | No | `0` | Start Tick |
 | `final_tick` | integer | No | `0` | Final Tick |
 | `terminated` | boolean | No | `false` | Terminated |
 | `duration_steps` | integer | No | `0` | Duration Steps |
@@ -479,7 +483,7 @@ Run a rollout. Requires operator or admin; emits one rollout audit row.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `rollout_id` | string \| string | No | — | Rollout Id |
-| `episode_config` | object | No | — | Configuration for a single episode (bounded simulation run). |
+| `episode_config` | object | No | — | Configuration for a single episode (bounded simulation run). Three termination strategies, checked in this order each tick (first to fire wins), plus the ``max_steps`` cap: 1. **Structural** — ``terminal_component`` *without* ``terminal_field``: stop as soon as any entity *carries* that component type. Checked before each step (an already-terminal world runs zero steps). 2. **Value-based** — ``terminal_component`` *with* ``terminal_field``: stop when entities carrying the component have the boolean field latched. ``terminal_all`` picks the reducer — True (default) waits for *every* such entity, False stops at the *first*. Checked after each step, against persisted rows. This is the "all entities done" contract the LIBERO driver hand-rolled per tick. 3. **Callable** — ``termination(world) -> bool`` escape hatch, checked before each step. Setting ``terminal_field`` reinterprets ``terminal_component`` as the value-carrier, so the structural check is suppressed (otherwise the component's mere presence would terminate at tick 0). |
 | `num_episodes` | integer | No | `1` | Num Episodes |
 | `parallel` | boolean | No | `false` | Parallel |
 | `name_prefix` | string | No | `"ep"` | Name Prefix |

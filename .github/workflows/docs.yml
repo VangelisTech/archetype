@@ -7,9 +7,9 @@ on:
       - "docs/**"
       - "**/*.md"
       - "mkdocs.yml"
-      - "scripts/generate_*.py"
-      - "src/archetype/api/**"
-      - "src/archetype/cli/**"
+      - "scripts/**"
+      # The generated Python, CLI, and REST references derive from source.
+      - "src/archetype/**"
       - ".github/workflows/docs.yml"
   # No path filter on pull_request: Spelling, Markdown lint, and Build docs
   # are required status checks on main, and a required check that never runs
@@ -84,23 +84,18 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra docs
 
-      - name: Generate API & CLI reference
-        run: |
-          uv run python scripts/generate_api_docs.py
-          uv run python scripts/generate_cli_docs.py
-
-      - name: Build MkDocs
-        run: uv run --extra docs mkdocs build
+      - name: Build docs site
+        run: make docs
 
       - name: Verify Cloudflare Pages files
         run: |
-          for f in _headers _redirects; do
+          for f in _headers index.html 404.html docs/index.html; do
             if [ ! -f "site/$f" ]; then
-              echo "::error::site/$f missing — MkDocs did not copy docs/$f"
+              echo "::error::site/$f missing from the production artifact"
               exit 1
             fi
           done
-          echo "Cloudflare Pages files present: _headers, _redirects"
+          echo "Cloudflare Pages artifact contains the landing page and /docs site"
 
       - name: Upload site artifact
         uses: actions/upload-artifact@v4
@@ -176,6 +171,120 @@ jobs:
             exit 1
           fi
           echo "deployment-url=$url" >> "$GITHUB_OUTPUT"
+
+      # A CNAME file in the repository is a GitHub Pages convention; it does
+      # not attach a hostname to a Cloudflare Pages project. Keep the Pages
+      # association in the deployment workflow so the real custom-domain
+      # configuration cannot drift from the public site URL in mkdocs.yml.
+      - name: Ensure production custom domain
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
+          CUSTOM_DOMAIN: archetype.vangelis.tech
+        run: |
+          set -euo pipefail
+          endpoint="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/archetype-docs/domains"
+          status="$(curl --silent --show-error --output /tmp/pages-domains.json \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "$endpoint")"
+          if [ "$status" != "200" ]; then
+            echo "::error::Could not inspect Cloudflare Pages domains (HTTP $status)"
+            cat /tmp/pages-domains.json
+            exit 1
+          fi
+          if node -e '
+            const fs = require("fs");
+            const response = JSON.parse(fs.readFileSync("/tmp/pages-domains.json", "utf8"));
+            if (!response.success) process.exit(2);
+            process.exit(response.result.some((domain) => domain.name === process.env.CUSTOM_DOMAIN) ? 0 : 1);
+          '; then
+            echo "Cloudflare Pages custom domain already configured: ${CUSTOM_DOMAIN}"
+          else
+            curl --fail-with-body --silent --show-error \
+              --header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              --header "Content-Type: application/json" \
+              --data "{\"name\":\"${CUSTOM_DOMAIN}\"}" \
+              "$endpoint"
+            echo "Requested Cloudflare Pages custom domain: ${CUSTOM_DOMAIN}"
+          fi
+
+      # Pages associates the hostname with the project, but the DNS record is
+      # still required for a subdomain to resolve. Manage that single record
+      # here as well so the public hostname cannot remain pending after a
+      # successful production deploy.
+      - name: Ensure production DNS record
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
+          CUSTOM_DOMAIN: archetype.vangelis.tech
+          ZONE_NAME: vangelis.tech
+          PAGES_HOST: archetype-docs.pages.dev
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_DNS_API_TOKEN}" ]; then
+            echo "::warning::Set CLOUDFLARE_DNS_API_TOKEN (Zone:Read and DNS:Edit for vangelis.tech) to provision ${CUSTOM_DOMAIN}."
+            exit 0
+          fi
+          api="https://api.cloudflare.com/client/v4"
+          auth=(--header "Authorization: Bearer ${CLOUDFLARE_DNS_API_TOKEN}")
+
+          curl --fail-with-body --silent --show-error --get \
+            "${auth[@]}" \
+            --data-urlencode "name=${ZONE_NAME}" \
+            --output /tmp/zones.json \
+            "${api}/zones"
+          zone_id="$(node -e '
+            const fs = require("fs");
+            const response = JSON.parse(fs.readFileSync("/tmp/zones.json", "utf8"));
+            const zones = response.result?.filter((zone) => zone.name === process.env.ZONE_NAME) ?? [];
+            if (!response.success || zones.length !== 1) {
+              console.error(`Expected one Cloudflare zone named ${process.env.ZONE_NAME}`);
+              process.exit(1);
+            }
+            process.stdout.write(zones[0].id);
+          ')"
+
+          curl --fail-with-body --silent --show-error --get \
+            "${auth[@]}" \
+            --data-urlencode "name=${CUSTOM_DOMAIN}" \
+            --output /tmp/dns-records.json \
+            "${api}/zones/${zone_id}/dns_records"
+          record_id="$(node -e '
+            const fs = require("fs");
+            const response = JSON.parse(fs.readFileSync("/tmp/dns-records.json", "utf8"));
+            const records = response.result ?? [];
+            if (!response.success || records.length > 1 || records.some((record) => record.type !== "CNAME")) {
+              console.error(`Refusing to replace existing DNS records for ${process.env.CUSTOM_DOMAIN}`);
+              process.exit(1);
+            }
+            if (records.length === 1) process.stdout.write(records[0].id);
+          ')"
+          payload="$(node -e '
+            console.log(JSON.stringify({
+              type: "CNAME",
+              name: process.env.CUSTOM_DOMAIN,
+              content: process.env.PAGES_HOST,
+              proxied: true,
+              ttl: 1,
+            }));
+          ')"
+
+          if [ -n "${record_id}" ]; then
+            method="PUT"
+            endpoint="${api}/zones/${zone_id}/dns_records/${record_id}"
+          else
+            method="POST"
+            endpoint="${api}/zones/${zone_id}/dns_records"
+          fi
+          curl --fail-with-body --silent --show-error \
+            "${auth[@]}" \
+            --header "Content-Type: application/json" \
+            --request "${method}" \
+            --data "${payload}" \
+            "${endpoint}"
+          echo "Ensured proxied CNAME ${CUSTOM_DOMAIN} -> ${PAGES_HOST}"
 
       - name: Update deployment status (success)
         if: success()

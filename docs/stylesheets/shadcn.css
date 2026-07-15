@@ -1,186 +1,151 @@
-/* Archetype docs — overrides for mkdocs-shadcn theme */
+/* Archetype docs — fixed, monochrome Vangelis Tech presentation. */
 
-/* ── Fonts ───────────────────────────────────────────────────── */
-
-:root {
-  --font-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", "JetBrains Mono", monospace;
+:root,
+html.dark {
+  --font-sans: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --radius: 0.25rem;
+  --background: #ffffff;
+  --foreground: #000000;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #000000;
+  --muted: #f5f5f5;
+  --muted-foreground: #525252;
+  --accent: #eeeeee;
+  --accent-foreground: #000000;
+  --destructive: #000000;
+  --destructive-foreground: #ffffff;
+  --border: #d4d4d4;
+  --input: #d4d4d4;
+  --ring: #000000;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #000000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f5f5f5;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #d4d4d4;
+  --sidebar-ring: #000000;
+  --surface: #f5f5f5;
+  --surface-foreground: #000000;
+  --code: #f5f5f5;
+  --code-foreground: #000000;
+  --code-highlight: #e5e5e5;
+  --code-number: #525252;
+  --selection: #000000;
+  --selection-foreground: #ffffff;
 }
 
-body,
 html {
-  font-family: var(--font-sans);
+  color-scheme: light;
+  background: #ffffff;
 }
 
-h1, h2, h3, h4, h5, h6 {
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The Vangelis mark is 625 × 245, not a square app glyph. */
+header img[alt="icon"] {
+  height: 1.25rem !important;
+  width: auto !important;
+  max-width: none;
+}
+
+header a:has(> span > img[alt="icon"]) > span {
+  width: 3.5rem;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-family: var(--font-sans);
   font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 h1 {
-  margin-top: 1em !important;
+  margin-top: 0.8em !important;
+  font-size: clamp(2.15rem, 5vw, 3.25rem) !important;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
 }
 
 h2 {
-  margin-top: 1em !important;
+  margin-top: 1.8em !important;
+  font-size: 1.5rem;
+  line-height: 1.2;
 }
 
-.font-semibold {
-  font-family: "DIN Alternate", "DIN", var(--font-sans);
-  font-weight: 700;
-  letter-spacing: 0.02em;
+main p,
+main li {
+  line-height: 1.7;
 }
 
-/* ── Accent color (amber #F59E0B) ────────────────────────────── */
-
-a {
-  color: #C8962E;
+main a,
+footer a {
+  color: #000000;
+  text-decoration: underline;
+  text-decoration-color: #000000;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
 }
 
-a:hover {
-  color: #A67B1E;
+main a:hover,
+footer a:hover {
+  text-decoration-thickness: 2px;
 }
 
-.dark a {
-  color: #D4A843;
-}
-
-.dark a:hover {
-  color: #C8962E;
-}
-
-/* Sidebar active link */
 nav a[aria-current="page"],
 nav a.active {
-  color: #D4A843 !important;
+  color: #000000 !important;
+  font-weight: 700;
 }
 
-/* ── Inline code — subtle gold tint ─────────────────────────── */
+main > div > blockquote {
+  border-left-color: #000000;
+}
+
+table {
+  border-radius: 0.25rem;
+  overflow: hidden;
+}
 
 code:not(pre code) {
-  background-color: rgba(245, 158, 11, 0.08);
-  border: 1px solid rgba(245, 158, 11, 0.15);
-  border-radius: 4px;
+  background-color: #f5f5f5;
+  border: 1px solid #d4d4d4;
+  border-radius: 3px;
   padding: 0.15em 0.35em;
 }
 
-.dark code:not(pre code) {
-  background-color: rgba(212, 168, 67, 0.12);
-  border-color: rgba(212, 168, 67, 0.2);
-}
-
-/* code inside links — inherit link color, no gold background */
 a code:not(pre code) {
   background-color: transparent;
-  border: none;
-  padding: 0;
+  border: 0;
   color: inherit;
+  padding: 0;
 }
-
-/* ── Code blocks — padding + margin ──────────────────────────── */
 
 pre {
   margin: 1.5em 0;
+  border: 1px solid #d4d4d4;
+  border-radius: 0.25rem;
+  overflow: auto;
 }
 
 pre > code,
 pre code {
-  padding: 1em 1.25em;
   display: block;
-}
-
-/* ── VS Code Dark+ High Contrast syntax theme ───────────────── */
-
-/* code block surface — true black in dark mode */
-.dark pre,
-.dark .codehilite pre,
-.dark .highlight pre {
-  background-color: #000000 !important;
-}
-
-.dark pre > code,
-.dark .codehilite pre > code,
-.dark .highlight pre > code {
-  background-color: #000000 !important;
-}
-
-/* tokens — VS Code Dark+ HC palette */
-.dark .codehilite .c,
-.dark .codehilite .c1,
-.dark .codehilite .cm,
-.dark .codehilite .cs,
-.dark .codehilite .ch {
-  color: #7ca668;                     /* comments — muted green */
-}
-
-.dark .codehilite .k,
-.dark .codehilite .kc,
-.dark .codehilite .kd,
-.dark .codehilite .kn,
-.dark .codehilite .kp,
-.dark .codehilite .kr,
-.dark .codehilite .kt,
-.dark .codehilite .ow {
-  color: #569cd6;                     /* keywords — blue */
-}
-
-.dark .codehilite .nb,
-.dark .codehilite .bp {
-  color: #4ec9b0;                     /* builtins — teal */
-}
-
-.dark .codehilite .nf,
-.dark .codehilite .fm,
-.dark .codehilite .nc {
-  color: #dcdcaa;                     /* functions/classes — yellow */
-}
-
-.dark .codehilite .s,
-.dark .codehilite .s1,
-.dark .codehilite .s2,
-.dark .codehilite .sa,
-.dark .codehilite .sb,
-.dark .codehilite .sc,
-.dark .codehilite .sd,
-.dark .codehilite .se,
-.dark .codehilite .sh,
-.dark .codehilite .si,
-.dark .codehilite .sx,
-.dark .codehilite .sr {
-  color: #ce9178;                     /* strings — orange */
-}
-
-.dark .codehilite .mi,
-.dark .codehilite .mf,
-.dark .codehilite .mh,
-.dark .codehilite .mo,
-.dark .codehilite .mb,
-.dark .codehilite .il {
-  color: #b5cea8;                     /* numbers — light green */
-}
-
-.dark .codehilite .n,
-.dark .codehilite .na,
-.dark .codehilite .ni,
-.dark .codehilite .nl,
-.dark .codehilite .nn,
-.dark .codehilite .no,
-.dark .codehilite .nv,
-.dark .codehilite .nd {
-  color: #9cdcfe;                     /* names/variables — light blue */
-}
-
-.dark .codehilite .o,
-.dark .codehilite .p {
-  color: #d4d4d4;                     /* operators/punctuation — light grey */
-}
-
-.dark .codehilite .gd { color: #f44747; }  /* diff deleted */
-.dark .codehilite .gi { color: #6a9955; }  /* diff inserted */
-
-/* line numbers */
-.dark .codehilite .linenos,
-.dark .codehilite .linenodiv {
-  color: #5a5a5a;
-  border-right-color: #333333;
+  padding: 1em 1.25em;
 }
