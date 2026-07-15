@@ -881,7 +881,6 @@ coherent engine contract:
 8. Resolve or explicitly codify same-entity same-tick mutation composition so
    broker command order and final materialized state cannot diverge silently.
 
-
 ## Durability Posture (v0.3, issue #276)
 
 The durable substrate (#272–#275) gives each remaining self-assessment an
