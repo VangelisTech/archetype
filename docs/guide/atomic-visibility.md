@@ -82,6 +82,12 @@ The allowlist matches manifests across history, not the head epoch alone: a
 stale writer may append old-epoch rows at an already-visible tick, and those
 rows carry an unpublished token, so they never surface.
 
+A corrupt or unreadable catalog fails coordinated reads closed — the error
+propagates; it never degrades to unfiltered visibility. (Degraded discovery
+returns less data; degraded visibility would return rows no manifest
+authorized.) A merely missing catalog is not an error: connecting creates an
+empty one, which reports the legacy-unfiltered case.
+
 ## 5. Writer fencing
 
 One live writer per world, enforced by catalog CAS: acquiring the fence

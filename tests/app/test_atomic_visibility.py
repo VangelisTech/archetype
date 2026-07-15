@@ -312,6 +312,27 @@ async def test_v1_catalog_upgrades_additively(tmp_path):
     await catalog.close()
 
 
+async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch):
+    """A broken control catalog must fail coordinated reads, never widen
+    them: returning 'no allowlist' on error would surface rows from crashed
+    or stale commit attempts that no manifest authorized (Codex P1, #280)."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        await _spawn_and_step(c, world)
+        assert len(await _visible_rows(c, world, storage, ticks=[0])) == 1
+
+        async def _broken(self, *args, **kwargs):
+            raise RuntimeError("catalog corrupt")
+
+        monkeypatch.setattr(SqliteControlCatalog, "visible_tokens", _broken)
+        with pytest.raises(RuntimeError, match="catalog corrupt"):
+            await _visible_rows(c, world, storage, ticks=[0])
+    finally:
+        await c.shutdown()
+
+
 async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     catalog = SqliteControlCatalog(tmp_path / "cat.db")
     epoch = await catalog.acquire_fence("w", "h1")

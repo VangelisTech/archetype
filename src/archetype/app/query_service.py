@@ -158,15 +158,18 @@ class QueryService:
         """Reader-side commit-token allowlist for one (world, run) segment.
 
         None = unfiltered (no manifests recorded: uncoordinated or pre-#273
-        history — implicit epoch-0). Catalog unavailability degrades to
-        unfiltered reads, matching _catalog_candidates' failure posture.
+        history — implicit epoch-0).
+
+        Catalog errors PROPAGATE — the opposite posture from
+        _catalog_candidates, deliberately. Degraded discovery returns less
+        data; a degraded visibility check would return MORE (rows from
+        crashed or stale commit attempts that no manifest authorized), so a
+        corrupt or unreadable catalog fails the read closed. A missing
+        catalog is not an error: connecting creates an empty one, which
+        reports no manifests and no fence — the legacy-unfiltered case.
         """
-        try:
-            catalog = self._storage_service.get_control_catalog(storage_config)
-            visible = await catalog.visible_tokens(str(world_id), str(run_id), ticks)
-        except Exception:
-            logger.exception("control catalog unavailable for %s", storage_config.uri)
-            return None
+        catalog = self._storage_service.get_control_catalog(storage_config)
+        visible = await catalog.visible_tokens(str(world_id), str(run_id), ticks)
         if visible is None:
             return None
         if ticks is None:
