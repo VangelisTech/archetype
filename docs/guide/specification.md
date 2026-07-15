@@ -899,9 +899,11 @@ Four tasks cross real OS-process boundaries over shared LanceDB and SQLite
 files: hard process death followed by cold resume, a two-writer fence race,
 eight-process fact replay, and eight-process evaluation replay with an
 external grader-call ledger. The `infrastructure-idempotency` GitHub Actions
-job creates a disposable table in Cloudflare R2 Data Catalog and runs the
-Iceberg integration under `tests/infrastructure/`; local development does not
-require Docker.
+job creates a disposable Iceberg table under a unique Cloudflare R2 object
+storage prefix and runs the integration under `tests/infrastructure/`; local
+development does not require Docker. The catalog metadata is isolated in a
+runner-local SQLite database, so this gate proves Archetype/Daft/PyIceberg R2
+I/O and commit visibility, not the Cloudflare Data Catalog control plane.
 
 ## Required Hardening Work
 
