@@ -435,6 +435,39 @@ class RuntimeWorld:
         df = await self.query(*component_types, entity_ids=entity_ids)
         return await self._state.runtime._container.eval_service.run_graders(df, graders)
 
+    async def evaluate(
+        self,
+        *component_types: type[Component],
+        contract,
+        grader: TrajectoryGrader,
+        evaluation_id: str,
+        producer: str = "evals",
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ):
+        """Claim-before-grade (issue #275): one visible receipt per evaluation_id.
+
+        Unlike ``grade`` (ephemeral scores), this persists a durable
+        EvalReceipt pinned to the world's current snapshot and a versioned
+        GraderContract. Replaying the same evaluation_id returns the
+        original receipt without re-grading; new trials of nondeterministic
+        graders use new evaluation_ids. Receipts are evidence, never
+        authority.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.evaluate(
+                self._ctx,
+                wid,
+                list(component_types),
+                contract=contract,
+                grader=grader,
+                evaluation_id=evaluation_id,
+                producer=producer,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def info(self) -> WorldInfo:
@@ -702,6 +735,29 @@ class SyncRuntimeWorld:
     ) -> list[GraderOutput]:
         return self._run(
             lambda: self._world.grade(*component_types, graders=graders, entity_ids=entity_ids)
+        )
+
+    def evaluate(
+        self,
+        *component_types: type[Component],
+        contract,
+        grader: TrajectoryGrader,
+        evaluation_id: str,
+        producer: str = "evals",
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ):
+        """See RuntimeWorld.evaluate (claim-before-grade receipts)."""
+        return self._run(
+            lambda: self._world.evaluate(
+                *component_types,
+                contract=contract,
+                grader=grader,
+                evaluation_id=evaluation_id,
+                producer=producer,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
         )
 
     def info(self) -> WorldInfo:

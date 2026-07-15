@@ -97,12 +97,6 @@ method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
 [[entries]]
-path = "src/archetype/app/ingestion_service.py"
-line = 136
-method = "to_pylist"
-reason = "Crash-recovery orphan probe (issue #274): a lease takeover must learn whether the presumed-dead claimant already appended this ONE fact (rows filtered to a single commit token, bounded to one fact's rows) so it can complete-without-append instead of duplicating; the append/skip decision is imperative claim-lifecycle control flow, not a dataframe computation."
-
-[[entries]]
 path = "src/archetype/experiments/boundary.py"
 line = 119
 method = "to_pylist"

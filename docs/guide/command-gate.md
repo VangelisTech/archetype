@@ -99,6 +99,7 @@ A `player` does not advance the world — they participate in the world that som
 | `fork_world` | — | — | ✓ | ✓ |
 | `destroy_world` | — | — | ✓ | ✓ |
 | `ingest_fact` | — | — | ✓ | ✓ |
+| `evaluate` | — | — | ✓ | ✓ |
 
 The asymmetry is intentional. `create_world` establishes new platform-level identity → admin-only. `fork_world` and `destroy_world` are operator-territory because operators routinely fork (rollouts) and destroy (cleanup). Forks and destroys never delete persistent data (append-only invariant), so this is safe.
 

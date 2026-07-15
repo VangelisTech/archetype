@@ -79,6 +79,7 @@ class ServiceContainer:
             broker=self.broker,
             audit=self.audit_log,
             ingestion=self.ingestion_service,
+            evals=self.eval_service,
             autoresearch=self.autoresearch_service,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)

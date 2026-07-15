@@ -48,6 +48,18 @@ class QueryService:
         self._storage_service = storage_service
         self._audit = audit
 
+    async def _querier_for(self, storage_config: StorageConfig | None):
+        """Resolve (config, store, querier) for one call.
+
+        The store is per-call state — every method takes a storage_config so
+        any historical location is reachable — and the pool inside
+        StorageService makes repeated resolution a dict lookup. The querier
+        is a stateless facade; constructing one per call is deliberate.
+        """
+        effective = storage_config or StorageConfig()
+        store = await self._storage_service.get_or_create_store(effective, None)
+        return effective, store, AsyncQueryManager(store=store)
+
     async def query_archetype(
         self,
         sig: ArchetypeSignature,
@@ -70,9 +82,7 @@ class QueryService:
         When `lineage` is provided (a fork's ancestor segments), pre-fork
         ticks are read from the owning ancestor's run and unioned in.
         """
-        effective_config = storage_config or StorageConfig()
-        store = await self._storage_service.get_or_create_store(effective_config)
-        querier = AsyncQueryManager(store=store)
+        effective_config, _store, querier = await self._querier_for(storage_config)
 
         async def _segment(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
             tokens = await self._visible_tokens(effective_config, seg_world, seg_run, seg_ticks)
@@ -108,9 +118,7 @@ class QueryService:
         When `lineage` is provided (a fork's ancestor segments), pre-fork
         ticks are read from the owning ancestor's run and unioned in.
         """
-        effective_config = storage_config or StorageConfig()
-        store = await self._storage_service.get_or_create_store(effective_config, None)
-        querier = AsyncQueryManager(store=store)
+        effective_config, store, querier = await self._querier_for(storage_config)
         catalog_records = await self._catalog_candidates(effective_config, components)
 
         async def _read(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
@@ -289,7 +297,7 @@ class QueryService:
         Lineage rows are append-only, so this works for destroyed worlds.
         Returns None for root worlds (nothing was recorded at fork time).
         """
-        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        _config, store, _querier = await self._querier_for(storage_config)
         return await load_lineage(store, world_id=world_id, run_id=run_id)
 
     async def list_signatures(
@@ -297,8 +305,7 @@ class QueryService:
         storage_config: StorageConfig | None = None,
     ) -> list[ArchetypeSignature]:
         """List all archetype signatures in a store."""
-        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
-        querier = AsyncQueryManager(store=store)
+        _config, _store, querier = await self._querier_for(storage_config)
         return await querier.list_signatures()
 
     async def get_command_history(
