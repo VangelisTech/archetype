@@ -114,6 +114,7 @@ class AsyncWorld(iAsyncWorld):
         self._commit_ctx: CommitContext | None = None
         self._updater_takes_commit: bool | None = None
         self._querier_caps: dict[str, dict[str, bool]] | None = None
+        self._sig_intern: dict[str, ArchetypeSignature] | None = None
 
     @property
     def _entity2sig(self):
@@ -231,7 +232,7 @@ class AsyncWorld(iAsyncWorld):
                     str(self.run_id),
                     self.tick,
                     self._commit_ctx,
-                    [Archetype.get_name(sig) for sig in sigs],
+                    sigs,
                 )
                 # Mutations are consumed only now, after the manifest exists.
                 # A crash or stale-writer failure at ANY earlier point leaves
@@ -507,11 +508,30 @@ class AsyncWorld(iAsyncWorld):
             )
         await self._register_entity(entity_id, components)
 
+    def _intern_sig(self, sig: ArchetypeSignature) -> ArchetypeSignature:
+        """One canonical signature tuple per table id.
+
+        Schema-identical twin classes exist legitimately: a resumed world's
+        fingerprint-resolved signature and the caller's own classes hash to
+        the same table. They must share ONE key in entity2sig and the
+        mutation caches — as distinct dict keys, the step loop would process
+        their shared table once per alias and double-append every row.
+        """
+        if self._sig_intern is None:
+            self._sig_intern = {}
+            for existing in (
+                *self.entity2sig.values(),
+                *self.spawn_cache,
+                *self.despawn_cache,
+            ):
+                self._sig_intern.setdefault(Archetype.get_name(existing), existing)
+        return self._sig_intern.setdefault(Archetype.get_name(sig), sig)
+
     async def _register_entity(self, entity_id: int, components: list[Component]) -> None:
         """Single source of truth for entity spawn. Every path that makes a
         new entity observable to the world MUST go through this method so
         ``OnSpawn`` is always fired exactly once with the correct payload."""
-        sig = Archetype.sig_from_components(components)
+        sig = self._intern_sig(Archetype.sig_from_components(components))
         self.entity2sig[entity_id] = sig
         row_dict = Archetype.to_row_dict(
             entity_id, self.tick, components, self.world_id, run_id=self.run_id
@@ -589,6 +609,7 @@ class AsyncWorld(iAsyncWorld):
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
 
         # 2) row to *insert* under new signature
+        new_sig = self._intern_sig(new_sig)
         self.spawn_cache.setdefault(new_sig, []).append(row)
 
         # 3) update bookkeeping – atomically
@@ -620,6 +641,7 @@ class AsyncWorld(iAsyncWorld):
         )  # remove ≡ keep remaining columns
 
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
+        new_sig = self._intern_sig(new_sig)
         self.spawn_cache.setdefault(new_sig, []).append(row)
         self.entity2sig[entity_id] = new_sig
 
@@ -697,11 +719,16 @@ class AsyncWorld(iAsyncWorld):
             store_sigs = {_canonicalize(s) for s in await self.querier.list_signatures()}
             live_sigs = {_canonicalize(s) for s in self.active_signatures}
             all_known = live_sigs | store_sigs
+            # Identity is the SCHEMA, not the Python class objects: compare
+            # by table id (a schema hash), so a schema-identical component
+            # class from another module (a resumed world's resolved twin)
+            # matches the signature it stands for.
+            known_ids = {Archetype.get_name(s) for s in all_known}
             # Only raise when we have at least one committed or live sig — a truly
             # brand-new world that has never spawned anything (empty store, no
             # pending spawns) cannot yet distinguish a valid future sig from an
             # incorrect one, so we let the store return an empty frame naturally.
-            if all_known and sig not in all_known:
+            if all_known and Archetype.get_name(sig) not in known_ids:
                 component_names = ", ".join(t.__name__ for t in sig)
                 raise UnknownSignatureError(
                     f"Archetype signature ({component_names}) has never been registered in this world. "

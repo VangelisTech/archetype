@@ -152,7 +152,14 @@ class AsyncQueryManager(iAsyncQueryManager):
         import daft
         import pyarrow as pa
 
-        required = set(components)
+        # Identity is the SCHEMA, not the class object: two classes with the
+        # same name and prefixed schema are the same component wherever they
+        # were defined (a resumed world resolves twins by fingerprint, so
+        # its live sigs may hold a different-but-identical class object).
+        def _key(t: type[Component]) -> tuple[str, str]:
+            return (t.__name__, str(t.get_prefixed_schema()))
+
+        required = {_key(c) for c in components}
 
         # Build the output schema from the requested components. Component
         # projections exclude commit-identity columns (they are storage
@@ -164,7 +171,7 @@ class AsyncQueryManager(iAsyncQueryManager):
 
         # Find all sigs that contain the required types
         all_sigs = await self.list_signatures()
-        matching = [sig for sig in all_sigs if required.issubset(set(sig))]
+        matching = [sig for sig in all_sigs if required.issubset({_key(t) for t in sig})]
 
         # Ergonomic check: when no archetype satisfies the full component set,
         # raise with a message that names the problematic component(s) and hints
@@ -181,7 +188,7 @@ class AsyncQueryManager(iAsyncQueryManager):
             hints: list[str] = []
             culprit_names: list[str] = []
             for c in components:
-                providers = [s for s in all_sigs if c in s]
+                providers = [s for s in all_sigs if _key(c) in {_key(t) for t in s}]
                 if not providers:
                     # Case (a): component has never been spawned at all.
                     hints.append(f"{c.__name__} has never been spawned in this world")

@@ -382,8 +382,8 @@ async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     ctx = await coordinator.begin_tick("w", "r", 0)
     assert ctx.writer_epoch == epoch and ctx.commit_token
 
-    await coordinator.publish_tick("w", "r", 0, ctx, ["t1"])
-    await coordinator.publish_tick("w", "r", 0, ctx, ["t1"])  # idempotent retry
+    await coordinator.publish_tick("w", "r", 0, ctx, [(Counter,)])
+    await coordinator.publish_tick("w", "r", 0, ctx, [(Counter,)])  # idempotent retry
 
     visible = await coordinator.visible_tokens("w", "r", [0, 1])
     assert visible == {0: ctx.commit_token}
@@ -392,5 +392,5 @@ async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     await catalog.acquire_fence("w", "h2")
     ctx2 = await coordinator.begin_tick("w", "r", 1)
     with pytest.raises(StaleWriterError):
-        await coordinator.publish_tick("w", "r", 1, ctx2, ["t1"])
+        await coordinator.publish_tick("w", "r", 1, ctx2, [(Counter,)])
     await catalog.close()

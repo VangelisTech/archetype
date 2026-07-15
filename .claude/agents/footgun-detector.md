@@ -79,6 +79,19 @@ Config fields, constructor params, or Component fields defined but never read/wi
 #### Substring matching on structured data
 `str.contains()` on JSON strings when exact match needed. Parse JSON first.
 
+
+#### Fail-open failure paths
+Error handling in a VALIDATION or FILTER path that degrades to not-checking: an exception swallowed into "no allowlist", a TypeError fallback that retries without the guard parameter, a catalog error returning "unfiltered". Degraded discovery returns LESS data (fine); degraded visibility/authorization returns MORE (never fine). Failure in checking machinery must propagate or fail closed.
+
+#### Identity/keying disagreement
+Two functions that define identity for the same thing must agree field-for-field: a pool key including `backend` while a catalog path omits it; a fingerprint hashing physical types while a comparison uses logical ones; a guard comparing Python class objects where storage compares schema hashes. Grep for the sibling identity function and diff the fields.
+
+#### Error-path unwind
+An operation that registers state in one place then fails in a later step must unwind the first (or order the authoritative write first). A failed create/resume that leaves a live registry entry, an acquired fence, or a half-registered record behind is a lingering mutable orphan.
+
+#### Off-lifecycle states
+Objects have reachable states OFF the canonical create→spawn→step→destroy path: forked-but-never-stepped, resumed-but-not-reattached, crashed-mid-commit, registered-but-fence-failed. Diffs that reconstruct or inventory state (resume, discovery, migration) must handle every reachable state, not just the ones tests naturally visit. Ask: what does this code do for a world that exists but has never ticked?
+
 #### Wrong return values
 Returning indices/booleans/placeholders instead of real identifiers.
 

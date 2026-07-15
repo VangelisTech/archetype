@@ -189,7 +189,60 @@ Read-only by convention; no enforcement in v1.
 
 Destroying an unknown world_id is a no-op, not an error. Repeated calls to `destroy_world(world_id)` after the first succeed silently.
 
-## 6. `WorldInfo` and the info-class downgrade
+## 6. `resume_world` (fenced mutable cold resume)
+
+Added by issue #273 on top of the atomic-visibility contract
+([Atomic Visibility](atomic-visibility.md)).
+
+```python
+# iWorldService (returns AsyncWorld; internal use)
+async def open_world_mutable(
+    storage_config: StorageConfig,
+    world_id: str | UUID,
+) -> AsyncWorld: ...
+
+# iCommandService (returns WorldInfo; downgrade at gate boundary)
+async def resume_world(
+    ctx: ActorCtx,
+    storage_config: StorageConfig,
+    world_id: str | UUID,
+) -> WorldInfo: ...
+
+# ArchetypeRuntime (returns a RuntimeWorld handle)
+world = await runtime.resume(world_id, storage=...)
+```
+
+Resume reconstructs a live, writable world from durable state in a process
+that shares nothing with the previous writer but the storage config:
+
+- **Tick** — the last *visible* tick + 1, from manifests, never from rows:
+  a crashed attempt's unpublished rows must not advance the head.
+- **Entity directory** — the latest visible row per entity across every
+  catalog table decides its archetype and liveness; `next_entity_id`
+  resumes past the highest id ever seen (ids are never reused). The
+  inventory reads through the open-never-create seam on base columns, so
+  classes are demanded only for archetypes with LIVE entities.
+- **Component classes** — resolved by the stored schema fingerprint, not by
+  name alone: same-named classes from different modules cannot be confused,
+  and a definition that drifted since the rows were written is refused.
+  Identity is the schema.
+- **Lineage** — restored from the persisted ancestor chain; a fork record
+  whose lineage rows are missing is detectable corruption and refuses.
+- **Fence** — acquired last (epoch + 1): the previous writer's next publish
+  fails closed with `StaleWriterError`.
+
+Resume fails loudly rather than reconstructing unfaithfully: unrecorded
+worlds (`KeyError`), destroyed worlds (queryable, never resumable), worlds
+already live in this process, missing or drifted component classes, and
+corrupt fork records all refuse with the cause named.
+
+**Code is not rows.** Processors, resources, and hooks are never restored
+and never claimed to be. The caller reattaches them after resume; until
+then the world steps as a pure ledger-advancing simulation. Gated as
+`CREATE_WORLD` — resuming creates a live writer, the same authority class
+as creating one.
+
+## 7. `WorldInfo` and the info-class downgrade
 
 The gate downgrades live objects to immutable info classes before returning to user code. This is what enforces "the runtime never holds an `iWorld`."
 
@@ -246,7 +299,7 @@ class ResourceInfo(BaseModel):
 
 The downgrade happens at the gate's return statement. Live objects (iWorld, iAsyncProcessor instances, callables, user resources) never escape past the gate.
 
-## 7. Permissions
+## 8. Permissions
 
 | Method | viewer | player | operator | admin |
 |---|---|---|---|---|
@@ -260,7 +313,7 @@ The downgrade happens at the gate's return statement. Live objects (iWorld, iAsy
 
 `fork_world` and `destroy_world` are operator-permitted because operators routinely fork (rollouts) and destroy (cleanup), and neither operation deletes persisted data.
 
-## 8. Tests
+## 9. Tests
 
 Critical:
 
@@ -274,7 +327,7 @@ Critical:
 - `iAsyncStore` protocol has no `drop_*` / `delete_*` method. (Reflective check.)
 - `iAuditLog` protocol has no `drop_*` / `delete_*` method. (Reflective check.)
 
-## 9. Out of scope
+## 10. Out of scope
 
 - Per-resource forking semantics (isolated resources per fork). v1: shared.
 - Per-world storage migration after creation. v1: storage_config at creation time only.

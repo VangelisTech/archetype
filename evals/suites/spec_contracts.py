@@ -188,6 +188,7 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "list_worlds": CommandType.LIST_WORLDS,
     "discover_worlds": CommandType.LIST_WORLDS,
     "open_world_readonly": CommandType.GET_WORLD_INFO,
+    "resume_world": CommandType.CREATE_WORLD,
     "step": CommandType.STEP,
     "run": CommandType.RUN,
     "run_episode": CommandType.RUN_EPISODE,

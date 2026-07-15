@@ -72,7 +72,8 @@ async def open_world_readonly(
 - `open_world_readonly` is gated as `GET_WORLD_INFO`. It returns the world's
   durable descriptor as the existing `WorldInfo` boundary type and raises
   `KeyError` for unrecorded worlds. It never constructs a live mutable
-  world — fenced mutable resume is a separate, A2-gated capability.
+  world — that is `resume_world` (gated as `CREATE_WORLD`; see
+  [World Lifecycle](world-lifecycle.md) § Resume).
 
 Both operations respect the info-class downgrade: callers get `WorldInfo`,
 never a world handle.
@@ -135,5 +136,5 @@ Not guaranteed until A2 (issue #273):
 
 - The catalog tick head is advisory. The durable, atomic tick-visibility
   boundary (commit tokens, writer epochs) is A2's contract.
-- No fenced mutable resume of a discovered world. Opens are read-only.
-- Crashed physical executions are queryable, not resumable.
+- Crashed physical executions are queryable, not resumable (the ledger can
+  hide partial rows; it cannot un-step external physics).
