@@ -52,6 +52,27 @@ export default {
     if (parts[2] === "w" && parts.length >= 4) {
       const worldId = parts[3];
       const stub = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
+      // Manifest publication also advances the directory's world head. The
+      // SQLite reference does both in one transaction; across two Durable
+      // Objects the update is ordered-after-publish and idempotent
+      // (MAX(head, tick)), so a crash between the calls self-heals on the
+      // next publish. Manifests remain the authority; the directory head is
+      // derived data for discovery and fact-tick selection.
+      if (parts[4] === "manifests" && request.method === "POST") {
+        const body = (await request.clone().json()) as { tick?: number };
+        const response = await stub.fetch(request);
+        if (response.ok && typeof body.tick === "number") {
+          const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
+          await directory.fetch(
+            new Request(`${url.origin}/ns/${namespace}/worlds/${worldId}`, {
+              method: "PATCH",
+              headers: JSON_HEADERS,
+              body: JSON.stringify({ tick_head: body.tick }),
+            }),
+          );
+        }
+        return response;
+      }
       return stub.fetch(request);
     }
     const stub = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
