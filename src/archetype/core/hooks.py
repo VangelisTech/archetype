@@ -64,16 +64,17 @@ class HookEvent:
 
 @dataclass(frozen=True, slots=True)
 class PreTick(HookEvent):
-    """Fires at the start of ``World.step``, before any archetype runs."""
+    """Fire before processors run for a tick."""
 
     tick: int
 
 
 @dataclass(frozen=True, slots=True)
 class PostTick(HookEvent):
-    """Fires after all archetypes have processed and ``_live`` has been
-    refreshed. ``tick`` is the *next* tick (the one just completed was
-    ``tick - 1``)."""
+    """Fire after processors finish and the tick is persisted.
+
+    `tick` is the next tick; the completed tick is `tick - 1`.
+    """
 
     tick: int
     results: dict[ArchetypeSignature, DataFrame]
@@ -81,10 +82,7 @@ class PostTick(HookEvent):
 
 @dataclass(frozen=True, slots=True)
 class OnSpawn(HookEvent):
-    """Fires after the entity has been registered in ``_entity2sig`` and the
-    row appended to ``_spawn_cache``, but before the tick materializes it.
-    A handler calling ``world.get_entity(event.entity_id)`` will not find
-    the entity until ``PostTick`` of the current tick."""
+    """Fire after an entity is registered but before its first row is persisted."""
 
     entity_id: int
     components: list[Component]
@@ -92,18 +90,18 @@ class OnSpawn(HookEvent):
 
 @dataclass(frozen=True, slots=True)
 class OnDespawn(HookEvent):
-    """Fires after the entity has been removed from ``_entity2sig`` and either
-    the same-tick spawn has been cancelled or a despawn row has been queued
-    in ``_despawn_cache``."""
+    """Fire after an entity is removed from active state."""
 
     entity_id: int
 
 
 @dataclass(frozen=True, slots=True)
 class OnComponentAdded(HookEvent):
-    """Fires after ``add_components`` has moved the entity to its new
-    signature. ``components`` is the list of instances the caller supplied,
-    not the full post-move component set."""
+    """Fire after component types are added to an entity.
+
+    `components` contains the supplied additions, not the entity's complete
+    component set.
+    """
 
     entity_id: int
     components: list[Component]
@@ -111,8 +109,7 @@ class OnComponentAdded(HookEvent):
 
 @dataclass(frozen=True, slots=True)
 class OnComponentRemoved(HookEvent):
-    """Fires after ``remove_components`` has moved the entity to its new
-    signature."""
+    """Fire after component types are removed from an entity."""
 
     entity_id: int
     component_types: list[type[Component]]
@@ -120,10 +117,9 @@ class OnComponentRemoved(HookEvent):
 
 @dataclass(frozen=True, slots=True)
 class OnDestroy(HookEvent):
-    """Fires when a world is destroyed via ``WorldOrchestrator.destroy_world``.
+    """Fire immediately before a world is destroyed.
 
-    Fires before the world is removed from the registry. Handlers can
-    perform cleanup or final reads against the still-live world.
+    Handlers can perform cleanup or final reads while the world is still live.
     """
 
 
@@ -155,14 +151,9 @@ FireMode = Literal["blocking", "spawn"]
 
 @dataclass(frozen=True, slots=True)
 class HookHandle:
-    """Opaque token returned by ``world.add_hook``. Pass to
-    ``world.remove_hook`` to unregister. Equality and hashing are registry-
-    scoped so a handle from one world cannot accidentally match a same-shaped
-    handle minted by another world.
+    """Opaque token used to remove a registered hook.
 
-    Shared by both ``HookRegistry`` and ``SyncHookRegistry`` — a handle
-    minted by one registry is not meaningful to the other, but the type is
-    uniform so interfaces can accept either.
+    Handles are scoped to the world and hook registry that created them.
     """
 
     _id: int

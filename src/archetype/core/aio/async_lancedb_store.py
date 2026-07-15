@@ -247,7 +247,7 @@ class AsyncLancedbStore(iAsyncStore):
     ) -> DataFrame:
         """Read one archetype's rows.
 
-        ``commit_tokens`` is the reader-side visibility allowlist (issue #273):
+        `commit_tokens` is the reader-side visibility allowlist:
         current-generation rows must match a published manifest token. Legacy
         (v0.2) rows carry no commit identity and are implicitly epoch-0
         visible — the allowlist never applies to them.

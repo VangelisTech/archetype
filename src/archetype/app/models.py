@@ -22,6 +22,7 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
+from archetype.app.facts import FactReceipt as FactReceipt
 from archetype.core.config import JsonUUID, RunConfig
 
 # Global sequence counter for command ordering
@@ -148,107 +149,118 @@ class Command(BaseModel):
 
 
 class WorldInfo(BaseModel):
-    """Immutable snapshot of a world's identity and position.
-
-    This is the gate boundary type — iCommandService returns WorldInfo,
-    never iWorld. Field access is sync; fetch is gated.
-    """
+    """Immutable snapshot of a world's identity and current position."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
     # str | UUID: worlds store str internally; gate accepts both
-    world_id: str | JsonUUID
-    name: str | None = None
-    tick: int = 0
-    run_id: str | JsonUUID | None = None
+    world_id: str | JsonUUID = Field(description="Durable world identifier.")
+    name: str | None = Field(default=None, description="Human-readable world name.")
+    tick: int = Field(default=0, description="Next tick to execute.")
+    run_id: str | JsonUUID | None = Field(
+        default=None, description="Identifier of the active or most recent run."
+    )
 
 
 class RunResult(BaseModel):
+    """Summary of a completed call to `RuntimeWorld.run()`."""
+
     model_config = dict(arbitrary_types_allowed=True)
-    run_id: str | JsonUUID
-    world_id: str | JsonUUID
-    ticks_completed: int = 0
-    commands_applied: int = 0
-    final_tick: int = 0
+    run_id: str | JsonUUID = Field(description="Identifier of the completed run.")
+    world_id: str | JsonUUID = Field(description="World advanced by the run.")
+    ticks_completed: int = Field(default=0, description="Number of ticks executed.")
+    commands_applied: int = Field(
+        default=0, description="Number of queued commands applied during the run."
+    )
+    final_tick: int = Field(default=0, description="World tick after the run completed.")
 
 
 class EpisodeConfig(BaseModel):
-    """Configuration for a single episode (bounded simulation run).
+    """Configure a bounded simulation episode.
 
-    Three termination strategies, checked in this order each tick (first to
-    fire wins), plus the ``max_steps`` cap:
-
-    1. **Structural** — ``terminal_component`` *without* ``terminal_field``:
-       stop as soon as any entity *carries* that component type. Checked
-       before each step (an already-terminal world runs zero steps).
-    2. **Value-based** — ``terminal_component`` *with* ``terminal_field``:
-       stop when entities carrying the component have the boolean field
-       latched. ``terminal_all`` picks the reducer — True (default) waits
-       for *every* such entity, False stops at the *first*. Checked after
-       each step, against persisted rows. This is the "all entities done"
-       contract the LIBERO driver hand-rolled per tick.
-    3. **Callable** — ``termination(world) -> bool`` escape hatch, checked
-       before each step.
-
-    Setting ``terminal_field`` reinterprets ``terminal_component`` as the
-    value-carrier, so the structural check is suppressed (otherwise the
-    component's mere presence would terminate at tick 0).
+    An episode stops at `max_steps`, when `termination` returns true, or when
+    its terminal component condition is satisfied. Supplying only
+    `terminal_component` stops on component presence. Adding `terminal_field`
+    instead tests that boolean field; `terminal_all` chooses whether every or
+    any matching entity must satisfy it.
     """
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    episode_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
-    run_config: RunConfig = Field(default_factory=RunConfig)
-    max_steps: int = 1000
-    terminal_component: Any | None = None
-    terminal_field: str | None = None  # boolean field on terminal_component, e.g. "done"
-    terminal_all: bool = True  # True: every entity must latch; False: any one
-    termination: Any | None = None  # Callable[[iWorld], bool] | None
+    episode_id: str | JsonUUID = Field(
+        default_factory=uuid.uuid7, description="Stable identifier for this episode."
+    )
+    run_config: RunConfig = Field(default_factory=RunConfig, description="Tick execution options.")
+    max_steps: int = Field(default=1000, description="Maximum ticks before stopping.")
+    terminal_component: Any | None = Field(
+        default=None, description="Component type used for structural or value termination."
+    )
+    terminal_field: str | None = Field(
+        default=None, description="Boolean field tested on the terminal component."
+    )
+    terminal_all: bool = Field(
+        default=True, description="Require every matching entity when testing a field."
+    )
+    termination: Any | None = Field(
+        default=None, description="Optional callable termination predicate."
+    )
 
 
 class RolloutConfig(BaseModel):
-    """Configuration for a rollout (N episodes forked from a base world)."""
+    """Configure several episodes run on forks of one base world."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    rollout_id: str | JsonUUID = Field(default_factory=uuid.uuid7)
-    episode_config: EpisodeConfig = Field(default_factory=EpisodeConfig)
-    num_episodes: int = 1
-    parallel: bool = False
-    name_prefix: str = "ep"
-    destroy_forks_on_complete: bool = False
+    rollout_id: str | JsonUUID = Field(
+        default_factory=uuid.uuid7, description="Stable identifier for this rollout."
+    )
+    episode_config: EpisodeConfig = Field(
+        default_factory=EpisodeConfig, description="Configuration shared by each episode."
+    )
+    num_episodes: int = Field(default=1, description="Number of episode forks to run.")
+    parallel: bool = Field(default=False, description="Run episode forks concurrently.")
+    name_prefix: str = Field(default="ep", description="Name prefix for episode worlds.")
+    destroy_forks_on_complete: bool = Field(
+        default=False, description="Destroy live episode worlds after collecting results."
+    )
 
 
 class EpisodeResult(BaseModel):
     """Result of a single episode."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    episode_id: str | JsonUUID
-    world_id: str | JsonUUID
-    run_id: str | JsonUUID | None = None
-    start_tick: int = 0
-    final_tick: int = 0
-    terminated: bool = False
-    duration_steps: int = 0
+    episode_id: str | JsonUUID = Field(description="Episode identifier.")
+    world_id: str | JsonUUID = Field(description="Forked world used by the episode.")
+    run_id: str | JsonUUID | None = Field(default=None, description="Episode run identifier.")
+    start_tick: int = Field(default=0, description="World tick at episode start.")
+    final_tick: int = Field(default=0, description="World tick at episode completion.")
+    terminated: bool = Field(
+        default=False, description="Whether a termination condition stopped the episode."
+    )
+    duration_steps: int = Field(default=0, description="Number of ticks executed.")
 
 
 class RolloutResult(BaseModel):
-    """Result of a rollout (N episodes)."""
+    """Aggregate result of a rollout."""
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
-    rollout_id: str | JsonUUID
-    base_world_id: str | JsonUUID
-    episodes: list[EpisodeResult] = Field(default_factory=list)
-    num_episodes: int = 0
-    total_duration_steps: int = 0
+    rollout_id: str | JsonUUID = Field(description="Rollout identifier.")
+    base_world_id: str | JsonUUID = Field(description="World forked for each episode.")
+    episodes: list[EpisodeResult] = Field(
+        default_factory=list, description="Results in episode order."
+    )
+    num_episodes: int = Field(default=0, description="Number of completed episodes.")
+    total_duration_steps: int = Field(
+        default=0, description="Total ticks executed across all episodes."
+    )
 
 
 class ProcessorInfo(BaseModel):
     """Read-only summary of a registered processor."""
 
     model_config = dict(frozen=True)
-    qualname: str = Field(description="Processor class qualname")
-    priority: int = 0
+    qualname: str = Field(description="Qualified processor class name.")
+    priority: int = Field(default=0, description="Execution priority; lower values run first.")
     components: tuple[str, ...] = Field(
         default_factory=tuple,
-        description="Component qualnames this processor operates on",
+        description="Qualified component names required by the processor.",
     )
 
 
@@ -256,10 +268,10 @@ class HookInfo(BaseModel):
     """Read-only summary of a registered hook."""
 
     model_config = dict(frozen=True)
-    event_type: str = Field(description="HookEvent subclass qualname")
-    handler_qualname: str = Field(description="Handler callable qualname")
-    mode: str = Field(default="blocking", description="'blocking' or 'spawn'")
-    handle_id: int = Field(description="HookHandle._id for removal")
+    event_type: str = Field(description="Qualified lifecycle-event class name.")
+    handler_qualname: str = Field(description="Qualified handler name.")
+    mode: str = Field(default="blocking", description="Execution mode: blocking or spawn.")
+    handle_id: int = Field(description="Handle identifier used to remove the hook.")
 
 
 class ResourceInfo(BaseModel):
@@ -270,7 +282,7 @@ class ResourceInfo(BaseModel):
     """
 
     model_config = dict(frozen=True)
-    qualname: str = Field(description="Resource class qualname")
+    qualname: str = Field(description="Qualified resource class name.")
 
 
 class AuditRow(BaseModel):

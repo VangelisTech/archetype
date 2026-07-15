@@ -35,32 +35,23 @@ JsonIOConfig = Annotated[
 
 
 class StorageBackend(Enum):
-    """
-    Storage backend engine: 'iceberg' or 'lancedb'
-    """
+    """Storage engine used for durable world data."""
 
     ICEBERG = "iceberg"  # Iceberg backed by Parquet using SQLite PyIceberg SQL Catalog
     LANCEDB = "lancedb"
 
 
 class StorageConfig(BaseModel):
-    """
-    Storage backend configuration for app/runtime storage resolution.
-
-    Includes:
-        - uri: str  - The URI location for the storage backend
-        - namespace: str - The desired namespace for the catalog
-        - io_config: IOConfig - Native Daft I/O configuration for storage reads/writes
-    """
+    """Select the location and backend for durable world data."""
 
     uri: str | Path = Field(
         default="./archetype_db",
-        description="The URI location for the storage backend (str or Path)",
+        description="Local path or object-store URI for durable data.",
     )
-    namespace: str = Field(default="ecs")
+    namespace: str = Field(default="ecs", description="Catalog namespace for world tables.")
     backend: StorageBackend = Field(
         default=StorageBackend.LANCEDB,
-        description="Storage backend engine: 'iceberg' or 'lancedb (default)'",
+        description="Storage engine. Defaults to LanceDB.",
     )
     io_config: JsonIOConfig | None = Field(
         default=None,
@@ -77,58 +68,37 @@ class StorageConfig(BaseModel):
 
 
 class CacheConfig(BaseModel):
-    """
-    A cache configuration is a container for the cache configuration, including:
-      - flush_rows: int - The number of rows to flush to the storage backend
-      - flush_mb: int - The number of megabytes to flush to the storage backend
-      - global_mb: int - The number of megabytes to use for the cache
-      - idle_sec: int - The number of seconds to wait before flushing the cache
-    """
+    """Control when buffered world rows are flushed to durable storage."""
 
     flush_rows: int = Field(
-        default=1_000_000, description="The number of rows to flush to the storage backend"
+        default=1_000_000, description="Flush a table after it accumulates this many rows."
     )
     flush_mb: int = Field(
-        default=512, description="The number of megabytes to flush to the storage backend"
+        default=512, description="Flush a table after it reaches this size in megabytes."
     )
     global_mb: int = Field(
-        default=1024 * 1024 * 1024, description="The number of megabytes to use for the cache"
+        default=1024 * 1024 * 1024, description="Maximum memory budget across cached tables."
     )
-    idle_sec: float = Field(
-        default=30.0, description="The number of seconds to wait before flushing the cache"
-    )
+    idle_sec: float = Field(default=30.0, description="Flush a table after this many idle seconds.")
 
     model_config = dict(arbitrary_types_allowed=True)
 
 
 class RunConfig(BaseModel):
-    """
-    A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world.
-
-    Carries configuration for the run, including:
-      - run_id: UUID - The unique identifier for the run sequence, a uuid7
-      - num_steps: int - The number of steps to execute in the run sequence
-      - debug: bool - Whether or not to enable debug mode
-      - validate: bool - Whether or not to enable validation mode
-
-    TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True)
-          and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity.
-    """
+    """Configure one bounded sequence of world ticks."""
 
     run_id: str | JsonUUID = Field(
         default_factory=uuid.uuid7,
-        description="The unique identifier for the run sequence, a uuid7",
+        description="Stable identifier for this run, generated when omitted.",
     )
-    num_steps: int = Field(
-        default=1, description="The number of steps to execute in the run sequence"
-    )
-    debug: bool = Field(default=False, description="Whether or not to enable debug mode")
+    num_steps: int = Field(default=1, description="Number of ticks to execute.")
+    debug: bool = Field(default=False, description="Emit per-tick diagnostic panels.")
     show_rows: int = Field(
         default=8,
-        description="Max rows to display for DataFrame snapshots in debug panels (0 disables)",
+        description="Maximum rows shown in each debug snapshot; zero disables snapshots.",
     )
     metadata: dict[str, Any] | None = Field(
-        default=None, description="Arbitrary metadata for experiment tracking"
+        default=None, description="Optional metadata recorded with the run."
     )
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)
@@ -143,6 +113,7 @@ class RunConfig(BaseModel):
         show_rows: int = 5,
         metadata: dict[str, Any] | None = None,
     ) -> "RunConfig":
+        """Create a run configuration with interactive diagnostics enabled."""
         return cls(
             num_steps=steps,
             debug=debug,
@@ -159,6 +130,7 @@ class RunConfig(BaseModel):
         show_rows: int = 0,
         metadata: dict[str, Any] | None = None,
     ) -> "RunConfig":
+        """Create a quiet run configuration for performance measurement."""
         return cls(
             num_steps=steps,
             debug=debug,
@@ -168,12 +140,10 @@ class RunConfig(BaseModel):
 
 
 class WorldConfig(BaseModel):
-    """
-    World identity and initial state.
+    """Describe world identity and serializable engine state.
 
-    Carries the world's identity (id, name) and its mutable simulation state
-    (tick counter, entity registry, mutation caches).  Passed to the world
-    constructor so all state is explicit and serializable.
+    Runtime users normally create worlds through `ArchetypeRuntime.world()`.
+    Custom hosts use this model when constructing the lower-level engine.
     """
 
     world_id: str | JsonUUID | None = Field(

@@ -16,8 +16,8 @@
 Archetype Runtime
 =================
 
-The script boundary. Owns the service container and provides ergonomic
-world handles that route every operation through iCommandService.
+The recommended script boundary. Owns process-level services and provides
+ergonomic world handles.
 """
 
 from archetype.runtime.runtime import (

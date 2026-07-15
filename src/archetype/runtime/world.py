@@ -12,10 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""RuntimeWorld — the user-facing world handle.
-
-Holds world_id (not iWorld). Routes every operation through iCommandService.
-"""
+"""User-facing asynchronous and synchronous world handles."""
 
 from __future__ import annotations
 
@@ -30,6 +27,10 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.models import (
     EpisodeConfig,
     EpisodeResult,
+    FactReceipt,
+    HookInfo,
+    ProcessorInfo,
+    ResourceInfo,
     RolloutConfig,
     RolloutResult,
     RunResult,
@@ -42,6 +43,8 @@ from archetype.core.hooks import HookEvent
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from daft import DataFrame
+
     from archetype.app.autoresearch_service import (
         AutoResearchConfig,
         AutoResearchResult,
@@ -50,6 +53,8 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.app.eval_service import GraderOutput, TrajectoryGrader
+    from archetype.core.hooks import HookHandle
+    from archetype.experiments.receipts import GraderContract
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
@@ -186,9 +191,12 @@ class _RuntimeWorldState:
 
 
 class RuntimeWorld:
-    """User-facing world handle. Holds world_id, NOT iWorld.
+    """Operate one world through an `ArchetypeRuntime`.
 
-    Every operation routes through CommandService with the bound ActorCtx.
+    Handles are lazy and safe to create before the world exists. The first
+    operation activates the world. A handle also carries the identity used for
+    authorization; `as_actor()` creates another view with a different
+    identity while sharing the same world lifecycle.
     """
 
     def __init__(self, *, state: _RuntimeWorldState, actor_ctx: ActorCtx) -> None:
@@ -209,18 +217,20 @@ class RuntimeWorld:
 
     @property
     def world_id(self) -> str | UUID:
+        """Return the durable world identifier after activation."""
         if not self._state.initialized or self._state.world_id is None:
             raise RuntimeError("World has not been activated yet")
         return self._state.world_id
 
     @property
     def name(self) -> str:
+        """Return the handle's local world name."""
         return self._state.name
 
     # ── Mutations ─────────────────────────────────────────────────────────
 
     async def spawn(self, *components: Component) -> int:
-        """Create an entity. Returns entity_id immediately."""
+        """Create an entity and return its reserved identifier."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.create_entity(self._ctx, wid, list(components))
@@ -230,14 +240,12 @@ class RuntimeWorld:
         *components: Component,
         external_id: str,
         producer: str = "default",
-    ):
-        """Ingest an external fact: exactly one visible per external id.
+    ) -> FactReceipt:
+        """Persist an external fact exactly once per external identity.
 
-        Facts are durable immediately (no step required), carry their
-        external identity on the data plane, and never join active
-        simulation — they are queryable history, not entities. Returns the
-        FactReceipt; resubmitting the same id with the same payload returns
-        the original receipt, and a different payload fails loudly.
+        Facts become durable immediately and do not join the active simulation.
+        Repeating an identity with the same payload returns the original
+        receipt; repeating it with a different payload raises an error.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
@@ -246,15 +254,13 @@ class RuntimeWorld:
             )
 
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
-        """Batch-spawn entities. Fires one OnSpawn per entity, one batch per archetype.
+        """Create several entities in one batch.
 
-        All entities obey the initial-conditions contract: each entity's first
-        persisted row is its raw spawn values at the materialization tick;
-        processors first apply on the following tick (x_0 is given,
-        x_{t+1} = f(x_t)).
+        Each entity's first persisted row contains its supplied components.
+        Processors first apply on the following tick.
 
         Args:
-            entities: A list of component lists, one per entity to spawn.
+            entities: Component lists, one for each entity.
 
         Returns:
             A list of entity IDs in the same order as ``entities``.
@@ -288,24 +294,24 @@ class RuntimeWorld:
         return await self.spawn_many(entities)
 
     async def reserve_ids(self, n: int) -> list[int]:
-        """Reserve *n* entity IDs without spawning.
+        """Reserve entity identifiers without creating entities.
 
         The returned IDs are drawn from the same monotonic counter as
         ``spawn`` / ``spawn_many``, so interleaved calls produce disjoint
-        ranges. Use ``spawn_reserved`` to materialise a reserved ID.
+        ranges. Use `spawn_reserved()` to materialize a reserved ID.
 
         Args:
-            n: Number of IDs to reserve (must be >= 1).
+            n: Number of identifiers to reserve. Must be at least one.
 
         Returns:
-            A sorted list of *n* reserved entity IDs.
+            Reserved identifiers in ascending order.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return self._gate.reserve_entity_ids(self._ctx, wid, n)
 
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
-        """Materialise a previously reserved entity ID.
+        """Create an entity with a previously reserved identifier.
 
         Args:
             entity_id: A previously reserved ID (from ``reserve_ids``).
@@ -325,13 +331,13 @@ class RuntimeWorld:
             await self._gate.remove_entity(self._ctx, wid, entity_id)
 
     async def update(self, entity_id: int, *components: Component) -> None:
-        """Overlay values on existing components (same archetype)."""
+        """Replace values on component types already held by an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.update_entity(self._ctx, wid, entity_id, list(components))
 
     async def add_components(self, entity_id: int, *components: Component) -> None:
-        """Extend entity's archetype with new component types."""
+        """Add component types to an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.add_components(self._ctx, wid, entity_id, list(components))
@@ -343,13 +349,13 @@ class RuntimeWorld:
             await self._gate.remove_components(self._ctx, wid, entity_id, list(component_types))
 
     async def add_processor(self, processor) -> None:
-        """Add a processor to this world's system."""
+        """Install a processor on this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.add_processor(self._ctx, wid, processor)
 
     async def remove_processor(self, proc_type) -> None:
-        """Remove a processor from this world's system."""
+        """Remove every installed processor of a type."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.remove_processor(self._ctx, wid, proc_type)
@@ -366,20 +372,20 @@ class RuntimeWorld:
     async def run(
         self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
     ) -> RunResult:
-        """Run N ticks."""
+        """Advance the world by a number of ticks and return the run result."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             rc = config or RunConfig(num_steps=steps, debug=debug)
             return await self._gate.run(self._ctx, wid, rc, **kw)
 
     async def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
-        """Run a bounded episode."""
+        """Run until an episode termination condition or step limit is reached."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.run_episode(self._ctx, wid, config, **kw)
 
     async def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
-        """Run N forked episodes."""
+        """Run several episodes on forks of this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.run_rollout(self._ctx, wid, config, **kw)
@@ -395,17 +401,10 @@ class RuntimeWorld:
     ) -> AutoResearchResult:
         """Run an autoresearch loop with this world as the base save state.
 
-        Each iteration optionally prepares a candidate world (a fork of this
-        one), runs a rollout, scores it with ``evaluator``, and advances the
-        experiment's BranchHead on improvement. This world is never mutated.
-        Loop state lives on the experiment's lab world, so rerunning with the
-        same ``config.experiment_id`` resumes from the persisted incumbent.
-        Episode worlds are kept by default — load them with
-        ``runtime.attach`` to inspect or grade what happened.
-
-        The op lock is held only for activation: ``evaluator``,
-        ``prepare_candidate``, and ``on_iteration`` may call back into this
-        handle (e.g. ``query``) without deadlocking.
+        Each iteration prepares an optional candidate, runs a rollout, and
+        compares its score with the persisted incumbent. This base world is
+        never mutated. Reusing `config.experiment_id` resumes the loop, and
+        episode worlds remain available for inspection by default.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
@@ -425,12 +424,10 @@ class RuntimeWorld:
         graders: Sequence[TrajectoryGrader],
         entity_ids: list[int] | None = None,
     ) -> list[GraderOutput]:
-        """Query this world's rows and execute graders over the result.
+        """Run graders against this world's append-only history.
 
-        The query is gated and lineage-resolved exactly like ``query``;
-        graders receive one lazy Daft DataFrame of the full append-only
-        history and decide what to compute. Durable scores remain components
-        the caller writes back.
+        Graders receive one lazy Daft DataFrame. Returned values are ephemeral;
+        use `evaluate()` when the outcome needs a durable receipt.
         """
         df = await self.query(*component_types, entity_ids=entity_ids)
         return await self._state.runtime._container.eval_service.run_graders(df, graders)
@@ -438,21 +435,18 @@ class RuntimeWorld:
     async def evaluate(
         self,
         *component_types: type[Component],
-        contract,
+        contract: GraderContract,
         grader: TrajectoryGrader,
         evaluation_id: str,
         producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ):
-        """Claim-before-grade (issue #275): one visible receipt per evaluation_id.
+    ) -> FactReceipt:
+        """Persist one evaluation receipt for an evaluation identity.
 
-        Unlike ``grade`` (ephemeral scores), this persists a durable
-        EvalReceipt pinned to the world's current snapshot and a versioned
-        GraderContract. Replaying the same evaluation_id returns the
-        original receipt without re-grading; new trials of nondeterministic
-        graders use new evaluation_ids. Receipts are evidence, never
-        authority.
+        The receipt is pinned to the current snapshot and grader contract.
+        Repeating an evaluation identity returns its original receipt without
+        grading again. Use a new identity for another nondeterministic trial.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
@@ -483,7 +477,7 @@ class RuntimeWorld:
         storage: str | StorageConfig | None = None,
         cache: CacheConfig | None = None,
     ) -> RuntimeWorld:
-        """Fork this world. Returns a new handle."""
+        """Create a copy-on-write fork and return its handle."""
         from archetype.runtime._config import coerce_cache, coerce_storage
 
         # None means "inherit the source's storage" (world-lifecycle.md § 4.5):
@@ -519,7 +513,7 @@ class RuntimeWorld:
             return fork_handle
 
     async def destroy(self) -> None:
-        """Destroy this world. In-memory cleanup; storage retained."""
+        """Destroy the live world while retaining its durable rows."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.destroy_world(self._ctx, wid)
@@ -528,7 +522,7 @@ class RuntimeWorld:
                 self._state.runtime._unregister_handle(alias)
 
     async def shutdown(self) -> None:
-        """Shut down this handle."""
+        """Close this handle without destroying the world."""
         await self._shutdown_internal(from_runtime=False)
 
     async def _shutdown_internal(self, *, from_runtime: bool) -> None:
@@ -536,15 +530,12 @@ class RuntimeWorld:
 
     # ── Queries ───────────────────────────────────────────────────────────
 
-    async def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
-        """Query all entities that have the requested component types.
+    async def query(
+        self, *component_types: type[Component], entity_ids: list[int] | None = None
+    ) -> DataFrame:
+        """Return append-only history for entities with the requested components.
 
-        Returns the full append-only history (all ticks) for matching entities.
-        To get current state only, filter the result:
-
-            df = await world.query(Position)
-            info = await world.info()
-            current = df.where(col("tick") == info.tick - 1)
+        The result contains every matching tick, not only current state.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
@@ -558,26 +549,35 @@ class RuntimeWorld:
                 entity_ids=entity_ids,
             )
 
-    async def history(self, *, limit: int = 100, **filters):
-        """Read the audit log for this world. Returns raw DataFrame."""
+    async def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
+        """Return recent audit-log rows for this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.get_audit_history(self._ctx, wid, limit=limit, **filters)
 
-    async def list_processors(self):
-        """List processor summaries (ProcessorInfo)."""
+    async def list_processors(self) -> list[ProcessorInfo]:
+        """Return summaries of installed processors."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.list_processors(self._ctx, wid)
 
-    async def list_hooks(self):
-        """List hook summaries (HookInfo)."""
+    async def list_hooks(self) -> list[HookInfo]:
+        """Return summaries of installed hooks."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.list_hooks(self._ctx, wid)
 
-    async def add_hook(self, event_type, fn, *, mode: str = "blocking"):
-        """Add a hook. Raises if world not yet activated (use runtime.world(..., hooks=[...]) instead)."""
+    async def add_hook(
+        self,
+        event_type: type[HookEvent],
+        fn: Callable,
+        *,
+        mode: _FireMode = "blocking",
+    ) -> HookHandle:
+        """Install a hook on an active world.
+
+        Hooks needed during activation should be passed to `runtime.world()`.
+        """
         if not self._state.initialized:
             raise RuntimeError(
                 "Cannot add_hook before activation. Pass hooks via runtime.world(..., hooks=[...])."
@@ -586,14 +586,14 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.add_hook(self._ctx, wid, event_type, fn, mode=mode)
 
-    async def remove_hook(self, handle) -> None:
+    async def remove_hook(self, handle: HookHandle) -> None:
         """Remove a hook by handle."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             await self._gate.remove_hook(self._ctx, wid, handle)
 
-    async def list_resources(self):
-        """List resource summaries (ResourceInfo)."""
+    async def list_resources(self) -> list[ResourceInfo]:
+        """Return summaries of installed resources."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
             return await self._gate.list_resources(self._ctx, wid)
@@ -601,7 +601,7 @@ class RuntimeWorld:
     # ── Aliasing ──────────────────────────────────────────────────────────
 
     def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
-        """Return a sibling handle with a different ActorCtx."""
+        """Return a handle sharing this world but using another identity."""
         sibling = RuntimeWorld(state=self._state, actor_ctx=actor_ctx)
         self._state.aliases.add(sibling)
         self._state.runtime._register_handle(sibling)
@@ -630,7 +630,7 @@ def _callback_in_thread(fn):
 
 
 class SyncRuntimeWorld:
-    """Synchronous facade. Mirrors RuntimeWorld without await."""
+    """Synchronous compatibility facade over `RuntimeWorld`."""
 
     def __init__(self, world: RuntimeWorld, runtime: SyncArchetypeRuntime) -> None:
         self._world = world
@@ -653,8 +653,10 @@ class SyncRuntimeWorld:
     def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         return self._run(lambda: self._world.spawn_many(entities))
 
-    def ingest(self, *components: Component, external_id: str, producer: str = "default"):
-        """See RuntimeWorld.ingest (durable external fact, exactly-once-visible)."""
+    def ingest(
+        self, *components: Component, external_id: str, producer: str = "default"
+    ) -> FactReceipt:
+        """Persist an external fact exactly once per external identity."""
         return self._run(
             lambda: self._world.ingest(*components, external_id=external_id, producer=producer)
         )
@@ -740,14 +742,14 @@ class SyncRuntimeWorld:
     def evaluate(
         self,
         *component_types: type[Component],
-        contract,
+        contract: GraderContract,
         grader: TrajectoryGrader,
         evaluation_id: str,
         producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ):
-        """See RuntimeWorld.evaluate (claim-before-grade receipts)."""
+    ) -> FactReceipt:
+        """Persist one evaluation receipt for an evaluation identity."""
         return self._run(
             lambda: self._world.evaluate(
                 *component_types,
@@ -770,25 +772,33 @@ class SyncRuntimeWorld:
     def destroy(self) -> None:
         self._run(lambda: self._world.destroy())
 
-    def query(self, *component_types: type[Component], entity_ids: list[int] | None = None):
+    def query(
+        self, *component_types: type[Component], entity_ids: list[int] | None = None
+    ) -> DataFrame:
         return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
 
-    def history(self, *, limit: int = 100, **filters):
+    def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         return self._run(lambda: self._world.history(limit=limit, **filters))
 
-    def list_processors(self):
+    def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())
 
-    def list_hooks(self):
+    def list_hooks(self) -> list[HookInfo]:
         return self._run(lambda: self._world.list_hooks())
 
-    def list_resources(self):
+    def list_resources(self) -> list[ResourceInfo]:
         return self._run(lambda: self._world.list_resources())
 
-    def add_hook(self, event_type, fn, *, mode: str = "blocking"):
+    def add_hook(
+        self,
+        event_type: type[HookEvent],
+        fn: Callable,
+        *,
+        mode: _FireMode = "blocking",
+    ) -> HookHandle:
         return self._run(lambda: self._world.add_hook(event_type, fn, mode=mode))
 
-    def remove_hook(self, handle) -> None:
+    def remove_hook(self, handle: HookHandle) -> None:
         self._run(lambda: self._world.remove_hook(handle))
 
     def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:

@@ -440,25 +440,25 @@ Run one episode. Requires operator or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `episode_id` | string \| string | No | — | Episode Id |
-| `run_config` | object | No | — | A run represents the configuration of a sequence of world.steps, and configures the runtime options for the world. Carries configuration for the run, including: - run_id: UUID - The unique identifier for the run sequence, a uuid7 - num_steps: int - The number of steps to execute in the run sequence - debug: bool - Whether or not to enable debug mode - validate: bool - Whether or not to enable validation mode TODO: Add ergonomic named constructors, e.g. RunConfig.dev(steps=1, debug=True) and RunConfig.benchmark(steps, explain=False) to reduce call-site verbosity. |
-| `max_steps` | integer | No | `1000` | Max Steps |
-| `terminal_component` | any \| null | No | — | Terminal Component |
-| `terminal_field` | string \| null | No | — | Terminal Field |
-| `terminal_all` | boolean | No | `true` | Terminal All |
-| `termination` | any \| null | No | — | Termination |
+| `episode_id` | string \| string | No | — | Stable identifier for this episode. |
+| `run_config` | object | No | — | Configure one bounded sequence of world ticks. |
+| `max_steps` | integer | No | `1000` | Maximum ticks before stopping. |
+| `terminal_component` | any \| null | No | — | Component type used for structural or value termination. |
+| `terminal_field` | string \| null | No | — | Boolean field tested on the terminal component. |
+| `terminal_all` | boolean | No | `true` | Require every matching entity when testing a field. |
+| `termination` | any \| null | No | — | Optional callable termination predicate. |
 
 **Response** (`200`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `episode_id` | string \| string | Yes | — | Episode Id |
-| `world_id` | string \| string | Yes | — | World Id |
-| `run_id` | string \| string \| null | No | — | Run Id |
-| `start_tick` | integer | No | `0` | Start Tick |
-| `final_tick` | integer | No | `0` | Final Tick |
-| `terminated` | boolean | No | `false` | Terminated |
-| `duration_steps` | integer | No | `0` | Duration Steps |
+| `episode_id` | string \| string | Yes | — | Episode identifier. |
+| `world_id` | string \| string | Yes | — | Forked world used by the episode. |
+| `run_id` | string \| string \| null | No | — | Episode run identifier. |
+| `start_tick` | integer | No | `0` | World tick at episode start. |
+| `final_tick` | integer | No | `0` | World tick at episode completion. |
+| `terminated` | boolean | No | `false` | Whether a termination condition stopped the episode. |
+| `duration_steps` | integer | No | `0` | Number of ticks executed. |
 
 **Error codes:** `422`
 
@@ -482,22 +482,22 @@ Run a rollout. Requires operator or admin; emits one rollout audit row.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `rollout_id` | string \| string | No | — | Rollout Id |
-| `episode_config` | object | No | — | Configuration for a single episode (bounded simulation run). Three termination strategies, checked in this order each tick (first to fire wins), plus the ``max_steps`` cap: 1. **Structural** — ``terminal_component`` *without* ``terminal_field``: stop as soon as any entity *carries* that component type. Checked before each step (an already-terminal world runs zero steps). 2. **Value-based** — ``terminal_component`` *with* ``terminal_field``: stop when entities carrying the component have the boolean field latched. ``terminal_all`` picks the reducer — True (default) waits for *every* such entity, False stops at the *first*. Checked after each step, against persisted rows. This is the "all entities done" contract the LIBERO driver hand-rolled per tick. 3. **Callable** — ``termination(world) -> bool`` escape hatch, checked before each step. Setting ``terminal_field`` reinterprets ``terminal_component`` as the value-carrier, so the structural check is suppressed (otherwise the component's mere presence would terminate at tick 0). |
-| `num_episodes` | integer | No | `1` | Num Episodes |
-| `parallel` | boolean | No | `false` | Parallel |
-| `name_prefix` | string | No | `"ep"` | Name Prefix |
-| `destroy_forks_on_complete` | boolean | No | `false` | Destroy Forks On Complete |
+| `rollout_id` | string \| string | No | — | Stable identifier for this rollout. |
+| `episode_config` | object | No | — | Configure a bounded simulation episode. An episode stops at `max_steps`, when `termination` returns true, or when its terminal component condition is satisfied. Supplying only `terminal_component` stops on component presence. Adding `terminal_field` instead tests that boolean field; `terminal_all` chooses whether every or any matching entity must satisfy it. |
+| `num_episodes` | integer | No | `1` | Number of episode forks to run. |
+| `parallel` | boolean | No | `false` | Run episode forks concurrently. |
+| `name_prefix` | string | No | `"ep"` | Name prefix for episode worlds. |
+| `destroy_forks_on_complete` | boolean | No | `false` | Destroy live episode worlds after collecting results. |
 
 **Response** (`200`):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `rollout_id` | string \| string | Yes | — | Rollout Id |
-| `base_world_id` | string \| string | Yes | — | Base World Id |
-| `episodes` | array[EpisodeResult] | No | — | Episodes |
-| `num_episodes` | integer | No | `0` | Num Episodes |
-| `total_duration_steps` | integer | No | `0` | Total Duration Steps |
+| `rollout_id` | string \| string | Yes | — | Rollout identifier. |
+| `base_world_id` | string \| string | Yes | — | World forked for each episode. |
+| `episodes` | array[EpisodeResult] | No | — | Results in episode order. |
+| `num_episodes` | integer | No | `0` | Number of completed episodes. |
+| `total_duration_steps` | integer | No | `0` | Total ticks executed across all episodes. |
 
 **Error codes:** `422`
 
@@ -608,10 +608,10 @@ Create a world. Requires admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `run_id` | string \| string \| null | No | — | Run Id |
+| `world_id` | string \| string | Yes | — | Durable world identifier. |
+| `name` | string \| null | No | — | Human-readable world name. |
+| `tick` | integer | No | `0` | Next tick to execute. |
+| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
 
 **Error codes:** `422`
 
@@ -655,10 +655,10 @@ Get world metadata. Requires viewer, player, operator, or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `run_id` | string \| string \| null | No | — | Run Id |
+| `world_id` | string \| string | Yes | — | Durable world identifier. |
+| `name` | string \| null | No | — | Human-readable world name. |
+| `tick` | integer | No | `0` | Next tick to execute. |
+| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
 
 **Error codes:** `422`
 
@@ -690,10 +690,10 @@ Fork a world. Requires operator or admin.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `world_id` | string \| string | Yes | — | World Id |
-| `name` | string \| null | No | — | Name |
-| `tick` | integer | No | `0` | Tick |
-| `run_id` | string \| string \| null | No | — | Run Id |
+| `world_id` | string \| string | Yes | — | Durable world identifier. |
+| `name` | string \| null | No | — | Human-readable world name. |
+| `tick` | integer | No | `0` | Next tick to execute. |
+| `run_id` | string \| string \| null | No | — | Identifier of the active or most recent run. |
 
 **Error codes:** `422`
 

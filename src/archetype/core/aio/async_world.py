@@ -889,10 +889,9 @@ class AsyncWorld(iAsyncWorld):
     ) -> DataFrame:
         """Update the store with the given archetypes.
 
-        Stamps the tick's commit context when one is active (issue #273).
-        Updater capability is resolved by signature inspection, NOT by
-        TypeError probing — a retry-on-TypeError around a write could
-        double-append rows the first call already persisted.
+        When coordinated persistence is active, the update carries the tick's
+        commit identity. Capability is determined before writing so an error
+        cannot cause the same rows to be appended twice.
         """
         if self._updater_takes_commit is None:
             params = inspect.signature(self.updater.update).parameters
