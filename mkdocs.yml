@@ -46,11 +46,11 @@ extra:
 copyright: Copyright &copy; 2026 Vangelis Tech
 
 nav:
-  - Getting Started:
+  - GETTING STARTED:
       - Overview: index.md
       - Quickstart: guide/quickstart.md
       - Choose an Example: guide/examples.md
-  - User Guide:
+  - USER GUIDE:
       - Building Simulations: guide/building-simulations.md
       - Components: guide/components.md
       - Processors: guide/processors.md
@@ -60,7 +60,7 @@ nav:
       - Lifecycle Hooks: guide/hooks.md
       - Storage: guide/stores.md
       - Configuration: guide/run-config.md
-  - Advanced Guides:
+  - ADVANCED GUIDES:
       - Service Hosting: guide/app-overview.md
       - Custom Commands: guide/custom-commands.md
       - Access Control and Audit: guide/command-gate.md
@@ -70,8 +70,8 @@ nav:
       - AutoResearch: guide/autoresearch.md
       - LIBERO Recipe: guide/libero-recipe.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
-  - Reference:
-      - Python API:
+  - REFERENCE:
+      - PYTHON API:
           - Overview: reference/python-api.md
           - Runtime: reference/python/runtime.md
           - World Handle: reference/python/world-handle.md
@@ -86,7 +86,7 @@ nav:
           - Compatibility: reference/python/compatibility.md
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
-  - Development:
+  - DEVELOPMENT:
       - Contributing: guide/contributing.md
       - API Stability and Docstrings: guide/api-stability.md
       - Architecture Overview: guide/architecture.md
@@ -99,7 +99,7 @@ nav:
       - Atomic Visibility: guide/atomic-visibility.md
       - Durable Facts: guide/durable-facts.md
       - Audit Log: guide/audit-log.md
-      - Core Internals:
+      - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md
           - World Internals: guide/worlds.md
