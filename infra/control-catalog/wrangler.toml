@@ -1,0 +1,15 @@
+name = "archetype-control-catalog"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+
+[[durable_objects.bindings]]
+name = "DIRECTORY"
+class_name = "CatalogDirectoryDO"
+
+[[durable_objects.bindings]]
+name = "WORLD"
+class_name = "WorldCommitDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["CatalogDirectoryDO", "WorldCommitDO"]
