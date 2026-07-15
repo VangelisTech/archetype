@@ -217,14 +217,18 @@ jobs:
       - name: Ensure production DNS record
         if: github.event_name == 'push'
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_DNS_API_TOKEN: ${{ secrets.CLOUDFLARE_DNS_API_TOKEN }}
           CUSTOM_DOMAIN: archetype.vangelis.tech
           ZONE_NAME: vangelis.tech
           PAGES_HOST: archetype-docs.pages.dev
         run: |
           set -euo pipefail
+          if [ -z "${CLOUDFLARE_DNS_API_TOKEN}" ]; then
+            echo "::warning::Set CLOUDFLARE_DNS_API_TOKEN (Zone:Read and DNS:Edit for vangelis.tech) to provision ${CUSTOM_DOMAIN}."
+            exit 0
+          fi
           api="https://api.cloudflare.com/client/v4"
-          auth=(--header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          auth=(--header "Authorization: Bearer ${CLOUDFLARE_DNS_API_TOKEN}")
 
           curl --fail-with-body --silent --show-error --get \
             "${auth[@]}" \
