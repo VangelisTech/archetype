@@ -28,6 +28,7 @@ from uuid_utils import UUID
 from archetype import _obs
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import WorldInfo
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._actor import default_actor_ctx
@@ -215,16 +216,43 @@ class ArchetypeRuntime:
         )
         return self.attach(info.world_id, name=name)
 
-    def attach(self, world_id: str | UUID, *, name: str = "attached") -> RuntimeWorld:
-        """Attach a non-owning handle to a live world.
+    async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
+        """List every world recorded for a storage identity.
 
-        The identity is validated on first use. Closing the handle does not
-        destroy the world, although an explicit `RuntimeWorld.destroy()`
-        still does.
+        Discovery works without a live world and includes destroyed worlds,
+        whose durable rows remain queryable.
 
         Args:
-            world_id: Identity of a world already active in this runtime.
+            storage: Storage whose durable world catalog should be listed.
+
+        Returns:
+            Durable descriptors for every world recorded in that storage.
+        """
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+        gate = self._container.command_service
+        return await gate.discover_worlds(
+            self._actor_ctx, coerce_storage(storage) or StorageConfig()
+        )
+
+    def attach(
+        self,
+        world_id: str | UUID,
+        *,
+        name: str = "attached",
+        storage: str | Path | StorageConfig | None = None,
+    ) -> RuntimeWorld:
+        """Attach a non-owning handle to a live or durable world.
+
+        With explicit storage, `info()` and `query()` can resolve a world that
+        is not live in this process. The identity is validated on first use.
+        Closing the handle does not destroy the world, although an explicit
+        `RuntimeWorld.destroy()` still does.
+
+        Args:
+            world_id: Durable identity of the world to attach.
             name: Local name for the returned handle.
+            storage: Storage containing a cold world. Omit it for a live world.
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -232,8 +260,9 @@ class ArchetypeRuntime:
         state = _RuntimeWorldState(
             runtime=self,
             name=name,
-            # None → the gate resolves the world's recorded storage on read.
-            storage_config=None,
+            # None → the gate resolves the world's recorded storage on read;
+            # explicit storage additionally enables cold reads.
+            storage_config=coerce_storage(storage),
             cache_config=None,
             init_processors=[],
             init_resources=[],
@@ -337,9 +366,13 @@ class SyncArchetypeRuntime:
         )
         return SyncRuntimeWorld(rw, self)
 
-    def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
-        """Attach a non-owning synchronous handle to a live world."""
-        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
+    def discover(self, storage=None) -> list[WorldInfo]:
+        """List durable worlds through the synchronous facade."""
+        return self._dispatch(self._runtime.discover(storage))
+
+    def attach(self, world_id, *, name: str = "attached", storage=None) -> SyncRuntimeWorld:
+        """Attach a synchronous handle to a live or durable world."""
+        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name, storage=storage), self)
 
     def resume(self, world_id, *, storage=None, name: str = "resumed") -> SyncRuntimeWorld:
         """Resume a durable world as the active writer."""

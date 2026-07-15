@@ -464,11 +464,26 @@ class RuntimeWorld:
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
+    async def _resolve_info(self, wid) -> WorldInfo:
+        """World descriptor for live OR cold worlds.
+
+        Live worlds answer from the registry. A handle attached with an
+        explicit storage config can also describe a COLD world (durable
+        discovery, issue #272) through the catalog — reads never require the
+        world to be live.
+        """
+        try:
+            return await self._gate.get_world_info(self._ctx, wid)
+        except Exception:
+            if self._state.storage_config is None:
+                raise
+            return await self._gate.open_world_readonly(self._ctx, self._state.storage_config, wid)
+
     async def info(self) -> WorldInfo:
-        """Get an immutable snapshot of world state."""
+        """Get an immutable snapshot of world state (live or cold)."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.get_world_info(self._ctx, wid)
+            return await self._resolve_info(wid)
 
     async def fork(
         self,
@@ -539,7 +554,7 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            info = await self._gate.get_world_info(self._ctx, wid)
+            info = await self._resolve_info(wid)
             return await self._gate.query_components(
                 self._ctx,
                 list(component_types),

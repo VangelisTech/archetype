@@ -28,12 +28,14 @@ import logging
 import os
 import socket
 import time
+from dataclasses import dataclass
 
 import daft
 import pyarrow as pa
 from uuid_utils import uuid7
 
 from archetype.app._catalog import (
+    CatalogSchemaMismatchError,
     ClaimPendingError,
     ClaimRecord,
     SignatureRecord,
@@ -49,6 +51,17 @@ from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PinnedSnapshot:
+    """Immutable simulation visibility captured for one evaluation."""
+
+    run_id: str
+    tick: int
+    head_tokens: tuple[str, ...]
+    visibility_tokens: tuple[str, ...]
+    storage_config: StorageConfig
 
 
 class IngestionService:
@@ -86,6 +99,7 @@ class IngestionService:
             external_id=external_id,
             producer=producer,
             payload_digest=fact_payload_digest(components),
+            component_types=[type(component) for component in components],
             build_components=_ready,
             storage_config=storage_config,
             lease_seconds=lease_seconds,
@@ -98,6 +112,7 @@ class IngestionService:
         evaluation_id: str,
         producer: str,
         identity_digest: str,
+        component_types: list[type[Component]],
         build_components,
         storage_config: StorageConfig | None = None,
         lease_seconds: float = 30.0,
@@ -111,13 +126,16 @@ class IngestionService:
         (the grader, composed by the gate layer) runs at most once per
         completed claim: a duplicate returns the persisted receipt without
         re-grading, and a lease takeover that finds the orphan rows
-        completes without re-running.
+        completes without re-running. ``component_types`` declares the
+        persisted shape so takeover can restore a missing signature record
+        without rebuilding the graded payload.
         """
         return await self._ingest(
             world_id,
             external_id=evaluation_id,
             producer=producer,
             payload_digest=identity_digest,
+            component_types=component_types,
             build_components=build_components,
             storage_config=storage_config,
             lease_seconds=lease_seconds,
@@ -130,6 +148,7 @@ class IngestionService:
         external_id: str,
         producer: str,
         payload_digest: str,
+        component_types: list[type[Component]],
         build_components,
         storage_config: StorageConfig | None,
         lease_seconds: float,
@@ -146,6 +165,7 @@ class IngestionService:
         run_id = record.run_id
         if not run_id:
             raise RuntimeError(f"world {wid} has no recorded run; nothing to attach facts to")
+        sig, table_id, signature_record = self._signature(component_types)
 
         claimant = f"{socket.gethostname()}:{os.getpid()}:{uuid7().hex[:8]}"
         deadline = time.monotonic() + max(lease_seconds, 1.0) * 2
@@ -186,56 +206,67 @@ class IngestionService:
             # duplicate. table_id on the claim names where to look; absent
             # table_id (or a recorded table that was never materialized)
             # means the crash preceded any append.
+            if claim.table_id != table_id:
+                raise RuntimeError(
+                    f"claim {claim.scope_key} records table {claim.table_id}, but the "
+                    f"declared component shape resolves to {table_id}"
+                )
             try:
                 existing = await store.get_existing_table_df(claim.table_id, wid, str(run_id))
-                orphaned = existing.where(
-                    existing["commit_token"]  # ty: ignore[invalid-argument-type]
-                    == claim.commit_token
-                )
+                orphaned = existing.where(existing["commit_token"] == claim.commit_token)
                 found = orphaned.count_rows() > 0
             except KeyError:
                 found = False
             if found:
                 await store.flush()
-                await catalog.complete_claim(claim.scope_key, claimant, claim.table_id)
-                settled = await catalog.get_claim(claim.scope_key)
+                physical = await store.get_existing_table_schema(claim.table_id)
+                if not signature_record.matches(physical):
+                    raise CatalogSchemaMismatchError(
+                        f"recovered table {claim.table_id} does not match its declared "
+                        "component schema; refusing to publish the claim"
+                    )
+                # The original claimant may have died after append but before
+                # signature registration. Restore discovery BEFORE making its
+                # token visible by completing the claim.
+                await catalog.register_signature(signature_record)
+                await catalog.complete_claim(wid, claim.scope_key, claimant, claim.table_id)
+                settled = await catalog.get_claim(wid, claim.scope_key)
                 return self._receipt(settled if settled is not None else claim, duplicate=False)
 
         components = await build_components(claim)
         if not components:
             raise ValueError("a fact needs at least one component")
-        sig = tuple(sorted({*(type(c) for c in components), FactMeta}, key=lambda t: t.__name__))
-        table_id = Archetype.get_name(sig)
-        await catalog.record_claim_table(claim.scope_key, table_id)
+        actual_types = {type(component) for component in components}
+        declared_types = set(component_types)
+        if actual_types != declared_types:
+            raise ValueError(
+                "built fact components do not match their declared types: "
+                f"declared={sorted(t.__name__ for t in declared_types)}, "
+                f"actual={sorted(t.__name__ for t in actual_types)}"
+            )
+        await catalog.record_claim_table(wid, claim.scope_key, table_id)
 
         await self._append_fact(store, sig, claim, components, wid, str(run_id))
 
         # Facts are discoverable like everything else.
-        schema = Archetype.get_archetype_schema(sig)
-        await catalog.register_signature(
-            SignatureRecord(
-                table_id=table_id,
-                component_names=tuple(c.__name__ for c in sig),
-                schema_json=json.dumps(arrow_schema_descriptor(schema)),
-                fingerprint=schema_fingerprint(schema),
-            )
-        )
+        await catalog.register_signature(signature_record)
 
         # Visibility must never outrun durability (same rule as ticks).
         await store.flush()
-        await catalog.complete_claim(claim.scope_key, claimant, table_id)
-        settled = await catalog.get_claim(claim.scope_key)
+        await catalog.complete_claim(wid, claim.scope_key, claimant, table_id)
+        settled = await catalog.get_claim(wid, claim.scope_key)
         return self._receipt(settled if settled is not None else claim, duplicate=False)
 
     async def snapshot_ref(
         self, world_id: str, storage_config: StorageConfig | None = None
-    ) -> tuple[str, int, list[str], StorageConfig]:
-        """The world's pinned snapshot reference: (run_id, head tick, tokens
-        at that tick, effective storage).
+    ) -> PinnedSnapshot:
+        """Capture the world's immutable simulation visibility.
 
         Persisted receipts require a pinned subject (issue #275); a world
         with no published visibility has nothing immutable to pin — fail
-        closed rather than hash a moving target.
+        closed rather than hash a moving target. ``head_tokens`` identify
+        the snapshot for the subject digest; ``visibility_tokens`` pin the
+        full manifest prefix that the grader may read.
         """
         wid = str(world_id)
         effective = self._resolve_storage(wid, storage_config)
@@ -256,10 +287,49 @@ class IngestionService:
                 "(step it at least once before evaluating)"
             )
         head = max(m.tick for m in manifests)
-        tokens = sorted(m.commit_token for m in manifests if m.tick == head)
-        return str(record.run_id), head, tokens, effective
+        # Keep the subject identity manifest-only, but pin every row that is
+        # visible at capture time. Completed fact claims publish their own
+        # commit tokens and may share a tick with a manifest; omitting them
+        # would make durable facts disappear from the grader's exact-token
+        # read even though an ordinary query can see them.
+        visible = await catalog.visible_tokens(wid, str(record.run_id))
+        visibility_tokens = {
+            token for tick, tokens in (visible or {}).items() if tick <= head for token in tokens
+        }
+        return PinnedSnapshot(
+            run_id=str(record.run_id),
+            tick=head,
+            head_tokens=tuple(sorted(m.commit_token for m in manifests if m.tick == head)),
+            visibility_tokens=tuple(sorted(visibility_tokens)),
+            storage_config=effective,
+        )
 
     # ── internals ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _signature(
+        component_types: list[type[Component]],
+    ) -> tuple[tuple[type[Component], ...], str, SignatureRecord]:
+        if not component_types:
+            raise ValueError("a fact needs at least one declared component type")
+        if any(not isinstance(component_type, type) for component_type in component_types):
+            raise TypeError("component_types must contain Component classes")
+        if any(not issubclass(component_type, Component) for component_type in component_types):
+            raise TypeError("component_types must contain Component classes")
+
+        sig = tuple(sorted({*component_types, FactMeta}, key=lambda component: component.__name__))
+        table_id = Archetype.get_name(sig)
+        schema = Archetype.get_archetype_schema(sig)
+        return (
+            sig,
+            table_id,
+            SignatureRecord(
+                table_id=table_id,
+                component_names=tuple(component.__name__ for component in sig),
+                schema_json=json.dumps(arrow_schema_descriptor(schema)),
+                fingerprint=schema_fingerprint(schema),
+            ),
+        )
 
     def _resolve_storage(
         self, world_id: str, storage_config: StorageConfig | None
@@ -309,7 +379,7 @@ class IngestionService:
         """
         scope = claim_scope_key(world_id, run_id, producer, external_id)
         for _ in range(100):
-            claim = await catalog.get_claim(scope)
+            claim = await catalog.get_claim(world_id, scope)
             if claim is None:
                 return None
             if claim.status == "COMPLETE":

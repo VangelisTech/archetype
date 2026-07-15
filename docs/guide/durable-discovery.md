@@ -18,7 +18,10 @@ storage identity, with no shared memory and no live world object.
 
 ## 2. The control catalog
 
-Each storage identity gets one SQLite control catalog. The catalog is
+Each storage identity gets one control catalog — local SQLite by default,
+or the remote Durable Objects catalog when
+``ARCHETYPE_CONTROL_CATALOG_URL`` is configured (issue #281), which lifts
+the single-host limit. The catalog is
 **authoritative for world identity** and **advisory for progress**:
 
 | Recorded | Authority |
