@@ -154,10 +154,13 @@ class AsyncQueryManager(iAsyncQueryManager):
 
         required = set(components)
 
-        # Build the output schema from the requested components
+        # Build the output schema from the requested components. Component
+        # projections exclude commit-identity columns (they are storage
+        # metadata; raw query_archetype reads still expose them).
         output_sig = tuple(sorted(components, key=lambda t: t.__name__))
-        schema = Archetype.get_archetype_schema(output_sig)
-        proj_cols = schema.names
+        proj_cols = Archetype.projection_columns(list(output_sig))
+        full_schema = Archetype.get_archetype_schema(output_sig)
+        schema = pa.schema([full_schema.field(name) for name in proj_cols])
 
         # Find all sigs that contain the required types
         all_sigs = await self.list_signatures()

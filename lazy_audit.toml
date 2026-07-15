@@ -38,13 +38,13 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 198
+line = 276
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 332
+line = 382
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 

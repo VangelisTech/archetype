@@ -21,6 +21,7 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
+| [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
@@ -129,7 +130,12 @@ Each layer may depend downward. No lower layer may depend upward.
 - Signature identity is order-invariant. `(A, B)` and `(B, A)` describe the
   same archetype.
 - The base persisted columns for every archetype row are:
-  `world_id`, `run_id`, `entity_id`, `tick`, and `is_active`.
+  `world_id`, `run_id`, `entity_id`, `tick`, `is_active`, and — since the
+  atomic-visibility amendment ([Atomic Visibility](atomic-visibility.md)) —
+  `commit_token` and `writer_epoch`. v0.2 tables without the commit columns
+  remain readable as implicit epoch-0 history under their legacy table ids.
+- Component projections exclude the commit columns; raw archetype reads
+  expose them.
 
 ## Store Contracts
 

@@ -232,6 +232,15 @@ class AsyncWorld(iAsyncWorld):
                     self._commit_ctx,
                     [Archetype.get_name(sig) for sig in sigs],
                 )
+                # Mutations are consumed only now, after the manifest exists.
+                # A crash or stale-writer failure at ANY earlier point leaves
+                # the caches intact, so the retried tick recomputes and
+                # re-appends under a fresh token — the failed attempt's rows
+                # stay unmanifested and invisible; exactly one attempt per
+                # tick ever becomes visible.
+                for sig in sigs:
+                    self.spawn_cache.pop(sig, None)
+                    self.despawn_cache.pop(sig, None)
             self._commit_ctx = None
 
             self.tick += 1
@@ -278,15 +287,18 @@ class AsyncWorld(iAsyncWorld):
     async def _commit_archetype(
         self, sig: ArchetypeSignature, df: DataFrame, run_config: RunConfig
     ) -> DataFrame:
-        """Append one archetype's computed frame and consume its caches.
+        """Append one archetype's computed frame; consume caches (uncoordinated).
 
         The updater raises on failed persistence, in which case the caches
-        survive for retry."""
+        survive for retry. Coordinated worlds defer cache consumption to
+        after manifest publish (see step): durability alone is not enough
+        once visibility requires the published head."""
         with _obs.span("world.update", sig=Archetype.get_name(sig), tick=self.tick):
             df_mat = await self.update(df, sig, run_config)
 
-        self.spawn_cache.pop(sig, None)
-        self.despawn_cache.pop(sig, None)
+        if self.commit_coordinator is None:
+            self.spawn_cache.pop(sig, None)
+            self.despawn_cache.pop(sig, None)
         return df_mat
 
     # ---------------------------------------------------------------------
@@ -835,7 +847,7 @@ class AsyncWorld(iAsyncWorld):
                 tick or self.tick,
                 self.world_id,
                 self.run_id,
-                commit=self._commit_ctx,  # ty: ignore[unknown-argument]  # presence checked above
+                commit=self._commit_ctx,
             )
         return await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
 

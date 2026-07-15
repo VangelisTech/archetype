@@ -97,6 +97,8 @@ async def test_lancedb_store_creates_opens_and_appends(monkeypatch, tmp_path):
                 "entity_id": 1,
                 "tick": 0,
                 "is_active": True,
+                "commit_token": "",
+                "writer_epoch": 0,
                 "demo__v": 7,
             }
         ],

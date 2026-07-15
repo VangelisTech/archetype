@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import socket
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
@@ -35,6 +37,7 @@ from archetype.app._catalog import (
     arrow_schema_descriptor,
     schema_fingerprint,
 )
+from archetype.app._commit import CatalogCommitCoordinator
 from archetype.app.models import WorldInfo
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import (
@@ -54,6 +57,11 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def _writer_holder() -> str:
+    """Diagnostic fence-holder label; the epoch is the actual authority."""
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 def _world_info_from_record(record: WorldRecord) -> WorldInfo:
@@ -317,8 +325,9 @@ class WorldService:
         # fails the create, loudly — a world the catalog cannot describe would
         # be undiscoverable after this process exits. Unwind the registry so
         # the failed create leaves no live, mutable world behind.
+        catalog = self._storage_service.get_control_catalog(storage_config)
         try:
-            await self._storage_service.get_control_catalog(storage_config).register_world(
+            await catalog.register_world(
                 WorldRecord(
                     world_id=str(world.world_id),
                     name=world.name,
@@ -328,9 +337,13 @@ class WorldService:
                     tick_head=world.tick,
                 )
             )
+            # Fenced writer (issue #273): this process is the world's one live
+            # writer; every tick it commits publishes under this epoch.
+            epoch = await catalog.acquire_fence(str(world.world_id), _writer_holder())
         except Exception:
             self._registry.remove(world.world_id)
             raise
+        world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
         self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
         return world
 
@@ -394,8 +407,9 @@ class WorldService:
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         # Same authoritative-identity contract as create_world: a fork the
         # catalog cannot describe must not survive as a live world.
+        catalog = self._storage_service.get_control_catalog(storage_config)
         try:
-            await self._storage_service.get_control_catalog(storage_config).register_world(
+            await catalog.register_world(
                 WorldRecord(
                     world_id=str(fork.world_id),
                     name=fork.name,
@@ -405,9 +419,11 @@ class WorldService:
                     tick_head=fork.tick,
                 )
             )
+            epoch = await catalog.acquire_fence(str(fork.world_id), _writer_holder())
         except Exception:
             self._registry.remove(fork.world_id)
             raise
+        fork.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
         self._storage_configs[str(fork.world_id)] = (storage_config, cache_config)
         # Persist the fork's ancestor chain (append-only): provenance must
         # survive the fork being destroyed or the process restarting.
@@ -467,12 +483,12 @@ class WorldService:
     async def record_step(self, world_id: str | UUID) -> None:
         """Advance the world's advisory catalog head after a step.
 
-        Called by SimulationService post-step. Advisory in A1-read (the
-        cached store may not have flushed; the true durable head arrives
-        with A2 manifests), so failures log loudly rather than failing a
-        tick whose data-plane writes already succeeded. New signatures are
-        registered once (process-local memo keeps the hot loop at one
-        catalog transaction per step).
+        Called by SimulationService post-step. Since #273, the durable tick
+        head is maintained transactionally by manifest publication inside
+        world.step — this hook only registers new signatures (once, via a
+        process-local memo) and refreshes the world's current run_id.
+        Failures log loudly rather than failing a tick whose data-plane
+        writes and manifest already succeeded.
         """
         record = self._storage_configs.get(str(world_id))
         if record is None:
@@ -495,11 +511,10 @@ class WorldService:
                     )
                 )
                 registered.add(table_id)
-            await catalog.set_tick_head(
-                str(world_id), world.tick, str(world.run_id) if world.run_id else None
-            )
+            if world.run_id:
+                await catalog.set_world_run(str(world_id), str(world.run_id))
         except Exception:
-            logger.exception("catalog head update failed for world %s", world_id)
+            logger.exception("catalog signature registration failed for world %s", world_id)
 
     async def add_resource(self, world_id: str | UUID, resource: object) -> None:
         """Attach a resource to a world's Resources container."""

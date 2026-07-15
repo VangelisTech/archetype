@@ -130,7 +130,7 @@ class AsyncStore(iAsyncStore):
         if commit_tokens is not None:
             # (Daft stubs Expression.__and__ etc. as bool; these are Expressions.)
             visible = df["commit_token"].is_in(commit_tokens) if commit_tokens else lit(False)
-            df = df.where(visible)  # ty: ignore[invalid-argument-type]
+            df = df.where(visible)
 
         legacy_df = self._legacy_df(
             sig, world_id, run_id, ticks=ticks, entity_ids=entity_ids, active_only=active_only
@@ -186,7 +186,10 @@ class AsyncStore(iAsyncStore):
         legacy_name = Archetype.get_legacy_name(sig)
         known = self._legacy_present.get(legacy_name)
         if known is None:
-            known = self.session.has_table(legacy_name)
+            # The ctor accepts Session-like duck types (test fakes); one that
+            # cannot answer has_table has no legacy tables to offer.
+            has_table = getattr(self.session, "has_table", None)
+            known = bool(has_table(legacy_name)) if callable(has_table) else False
             self._legacy_present[legacy_name] = known
         if not known:
             return None
@@ -276,9 +279,7 @@ class AsyncStore(iAsyncStore):
             df.collect()
             rows = df.count_rows()
             if rows == 0 or not df.column_names:
-                logger.info(
-                    f"Append skipped (store): archetype={table_id} rows=0 or empty schema"
-                )
+                logger.info(f"Append skipped (store): archetype={table_id} rows=0 or empty schema")
                 return AppendReceipt(table_id=table_id, rows=0, durable=True)
         except Exception as e:
             # A frame that cannot materialize cannot be persisted; the caller

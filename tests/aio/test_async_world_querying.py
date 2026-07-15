@@ -86,7 +86,8 @@ async def test_query_archetype_with_filters_and_projection(world):
     cols = set(df_proj.collect().column_names)
     from archetype.core.archetype import Archetype as A
 
-    base_cols = set(A.BASE_SCHEMA.names)
+    # Projections exclude commit-identity columns (issue #273).
+    base_cols = set(A.LEGACY_BASE_SCHEMA.names)
     comp_cols = set(Position.get_prefixed_schema().names)
     assert base_cols.issubset(cols) and comp_cols.issubset(cols)
 

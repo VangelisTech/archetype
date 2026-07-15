@@ -192,7 +192,7 @@ class AsyncCachedStore(iAsyncStore):
             visible = (
                 mem_df["commit_token"].is_in(commit_tokens) if commit_tokens else daft.lit(False)
             )
-            mem_df = mem_df.where(visible)  # ty: ignore[invalid-argument-type]
+            mem_df = mem_df.where(visible)
 
         return disk_df.concat(mem_df)
 
@@ -238,9 +238,7 @@ class AsyncCachedStore(iAsyncStore):
         if needs_flush:
             await self._background_flush_sig(sig)
 
-        return AppendReceipt(
-            table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush
-        )
+        return AppendReceipt(table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush)
 
     async def flush(self) -> None:
         """Drain every memtable to the inner store (issue #273).
