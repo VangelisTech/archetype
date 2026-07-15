@@ -197,8 +197,8 @@ class IngestionService:
                 found = False
             if found:
                 await store.flush()
-                await catalog.complete_claim(claim.scope_key, claimant, claim.table_id)
-                settled = await catalog.get_claim(claim.scope_key)
+                await catalog.complete_claim(wid, claim.scope_key, claimant, claim.table_id)
+                settled = await catalog.get_claim(wid, claim.scope_key)
                 return self._receipt(settled if settled is not None else claim, duplicate=False)
 
         components = await build_components(claim)
@@ -206,7 +206,7 @@ class IngestionService:
             raise ValueError("a fact needs at least one component")
         sig = tuple(sorted({*(type(c) for c in components), FactMeta}, key=lambda t: t.__name__))
         table_id = Archetype.get_name(sig)
-        await catalog.record_claim_table(claim.scope_key, table_id)
+        await catalog.record_claim_table(wid, claim.scope_key, table_id)
 
         await self._append_fact(store, sig, claim, components, wid, str(run_id))
 
@@ -223,8 +223,8 @@ class IngestionService:
 
         # Visibility must never outrun durability (same rule as ticks).
         await store.flush()
-        await catalog.complete_claim(claim.scope_key, claimant, table_id)
-        settled = await catalog.get_claim(claim.scope_key)
+        await catalog.complete_claim(wid, claim.scope_key, claimant, table_id)
+        settled = await catalog.get_claim(wid, claim.scope_key)
         return self._receipt(settled if settled is not None else claim, duplicate=False)
 
     async def snapshot_ref(
@@ -309,7 +309,7 @@ class IngestionService:
         """
         scope = claim_scope_key(world_id, run_id, producer, external_id)
         for _ in range(100):
-            claim = await catalog.get_claim(scope)
+            claim = await catalog.get_claim(world_id, scope)
             if claim is None:
                 return None
             if claim.status == "COMPLETE":
