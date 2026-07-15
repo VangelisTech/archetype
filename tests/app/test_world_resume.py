@@ -354,7 +354,8 @@ async def test_autoresearch_continues_across_processes(tmp_path):
         [sys.executable, "-c", script, uri],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,  # the child runs a real 2-iteration autoresearch loop; a
+        # loaded machine (xdist peers) has pushed it past 300s (observed).
     )
     assert proc.returncode == 0, proc.stderr
     child = json.loads(proc.stdout.strip().splitlines()[-1])

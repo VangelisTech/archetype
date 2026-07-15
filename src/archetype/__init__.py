@@ -175,6 +175,24 @@ _EXPORTS: dict[str, tuple[str, str]] = {
 }
 
 
+# Sync-engine exports are the educational tier (issue #278): stable, kept,
+# and deprecated at the TOP-LEVEL alias only. `archetype.core.sync` imports
+# stay silent — the tier is for reading and teaching; the async stack (and
+# the Rust core beyond it) is the performance path.
+_SYNC_TIER_DEPRECATED = frozenset(
+    {
+        "World",
+        "Processor",
+        "System",
+        "Store",
+        "SyncWorld",
+        "SyncProcessor",
+        "SyncSystem",
+        "SyncStore",
+    }
+)
+
+
 def __getattr__(name: str) -> Any:
     """
     Lazy public API loader.
@@ -183,6 +201,16 @@ def __getattr__(name: str) -> Any:
     the entire world at `import archetype` time so small utilities can run in
     minimal environments.
     """
+    if name in _SYNC_TIER_DEPRECATED:
+        import warnings
+
+        warnings.warn(
+            f"archetype.{name} is the educational sync tier: stable but frozen. "
+            "New code should use ArchetypeRuntime (or the Async* classes); see "
+            "docs/guide/runtime.md.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     target = _EXPORTS.get(name)
     if not target:

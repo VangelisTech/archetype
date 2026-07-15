@@ -32,7 +32,6 @@ from archetype.app._catalog import SqliteControlCatalog, catalog_path_for
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
-from archetype.core.sync import SyncStore
 
 logger = logging.getLogger(__name__)
 
@@ -77,21 +76,6 @@ def create_async_store(
         store = AsyncCachedStore(async_store=store, cache_config=cache_config)
 
     return store
-
-
-def create_sync_store(
-    config: StorageConfig,
-    session: Session | None = None,
-) -> SyncStore:
-    """Create a sync store from a StorageConfig."""
-    uri = _resolve_uri(str(config.uri))
-    if config.backend == StorageBackend.ICEBERG:
-        from archetype.runtime.session import configure_session
-
-        sess = configure_session(config, session or Session())
-    else:
-        sess = session or Session()
-    return SyncStore(uri, sess, io_config=config.io_config)
 
 
 class StorageService:

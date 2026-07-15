@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""EDUCATIONAL TIER (deprecated at the top-level API, kept stable here)."""
+
 from .processor import SyncProcessor
 from .querier import QueryManager
 from .store import SyncStore

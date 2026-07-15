@@ -111,8 +111,8 @@ dev = [
     "mutmut>=3.5",
     "mujoco>=3.2",  # physics parity tests (tests/experiments/test_mujoco_rollout.py)
     "pytest-xdist>=3.8.0",
-    # Dev keeps the optional logfire backend installed so CI exercises
-    # contrib/logfire_observer and the api instrumentation path; the
+    # Dev keeps the optional logfire backend installed so CI can exercise
+    # contrib/logfire_observer (tests/contrib) and the api instrumentation path; the
     # published package depends only on the OTel API + SDK.
     "logfire[fastapi]>=4.32.0",
 ]
