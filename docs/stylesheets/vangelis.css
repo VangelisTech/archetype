@@ -1,0 +1,229 @@
+/* Archetype documentation — Vangelis Tech monochrome presentation. */
+
+:root {
+  --md-text-font: Helvetica, "Helvetica Neue", Arial, sans-serif;
+  --md-code-font: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--light: #ffffff;
+  --md-primary-fg-color--dark: #ffffff;
+  --md-primary-bg-color: #000000;
+  --md-primary-bg-color--light: #404040;
+  --md-accent-fg-color: #000000;
+  --md-accent-fg-color--transparent: rgba(0, 0, 0, 0.08);
+  --md-default-bg-color: #ffffff;
+  --md-default-fg-color: #000000;
+  --md-default-fg-color--light: #525252;
+  --md-default-fg-color--lighter: #737373;
+  --md-default-fg-color--lightest: #d4d4d4;
+  --md-typeset-a-color: #000000;
+  --md-code-bg-color: #f5f5f5;
+  --md-code-fg-color: #000000;
+  --md-footer-bg-color: #ffffff;
+  --md-footer-bg-color--dark: #ffffff;
+  --md-footer-fg-color: #000000;
+  --md-footer-fg-color--light: #525252;
+  --md-footer-fg-color--lighter: #737373;
+}
+
+html {
+  color-scheme: light;
+  background: #ffffff;
+}
+
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: var(--md-text-font);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: #000000;
+  color: #ffffff;
+}
+
+.md-grid {
+  max-width: 90rem;
+}
+
+.md-header {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e5e5;
+  box-shadow: none;
+  color: #000000;
+}
+
+.md-header--shadow {
+  box-shadow: none;
+}
+
+.md-header__title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+/* The source mark is 625 × 245; preserve its horizontal aspect ratio. */
+.md-header__button.md-logo {
+  padding-left: 0;
+  padding-right: 0.6rem;
+}
+
+.md-header__button.md-logo img {
+  height: 1.25rem;
+  width: auto;
+  max-width: 3.25rem;
+}
+
+.md-search__form {
+  background: #f5f5f5;
+  border: 1px solid #d4d4d4;
+  border-radius: 0.25rem;
+}
+
+.md-search__form:hover {
+  background: #eeeeee;
+}
+
+.md-search__input,
+.md-search__input::placeholder {
+  color: #000000;
+}
+
+.md-tabs {
+  background: #ffffff;
+  border-bottom: 1px solid #e5e5e5;
+  color: #000000;
+}
+
+/* Material uses masks at scroll boundaries; keep the left rail flat. */
+.md-sidebar__scrollwrap {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
+.md-nav__title,
+.md-nav__link {
+  color: #404040;
+}
+
+.md-nav__link:hover,
+.md-nav__link:focus,
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active {
+  color: #000000;
+}
+
+.md-nav__link--active,
+.md-nav__item .md-nav__link--active {
+  font-weight: 700;
+}
+
+.md-typeset {
+  color: #171717;
+  font-size: 0.82rem;
+  line-height: 1.72;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4,
+.md-typeset h5,
+.md-typeset h6 {
+  color: #000000;
+  font-family: var(--md-text-font);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.md-typeset h1 {
+  margin-bottom: 1.2rem;
+  font-size: clamp(2.2rem, 5vw, 3.25rem);
+  letter-spacing: -0.045em;
+  line-height: 1.05;
+}
+
+.md-typeset h2 {
+  margin-top: 2.2rem;
+  font-size: 1.5rem;
+  line-height: 1.2;
+}
+
+.md-typeset h3 {
+  margin-top: 1.8rem;
+  font-size: 1.08rem;
+}
+
+.md-typeset a {
+  color: #000000;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.md-typeset a:hover {
+  text-decoration-thickness: 2px;
+}
+
+.md-typeset code {
+  border: 1px solid #d4d4d4;
+  border-radius: 0.2rem;
+  box-shadow: none;
+}
+
+.md-typeset pre > code {
+  padding: 1rem 1.2rem;
+}
+
+.md-typeset .highlight,
+.md-typeset pre {
+  border-radius: 0.25rem;
+  box-shadow: none;
+}
+
+.md-typeset blockquote {
+  border-left-color: #000000;
+  color: #404040;
+}
+
+.md-typeset table:not([class]) {
+  border: 1px solid #d4d4d4;
+  border-radius: 0.25rem;
+  box-shadow: none;
+}
+
+.md-typeset table:not([class]) th {
+  background: #f5f5f5;
+  color: #000000;
+}
+
+.md-footer {
+  background: #ffffff;
+  border-top: 1px solid #e5e5e5;
+  color: #000000;
+}
+
+.md-footer-meta {
+  background: #ffffff;
+}
+
+.md-footer__link,
+.md-footer-meta__inner,
+.md-copyright {
+  color: #525252;
+}
+
+.md-progress__bar {
+  background: #000000;
+}
+
+@media screen and (max-width: 59.984375em) {
+  .md-nav--primary .md-nav__title[for="__drawer"] {
+    background: #ffffff;
+    color: #000000;
+  }
+}

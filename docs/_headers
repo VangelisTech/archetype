@@ -45,8 +45,8 @@
 # Early Hints — preload critical assets so the CDN can 103 them
 # --------------------------------------------------------------------------
 /docs/
-  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style
+  Link: </docs/stylesheets/vangelis.css>; rel=preload; as=style
 /docs/guide/*
-  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style
+  Link: </docs/stylesheets/vangelis.css>; rel=preload; as=style
 /docs/reference/*
-  Link: </docs/stylesheets/shadcn.css>; rel=preload; as=style
+  Link: </docs/stylesheets/vangelis.css>; rel=preload; as=style
