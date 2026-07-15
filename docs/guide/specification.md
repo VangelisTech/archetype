@@ -881,6 +881,23 @@ coherent engine contract:
 8. Resolve or explicitly codify same-entity same-tick mutation composition so
    broker command order and final materialized state cannot diverge silently.
 
+## Durability Posture (v0.3, issue #276)
+
+The durable substrate (#272–#275) gives each remaining self-assessment an
+explicit contract. Every subsystem below is either durable by mechanism or
+deliberately advisory with the durable alternative named — none is an
+undocumented gap.
+
+| Subsystem | Contract |
+|---|---|
+| CommandBroker | **Advisory by contract**: tick-boundary batching for live worlds; in-memory, non-deduplicating, drain failures log. Durable, deduplicating delivery of external events is `ingest_fact` ([Durable Facts](durable-facts.md)) — routing durability requirements through the broker is a misuse, not a gap. |
+| AuditLog | **Advisory durability class** in v0.3: `_emit` never raises (an audit failure must not fail the gated operation). The upgrade path is the control catalog's transactional substrate; until then, audit rows are operational telemetry, and durable evidence belongs in fact/receipt rows. |
+| Mutation idempotency | **Simulation mutations stay non-idempotent by design** — `create_entity` twice is two entities, because spawns are simulation events, not external ones. External events with retry semantics carry an external identity through `ingest_fact` (exactly-once-visible). Deterministic replays use reserved entity ids. |
+| API auth | **Development-grade by contract**: the default admin `ActorCtx` is for the reference deployment. A production front must inject authenticated `ActorCtx` (roles resolved by the deployment's identity layer) and never expose the default. |
+| RBAC quota state | **Process-local and advisory** in v0.3 (daily token budgets reset on restart). Durable quota accounting is a control-catalog follow-up; deployments needing hard budgets enforce them at the identity layer above. |
+
+Receipts and facts carry no authority (enforced by `spec.receipt_authority_firewall`); the audit log records who asked, the ledger records what happened, and every durable guarantee in this table traces to the visibility contract in [Atomic Visibility](atomic-visibility.md).
+
 ## Acceptance Criteria
 
 This specification should be considered satisfied only when tests demonstrate

@@ -15,6 +15,10 @@
 """
 Archetype HTN — Hierarchical Task Network plan resolution as a formal ECS pattern.
 
+**EXPERIMENTAL** (issue #278): never production-dogfooded; the API and the
+row shapes may change without deprecation. Use for exploration, not as a
+dependency surface.
+
 Plan resolution is a single-world, ``plan_id``-tagged AND/OR forest. Every live
 branch is ONE row of ONE ``(Branch,)`` archetype carrying, co-located:
 
