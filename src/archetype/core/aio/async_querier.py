@@ -54,6 +54,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         entity_ids: list[int] | None = None,
         components: list[type["Component"]] | None = None,
         run_id: str | None = None,
+        commit_tokens: list[str] | None = None,
         **kwargs,  # absorbs world-internal keys (e.g. run_config, _world_validated)
     ) -> DataFrame:
         """Query active entities for the provided archetype signature.
@@ -120,6 +121,7 @@ class AsyncQueryManager(iAsyncQueryManager):
             ticks=ticks,
             entity_ids=entity_ids,
             active_only=True,
+            commit_tokens=commit_tokens,
         )
 
         if components:
@@ -135,6 +137,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
         """Query all entities that contain the requested component types.
 
@@ -151,10 +154,13 @@ class AsyncQueryManager(iAsyncQueryManager):
 
         required = set(components)
 
-        # Build the output schema from the requested components
+        # Build the output schema from the requested components. Component
+        # projections exclude commit-identity columns (they are storage
+        # metadata; raw query_archetype reads still expose them).
         output_sig = tuple(sorted(components, key=lambda t: t.__name__))
-        schema = Archetype.get_archetype_schema(output_sig)
-        proj_cols = schema.names
+        proj_cols = Archetype.projection_columns(list(output_sig))
+        full_schema = Archetype.get_archetype_schema(output_sig)
+        schema = pa.schema([full_schema.field(name) for name in proj_cols])
 
         # Find all sigs that contain the required types
         all_sigs = await self.list_signatures()
@@ -207,6 +213,7 @@ class AsyncQueryManager(iAsyncQueryManager):
                 ticks=ticks,
                 entity_ids=entity_ids,
                 active_only=True,
+                commit_tokens=commit_tokens,
             )
             result = result.concat(df.select(*proj_cols))
 

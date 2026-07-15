@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+import inspect
 import json
 from logging import getLogger
 from typing import Any, TypeVar, cast
@@ -42,12 +43,14 @@ from archetype.core.hooks import (
 )
 from archetype.core.interfaces import (
     ArchetypeSignature,
+    CommitContext,
     iAsyncHookBus,
     iAsyncProcessor,
     iAsyncQueryManager,
     iAsyncSystem,
     iAsyncUpdateManager,
     iAsyncWorld,
+    iCommitCoordinator,
     iResourceContainer,
 )
 
@@ -74,6 +77,7 @@ class AsyncWorld(iAsyncWorld):
         spawn_cache: dict[ArchetypeSignature, list[dict[str, Any]]] | None = None,
         despawn_cache: dict[ArchetypeSignature, list[int]] | None = None,
         lineage: list[tuple[str, str, int]] | None = None,
+        commit_coordinator: iCommitCoordinator | None = None,
     ):
         """
         Initialize the fully parallel async world.
@@ -100,6 +104,16 @@ class AsyncWorld(iAsyncWorld):
         # Rows for ticks <= up_to_tick live under that ancestor's run; the
         # store is append-only, so those rows are immutable history.
         self.lineage = list(lineage) if lineage else []
+
+        # Commit identity (issue #273). Coordinated worlds mint a commit
+        # context per tick attempt and publish the tick's manifest LAST;
+        # readers admit only manifest-matched rows. Uncoordinated worlds
+        # (coordinator=None) keep implicit epoch-0 semantics: rows stamp
+        # token ""/epoch 0 and nothing is filtered.
+        self.commit_coordinator = commit_coordinator
+        self._commit_ctx: CommitContext | None = None
+        self._updater_takes_commit: bool | None = None
+        self._querier_caps: dict[str, dict[str, bool]] | None = None
 
     @property
     def _entity2sig(self):
@@ -170,6 +184,16 @@ class AsyncWorld(iAsyncWorld):
             # so a store failure preserves exactly the uncommitted mutations.
             # The guard above propagated/raised every exception, so each
             # remaining result is a computed DataFrame.
+            #
+            # Coordinated worlds (issue #273) mint one commit context for the
+            # whole tick; every append this tick stamps it. The manifest is
+            # published LAST, after a forced flush — a crash or stale-writer
+            # failure anywhere before publish leaves this tick's rows
+            # unmanifested and therefore invisible to every reader.
+            if self.commit_coordinator is not None:
+                self._commit_ctx = await self.commit_coordinator.begin_tick(
+                    str(self.world_id), str(self.run_id), self.tick
+                )
             frames = cast("list[DataFrame]", results)
             commits = [
                 self._commit_archetype(sig, df, run_config)
@@ -195,6 +219,30 @@ class AsyncWorld(iAsyncWorld):
                 for sig, r in zip(sigs, committed, strict=False)
                 if not isinstance(r, BaseException)
             }
+
+            if self.commit_coordinator is not None and self._commit_ctx is not None:
+                # Visibility must never outrun durability: staged (cached)
+                # rows flush before the head claims them.
+                store = getattr(self.updater, "store", None)
+                if store is not None:
+                    await store.flush()
+                await self.commit_coordinator.publish_tick(
+                    str(self.world_id),
+                    str(self.run_id),
+                    self.tick,
+                    self._commit_ctx,
+                    [Archetype.get_name(sig) for sig in sigs],
+                )
+                # Mutations are consumed only now, after the manifest exists.
+                # A crash or stale-writer failure at ANY earlier point leaves
+                # the caches intact, so the retried tick recomputes and
+                # re-appends under a fresh token — the failed attempt's rows
+                # stay unmanifested and invisible; exactly one attempt per
+                # tick ever becomes visible.
+                for sig in sigs:
+                    self.spawn_cache.pop(sig, None)
+                    self.despawn_cache.pop(sig, None)
+            self._commit_ctx = None
 
             self.tick += 1
 
@@ -240,15 +288,18 @@ class AsyncWorld(iAsyncWorld):
     async def _commit_archetype(
         self, sig: ArchetypeSignature, df: DataFrame, run_config: RunConfig
     ) -> DataFrame:
-        """Append one archetype's computed frame and consume its caches.
+        """Append one archetype's computed frame; consume caches (uncoordinated).
 
         The updater raises on failed persistence, in which case the caches
-        survive for retry."""
+        survive for retry. Coordinated worlds defer cache consumption to
+        after manifest publish (see step): durability alone is not enough
+        once visibility requires the published head."""
         with _obs.span("world.update", sig=Archetype.get_name(sig), tick=self.tick):
             df_mat = await self.update(df, sig, run_config)
 
-        self.spawn_cache.pop(sig, None)
-        self.despawn_cache.pop(sig, None)
+        if self.commit_coordinator is None:
+            self.spawn_cache.pop(sig, None)
+            self.despawn_cache.pop(sig, None)
         return df_mat
 
     # ---------------------------------------------------------------------
@@ -660,32 +711,38 @@ class AsyncWorld(iAsyncWorld):
                 )
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
-            # Prefer to pass run_config if the querier supports it (instrumented);
-            # otherwise omit.  Also pass _world_validated=True so that the
-            # querier's own existence check is bypassed — the world-level guard
-            # above has already verified the sig against live + store sigs,
-            # including sigs that are in the spawn cache but not yet committed.
-            try:
-                return await self.querier.query_archetype(
-                    sig=sig,
-                    world_id=target_world,
-                    run_id=target_run,
-                    ticks=target_ticks,
-                    entity_ids=entity_ids,
-                    components=components,
-                    run_config=run_config,  # ty: ignore[unknown-argument]  # probed; TypeError-guarded below
-                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
-                )
-            except TypeError:
-                return await self.querier.query_archetype(
-                    sig=sig,
-                    world_id=target_world,
-                    run_id=target_run,
-                    ticks=target_ticks,
-                    entity_ids=entity_ids,
-                    components=components,
-                    _world_validated=True,  # ty: ignore[unknown-argument]  # absorbed by **kwargs
-                )
+            # Querier capability is resolved by signature inspection, NOT by
+            # TypeError probing: a retry-on-TypeError fallback that omits
+            # commit_tokens would silently fail OPEN — surfacing rows no
+            # manifest authorized — the exact failure the atomic-visibility
+            # amendment forbids (same reasoning as update()'s commit param).
+            tokens = await self._visible_tokens(target_world, target_run, target_ticks)
+            caps = self._querier_caps_for("query_archetype")
+            kwargs: dict[str, Any] = {}
+            if caps["_world_validated"]:
+                # Bypass the querier's own existence check — the world-level
+                # guard above already verified the sig against live + store
+                # sigs, including uncommitted spawn-cache sigs.
+                kwargs["_world_validated"] = True
+            if caps["run_config"] and run_config is not None:
+                kwargs["run_config"] = run_config
+            if tokens is not None:
+                if not caps["commit_tokens"]:
+                    raise RuntimeError(
+                        f"querier {type(self.querier).__name__} does not accept "
+                        "commit_tokens; refusing an unfiltered read of a "
+                        "coordinated world (fail closed)"
+                    )
+                kwargs["commit_tokens"] = tokens
+            return await self.querier.query_archetype(
+                sig=sig,
+                world_id=target_world,
+                run_id=target_run,
+                ticks=target_ticks,
+                entity_ids=entity_ids,
+                components=components,
+                **kwargs,
+            )
 
         requested_ticks = ticks or [self.tick]
         if not self.lineage:
@@ -717,6 +774,47 @@ class AsyncWorld(iAsyncWorld):
                 return str(ancestor_world), str(ancestor_run)
         return str(self.world_id), str(own_run_id or self.run_id or "")
 
+    def _querier_caps_for(self, method: str) -> dict[str, bool]:
+        """Which optional kwargs a querier method accepts (memoized per method).
+
+        A parameter is accepted if it is named in the signature or the
+        signature takes **kwargs (the core querier absorbs world-internal
+        keys that way). Per the iAsyncQueryManager contract, a querier that
+        accepts commit_tokens MUST filter by it — coordinated worlds refuse
+        queriers that cannot accept it at all (fail closed).
+        """
+        if self._querier_caps is None:
+            self._querier_caps = {}
+        caps = self._querier_caps.get(method)
+        if caps is None:
+            params = inspect.signature(getattr(self.querier, method)).parameters
+            var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+            caps = {
+                name: var_kw or name in params
+                for name in ("commit_tokens", "run_config", "_world_validated")
+            }
+            self._querier_caps[method] = caps
+        return caps
+
+    async def _visible_tokens(
+        self, world_id: str, run_id: str, ticks: list[int] | None
+    ) -> list[str] | None:
+        """Reader-side commit-token allowlist for one (world, run) segment.
+
+        None means unfiltered: either this world is uncoordinated, or the
+        target segment has no manifests at all (pre-#273 legacy history).
+        An empty list means manifests exist but none cover the requested
+        ticks — nothing current-generation is visible there.
+        """
+        if self.commit_coordinator is None:
+            return None
+        visible = await self.commit_coordinator.visible_tokens(str(world_id), str(run_id), ticks)
+        if visible is None:
+            return None
+        if ticks is None:
+            return sorted(set(visible.values()))
+        return sorted({visible[t] for t in ticks if t in visible})
+
     async def get_components(
         self,
         components: list[type[Component]],
@@ -728,12 +826,25 @@ class AsyncWorld(iAsyncWorld):
         """
         read_tick = max(self.tick - 1, 0)
         source_world, source_run = self._tick_source(read_tick)
+        tokens = await self._visible_tokens(source_world, source_run, [read_tick])
+        kwargs: dict[str, Any] = {}
+        if tokens is not None:
+            # Same fail-closed guard as query_archetype: a querier that
+            # cannot accept the allowlist must not serve a coordinated read.
+            if not self._querier_caps_for("query_components")["commit_tokens"]:
+                raise RuntimeError(
+                    f"querier {type(self.querier).__name__} does not accept "
+                    "commit_tokens; refusing an unfiltered read of a "
+                    "coordinated world (fail closed)"
+                )
+            kwargs["commit_tokens"] = tokens
         return await self.querier.query_components(
             components=components,
             world_id=source_world,
             run_id=source_run,
             ticks=[read_tick],
             entity_ids=entity_ids,
+            **kwargs,
         )
 
     async def execute(self, df: DataFrame, sig: ArchetypeSignature, **input_kwargs) -> DataFrame:
@@ -749,9 +860,26 @@ class AsyncWorld(iAsyncWorld):
         run_config: RunConfig,
         tick: int | None = None,
     ) -> DataFrame:
-        """Update the store with the given archetypes."""
-        df = await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
-        return df
+        """Update the store with the given archetypes.
+
+        Stamps the tick's commit context when one is active (issue #273).
+        Updater capability is resolved by signature inspection, NOT by
+        TypeError probing — a retry-on-TypeError around a write could
+        double-append rows the first call already persisted.
+        """
+        if self._updater_takes_commit is None:
+            params = inspect.signature(self.updater.update).parameters
+            self._updater_takes_commit = "commit" in params
+        if self._updater_takes_commit:
+            return await self.updater.update(
+                df,
+                sig,
+                tick or self.tick,
+                self.world_id,
+                self.run_id,
+                commit=self._commit_ctx,
+            )
+        return await self.updater.update(df, sig, tick or self.tick, self.world_id, self.run_id)
 
     # -------------------------------------------------------------------------
     # Hooks: Typed lifecycle callbacks for observability

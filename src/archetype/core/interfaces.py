@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 import pyarrow as pa
@@ -330,6 +331,68 @@ class iWorld(Protocol):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# COMMIT IDENTITY (issue #273, spec amendment approved 2026-07-14)
+# ═══════════════════════════════════════════════════════════════════════════════
+# A tick is visible iff its manifest is published. Rows carry a commit token
+# and writer epoch; readers admit only rows whose token matches the published
+# manifest for that tick, so crashed partial writes and stale-writer appends
+# are invisible by construction. The coordinator lives above core (the control
+# catalog implements it); core defines the protocol and runs uncoordinated —
+# with implicit epoch-0, everything-visible semantics — when none is injected.
+
+
+@dataclass(frozen=True)
+class CommitContext:
+    """Identity of one tick-commit attempt by one fenced writer."""
+
+    commit_token: str
+    writer_epoch: int
+
+
+@dataclass(frozen=True)
+class AppendReceipt:
+    """Durable batch receipt for one append (spec: append returns receipts).
+
+    ``durable`` is False for staged writes (e.g. a caching store's memtable);
+    such rows become durable at flush. ``backend_ref`` is an auxiliary
+    diagnostic (e.g. a Lance version or Iceberg snapshot id) — never the
+    visibility mechanism.
+    """
+
+    table_id: str
+    rows: int | None
+    durable: bool
+    backend_ref: str | None = None
+
+
+class StaleWriterError(RuntimeError):
+    """A writer whose epoch lost the fence attempted to publish; fail closed."""
+
+
+class iCommitCoordinator(Protocol):
+    """Fenced tick-commit protocol (spec §273 amendment).
+
+    begin_tick mints the commit identity for a tick attempt; publish_tick
+    CAS-publishes the manifest LAST, verifying the writer still holds the
+    fence in the same transaction; visible_tokens answers the reader-side
+    allowlist (None: no manifests recorded — legacy world, nothing filtered).
+    """
+
+    async def begin_tick(self, world_id: str, run_id: str, tick: int) -> CommitContext: ...
+    async def publish_tick(
+        self,
+        world_id: str,
+        run_id: str,
+        tick: int,
+        ctx: CommitContext,
+        table_ids: list[str],
+    ) -> None: ...
+    async def visible_tokens(
+        self, world_id: str, run_id: str, ticks: list[int] | None = None
+    ) -> dict[int, str] | None: ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ASYNCHRONOUS INTERFACES
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -367,6 +430,7 @@ class iAsyncStore(Protocol):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         active_only: bool = False,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame: ...
     async def list_signatures(self) -> list[ArchetypeSignature]: ...
     async def list_committed_signatures(self) -> list[ArchetypeSignature]:
@@ -374,7 +438,13 @@ class iAsyncStore(Protocol):
         read tables. Used by the querier's UnknownSignatureError existence check."""
         ...
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None: ...
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt: ...
+    async def flush(self) -> None:
+        """Force staged rows durable. No-op for stores that write through;
+        caching stores drain their memtables. A commit coordinator's manifest
+        head must never be published while its tick's rows are staged-only."""
+        ...
+
     async def shutdown(self) -> None: ...
 
     # ── Durable-discovery seam (issue #272, approved 2026-07-14) ──────────
@@ -398,7 +468,14 @@ class iAsyncStore(Protocol):
 
 
 class iAsyncQueryManager(Protocol):
-    """Async active-state read facade (spec §159–§173)."""
+    """Async active-state read facade (spec §159–§173).
+
+    ``commit_tokens`` (issue #273) is the reader-side visibility allowlist.
+    An implementation that accepts it MUST filter current-generation rows to
+    the allowlisted tokens — accepting and ignoring it silently fails open,
+    which the atomic-visibility amendment forbids. Coordinated worlds refuse
+    queriers whose signatures cannot accept it (fail closed).
+    """
 
     async def get_archetype(
         self, sig: ArchetypeSignature, world_id: str, run_id: str
@@ -411,6 +488,7 @@ class iAsyncQueryManager(Protocol):
         entity_ids: list[int] | None = None,
         components: list[type[Component]] | None = None,
         run_id: str | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame: ...
     async def query_components(
         self,
@@ -420,6 +498,7 @@ class iAsyncQueryManager(Protocol):
         *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame: ...
     async def list_signatures(self) -> list[ArchetypeSignature]: ...
 
@@ -428,7 +507,13 @@ class iAsyncUpdateManager(Protocol):
     """Async write facade; returns the persisted-shape DataFrame (spec §181)."""
 
     async def update(
-        self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        tick: int,
+        world_id: str,
+        run_id: str,
+        commit: CommitContext | None = None,
     ) -> DataFrame: ...
 
 

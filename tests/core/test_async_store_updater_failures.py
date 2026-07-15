@@ -101,6 +101,8 @@ async def test_async_updater_raises_on_store_failure(tmp_path, caplog):
                     "entity_id": 1,
                     "tick": 0,
                     "is_active": True,
+                    "commit_token": "",
+                    "writer_epoch": 0,
                     "demo__v": 1,
                 }
             ],

@@ -433,6 +433,8 @@ async def test_iceberg_seam_reads_existing_tables_only(tmp_path):
             "entity_id": 1,
             "tick": 0,
             "is_active": True,
+            "commit_token": "",
+            "writer_epoch": 0,
             "score__points": 3.0,
         }
         await writer.append(sig, daft.from_arrow(pa.Table.from_pylist([row], schema=schema)))

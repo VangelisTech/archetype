@@ -102,7 +102,8 @@ async def test_update_stamps_and_query_filters(store_backend):
         run_id=run_id,
     )
     cols = set(df_proj.collect().column_names)
-    base_cols = set(Archetype.BASE_SCHEMA.names)
+    # Projections exclude commit-identity columns (issue #273).
+    base_cols = set(Archetype.LEGACY_BASE_SCHEMA.names)
     comp_cols = set(Position.get_prefixed_schema().names)
     assert base_cols.issubset(cols)
     assert comp_cols.issubset(cols)

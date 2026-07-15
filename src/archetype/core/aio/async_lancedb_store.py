@@ -20,11 +20,11 @@ from typing import Any, Protocol
 
 import daft
 import lancedb
-from daft import DataFrame
+from daft import DataFrame, lit
 from lancedb.index import Bitmap, BTree
 
 from archetype.core.archetype import Archetype
-from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
+from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,9 @@ class AsyncLancedbStore(iAsyncStore):
         # ~100s of it). A LanceDB handle always reads the current version, so
         # reusing it is safe — appends and queries see the latest data.
         self._tables: dict[str, Any] = {}
+        # Memoized presence of v0.2 legacy tables per legacy table id — frozen
+        # history, checked once (see _legacy_df).
+        self._legacy_present: dict[str, bool] = {}
 
     async def _ensure_table(self, sig):
         table_name = Archetype.get_name(sig)
@@ -193,6 +196,44 @@ class AsyncLancedbStore(iAsyncStore):
 
         return list(await self.lancedb.table_names())
 
+    @staticmethod
+    def _where(
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None,
+        entity_ids: list[int] | None,
+        active_only: bool,
+        commit_tokens: list[str] | None = None,
+    ) -> str:
+        safe_world = str(world_id).replace("'", "''")
+        safe_run = str(run_id).replace("'", "''")
+        clauses = [
+            f"world_id = '{safe_world}'",
+            f"run_id = '{safe_run}'",
+        ]
+
+        if active_only:
+            clauses.append("is_active = true")
+
+        if ticks is not None:
+            tick_list = ", ".join(str(int(t)) for t in ticks)
+            clauses.append(f"tick IN ({tick_list})")
+
+        if entity_ids is not None:
+            id_list = ", ".join(str(int(eid)) for eid in entity_ids)
+            clauses.append(f"entity_id IN ({id_list})")
+
+        if commit_tokens is not None:
+            if commit_tokens:
+                token_list = ", ".join("'{}'".format(t.replace("'", "''")) for t in commit_tokens)
+                clauses.append(f"commit_token IN ({token_list})")
+            else:
+                # An empty allowlist means no current-generation row is visible.
+                clauses.append("false")
+
+        return " AND ".join(clauses)
+
     async def get_archetype_df(
         self,
         sig,
@@ -202,30 +243,27 @@ class AsyncLancedbStore(iAsyncStore):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         active_only: bool = False,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
+        """Read one archetype's rows.
+
+        ``commit_tokens`` is the reader-side visibility allowlist (issue #273):
+        current-generation rows must match a published manifest token. Legacy
+        (v0.2) rows carry no commit identity and are implicitly epoch-0
+        visible — the allowlist never applies to them.
+        """
         table_name = Archetype.get_name(sig)
         async_table = await self._ensure_table(sig)
 
         try:
-            safe_world = str(world_id).replace("'", "''")
-            safe_run = str(run_id).replace("'", "''")
-            clauses = [
-                f"world_id = '{safe_world}'",
-                f"run_id = '{safe_run}'",
-            ]
-
-            if active_only:
-                clauses.append("is_active = true")
-
-            if ticks is not None:
-                tick_list = ", ".join(str(int(t)) for t in ticks)
-                clauses.append(f"tick IN ({tick_list})")
-
-            if entity_ids is not None:
-                id_list = ", ".join(str(int(eid)) for eid in entity_ids)
-                clauses.append(f"entity_id IN ({id_list})")
-
-            where_str = " AND ".join(clauses)
+            where_str = self._where(
+                world_id,
+                run_id,
+                ticks=ticks,
+                entity_ids=entity_ids,
+                active_only=active_only,
+                commit_tokens=commit_tokens,
+            )
             filtered_arrow = await async_table.query().where(where_str).to_arrow()
             df = daft.from_arrow(filtered_arrow)
 
@@ -233,7 +271,52 @@ class AsyncLancedbStore(iAsyncStore):
             logger.error(f"Error reading archetype table {table_name}: {e}")
             raise e
 
+        legacy_df = await self._legacy_df(
+            sig, world_id, run_id, ticks=ticks, entity_ids=entity_ids, active_only=active_only
+        )
+        if legacy_df is not None:
+            df = df.concat(legacy_df)
+
         return df
+
+    async def _legacy_df(
+        self,
+        sig,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None,
+        entity_ids: list[int] | None,
+        active_only: bool,
+    ) -> DataFrame | None:
+        """Rows persisted by v0.2 under the legacy table id, if any.
+
+        Presence is memoized per legacy table id: legacy tables are frozen
+        history (nothing writes them after #273), so one existence check
+        suffices. Rows are stamped with the epoch-0 identity and aligned to
+        the current schema so callers see one uniform shape.
+        """
+        legacy_name = Archetype.get_legacy_name(sig)
+        known = self._legacy_present.get(legacy_name)
+        if known is None:
+            await self._connect()
+            known = legacy_name in await self._list_table_names()
+            self._legacy_present[legacy_name] = known
+        if not known:
+            return None
+
+        table = await self._open_existing_table(legacy_name)
+        where_str = self._where(
+            world_id, run_id, ticks=ticks, entity_ids=entity_ids, active_only=active_only
+        )
+        arrow = await table.query().where(where_str).to_arrow()
+        df = daft.from_arrow(arrow).with_columns(
+            {
+                "commit_token": lit(""),
+                "writer_epoch": lit(0).cast(daft.DataType.int64()),
+            }
+        )
+        return df.select(*Archetype.get_archetype_schema(sig).names)
 
     async def list_signatures(self) -> list[ArchetypeSignature]:
         return list(self._known_sigs.values())
@@ -246,28 +329,38 @@ class AsyncLancedbStore(iAsyncStore):
         """
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
-    async def append(self, sig, df: DataFrame) -> None:
+    async def append(self, sig, df: DataFrame) -> AppendReceipt:
         # ONE materialization. Lance rejects zero-row / schemaless frames, so the
         # empty guard stays — but the row count comes free from the Arrow table we
         # must build anyway. A separate df.collect() + df.count_rows() re-ran the
         # Daft plan twice for nothing; this redundancy is a recurring rewrite
         # regression (perf-fixed before in the predecessor stores) — keep it lean.
+        table_id = Archetype.get_name(sig)
         if not df.column_names:
-            logger.info(
-                f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} empty schema"
-            )
-            return
+            logger.info(f"Append skipped (lancedb): archetype={table_id} empty schema")
+            return AppendReceipt(table_id=table_id, rows=0, durable=True)
         arrow_table = df.to_arrow()
         if arrow_table.num_rows == 0:
-            logger.info(f"Append skipped (lancedb): archetype={Archetype.get_name(sig)} rows=0")
-            return
+            logger.info(f"Append skipped (lancedb): archetype={table_id} rows=0")
+            return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
         async_table = await self._ensure_table(sig)
         # Record this sig as durably committed for list_committed_signatures().
-        self._committed_sigs.add(Archetype.get_name(sig))
+        self._committed_sigs.add(table_id)
         # No local try/except: AsyncUpdateManager.update already logs + re-raises
         # (the "loud failures" contract), so wrapping here would only double-log.
-        await async_table.add(arrow_table, mode="append")
+        result = await async_table.add(arrow_table, mode="append")
+        # Backend version is an auxiliary diagnostic, never the visibility mechanism.
+        version = getattr(result, "version", None)
+        return AppendReceipt(
+            table_id=table_id,
+            rows=arrow_table.num_rows,
+            durable=True,
+            backend_ref=str(version) if version is not None else None,
+        )
+
+    async def flush(self) -> None:
+        """No-op: appends write through to LanceDB."""
 
     async def shutdown(self) -> None:
         if self.lancedb is not None:

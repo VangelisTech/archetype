@@ -55,10 +55,11 @@ from urllib.parse import urlparse
 import pyarrow as pa
 
 from archetype.core.config import StorageConfig
+from archetype.core.interfaces import StaleWriterError
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
@@ -196,6 +197,25 @@ class WorldRecord:
 
 
 @dataclass(frozen=True)
+class ManifestRecord:
+    """One published tick commit: the visibility authority (issue #273).
+
+    A tick is visible iff its manifest row exists. Compact by contract:
+    world, run, tick, the commit token that names the winning attempt, the
+    fenced writer epoch, and the table ids touched — never entity
+    directories or state snapshots.
+    """
+
+    world_id: str
+    run_id: str
+    tick: int
+    commit_token: str
+    writer_epoch: int
+    table_ids: tuple[str, ...]
+    created_at: str
+
+
+@dataclass(frozen=True)
 class SignatureRecord:
     """Compact durable pointer to one archetype table."""
 
@@ -213,7 +233,7 @@ class ControlCatalog(Protocol):
 
     async def register_world(self, record: WorldRecord) -> None: ...
     async def set_world_status(self, world_id: str, status: str) -> None: ...
-    async def set_tick_head(self, world_id: str, tick_head: int, run_id: str | None) -> None: ...
+    async def set_world_run(self, world_id: str, run_id: str) -> None: ...
     async def get_world(self, world_id: str) -> WorldRecord | None: ...
     async def list_worlds(self) -> list[WorldRecord]: ...
     async def register_signature(self, record: SignatureRecord) -> None: ...
@@ -243,6 +263,22 @@ CREATE TABLE IF NOT EXISTS signatures (
     component_names TEXT NOT NULL,
     schema_json TEXT NOT NULL,
     fingerprint TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS manifests (
+    world_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    tick INTEGER NOT NULL,
+    commit_token TEXT NOT NULL,
+    writer_epoch INTEGER NOT NULL,
+    tables_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (world_id, run_id, tick)
+);
+CREATE TABLE IF NOT EXISTS writer_fence (
+    world_id TEXT PRIMARY KEY,
+    epoch INTEGER NOT NULL,
+    holder TEXT NOT NULL,
+    acquired_at TEXT NOT NULL
 );
 INSERT OR IGNORE INTO catalog_meta (key, value) VALUES ('schema_version', '{_SCHEMA_VERSION}');
 """
@@ -274,13 +310,20 @@ class SqliteControlCatalog:
             logger.warning("catalog %s: journal_mode=%s (WAL unavailable)", self.path, journal)
         conn.execute("PRAGMA synchronous=FULL")
         conn.executescript(_DDL)
-        version = conn.execute(
-            "SELECT value FROM catalog_meta WHERE key='schema_version'"
-        ).fetchone()[0]
-        if int(version) != _SCHEMA_VERSION:
+        version = int(
+            conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[0]
+        )
+        if version > _SCHEMA_VERSION:
             raise CatalogConflictError(
                 f"catalog {self.path} has schema_version={version}, "
                 f"this build expects {_SCHEMA_VERSION}"
+            )
+        if version < _SCHEMA_VERSION:
+            # Upgrades are strictly additive (the DDL above already created
+            # any missing tables); record the new version.
+            conn.execute(
+                "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
+                (str(_SCHEMA_VERSION),),
             )
         conn.commit()
         self._conn = conn
@@ -345,20 +388,13 @@ class SqliteControlCatalog:
 
         await self._run(_set)
 
-    async def set_tick_head(self, world_id: str, tick_head: int, run_id: str | None) -> None:
+    async def set_world_run(self, world_id: str, run_id: str) -> None:
+        """Track the world's current run (manifests own the tick head)."""
+
         def _set() -> None:
             conn = self._connect_sync()
             with conn:
-                if run_id is None:
-                    conn.execute(
-                        "UPDATE worlds SET tick_head=? WHERE world_id=?",
-                        (tick_head, world_id),
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE worlds SET tick_head=?, run_id=? WHERE world_id=?",
-                        (tick_head, run_id, world_id),
-                    )
+                conn.execute("UPDATE worlds SET run_id=? WHERE world_id=?", (run_id, world_id))
 
         await self._run(_set)
 
@@ -425,6 +461,188 @@ class SqliteControlCatalog:
             ]
 
         return await self._run(_list)
+
+    # ── commit identity: writer fence + manifests (issue #273) ──────────────
+
+    async def acquire_fence(self, world_id: str, holder: str) -> int:
+        """CAS-acquire the world's writer fence; returns the new epoch.
+
+        Every acquisition increments the epoch, so exactly one writer holds
+        the live epoch and every earlier writer becomes stale. Publishing
+        verifies the epoch inside the same transaction — a stale writer
+        fails closed rather than splitting history.
+        """
+
+        def _acquire() -> int:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+                ).fetchone()
+                epoch = (int(row["epoch"]) if row is not None else 0) + 1
+                conn.execute(
+                    "INSERT INTO writer_fence (world_id, epoch, holder, acquired_at) "
+                    "VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(world_id) DO UPDATE SET "
+                    "epoch=excluded.epoch, holder=excluded.holder, "
+                    "acquired_at=excluded.acquired_at",
+                    (world_id, epoch, holder, _utcnow()),
+                )
+                return epoch
+
+        return await self._run(_acquire)
+
+    async def current_fence_epoch(self, world_id: str) -> int | None:
+        def _get() -> int | None:
+            conn = self._connect_sync()
+            row = conn.execute(
+                "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+            ).fetchone()
+            return int(row["epoch"]) if row is not None else None
+
+        return await self._run(_get)
+
+    async def publish_manifest(
+        self,
+        world_id: str,
+        run_id: str,
+        tick: int,
+        commit_token: str,
+        writer_epoch: int,
+        table_ids: list[str],
+    ) -> None:
+        """Publish one tick's manifest — the LAST step of a tick commit.
+
+        One transaction: verify the caller still holds the fence, put-if-
+        absent the manifest row, and advance the world's tick head. A stale
+        epoch raises StaleWriterError; a different already-published attempt
+        for the same tick raises CatalogConflictError. Re-publishing the
+        identical attempt is a no-op (idempotent retry).
+        """
+
+        def _publish() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                fence = conn.execute(
+                    "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
+                ).fetchone()
+                if fence is None or int(fence["epoch"]) != writer_epoch:
+                    live = None if fence is None else int(fence["epoch"])
+                    raise StaleWriterError(
+                        f"writer epoch {writer_epoch} for world {world_id} is not the "
+                        f"live fence epoch ({live}); refusing to publish tick {tick}"
+                    )
+                row = conn.execute(
+                    "SELECT commit_token FROM manifests WHERE world_id=? AND run_id=? AND tick=?",
+                    (world_id, run_id, tick),
+                ).fetchone()
+                if row is not None:
+                    if row["commit_token"] == commit_token:
+                        return
+                    raise CatalogConflictError(
+                        f"tick {tick} of world {world_id} already has a published "
+                        f"manifest from a different commit attempt"
+                    )
+                conn.execute(
+                    "INSERT INTO manifests "
+                    "(world_id, run_id, tick, commit_token, writer_epoch, tables_json, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        world_id,
+                        run_id,
+                        tick,
+                        commit_token,
+                        writer_epoch,
+                        json.dumps(sorted(table_ids)),
+                        _utcnow(),
+                    ),
+                )
+                conn.execute(
+                    "UPDATE worlds SET tick_head=MAX(tick_head, ?) WHERE world_id=?",
+                    (tick, world_id),
+                )
+
+        await self._run(_publish)
+
+    async def visible_tokens(
+        self, world_id: str, run_id: str, ticks: list[int] | None = None
+    ) -> dict[int, str] | None:
+        """The reader-side visibility map for one (world, run).
+
+        None when the pair has no manifests at all — an uncoordinated or
+        pre-#273 world whose rows are implicitly visible. Otherwise a
+        {tick: commit_token} map covering the requested ticks; a tick with
+        no entry is invisible (its commit never finished).
+        """
+
+        def _tokens() -> dict[int, str] | None:
+            conn = self._connect_sync()
+            any_row = conn.execute(
+                "SELECT 1 FROM manifests WHERE world_id=? AND run_id=? LIMIT 1",
+                (world_id, run_id),
+            ).fetchone()
+            if any_row is None:
+                # No manifests: distinguish true pre-#273 history (never
+                # fenced — implicitly visible) from a coordinated world whose
+                # first commit hasn't published (fence exists — nothing is
+                # visible yet; a crashed first tick must not surface).
+                fence = conn.execute(
+                    "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
+                ).fetchone()
+                return None if fence is None else {}
+            if ticks is None:
+                rows = conn.execute(
+                    "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?",
+                    (world_id, run_id),
+                ).fetchall()
+            else:
+                placeholders = ",".join("?" for _ in ticks)
+                rows = conn.execute(
+                    "SELECT tick, commit_token FROM manifests "
+                    f"WHERE world_id=? AND run_id=? AND tick IN ({placeholders})",
+                    (world_id, run_id, *[int(t) for t in ticks]),
+                ).fetchall()
+            return {int(r["tick"]): r["commit_token"] for r in rows}
+
+        return await self._run(_tokens)
+
+    async def list_manifests(
+        self, world_id: str, run_id: str | None = None
+    ) -> list[ManifestRecord]:
+        def _list() -> list[ManifestRecord]:
+            conn = self._connect_sync()
+            if run_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM manifests WHERE world_id=? ORDER BY run_id, tick",
+                    (world_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM manifests WHERE world_id=? AND run_id=? ORDER BY tick",
+                    (world_id, run_id),
+                ).fetchall()
+            return [
+                ManifestRecord(
+                    world_id=r["world_id"],
+                    run_id=r["run_id"],
+                    tick=int(r["tick"]),
+                    commit_token=r["commit_token"],
+                    writer_epoch=int(r["writer_epoch"]),
+                    table_ids=tuple(json.loads(r["tables_json"])),
+                    created_at=r["created_at"],
+                )
+                for r in rows
+            ]
+
+        return await self._run(_list)
+
+
+def _utcnow() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()
 
 
 def _world_from_row(row: sqlite3.Row) -> WorldRecord:

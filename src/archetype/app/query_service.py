@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from daft import DataFrame, col
+from daft import DataFrame, col, lit
 
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
@@ -70,18 +70,12 @@ class QueryService:
         When `lineage` is provided (a fork's ancestor segments), pre-fork
         ticks are read from the owning ancestor's run and unioned in.
         """
-        store = await self._storage_service.get_or_create_store(storage_config or StorageConfig())
+        effective_config = storage_config or StorageConfig()
+        store = await self._storage_service.get_or_create_store(effective_config)
         querier = AsyncQueryManager(store=store)
-        result = await querier.query_archetype(
-            sig=sig,
-            world_id=world_id,
-            run_id=run_id,
-            ticks=ticks,
-            entity_ids=entity_ids,
-            components=components,
-        )
 
         async def _segment(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
+            tokens = await self._visible_tokens(effective_config, seg_world, seg_run, seg_ticks)
             return await querier.query_archetype(
                 sig=sig,
                 world_id=seg_world,
@@ -89,8 +83,10 @@ class QueryService:
                 ticks=seg_ticks,
                 entity_ids=entity_ids,
                 components=components,
+                commit_tokens=tokens,
             )
 
+        result = await _segment(world_id, run_id, ticks)
         return await self._union_lineage(result, lineage, ticks, _segment)
 
     async def query_components(
@@ -118,6 +114,7 @@ class QueryService:
         catalog_records = await self._catalog_candidates(effective_config, components)
 
         async def _read(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
+            tokens = await self._visible_tokens(effective_config, seg_world, seg_run, seg_ticks)
             return await self._components_frame(
                 querier,
                 store,
@@ -127,6 +124,7 @@ class QueryService:
                 seg_run,
                 ticks=seg_ticks,
                 entity_ids=entity_ids,
+                commit_tokens=tokens,
             )
 
         result = await _read(world_id, run_id, ticks)
@@ -150,6 +148,34 @@ class QueryService:
             return []
         return [r for r in records if requested.issubset(set(r.component_names))]
 
+    async def _visible_tokens(
+        self,
+        storage_config: StorageConfig,
+        world_id: str,
+        run_id: str,
+        ticks: list[int] | None,
+    ) -> list[str] | None:
+        """Reader-side commit-token allowlist for one (world, run) segment.
+
+        None = unfiltered (no manifests recorded: uncoordinated or pre-#273
+        history — implicit epoch-0).
+
+        Catalog errors PROPAGATE — the opposite posture from
+        _catalog_candidates, deliberately. Degraded discovery returns less
+        data; a degraded visibility check would return MORE (rows from
+        crashed or stale commit attempts that no manifest authorized), so a
+        corrupt or unreadable catalog fails the read closed. A missing
+        catalog is not an error: connecting creates an empty one, which
+        reports no manifests and no fence — the legacy-unfiltered case.
+        """
+        catalog = self._storage_service.get_control_catalog(storage_config)
+        visible = await catalog.visible_tokens(str(world_id), str(run_id), ticks)
+        if visible is None:
+            return None
+        if ticks is None:
+            return sorted(set(visible.values()))
+        return sorted({visible[t] for t in ticks if t in visible})
+
     async def _components_frame(
         self,
         querier: AsyncQueryManager,
@@ -161,6 +187,7 @@ class QueryService:
         *,
         ticks: list[int] | None,
         entity_ids: list[int] | None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
         """Live subset query unioned with catalog-discovered tables.
 
@@ -176,8 +203,9 @@ class QueryService:
         from archetype.app._catalog import CatalogSchemaMismatchError, schema_fingerprint
 
         output_sig = tuple(sorted(components, key=lambda t: t.__name__))
-        schema = Archetype.get_archetype_schema(output_sig)
-        proj_cols = schema.names
+        proj_cols = Archetype.projection_columns(list(output_sig))
+        full_schema = Archetype.get_archetype_schema(output_sig)
+        schema = pa.schema([full_schema.field(name) for name in proj_cols])
 
         live_sigs = await querier.list_signatures()
         live_tables = {Archetype.get_name(sig) for sig in live_sigs}
@@ -190,6 +218,7 @@ class QueryService:
                 run_id=run_id,
                 ticks=ticks,
                 entity_ids=entity_ids,
+                commit_tokens=commit_tokens,
             )
         except KeyError:
             # The live registry has signatures but none satisfy the request.
@@ -214,6 +243,10 @@ class QueryService:
                 entity_ids=entity_ids,
                 active_only=True,
             )
+            if commit_tokens is not None and "commit_token" in df.column_names:
+                # (Daft stubs Expression methods as bool; these are Expressions.)
+                visible = df["commit_token"].is_in(commit_tokens) if commit_tokens else lit(False)
+                df = df.where(visible)
             result = result.concat(df.select(*proj_cols))
 
         return result

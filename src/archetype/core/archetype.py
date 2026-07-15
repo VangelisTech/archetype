@@ -24,13 +24,28 @@ from archetype.core.interfaces import ArchetypeSignature
 class Archetype:
     """Convenience handler for archetype operations"""
 
-    BASE_SCHEMA = pa.schema(
+    # v0.2 base schema. Kept verbatim: legacy tables are named by the hash of
+    # this shape and remain readable as implicit epoch-0 history (issue #273).
+    LEGACY_BASE_SCHEMA = pa.schema(
         [
             pa.field("world_id", pa.string(), nullable=False),
             pa.field("run_id", pa.string(), nullable=False),
             pa.field("entity_id", pa.int32(), nullable=False),
             pa.field("tick", pa.int32(), nullable=False),
             pa.field("is_active", pa.bool_(), nullable=False),
+        ]
+    )
+
+    # Commit identity (issue #273): a tick is visible iff its manifest is
+    # published; rows carry the commit token + writer epoch that name the
+    # attempt. Schema-is-identity means these columns produce NEW table ids
+    # via get_name's schema hash — v0.2 tables never evolve in place.
+    COMMIT_FIELD_NAMES = ("commit_token", "writer_epoch")
+    BASE_SCHEMA = pa.schema(
+        [
+            *LEGACY_BASE_SCHEMA,
+            pa.field("commit_token", pa.string(), nullable=False),
+            pa.field("writer_epoch", pa.int64(), nullable=False),
         ]
     )
     PARTITION_KEYS = ["world_id", "run_id", "tick"]
@@ -60,9 +75,17 @@ class Archetype:
         Projection is type-level — only the schema matters — so this accepts
         component types directly. Instances are accepted for back-compat and
         normalized to their types.
+
+        Commit-identity columns are excluded: they are storage metadata the
+        read layer filters on, not part of the user-facing shape — and legacy
+        epoch-0 tables do not have them, so projections must not ask.
         """
         component_types = tuple({c if isinstance(c, type) else type(c) for c in components})
-        return list(Archetype.get_archetype_schema(component_types).names)
+        return [
+            name
+            for name in Archetype.get_archetype_schema(component_types).names
+            if name not in Archetype.COMMIT_FIELD_NAMES
+        ]
 
     @staticmethod
     def add_components(
@@ -89,16 +112,27 @@ class Archetype:
         Generate a compact, filesystem-safe name for an archetype.
         We avoid extremely long identifiers by using only a short descriptor and
         a schema hash. This ensures stable uniqueness without exceeding path limits.
-        """
-        # Schema hash part: hash of the combined PyArrow schema
-        combined_schema = Archetype.get_archetype_schema(sig)
-        # Convert PyArrow schema to a JSON string for consistent hashing
-        schema_json = str(combined_schema)
-        schema_hash = hashlib.sha256(schema_json.encode()).hexdigest()[:16]  # 16-char suffix
 
-        # Compact descriptor: number of components
-        num_components = len(sig)
-        return f"a_{num_components}c_s{schema_hash}"
+        The hash covers the FULL storage schema, commit columns included —
+        schema-is-identity is what turns the commit-identity amendment into
+        new-generation table ids instead of in-place evolution.
+        """
+        return Archetype._name_for_schema(sig, Archetype.get_archetype_schema(sig))
+
+    @staticmethod
+    def get_legacy_name(sig: ArchetypeSignature) -> str:
+        """The v0.2 table id for a signature (base schema without commit columns).
+
+        Read-only fallback: stores resolve this name when the current-generation
+        table does not exist, so pre-#273 history stays queryable. Nothing ever
+        writes to a legacy table id.
+        """
+        return Archetype._name_for_schema(sig, Archetype.get_legacy_schema(sig))
+
+    @staticmethod
+    def _name_for_schema(sig: ArchetypeSignature, schema: pa.Schema) -> str:
+        schema_hash = hashlib.sha256(str(schema).encode()).hexdigest()[:16]
+        return f"a_{len(sig)}c_s{schema_hash}"
 
     @staticmethod
     def get_archetype_schema(sig: ArchetypeSignature) -> pa.Schema:
@@ -106,6 +140,15 @@ class Archetype:
         Get the schema for an archetype from a list of component types.
         Combines the base archetype schema with prefixed component schemas.
         """
+        return Archetype._schema_from_base(sig, Archetype.BASE_SCHEMA)
+
+    @staticmethod
+    def get_legacy_schema(sig: ArchetypeSignature) -> pa.Schema:
+        """The v0.2 storage schema for a signature (no commit columns)."""
+        return Archetype._schema_from_base(sig, Archetype.LEGACY_BASE_SCHEMA)
+
+    @staticmethod
+    def _schema_from_base(sig: ArchetypeSignature, base: pa.Schema) -> pa.Schema:
         seen: dict[str, type[Component]] = {}
         for component_type in sig:
             prefix = component_type.get_prefix()
@@ -120,7 +163,7 @@ class Archetype:
                 )
             seen[prefix] = component_type
 
-        archetype_schema = Archetype.BASE_SCHEMA
+        archetype_schema = base
         for component_type in sig:
             component_schema = component_type.get_prefixed_schema()
             archetype_schema = pa.unify_schemas([archetype_schema, component_schema])
@@ -150,6 +193,10 @@ class Archetype:
             "entity_id": entity_id,
             "tick": tick,
             "is_active": True,
+            # Placeholders satisfying the non-nullable storage schema; the
+            # updater stamps the real commit identity at append time.
+            "commit_token": "",
+            "writer_epoch": 0,
         }
 
         seen_prefixes: dict[str, type[Component]] = {}

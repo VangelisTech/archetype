@@ -108,6 +108,8 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
                 "entity_id": 1,
                 "tick": 0,
                 "is_active": True,
+                "commit_token": "",
+                "writer_epoch": 0,
                 "demo__v": 1,
             }
         ],
