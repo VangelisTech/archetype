@@ -5,10 +5,7 @@
 
 from __future__ import annotations
 
-import json
 import os
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 import daft
 import pytest
@@ -22,13 +19,13 @@ from archetype.core.component import Component
 from archetype.core.interfaces import CommitContext
 
 TOKEN = os.environ.get("R2_CATALOG_TOKEN")
-DISCOVERY_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
-ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+CATALOG_URI = os.environ.get("R2_CATALOG_URI")
+WAREHOUSE = os.environ.get("R2_CATALOG_WAREHOUSE")
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(
-        not TOKEN or not DISCOVERY_TOKEN or not ACCOUNT_ID,
-        reason="GitHub Actions supplies the Cloudflare R2 catalog credentials",
+        not TOKEN or not CATALOG_URI or not WAREHOUSE,
+        reason="GitHub Actions supplies the Cloudflare R2 catalog configuration",
     ),
 ]
 
@@ -37,73 +34,15 @@ class R2Reading(Component):
     value: float = 0.0
 
 
-def _cloudflare_get(url: str, token: str) -> dict | None:
-    request = Request(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    try:
-        with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed Cloudflare origin
-            return json.load(response)
-    except HTTPError:
-        return None
-
-
-def _catalog_settings() -> tuple[str, str]:
-    """Discover one explicitly selected—or unambiguous—active R2 catalog."""
-    assert ACCOUNT_ID is not None
-    assert DISCOVERY_TOKEN is not None
-    assert TOKEN is not None
-
-    account_ids = [ACCOUNT_ID]
-    accounts = _cloudflare_get(
-        "https://api.cloudflare.com/client/v4/accounts?per_page=50",
-        DISCOVERY_TOKEN,
-    )
-    if accounts and accounts.get("success"):
-        account_ids.extend(item["id"] for item in accounts.get("result", []))
-    account_ids = list(dict.fromkeys(account_ids))
-
-    active: list[tuple[str, dict]] = []
-    for account_id in account_ids:
-        for credential in dict.fromkeys((TOKEN, DISCOVERY_TOKEN)):
-            payload = _cloudflare_get(
-                f"https://api.cloudflare.com/client/v4/accounts/{account_id}/r2-catalog",
-                credential,
-            )
-            if not payload or not payload.get("success"):
-                continue
-            active.extend(
-                (account_id, item)
-                for item in payload.get("result", {}).get("warehouses", [])
-                if item.get("status") == "active"
-            )
-            break
-
-    requested_bucket = os.environ.get("R2_CATALOG_BUCKET")
-    if requested_bucket:
-        active = [entry for entry in active if entry[1].get("bucket") == requested_bucket]
-        if len(active) != 1:
-            pytest.fail(f"No unique active R2 catalog found for bucket {requested_bucket!r}")
-    elif len(active) != 1:
-        pytest.fail("R2 catalog selection is ambiguous; set repository variable R2_CATALOG_BUCKET")
-
-    selected_account, selected = active[0]
-    bucket = selected["bucket"]
-    return (
-        f"https://catalog.cloudflarestorage.com/{selected_account}/{bucket}",
-        selected["name"],
-    )
-
-
 async def test_r2_iceberg_commit_visibility() -> None:
     """Exercise Archetype's real Iceberg store on one disposable R2 table."""
     assert TOKEN is not None
-    catalog_uri, warehouse = _catalog_settings()
+    assert CATALOG_URI is not None
+    assert WAREHOUSE is not None
     catalog = RestCatalog(
         "archetype_ci",
-        uri=catalog_uri,
-        warehouse=warehouse,
+        uri=CATALOG_URI,
+        warehouse=WAREHOUSE,
         token=TOKEN,
     )
     run_id = os.environ.get("GITHUB_RUN_ID", "local")

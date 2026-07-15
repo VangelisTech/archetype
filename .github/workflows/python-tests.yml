@@ -96,10 +96,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       R2_CATALOG_TOKEN: ${{ secrets.R2_CATALOG_TOKEN }}
-      R2_CATALOG_BUCKET: ${{ vars.R2_CATALOG_BUCKET }}
+      R2_CATALOG_URI: ${{ vars.R2_CATALOG_URI }}
+      R2_CATALOG_WAREHOUSE: ${{ vars.R2_CATALOG_WAREHOUSE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,7 +119,10 @@ jobs:
         run: uv sync --group dev
 
       - name: Verify R2 integration credentials
-        run: test -n "$CLOUDFLARE_API_TOKEN" && test -n "$R2_CATALOG_TOKEN"
+        run: |
+          test -n "$R2_CATALOG_TOKEN"
+          test -n "$R2_CATALOG_URI"
+          test -n "$R2_CATALOG_WAREHOUSE"
 
       - name: Run R2 Data Catalog idempotency integration
         run: make test-infra
