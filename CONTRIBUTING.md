@@ -253,6 +253,10 @@ Docs use [MkDocs](https://www.mkdocs.org/) with the Material theme. The source
 is `docs/`; `mkdocs.yml` defines navigation. The build generates the Python,
 CLI, and REST references before rendering the site.
 
+Public API tiers and the docstring standard are defined in
+[`docs/guide/api-stability.md`](docs/guide/api-stability.md). Review that policy
+before adding an export or documenting a new public workflow.
+
 ```bash
 make docs-serve  # Build and preview the exact Pages artifact at /docs/
 make docs        # Generate references and build the static site

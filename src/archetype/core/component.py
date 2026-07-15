@@ -19,22 +19,24 @@ from lancedb.pydantic import LanceModel
 
 
 class Component(LanceModel):
-    """
-    Base class for all archetype components, extending LanceModel with additional utilities.
+    """Base class for typed entity data.
+
+    Define a component by subclassing `Component` and declaring Pydantic fields.
+    Keep components small and focused on one concern.
+
+    Examples:
+        >>> class Position(Component):
+        ...     x: float = 0.0
+        ...     y: float = 0.0
     """
 
     @classmethod
     def get_type_by_name(cls, name: str) -> type["Component"]:
         """Find a Component subclass (at any depth) by its class name.
 
-        Walks the full subclass tree — ``__subclasses__()`` only returns
-        direct subclasses, so a naive lookup misses components defined as
-        subclasses of intermediate base classes.
-
-        Raises on ambiguity: two Component classes sharing a name would
-        make name-addressed payloads (CLI/API spawn commands) land rows in
-        whichever archetype import order happened to favor — a silent
-        wrong-table write. Ambiguity must be loud.
+        Raises:
+            ValueError: If no matching subclass exists or more than one
+                subclass has the requested name.
         """
         matches: list[type[Component]] = []
         stack: list[type[Component]] = [cls]
@@ -62,11 +64,11 @@ class Component(LanceModel):
     def from_dict(cls, data: dict[str, Any]) -> "Component":
         """Create a component instance from a dictionary.
 
-        The dict must either include a ``"type"`` key naming a concrete
-        Component subclass, or this method must be called on a concrete
-        subclass directly. Calling ``Component.from_dict({...})`` without
-        a ``"type"`` key raises ``ValueError`` rather than silently
-        constructing a base Component with lost type information.
+        Call this method on a concrete subclass, or include a `"type"` key
+        naming a registered subclass when calling `Component.from_dict()`.
+
+        Raises:
+            ValueError: If the concrete component type cannot be determined.
         """
         component_type_name = data.get("type")
         # Build kwargs without mutating the caller's dict. ``dict.pop`` would
@@ -87,25 +89,21 @@ class Component(LanceModel):
         return cls(**fields)
 
     def to_payload(self) -> dict[str, Any]:
-        """Serialize to a dict suitable for ``Command`` payloads.
+        """Serialize this component for command and API payloads.
 
-        Unlike ``model_dump()``, this includes a ``"type"`` key so that
-        ``Component.from_dict()`` can reconstruct the concrete subclass
-        on the other side of a round-trip through ``CommandService``.
+        Unlike `model_dump()`, the result includes the concrete component
+        type so `Component.from_dict()` can reconstruct it.
         """
         return {"type": type(self).__name__, **self.model_dump()}
 
     @classmethod
     def get_prefix(cls) -> str:
-        """Generate a standardized prefix for this component type's fields."""
+        """Return the column prefix for this component type."""
         return cls.__name__.lower() + "__"
 
     @classmethod
     def to_pyarrow_schema(cls) -> pa.Schema:
-        """
-        Convert this component type to a PyArrow schema.
-        Uses LanceModel's built-in to_arrow_schema method.
-        """
+        """Return the unprefixed PyArrow schema for this component type."""
         if issubclass(cls, LanceModel):
             return cls.to_arrow_schema()
         else:
@@ -113,10 +111,7 @@ class Component(LanceModel):
 
     @classmethod
     def get_prefixed_schema(cls) -> pa.Schema:
-        """
-        Get this component's PyArrow schema with prefixed field names.
-        This is used when combining multiple components into an archetype schema.
-        """
+        """Return a PyArrow schema whose fields use the component prefix."""
         component_schema = cls.to_pyarrow_schema()
         prefix = cls.get_prefix()
 
@@ -128,7 +123,8 @@ class Component(LanceModel):
 
         return component_schema
 
-    def to_row_dict(self):
+    def to_row_dict(self) -> dict[str, Any]:
+        """Return component values keyed by their prefixed column names."""
         prefix = self.get_prefix()
         row_dict = {prefix + key: value for key, value in self.model_dump().items()}
         return row_dict

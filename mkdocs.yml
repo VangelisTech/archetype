@@ -71,11 +71,24 @@ nav:
       - LIBERO Recipe: guide/libero-recipe.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - Reference:
+      - Python API:
+          - Overview: reference/python-api.md
+          - Runtime: reference/python/runtime.md
+          - World Handle: reference/python/world-handle.md
+          - Runtime Models: reference/python/runtime-models.md
+          - Building Blocks: reference/python/building-blocks.md
+          - Hooks and Identity: reference/python/hooks.md
+          - Configuration: reference/python/configuration.md
+          - AutoResearch and Evaluation: reference/python/autoresearch.md
+          - Service Integration: reference/python/services.md
+          - Core Engine: reference/python/core.md
+          - Storage Backends: reference/python/storage.md
+          - Compatibility: reference/python/compatibility.md
       - REST API: reference/rest-api.md
       - CLI: reference/cli.md
-      - Python API: reference/python-api.md
   - Development:
       - Contributing: guide/contributing.md
+      - API Stability and Docstrings: guide/api-stability.md
       - Architecture Overview: guide/architecture.md
       - Runtime Contract: guide/runtime.md
       - Specifications: guide/specification.md
@@ -127,7 +140,16 @@ plugins:
             show_source: false
             show_root_heading: true
             show_root_full_path: false
-            heading_level: 3
+            heading_level: 2
             members_order: source
-            show_if_no_docstring: true
+            filters:
+              - "!^_"
+            inherited_members: false
+            show_bases: false
+            show_if_no_docstring: false
+            merge_init_into_class: true
+            separate_signature: true
+            signature_crossrefs: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
             docstring_style: google

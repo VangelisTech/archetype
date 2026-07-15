@@ -21,7 +21,9 @@ from uuid_utils import UUID
 class ActorCtx(BaseModel):
     """Identity and permissions of the caller."""
 
-    id: UUID
-    roles: set[str] = Field(default_factory=lambda: {"viewer"})
+    id: UUID = Field(description="Stable actor identifier used by audit records.")
+    roles: set[str] = Field(
+        default_factory=lambda: {"viewer"}, description="Roles granted to this actor."
+    )
 
     model_config = dict(frozen=True, arbitrary_types_allowed=True)

@@ -32,13 +32,18 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.eval_service import EvalService
+from archetype.app.facts import FactReceipt
 from archetype.app.models import (
     AuditRow,
     Command,
     CommandType,
+    EpisodeConfig,
+    EpisodeResult,
     HookInfo,
     ProcessorInfo,
     ResourceInfo,
+    RolloutConfig,
+    RolloutResult,
     RunResult,
     WorldInfo,
 )
@@ -65,6 +70,11 @@ __all__ = [
     # Models
     "Command",
     "CommandType",
+    "EpisodeConfig",
+    "EpisodeResult",
+    "RolloutConfig",
+    "RolloutResult",
+    "FactReceipt",
     "AuditRow",
     "WorldInfo",
     "RunResult",

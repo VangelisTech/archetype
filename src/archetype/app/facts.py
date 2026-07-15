@@ -107,11 +107,10 @@ def fact_payload_digest(components: list[Component]) -> str:
 
 @dataclass(frozen=True)
 class FactReceipt:
-    """The durable outcome of an ingestion: exactly one per external id.
+    """Describe the durable outcome of ingesting an external fact.
 
-    ``duplicate`` is True when this call matched an already-visible fact
-    (same external id, same digest) — the original receipt is returned and
-    nothing was appended.
+    `duplicate` is true when the external identity and payload already existed.
+    In that case, ingestion returns the original receipt without appending.
     """
 
     world_id: str

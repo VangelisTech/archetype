@@ -153,9 +153,9 @@ class AsyncCachedStore(iAsyncStore):
 
         Reads are a union of already-flushed rows on disk and unflushed rows
         still in the memtable so that callers always see a coherent view of
-        the sig's full history regardless of flush state. The commit-token
-        allowlist (issue #273) applies to both layers: staged rows are no
-        more visible than durable ones.
+        the signature's full history regardless of flush state. The
+        commit-token allowlist applies to both layers, so staged rows are no
+        more visible than durable rows.
         """
         disk_df = await self._inner.get_archetype_df(
             sig,
@@ -241,7 +241,7 @@ class AsyncCachedStore(iAsyncStore):
         return AppendReceipt(table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush)
 
     async def flush(self) -> None:
-        """Drain every memtable to the inner store (issue #273).
+        """Drain every memtable to the inner store.
 
         Called by the commit coordinator's owner before a manifest head is
         published, so visibility never outruns durability.
