@@ -122,6 +122,44 @@ body {
   font-weight: 700;
 }
 
+/* Give the desktop documentation rail a clearer section rhythm. */
+@media screen and (min-width: 76.25em) {
+  .md-nav--primary > .md-nav__list > .md-nav__item--section {
+    margin: 0 0 1.6rem;
+  }
+
+  .md-nav--primary > .md-nav__list > .md-nav__item--section > .md-nav__link {
+    color: #000000;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    line-height: 1.2;
+    margin-bottom: 0.55rem;
+    text-transform: uppercase;
+  }
+
+  .md-nav--primary
+    > .md-nav__list
+    > .md-nav__item--section
+    > .md-nav
+    > .md-nav__list
+    > .md-nav__item
+    > .md-nav__link {
+    line-height: 1.45;
+    margin-top: 0.5rem;
+  }
+
+  .md-nav--primary
+    > .md-nav__list
+    > .md-nav__item--section
+    > .md-nav
+    > .md-nav__list
+    > .md-nav__item:first-child
+    > .md-nav__link {
+    margin-top: 0;
+  }
+}
+
 .md-typeset {
   color: #171717;
   font-size: 0.82rem;
