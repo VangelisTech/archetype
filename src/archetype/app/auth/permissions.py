@@ -70,6 +70,7 @@ _OPERATOR_ADDS = frozenset(
         CommandType.AUTORESEARCH,
         CommandType.FORK_WORLD,
         CommandType.DESTROY_WORLD,
+        CommandType.INGEST_FACT,
     }
 )
 

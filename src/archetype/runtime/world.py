@@ -225,6 +225,26 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.create_entity(self._ctx, wid, list(components))
 
+    async def ingest(
+        self,
+        *components: Component,
+        external_id: str,
+        producer: str = "default",
+    ):
+        """Ingest an external fact: exactly one visible per external id.
+
+        Facts are durable immediately (no step required), carry their
+        external identity on the data plane, and never join active
+        simulation — they are queryable history, not entities. Returns the
+        FactReceipt; resubmitting the same id with the same payload returns
+        the original receipt, and a different payload fails loudly.
+        """
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.ingest_fact(
+                self._ctx, wid, list(components), external_id=external_id, producer=producer
+            )
+
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         """Batch-spawn entities. Fires one OnSpawn per entity, one batch per archetype.
 
@@ -599,6 +619,12 @@ class SyncRuntimeWorld:
 
     def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         return self._run(lambda: self._world.spawn_many(entities))
+
+    def ingest(self, *components: Component, external_id: str, producer: str = "default"):
+        """See RuntimeWorld.ingest (durable external fact, exactly-once-visible)."""
+        return self._run(
+            lambda: self._world.ingest(*components, external_id=external_id, producer=producer)
+        )
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None

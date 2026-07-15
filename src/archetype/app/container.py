@@ -26,6 +26,7 @@ from archetype.app.autoresearch_service import AutoResearchService
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.eval_service import EvalService
+from archetype.app.ingestion_service import IngestionService
 from archetype.app.mutation_service import MutationService
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
@@ -66,6 +67,9 @@ class ServiceContainer:
         # AutoResearch — depends on WorldService + SimulationService
         self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
+        # Ingestion — durable external facts (issue #274)
+        self.ingestion_service = IngestionService(self.storage_service, self.world_service)
+
         # The gate — depends on everything
         self.command_service = CommandService(
             mutations=self.mutation_service,
@@ -74,6 +78,7 @@ class ServiceContainer:
             queries=self.query_service,
             broker=self.broker,
             audit=self.audit_log,
+            ingestion=self.ingestion_service,
             autoresearch=self.autoresearch_service,
         )
         self.simulation_service.set_command_drain(self.command_service.drain_and_apply)

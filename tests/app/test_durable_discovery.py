@@ -134,7 +134,9 @@ def _register_world_proc(path: str, result_queue) -> None:
 
     async def go():
         catalog = SqliteControlCatalog.__new__(SqliteControlCatalog)
-        catalog.__init__(__import__("pathlib").Path(path))
+        # Generous busy timeout: eight writers on one file under a loaded
+        # test machine can exceed the 5s default (observed flake).
+        catalog.__init__(__import__("pathlib").Path(path), busy_timeout_ms=60_000)
         await catalog.register_world(
             WorldRecord(
                 world_id="race",
@@ -164,7 +166,7 @@ def test_concurrent_identical_registration_yields_one_row(tmp_path):
         p.start()
     for p in procs:
         p.join(timeout=60)
-    results = [queue.get(timeout=5) for _ in procs]
+    results = [queue.get(timeout=60) for _ in procs]
     assert all(r == "ok" for r in results), results
 
     rows = sqlite3.connect(path).execute("SELECT COUNT(*) FROM worlds").fetchone()[0]

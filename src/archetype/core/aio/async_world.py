@@ -839,8 +839,8 @@ class AsyncWorld(iAsyncWorld):
         if visible is None:
             return None
         if ticks is None:
-            return sorted(set(visible.values()))
-        return sorted({visible[t] for t in ticks if t in visible})
+            return sorted({token for tokens in visible.values() for token in tokens})
+        return sorted({token for t in ticks if t in visible for token in visible[t]})
 
     async def get_components(
         self,

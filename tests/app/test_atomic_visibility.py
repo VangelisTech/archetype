@@ -386,7 +386,7 @@ async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     await coordinator.publish_tick("w", "r", 0, ctx, [(Counter,)])  # idempotent retry
 
     visible = await coordinator.visible_tokens("w", "r", [0, 1])
-    assert visible == {0: ctx.commit_token}
+    assert visible == {0: [ctx.commit_token]}
 
     # A newer fence stales this coordinator.
     await catalog.acquire_fence("w", "h2")

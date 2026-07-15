@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.app.broker import CommandBroker
+    from archetype.app.ingestion_service import IngestionService
     from archetype.app.models import (
         EpisodeConfig,
         EpisodeResult,
@@ -94,6 +95,7 @@ class CommandService:
         broker: CommandBroker,
         audit: AuditLog | None = None,
         autoresearch: AutoResearchService | None = None,
+        ingestion: IngestionService | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -102,6 +104,7 @@ class CommandService:
         self._broker = broker
         self._audit = audit
         self._autoresearch = autoresearch
+        self._ingestion = ingestion
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
@@ -367,6 +370,36 @@ class CommandService:
         info = await self._worlds.open_world_readonly(storage_config, world_id)
         await self._emit(ctx, "open_world_readonly", world_id)
         return info
+
+    @instrument("gate.ingest_fact")
+    async def ingest_fact(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        components: list,
+        *,
+        external_id: str,
+        producer: str = "default",
+        storage_config: StorageConfig | None = None,
+    ):
+        """Durable external fact (issue #274): exactly one visible per id.
+
+        Direct gated method, never the deferred broker path — a dropped
+        drain would lose the caller's receipt. Gated as INGEST_FACT
+        (operator+: it writes durable history).
+        """
+        if self._ingestion is None:
+            raise RuntimeError("ingestion service is not wired")
+        self._gate(Command(type=CommandType.INGEST_FACT), ctx)
+        receipt = await self._ingestion.ingest_fact(
+            str(world_id),
+            components,
+            external_id=external_id,
+            producer=producer,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "ingest_fact", world_id)
+        return receipt
 
     @instrument("gate.resume_world")
     async def resume_world(

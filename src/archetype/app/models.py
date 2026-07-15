@@ -39,6 +39,7 @@ class CommandType(StrEnum):
     """
 
     # Entity-level commands
+    INGEST_FACT = "ingest_fact"  # Durable external fact, exactly-once-visible
     SPAWN = "spawn"
     DESPAWN = "despawn"
     UPDATE = "update"
