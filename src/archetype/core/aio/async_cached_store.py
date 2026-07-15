@@ -28,7 +28,7 @@ from archetype.core.archetype import Archetype
 from archetype.core.config import CacheConfig
 
 # Internals
-from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
+from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 
 logger = getLogger(__name__)
 
@@ -146,13 +146,16 @@ class AsyncCachedStore(iAsyncStore):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         active_only: bool = False,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
 
         Reads are a union of already-flushed rows on disk and unflushed rows
         still in the memtable so that callers always see a coherent view of
-        the sig's full history regardless of flush state.
+        the sig's full history regardless of flush state. The commit-token
+        allowlist (issue #273) applies to both layers: staged rows are no
+        more visible than durable ones.
         """
         disk_df = await self._inner.get_archetype_df(
             sig,
@@ -161,6 +164,7 @@ class AsyncCachedStore(iAsyncStore):
             ticks=ticks,
             entity_ids=entity_ids,
             active_only=active_only,
+            commit_tokens=commit_tokens,
         )
 
         mt = self._mem.get(sig)
@@ -184,6 +188,12 @@ class AsyncCachedStore(iAsyncStore):
         if entity_ids is not None:
             mem_df = mem_df.where(mem_df["entity_id"].is_in(entity_ids))
 
+        if commit_tokens is not None:
+            visible = (
+                mem_df["commit_token"].is_in(commit_tokens) if commit_tokens else daft.lit(False)
+            )
+            mem_df = mem_df.where(visible)  # ty: ignore[invalid-argument-type]
+
         return disk_df.concat(mem_df)
 
     async def list_signatures(self) -> list[ArchetypeSignature]:
@@ -196,17 +206,27 @@ class AsyncCachedStore(iAsyncStore):
             return await self._inner.list_committed_signatures()
         return await self._inner.list_signatures()
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
         Cache driven append with built in flush logic to underlying storage (super) a table with a new dataframe.
+
+        The receipt is staged (durable=False) unless this append tripped a
+        flush: rows become durable at flush()/threshold/idle/shutdown. A
+        commit coordinator must call flush() before publishing a manifest
+        head — a head must never claim RAM-only rows are durable.
         """
         # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
         added_bytes = 0
+        added_rows = 0
         for batch in df.to_arrow_iter():
             self._mem.setdefault(sig, MemTable()).append(batch)
             added_bytes += batch.nbytes
+            added_rows += batch.num_rows
 
         self._update_total_bytes(added_bytes)
+
+        if added_rows == 0:
+            return AppendReceipt(table_id=Archetype.get_name(sig), rows=0, durable=True)
 
         # cheap in‑mem stats
         needs_flush = (
@@ -217,6 +237,21 @@ class AsyncCachedStore(iAsyncStore):
 
         if needs_flush:
             await self._background_flush_sig(sig)
+
+        return AppendReceipt(
+            table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush
+        )
+
+    async def flush(self) -> None:
+        """Drain every memtable to the inner store (issue #273).
+
+        Called by the commit coordinator's owner before a manifest head is
+        published, so visibility never outruns durability.
+        """
+        for sig, mt in list(self._mem.items()):
+            if mt.rows:
+                await self._background_flush_sig(sig)
+        await self._inner.flush()
 
     async def shutdown(self) -> None:
         """

@@ -235,6 +235,8 @@ def test_sync_update_manager_appends_stamped_rows_to_store():
             "entity_id": 5,
             "tick": 9,
             "is_active": True,
+            "commit_token": "",
+            "writer_epoch": 0,
             "position__x": 7,
             "position__y": 8,
         }
@@ -335,6 +337,8 @@ def test_sync_query_manager_filters_active_ticks_and_entities():
             "entity_id": 2,
             "tick": 1,
             "is_active": True,
+            "commit_token": "",
+            "writer_epoch": 0,
             "position__x": 2,
             "position__y": 2,
             "velocity__vx": 20,
@@ -429,6 +433,8 @@ def test_sync_world_materialize_mutations_prefers_latest_spawn_for_same_entity(t
             "entity_id": 7,
             "tick": 0,
             "is_active": True,
+            "commit_token": "",
+            "writer_epoch": 0,
             "position__x": 9,
             "position__y": 9,
         }
@@ -464,6 +470,8 @@ def test_sync_world_materialize_mutations_marks_despawned_entities_inactive(tmp_
             "entity_id": 4,
             "tick": 0,
             "is_active": False,
+            "commit_token": "",
+            "writer_epoch": 0,
             "position__x": 1,
             "position__y": 2,
         }

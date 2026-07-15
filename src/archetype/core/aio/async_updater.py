@@ -19,7 +19,12 @@ import daft
 from daft import DataFrame, col, lit
 
 from archetype.core.archetype import Archetype
-from archetype.core.interfaces import ArchetypeSignature, iAsyncStore, iAsyncUpdateManager
+from archetype.core.interfaces import (
+    ArchetypeSignature,
+    CommitContext,
+    iAsyncStore,
+    iAsyncUpdateManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +35,13 @@ class AsyncUpdateManager(iAsyncUpdateManager):
         self.validate_flag = validate_flag
 
     async def update(
-        self, df: DataFrame, sig: ArchetypeSignature, tick: int, world_id: str, run_id: str
+        self,
+        df: DataFrame,
+        sig: ArchetypeSignature,
+        tick: int,
+        world_id: str,
+        run_id: str,
+        commit: CommitContext | None = None,
     ) -> DataFrame:
         # A schemaless frame (no columns) cannot be stamped and carries
         # nothing to persist — a legitimate no-op, distinct from a failure.
@@ -45,6 +56,13 @@ class AsyncUpdateManager(iAsyncUpdateManager):
                     "world_id": lit(str(world_id)),
                     "run_id": lit(str(run_id)),
                     "entity_id": col("entity_id").cast(daft.DataType.int32()),
+                    # Commit identity (issue #273). Uncoordinated worlds stamp
+                    # the implicit epoch-0 identity: no manifests exist, so
+                    # every row stays visible — v0.2 semantics, new schema.
+                    "commit_token": lit(commit.commit_token if commit else ""),
+                    "writer_epoch": lit(commit.writer_epoch if commit else 0).cast(
+                        daft.DataType.int64()
+                    ),
                 }
             )
 

@@ -45,6 +45,11 @@ class UpdateManager(iUpdateManager):
                 "world_id": lit(str(world_id)),
                 "run_id": lit(str(run_id)),
                 "entity_id": col("entity_id").cast(daft.DataType.uint32()),
+                # The sync stack runs uncoordinated: implicit epoch-0 commit
+                # identity, everything visible (issue #273). The async stack
+                # is the coordinated path.
+                "commit_token": lit(""),
+                "writer_epoch": lit(0).cast(daft.DataType.int64()),
             }
         )
         try:

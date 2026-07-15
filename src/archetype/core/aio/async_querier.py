@@ -54,6 +54,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         entity_ids: list[int] | None = None,
         components: list[type["Component"]] | None = None,
         run_id: str | None = None,
+        commit_tokens: list[str] | None = None,
         **kwargs,  # absorbs world-internal keys (e.g. run_config, _world_validated)
     ) -> DataFrame:
         """Query active entities for the provided archetype signature.
@@ -120,6 +121,7 @@ class AsyncQueryManager(iAsyncQueryManager):
             ticks=ticks,
             entity_ids=entity_ids,
             active_only=True,
+            commit_tokens=commit_tokens,
         )
 
         if components:
@@ -135,6 +137,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         *,
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
         """Query all entities that contain the requested component types.
 
@@ -207,6 +210,7 @@ class AsyncQueryManager(iAsyncQueryManager):
                 ticks=ticks,
                 entity_ids=entity_ids,
                 active_only=True,
+                commit_tokens=commit_tokens,
             )
             result = result.concat(df.select(*proj_cols))
 

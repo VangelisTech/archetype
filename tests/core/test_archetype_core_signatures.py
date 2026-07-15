@@ -40,15 +40,29 @@ def test_add_and_remove_components_are_set_like_and_sorted():
 
 
 def test_base_schema_and_partition_keys_are_stable():
-    """Core base schema and partition keys should remain stable over time (API contract)."""
-    # Names only (types covered elsewhere); keep invariant stable
+    """Core base schema and partition keys should remain stable over time (API contract).
+
+    Amended by issue #273 (approved spec amendment): the storage base schema
+    carries the commit identity; the v0.2 shape is frozen as LEGACY_BASE_SCHEMA
+    and names the read-only legacy tables.
+    """
     assert set(Archetype.BASE_SCHEMA.names) == {
         "world_id",
         "run_id",
         "entity_id",
         "tick",
         "is_active",
+        "commit_token",
+        "writer_epoch",
     }
+    assert set(Archetype.LEGACY_BASE_SCHEMA.names) == {
+        "world_id",
+        "run_id",
+        "entity_id",
+        "tick",
+        "is_active",
+    }
+    assert Archetype.COMMIT_FIELD_NAMES == ("commit_token", "writer_epoch")
     assert Archetype.PARTITION_KEYS == ["world_id", "run_id", "tick"]
 
 

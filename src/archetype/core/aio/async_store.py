@@ -17,14 +17,15 @@ from logging import getLogger
 from typing import cast
 
 # Technologies
-from daft import DataFrame, Schema, read_iceberg
+import daft
+from daft import DataFrame, Schema, lit, read_iceberg
 from daft.catalog import Table
 from daft.io import IOConfig
 from daft.session import Session
 
 # Internals
 from archetype.core.archetype import Archetype
-from archetype.core.interfaces import ArchetypeSignature, iAsyncStore
+from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 
 # Logger
 logger = getLogger(__name__)
@@ -57,6 +58,9 @@ class AsyncStore(iAsyncStore):
         # This lets query_archetype distinguish an unknown sig (never committed)
         # from an empty-but-known sig (committed with zero active rows).
         self._committed_sigs: set[str] = set()
+        # Memoized presence of v0.2 legacy tables per legacy table id — frozen
+        # history, checked once (see _legacy_df).
+        self._legacy_present: dict[str, bool] = {}
 
     def _ensure_table(self, sig: ArchetypeSignature) -> Table:
         """
@@ -108,13 +112,44 @@ class AsyncStore(iAsyncStore):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         active_only: bool = False,
+        commit_tokens: list[str] | None = None,
     ) -> DataFrame:
         """
         Get all archetypes that contain all of the specified component types.
+
+        ``commit_tokens`` is the reader-side visibility allowlist (issue #273):
+        current-generation rows must match a published manifest token. Legacy
+        (v0.2) rows carry no commit identity and are implicitly epoch-0
+        visible — the allowlist never applies to them.
         """
         table: Table = self._ensure_table(sig)
         df: DataFrame = self._read_table(table)  # Cheap, Lazy
+        df = self._filter(
+            df, world_id, run_id, ticks=ticks, entity_ids=entity_ids, active_only=active_only
+        )
+        if commit_tokens is not None:
+            # (Daft stubs Expression.__and__ etc. as bool; these are Expressions.)
+            visible = df["commit_token"].is_in(commit_tokens) if commit_tokens else lit(False)
+            df = df.where(visible)  # ty: ignore[invalid-argument-type]
 
+        legacy_df = self._legacy_df(
+            sig, world_id, run_id, ticks=ticks, entity_ids=entity_ids, active_only=active_only
+        )
+        if legacy_df is not None:
+            df = df.concat(legacy_df)
+
+        return df
+
+    def _filter(
+        self,
+        df: DataFrame,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None,
+        entity_ids: list[int] | None,
+        active_only: bool,
+    ) -> DataFrame:
         # stored as strings; ensure filter values are strings
         # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
         df = df.where(df["world_id"] == str(world_id))  # ty: ignore[invalid-argument-type]
@@ -130,6 +165,48 @@ class AsyncStore(iAsyncStore):
             df = df.where(df["entity_id"].is_in(entity_ids))
 
         return df
+
+    def _legacy_df(
+        self,
+        sig: ArchetypeSignature,
+        world_id: str,
+        run_id: str,
+        *,
+        ticks: list[int] | None,
+        entity_ids: list[int] | None,
+        active_only: bool,
+    ) -> DataFrame | None:
+        """Rows persisted by v0.2 under the legacy table id, if any.
+
+        Presence is memoized per signature: legacy tables are frozen history
+        (nothing writes them after #273), so one existence check suffices.
+        Rows are stamped with the epoch-0 identity and aligned to the current
+        schema so callers see one uniform shape.
+        """
+        legacy_name = Archetype.get_legacy_name(sig)
+        known = self._legacy_present.get(legacy_name)
+        if known is None:
+            known = self.session.has_table(legacy_name)
+            self._legacy_present[legacy_name] = known
+        if not known:
+            return None
+
+        table = self.session.get_table(legacy_name)
+        df = self._filter(
+            self._read_table(table),
+            world_id,
+            run_id,
+            ticks=ticks,
+            entity_ids=entity_ids,
+            active_only=active_only,
+        )
+        df = df.with_columns(
+            {
+                "commit_token": lit(""),
+                "writer_epoch": lit(0).cast(daft.DataType.int64()),
+            }
+        )
+        return df.select(*Archetype.get_archetype_schema(sig).names)
 
     # ── Durable-discovery seam (issue #272) ─────────────────────────────────
     # Open-never-create reads by persisted physical table identity, so a cold
@@ -189,32 +266,51 @@ class AsyncStore(iAsyncStore):
         """
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
-    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> None:
+    async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
-        Append a table with a new dataframe.
+        Append a table with a new dataframe. Returns the durable batch receipt.
         """
+        table_id = Archetype.get_name(sig)
         # Defensive: skip zero-row or empty-schema appends to protect backends
         try:
             df.collect()
-            if df.count_rows() == 0 or not df.column_names:
+            rows = df.count_rows()
+            if rows == 0 or not df.column_names:
                 logger.info(
-                    f"Append skipped (store): archetype={Archetype.get_name(sig)} rows=0 or empty schema"
+                    f"Append skipped (store): archetype={table_id} rows=0 or empty schema"
                 )
-                return
+                return AppendReceipt(table_id=table_id, rows=0, durable=True)
         except Exception as e:
             # A frame that cannot materialize cannot be persisted; the caller
             # must see that, not a silent no-op.
-            logger.error(f"Append collect failed for {Archetype.get_name(sig)}: {e}")
+            logger.error(f"Append collect failed for {table_id}: {e}")
             raise
 
         table = self._ensure_table(sig)
         # Record that this sig has been durably committed (not just auto-created
         # by a read).  list_committed_signatures() uses this to give callers a
         # reliable "was this sig ever written?" answer.
-        self._committed_sigs.add(Archetype.get_name(sig))
+        self._committed_sigs.add(table_id)
 
         # Daft's Table.append is synchronous; do not await
         self._append_table(table, df)
+        return AppendReceipt(
+            table_id=table_id, rows=rows, durable=True, backend_ref=self._snapshot_ref(table)
+        )
+
+    @staticmethod
+    def _snapshot_ref(table: Table) -> str | None:
+        """Auxiliary diagnostic only — never the visibility mechanism."""
+        inner = getattr(table, "_inner", None)
+        current = getattr(inner, "current_snapshot", None)
+        try:
+            snapshot = current() if callable(current) else None
+        except Exception:
+            return None
+        return str(snapshot.snapshot_id) if snapshot is not None else None
+
+    async def flush(self) -> None:
+        """No-op: appends write through to Iceberg."""
 
     async def shutdown(self) -> None:
         """
