@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
@@ -72,6 +73,15 @@ def _component_classes_by_name() -> dict[str, list[type[Component]]]:
         stack.extend(cls.__subclasses__())
         classes.setdefault(cls.__name__, []).append(cls)
     return classes
+
+
+@dataclass(frozen=True)
+class _ResumeSnapshot:
+    """Durable state a resume reconstructs a world from."""
+
+    directory: dict[int, SignatureRecord]
+    next_entity_id: int
+    resume_tick: int
 
 
 def _writer_holder() -> str:
@@ -541,25 +551,20 @@ class WorldService:
                 "persisted lineage rows; refusing to resume (corruption)"
             )
 
-        # Resume tick comes from manifests, never from rows: unpublished
-        # crashed attempts may have written higher ticks that do not exist.
-        visible = await catalog.visible_tokens(wid, str(run_id))
-        if visible:
-            resume_tick = max(visible) + 1
-            tokens: list[str] | None = sorted(set(visible.values()))
-        elif visible is not None:
-            resume_tick, tokens = 0, []
-        else:
-            # Never-fenced legacy world: no manifests to consult; rows are
-            # implicitly visible and the row head is the true head.
-            resume_tick, tokens = None, None
+        # Validation pass BEFORE fencing: rebuilding the snapshot here proves
+        # this process can faithfully reconstruct the world (classes present,
+        # descriptors resolvable) without side effects — a resume that fails
+        # validation must never stale a healthy incumbent writer.
+        snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
+        self._resolve_live_signatures(snapshot.directory)
 
-        directory, next_entity_id, row_head = await self._rebuild_entity_directory(
-            catalog, store, wid, str(run_id), tokens
-        )
-        entity2sig, _live_tables = self._resolve_live_signatures(directory)
-        if resume_tick is None:
-            resume_tick = row_head + 1 if row_head is not None else 0
+        # Fence, THEN take the authoritative snapshot. Post-fence the old
+        # writer cannot publish (its epoch is stale), so the second read is
+        # stable — no window where a late-published tick slips between the
+        # snapshot and the fence.
+        epoch = await catalog.acquire_fence(wid, _writer_holder())
+        snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
+        entity2sig, _live_tables = self._resolve_live_signatures(snapshot.directory)
 
         world = self._factory.create_async_world(
             store,
@@ -567,48 +572,114 @@ class WorldService:
                 world_id=wid,
                 name=record.name,
                 run_id=str(run_id),
-                tick=resume_tick,
-                next_entity_id=next_entity_id,
+                tick=snapshot.resume_tick,
+                next_entity_id=snapshot.next_entity_id,
                 entity2sig=entity2sig,
                 lineage=lineage or [],
             ),
         )
-        epoch = await catalog.acquire_fence(wid, _writer_holder())
         world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
         self._registry.insert(world)
         self._storage_configs[wid] = (storage_config, None)
         logger.info(
             "resumed world %s at tick %d (epoch %d, %d entities)",
             wid,
-            resume_tick,
+            snapshot.resume_tick,
             epoch,
             len(entity2sig),
         )
         return world
 
-    async def _rebuild_entity_directory(
+    async def _resume_snapshot(
+        self,
+        catalog,
+        store: iAsyncStore,
+        world_id: str,
+        run_id: str,
+        lineage: list[tuple[str, str, int]] | None,
+    ) -> _ResumeSnapshot:
+        """The world's durable state: entity directory + counters + tick.
+
+        Resume tick comes from manifests, never from rows (unpublished
+        crashed attempts may have written higher ticks that do not exist).
+        An unstepped coordinated fork has no own manifests: it resumes at
+        the fork point (last ancestor boundary + 1).
+
+        The directory seeds from ancestor lineage segments first (ascending)
+        so a fork resumed before its first own step inherits its snapshot
+        state; the fork's own rows override by tick.
+        """
+        visible = await catalog.visible_tokens(world_id, run_id)
+        if visible:
+            resume_tick: int | None = max(visible) + 1
+            tokens: list[str] | None = sorted(set(visible.values()))
+        elif visible is not None:
+            resume_tick = (lineage[-1][2] + 1) if lineage else 0
+            tokens = []
+        else:
+            # Never-fenced legacy world: rows are implicitly visible and the
+            # own-row head is the true head (resolved after the scan).
+            resume_tick, tokens = None, None
+
+        directory: dict[int, SignatureRecord] = {}
+        latest_seen: dict[int, int] = {}
+        max_entity_id = 0
+
+        for ancestor_world, ancestor_run, up_to_tick in lineage or []:
+            ancestor_visible = await catalog.visible_tokens(str(ancestor_world), str(ancestor_run))
+            ancestor_tokens = (
+                sorted(set(ancestor_visible.values()))
+                if ancestor_visible
+                else ([] if ancestor_visible is not None else None)
+            )
+            seg_max_eid, _ = await self._scan_world_rows(
+                catalog,
+                store,
+                str(ancestor_world),
+                str(ancestor_run),
+                ancestor_tokens,
+                directory,
+                latest_seen,
+                max_tick=int(up_to_tick),
+            )
+            max_entity_id = max(max_entity_id, seg_max_eid)
+
+        own_max_eid, own_head = await self._scan_world_rows(
+            catalog, store, world_id, run_id, tokens, directory, latest_seen
+        )
+        max_entity_id = max(max_entity_id, own_max_eid)
+        if resume_tick is None:
+            resume_tick = (
+                own_head + 1 if own_head is not None else ((lineage[-1][2] + 1) if lineage else 0)
+            )
+        return _ResumeSnapshot(
+            directory=directory,
+            next_entity_id=max_entity_id + 1,
+            resume_tick=resume_tick,
+        )
+
+    async def _scan_world_rows(
         self,
         catalog,
         store: iAsyncStore,
         world_id: str,
         run_id: str,
         tokens: list[str] | None,
-    ) -> tuple[dict[int, SignatureRecord], int, int | None]:
-        """Latest visible row per entity across every catalog table.
+        directory: dict[int, SignatureRecord],
+        latest_seen: dict[int, int],
+        *,
+        max_tick: int | None = None,
+    ) -> tuple[int, int | None]:
+        """Merge one (world, run) segment's latest visible rows into the
+        directory accumulator. Returns (max entity id seen, max row tick).
 
         Reads through the open-never-create seam on BASE columns only, so no
         Python component classes are needed to take inventory — classes are
         demanded later, and only for archetypes that still have LIVE
-        entities in this world (code is not rows, but dead history should
-        not hold a resume hostage).
-
-        Returns ({entity_id: SignatureRecord-of-latest-active-row},
-        next_entity_id, max visible row tick or None).
+        entities (dead history should not hold a resume hostage).
         """
         from daft import col, lit
 
-        directory: dict[int, SignatureRecord] = {}
-        latest_seen: dict[int, int] = {}
         max_entity_id = 0
         row_head: int | None = None
         for rec in await catalog.list_signatures():
@@ -619,6 +690,9 @@ class WorldService:
             if tokens is not None and "commit_token" in df.column_names:
                 visible = df["commit_token"].is_in(tokens) if tokens else lit(False)
                 df = df.where(visible)
+            if max_tick is not None:
+                # (Daft stubs Expression.__le__ as bool; this is an Expression.)
+                df = df.where(df["tick"] <= max_tick)  # ty: ignore[unsupported-operator]
             latest = df.groupby("entity_id").agg(col("tick").max().alias("latest_tick"))
             current = df.join(
                 latest,
@@ -650,7 +724,7 @@ class WorldService:
                     directory[eid] = rec
                 else:
                     directory.pop(eid, None)
-        return directory, max_entity_id + 1, row_head
+        return max_entity_id, row_head
 
     def _resolve_live_signatures(
         self, directory: dict[int, SignatureRecord]

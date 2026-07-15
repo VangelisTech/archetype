@@ -415,3 +415,77 @@ async def test_autoresearch_continues_across_processes(tmp_path):
         )
         assert [it.score for it in result.iterations] == [-1.0, 0.0]
         assert result.final_score == 0.0 and result.improved, "incumbent carried across processes"
+
+
+async def test_fork_resumed_before_first_step_inherits_snapshot(tmp_path):
+    """A fork registers and persists lineage at creation, possibly before
+    writing any rows of its own. Resume must seed the entity directory from
+    the ancestor segments — an unstepped fork is its snapshot (Codex P1)."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        base = await c.world_service.create_world(WorldConfig(name="base"), storage)
+        e1 = await c.mutation_service.create_entity(base.world_id, [Score(points=5.0)])
+        await c.simulation_service.step(base.world_id, RunConfig())
+        fork = await c.world_service.fork_world(base.world_id, name="unstepped")
+        fid, fork_tick = str(fork.world_id), int(fork.tick)
+    finally:
+        await c.shutdown()
+
+    fresh = ServiceContainer()
+    try:
+        resumed = await fresh.world_service.open_world_mutable(storage, fid)
+        assert resumed.tick == fork_tick, "unstepped fork resumes at the fork point"
+        assert set(resumed.entity2sig) == {e1}, "inherited entities restored from lineage"
+        assert resumed.next_entity_id > e1, "counter accounts for inherited ids"
+
+        # The resumed fork is a working world: step and read continuity.
+        await fresh.simulation_service.step(fid, RunConfig())
+        df = await resumed.query_archetype((Score,), ticks=[fork_tick])
+        rows = df.to_pylist()
+        assert len(rows) == 1 and rows[0]["score__points"] == 5.0
+    finally:
+        await fresh.shutdown()
+
+
+async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path):
+    """A publish that lands between a pre-fence read and the fence must not
+    strand the resumed world behind the true head: the authoritative
+    snapshot is taken AFTER fencing, when the head can no longer move
+    (Codex P1)."""
+    a = ServiceContainer()
+    b = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world_a = await a.world_service.create_world(WorldConfig(name="w"), storage)
+        await a.mutation_service.create_entity(world_a.world_id, [Score(points=1.0)])
+        await a.simulation_service.step(world_a.world_id, RunConfig())  # tick 0
+        wid = str(world_a.world_id)
+
+        # Interleave: the incumbent publishes tick 1 exactly between B's
+        # validation pass and its fence acquisition.
+        real_acquire = SqliteControlCatalog.acquire_fence
+        fired = False
+
+        async def racing_acquire(self, world_id, holder):
+            nonlocal fired
+            if not fired and world_id == wid:
+                fired = True
+                await a.simulation_service.step(wid, RunConfig())  # tick 1 lands
+            return await real_acquire(self, world_id, holder)
+
+        SqliteControlCatalog.acquire_fence = racing_acquire
+        try:
+            resumed = await b.world_service.open_world_mutable(storage, wid)
+        finally:
+            SqliteControlCatalog.acquire_fence = real_acquire
+
+        assert resumed.tick == 2, (
+            f"snapshot must include the racing publish (tick 1); resumed at {resumed.tick}"
+        )
+        await b.simulation_service.step(wid, RunConfig())  # tick 2 under epoch 2
+        df = await b.query_service.query_components([Score], wid, str(resumed.run_id), storage)
+        assert {r["tick"] for r in df.to_pylist()} == {0, 1, 2}, "no tick lost, none doubled"
+    finally:
+        await a.shutdown()
+        await b.shutdown()
