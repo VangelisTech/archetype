@@ -32,6 +32,7 @@ from uuid_utils import UUID
 from archetype import _obs
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import WorldInfo
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._actor import default_actor_ctx
@@ -181,15 +182,41 @@ class ArchetypeRuntime:
         )
         return self.attach(info.world_id, name=name)
 
-    def attach(self, world_id: str | UUID, *, name: str = "attached") -> RuntimeWorld:
-        """Return a handle for a world that already exists in this runtime.
+    async def discover(
+        self, storage: str | Path | StorageConfig | None = None
+    ) -> list[WorldInfo]:
+        """Every world ever recorded against a storage identity — works cold.
+
+        Durable discovery (issue #272) from the recommended API: a fresh
+        process pointed at existing storage sees each world's descriptor,
+        including destroyed ones (their rows remain queryable). Pair with
+        ``attach(world_id, storage=...)`` for cold reads or ``resume`` for a
+        fenced writer.
+        """
+        if self._closed:
+            raise RuntimeError("ArchetypeRuntime is closed")
+        gate = self._container.command_service
+        return await gate.discover_worlds(
+            self._actor_ctx, coerce_storage(storage) or StorageConfig()
+        )
+
+    def attach(
+        self,
+        world_id: str | UUID,
+        *,
+        name: str = "attached",
+        storage: str | Path | StorageConfig | None = None,
+    ) -> RuntimeWorld:
+        """Return a handle for an existing world — live, or cold via storage.
 
         The save-slot loader: episode worlds left behind by a rollout, an
         autoresearch lab world, or any world created outside this handle's
-        scope can be queried and driven through the same gated surface. The
-        id is validated on first operation, and the handle does not own the
-        world — shutting it down never destroys the world (``destroy()``
-        still can, explicitly).
+        scope can be queried and driven through the same gated surface. With
+        an explicit ``storage``, the handle also reads worlds that are not
+        live in this process (cold discovery): ``info()`` and ``query()``
+        resolve through the durable catalog. The id is validated on first
+        operation, and the handle does not own the world — shutting it down
+        never destroys the world (``destroy()`` still can, explicitly).
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
@@ -197,8 +224,9 @@ class ArchetypeRuntime:
         state = _RuntimeWorldState(
             runtime=self,
             name=name,
-            # None → the gate resolves the world's recorded storage on read.
-            storage_config=None,
+            # None → the gate resolves the world's recorded storage on read;
+            # explicit storage additionally enables cold reads.
+            storage_config=coerce_storage(storage),
             cache_config=None,
             init_processors=[],
             init_resources=[],
@@ -298,9 +326,13 @@ class SyncArchetypeRuntime:
         )
         return SyncRuntimeWorld(rw, self)
 
-    def attach(self, world_id, *, name: str = "attached") -> SyncRuntimeWorld:
+    def discover(self, storage=None) -> "list[WorldInfo]":
+        """See ArchetypeRuntime.discover (durable discovery, works cold)."""
+        return self._dispatch(self._runtime.discover(storage))
+
+    def attach(self, world_id, *, name: str = "attached", storage=None) -> SyncRuntimeWorld:
         """Handle for an existing world. See ArchetypeRuntime.attach."""
-        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name), self)
+        return SyncRuntimeWorld(self._runtime.attach(world_id, name=name, storage=storage), self)
 
     def resume(self, world_id, *, storage=None, name: str = "resumed") -> SyncRuntimeWorld:
         """See ArchetypeRuntime.resume (fenced mutable cold resume)."""
