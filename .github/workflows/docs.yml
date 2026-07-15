@@ -210,6 +210,78 @@ jobs:
             echo "Requested Cloudflare Pages custom domain: ${CUSTOM_DOMAIN}"
           fi
 
+      # Pages associates the hostname with the project, but the DNS record is
+      # still required for a subdomain to resolve. Manage that single record
+      # here as well so the public hostname cannot remain pending after a
+      # successful production deploy.
+      - name: Ensure production DNS record
+        if: github.event_name == 'push'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CUSTOM_DOMAIN: archetype.vangelis.tech
+          ZONE_NAME: vangelis.tech
+          PAGES_HOST: archetype-docs.pages.dev
+        run: |
+          set -euo pipefail
+          api="https://api.cloudflare.com/client/v4"
+          auth=(--header "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+
+          curl --fail-with-body --silent --show-error --get \
+            "${auth[@]}" \
+            --data-urlencode "name=${ZONE_NAME}" \
+            --output /tmp/zones.json \
+            "${api}/zones"
+          zone_id="$(node -e '
+            const fs = require("fs");
+            const response = JSON.parse(fs.readFileSync("/tmp/zones.json", "utf8"));
+            const zones = response.result?.filter((zone) => zone.name === process.env.ZONE_NAME) ?? [];
+            if (!response.success || zones.length !== 1) {
+              console.error(`Expected one Cloudflare zone named ${process.env.ZONE_NAME}`);
+              process.exit(1);
+            }
+            process.stdout.write(zones[0].id);
+          ')"
+
+          curl --fail-with-body --silent --show-error --get \
+            "${auth[@]}" \
+            --data-urlencode "name=${CUSTOM_DOMAIN}" \
+            --output /tmp/dns-records.json \
+            "${api}/zones/${zone_id}/dns_records"
+          record_id="$(node -e '
+            const fs = require("fs");
+            const response = JSON.parse(fs.readFileSync("/tmp/dns-records.json", "utf8"));
+            const records = response.result ?? [];
+            if (!response.success || records.length > 1 || records.some((record) => record.type !== "CNAME")) {
+              console.error(`Refusing to replace existing DNS records for ${process.env.CUSTOM_DOMAIN}`);
+              process.exit(1);
+            }
+            if (records.length === 1) process.stdout.write(records[0].id);
+          ')"
+          payload="$(node -e '
+            console.log(JSON.stringify({
+              type: "CNAME",
+              name: process.env.CUSTOM_DOMAIN,
+              content: process.env.PAGES_HOST,
+              proxied: true,
+              ttl: 1,
+            }));
+          ')"
+
+          if [ -n "${record_id}" ]; then
+            method="PUT"
+            endpoint="${api}/zones/${zone_id}/dns_records/${record_id}"
+          else
+            method="POST"
+            endpoint="${api}/zones/${zone_id}/dns_records"
+          fi
+          curl --fail-with-body --silent --show-error \
+            "${auth[@]}" \
+            --header "Content-Type: application/json" \
+            --request "${method}" \
+            --data "${payload}" \
+            "${endpoint}"
+          echo "Ensured proxied CNAME ${CUSTOM_DOMAIN} -> ${PAGES_HOST}"
+
       - name: Update deployment status (success)
         if: success()
         uses: actions/github-script@v7
