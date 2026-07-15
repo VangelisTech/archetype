@@ -17,6 +17,7 @@ ingestion, resume, discovery) behaves identically against either backend.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -56,16 +57,30 @@ class RemoteControlCatalog:
         await self._client.aclose()
 
     async def _call(self, method: str, path: str, payload: dict | None = None) -> httpx.Response:
-        response = await self._client.request(
-            method, f"{self._base}{path}", json=payload if payload is not None else None
-        )
-        if response.status_code in (409, 412, 423):
-            body = response.json()
-            error = _ERROR_MAP.get(body.get("error", ""))
-            if error is not None:
-                raise error(body.get("message", body.get("error")))
-        response.raise_for_status()
-        return response
+        # GETs retry transient platform errors (Durable Object cold starts
+        # surface as one-off 5xx). Writes never blind-retry here — every
+        # write in the protocol is CAS/idempotent at the catalog, but the
+        # caller owns that decision, not the transport.
+        attempts = 3 if method == "GET" else 1
+        last: httpx.Response | None = None
+        for attempt in range(attempts):
+            response = await self._client.request(
+                method, f"{self._base}{path}", json=payload if payload is not None else None
+            )
+            if response.status_code in (409, 412, 423):
+                body = response.json()
+                error = _ERROR_MAP.get(body.get("error", ""))
+                if error is not None:
+                    raise error(body.get("message", body.get("error")))
+            if response.status_code >= 500 and attempt < attempts - 1:
+                last = response
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            return response
+        assert last is not None
+        last.raise_for_status()
+        return last
 
     # ── worlds ───────────────────────────────────────────────────────────────
 
