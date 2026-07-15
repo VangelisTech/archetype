@@ -21,11 +21,12 @@ from archetype.core.component import Component
 from archetype.core.interfaces import CommitContext
 
 TOKEN = os.environ.get("R2_CATALOG_TOKEN")
+DISCOVERY_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
 pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(
-        not TOKEN or not ACCOUNT_ID,
+        not TOKEN or not DISCOVERY_TOKEN or not ACCOUNT_ID,
         reason="GitHub Actions supplies the Cloudflare R2 catalog credentials",
     ),
 ]
@@ -38,10 +39,10 @@ class R2Reading(Component):
 def _catalog_settings() -> tuple[str, str]:
     """Discover one explicitly selected—or unambiguous—active R2 catalog."""
     assert ACCOUNT_ID is not None
-    assert TOKEN is not None
+    assert DISCOVERY_TOKEN is not None
     request = Request(
         f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/r2-catalog",
-        headers={"Authorization": f"Bearer {TOKEN}"},
+        headers={"Authorization": f"Bearer {DISCOVERY_TOKEN}"},
     )
     with urlopen(request, timeout=30) as response:  # noqa: S310 - fixed Cloudflare origin
         payload = json.load(response)
