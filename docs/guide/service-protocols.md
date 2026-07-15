@@ -95,9 +95,15 @@ async def query_archetype(sig, world_id, run_id, storage_config=None,
                            *, ticks=None, entity_ids=None, components=None,
                            lineage=None) -> DataFrame
 async def query_components(components, world_id, run_id, storage_config=None,
-                           *, ticks=None, entity_ids=None, lineage=None) -> DataFrame
+                           *, ticks=None, entity_ids=None, lineage=None,
+                           visibility_tokens=None) -> DataFrame
 async def list_signatures(storage_config=None) -> list[ArchetypeSignature]
 ```
+
+`visibility_tokens` is an exact commit-token allowlist for immutable reads.
+Persisted evaluation uses it with snapshot-bounded ticks so a concurrently
+advancing world cannot change the rows attributed to a receipt. It cannot be
+combined with `lineage`, whose segments each require their own visibility set.
 
 ### `iEvalService`
 

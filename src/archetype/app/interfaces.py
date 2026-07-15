@@ -203,6 +203,7 @@ class iQueryService(Protocol):
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         lineage: list[tuple[str, str, int]] | None = None,
+        visibility_tokens: list[str] | None = None,
     ) -> DataFrame: ...
 
     async def list_signatures(

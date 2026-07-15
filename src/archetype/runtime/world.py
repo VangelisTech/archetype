@@ -483,9 +483,7 @@ class RuntimeWorld:
         except Exception:
             if self._state.storage_config is None:
                 raise
-            return await self._gate.open_world_readonly(
-                self._ctx, self._state.storage_config, wid
-            )
+            return await self._gate.open_world_readonly(self._ctx, self._state.storage_config, wid)
 
     async def info(self) -> WorldInfo:
         """Get an immutable snapshot of world state (live or cold)."""

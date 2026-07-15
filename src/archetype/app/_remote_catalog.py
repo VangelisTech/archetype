@@ -236,9 +236,7 @@ class RemoteControlCatalog:
         return body["outcome"], _claim_from_json(world_id, body["claim"])
 
     async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
-        await self._call(
-            "POST", f"/w/{world_id}/claims/{scope_key}/table", {"table_id": table_id}
-        )
+        await self._call("POST", f"/w/{world_id}/claims/{scope_key}/table", {"table_id": table_id})
 
     async def complete_claim(
         self, world_id: str, scope_key: str, claimant: str, table_id: str

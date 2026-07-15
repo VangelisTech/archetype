@@ -15,7 +15,6 @@ The final test runs the real service stack — coordinator, ingestion,
 receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 """
 
-import asyncio
 import shutil
 import socket
 import subprocess

@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 from daft.session import Session
 
-from archetype.app._catalog import SqliteControlCatalog, catalog_path_for
+from archetype.app._catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
@@ -94,7 +94,7 @@ class StorageService:
         # The catalog is an implementation resource of this service — it is
         # authoritative for discovery, and its location is a pure function
         # of the storage identity (see app/_catalog.py).
-        self._catalogs: dict[str, object] = {}
+        self._catalogs: dict[str, ControlCatalog] = {}
 
     def get_control_catalog(self, storage_config: StorageConfig):
         """The durable control catalog for a storage location (pooled).
@@ -197,11 +197,11 @@ class StorageService:
                 logger.exception("Failed to shut down store %r", store)
                 errors.append(e)
 
-        for catalog in self._catalogs.values():
+        for key, catalog in self._catalogs.items():
             try:
                 await catalog.close()
             except Exception as e:
-                logger.exception("Failed to close control catalog %r", catalog.path)
+                logger.exception("Failed to close control catalog %r", key)
                 errors.append(e)
 
         self._instances.clear()

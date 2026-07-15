@@ -182,9 +182,7 @@ class ArchetypeRuntime:
         )
         return self.attach(info.world_id, name=name)
 
-    async def discover(
-        self, storage: str | Path | StorageConfig | None = None
-    ) -> list[WorldInfo]:
+    async def discover(self, storage: str | Path | StorageConfig | None = None) -> list[WorldInfo]:
         """Every world ever recorded against a storage identity — works cold.
 
         Durable discovery (issue #272) from the recommended API: a fresh
@@ -326,7 +324,7 @@ class SyncArchetypeRuntime:
         )
         return SyncRuntimeWorld(rw, self)
 
-    def discover(self, storage=None) -> "list[WorldInfo]":
+    def discover(self, storage=None) -> list[WorldInfo]:
         """See ArchetypeRuntime.discover (durable discovery, works cold)."""
         return self._dispatch(self._runtime.discover(storage))
 
