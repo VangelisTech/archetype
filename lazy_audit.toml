@@ -38,7 +38,7 @@ reason = "HTTP JSON response boundary: convert the already-collected Daft result
 
 [[entries]]
 path = "src/archetype/core/aio/async_store.py"
-line = 276
+line = 279
 method = "collect"
 reason = "Storage write boundary: defensive empty-frame probe before delegating to the backing table writer; cannot be expressed as a Daft predicate because count_rows requires materialised state."
 
