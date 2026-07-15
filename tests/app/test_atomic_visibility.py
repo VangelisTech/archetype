@@ -333,6 +333,40 @@ async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch
         await c.shutdown()
 
 
+async def test_querier_without_commit_tokens_support_fails_closed(tmp_path):
+    """A querier whose signature cannot accept the visibility allowlist must
+    refuse coordinated reads — never silently retry unfiltered (footgun
+    finding on #280: the old TypeError fallback dropped commit_tokens)."""
+    from archetype.core.aio import AsyncWorld
+
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        await _spawn_and_step(c, world)
+
+        class NoTokenQuerier:
+            def __init__(self, inner):
+                self._inner = inner
+
+            async def list_signatures(self):
+                return await self._inner.list_signatures()
+
+            async def query_archetype(
+                self, sig, world_id, ticks=None, entity_ids=None, components=None, run_id=None
+            ):
+                raise AssertionError("must not be reached for a coordinated world")
+
+        assert isinstance(world, AsyncWorld)
+        world.querier = NoTokenQuerier(world.querier)
+        world._querier_caps = None  # re-inspect the replaced querier
+
+        with pytest.raises(RuntimeError, match="commit_tokens.*fail closed"):
+            await world.query_archetype((Counter,), ticks=[0])
+    finally:
+        await c.shutdown()
+
+
 async def test_coordinator_epoch_and_manifest_roundtrip(tmp_path):
     catalog = SqliteControlCatalog(tmp_path / "cat.db")
     epoch = await catalog.acquire_fence("w", "h1")
