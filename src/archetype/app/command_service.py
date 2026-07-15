@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         IterationResult,
     )
     from archetype.app.broker import CommandBroker
+    from archetype.app.eval_service import EvalService
     from archetype.app.ingestion_service import IngestionService
     from archetype.app.models import (
         EpisodeConfig,
@@ -96,6 +97,7 @@ class CommandService:
         audit: AuditLog | None = None,
         autoresearch: AutoResearchService | None = None,
         ingestion: IngestionService | None = None,
+        evals: EvalService | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -105,6 +107,7 @@ class CommandService:
         self._audit = audit
         self._autoresearch = autoresearch
         self._ingestion = ingestion
+        self._evals = evals
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
@@ -399,6 +402,128 @@ class CommandService:
             storage_config=storage_config,
         )
         await self._emit(ctx, "ingest_fact", world_id)
+        return receipt
+
+    @instrument("gate.evaluate")
+    async def evaluate(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        components: list[type[Component]],
+        *,
+        contract,
+        grader,
+        evaluation_id: str,
+        producer: str = "evals",
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ):
+        """Claim-before-grade (issue #275): one visible receipt per evaluation_id.
+
+        The claim is acquired BEFORE the grader runs; a matching COMPLETE
+        claim returns the persisted receipt without re-grading. The subject
+        is pinned by snapshot reference (manifest head + tokens) + canonical
+        selector — never row-content hashing. A versioned GraderContract is
+        required: bare callables get no digest. The receipt is evidence,
+        never authority.
+
+        Composition lives here by design: EvalService stays QueryService-
+        only, IngestionService never grades — the gate wires them together.
+        """
+        import time as _time
+
+        from pydantic_core import to_jsonable_python as _to_jsonable
+
+        from archetype.experiments.receipts import (
+            EvalReceipt,
+            GraderContract,
+            Outcome,
+            evaluation_identity_digest,
+            subject_digest,
+        )
+
+        self._gate(Command(type=CommandType.EVALUATE), ctx)
+        if self._ingestion is None or self._evals is None:
+            raise RuntimeError("evaluation requires the ingestion and eval services wired")
+        ingestion, evals = self._ingestion, self._evals
+        if not isinstance(contract, GraderContract):
+            raise ValueError(
+                "persisted receipts require a GraderContract descriptor — bare "
+                "callables get no digest (use world.grade for ephemeral scoring)"
+            )
+
+        wid = str(world_id)
+        run_id, snap_tick, snap_tokens, effective = await ingestion.snapshot_ref(
+            wid, storage_config
+        )
+        subject = subject_digest(
+            wid,
+            run_id,
+            snapshot_tick=snap_tick,
+            snapshot_tokens=snap_tokens,
+            component_names=[c.__name__ for c in components],
+            ticks=ticks,
+            entity_ids=entity_ids,
+        )
+        contract_digest = contract.digest()
+        identity = evaluation_identity_digest(subject, contract_digest)
+
+        async def _grade_and_build(_claim) -> list:
+            df = await self._queries.query_components(
+                components,
+                wid,
+                run_id,
+                effective,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+            outputs = await evals.run_graders(df, [grader])
+            typed = [o for o in outputs if isinstance(o, Outcome)]
+            if len(typed) != len(outputs):
+                raise ValueError(
+                    "persisted receipts require typed Outcome results "
+                    "(pass/fail/invalid/inconclusive + optional finite score)"
+                )
+            if len(typed) != 1:
+                raise ValueError(
+                    "a persisted evaluation is one trial: the grader must return "
+                    "exactly one Outcome (run more trials under new evaluation_ids)"
+                )
+            outcome = typed[0]
+            return [
+                EvalReceipt(
+                    evaluation_id=evaluation_id,
+                    subject_digest=subject,
+                    contract_digest=contract_digest,
+                    grader_id=contract.grader_id,
+                    outcome=outcome.status,
+                    score=outcome.score,
+                    graded_at_ms=int(_time.time() * 1000),
+                    evidence_json=json.dumps(_to_jsonable(outcome.evidence)),
+                )
+            ]
+
+        receipt = await ingestion.ingest_evaluated(
+            wid,
+            evaluation_id=evaluation_id,
+            producer=producer,
+            identity_digest=identity,
+            build_components=_grade_and_build,
+            storage_config=storage_config,
+        )
+        await self._emit(
+            ctx,
+            "evaluate",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "evaluation_id": evaluation_id,
+                    "duplicate": receipt.duplicate,
+                    "grader_id": contract.grader_id,
+                }
+            ),
+        )
         return receipt
 
     @instrument("gate.resume_world")

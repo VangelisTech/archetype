@@ -1,7 +1,7 @@
 # Durable Facts
 
 **Document type:** Normative.
-**Scope:** `IngestionService`, fact claims, exactly-once visibility, asset references. Issue #274 (v0.3.0 slice B). Builds on [Atomic Visibility](atomic-visibility.md).
+**Scope:** `IngestionService`, fact claims, exactly-once visibility, asset references, evaluation receipts. Issues #274 and #275 (v0.3.0 slices B and C). Builds on [Atomic Visibility](atomic-visibility.md).
 
 ## 1. What a fact is
 
@@ -93,3 +93,41 @@ table, digest, and whether this call deduplicated against an existing
 visible fact. Ingestion works against live worlds and cold (catalog-
 recorded) ones; facts land at the world's last visible tick and never
 advance it.
+
+## 7. Evaluation receipts: claim-before-grade
+
+A receipt records that ONE grader ran under ONE pinned contract against ONE
+pinned subject, and what it concluded. Receipts ride the fact machinery —
+same claims, same visibility, same crash recovery — with three identity
+rules on top:
+
++ **The claim precedes the grader.** `evaluate` acquires the claim before
+  any grading runs; a matching COMPLETE claim returns the persisted receipt
+  **without re-grading**. The guarantee is exactly one **visible** durable
+  receipt per `evaluation_id` — never exactly-once grader execution. A
+  lease takeover whose orphan probe finds the appended rows completes
+  without re-running the grader; a takeover that finds none re-runs it at
+  most once.
++ **The subject is pinned, never hashed by content.** Subject identity =
+  the immutable snapshot reference (manifest head tick + commit tokens)
+  plus the canonical selector (components, ticks, entity ids).
+  Materializing a trajectory to hash its rows would break the lazy
+  contract; the snapshot reference makes the receipt recomputable and
+  attributable without it. Asset references inside subjects bind content
+  digests, never path strings.
++ **The contract is versioned or the receipt is refused.** A
+  `GraderContract` (stable grader id, implementation/prompt/model version,
+  config, thresholds, seed) is required; bare callables get no digest and
+  no persisted receipt — `world.grade` remains the ephemeral path. The
+  `evaluation_id` is deliberately distinct from subject + contract:
+  repeated trials of nondeterministic graders are a feature, and each
+  trial is its own id. Same id with a different subject or contract is a
+  loud conflict.
+
+Outcomes are typed — pass, fail, invalid, or inconclusive, with an optional
+finite score — and empty outcome sets fail closed.
+
+**Receipts are evidence, never authority.** A receipt carries no authority
+fields — no accepted, no promote, no approved, no allowed_next_action —
+enforced by the spec-contract eval suite. A PASS means one grader passed
+under one pinned contract; the layer above owns what that means.

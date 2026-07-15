@@ -40,6 +40,7 @@ class CommandType(StrEnum):
 
     # Entity-level commands
     INGEST_FACT = "ingest_fact"  # Durable external fact, exactly-once-visible
+    EVALUATE = "evaluate"  # Claim-before-grade: one visible receipt per evaluation_id
     SPAWN = "spawn"
     DESPAWN = "despawn"
     UPDATE = "update"

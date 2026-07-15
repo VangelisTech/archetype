@@ -75,10 +75,67 @@ class IngestionService:
         in the catalog). Concurrent identical submissions converge: one
         caller appends, the rest receive the original receipt.
         """
-        if not external_id.strip():
-            raise ValueError("external_id must be a non-empty producer-scoped identity")
         if not components:
             raise ValueError("a fact needs at least one component")
+
+        async def _ready(_claim: ClaimRecord) -> list[Component]:
+            return components
+
+        return await self._ingest(
+            world_id,
+            external_id=external_id,
+            producer=producer,
+            payload_digest=fact_payload_digest(components),
+            build_components=_ready,
+            storage_config=storage_config,
+            lease_seconds=lease_seconds,
+        )
+
+    async def ingest_evaluated(
+        self,
+        world_id: str,
+        *,
+        evaluation_id: str,
+        producer: str,
+        identity_digest: str,
+        build_components,
+        storage_config: StorageConfig | None = None,
+        lease_seconds: float = 30.0,
+    ) -> FactReceipt:
+        """Claim-BEFORE-grade (issue #275): the payload is built only after
+        this claimant owns the claim.
+
+        ``identity_digest`` names what the evaluation is OF (subject +
+        contract), never the graded outcome — trials of nondeterministic
+        graders share it while concluding differently. ``build_components``
+        (the grader, composed by the gate layer) runs at most once per
+        completed claim: a duplicate returns the persisted receipt without
+        re-grading, and a lease takeover that finds the orphan rows
+        completes without re-running.
+        """
+        return await self._ingest(
+            world_id,
+            external_id=evaluation_id,
+            producer=producer,
+            payload_digest=identity_digest,
+            build_components=build_components,
+            storage_config=storage_config,
+            lease_seconds=lease_seconds,
+        )
+
+    async def _ingest(
+        self,
+        world_id: str,
+        *,
+        external_id: str,
+        producer: str,
+        payload_digest: str,
+        build_components,
+        storage_config: StorageConfig | None,
+        lease_seconds: float,
+    ) -> FactReceipt:
+        if not external_id.strip():
+            raise ValueError("external_id must be a non-empty producer-scoped identity")
 
         wid = str(world_id)
         effective = self._resolve_storage(wid, storage_config)
@@ -90,7 +147,6 @@ class IngestionService:
         if not run_id:
             raise RuntimeError(f"world {wid} has no recorded run; nothing to attach facts to")
 
-        digest = fact_payload_digest(components)
         claimant = f"{socket.gethostname()}:{os.getpid()}:{uuid7().hex[:8]}"
         deadline = time.monotonic() + max(lease_seconds, 1.0) * 2
 
@@ -101,7 +157,7 @@ class IngestionService:
                     run_id=str(run_id),
                     producer=producer,
                     external_id=external_id,
-                    payload_digest=digest,
+                    payload_digest=payload_digest,
                     claimant=claimant,
                     tick=record.tick_head,
                     lease_seconds=lease_seconds,
@@ -122,21 +178,37 @@ class IngestionService:
             return self._receipt(claim, duplicate=True)
 
         store = await self._storage_service.get_or_create_store(effective, None)
-        sig = tuple(sorted({*(type(c) for c in components), FactMeta}, key=lambda t: t.__name__))
-        table_id = Archetype.get_name(sig)
 
-        appended = False
-        if outcome == "recovered":
+        if outcome == "recovered" and claim.table_id:
             # Crash recovery: the original claimant may have appended before
             # dying. The claim's token finds the orphan ON the data plane —
-            # complete without re-appending, never duplicate.
-            existing = await store.get_archetype_df(
-                sig, wid, str(run_id), commit_tokens=[claim.commit_token]
-            )
-            appended = bool(existing.to_pylist())
+            # complete without re-appending (and without re-grading), never
+            # duplicate. table_id on the claim names where to look; absent
+            # table_id (or a recorded table that was never materialized)
+            # means the crash preceded any append.
+            try:
+                existing = await store.get_existing_table_df(claim.table_id, wid, str(run_id))
+                orphaned = existing.where(
+                    existing["commit_token"]  # ty: ignore[invalid-argument-type]
+                    == claim.commit_token
+                )
+                found = orphaned.count_rows() > 0
+            except KeyError:
+                found = False
+            if found:
+                await store.flush()
+                await catalog.complete_claim(claim.scope_key, claimant, claim.table_id)
+                settled = await catalog.get_claim(claim.scope_key)
+                return self._receipt(settled if settled is not None else claim, duplicate=False)
 
-        if not appended:
-            await self._append_fact(store, sig, claim, components, wid, str(run_id))
+        components = await build_components(claim)
+        if not components:
+            raise ValueError("a fact needs at least one component")
+        sig = tuple(sorted({*(type(c) for c in components), FactMeta}, key=lambda t: t.__name__))
+        table_id = Archetype.get_name(sig)
+        await catalog.record_claim_table(claim.scope_key, table_id)
+
+        await self._append_fact(store, sig, claim, components, wid, str(run_id))
 
         # Facts are discoverable like everything else.
         schema = Archetype.get_archetype_schema(sig)
@@ -154,6 +226,38 @@ class IngestionService:
         await catalog.complete_claim(claim.scope_key, claimant, table_id)
         settled = await catalog.get_claim(claim.scope_key)
         return self._receipt(settled if settled is not None else claim, duplicate=False)
+
+    async def snapshot_ref(
+        self, world_id: str, storage_config: StorageConfig | None = None
+    ) -> tuple[str, int, list[str], StorageConfig]:
+        """The world's pinned snapshot reference: (run_id, head tick, tokens
+        at that tick, effective storage).
+
+        Persisted receipts require a pinned subject (issue #275); a world
+        with no published visibility has nothing immutable to pin — fail
+        closed rather than hash a moving target.
+        """
+        wid = str(world_id)
+        effective = self._resolve_storage(wid, storage_config)
+        catalog = self._storage_service.get_control_catalog(effective)
+        record = await catalog.get_world(wid)
+        if record is None:
+            raise KeyError(f"world {wid} is not recorded in catalog for {effective.uri}")
+        if not record.run_id:
+            raise RuntimeError(f"world {wid} has no recorded run; nothing to pin")
+        # Manifests ONLY: the subject is the simulation snapshot. Fact and
+        # receipt tokens are evidence ATTACHED to that snapshot — including
+        # them would let every completed receipt perturb the identity of the
+        # subject it was graded against.
+        manifests = await catalog.list_manifests(wid, str(record.run_id))
+        if not manifests:
+            raise RuntimeError(
+                f"world {wid} has no published visibility to pin a subject against "
+                "(step it at least once before evaluating)"
+            )
+        head = max(m.tick for m in manifests)
+        tokens = sorted(m.commit_token for m in manifests if m.tick == head)
+        return str(record.run_id), head, tokens, effective
 
     # ── internals ────────────────────────────────────────────────────────────
 

@@ -87,6 +87,12 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         task_id="spec.info_class_downgrades",
     ),
     SpecCase(
+        spec_id="durable-facts.7",
+        source="durable-facts.md",
+        anchors=("evidence, never authority", "no authority"),
+        task_id="spec.receipt_authority_firewall",
+    ),
+    SpecCase(
         spec_id="audit-log.2",
         source="audit-log.md",
         anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
@@ -169,6 +175,7 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.FORK_WORLD,
             CommandType.DESTROY_WORLD,
             CommandType.INGEST_FACT,
+            CommandType.EVALUATE,
         }
     ),
     "admin": frozenset(CommandType),
@@ -191,6 +198,7 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "open_world_readonly": CommandType.GET_WORLD_INFO,
     "resume_world": CommandType.CREATE_WORLD,
     "ingest_fact": CommandType.INGEST_FACT,
+    "evaluate": CommandType.EVALUATE,
     "step": CommandType.STEP,
     "run": CommandType.RUN,
     "run_episode": CommandType.RUN_EPISODE,
@@ -581,6 +589,35 @@ def _registered_task_ids() -> list[str]:
     return [task_id for task_id, _, _, _ in harness._tasks]
 
 
+def task_receipt_authority_firewall() -> list[GraderResult]:
+    """Receipt and fact components carry evidence, never authority.
+
+    The non-negotiable boundary (issue #275): no field on a persisted
+    receipt/fact component may name an authority decision. A PASS means one
+    grader passed under one pinned contract — the layer above owns meaning.
+    """
+    from archetype.app.facts import AssetRef, FactMeta
+    from archetype.experiments.receipts import EvalReceipt
+
+    forbidden = {
+        "accepted",
+        "accept",
+        "approved",
+        "approve",
+        "promote",
+        "promoted",
+        "allowed_next_action",
+        "authorized",
+        "authorize",
+        "permitted",
+    }
+    checks = {}
+    for component in (EvalReceipt, FactMeta, AssetRef):
+        fields = {name.lower() for name in component.model_fields}
+        checks[f"{component.__name__}_carries_no_authority"] = not (fields & forbidden)
+    return [state_check(checks, name="receipt_authority_firewall")]
+
+
 def register(harness: EvalHarness) -> None:
     harness.add(
         "spec.manifest_traceability",
@@ -611,6 +648,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_append_only_protocols,
         desc="Storage and audit protocols expose no destructive delete/drop methods.",
+    )
+    harness.add(
+        "spec.receipt_authority_firewall",
+        suite=SUITE,
+        fn=task_receipt_authority_firewall,
+        desc="Receipt/fact components carry no authority fields (evidence only).",
     )
     harness.add(
         "spec.info_class_downgrades",

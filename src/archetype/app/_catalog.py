@@ -572,6 +572,23 @@ class SqliteControlCatalog:
 
         return await self._run(_acquire)
 
+    async def record_claim_table(self, scope_key: str, table_id: str) -> None:
+        """Record where a claim's rows will land, BEFORE the append.
+
+        Lets lease-takeover recovery probe the exact table for orphan rows
+        by commit token — and complete without re-running the payload
+        builder (for evaluations: without re-grading)."""
+
+        def _record() -> None:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute(
+                    "UPDATE claims SET table_id=? WHERE scope_key=? AND status='PENDING'",
+                    (table_id, scope_key),
+                )
+
+        await self._run(_record)
+
     async def complete_claim(self, scope_key: str, claimant: str, table_id: str) -> None:
         """Publish the fact's visibility and complete the claim — one CAS.
 
