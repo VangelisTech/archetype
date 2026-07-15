@@ -126,7 +126,10 @@ is what makes maintenance safe:
 - No physical resumability: a crashed MuJoCo (or any external-process)
   execution is queryable up to its last published tick, not resumable
   mid-physics.
-- No cross-host fencing: the catalog is single-host authority in v0.3.
+- Cross-host fencing requires the remote control catalog
+  (``ARCHETYPE_CONTROL_CATALOG_URL``, issue #281): with it configured,
+  discovery, fencing, and visibility hold across hosts; the default local
+  SQLite catalog remains single-host authority.
 - Mutable cold resume is delivered on top of this contract — see
   [World Lifecycle](world-lifecycle.md) § Resume: `resume_world`
   reconstructs a live world from visible rows + manifests and acquires the
