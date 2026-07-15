@@ -51,12 +51,14 @@ async def test_r2_iceberg_commit_visibility(tmp_path: Path) -> None:
     prefix = f"archetype-ci/idempotency/{run_id}-{attempt}-{uuid7().hex}"
     warehouse = f"s3://{BUCKET}/{prefix}"
     namespace = "archetype_ci"
+    endpoint = urlparse(API_ENDPOINT)
     catalog = SqlCatalog(
         "archetype_r2_ci",
         uri=f"sqlite:///{tmp_path / 'catalog.db'}",
         warehouse=warehouse,
         **{
-            "s3.endpoint": API_ENDPOINT,
+            # PyArrow expects host[:port]; Daft's S3Config below expects URL.
+            "s3.endpoint": endpoint.netloc,
             "s3.access-key-id": ACCESS_KEY_ID,
             "s3.secret-access-key": SECRET_ACCESS_KEY,
             "s3.region": "auto",
@@ -120,7 +122,6 @@ async def test_r2_iceberg_commit_visibility(tmp_path: Path) -> None:
             catalog.drop_table(table)
         catalog.drop_namespace(namespace)
 
-        endpoint = urlparse(API_ENDPOINT)
         filesystem = S3FileSystem(
             access_key=ACCESS_KEY_ID,
             secret_key=SECRET_ACCESS_KEY,
