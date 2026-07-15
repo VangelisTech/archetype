@@ -859,6 +859,49 @@ the constraints that any acceptable design must satisfy.
 | `world.step()` | Not idempotent; advances tick and appends new rows |
 | `world.run()` | Not idempotent; performs multiple steps under one run contract |
 | `QueryManager.query_archetype()` | Idempotent for fixed persisted state |
+| Store `append()` replay | Not idempotent; repeating an append persists duplicate rows |
+| Updater `update()` replay | Not idempotent; repeating an update appends another row version |
+| Store `get_archetype_df()` replay | Idempotent for the same persisted data |
+| `QueryService` fixed-state reads | Idempotent for fixed rows, history, and signature catalog |
+| Catalog re-registration | Same identity and content is an idempotent no-op; different content conflicts loudly |
+| Coordinated tick retry after failed publish | Unpublished attempts stay invisible; retry produces exactly one visible attempt |
+| Cold discovery and reads | Repeated cold discovery and reads return stable durable state |
+| Fenced mutable resume | Resume continues from the last visible tick and stale-writer retries stay invisible |
+| `ingest_fact()` replay | Identical external identity and payload converges on one visible fact; changed payload conflicts |
+| `ingest_fact()` crash recovery | Lease takeover completes an appended orphan without creating a second visible fact |
+| `evaluate()` replay | Same evaluation identity, subject, and contract returns one receipt without re-grading |
+| Hard process crash and cold resume | Unpublished physical rows do not advance a fresh process beyond the last visible tick |
+| Independent writer-process race | Exactly one fenced writer publishes the contested tick |
+| Independent process `ingest_fact()` replay | Concurrent processes converge on one visible external fact |
+| Independent process `evaluate()` replay | Concurrent processes grade once, and changed subjects conflict before grading |
+
+The durable rows above summarize the normative amendments in
+[Durable Discovery](durable-discovery.md),
+[Atomic Visibility](atomic-visibility.md),
+[World Lifecycle](world-lifecycle.md), and [Durable Facts](durable-facts.md).
+The idempotency eval manifest must match this table exactly; `make
+idempotency-audit` is the fast static drift check, while `make eval-idem`
+executes the behavioral scenarios.
+
+The behavioral suite is an independent oracle: it does not call or import the
+feature tests under `tests/app/`. Each task builds fresh storage and asserts
+primarily on service-facing outcomes and durable query results. Deterministic
+fault injection targets only the documented manifest-publish and
+claim-completion boundaries; selected internal counters provide secondary
+failure diagnostics. Coverage is deliberately symmetric: repeated no-ops must
+collapse, non-idempotent simulation calls must remain distinct, concurrent
+durable submissions must converge, interrupted commits must recover, and
+identity reuse with changed content must fail loudly. A new matrix row
+therefore requires a registered behavioral task, and a new task must trace
+back to at least one matrix row.
+
+Four tasks cross real OS-process boundaries over shared LanceDB and SQLite
+files: hard process death followed by cold resume, a two-writer fence race,
+eight-process fact replay, and eight-process evaluation replay with an
+external grader-call ledger. The `infrastructure-idempotency` GitHub Actions
+job creates a disposable table in Cloudflare R2 Data Catalog and runs the
+Iceberg integration under `tests/infrastructure/`; local development does not
+require Docker.
 
 ## Required Hardening Work
 

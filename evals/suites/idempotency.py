@@ -4,10 +4,12 @@
 """Idempotency eval suite.
 
 These tasks execute the idempotency matrix in ``docs/guide/specification.md``.
-They intentionally cover both sides of the contract:
+They intentionally cover repetition, concurrency, and crash-retry boundaries:
 
 - operations marked idempotent collapse, reuse, or no-op on repetition
 - operations marked non-idempotent produce distinct observable effects
+- durable operations converge on one visible outcome after races or failures
+- identity reuse with different content fails loudly instead of silently merging
 """
 
 from __future__ import annotations
@@ -27,13 +29,27 @@ from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
-from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
-from archetype.core.sync import QueryManager
+from archetype.core.sync import QueryManager, SyncStore, UpdateManager
+from archetype.runtime.session import configure_session
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
+from evals.suites.idempotency_durable import (
+    task_atomic_publish_retry,
+    task_durable_discovery,
+    task_durable_fact_crash_recovery,
+    task_durable_fact_replay,
+    task_evaluation_receipt_replay,
+    task_resume_and_writer_fencing,
+)
+from evals.suites.idempotency_process import (
+    task_process_crash_cold_resume,
+    task_process_evaluation_replay,
+    task_process_fact_replay,
+    task_process_writer_fence_race,
+)
 from evals.types import GraderResult
 
 SUITE = "idempotency"
@@ -148,6 +164,97 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         expected_contract="Idempotent for fixed persisted state",
         task_id="idempotency.query_archetype_repeatable",
     ),
+    IdempotencyCase(
+        operation="Store `append()` replay",
+        expected_contract="Not idempotent; repeating an append persists duplicate rows",
+        task_id="idempotency.query_archetype_repeatable",
+    ),
+    IdempotencyCase(
+        operation="Updater `update()` replay",
+        expected_contract="Not idempotent; repeating an update appends another row version",
+        task_id="idempotency.query_archetype_repeatable",
+    ),
+    IdempotencyCase(
+        operation="Store `get_archetype_df()` replay",
+        expected_contract="Idempotent for the same persisted data",
+        task_id="idempotency.query_archetype_repeatable",
+    ),
+    IdempotencyCase(
+        operation="`QueryService` fixed-state reads",
+        expected_contract="Idempotent for fixed rows, history, and signature catalog",
+        task_id="idempotency.fixed_reads",
+    ),
+    IdempotencyCase(
+        operation="Catalog re-registration",
+        expected_contract=(
+            "Same identity and content is an idempotent no-op; different content conflicts loudly"
+        ),
+        task_id="idempotency.durable_discovery",
+    ),
+    IdempotencyCase(
+        operation="Coordinated tick retry after failed publish",
+        expected_contract=(
+            "Unpublished attempts stay invisible; retry produces exactly one visible attempt"
+        ),
+        task_id="idempotency.atomic_publish_retry",
+    ),
+    IdempotencyCase(
+        operation="Cold discovery and reads",
+        expected_contract="Repeated cold discovery and reads return stable durable state",
+        task_id="idempotency.durable_discovery",
+    ),
+    IdempotencyCase(
+        operation="Fenced mutable resume",
+        expected_contract=(
+            "Resume continues from the last visible tick and stale-writer retries stay invisible"
+        ),
+        task_id="idempotency.resume_and_writer_fencing",
+    ),
+    IdempotencyCase(
+        operation="`ingest_fact()` replay",
+        expected_contract=(
+            "Identical external identity and payload converges on one visible fact; changed payload conflicts"
+        ),
+        task_id="idempotency.durable_fact_replay",
+    ),
+    IdempotencyCase(
+        operation="`ingest_fact()` crash recovery",
+        expected_contract=(
+            "Lease takeover completes an appended orphan without creating a second visible fact"
+        ),
+        task_id="idempotency.durable_fact_crash_recovery",
+    ),
+    IdempotencyCase(
+        operation="`evaluate()` replay",
+        expected_contract=(
+            "Same evaluation identity, subject, and contract returns one receipt without re-grading"
+        ),
+        task_id="idempotency.evaluation_receipt_replay",
+    ),
+    IdempotencyCase(
+        operation="Hard process crash and cold resume",
+        expected_contract=(
+            "Unpublished physical rows do not advance a fresh process beyond the last visible tick"
+        ),
+        task_id="idempotency.process_crash_cold_resume",
+    ),
+    IdempotencyCase(
+        operation="Independent writer-process race",
+        expected_contract="Exactly one fenced writer publishes the contested tick",
+        task_id="idempotency.process_writer_fence_race",
+    ),
+    IdempotencyCase(
+        operation="Independent process `ingest_fact()` replay",
+        expected_contract="Concurrent processes converge on one visible external fact",
+        task_id="idempotency.process_fact_replay",
+    ),
+    IdempotencyCase(
+        operation="Independent process `evaluate()` replay",
+        expected_contract=(
+            "Concurrent processes grade once, and changed subjects conflict before grading"
+        ),
+        task_id="idempotency.process_evaluation_replay",
+    ),
 )
 
 
@@ -181,28 +288,59 @@ def contract_map() -> list[dict[str, str]]:
     ]
 
 
-def _registered_task_ids() -> set[str]:
+def _registered_tasks() -> list[tuple[str, str, object, str]]:
     harness = EvalHarness()
     register(harness)
-    return {task_id for task_id, _, _, _ in harness._tasks}
+    return list(harness._tasks)
+
+
+def _registered_task_ids() -> set[str]:
+    return {task_id for task_id, _, _, _ in _registered_tasks()}
+
+
+def _spec_matrix_rows(text: str) -> list[tuple[str, str]]:
+    """Parse the normative two-column matrix without a Markdown dependency."""
+    try:
+        section = text.split("## Idempotency Matrix", 1)[1].split("\n## ", 1)[0]
+    except IndexError:
+        return []
+
+    rows: list[tuple[str, str]] = []
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 2 or cells[0] == "Operation" or set(cells[0]) == {"-"}:
+            continue
+        rows.append((cells[0], cells[1]))
+    return rows
+
+
+def traceability_checks() -> dict[str, bool]:
+    """Return fast static checks used by the eval and the lint entry point."""
+    text = SPECIFICATION.read_text() if SPECIFICATION.exists() else ""
+    registered = _registered_task_ids()
+    mapped_rows = [(case.operation, case.expected_contract) for case in IDEMPOTENCY_CASES]
+    mapped_task_ids = {case.task_id for case in IDEMPOTENCY_CASES}
+    parsed_rows = _spec_matrix_rows(text)
+    checks: dict[str, bool] = {
+        "specification_exists": SPECIFICATION.exists(),
+        "matrix_is_not_empty": bool(parsed_rows),
+        "matrix_rows_match_eval_manifest": parsed_rows == mapped_rows,
+        "all_task_ids_registered": mapped_task_ids <= registered,
+        "all_behavior_tasks_mapped": registered
+        == mapped_task_ids | {"idempotency.manifest_traceability"},
+        "unique_operations": len({case.operation for case in IDEMPOTENCY_CASES})
+        == len(IDEMPOTENCY_CASES),
+        "unique_registered_task_ids": len(registered)
+        == len([task_id for task_id, _, _, _ in _registered_tasks()]),
+    }
+    return checks
 
 
 def task_manifest_traceability() -> list[GraderResult]:
     """Every idempotency matrix row maps to a registered eval task."""
-    text = SPECIFICATION.read_text() if SPECIFICATION.exists() else ""
-    registered = _registered_task_ids()
-    checks: dict[str, bool] = {
-        "specification_exists": SPECIFICATION.exists(),
-        "all_task_ids_registered": all(case.task_id in registered for case in IDEMPOTENCY_CASES),
-    }
-    for case in IDEMPOTENCY_CASES:
-        checks[f"{case.operation}:operation_anchor"] = case.operation in text
-        checks[f"{case.operation}:contract_anchor"] = case.expected_contract in text
-
-    mapped_operations = {case.operation for case in IDEMPOTENCY_CASES}
-    checks["unique_operations"] = len(mapped_operations) == len(IDEMPOTENCY_CASES)
-
-    return [state_check(checks, name="idempotency_manifest_traceability")]
+    return [state_check(traceability_checks(), name="idempotency_manifest_traceability")]
 
 
 def task_storage_pooling_and_shutdown() -> list[GraderResult]:
@@ -759,86 +897,74 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
 
 
 def task_query_archetype_repeatable() -> list[GraderResult]:
-    """Sync QueryManager.query_archetype is stable for fixed persisted state."""
+    """Real sync store reads repeat; updater replay deliberately appends."""
     import daft
 
-    sig = (IdemCounter,)
-    rows = [
-        Archetype.to_row_dict(
-            entity_id=1,
-            tick=0,
-            components=[IdemCounter(value=101)],
-            world_id="idem-query-world",
-            run_id="idem-query-run",
-        ),
-        {
-            **Archetype.to_row_dict(
-                entity_id=2,
-                tick=0,
-                components=[IdemCounter(value=202)],
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = StorageConfig(uri=f"{tmp}/store", namespace="real_sync_idempotency")
+        store = SyncStore(uri=str(storage.uri), session=configure_session(storage))
+        updater = UpdateManager(store)
+        query = QueryManager(store=store)
+        sig = (IdemCounter,)
+        raw = daft.from_pylist([{"entity_id": 1, "is_active": True, "idemcounter__value": 101}])
+
+        updater.update(raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run")
+        first = (
+            query.query_archetype(
+                sig=sig,
                 world_id="idem-query-world",
                 run_id="idem-query-run",
+                ticks=[0],
+                entity_ids=[1],
+            )
+            .collect()
+            .to_pylist()
+        )
+        second = (
+            query.query_archetype(
+                sig=sig,
+                world_id="idem-query-world",
+                run_id="idem-query-run",
+                ticks=[0],
+                entity_ids=[1],
+            )
+            .collect()
+            .to_pylist()
+        )
+
+        updater.update(raw, sig, tick=0, world_id="idem-query-world", run_id="idem-query-run")
+        after_replayed_update = (
+            query.query_archetype(
+                sig=sig,
+                world_id="idem-query-world",
+                run_id="idem-query-run",
+                ticks=[0],
+                entity_ids=[1],
+            )
+            .collect()
+            .to_pylist()
+        )
+        store.shutdown()
+
+        return [
+            exact_match(first, second, name="real_store_fixed_read_repeatability"),
+            state_check(
+                {
+                    "one_active_filtered_row": len(first) == 1,
+                    "world_scoped": first[0].get("world_id") == "idem-query-world"
+                    if first
+                    else False,
+                    "run_scoped": first[0].get("run_id") == "idem-query-run" if first else False,
+                    "entity_filtered": first[0].get("entity_id") == 1 if first else False,
+                    "tick_filtered": first[0].get("tick") == 0 if first else False,
+                    "component_value_preserved": first[0].get("idemcounter__value") == 101
+                    if first
+                    else False,
+                    "replayed_updater_appends_again": len(after_replayed_update) == 2,
+                },
+                name="real_sync_store_contracts",
             ),
-            "is_active": False,
-        },
-    ]
-    fixed_df = daft.from_pylist(rows)
-    calls: list[tuple[tuple[type[Component], ...], str, str]] = []
-
-    class _Store:
-        def get_archetype_df(self, requested_sig, world_id, run_id):
-            calls.append((requested_sig, world_id, run_id))
-            return fixed_df
-
-    query = QueryManager(store=_Store())
-    first = (
-        query.query_archetype(
-            sig=sig,
-            world_id="idem-query-world",
-            run_id="idem-query-run",
-            ticks=[0],
-            entity_ids=[1],
-        )
-        .collect()
-        .to_pylist()
-    )
-    second = (
-        query.query_archetype(
-            sig=sig,
-            world_id="idem-query-world",
-            run_id="idem-query-run",
-            ticks=[0],
-            entity_ids=[1],
-        )
-        .collect()
-        .to_pylist()
-    )
-
-    return [
-        exact_match(first, second, name="query_archetype_repeatable_rows"),
-        state_check(
-            {
-                "one_active_filtered_row": len(first) == 1,
-                "world_scoped": first[0].get("world_id") == "idem-query-world" if first else False,
-                "run_scoped": first[0].get("run_id") == "idem-query-run" if first else False,
-                "entity_filtered": first[0].get("entity_id") == 1 if first else False,
-                "tick_filtered": first[0].get("tick") == 0 if first else False,
-                "active_only": first[0].get("is_active") is True if first else False,
-                "component_value_preserved": (
-                    first[0].get("idemcounter__value") == 101 if first else False
-                ),
-            },
-            name="query_archetype_fixed_filters",
-        ),
-        exact_match(
-            calls,
-            [
-                (sig, "idem-query-world", "idem-query-run"),
-                (sig, "idem-query-world", "idem-query-run"),
-            ],
-            name="query_archetype_scopes_by_world_and_run",
-        ),
-    ]
+        ]
 
 
 def task_step_and_run_are_not_idempotent() -> list[GraderResult]:
@@ -956,11 +1082,71 @@ def register(harness: EvalHarness) -> None:
         "idempotency.query_archetype_repeatable",
         suite=SUITE,
         fn=task_query_archetype_repeatable,
-        desc="Sync QueryManager.query_archetype is repeatable for fixed persisted state.",
+        desc="Real sync store reads repeat while updater replay appends another row.",
     )
     harness.add(
         "idempotency.step_and_run_non_idempotent",
         suite=SUITE,
         fn=task_step_and_run_are_not_idempotent,
         desc="Repeated step/run calls advance time and append additional rows.",
+    )
+    harness.add(
+        "idempotency.atomic_publish_retry",
+        suite=SUITE,
+        fn=task_atomic_publish_retry,
+        desc="Failed tick publication stays invisible and retry exposes one attempt.",
+    )
+    harness.add(
+        "idempotency.durable_discovery",
+        suite=SUITE,
+        fn=task_durable_discovery,
+        desc="Cold discovery, reads, and catalog re-registration converge on durable state.",
+    )
+    harness.add(
+        "idempotency.resume_and_writer_fencing",
+        suite=SUITE,
+        fn=task_resume_and_writer_fencing,
+        desc="Fenced resume owns the next tick and stale writer attempts remain invisible.",
+    )
+    harness.add(
+        "idempotency.durable_fact_replay",
+        suite=SUITE,
+        fn=task_durable_fact_replay,
+        desc="Concurrent fact replay converges and identity-content conflicts fail loudly.",
+    )
+    harness.add(
+        "idempotency.durable_fact_crash_recovery",
+        suite=SUITE,
+        fn=task_durable_fact_crash_recovery,
+        desc="Lease takeover completes an appended orphan without a duplicate visible fact.",
+    )
+    harness.add(
+        "idempotency.evaluation_receipt_replay",
+        suite=SUITE,
+        fn=task_evaluation_receipt_replay,
+        desc="Evaluation replay returns one receipt without re-running the grader.",
+    )
+    harness.add(
+        "idempotency.process_crash_cold_resume",
+        suite=SUITE,
+        fn=task_process_crash_cold_resume,
+        desc="A hard-killed process leaves invisible rows and cold resume retries one tick.",
+    )
+    harness.add(
+        "idempotency.process_writer_fence_race",
+        suite=SUITE,
+        fn=task_process_writer_fence_race,
+        desc="Two independent writer processes race and exactly one publishes.",
+    )
+    harness.add(
+        "idempotency.process_fact_replay",
+        suite=SUITE,
+        fn=task_process_fact_replay,
+        desc="Concurrent processes converge on one externally identified fact.",
+    )
+    harness.add(
+        "idempotency.process_evaluation_replay",
+        suite=SUITE,
+        fn=task_process_evaluation_replay,
+        desc="Concurrent processes grade once and changed subjects conflict before grading.",
     )

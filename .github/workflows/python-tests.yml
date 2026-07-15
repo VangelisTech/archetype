@@ -1,6 +1,7 @@
 name: Tests
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -85,6 +86,43 @@ jobs:
       # through eval-reg alone.
       - name: Run capability evals
         run: make eval-cap
+
+  # Real object-store gate. The R2 catalog token vends short-lived object-store
+  # credentials, so no local or runner-side Docker service is involved.
+  infrastructure-idempotency:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_ACCOUNT_ID: f11df81ebc1ba9b7450c59398474827a
+      R2_CATALOG_TOKEN: ${{ secrets.R2_CATALOG_TOKEN }}
+      R2_CATALOG_BUCKET: ${{ vars.R2_CATALOG_BUCKET }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Verify R2 integration credentials
+        run: test -n "$R2_CATALOG_TOKEN"
+
+      - name: Run R2 Data Catalog idempotency integration
+        run: make test-infra
 
   format:
     runs-on: ubuntu-latest
