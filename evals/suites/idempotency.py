@@ -20,6 +20,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from daft.io import IOConfig
 from uuid_utils import uuid7
 
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
@@ -30,7 +31,13 @@ from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 from archetype.core.component import Component
-from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from archetype.core.config import (
+    CacheConfig,
+    RunConfig,
+    StorageBackend,
+    StorageConfig,
+    WorldConfig,
+)
 from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
 from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from archetype.runtime.session import configure_session
@@ -70,7 +77,8 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
     IdempotencyCase(
         operation="`StorageService.get_or_create_store(key)`",
         expected_contract=(
-            "Idempotent per `(uri, namespace, backend, cache config)` within one service instance"
+            "Idempotent per `(uri, namespace, backend, Daft IOConfig fingerprint, cache config)` "
+            "within one service instance"
         ),
         task_id="idempotency.storage_pooling_and_shutdown",
     ),
@@ -350,16 +358,30 @@ def task_storage_pooling_and_shutdown() -> list[GraderResult]:
 
 async def _task_storage_pooling_and_shutdown() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
-        service = StorageService()
-        storage = StorageConfig(uri=f"{tmp}/store", namespace="idem")
+        base_storage = StorageConfig(
+            uri=f"{tmp}/store",
+            namespace="idem",
+            backend=StorageBackend.ICEBERG,
+        )
+        service = StorageService(session=configure_session(base_storage))
+        io_config = IOConfig()
+        storage = base_storage.model_copy(update={"io_config": io_config})
         other_namespace = storage.model_copy(update={"namespace": "idem_other"})
+        equivalent_io = storage.model_copy(update={"io_config": IOConfig()})
+        other_io = storage.model_copy(update={"io_config": IOConfig(disable_suffix_range=True)})
         cache = CacheConfig(flush_rows=10_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
         try:
             plain_a = await service.get_or_create_store(storage)
             plain_b = await service.get_or_create_store(storage)
             cached_a = await service.get_or_create_store(storage, cache)
             cached_b = await service.get_or_create_store(storage, cache)
-            other = await service.get_or_create_store(other_namespace)
+            try:
+                await service.get_or_create_store(other_namespace)
+                other_namespace_rejected = False
+            except ValueError:
+                other_namespace_rejected = True
+            equivalent_credentials = await service.get_or_create_store(equivalent_io)
+            different_credentials = await service.get_or_create_store(other_io)
 
             # The cached store itself owns an idempotent shutdown contract.
             await cached_a.shutdown()
@@ -375,7 +397,11 @@ async def _task_storage_pooling_and_shutdown() -> list[GraderResult]:
                         "same_config_reuses_plain_store": plain_a is plain_b,
                         "same_cache_config_reuses_cached_store": cached_a is cached_b,
                         "cache_config_is_part_of_pool_key": plain_a is not cached_a,
-                        "namespace_is_part_of_pool_key": plain_a is not other,
+                        "injected_session_rejects_other_namespace": (other_namespace_rejected),
+                        "equivalent_io_config_reuses_store": (plain_a is equivalent_credentials),
+                        "io_config_fingerprint_is_part_of_pool_key": (
+                            plain_a is not different_credentials
+                        ),
                     },
                     name="storage_pooling_contract",
                 )

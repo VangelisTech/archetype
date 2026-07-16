@@ -47,34 +47,35 @@ def configure_session(
     config: StorageConfig,
     session: Session | None = None,
 ) -> Session:
-    """Configure a Daft session for Archetype's Iceberg storage backend.
+    """Build Archetype's concrete local SQLite-catalog Iceberg session.
 
-    Uses the global default session if none is provided.
-    Resolves the URI, creates the Iceberg catalog, attaches it, and sets the namespace.
+    Remote and managed catalogs are caller-owned. They enter through an
+    already-configured ``Session`` passed to ``StorageService`` rather than
+    being reconstructed from storage fields or environment variables.
 
     Args:
         config: Storage configuration with uri and namespace.
-        session: Optional explicit session. Defaults to the global Daft session.
+        session: Optional session to configure for backward-compatible local
+            construction. Managed sessions should instead be injected through
+            ``StorageService`` and are not reconfigured by Archetype.
 
     Returns:
         The configured session.
     """
     from pyiceberg.catalog.sql import SqlCatalog
 
-    if session is None:
-        session = Session()
-
     resolved_uri, is_remote = _resolve_storage_uri(str(config.uri))
-
     if is_remote:
-        local_meta_dir = pathlib.Path(".archetype_meta")
-        local_meta_dir.mkdir(parents=True, exist_ok=True)
-        sqlite_db_path = local_meta_dir / "catalog.db"
-        warehouse_uri = str(config.uri)
-    else:
-        base_path = pathlib.Path(resolved_uri)
-        sqlite_db_path = base_path / "catalog.db"
-        warehouse_uri = f"file://{base_path}"
+        raise ValueError(
+            "Archetype's built-in Iceberg factory supports local paths only; "
+            "inject a preconfigured Daft Session through StorageService for "
+            "remote or managed catalogs"
+        )
+
+    session = session if session is not None else Session()
+    base_path = pathlib.Path(resolved_uri)
+    sqlite_db_path = base_path / "catalog.db"
+    warehouse_uri = f"file://{base_path}"
 
     catalog = Catalog.from_iceberg(
         SqlCatalog(

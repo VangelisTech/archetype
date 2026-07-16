@@ -47,12 +47,13 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
     """
 
-    def __init__(self):
+    def __init__(self, storage_service: StorageService | None = None):
         # Infrastructure
         self.broker = CommandBroker()
 
         # Leaf services
-        self.storage_service = StorageService()
+        self._owns_storage_service = storage_service is None
+        self.storage_service = storage_service if storage_service is not None else StorageService()
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
@@ -90,4 +91,5 @@ class ServiceContainer:
         """Gracefully shut down all services."""
         await self.audit_log.shutdown()
         await self.broker.clear()
-        await self.world_service.shutdown()
+        if self._owns_storage_service:
+            await self.world_service.shutdown()

@@ -31,7 +31,13 @@ Each entry below is a one-line summary. The full signatures live in `app/interfa
 
 ### `iStorageService`
 
-Creates and pools async stores. Multiton on `(uri, namespace, backend, cache)`. Leaf service — no required dependencies.
+Creates and pools async stores. Multiton on
+`(uri, namespace, backend, Daft IOConfig fingerprint, cache)` within one process.
+The built-in Iceberg factory is a concrete local SQLite-catalog lakehouse.
+Managed or remote Iceberg enters through a caller-configured Daft `Session`;
+`IOConfig` passes directly to Daft data I/O. Leaf service — no required
+dependencies. One injected session serves one storage URI and namespace;
+mismatches fail closed.
 
 ```python
 async def get_or_create_store(storage_config, cache_config=None) -> iAsyncStore
@@ -292,9 +298,12 @@ Pattern: pydantic `BaseModel` with `frozen=True`. Carry only metadata that's saf
 
 ```python
 class ServiceContainer:
-    def __init__(self):
+    def __init__(self, storage_service: StorageService | None = None):
         self.broker = CommandBroker()
-        self.storage_service = StorageService()
+        self._owns_storage_service = storage_service is None
+        self.storage_service = (
+            storage_service if storage_service is not None else StorageService()
+        )
         self.audit = AuditLog(self.storage_service)
         self.world_service = WorldService(self.storage_service)
         self.mutation_service = MutationService(self.world_service)
@@ -314,10 +323,13 @@ class ServiceContainer:
         await self.broker.clear()
         await self.audit.flush()
         await self.audit.shutdown()
-        await self.world_service.shutdown()
+        if self._owns_storage_service:
+            await self.world_service.shutdown()
 ```
 
-Shutdown order matters: clear pending broker work; flush + close audit (write any buffered rows to permanent storage); close stores last.
+Shutdown order matters: clear pending broker work; flush + close audit; close
+container-owned stores last. An injected `StorageService` is caller-owned and
+remains open.
 
 ## 6. Companion specs
 
