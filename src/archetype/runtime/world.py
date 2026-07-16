@@ -27,7 +27,9 @@ from archetype.app.auth.models import ActorCtx
 from archetype.app.models import (
     EpisodeConfig,
     EpisodeResult,
+    FactProcessor,
     FactReceipt,
+    FactWriteReceipt,
     HookInfo,
     ProcessorInfo,
     ResourceInfo,
@@ -42,6 +44,7 @@ from archetype.core.hooks import HookEvent
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from daft import DataFrame
 
@@ -251,6 +254,38 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.ingest_fact(
                 self._ctx, wid, list(components), external_id=external_id, producer=producer
+            )
+
+    async def ingest_files(
+        self,
+        paths: str | Path | list[str | Path],
+        processor: FactProcessor,
+    ) -> FactWriteReceipt:
+        """Process files with Daft and persist typed rows in an Iceberg fact table."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.ingest_files(
+                self._ctx,
+                wid,
+                paths,
+                processor,
+                storage_config=self._state.storage_config,
+            )
+
+    async def write_facts(
+        self,
+        table_name: str,
+        facts: DataFrame,
+    ) -> FactWriteReceipt:
+        """Persist an existing Daft pipeline in a typed Iceberg fact table."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.write_facts(
+                self._ctx,
+                wid,
+                table_name,
+                facts,
+                storage_config=self._state.storage_config,
             )
 
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
@@ -570,6 +605,17 @@ class RuntimeWorld:
             wid = await self._ensure_id()
             return await self._gate.get_audit_history(self._ctx, wid, limit=limit, **filters)
 
+    async def facts(self, table_name: str) -> DataFrame:
+        """Return this run's rows from a typed Iceberg fact table."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.query_facts(
+                self._ctx,
+                wid,
+                table_name,
+                storage_config=self._state.storage_config,
+            )
+
     async def list_processors(self) -> list[ProcessorInfo]:
         """Return summaries of installed processors."""
         async with self._state.op_lock:
@@ -675,6 +721,16 @@ class SyncRuntimeWorld:
         return self._run(
             lambda: self._world.ingest(*components, external_id=external_id, producer=producer)
         )
+
+    def ingest_files(
+        self,
+        paths: str | Path | list[str | Path],
+        processor: FactProcessor,
+    ) -> FactWriteReceipt:
+        return self._run(lambda: self._world.ingest_files(paths, processor))
+
+    def write_facts(self, table_name: str, facts: DataFrame) -> FactWriteReceipt:
+        return self._run(lambda: self._world.write_facts(table_name, facts))
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -794,6 +850,9 @@ class SyncRuntimeWorld:
 
     def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         return self._run(lambda: self._world.history(limit=limit, **filters))
+
+    def facts(self, table_name: str) -> DataFrame:
+        return self._run(lambda: self._world.facts(table_name))
 
     def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())

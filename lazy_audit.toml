@@ -97,6 +97,12 @@ method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
+path = "src/archetype/app/iceberg.py"
+line = 69
+method = "collect"
+reason = "Storage write boundary: Daft has already committed the fact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No fact-row payload is materialized."
+
+[[entries]]
 path = "src/archetype/app/world_service.py"
 line = 701
 method = "to_pylist"

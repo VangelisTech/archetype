@@ -16,9 +16,11 @@ iStorageService -> iWorldService -> iMutationService
                               +---> iSimulationService
                 -> iQueryService -> iEvalService
                 -> iAuditLog
+iStorageService + iWorldService -> iFactService
 
 iWorldService + iMutationService + iSimulationService + iQueryService
-    + iAuditLog + iCommandBroker -> iCommandService (the ActorCtx-aware gate)
+    + iFactService + iAuditLog + iCommandBroker
+    -> iCommandService (the ActorCtx-aware gate)
 ```
 
 A tier MUST depend only on tiers strictly below it. Circular dependencies are forbidden.
@@ -142,6 +144,24 @@ vacuous success through Python's `all([])` behavior. Grader outputs are returned
 to the caller and remain opaque to Archetype. If a score should be durable, the
 caller writes it as a component.
 
+### `iFactService`
+
+Writes typed external facts to the same Iceberg catalog as their world. It
+depends on `iStorageService` for the authoritative Daft catalog and `IOConfig`,
+and on `iWorldService` to resolve a live world's storage configuration.
+
+```python
+async def ingest_files(world_id, paths, processor,
+                       storage_config=None) -> FactWriteReceipt
+async def write_facts(world_id, table_name, facts,
+                      storage_config=None) -> FactWriteReceipt
+async def read_facts(world_id, table_name,
+                     storage_config=None) -> DataFrame
+```
+
+The envelope, logical key, batching, schema, and writer-concurrency contracts
+are normative in [Durable Facts](durable-facts.md).
+
 ### `iCommandBroker`
 
 Priority queue + history of submitted commands. Pure queue — RBAC, quotas, and audit emission happen at the gate, not here.
@@ -192,6 +212,7 @@ def __init__(
     queries: iQueryService,
     broker: iCommandBroker,
     audit: iAuditLog,
+    facts: iFactService,
 ) -> None: ...
 ```
 
@@ -204,6 +225,10 @@ async def add_components(ctx, world_id, entity_id, components) -> None
 async def remove_components(ctx, world_id, entity_id, component_types) -> None
 async def add_processor(ctx, world_id, processor) -> None
 async def remove_processor(ctx, world_id, proc_type) -> None
+async def ingest_files(ctx, world_id, paths, processor,
+                       storage_config=None) -> FactWriteReceipt
+async def write_facts(ctx, world_id, table_name, facts,
+                      storage_config=None) -> FactWriteReceipt
 ```
 
 #### Lifecycle (return WorldInfo, not iWorld)
@@ -233,6 +258,8 @@ async def run_rollout(ctx, world_id, config, **kw) -> RolloutResult
 async def query_archetype(ctx, sig, world_id, run_id, storage_config=None,
                            *, ticks=None, entity_ids=None, components=None) -> DataFrame
 async def list_signatures(ctx, storage_config=None) -> list[ArchetypeSignature]
+async def query_facts(ctx, world_id, table_name,
+                      storage_config=None) -> DataFrame
 ```
 
 #### Resource attachment
@@ -288,7 +315,9 @@ A new gated method is needed when:
 
 Adding a method to `iCommandService` requires:
 
-- A corresponding `CommandType` entry in `app/models.py`.
+- A corresponding `CommandType` entry in `app/models.py`, or explicit reuse of
+  an existing command type when the new surface has the same permission class
+  (typed fact writes reuse `INGEST_FACT`; fact reads reuse `QUERY_WORLD`).
 - An entry in `COMMANDS_BY_ROLE` (see `command-gate.md`).
 - A test in the role-permissions parametrized suite.
 - The thin proxy implementation: `guardrail_allow → delegate → audit.record`.
@@ -319,6 +348,7 @@ class ServiceContainer:
         self.simulation_service = SimulationService(self.world_service)
         self.query_service = QueryService(self.storage_service)
         self.eval_service = EvalService(self.query_service)
+        self.fact_service = FactService(self.storage_service, self.world_service)
         self.command_service = CommandService(
             mutations=self.mutation_service,
             worlds=self.world_service,
@@ -326,6 +356,7 @@ class ServiceContainer:
             queries=self.query_service,
             broker=self.broker,
             audit=self.audit,
+            facts=self.fact_service,
         )
 
     async def shutdown(self) -> None:

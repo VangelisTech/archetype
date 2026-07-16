@@ -22,7 +22,9 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
+from archetype.app.facts import FactProcessor as FactProcessor
 from archetype.app.facts import FactReceipt as FactReceipt
+from archetype.app.facts import FactWriteReceipt as FactWriteReceipt
 from archetype.core.config import JsonUUID, RunConfig
 
 # Global sequence counter for command ordering
@@ -40,7 +42,7 @@ class CommandType(StrEnum):
     """
 
     # Entity-level commands
-    INGEST_FACT = "ingest_fact"  # Durable external fact, exactly-once-visible
+    INGEST_FACT = "ingest_fact"  # Durable external fact write
     EVALUATE = "evaluate"  # Claim-before-grade: one visible receipt per evaluation_id
     SPAWN = "spawn"
     DESPAWN = "despawn"

@@ -125,3 +125,17 @@
 | `tick` | `int` | `required` |
 | `table_id` | `str` | `required` |
 | `duplicate` | `bool` | `required` |
+
+::: archetype.app.facts.FactWriteReceipt
+    options:
+      members:
+        - duplicate
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `world_id` | `str` | `required` |
+| `run_id` | `str` | `required` |
+| `table_name` | `str` | `required` |
+| `table_id` | `str` | `required` |
+| `rows_written` | `int` | `required` |
+| `snapshot_id` | `int \| None` | `required` |

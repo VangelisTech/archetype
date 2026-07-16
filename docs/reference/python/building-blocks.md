@@ -8,4 +8,6 @@
 
 ::: archetype.core.AsyncProcessor
 
+::: archetype.app.facts.FactProcessor
+
 ::: archetype.core.Resources

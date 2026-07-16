@@ -223,7 +223,19 @@ Everything must be Arrow-serializable for LanceDB storage:
 
 ## File Handling: `daft.File`
 
-For weights-as-data pattern:
+Use `daft.from_files` for local or remote globs. It creates lazy `daft.File`
+references; `daft.functions.file_path` preserves the canonical source URI and
+`File.open()` streams content through the configured `IOConfig`.
+
+```python
+from daft import col
+from daft.functions import file_path
+
+files = daft.from_files("s3://bucket/inputs/**/*.json", io_config=io_config)
+files = files.with_column("source_uri", file_path(col("file")))
+```
+
+For weights-as-data patterns:
 
 ```python
 @daft.cls()

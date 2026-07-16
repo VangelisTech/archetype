@@ -59,6 +59,22 @@ class IcebergCatalogContext:
                 await asyncio.sleep(min(0.005 * (2**attempt), 0.1))
                 self._native_table(table).refresh()
 
+    async def append_counted(self, table: Table, frame: DataFrame) -> int:
+        """Execute one arbitrary fact pipeline and return its committed row count."""
+        written = frame.write_iceberg(
+            self._native_table(table),
+            mode="append",
+            io_config=self.io_config,
+        )
+        files = written.collect(num_preview_rows=0).to_pydict()
+        return sum(files["rows"])
+
+    def current_snapshot_id(self, table: Table) -> int | None:
+        native = self._native_table(table)
+        native.refresh()
+        snapshot = native.current_snapshot()
+        return snapshot.snapshot_id if snapshot is not None else None
+
     def _append_once(self, table: Table, frame: DataFrame) -> None:
         if self.io_config is None:
             table.append(frame)
