@@ -144,7 +144,7 @@ class EnvClientSpec(ABC):
     live in the benchmark, so nothing under ``src/archetype`` imports a
     simulator. Register a concrete spec under this base type::
 
-        world.resources.insert_as(LiberoEnvSpec(suite="libero_spatial"), EnvClientSpec)
+        world.resources.insert_as(InProcessLiberoEnvSpec(suite="libero_spatial"), EnvClientSpec)
     """
 
     @abstractmethod

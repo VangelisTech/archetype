@@ -80,6 +80,11 @@ class InProcessVlaJepaPolicy:
         frames_dir: str = "/frames",
         unnorm_key: str = "franka",
         startup_timeout: float = 900.0,
+        # The released config hardcodes attn_implementation=flash_attention_2.
+        # use_sdpa patches it to torch's built-in SDPA — the discriminator for
+        # flash-attn-wheel numerics (the wheel is the torch-2.6/cp312 analogue
+        # of the proven torch-2.5/cp310 one, not the proven wheel itself).
+        use_sdpa: bool = False,
     ) -> None:
         self._ckpt_dir = ckpt_dir
         self._vla_repo = vla_repo
@@ -88,6 +93,7 @@ class InProcessVlaJepaPolicy:
         self._frames_dir = frames_dir
         self._unnorm_key = unnorm_key
         self._startup_timeout = startup_timeout
+        self._use_sdpa = use_sdpa
         self._buffers: dict[int, list[list[float]]] = {}
 
     def __getstate__(self) -> dict[str, Any]:
@@ -124,7 +130,8 @@ class InProcessVlaJepaPolicy:
     def _ensure_server(self) -> None:
         """Launch the local policy server once and connect the websocket client.
 
-        Mirrors ``vla_jepa_worker.VlaJepaPolicy.start_server`` but in-process:
+        Mirrors ``VlaJepaPolicy.start_server`` from the deleted
+        ``vla_jepa_worker.py`` (git history) but in-process:
         the checkpoint is expected to already be present (image/volume), so this
         does no download — just patches the base-model paths, starts the server,
         and polls localhost until it accepts. Idempotent + process-global: a
@@ -204,6 +211,8 @@ class InProcessVlaJepaPolicy:
             patched = text
             for marker, repo_id in replacements.items():
                 patched = re.sub(rf"/home/[\w./-]*{re.escape(marker)}[\w./-]*", repo_id, patched)
+            if self._use_sdpa:
+                patched = patched.replace("flash_attention_2", "sdpa")
             if patched != text:
                 cfg.write_text(patched)
 
@@ -262,7 +271,24 @@ class InProcessVlaJepaPolicy:
         normalized = np.clip(np.asarray(response["data"]["normalized_actions"])[0], -1, 1)
         chunk = self._unnormalize(normalized)
         # model gripper {0,1} -> robosuite {-1 open, +1 close}, same as the client.
-        return [VlaJepaPolicyClient._convert_gripper(a) for a in chunk]
+        actions = [VlaJepaPolicyClient._convert_gripper(a) for a in chunk]
+        if reg.infer_count <= 3:  # first-chunk evidence in the run log
+            print(
+                f"VLA_INFER#{reg.infer_count} refs=({obs['agentview_ref']}, {obs['wrist_ref']}) "
+                f"state={[round(v, 4) for v in state]} a0={[round(v, 4) for v in actions[0]]}"
+            )
+        if reg.infer_count == 1:
+            # Thumbnail of the EXACT preprocessed model input (post rotate+resize),
+            # so a run log can prove what the model saw. ~3KB base64 JPEG.
+            import base64  # noqa: PLC0415
+
+            import cv2  # noqa: PLC0415
+
+            thumb = cv2.resize(agentview, (64, 64), interpolation=cv2.INTER_AREA)
+            ok, jpg = cv2.imencode(".jpg", cv2.cvtColor(thumb, cv2.COLOR_RGB2BGR))
+            if ok:
+                print(f"VLA_INPUT_THUMB_B64 {base64.b64encode(jpg.tobytes()).decode()}")
+        return actions
 
     # --- PolicyClient protocol --------------------------------------------
 

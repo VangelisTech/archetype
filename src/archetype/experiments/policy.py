@@ -112,7 +112,7 @@ class PolicyClientSpec(ABC):
     benchmark, so nothing under ``src/archetype`` imports a policy model.
     Register a concrete spec under this base type::
 
-        world.resources.insert_as(LiberoVlaPolicySpec(suite="libero_spatial"), PolicyClientSpec)
+        world.resources.insert_as(MyPolicySpec(checkpoint="..."), PolicyClientSpec)
     """
 
     @abstractmethod

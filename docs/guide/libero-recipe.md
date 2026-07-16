@@ -14,36 +14,44 @@ stop and read this. The recipe is pinned, tested, and owned by Archetype.
 ## TL;DR — the two commands
 
 ```bash
-modal run bench/libero/image.py             # builds the image, runs the in-process smoke
-modal run bench/libero/image.py::eval_task  # full batched control-plane eval on real LIBERO
+modal run bench/libero/image.py                       # builds the image, env-only smoke
+modal run bench/libero/image.py::colocated_eval_task  # policy-driven eval: env + VLA-JEPA in ONE container
 ```
 
-Both run on a Modal GPU container (`A10G`). Modal is used **only** for the one
-real constraint — a Linux host with EGL offscreen rendering and a GPU. Everything
-else runs in one Python 3.12 interpreter.
+Modal is used **only** for the one real constraint — a Linux host with EGL
+offscreen rendering and a GPU. Everything else — Archetype, LIBERO, and the
+VLA-JEPA policy — runs in one Python 3.12 interpreter, in one container.
+
+**Run truth lives in one place**: the RUN LEDGER in `bench/libero/image.py`'s
+module docstring records what has actually executed, with dates and evidence.
+This page describes how things work; the ledger records what has been proven.
+Never report a number from an entrypoint whose ledger row says NEVER RUN.
 
 ---
 
-## The modernized approach: LIBERO runs IN-PROCESS
+## The modernized approach: LIBERO **and the VLA** run IN-PROCESS
 
-The premise of the old `bench/libero/modal_worker.py` was that LIBERO "can never
-live in the Archetype process" because of its dependency pins, so it had to sit
-behind a Modal `.remote()` boundary. **That premise was laziness, not law.**
+The premise of the old two-worker deployment was that LIBERO "can never live in
+the Archetype process" because of its dependency pins, so it had to sit behind
+a Modal `.remote()` boundary. **That premise was laziness, not law.**
 
 The modern recipe rebuilds LIBERO on a current stack so it imports as a normal
-in-process dependency, in the **same Python 3.12 interpreter as Archetype**:
+in-process dependency, in the **same Python 3.12 interpreter as Archetype**,
+and installs the VLA-JEPA inference slice into the same container:
 
 | File | Role |
 |------|------|
-| `bench/libero/image.py` | Builds the one-env image (Python 3.12 + modern torch/mujoco + robosuite 1.4.1 + LIBERO at a pinned SHA + Archetype editable-installed on top). Exposes `libero_smoke` and `eval_task`. |
+| `bench/libero/image.py` | Builds both images (`image`: py3.12 + modern torch/mujoco + robosuite 1.4.1 + LIBERO at a pinned SHA + Archetype editable-installed; `colocated_image`: the VLA-JEPA inference slice on top). Owns every GPU entrypoint and the RUN LEDGER. |
 | `bench/libero/in_process.py` | `InProcessLiberoEnvClient` — the in-process `EnvClient`. Drives LIBERO's `OffScreenRenderEnv` directly; no `.remote()`, no container split, no env-state-loss. |
+| `bench/libero/in_process_policy.py` | `InProcessVlaJepaPolicy` — the VLA-JEPA policy in the same container, proxying upstream's own model server over localhost for bit-compatibility with their published eval. Reads frames from the same local dir the env writes. |
 | `bench/libero/eval_run.py` | `run_task_eval` — the batched control-plane orchestration. Env-client-agnostic. |
+| `bench/libero/clients.py` | The tested VLA↔robosuite numerics reference (state vector, gripper sign, chunk cadence) that the in-process policy reuses. |
 
 `import archetype` and `import libero` share one interpreter. The env client owns
 a dict of envs keyed by `env_key` (the trial index), so a control-plane world
 with N trial entities batch-steps N envs in a single `step` call. There is **no
 Modal interpreter split** — the `modal_worker.py`/`vla_jepa_worker.py` RPC path
-is legacy.
+was deleted on 2026-07-15 (git history has it).
 
 ---
 
@@ -174,28 +182,40 @@ resets, and steps in-process on Python 3.12 — no Archetype world needed yet, j
 the env client. Any residual `numpy<2` deprecation noise shows up here; that is
 the only expected friction, and it is not a wall.
 
-### Batched eval — the trustworthy numbers
+### Policy-driven eval — the real numbers
 
 ```bash
-modal run bench/libero/image.py::eval_task --suite libero_spatial --task-id 0 --trials 5 --max-steps 520
+modal run bench/libero/image.py::colocated_eval_task --suite libero_spatial --task-id 0 --trials 3 --max-steps 520
 ```
 
-`eval_task` runs the full batched control-plane eval entirely in-process:
-Archetype's `ServiceContainer`, the LIBERO env, and (when wired) the policy all
-in one Python 3.12 interpreter on the GPU. It returns the graded report —
-`success_rate`, `mean_length`, and the `(world_id, run_id)` that addresses the
-ledger so anyone can re-grade.
+`colocated_eval_task` runs the full batched control-plane eval with the
+VLA-JEPA policy acting: Archetype's `ServiceContainer`, the LIBERO env, and the
+policy all in one Python 3.12 interpreter on one GPU container. It returns the
+graded report — `success_rate`, `mean_length`, the `(world_id, run_id)` that
+addresses the ledger — plus the cost profile (model-load seconds, per-inference
+latency, per-control-step wall-clock, trials/GPU-hour). Check its RUN STATUS
+stamp in `image.py` before citing anything.
 
-> **Policy wiring is the open TODO.** `eval_task` currently passes
-> `policy_client=None`; wire the in-process VLA-JEPA policy there to get real
-> action numbers instead of zero actions.
+`eval_task` (env-only, `policy_client=None`, zero actions) exists to smoke the
+control-plane plumbing without paying for a model load. Its `success_rate` is
+not a policy result; its own docstring says so.
+
+Requirements: a Modal workspace **with a payment method** (GPU functions refuse
+to launch otherwise), and the `vla-jepa-ckpts` volume — self-populating from
+`hf.co/ginwind/VLA-JEPA` on first run. To send traces to Logfire, export
+`LOGFIRE_TOKEN` (or put it in the repo `.env` and source it) before `modal run`
+— the launcher's token rides into the container; without it, tracing is a
+no-op. (Do not gate Modal secrets on env vars — the container re-import sees a
+different object count and crash-loops.)
 
 ---
 
-## What's legacy (do not extend)
+## What's legacy (deleted 2026-07-15 — git history)
 
-| Legacy | Why |
+| Was | Why it's gone |
 |--------|-----|
-| `bench/libero/modal_worker.py`, `vla_jepa_worker.py` | The Modal interpreter-split RPC path. Superseded by the in-process client. |
-| `bench/libero/eval_driver.py` | Hand-rolled per-trial-world loop with manual quota reset. Superseded by `eval_run.run_task_eval`. |
+| `bench/libero/modal_worker.py`, `vla_jepa_worker.py` | The Modal interpreter-split RPC path. Superseded by the in-process env client + colocated policy. |
+| `bench/libero/e2e_ledger_smoke.py`, `e2e_vla_ledger_smoke.py`, `video_rollout.py` | Drove the two deployed workers; meaningless without them. The closed-loop video demo they produced (task 0 in 69 steps, 2026-06-12) predates colocation. |
+| `LiberoEnvSpec` / `LiberoVlaPolicySpec` (in `clients.py`) | Resources builders for the deleted workers. `InProcessLiberoEnvSpec` (in `in_process.py`) is the live spec. |
+| `bench/libero/eval_driver.py` (deleted earlier) | Hand-rolled per-trial-world loop with manual quota reset. Superseded by `eval_run.run_task_eval`. |
 | `EvalTrialResult` component + `eval_harness.py`/`report.py` grading off it | Summary that can drift from the ledger. Grade from raw `ManipStatus` instead (E1). |

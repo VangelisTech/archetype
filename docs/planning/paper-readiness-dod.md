@@ -4,6 +4,41 @@ Source: a 22-agent adversarial review (10 dimension reviews + 3 deep
 testing/evals/repro audits → 8 independent reviewer-persona panelists →
 synthesis), run `wf_99544adc-08b`, 2026-06-21.
 
+## Update 2026-07-16 — first colocated executions: pipeline real, behavior not reproduced
+
+Ground-truth audit + first watched runs of `colocated_eval_task` (the entry
+point gate #1 said was "one run away"). Verified 2026-07-15/16 on L40S
+(everett-38139; vangelis-tech has no Modal payment method yet):
+
+- **Gate #1 status: still open, now with evidence instead of absence.** The
+  colocated pipeline executes end to end — batched control-plane world,
+  correct 7-step chunk cadence, ~146 ms/inference, ledger-graded, full cost
+  profile (~77 s/trial, ~47 trials/GPU-hour) — but scores **0/3 and 0/1 at the
+  519-step horizon** on libero_spatial task 0, where the published number is
+  ~99% and the June two-worker demo solved the same task in 69 steps.
+- **Eliminated one variable at a time** (each with a watched run or artifact):
+  missing post-reset settle steps and camera 128→256 (both fixed, both
+  insufficient), 3-env batching (single trial fails identically), bf16 (fp16
+  fails), the flash-attn wheel (sdpa fails), model-input image content (logged
+  input thumbnail matches the June demo's first frame exactly), state vector
+  (sane logged values), payload/unnorm/gripper/server-args/VLA-JEPA SHA
+  (byte-identical to the proven worker, diffed from git history), HF
+  checkpoint+configs (unchanged upstream since 2026-03-25).
+- **Open differential:** the colocated py3.12/torch2.6 stack has never had
+  behavior-level validation — June's success ran the py3.10/torch2.5 worker.
+  `vla_smoke`'s single action proved plumbing, not behavior (exactly the
+  overclaim pattern this document warned about). Next probes, in order:
+  (1) run upstream's own `eval_libero.py` inside the colocated image — zero
+  new code, cleanly splits stack-vs-harness; (2) golden action-parity between
+  the resurrected June worker (git history) and the colocated server on
+  identical inputs.
+- **Housekeeping in the same pass:** the two-worker RPC path was deleted
+  (`modal_worker.py`, `vla_jepa_worker.py`, e2e smokes, `video_rollout.py` —
+  git history), the recipe/LEARNINGS drift was fixed (including a reversed
+  robosuite pin note), and `image.py` now carries a RUN LEDGER: dated,
+  evidence-only execution status per entrypoint, updated only from watched
+  runs.
+
 ## Update 2026-06-22 — smoke + colocation landed on real GPU hardware
 
 Two top gating items are now **closed**, verified on Modal GPUs:

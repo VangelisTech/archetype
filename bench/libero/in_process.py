@@ -12,8 +12,9 @@ LIBERO is installed *alongside* Archetype in one Python 3.12 environment (see
 ``_EnvStepper`` ``@daft.cls`` drives it statefully — exactly like the Stage-1
 MuJoCo boundary, exactly like ``ScriptedReachEnv`` does today.
 
-``InProcessLiberoEnvClient`` mirrors ``LiberoEnvBatch`` (modal_worker.py) field
-for field, minus the Modal wrapper: env instances live in a plain dict keyed by
+``InProcessLiberoEnvClient`` mirrors the retired ``LiberoEnvBatch`` (the deleted
+``modal_worker.py`` — git history) field for field, minus the Modal wrapper:
+env instances live in a plain dict keyed by
 ``env_key``; ``reset``/``step`` call robosuite directly. Drop it into
 ``EnvStepProcessor(InProcessLiberoEnvClient(...))`` and the whole eval flow runs
 in one interpreter — no container split, no env-state-loss across containers,
@@ -115,15 +116,25 @@ class InProcessLiberoEnvClient:
         self,
         suite: str = "libero_spatial",
         task_id: int = 0,
-        camera_size: int = 128,
+        # 256 matches the published VLA-JEPA eval (render 256, policy resizes to
+        # 224). The first colocated execution (2026-07-15) ran the old default of
+        # 128 — upscaling 128→224 starves the model of detail and scored 0/3.
+        camera_size: int = 256,
         with_frames: bool = False,
         frames_dir: str = "/tmp/archetype-libero-frames",
+        # Upstream's eval takes 10 zero-action steps after reset before the
+        # policy ever sees an observation (num_steps_wait=10): LIBERO drops
+        # objects at reset and the first frames are mid-fall physics. These
+        # settle steps run inside reset(), so tick 0 on the ledger is the
+        # settled initial condition and they never count as control steps.
+        settle_steps: int = 10,
     ) -> None:
         self._suite_name = suite
         self._task_id = task_id
         self._camera_size = camera_size
         self._with_frames = with_frames
         self._frames_dir = frames_dir
+        self._settle_steps = settle_steps
         # Unique per client construction (computed before @daft.cls pickling,
         # so driver and worker copies agree): a fresh process or a fresh
         # client can never collide with frame refs persisted by an earlier
@@ -208,6 +219,10 @@ class InProcessLiberoEnvClient:
         env.seed(seed)
         env.reset()
         obs = env.set_init_state(pool.init_states[seed % len(pool.init_states)])
+        # Settle action = zeros + gripper open (-1), exactly what the proven
+        # closed-loop demo used (video_rollout.py, git history).
+        for _ in range(self._settle_steps):
+            obs, _reward, _done, _info = env.step([0.0] * 6 + [-1.0])
         pool.step_counts[env_id] = 0
         pool.episode_counts[env_id] = pool.episode_counts.get(env_id, 0) + 1
         out = self._proprio(obs)
@@ -235,16 +250,18 @@ class InProcessLiberoEnvClient:
 class InProcessLiberoEnvSpec(EnvClientSpec):
     """Resources spec that builds an in-process LIBERO env (no Modal).
 
-    Register under ``EnvClientSpec`` exactly like ``LiberoEnvSpec``; the only
-    difference is ``build()`` returns the in-process client, so the env runs in
-    the same interpreter as the rest of the eval.
+    Register under ``EnvClientSpec``; ``build()`` returns the in-process client,
+    so the env runs in the same interpreter as the rest of the eval. (The old
+    ``LiberoEnvSpec``, which built the retired Modal RPC client, was deleted
+    2026-07-15.)
     """
 
     suite: str = "libero_spatial"
     task_id: int = 0
-    camera_size: int = 128
+    camera_size: int = 256
     with_frames: bool = False
     frames_dir: str = "/tmp/archetype-libero-frames"
+    settle_steps: int = 10
 
     def build(self) -> EnvClient:
         return InProcessLiberoEnvClient(
@@ -253,4 +270,5 @@ class InProcessLiberoEnvSpec(EnvClientSpec):
             camera_size=self.camera_size,
             with_frames=self.with_frames,
             frames_dir=self.frames_dir,
+            settle_steps=self.settle_steps,
         )

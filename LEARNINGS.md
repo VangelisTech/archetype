@@ -673,17 +673,21 @@ packaging from scratch every deploy is failure-mode **D5**. The recipe is frozen
 once in **`docs/guide/libero-recipe.md`** — read it before touching anything in
 `bench/libero/` or arguing about torch pins / a Modal split. Highlights:
 
-- **LIBERO runs in-process**, one Python 3.12 interpreter shared with Archetype.
-  `bench/libero/image.py` builds the env; `bench/libero/in_process.py`
-  (`InProcessLiberoEnvClient`) drives `OffScreenRenderEnv` directly. **No Modal
-  interpreter split** — `modal_worker.py`/`vla_jepa_worker.py` are legacy.
-- **Two commands:** `modal run bench/libero/image.py` (in-process smoke) and
-  `modal run bench/libero/image.py::eval_task` (batched eval).
+- **LIBERO and the VLA-JEPA policy run in-process**, one Python 3.12
+  interpreter shared with Archetype. `bench/libero/image.py` builds both images
+  and owns the **RUN LEDGER** (what has actually executed, with dates — check
+  it before citing any number from this surface); `in_process.py` drives
+  `OffScreenRenderEnv` directly; `in_process_policy.py` runs the VLA in the
+  same container. **No Modal interpreter split** —
+  `modal_worker.py`/`vla_jepa_worker.py` were deleted 2026-07-15 (git history).
+- **Two commands:** `modal run bench/libero/image.py` (env-only smoke) and
+  `modal run bench/libero/image.py::colocated_eval_task` (policy-driven eval).
 - **One real constraint:** Linux + EGL offscreen rendering + GPU. The pins we
   removed were laziness, not law — `torch<2.6` (the one `torch.load`
-  `weights_only` flip, patched in-process), Python 3.8–3.10 → 3.12,
-  `robosuite==1.4.1` → `>=1.5` (the one empirical unknown; fallback is 1.4.1 on
-  3.12).
+  `weights_only` flip, patched in-process), Python 3.8–3.10 → 3.12. **Keep
+  `robosuite==1.4.1`**: 1.5 removed `SingleArmEnv`/`load_controller_config`, so
+  LIBERO @ the pinned SHA fails at *import* on 1.5 — float 1.4.1's transitive
+  pins to cp312 wheels instead, and keep `numpy<2`.
 - **Architecture:** one control-plane world + N trial entities batch-stepped via
   `SimulationService.run_episode` (B1 quota reset + B2 all-done termination),
   graded from raw `ManipStatus` by the eval service. No `EvalTrialResult` (E1).
