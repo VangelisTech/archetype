@@ -1,6 +1,7 @@
 # robot-evals extraction runbook
 
-Target repo (created 2026-07-16, private): <https://github.com/everettVT/robot-evals>
+Target repo (created 2026-07-16, private — deliberately not hyperlinked: the
+link checker 404s on private repos): `everettVT/robot-evals` on GitHub.
 
 The LIBERO/VLA-JEPA harness leaves archetype; the machinery it forced into
 existence stays. Rule: **anything that imports robosuite/LIBERO/VLA/Modal or
