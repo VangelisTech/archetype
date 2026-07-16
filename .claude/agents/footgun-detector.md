@@ -20,7 +20,11 @@ You are NOT a style reviewer. You report zero style nits, zero "consider adding 
 
 ### 1. Get the diff
 
-If a PR number was provided, fetch the diff:
+If `.footgun-review-scope.json` and `.footgun-review.diff` exist, they are the
+authoritative exact-head scope and diff. Read them directly; do not fetch or
+execute candidate code.
+
+Otherwise, if a PR number was provided, fetch the diff:
 ```bash
 gh pr diff <number>
 ```
@@ -43,6 +47,10 @@ Read these files — they contain the rules the diff must obey:
 ### 3. For each changed file
 
 Read the full file (not just the diff hunk) to understand the surrounding context. A diff line in isolation is ambiguous — you need to see the function it lives in, the class it belongs to, and what it's trying to do.
+
+In deterministic CI, the working tree is the protected base. Use it for
+surrounding context and use `.footgun-review.diff` for the exact candidate
+changes; a newly added file is represented in full by its diff.
 
 ### 4. Check against all footgun categories
 
