@@ -456,7 +456,39 @@ def _markdown_code(value: str) -> str:
     return value.replace("`", "\\`")
 
 
-def render_evidence(result: Mapping[str, Any], digest: str) -> str:
+# GitHub caps comment bodies at 65536 characters; leave headroom for the
+# summary, context, and category sections that share the body.
+_INLINE_ARTIFACT_LIMIT = 45000
+
+
+def _artifact_section(result: Mapping[str, Any], run_url: str | None) -> list[str]:
+    payload = json.dumps(result, indent=2, ensure_ascii=False)
+    lines = [
+        "<details>",
+        "<summary>Validated review artifact</summary>",
+        "",
+    ]
+    if len(payload) <= _INLINE_ARTIFACT_LIMIT:
+        # Findings may quote code fences; the outer fence must be longer than
+        # any backtick run inside the payload.
+        longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
+        fence = "`" * max(3, longest_run + 1)
+        lines.extend([f"{fence}json", payload, fence, ""])
+    else:
+        lines.extend(
+            [
+                "The validated structured output exceeds the inline comment budget; "
+                "download it from the workflow run instead.",
+                "",
+            ]
+        )
+    if run_url:
+        lines.extend([f"Uploaded artifact: [workflow run]({run_url}) (1-day retention).", ""])
+    lines.append("</details>")
+    return lines
+
+
+def render_evidence(result: Mapping[str, Any], digest: str, run_url: str | None = None) -> str:
     findings = _expect_list(result.get("findings"), "findings")
     files = _expect_list(result.get("reviewed_files"), "reviewed_files")
     categories = _expect_list(result.get("reviewed_categories"), "reviewed_categories")
@@ -498,6 +530,8 @@ def render_evidence(result: Mapping[str, Any], digest: str) -> str:
             "",
             "</details>",
             "",
+            *_artifact_section(result, run_url),
+            "",
             evidence_marker(head_sha, finding_count, digest),
         ]
     )
@@ -521,7 +555,9 @@ def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
     )
 
 
-def review_payload(result: Mapping[str, Any], digest: str) -> dict[str, Any]:
+def review_payload(
+    result: Mapping[str, Any], digest: str, run_url: str | None = None
+) -> dict[str, Any]:
     head_sha = str(result["head_sha"])
     findings = _expect_list(result.get("findings"), "findings")
     if not findings:
@@ -529,7 +565,7 @@ def review_payload(result: Mapping[str, Any], digest: str) -> dict[str, Any]:
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
-        "body": render_evidence(result, digest),
+        "body": render_evidence(result, digest, run_url),
         "comments": [
             {
                 "path": finding["path"],
@@ -656,10 +692,10 @@ def _prepare_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.output_dir / "normalized.json", result)
     (args.output_dir / "evidence.md").write_text(
-        render_evidence(result, digest) + "\n", encoding="utf-8"
+        render_evidence(result, digest, args.run_url) + "\n", encoding="utf-8"
     )
     if finding_count:
-        _write_json(args.output_dir / "review.json", review_payload(result, digest))
+        _write_json(args.output_dir / "review.json", review_payload(result, digest, args.run_url))
 
     _append_github_outputs(
         args.github_output,
@@ -720,6 +756,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--result", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--github-output", type=Path, required=True)
+    prepare.add_argument("--run-url", default=None)
     prepare.set_defaults(handler=_prepare_command)
 
     verify = subparsers.add_parser("verify", help="verify exact GitHub evidence")

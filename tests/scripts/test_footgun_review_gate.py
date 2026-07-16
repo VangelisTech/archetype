@@ -27,6 +27,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+import footgun_review_gate as gate  # noqa: E402
 from footgun_review_gate import (  # noqa: E402
     BOT_LOGIN,
     REQUIRED_CATEGORIES,
@@ -272,6 +273,40 @@ def test_rendered_no_findings_evidence_is_specific_and_digest_bound():
     assert "no findings" in rendered
     assert "2 changed file(s), 22 detector categories" in rendered
     assert "old.py" in rendered
+    assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+
+
+def test_rendered_evidence_inlines_validated_artifact_and_run_link():
+    normalized = validate_result(_result(), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(normalized, digest, run_url="https://example.test/runs/7")
+
+    assert "<summary>Validated review artifact</summary>" in rendered
+    start = rendered.index("```json\n") + len("```json\n")
+    end = rendered.index("\n```\n", start)
+    assert json.loads(rendered[start:end]) == normalized
+    assert "[workflow run](https://example.test/runs/7)" in rendered
+
+
+def test_inline_artifact_fence_outruns_backticks_in_findings():
+    finding = _finding(fix="Replace the call:\n```python\nsafe_call()\n```\nand keep the guard.")
+    normalized = validate_result(_result(findings=[finding]), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(normalized, digest)
+
+    assert "````json\n" in rendered
+    assert rendered.count("````") == 2
+
+
+def test_oversized_artifact_defers_to_the_workflow_run(monkeypatch):
+    monkeypatch.setattr(gate, "_INLINE_ARTIFACT_LIMIT", 10)
+    normalized = validate_result(_result(), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(normalized, digest, run_url="https://example.test/runs/7")
+
+    assert "exceeds the inline comment budget" in rendered
+    assert "```json" not in rendered
+    assert "[workflow run](https://example.test/runs/7)" in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
 
 

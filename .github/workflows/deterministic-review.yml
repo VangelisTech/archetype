@@ -209,6 +209,8 @@ jobs:
 
       - name: Validate and render publishable evidence
         id: prepare
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p "${REVIEW_DIR}"
           python3 scripts/footgun_review_gate.py prepare \
@@ -216,7 +218,8 @@ jobs:
             --diff "${DIFF_FILE}" \
             --result "${RUNNER_TEMP}/detector-result/structured-output.json" \
             --output-dir "${REVIEW_DIR}" \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}" \
+            --run-url "${RUN_URL}"
 
       - name: Publish contextual no-findings evidence
         if: steps.prepare.outputs.finding_count == '0'
