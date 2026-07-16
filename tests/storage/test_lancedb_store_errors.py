@@ -51,6 +51,9 @@ class FailingAddClient:
     async def table_names(self):
         return []
 
+    async def open_table(self, name):
+        raise ValueError(f"Table {name!r} was not found")
+
     async def create_table(self, name, schema, storage_options=None, exist_ok=True):
         return FailingAddTable(name, schema)
 
@@ -118,3 +121,5 @@ async def test_lancedb_store_append_failure_raises(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="add failed"):
         await store.append(sig, daft.from_arrow(arrow))
+    assert sig in await store.list_signatures()
+    assert sig not in await store.list_committed_signatures()

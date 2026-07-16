@@ -1,4 +1,5 @@
 import daft
+import pyarrow as pa
 import pytest
 
 from archetype.core.aio.async_store import AsyncStore
@@ -17,12 +18,42 @@ class FailingStore(AsyncStore):
         raise RuntimeError("append failed")
 
 
+_PIPELINE_EXECUTIONS = 0
+
+
+@daft.func(return_dtype=daft.DataType.int64())
+def _count_pipeline_execution(value: int) -> int:
+    global _PIPELINE_EXECUTIONS
+    _PIPELINE_EXECUTIONS += 1
+    return value
+
+
 def _build_session_and_config(tmp_path):
     from archetype.runtime.session import configure_session
 
     cfg = StorageConfig(uri=str(tmp_path / "store_fail"), namespace="ns")
     session = configure_session(cfg)
     return session, cfg
+
+
+def _demo_frame(sig):
+    return daft.from_arrow(
+        pa.Table.from_pylist(
+            [
+                {
+                    "world_id": "w",
+                    "run_id": "r",
+                    "entity_id": 1,
+                    "tick": 0,
+                    "is_active": True,
+                    "commit_token": "",
+                    "writer_epoch": 0,
+                    "demo__v": 1,
+                }
+            ],
+            schema=Archetype.get_archetype_schema(sig),
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -50,13 +81,46 @@ async def test_async_store_append_raises_on_collect_failure(tmp_path, caplog):
     sig = Archetype.sig_from_components([Demo(v=1)])
 
     class BadDf:
-        def collect(self):
+        column_names = ["broken"]
+
+        def collect(self, **_kwargs):
             raise RuntimeError("boom")
 
     with caplog.at_level("ERROR"):
         with pytest.raises(RuntimeError, match="boom"):
             await store.append(sig, BadDf())
     assert any("Append collect failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_async_store_materializes_pipeline_once(tmp_path):
+    global _PIPELINE_EXECUTIONS
+    _PIPELINE_EXECUTIONS = 0
+    session, cfg = _build_session_and_config(tmp_path)
+    store = AsyncStore(session, io_config=cfg.io_config)
+    sig = Archetype.sig_from_components([Demo(v=1)])
+    frame = _demo_frame(sig).with_column("demo__v", _count_pipeline_execution(daft.col("demo__v")))
+
+    await store.append(sig, frame)
+
+    assert _PIPELINE_EXECUTIONS == 1
+
+
+@pytest.mark.asyncio
+async def test_async_store_failed_append_is_not_committed(tmp_path, monkeypatch):
+    session, cfg = _build_session_and_config(tmp_path)
+    store = AsyncStore(session, io_config=cfg.io_config)
+    sig = Archetype.sig_from_components([Demo(v=1)])
+
+    def fail_append(*_args):
+        raise RuntimeError("append failed")
+
+    monkeypatch.setattr(store, "_append_table", fail_append)
+    with pytest.raises(RuntimeError, match="append failed"):
+        await store.append(sig, _demo_frame(sig))
+
+    assert sig in await store.list_signatures()
+    assert sig not in await store.list_committed_signatures()
 
 
 @pytest.mark.asyncio
@@ -91,24 +155,7 @@ async def test_async_updater_raises_on_store_failure(tmp_path, caplog):
     store = FailingStore(session, io_config=cfg.io_config)
     updater = AsyncUpdateManager(store)
     sig = Archetype.sig_from_components([Demo(v=1)])
-    schema = Archetype.get_archetype_schema(sig)
-    df = daft.from_arrow(
-        __import__("pyarrow").Table.from_pylist(
-            [
-                {
-                    "world_id": "w",
-                    "run_id": "r",
-                    "entity_id": 1,
-                    "tick": 0,
-                    "is_active": True,
-                    "commit_token": "",
-                    "writer_epoch": 0,
-                    "demo__v": 1,
-                }
-            ],
-            schema=schema,
-        )
-    )
+    df = _demo_frame(sig)
     with caplog.at_level("ERROR"):
         with pytest.raises(RuntimeError, match="append failed"):
             await updater.update(df, sig, tick=1, world_id="w", run_id="r")
