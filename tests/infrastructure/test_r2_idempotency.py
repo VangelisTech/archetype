@@ -57,8 +57,8 @@ async def test_r2_iceberg_commit_visibility(tmp_path: Path) -> None:
         uri=f"sqlite:///{tmp_path / 'catalog.db'}",
         warehouse=warehouse,
         **{
-            # PyArrow expects host[:port]; Daft's S3Config below expects URL.
-            "s3.endpoint": endpoint.netloc,
+            # PyIceberg documents a full URL; direct PyArrow cleanup below uses host[:port].
+            "s3.endpoint": API_ENDPOINT,
             "s3.access-key-id": ACCESS_KEY_ID,
             "s3.secret-access-key": SECRET_ACCESS_KEY,
             "s3.region": "auto",
