@@ -155,6 +155,12 @@ bytes at different URIs also create distinct facts. There is no generic
 `observed_at` column. Domains that need source event time add a typed payload
 column with the precise semantics they require.
 
+Typed fact visibility is local to that `world_id` and `run_id`. ECS tick
+lineage is not applied to fact tables: a fork starts with an empty typed-fact
+view and may ingest the same source under its new identity. Inheriting ancestor
+facts without a fact-time boundary would incorrectly expose facts added to the
+ancestor after the fork.
+
 Each logical name maps to `facts__<table_name>` in the same catalog and
 namespace as the world. The remaining columns are the domain schema. Schema
 drift fails before append; fact tables do not silently widen or coerce.

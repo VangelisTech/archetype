@@ -150,7 +150,9 @@ corresponding gated read. The runtime does not inspect files, compute content
 identity, translate credentials, or touch a catalog directly. Async and sync
 handles expose identical fact surfaces. The older
 `world.ingest(..., external_id=...)` remains the claim-backed compatibility
-path described in [Durable Facts](durable-facts.md).
+path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
+the handle's current world and run; fork handles do not inherit ancestor fact
+rows.
 
 ## 3. Ergonomic surface
 

@@ -52,14 +52,21 @@ def _reject_service_columns(names: list[str]) -> None:
         raise ValueError("fact columns use a reserved service prefix: " + ", ".join(reserved))
 
 
-def _reject_persisted_files(schema: daft.Schema, names: list[str]) -> None:
+def _execution_file_columns(
+    schema: daft.Schema,
+    names: list[str],
+    *,
+    processor_output: bool,
+) -> set[str]:
     file_columns = [name for name in names if schema[name].dtype == DataType.file()]
-    unexpected = [name for name in file_columns if name != "file"]
+    execution_columns = {"file"} if processor_output else set()
+    unexpected = [name for name in file_columns if name not in execution_columns]
     if unexpected:
         raise ValueError(
             "daft.File columns are processor inputs and cannot be persisted: "
             + ", ".join(unexpected)
         )
+    return set(file_columns) & execution_columns
 
 
 @daft.func(return_dtype=DataType.string())
@@ -143,8 +150,10 @@ class FactService:
                     wid,
                     rid,
                 ).select("file", "source_uri", "content_hash")
-                if sources.select("source_uri").count_rows() == 0:
-                    return self._receipt(wid, rid, table_name, table_id, table, iceberg, 0)
+
+            sources = sources.collect(num_preview_rows=0)
+            if sources.count_rows() == 0:
+                return self._receipt(wid, rid, table_name, table_id, table, iceberg, 0)
 
             facts = processor.process(sources)
             if not isinstance(facts, DataFrame):
@@ -250,7 +259,7 @@ class FactService:
 
     @staticmethod
     def _normalize_payload(facts: DataFrame, world_id: str, run_id: str) -> DataFrame:
-        user_columns = FactService._payload_columns(facts)
+        user_columns = FactService._payload_columns(facts, processor_output=False)
         payload = facts.select("source_uri", "content_hash", *user_columns)
         payload = FactService._add_envelope(payload, world_id, run_id)
         return payload.with_columns(
@@ -272,7 +281,7 @@ class FactService:
         world_id: str,
         run_id: str,
     ) -> DataFrame:
-        user_columns = FactService._payload_columns(facts)
+        user_columns = FactService._payload_columns(facts, processor_output=True)
         processed = facts.select("source_uri", "content_hash", *user_columns).with_column(
             _PROCESSED_COLUMN,
             lit(True),
@@ -301,14 +310,18 @@ class FactService:
         )
 
     @staticmethod
-    def _payload_columns(facts: DataFrame) -> list[str]:
+    def _payload_columns(facts: DataFrame, *, processor_output: bool) -> list[str]:
         schema = facts.schema()
         names = schema.column_names()
         _require_identity_columns(names)
         _reject_service_columns(names)
-        _reject_persisted_files(schema, names)
+        execution_files = _execution_file_columns(
+            schema,
+            names,
+            processor_output=processor_output,
+        )
         user_columns = [
-            name for name in names if name not in {"file", "source_uri", "content_hash"}
+            name for name in names if name not in {"source_uri", "content_hash", *execution_files}
         ]
         if not user_columns:
             raise ValueError("a fact processor must emit at least one typed fact column")

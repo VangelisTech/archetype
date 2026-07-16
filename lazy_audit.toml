@@ -103,6 +103,12 @@ method = "collect"
 reason = "Storage write boundary: Daft has already committed the fact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No fact-row payload is materialized."
 
 [[entries]]
+path = "src/archetype/app/fact_service.py"
+line = 154
+method = "collect"
+reason = "File identity boundary: materializes only the current call's file references, source URIs, and content hashes so the emptiness check and processor reuse one execution. File contents stream through the hash UDF, and typed fact payload rows remain lazy through the Iceberg write."
+
+[[entries]]
 path = "src/archetype/app/world_service.py"
 line = 701
 method = "to_pylist"

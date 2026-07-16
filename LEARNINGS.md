@@ -364,7 +364,12 @@ This means:
 
 3. **Use `@daft.cls()` for non-serializable state.** API clients, model weights, DB connections — anything that can't be pickled goes in `@daft.cls().__init__()`. Methods are row-wise. Daft recreates the class per worker.
 
-4. **Only `.collect()` for cross-row context.** Message routing (sender → receiver) requires global visibility. Name lookups across entities require global visibility. These are justified collects. Document them inline.
+4. **Only `.collect()` for cross-row context or a narrow reusable execution
+   boundary.** Message routing and name lookups require global visibility. A
+   call-scoped identity frame may also be materialized once when an expensive
+   or mutable source feeds more than one downstream branch. Reassign the
+   returned frame (`df = df.collect()`); reusing the original lazy frame runs
+   its upstream plan again. Never materialize history or payload rows for this.
 
 5. **Don't import actor patterns.** No `asyncio.gather` over collected rows. No building dicts from pylist loops and feeding them back through batch UDFs. If you find yourself doing this, you're fighting the execution model.
 
