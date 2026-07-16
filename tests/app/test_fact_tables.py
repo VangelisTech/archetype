@@ -406,6 +406,8 @@ async def test_fact_table_rejects_schema_drift_and_duplicate_keys(tmp_path):
         )
         with pytest.raises(ValueError, match="exactly one row"):
             await container.fact_service.write_facts(str(world.world_id), "duplicated", duplicated)
+        iceberg = await container.storage_service.get_iceberg_context(storage)
+        assert not iceberg.has_table("facts__duplicated")
     finally:
         await container.shutdown()
 
@@ -423,6 +425,8 @@ async def test_file_processor_cannot_rewrite_source_identity(tmp_path):
             await container.fact_service.ingest_files(
                 str(world.world_id), source, RewritesIdentity()
             )
+        iceberg = await container.storage_service.get_iceberg_context(storage)
+        assert not iceberg.has_table("facts__documents")
     finally:
         await container.shutdown()
 

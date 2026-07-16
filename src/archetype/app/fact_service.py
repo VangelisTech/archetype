@@ -364,10 +364,21 @@ class FactService:
             if name not in {*FACT_KEY_COLUMNS, _EXPECTED_COLUMN, _PROCESSED_COLUMN}
         ]
         facts = facts.select(*FACT_ENVELOPE_COLUMNS, *user_columns)
-        if table is None:
-            table = iceberg.create_table_if_not_exists(table_id, facts.schema())
-        facts = self._align_to_table_schema(table, facts, iceberg, table_name)
-        rows_written = await iceberg.append_counted(table, facts)
+        created_table = table is None
+        if created_table:
+            table = iceberg.create_table(table_id, facts.schema())
+        try:
+            facts = self._align_to_table_schema(table, facts, iceberg, table_name)
+            rows_written = await iceberg.append_counted(table, facts)
+        except BaseException as exc:
+            if created_table:
+                try:
+                    iceberg.drop_table(table_id)
+                except Exception as cleanup_error:
+                    exc.add_note(
+                        f"failed to remove newly created fact table {table_id!r}: {cleanup_error}"
+                    )
+            raise
         return self._receipt(
             world_id,
             run_id,

@@ -42,6 +42,12 @@ class IcebergCatalogContext:
     def create_table_if_not_exists(self, table_name: str, schema: Schema) -> Table:
         return self.session.create_table_if_not_exists(table_name, source=schema)
 
+    def create_table(self, table_name: str, schema: Schema) -> Table:
+        return self.session.create_table(table_name, source=schema)
+
+    def drop_table(self, table_name: str) -> None:
+        self.session.drop_table(table_name)
+
     def read(self, table: Table) -> DataFrame:
         if self.io_config is None:
             return table.read()

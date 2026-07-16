@@ -98,7 +98,7 @@ reason = "Bounded compatibility boundary: queued audit rows are already filtered
 
 [[entries]]
 path = "src/archetype/app/iceberg.py"
-line = 69
+line = 75
 method = "collect"
 reason = "Storage write boundary: Daft has already committed the fact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No fact-row payload is materialized."
 
