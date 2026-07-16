@@ -74,6 +74,7 @@ class AsyncCachedStore(iAsyncStore):
     ):
         self._inner: iAsyncStore = async_store
         self._mem: dict[ArchetypeSignature, MemTable] = {}
+        self._committed_sigs: set[ArchetypeSignature] = set()
 
         # thresholds
         self.flush_rows = cache_config.flush_rows
@@ -118,6 +119,7 @@ class AsyncCachedStore(iAsyncStore):
         # 2. Convert to Daft and flush on the event-loop thread
         df = daft.from_arrow(tbl)
         await self._inner.append(sig, df)
+        self._committed_sigs.add(sig)
 
         # 3. Clear the memtable
         self._mem[sig].clear()
@@ -201,10 +203,9 @@ class AsyncCachedStore(iAsyncStore):
         return await self._inner.list_signatures()
 
     async def list_committed_signatures(self) -> list[ArchetypeSignature]:
-        """Delegate committed-sigs check to inner store."""
-        if hasattr(self._inner, "list_committed_signatures"):
-            return await self._inner.list_committed_signatures()
-        return await self._inner.list_signatures()
+        """Include successful staged appends as well as durable inner writes."""
+        inner = set(await self._inner.list_committed_signatures())
+        return list(inner | self._committed_sigs)
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
         """
@@ -238,6 +239,7 @@ class AsyncCachedStore(iAsyncStore):
         if needs_flush:
             await self._background_flush_sig(sig)
 
+        self._committed_sigs.add(sig)
         return AppendReceipt(table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush)
 
     async def flush(self) -> None:

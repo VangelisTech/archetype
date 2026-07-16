@@ -25,11 +25,21 @@ logger = logging.getLogger(__name__)
 
 class UnknownSignatureError(LookupError):
     """Raised when a query targets an archetype signature that has never been
-    registered in this world (distinct from 'no rows at this tick').
+    written or spawned in this world (distinct from 'no rows at this tick').
 
     A signature that exists but has zero rows at tick N produces an empty
     DataFrame; a signature that was never spawned raises this error.
     """
+
+
+def _unknown_signature_error(sig: ArchetypeSignature) -> UnknownSignatureError:
+    component_names = ", ".join(t.__name__ for t in sig)
+    return UnknownSignatureError(
+        f"Archetype signature ({component_names}) has never been written or spawned in this world. "
+        "No entity carrying exactly these component types has been spawned. "
+        "If you want to query entities that CONTAIN these components (possibly alongside others), "
+        "use world.query() / query_components() instead of query_archetype()."
+    )
 
 
 class AsyncQueryManager(iAsyncQueryManager):
@@ -64,7 +74,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         find the same table.
 
         Raises ``UnknownSignatureError`` when the canonical signature has never
-        been registered in the durable store — distinct from 'the signature
+        been accepted by the store — distinct from 'the signature
         exists but has zero rows at this tick', which returns an empty DataFrame.
 
         ``_world_validated=True`` may be passed by the world's ``query_archetype``
@@ -82,37 +92,12 @@ class AsyncQueryManager(iAsyncQueryManager):
         # guard makes the public API lenient while keeping the storage layer pure.
         sig = _canonicalize(sig)
 
-        # Existence check: the sig must appear in the store's committed-signature
-        # registry.  An unknown sig must raise UnknownSignatureError distinctly
-        # rather than silently returning an empty create-on-read table.
-        #
-        # We use list_committed_signatures() so that auto-created tables from
-        # concurrent get_archetype_df calls in the same tick batch do not
-        # pollute the check.  Only sigs durably committed via append() are
-        # considered "known" here.  When the committed registry is empty (brand-
-        # new world, nothing flushed yet, or in-memory store without persistence),
-        # the check is skipped — an empty registry cannot distinguish "not yet
-        # committed" from "truly unknown", so we let the store return an empty
-        # frame naturally.
-        #
-        # Skip the check when the world-level guard has already validated the sig
-        # (``_world_validated=True``).  The world guard also considers live/pending
-        # sigs in the spawn cache, which are not yet reflected in
-        # list_committed_signatures(); without this bypass, newly-spawned sigs
-        # that haven't been flushed would produce false-positive errors.
+        # The world-level guard also knows about pending, not-yet-durable spawns.
         world_validated: bool = kwargs.pop("_world_validated", False)
-        if not world_validated and hasattr(self._store, "list_committed_signatures"):
-            committed_sigs = {
-                _canonicalize(s) for s in await self._store.list_committed_signatures()
-            }
+        if not world_validated:
+            committed_sigs = {_canonicalize(s) for s in await self.list_committed_signatures()}
             if committed_sigs and sig not in committed_sigs:
-                component_names = ", ".join(t.__name__ for t in sig)
-                raise UnknownSignatureError(
-                    f"Archetype signature ({component_names}) has never been registered in this world. "
-                    "No entity carrying exactly these component types has been spawned. "
-                    "If you want to query entities that CONTAIN these components (possibly alongside others), "
-                    "use world.query() / query_components() instead of query_archetype()."
-                )
+                raise _unknown_signature_error(sig)
 
         df = await self._store.get_archetype_df(
             sig=sig,
@@ -144,7 +129,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         Discovers matching archetype signatures, queries each, projects to
         the requested component columns, and unions the results.
 
-        If a requested component type does not exist in ANY registered
+        If a requested component type does not exist in any committed
         archetype, a ``KeyError`` is raised naming the missing component so
         callers can detect the ManipProprio-vs-ManipAction style confusion
         (querying a component that belongs to a different archetype).
@@ -170,7 +155,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         schema = pa.schema([full_schema.field(name) for name in proj_cols])
 
         # Find all sigs that contain the required types
-        all_sigs = await self.list_signatures()
+        all_sigs = await self.list_committed_signatures()
         matching = [sig for sig in all_sigs if required.issubset({_key(t) for t in sig})]
 
         # Ergonomic check: when no archetype satisfies the full component set,
@@ -180,10 +165,6 @@ class AsyncQueryManager(iAsyncQueryManager):
         #   (b) Each component exists on a separate archetype but never together
         #       (the ManipProprio-vs-ManipAction trap).
         if not matching and all_sigs:
-            all_component_types: set[type[Component]] = set()
-            for s in all_sigs:
-                all_component_types.update(s)
-
             # Build per-component diagnostic hints.
             hints: list[str] = []
             culprit_names: list[str] = []
@@ -227,8 +208,12 @@ class AsyncQueryManager(iAsyncQueryManager):
         return result
 
     async def list_signatures(self) -> list[ArchetypeSignature]:
-        """Delegate to the underlying store's signature registry."""
+        """List every registered signature, including read-created tables."""
         return await self._store.list_signatures()
+
+    async def list_committed_signatures(self) -> list[ArchetypeSignature]:
+        """List signatures accepted by a successful store append."""
+        return await self._store.list_committed_signatures()
 
     async def _validate(self, sig: ArchetypeSignature, df: DataFrame):
         # No-op in baseline; validation lives in instrumentation layer

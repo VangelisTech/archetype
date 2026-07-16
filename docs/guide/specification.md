@@ -153,6 +153,10 @@ Each layer may depend downward. No lower layer may depend upward.
 - Store writes MUST resolve through the same table identity as reads for the
   same signature. A write path may not silently drift to a different table
   lookup mechanism.
+- Registered signatures and committed signatures are distinct. Read-created
+  tables appear only in `list_signatures()`; `list_committed_signatures()` adds
+  a signature only after the store accepts an append. Cached-store receipts
+  separately report whether those accepted rows are already durable.
 - The store itself MUST NOT impose active-state semantics; `is_active` and
   historical filtering belong above the raw store.
 - Empty appends SHOULD be safe no-ops.
@@ -180,6 +184,8 @@ Failure observability:
   optional component projection.
 - Component projection MUST use the canonical schema column list for the
   requested component set.
+- Exact-signature guards and component discovery MUST use committed signatures.
+  A world adds its live signatures separately so pending spawns remain queryable.
 - The querier MUST be read-only.
 - Full append history remains part of the storage model, but the current
   querier contract is an active-state projection, not a full history API.

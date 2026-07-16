@@ -254,19 +254,11 @@ class AsyncStore(iAsyncStore):
         return df
 
     async def list_signatures(self) -> list[ArchetypeSignature]:
-        """
-        List all archetype signatures that have been registered via _ensure_table.
-        """
+        """List all registered signatures, including read-created tables."""
         return list(self._known_sigs.values())
 
     async def list_committed_signatures(self) -> list[ArchetypeSignature]:
-        """List only signatures that have been durably committed via append().
-
-        Unlike list_signatures(), this excludes signatures that were only
-        auto-created by get_archetype_df (create-on-read).  Use this when you
-        need to distinguish 'sig was never written' from 'sig exists but has
-        no rows at the queried tick'.
-        """
+        """List signatures backed by a successful durable append."""
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
     async def append(self, sig: ArchetypeSignature, df: DataFrame) -> AppendReceipt:
@@ -274,27 +266,22 @@ class AsyncStore(iAsyncStore):
         Append a table with a new dataframe. Returns the durable batch receipt.
         """
         table_id = Archetype.get_name(sig)
-        # Defensive: skip zero-row or empty-schema appends to protect backends
+        if not df.column_names:
+            logger.info(f"Append skipped (store): archetype={table_id} empty schema")
+            return AppendReceipt(table_id=table_id, rows=0, durable=True)
         try:
-            df.collect()
-            rows = df.count_rows()
-            if rows == 0 or not df.column_names:
-                logger.info(f"Append skipped (store): archetype={table_id} rows=0 or empty schema")
-                return AppendReceipt(table_id=table_id, rows=0, durable=True)
+            materialized = df.collect(num_preview_rows=0)
+            rows = materialized.count_rows()
         except Exception as e:
-            # A frame that cannot materialize cannot be persisted; the caller
-            # must see that, not a silent no-op.
             logger.error(f"Append collect failed for {table_id}: {e}")
             raise
+        if rows == 0:
+            logger.info(f"Append skipped (store): archetype={table_id} rows=0")
+            return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
         table = self._ensure_table(sig)
-        # Record that this sig has been durably committed (not just auto-created
-        # by a read).  list_committed_signatures() uses this to give callers a
-        # reliable "was this sig ever written?" answer.
+        self._append_table(table, materialized)
         self._committed_sigs.add(table_id)
-
-        # Daft's Table.append is synchronous; do not await
-        self._append_table(table, df)
         return AppendReceipt(
             table_id=table_id, rows=rows, durable=True, backend_ref=self._snapshot_ref(table)
         )

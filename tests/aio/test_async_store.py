@@ -110,7 +110,7 @@ async def test_async_store_passes_io_config_to_iceberg_writes():
     class FakeDataFrame:
         column_names = ["world_id"]
 
-        def collect(self):
+        def collect(self, *, num_preview_rows=None):
             return self
 
         def count_rows(self):

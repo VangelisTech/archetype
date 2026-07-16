@@ -25,7 +25,7 @@ from daft.functions import when
 from uuid_utils import UUID, uuid7  # noqa: F401 imported for type hints
 
 from archetype import _obs
-from archetype.core.aio.async_querier import UnknownSignatureError, _canonicalize
+from archetype.core.aio.async_querier import _canonicalize, _unknown_signature_error
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
@@ -180,11 +180,7 @@ class AsyncWorld(iAsyncWorld):
                     "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
                 )
 
-            # Phase 2 — commit. Appends run concurrently; each archetype's
-            # mutation caches clear only after its rows are durably appended,
-            # so a store failure preserves exactly the uncommitted mutations.
-            # The guard above propagated/raised every exception, so each
-            # remaining result is a computed DataFrame.
+            # Phase 2 — commit every computed frame concurrently.
             #
             # Coordinated worlds (issue #273) mint one commit context for the
             # whole tick; every append this tick stamps it. The manifest is
@@ -678,7 +674,7 @@ class AsyncWorld(iAsyncWorld):
         The signature is canonicalized (sorted by class name) before lookup,
         so callers may supply types in any order.  If the canonical signature
         has never been active in this world (not in the live registry AND not
-        in the store's durable record) an ``UnknownSignatureError`` is raised —
+        accepted by the store) an ``UnknownSignatureError`` is raised —
         a distinct failure from 'the signature exists but has zero rows at
         this tick' which returns an empty DataFrame.
 
@@ -703,39 +699,17 @@ class AsyncWorld(iAsyncWorld):
         else:
             effective_run_id = ""
 
-        # Existence check: the sig must either be currently active (live entities
-        # or pending spawns/despawns) OR have been committed to the durable store.
-        # We always consult the durable store when the querier supports
-        # list_signatures — including when active_signatures is empty (e.g. all
-        # entities despawned, or brand-new world with no pending spawns).  Skipping
-        # the durable-store check when active_signatures is empty would allow an
-        # unknown signature to bypass the guard and silently return an empty
-        # DataFrame, violating the loud unknown-signature criterion.
-        # When the querier does not implement list_signatures (test fakes, InMemory
-        # queriers) the check is best-effort at the API boundary and is skipped.
-        if hasattr(self.querier, "list_signatures"):
-            # Consult the durable store for committed sigs and also include live
-            # sigs (pending spawns/despawns) that haven't been flushed yet.
-            store_sigs = {_canonicalize(s) for s in await self.querier.list_signatures()}
+        # Exact-signature existence is the union of accepted writes and live state.
+        signature_source = getattr(self.querier, "list_committed_signatures", None)
+        if signature_source is None:
+            signature_source = getattr(self.querier, "list_signatures", None)
+        if signature_source is not None:
+            committed_sigs = {_canonicalize(s) for s in await signature_source()}
             live_sigs = {_canonicalize(s) for s in self.active_signatures}
-            all_known = live_sigs | store_sigs
-            # Identity is the SCHEMA, not the Python class objects: compare
-            # by table id (a schema hash), so a schema-identical component
-            # class from another module (a resumed world's resolved twin)
-            # matches the signature it stands for.
+            all_known = live_sigs | committed_sigs
             known_ids = {Archetype.get_name(s) for s in all_known}
-            # Only raise when we have at least one committed or live sig — a truly
-            # brand-new world that has never spawned anything (empty store, no
-            # pending spawns) cannot yet distinguish a valid future sig from an
-            # incorrect one, so we let the store return an empty frame naturally.
             if all_known and Archetype.get_name(sig) not in known_ids:
-                component_names = ", ".join(t.__name__ for t in sig)
-                raise UnknownSignatureError(
-                    f"Archetype signature ({component_names}) has never been registered in this world. "
-                    "No entity carrying exactly these component types has been spawned. "
-                    "If you want to query entities that CONTAIN these components (possibly alongside others), "
-                    "use world.query() / query_components() instead of query_archetype()."
-                )
+                raise _unknown_signature_error(sig)
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):
             # Querier capability is resolved by signature inspection, NOT by
