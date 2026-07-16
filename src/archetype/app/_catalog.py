@@ -271,6 +271,7 @@ class ControlCatalog(Protocol):
     async def list_worlds(self) -> list[WorldRecord]: ...
     async def register_signature(self, record: SignatureRecord) -> None: ...
     async def list_signatures(self) -> list[SignatureRecord]: ...
+    async def max_manifest_tick(self, world_id: str, run_id: str) -> int | None: ...
     async def close(self) -> None: ...
 
 
@@ -717,6 +718,20 @@ class SqliteControlCatalog:
                 "SELECT epoch FROM writer_fence WHERE world_id=?", (world_id,)
             ).fetchone()
             return int(row["epoch"]) if row is not None else None
+
+        return await self._run(_get)
+
+    async def max_manifest_tick(self, world_id: str, run_id: str) -> int | None:
+        def _get() -> int | None:
+            row = (
+                self._connect_sync()
+                .execute(
+                    "SELECT MAX(tick) AS tick FROM manifests WHERE world_id=? AND run_id=?",
+                    (world_id, run_id),
+                )
+                .fetchone()
+            )
+            return int(row["tick"]) if row is not None and row["tick"] is not None else None
 
         return await self._run(_get)
 

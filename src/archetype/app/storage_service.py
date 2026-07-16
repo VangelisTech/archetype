@@ -151,7 +151,7 @@ class StorageService:
 
         Default: the local SQLite catalog (the reference implementation,
         single-host authority). Setting ``ARCHETYPE_CONTROL_CATALOG_URL``
-        (+ optional ``ARCHETYPE_CONTROL_CATALOG_TOKEN``) selects the remote
+        and ``ARCHETYPE_CONTROL_CATALOG_TOKEN`` selects the remote
         Durable Objects catalog (issue #281), namespaced by the storage
         fingerprint — the same identity key both implementations pool by,
         so a config resolves to ONE catalog whichever backend serves it.
@@ -161,6 +161,12 @@ class StorageService:
             from archetype.app._catalog import storage_fingerprint
             from archetype.app._remote_catalog import RemoteControlCatalog
 
+            token = os.environ.get("ARCHETYPE_CONTROL_CATALOG_TOKEN", "").strip()
+            if not token:
+                raise RuntimeError(
+                    "ARCHETYPE_CONTROL_CATALOG_TOKEN is required when "
+                    "ARCHETYPE_CONTROL_CATALOG_URL is configured"
+                )
             namespace = storage_fingerprint(storage_config)[:24]
             key = f"{remote_url}::{namespace}"
             catalog = self._catalogs.get(key)
@@ -168,7 +174,7 @@ class StorageService:
                 catalog = RemoteControlCatalog(
                     remote_url,
                     namespace,
-                    token=os.environ.get("ARCHETYPE_CONTROL_CATALOG_TOKEN") or None,
+                    token=token,
                 )
                 self._catalogs[key] = catalog
             return catalog

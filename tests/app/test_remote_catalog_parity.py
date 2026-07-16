@@ -18,6 +18,7 @@ receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -37,6 +38,7 @@ from archetype.core.interfaces import StaleWriterError
 pytestmark = pytest.mark.asyncio
 
 WORKER_DIR = Path(__file__).resolve().parents[2] / "infra" / "control-catalog"
+WORKER_TOKEN = "archetype-parity-token"
 
 
 def _free_port() -> int:
@@ -50,10 +52,21 @@ def worker_url():
     if shutil.which("npx") is None:
         pytest.skip("npx unavailable; wrangler dev harness skipped")
     port = _free_port()
+    worker_log = tempfile.TemporaryFile(mode="w+")
     proc = subprocess.Popen(
-        ["npx", "--yes", "wrangler", "dev", "--local", "--port", str(port)],
+        [
+            "npx",
+            "--yes",
+            "wrangler",
+            "dev",
+            "--local",
+            "--port",
+            str(port),
+            "--var",
+            f"CATALOG_TOKEN:{WORKER_TOKEN}",
+        ],
         cwd=WORKER_DIR,
-        stdout=subprocess.PIPE,
+        stdout=worker_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -64,10 +77,15 @@ def worker_url():
         deadline = time.time() + 120
         while time.time() < deadline:
             if proc.poll() is not None:
-                out = proc.stdout.read() if proc.stdout else ""
+                worker_log.seek(0)
+                out = worker_log.read()
                 pytest.skip(f"wrangler dev exited early: {out[-400:]}")
             try:
-                response = httpx.get(f"{url}/ns/probe/worlds", timeout=2.0)
+                response = httpx.get(
+                    f"{url}/ns/probe/worlds",
+                    headers={"authorization": f"Bearer {WORKER_TOKEN}"},
+                    timeout=2.0,
+                )
                 if response.status_code == 200:
                     break
             except Exception:
@@ -82,13 +100,18 @@ def worker_url():
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+        worker_log.close()
 
 
 def _remote(worker_url: str):
     from archetype.app._remote_catalog import RemoteControlCatalog
 
     # Fresh namespace per catalog instance: parity runs are independent.
-    return RemoteControlCatalog(worker_url, f"parity-{uuid.uuid4().hex[:12]}")
+    return RemoteControlCatalog(
+        worker_url,
+        f"parity-{uuid.uuid4().hex[:12]}",
+        token=WORKER_TOKEN,
+    )
 
 
 def _sqlite(tmp_path) -> SqliteControlCatalog:
@@ -105,6 +128,13 @@ def _world(wid: str = "w1", **overrides) -> WorldRecord:
 
 async def _both(tmp_path, worker_url):
     return _sqlite(tmp_path), _remote(worker_url)
+
+
+async def test_worker_requires_bearer_token(worker_url):
+    import httpx
+
+    response = httpx.get(f"{worker_url}/ns/probe/worlds")
+    assert response.status_code == 401
 
 
 async def test_world_registration_parity(tmp_path, worker_url):
@@ -148,6 +178,7 @@ async def test_fence_and_manifest_parity(tmp_path, worker_url):
         assert await catalog.acquire_fence("w1", "h1") == 1
         assert await catalog.acquire_fence("w1", "h2") == 2
         assert await catalog.current_fence_epoch("w1") == 2
+        assert await catalog.max_manifest_tick("w1", "r1") is None
 
         # Stale epoch fails closed.
         with pytest.raises(StaleWriterError):
@@ -157,10 +188,12 @@ async def test_fence_and_manifest_parity(tmp_path, worker_url):
         await catalog.publish_manifest("w1", "r1", 0, "tok-a", 2, ["t1"])
         with pytest.raises(CatalogConflictError):
             await catalog.publish_manifest("w1", "r1", 0, "tok-b", 2, ["t1"])
-        await catalog.publish_manifest("w1", "r1", 1, "tok-c", 2, ["t1", "t2"])
+        await catalog.publish_manifest("w1", "r1", 1, "tok-c", 2, ["t2", "t1"])
 
         manifests = await catalog.list_manifests("w1", "r1")
         assert [(m.tick, m.commit_token) for m in manifests] == [(0, "tok-a"), (1, "tok-c")]
+        assert manifests[1].table_ids == ("t1", "t2")
+        assert await catalog.max_manifest_tick("w1", "r1") == 1
         # Publication advances the durable head on both backends.
         assert (await catalog.get_world("w1")).tick_head == 1
         await catalog.close()
@@ -256,6 +289,7 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
     """The integration proof: coordinator + ingestion + receipts through the
     remote catalog with zero changes above the protocol."""
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_URL", worker_url)
+    monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", WORKER_TOKEN)
 
     from archetype.app.container import ServiceContainer
     from archetype.core.component import Component

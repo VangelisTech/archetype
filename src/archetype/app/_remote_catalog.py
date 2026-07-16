@@ -160,6 +160,11 @@ class RemoteControlCatalog:
         epoch = response.json().get("epoch")
         return int(epoch) if epoch is not None else None
 
+    async def max_manifest_tick(self, world_id: str, run_id: str) -> int | None:
+        response = await self._call("GET", f"/w/{world_id}/manifest-head?run={run_id}")
+        tick = response.json().get("tick")
+        return int(tick) if tick is not None else None
+
     async def publish_manifest(
         self,
         world_id: str,

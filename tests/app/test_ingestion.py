@@ -10,6 +10,7 @@ a fact is visible iff its claim is COMPLETE.
 """
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -72,6 +73,32 @@ async def test_ingest_appends_visible_fact_with_external_key_on_rows(tmp_path):
         assert rows[0]["factmeta__commit_id"] == receipt.commit_token, (
             "the external key and commit id ride the data plane"
         )
+    finally:
+        await c.shutdown()
+
+
+async def test_fact_tick_uses_manifest_head_when_directory_head_lags(tmp_path, monkeypatch):
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(c, storage)
+        await c.simulation_service.step(world.world_id, RunConfig())
+        catalog = c.storage_service.get_control_catalog(storage)
+        real_get_world = catalog.get_world
+
+        async def stale_get_world(world_id):
+            record = await real_get_world(world_id)
+            return replace(record, tick_head=0) if record is not None else None
+
+        monkeypatch.setattr(catalog, "get_world", stale_get_world)
+        receipt = await c.ingestion_service.ingest_fact(
+            str(world.world_id),
+            [Reading(value=21.5, unit="C")],
+            external_id="after-derived-head-failure",
+            producer="sensor-001",
+        )
+
+        assert receipt.tick == 1
     finally:
         await c.shutdown()
 

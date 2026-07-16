@@ -127,7 +127,8 @@ is what makes maintenance safe:
   execution is queryable up to its last published tick, not resumable
   mid-physics.
 - Cross-host fencing requires the remote control catalog
-  (``ARCHETYPE_CONTROL_CATALOG_URL``, issue #281): with it configured,
+  (``ARCHETYPE_CONTROL_CATALOG_URL`` plus
+  ``ARCHETYPE_CONTROL_CATALOG_TOKEN``, issue #281): with it configured,
   discovery, fencing, and visibility hold across hosts; the default local
   SQLite catalog remains single-host authority.
 - Mutable cold resume is delivered on top of this contract — see
