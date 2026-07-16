@@ -35,11 +35,15 @@ function conflict(kind: string, message: string): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (env.CATALOG_TOKEN) {
-      const auth = request.headers.get("authorization") ?? "";
-      if (auth !== `Bearer ${env.CATALOG_TOKEN}`) {
-        return json({ error: "unauthorized" }, 401);
-      }
+    if (!env.CATALOG_TOKEN) {
+      return json(
+        { error: "misconfigured", message: "CATALOG_TOKEN is not set" },
+        500,
+      );
+    }
+    const auth = request.headers.get("authorization") ?? "";
+    if (auth !== `Bearer ${env.CATALOG_TOKEN}`) {
+      return json({ error: "unauthorized" }, 401);
     }
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -63,13 +67,20 @@ export default {
         const response = await stub.fetch(request);
         if (response.ok && typeof body.tick === "number") {
           const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
-          await directory.fetch(
-            new Request(`${url.origin}/ns/${namespace}/worlds/${worldId}`, {
-              method: "PATCH",
-              headers: JSON_HEADERS,
-              body: JSON.stringify({ tick_head: body.tick }),
-            }),
-          );
+          try {
+            const headResponse = await directory.fetch(
+              new Request(`${url.origin}/ns/${namespace}/worlds/${worldId}`, {
+                method: "PATCH",
+                headers: JSON_HEADERS,
+                body: JSON.stringify({ tick_head: body.tick }),
+              }),
+            );
+            if (!headResponse.ok) {
+              console.error("directory tick_head advance failed", headResponse.status);
+            }
+          } catch (error) {
+            console.error("directory tick_head advance failed", error);
+          }
         }
         return response;
       }
@@ -283,7 +294,7 @@ export class WorldCommitDO implements DurableObject {
         m.tick,
         m.commit_token,
         m.writer_epoch,
-        JSON.stringify(m.table_ids ?? []),
+        JSON.stringify([...((m.table_ids as string[] | undefined) ?? [])].sort()),
         now,
       );
       return json({ ok: true });
