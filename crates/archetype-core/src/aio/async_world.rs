@@ -3,19 +3,24 @@
 //! ```text
 //! Tick N:
 //!   1. Read prior active rows (live snapshot from tick N-1, or store).
-//!   2. Apply despawns: drain despawn buffer, tombstone matching rows in prior.
+//!   2. Apply staged despawns: tombstone matching rows in prior.
 //!      Result = processor_input (only previously-live rows, with despawned ones
 //!      marked is_active=false).
 //!   3. Execute processors over processor_input.  Spawns queued this tick are NOT
 //!      visible to processors — they land raw.
-//!   4. Drain spawn buffer: deduplicate (last-write-wins, first-seen order), concat
+//!   4. Read staged spawns: deduplicate (last-write-wins, first-seen order), concat
 //!      raw spawn rows AFTER processor output.
 //!      Invariant: x₀ is the raw spawn value; x_{t+1} = f(x_t).
 //!   5. Stamp tick/world/run metadata on the full concatenated batch.
 //!   6. Persist the stamped batch.
-//!   7. Update live snapshot = active_snapshot(stamped), which includes raw spawn
+//!   7. Consume that table's mutations and update its live snapshot. The snapshot
+//!      is active_snapshot(stamped), which includes raw spawn
 //!      rows (is_active=true) so they are transformed for the first time on tick N+1.
 //! ```
+//!
+//! A world prepares every active table before the first append. Store appends
+//! are atomic per table, not across tables; failure after an earlier table was
+//! published poisons the world so tick N cannot be retried and duplicated.
 //!
 //! Same-tick spawn-cancel (despawn while spawn is still pending) removes the
 //! spawn row entirely without writing a tombstone — the entity is never observed.
@@ -58,6 +63,29 @@ pub struct StepProfile {
     pub tick: i32,
     pub tables: Vec<TableStepProfile>,
     pub tick_sec: f64,
+}
+
+struct PreparedTableStep {
+    batch: RecordBatch,
+    live_snapshot: RecordBatch,
+    profile: TableStepProfile,
+}
+
+#[derive(Debug, Clone)]
+struct PartialTickFailure {
+    tick: i32,
+    committed_tables: usize,
+    cause: String,
+}
+
+impl PartialTickFailure {
+    fn as_error(&self) -> ArchetypeCoreError {
+        ArchetypeCoreError::PartialTick {
+            tick: self.tick,
+            committed_tables: self.committed_tables,
+            cause: self.cause.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -150,6 +178,16 @@ impl WorldState {
             &self.world_id,
             &self.run_id,
         )?;
+        self.queue_stamped_spawn_batch(table_name, spawn, entity_ids);
+        Ok(())
+    }
+
+    fn queue_stamped_spawn_batch(
+        &mut self,
+        table_name: String,
+        spawn: RecordBatch,
+        entity_ids: &[EntityId],
+    ) {
         for entity_id in entity_ids {
             self.entity2table.insert(*entity_id, table_name.clone());
             self.next_entity_id = self.next_entity_id.max(*entity_id + 1);
@@ -159,17 +197,82 @@ impl WorldState {
             .entry(table_name)
             .or_default()
             .push(spawn);
+    }
+
+    fn queue_migration_batch(
+        &mut self,
+        table_name: impl Into<String>,
+        table_schema: SchemaRef,
+        component_batch: RecordBatch,
+        entity_ids: &[EntityId],
+    ) -> Result<()> {
+        let table_name = table_name.into();
+        let spawn = stamp_spawn_batch(
+            table_schema,
+            component_batch,
+            entity_ids,
+            self.tick,
+            &self.world_id,
+            &self.run_id,
+        )?;
+
+        let mut source_entities = HashMap::<String, Vec<EntityId>>::new();
+        for entity_id in entity_ids {
+            let source = self
+                .entity2table
+                .get(entity_id)
+                .ok_or(ArchetypeCoreError::UnknownEntity(*entity_id))?;
+            source_entities
+                .entry(source.clone())
+                .or_default()
+                .push(*entity_id);
+        }
+
+        let mut retained_spawns = HashMap::new();
+        let mut cancelled_spawns = HashSet::new();
+        for (source, ids) in &source_entities {
+            let Some(batches) = self.mutations.spawns.get(source) else {
+                continue;
+            };
+            let targets = ids.iter().copied().collect::<HashSet<_>>();
+            let (retained, removed) = remove_entities_from_spawn_batches(batches, &targets)?;
+            retained_spawns.insert(source.clone(), retained);
+            cancelled_spawns.extend(removed);
+        }
+
+        for (source, retained) in retained_spawns {
+            if retained.is_empty() {
+                self.mutations.spawns.remove(&source);
+            } else {
+                self.mutations.spawns.insert(source, retained);
+            }
+        }
+        for (source, ids) in source_entities {
+            let tombstones = ids
+                .into_iter()
+                .filter(|entity_id| !cancelled_spawns.contains(entity_id))
+                .collect::<Vec<_>>();
+            if !tombstones.is_empty() {
+                self.mutations
+                    .despawns
+                    .entry(source)
+                    .or_default()
+                    .extend(tombstones);
+            }
+        }
+        self.queue_stamped_spawn_batch(table_name, spawn, entity_ids);
         Ok(())
     }
 
     pub fn queue_despawn(&mut self, entity_id: EntityId) -> Result<()> {
         let table_name = self
             .entity2table
-            .remove(&entity_id)
+            .get(&entity_id)
+            .cloned()
             .ok_or(ArchetypeCoreError::UnknownEntity(entity_id))?;
-        // A despawn in the same tick as the spawn cancels the pending spawn
-        // instead of queueing a tombstone, matching AsyncWorld.remove_entity.
-        if self.cancel_pending_spawn(&table_name, entity_id)? {
+        let cancelled = self.cancel_pending_spawn(&table_name, entity_id)?;
+        self.entity2table.remove(&entity_id);
+        if cancelled {
             return Ok(());
         }
         self.mutations
@@ -181,32 +284,19 @@ impl WorldState {
     }
 
     fn cancel_pending_spawn(&mut self, table_name: &str, entity_id: EntityId) -> Result<bool> {
-        let Some(batches) = self.mutations.spawns.get_mut(table_name) else {
+        let Some(batches) = self.mutations.spawns.get(table_name) else {
             return Ok(false);
         };
-
-        let mut cancelled = false;
-        let mut kept = Vec::with_capacity(batches.len());
-        for batch in batches.drain(..) {
-            let entities = entity_column(&batch)?;
-            let keep = BooleanArray::from_iter(
-                (0..batch.num_rows()).map(|idx| Some(entities.value(idx) != entity_id)),
-            );
-            if keep.true_count() == batch.num_rows() {
-                kept.push(batch);
-            } else {
-                cancelled = true;
-                let filtered = filter_record_batch(&batch, &keep)?;
-                if filtered.num_rows() > 0 {
-                    kept.push(filtered);
-                }
-            }
-        }
-        *batches = kept;
-        if batches.is_empty() {
+        let targets = HashSet::from([entity_id]);
+        let (retained, removed) = remove_entities_from_spawn_batches(batches, &targets)?;
+        if retained.is_empty() {
             self.mutations.spawns.remove(table_name);
+        } else {
+            self.mutations
+                .spawns
+                .insert(table_name.to_string(), retained);
         }
-        Ok(cancelled)
+        Ok(removed.contains(&entity_id))
     }
 
     /// Phase 1 of the tick lifecycle: apply queued despawns to `prior` and
@@ -222,20 +312,29 @@ impl WorldState {
         table_schema: SchemaRef,
         prior: RecordBatch,
     ) -> Result<RecordBatch> {
+        let materialized = self.staged_despawns_to_prior(table_name, table_schema, prior)?;
+        self.mutations.despawns.remove(table_name);
+        Ok(materialized)
+    }
+
+    fn staged_despawns_to_prior(
+        &self,
+        table_name: &str,
+        table_schema: SchemaRef,
+        prior: RecordBatch,
+    ) -> Result<RecordBatch> {
         if prior.schema().fields() != table_schema.fields() {
             return Err(ArchetypeCoreError::SchemaMismatch {
                 table_name: table_name.to_string(),
             });
         }
-        let despawns = self
-            .mutations
-            .despawns
-            .remove(table_name)
-            .unwrap_or_default();
+        let Some(despawns) = self.mutations.despawns.get(table_name) else {
+            return Ok(prior);
+        };
         if despawns.is_empty() {
             Ok(prior)
         } else {
-            apply_despawns(prior, &despawns)
+            apply_despawns(prior, despawns)
         }
     }
 
@@ -247,14 +346,20 @@ impl WorldState {
     /// first-seen insertion order — matching the Python dict-based spawn
     /// dedupe.  Returns an empty `Vec` if nothing was queued.
     pub fn drain_spawn_frames(&mut self, table_name: &str) -> Result<Vec<RecordBatch>> {
-        let Some(spawns) = self.mutations.spawns.remove(table_name) else {
+        let frames = self.staged_spawn_frames(table_name)?;
+        self.mutations.spawns.remove(table_name);
+        Ok(frames)
+    }
+
+    fn staged_spawn_frames(&self, table_name: &str) -> Result<Vec<RecordBatch>> {
+        let Some(spawns) = self.mutations.spawns.get(table_name) else {
             return Ok(Vec::new());
         };
         // Dedupe: last-write-wins for duplicate entity IDs, first-seen order.
         let mut order = Vec::<EntityId>::new();
         let mut latest_by_entity = HashMap::<EntityId, RecordBatchRow>::new();
         let mut total_rows = 0usize;
-        for batch in &spawns {
+        for batch in spawns {
             let entities = entity_column(batch)?;
             for row_idx in 0..batch.num_rows() {
                 let entity_id = entities.value(row_idx);
@@ -274,7 +379,7 @@ impl WorldState {
             }
         }
         if latest_by_entity.len() == total_rows {
-            Ok(spawns)
+            Ok(spawns.clone())
         } else {
             order
                 .into_iter()
@@ -284,6 +389,11 @@ impl WorldState {
                 })
                 .collect()
         }
+    }
+
+    fn consume_table_mutations(&mut self, table_name: &str) {
+        self.mutations.spawns.remove(table_name);
+        self.mutations.despawns.remove(table_name);
     }
 
     /// Convenience wrapper used by unit tests and migration helpers: applies
@@ -299,11 +409,13 @@ impl WorldState {
         prior: RecordBatch,
     ) -> Result<RecordBatch> {
         let processor_input =
-            self.apply_despawns_to_prior(table_name, table_schema.clone(), prior)?;
-        let spawn_frames = self.drain_spawn_frames(table_name)?;
+            self.staged_despawns_to_prior(table_name, table_schema.clone(), prior)?;
+        let spawn_frames = self.staged_spawn_frames(table_name)?;
         let mut batches = vec![processor_input];
         batches.extend(spawn_frames);
-        concat_batches(&table_schema, &batches).map_err(Into::into)
+        let materialized = concat_batches(&table_schema, &batches)?;
+        self.consume_table_mutations(table_name);
+        Ok(materialized)
     }
 
     pub fn advance_tick(&mut self) {
@@ -320,6 +432,7 @@ where
     system: AsyncSystem,
     tables: HashMap<String, SchemaRef>,
     live_tables: HashMap<String, RecordBatch>,
+    partial_failure: Option<PartialTickFailure>,
 }
 
 impl<S> AsyncWorld<S>
@@ -333,6 +446,7 @@ where
             system,
             tables: HashMap::new(),
             live_tables: HashMap::new(),
+            partial_failure: None,
         }
     }
 
@@ -371,9 +485,12 @@ where
         table: &ArchetypeTable,
         component_batch: RecordBatch,
     ) -> Result<Vec<EntityId>> {
+        self.ensure_healthy()?;
+        let entity_ids =
+            self.state
+                .queue_spawn_batch(table.table_name(), table.schema(), component_batch)?;
         self.register_table(table);
-        self.state
-            .queue_spawn_batch(table.table_name(), table.schema(), component_batch)
+        Ok(entity_ids)
     }
 
     pub fn queue_spawn_batch_with_entity_ids(
@@ -382,16 +499,19 @@ where
         component_batch: RecordBatch,
         entity_ids: &[EntityId],
     ) -> Result<()> {
-        self.register_table(table);
+        self.ensure_healthy()?;
         self.state.queue_spawn_batch_with_entity_ids(
             table.table_name(),
             table.schema(),
             component_batch,
             entity_ids,
-        )
+        )?;
+        self.register_table(table);
+        Ok(())
     }
 
     pub fn queue_despawn(&mut self, entity_id: EntityId) -> Result<()> {
+        self.ensure_healthy()?;
         self.state.queue_despawn(entity_id)
     }
 
@@ -401,16 +521,15 @@ where
         entity_ids: &[EntityId],
         new_component_batch: RecordBatch,
     ) -> Result<()> {
-        self.register_table(new_table);
-        for entity_id in entity_ids {
-            self.state.queue_despawn(*entity_id)?;
-        }
-        self.state.queue_spawn_batch_with_entity_ids(
+        self.ensure_healthy()?;
+        self.state.queue_migration_batch(
             new_table.table_name(),
             new_table.schema(),
             new_component_batch,
             entity_ids,
-        )
+        )?;
+        self.register_table(new_table);
+        Ok(())
     }
 
     pub async fn step(&mut self) -> Result<()> {
@@ -418,17 +537,39 @@ where
     }
 
     pub async fn step_profiled(&mut self) -> Result<StepProfile> {
+        self.ensure_healthy()?;
         let tick_start = Instant::now();
         let tick = self.state.tick();
         let mut table_names = self.state.active_tables().into_iter().collect::<Vec<_>>();
         table_names.sort();
 
-        let mut tables = Vec::with_capacity(table_names.len());
-        for table_name in table_names {
-            let (_batch, profile) = self.step_table_profiled(&table_name).await?;
-            tables.push(profile);
+        let mut prepared = Vec::with_capacity(table_names.len());
+        for table_name in &table_names {
+            prepared.push(self.prepare_table_profiled(table_name).await?);
         }
 
+        let mut committed_tables = 0;
+        for table in &mut prepared {
+            match self.append_prepared_table(table).await {
+                Ok(()) => committed_tables += usize::from(table.batch.num_rows() > 0),
+                Err(error) if committed_tables == 0 => return Err(error),
+                Err(error) => {
+                    let failure = PartialTickFailure {
+                        tick,
+                        committed_tables,
+                        cause: error.to_string(),
+                    };
+                    let error = failure.as_error();
+                    self.partial_failure = Some(failure);
+                    return Err(error);
+                }
+            }
+        }
+
+        let tables = prepared
+            .into_iter()
+            .map(|table| self.finalize_prepared_table(table).1)
+            .collect();
         self.state.advance_tick();
         Ok(StepProfile {
             tick,
@@ -454,16 +595,13 @@ where
         &mut self,
         table_name: &str,
     ) -> Result<(RecordBatch, TableStepProfile)> {
-        // ── Tick lifecycle for one table ─────────────────────────────────────
-        // See module-level docs for the full ordered description.
-        //
-        // Phase 1: read prior active rows.
-        // Phase 2: apply despawns (tombstone in prior, not in spawns).
-        // Phase 3: execute processors over the despawn-filtered prior.
-        //           Spawns queued this tick are NOT visible here.
-        // Phase 4: drain spawn buffer; concat raw spawn rows AFTER processed.
-        //           Invariant: x₀ lands raw, f applied first on tick N+1.
-        // Phase 5: stamp metadata, persist, update live snapshot.
+        self.ensure_healthy()?;
+        let mut prepared = self.prepare_table_profiled(table_name).await?;
+        self.append_prepared_table(&mut prepared).await?;
+        Ok(self.finalize_prepared_table(prepared))
+    }
+
+    async fn prepare_table_profiled(&self, table_name: &str) -> Result<PreparedTableStep> {
         let table_start = Instant::now();
         let schema = self
             .tables
@@ -471,19 +609,16 @@ where
             .cloned()
             .ok_or_else(|| ArchetypeCoreError::UnknownTable(table_name.to_string()))?;
 
-        // Phase 1 — read prior
         let read_prior_start = Instant::now();
         let prior = self.read_prior_table(table_name, schema.clone()).await?;
         let read_prior_sec = read_prior_start.elapsed().as_secs_f64();
 
-        // Phase 2 — apply despawns (pre-processor)
         let materialize_start = Instant::now();
         let processor_input =
             self.state
-                .apply_despawns_to_prior(table_name, schema.clone(), prior)?;
+                .staged_despawns_to_prior(table_name, schema.clone(), prior)?;
         let materialize_sec = materialize_start.elapsed().as_secs_f64();
 
-        // Phase 3 — run processors over the despawn-filtered prior rows
         let process_start = Instant::now();
         let processed = self.system.execute(
             processor_input,
@@ -495,8 +630,7 @@ where
         )?;
         let process_sec = process_start.elapsed().as_secs_f64();
 
-        // Phase 4 — drain spawn buffer, concat raw spawn rows after processed
-        let spawn_frames = self.state.drain_spawn_frames(table_name)?;
+        let spawn_frames = self.state.staged_spawn_frames(table_name)?;
         let combined = if spawn_frames.is_empty() {
             processed
         } else {
@@ -505,32 +639,58 @@ where
             concat_batches(&schema, &batches)?
         };
 
-        // Phase 5 — stamp, persist, update live snapshot
         let stamped = stamp_batch_metadata(
             combined,
             self.state.tick(),
             self.state.world_id(),
             self.state.run_id(),
         )?;
-        let append_start = Instant::now();
-        if stamped.num_rows() > 0 {
-            self.store.append(table_name, &stamped).await?;
-        }
-        let append_sec = append_start.elapsed().as_secs_f64();
         let live_snapshot_start = Instant::now();
-        self.live_tables
-            .insert(table_name.to_string(), active_snapshot(&stamped)?);
+        let live_snapshot = active_snapshot(&stamped)?;
         let live_snapshot_sec = live_snapshot_start.elapsed().as_secs_f64();
         let profile = TableStepProfile {
             table_name: table_name.to_string(),
             read_prior_sec,
             materialize_sec,
             process_sec,
-            append_sec,
+            append_sec: 0.0,
             live_snapshot_sec,
             table_sec: table_start.elapsed().as_secs_f64(),
         };
-        Ok((stamped, profile))
+        Ok(PreparedTableStep {
+            batch: stamped,
+            live_snapshot,
+            profile,
+        })
+    }
+
+    async fn append_prepared_table(&self, prepared: &mut PreparedTableStep) -> Result<()> {
+        let append_start = Instant::now();
+        if prepared.batch.num_rows() > 0 {
+            self.store
+                .append(&prepared.profile.table_name, &prepared.batch)
+                .await?;
+        }
+        prepared.profile.append_sec = append_start.elapsed().as_secs_f64();
+        prepared.profile.table_sec += prepared.profile.append_sec;
+        Ok(())
+    }
+
+    fn finalize_prepared_table(
+        &mut self,
+        prepared: PreparedTableStep,
+    ) -> (RecordBatch, TableStepProfile) {
+        let table_name = prepared.profile.table_name.clone();
+        self.state.consume_table_mutations(&table_name);
+        self.live_tables.insert(table_name, prepared.live_snapshot);
+        (prepared.batch, prepared.profile)
+    }
+
+    fn ensure_healthy(&self) -> Result<()> {
+        match &self.partial_failure {
+            Some(failure) => Err(failure.as_error()),
+            None => Ok(()),
+        }
     }
 
     pub async fn query_table(
@@ -579,6 +739,34 @@ where
 struct RecordBatchRow {
     batch: RecordBatch,
     row_idx: usize,
+}
+
+fn remove_entities_from_spawn_batches(
+    batches: &[RecordBatch],
+    targets: &HashSet<EntityId>,
+) -> Result<(Vec<RecordBatch>, HashSet<EntityId>)> {
+    let mut retained = Vec::with_capacity(batches.len());
+    let mut removed = HashSet::new();
+    for batch in batches {
+        let entities = entity_column(batch)?;
+        let keep = BooleanArray::from_iter((0..batch.num_rows()).map(|idx| {
+            let entity_id = entities.value(idx);
+            let remove = targets.contains(&entity_id);
+            if remove {
+                removed.insert(entity_id);
+            }
+            Some(!remove)
+        }));
+        if keep.true_count() == batch.num_rows() {
+            retained.push(batch.clone());
+        } else {
+            let filtered = filter_record_batch(batch, &keep)?;
+            if filtered.num_rows() > 0 {
+                retained.push(filtered);
+            }
+        }
+    }
+    Ok((retained, removed))
 }
 
 fn stamp_spawn_batch(

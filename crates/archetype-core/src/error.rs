@@ -27,6 +27,16 @@ pub enum ArchetypeCoreError {
     #[error("entity {0} is not registered in this world")]
     UnknownEntity(i32),
 
+    #[error(
+        "tick {tick} partially committed after {committed_tables} table(s): {cause}; \
+         this world is not safe to retry"
+    )]
+    PartialTick {
+        tick: i32,
+        committed_tables: usize,
+        cause: String,
+    },
+
     #[error("arrow error: {0}")]
     Arrow(#[from] ArrowError),
 
