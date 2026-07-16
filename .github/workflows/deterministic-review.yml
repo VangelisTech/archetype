@@ -73,7 +73,7 @@ jobs:
           github_token: ${{ github.token }}
           claude_args: |
             --allowedTools "Read,Grep,Glob"
-            --max-turns 20
+            --max-turns 40
             --json-schema '${{ steps.scope.outputs.schema }}'
           prompt: |
             Review PR #${{ github.event.pull_request.number }} at exact head
@@ -94,6 +94,10 @@ jobs:
             a substantive diff-specific summary, and anchors every finding to
             an actual changed line. An empty findings array is valid only after
             that complete review.
+
+            Use only Read, Grep, and Glob. Do not attempt Bash or any other
+            unavailable tool, and reserve enough turns to return the required
+            structured output.
 
             Do not post comments or reviews. Do not edit files, run repository
             code, run tests, or push commits.
@@ -249,9 +253,20 @@ jobs:
             --finding-count "${FINDING_COUNT}" \
             --digest "${ARTIFACT_DIGEST}"
 
-      - name: Report incomplete review
-        if: failure()
+      - name: Block merge on findings
+        id: finding_gate
+        if: steps.prepare.outputs.finding_count != '0'
         env:
+          FINDING_COUNT: ${{ steps.prepare.outputs.finding_count }}
+        run: |
+          echo "Footgun review reported ${FINDING_COUNT} blocking finding(s)."
+          echo "Resolve the published review threads and push the fix before merging."
+          exit 1
+
+      - name: Report incomplete review
+        if: failure() && steps.finding_gate.outcome != 'failure'
+        env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
