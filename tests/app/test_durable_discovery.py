@@ -10,6 +10,7 @@ container recycling would not prove cold discovery.
 """
 
 import json
+import logging
 import multiprocessing
 import sqlite3
 import subprocess
@@ -190,6 +191,22 @@ async def test_destroyed_worlds_stay_discoverable_with_status(tmp_path):
         assert [str(i.world_id) for i in infos] == [str(world.world_id)]
         record = await c.storage_service.get_control_catalog(storage).get_world(str(world.world_id))
         assert record.status == "destroyed", "append-only: destroy marks, never deletes"
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_record_step_remains_advisory_after_destroy(tmp_path, caplog):
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await c.world_service.create_world(WorldConfig(name="ephemeral"), storage)
+        await c.world_service.destroy_world(world.world_id)
+
+        with caplog.at_level(logging.ERROR):
+            await c.world_service.record_step(world.world_id)
+
+        assert "catalog run update failed" in caplog.text
     finally:
         await c.shutdown()
 

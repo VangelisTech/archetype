@@ -99,9 +99,11 @@ for every component the writing process defined.
 
 ```python
 # Process B, sharing nothing with the writer but the storage config:
-infos = await gate.discover_worlds(ctx, storage_config)
-df = await runtime.query_components(
-    [Score], world_id=infos[0].world_id, run_id=infos[0].run_id,
+infos = await container.command_service.discover_worlds(ctx, storage_config)
+info = infos[0]
+assert info.run_id is not None
+df = await container.command_service.query_components(
+    ctx, [Score], world_id=str(info.world_id), run_id=str(info.run_id),
     storage_config=storage_config,
 )
 ```

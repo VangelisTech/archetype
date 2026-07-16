@@ -215,8 +215,9 @@ world = await runtime.resume(world_id, storage=...)
 Resume reconstructs a live, writable world from durable state in a process
 that shares nothing with the previous writer but the storage config:
 
-- **Tick** — the last *visible* tick + 1, from manifests, never from rows:
-  a crashed attempt's unpublished rows must not advance the head.
+- **Tick** — the last manifest tick + 1, never from fact claims or rows:
+  neither a visible fact nor a crashed attempt's unpublished rows may
+  advance the simulation head.
 - **Entity directory** — the latest visible row per entity across every
   catalog table decides its archetype and liveness; `next_entity_id`
   resumes past the highest id ever seen (ids are never reused). The
@@ -230,6 +231,12 @@ that shares nothing with the previous writer but the storage config:
   whose lineage rows are missing is detectable corruption and refuses.
 - **Fence** — acquired last (epoch + 1): the previous writer's next publish
   fails closed with `StaleWriterError`.
+
+Resume preflights reconstruction before fencing, then repeats it against the
+authoritative post-fence snapshot. If state changed between those reads and
+the second reconstruction fails, the new fence has already made the previous
+writer stale; the failure is logged as an operator-visible orphaned-writer
+condition and the caller must retry after correcting the reconstruction error.
 
 Resume fails loudly rather than reconstructing unfaithfully: unrecorded
 worlds (`KeyError`), destroyed worlds (queryable, never resumable), worlds
