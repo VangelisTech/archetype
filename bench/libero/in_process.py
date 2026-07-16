@@ -73,6 +73,7 @@ def _patch_torch_load_for_libero() -> None:
 # in container memory: the env never crosses the serialization boundary.
 _ENV_POOLS: dict[tuple[str, int, int], _EnvPool] = {}
 
+
 # Every MuJoCo call (env creation, reset, step) is marshalled onto ONE
 # persistent thread. OpenGL/EGL offscreen contexts are THREAD-BOUND: physics
 # survives cross-thread calls but rendering silently returns garbage. The bug

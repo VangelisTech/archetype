@@ -26,10 +26,16 @@ field exists.
 
 RUN LEDGER (same rule as image.py — update only from watched runs):
 
-    download_libero_pro   verified 2026-07-16 (local laptop): 322 files listed
-                          from the bucket via Daft; full download NOT yet run.
-    register_libero_pro   NEVER RUN against a real LIBERO install as of
-                          2026-07-16 (pure parts covered by unit tests).
+    download_libero_pro   verified 2026-07-16 (L40S container): full 320-file
+                          download from the bucket via Daft.
+    register_libero_pro   verified 2026-07-16 (L40S container): 16 variants
+                          registered against the real LIBERO install;
+                          ``pro_eval_task`` then scored 3/3 on
+                          libero_spatial_lan task 0 with the PERTURBED
+                          instruction on the ledger. Caveat recorded in
+                          image.py: the variant's .pruned_init may carry
+                          fewer init states than stock — verify
+                          ``len(init_states)`` before scaling trials.
 """
 
 from __future__ import annotations

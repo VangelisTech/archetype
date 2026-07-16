@@ -57,6 +57,13 @@ a run finish, never when writing new code.
                          10x10 protocol, lerobot serving) — two independent
                          serving stacks, same number. Not yet the published
                          50-trials/task protocol.
+    pro_eval_task        VERIFIED 2026-07-16 (L40S, vangelis-tech): 3/3 on
+                         libero_spatial_lan task 0, mean length 77 — the
+                         PERTURBED instruction from the BDDL drove the policy.
+                         Caveat: all three trials reset bit-identically (the
+                         variant's .pruned_init appears to carry fewer init
+                         states than stock; seed % len wraps) — check
+                         len(init_states) before scaling trials.
     upstream_probe.py    the debugging instruments that found the EGL bug —
                          see that module's own RUN LEDGER.
 
@@ -200,7 +207,16 @@ app = modal.App("archetype-libero", image=image)
 # gated on an env var defines different Modal objects locally vs. in the
 # container re-import ("Function has 2 dependencies but container got 3") and
 # breaks on workspaces that lack the secret.
-_obs_secrets = [modal.Secret.from_dict({"LOGFIRE_TOKEN": os.environ.get("LOGFIRE_TOKEN", "")})]
+_obs_secrets = [
+    modal.Secret.from_dict(
+        {
+            "LOGFIRE_TOKEN": os.environ.get("LOGFIRE_TOKEN", ""),
+            # LIBERO-Pro assets live in a private HF bucket; empty when the
+            # launcher has no token — pro_eval_task fails loudly in that case.
+            "HF_TOKEN": os.environ.get("HF_TOKEN", ""),
+        }
+    )
+]
 
 
 def _configure_bench_tracing() -> None:
@@ -857,6 +873,112 @@ def colocated_suite_eval(
                 f"({summary['success_rate'] * 100:.1f}%) in {round(total_wall / 60, 1)} min"
             )
             return summary
+        finally:
+            await container.shutdown()
+
+    return asyncio.run(_run())
+
+
+@app.function(
+    image=colocated_image,
+    gpu="L40S",
+    timeout=7200,
+    volumes={_VLA_CKPT_DIR: vla_ckpt_volume},
+    secrets=_obs_secrets,
+)
+def pro_eval_task(
+    variant: str = "libero_spatial_lan",
+    task_id: int = 0,
+    trials: int = 3,
+    max_steps: int = 251,
+) -> dict:
+    """LIBERO-Pro variant eval: download + register the perturbed suites
+    (``pro_suite.py``) and run the colocated eval on one variant task. The
+    instruction on the ledger is the PERTURBED one parsed from the BDDL's
+    ``(:language ...)`` field — the whole point of #289's headroom.
+
+    Needs ``HF_TOKEN`` in the launcher env (private bucket) — rides in via the
+    secret pass-through; fails loudly when absent.
+
+    RUN STATUS: VERIFIED 2026-07-16 (L40S, vangelis-tech, watched) — 3/3 on
+    libero_spatial_lan task 0, mean length 77, with the perturbed instruction
+    ('lift the black bowl ... and set it on the plate') on the ledger. 16
+    variants registered from the bucket. CAVEAT: all three trials reset
+    bit-identically — the variant's .pruned_init appears to carry fewer init
+    states than stock (``seed % len`` wraps), so this receipt is one initial
+    condition x3, not three. Verify ``len(init_states)`` per variant before
+    scaling trial counts.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from archetype.app.container import ServiceContainer  # noqa: PLC0415
+    from archetype.core.config import StorageConfig  # noqa: PLC0415
+    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
+    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
+    from bench.libero.pro_suite import download_libero_pro, register_libero_pro  # noqa: PLC0415
+
+    if not os.environ.get("HF_TOKEN"):
+        raise RuntimeError(
+            "HF_TOKEN is empty in the container — the LIBERO-Pro bucket is private. "
+            "Put HF_TOKEN in the launcher environment (repo .env) and rerun."
+        )
+
+    _configure_bench_tracing()
+
+    root = download_libero_pro("/tmp/libero-pro-assets")
+    registered = register_libero_pro(root)
+    if variant not in registered:
+        raise ValueError(f"variant {variant!r} not in registered suites: {registered}")
+    print(f"PRO_EVAL registered {len(registered)} variants")
+
+    local_frames = "/tmp/libero-pro-frames"
+
+    async def _run() -> dict:
+        container = ServiceContainer()
+        try:
+            env = InProcessLiberoEnvClient(
+                suite=variant, task_id=task_id, with_frames=True, frames_dir=local_frames
+            )
+            policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir=local_frames)
+            print(f"PRO_EVAL instruction (perturbed): {env.task_language()!r}")
+
+            wall_start = time.monotonic()
+            report = await run_task_eval(
+                world_service=container.world_service,
+                simulation_service=container.simulation_service,
+                eval_service=container.eval_service,
+                env_client=env,
+                policy_client=policy,
+                suite=variant,
+                task_id=task_id,
+                trials=trials,
+                max_steps=max_steps,
+                storage=StorageConfig(
+                    uri="/tmp/libero-pro-store", namespace=f"pro_{variant}_t{task_id}"
+                ),
+                with_frames=True,
+            )
+            total_wall = time.monotonic() - wall_start
+            successes = sum(1 for t in report.trials if t.success)
+            result = {
+                "variant": variant,
+                "task_id": task_id,
+                "instruction": report.instruction,
+                "successes": successes,
+                "trials": trials,
+                "success_rate": report.success_rate,
+                "mean_length": round(report.mean_length, 1),
+                "world_id": report.world_id,
+                "run_id": report.run_id,
+                "wall_s": round(total_wall, 2),
+            }
+            print(
+                f"PRO_EVAL result: {successes}/{trials} on {variant} task {task_id} "
+                f"mean_length={result['mean_length']}"
+            )
+            return result
         finally:
             await container.shutdown()
 
