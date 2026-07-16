@@ -27,8 +27,8 @@ exactly (the provenance contract tested in
 ``tests/experiments/test_policy_loop.py``).
 
 ``PolicyClient`` mirrors ``EnvClient``: in-process scripted policies for
-contract tests, a remote GPU worker (VLA-JEPA behind a Modal/websocket
-server) for the real thing. The tick-0 row keeps its spawn action
+contract tests and direct in-interpreter GPU policies such as VLA-JEPA for the
+real thing. The tick-0 row keeps its spawn action
 untouched — like the reset observation, the initial action slot is given,
 not computed.
 
@@ -112,7 +112,7 @@ class PolicyClientSpec(ABC):
     benchmark, so nothing under ``src/archetype`` imports a policy model.
     Register a concrete spec under this base type::
 
-        world.resources.insert_as(LiberoVlaPolicySpec(suite="libero_spatial"), PolicyClientSpec)
+        world.resources.insert_as(MyPolicySpec(checkpoint="..."), PolicyClientSpec)
     """
 
     @abstractmethod
@@ -452,8 +452,8 @@ class InstructionConditionedReachPolicy:
     plays for the provenance contract, extended along the instruction axis.
 
     Conforms to the ``PolicyClient`` protocol, so it drops into
-    ``PolicyActionProcessor`` and ``run_instruction_sweep`` exactly where the
-    real ``VlaJepaPolicyClient`` goes.
+    ``PolicyActionProcessor`` and ``run_instruction_sweep`` exactly where a
+    direct model policy such as ``InProcessVlaJepaPolicy`` goes.
     """
 
     def __init__(

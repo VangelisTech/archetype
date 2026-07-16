@@ -9,7 +9,7 @@ and step labels repeat after every reset, so uniqueness must come from the
 client session (per construction) and the episode ordinal (per reset).
 """
 
-from bench.libero.in_process import InProcessLiberoEnvClient, _frame_rel_dir
+from bench.libero.in_process import InProcessLiberoEnvClient, InProcessLiberoEnvSpec, _frame_rel_dir
 
 
 def test_session_is_unique_per_client_construction():
@@ -35,3 +35,8 @@ def test_repeated_step_labels_cannot_collide_across_episodes():
     # The overwrite scenario from review: same env_key, same step label,
     # different sweep rounds — now distinct paths.
     assert f"{ep1}/00001-agentview.png" != f"{ep2}/00001-agentview.png"
+
+
+def test_env_spec_threads_env_seed_to_client():
+    client = InProcessLiberoEnvSpec(env_seed=23).build()
+    assert client._env_seed == 23

@@ -16,8 +16,8 @@ optimizer does not define (roadmap A3/H5, and the Limitations section).
 
 The plumbing under test is real: the instruction is a per-entity ``ManipTask``
 field that flows to the policy (``PolicyClient.act`` receives it; the real
-``VlaJepaPolicyClient`` forwards it into the VLA). Swap ``ScriptedReachEnv`` ->
-``InProcessLiberoEnvClient`` and the stand-in policy -> ``VlaJepaPolicyClient``
+``InProcessVlaJepaPolicy`` forwards it into the VLA). Swap ``ScriptedReachEnv`` ->
+``InProcessLiberoEnvClient`` and the stand-in policy -> ``InProcessVlaJepaPolicy``
 and the same sweep + optimizer run on real LIBERO on a Modal GPU container.
 """
 
@@ -28,15 +28,15 @@ import pytest
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
 from archetype.core.config import StorageConfig
+from archetype.experiments.instruction_sweep import (
+    TemplatePerturbation,
+    optimize_instruction,
+    run_instruction_sweep,
+)
 from archetype.experiments.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.experiments.policy import (
     InstructionConditionedReachPolicy,
     instruction_quality,
-)
-from bench.libero.instruction_sweep import (
-    TemplatePerturbation,
-    optimize_instruction,
-    run_instruction_sweep,
 )
 
 # Proportional-controller params shared by the policy and the replay oracle.
