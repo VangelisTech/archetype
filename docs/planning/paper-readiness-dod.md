@@ -4,6 +4,33 @@ Source: a 22-agent adversarial review (10 dimension reviews + 3 deep
 testing/evals/repro audits → 8 independent reviewer-persona panelists →
 synthesis), run `wf_99544adc-08b`, 2026-06-21.
 
+## Update 2026-07-16 (direct-model migration) — coded, GPU revalidation pending
+
+The localhost VLA-JEPA model server has now been removed from the live
+Archetype path. `InProcessVlaJepaPolicy` imports upstream's `baseframework`,
+loads the checkpoint, and calls `predict_action` directly in the same Python
+interpreter. The deleted wrapper only converted numpy images to PIL, invoked
+that method, and serialized its result; the direct adapter preserves those
+input transformations without a subprocess, websocket, port, or polling loop.
+
+This is currently a **code-level migration, not a new execution claim**. The
+3/3 receipt below was produced by the preceding localhost-wrapper revision.
+Before attributing any benchmark number to the direct path, run the GPU smoke
+and the same task-0 × 3-trial behavior check (or a golden normalized-action
+parity probe) and add a dated receipt to the RUN LEDGER.
+
+## Update 2026-07-16 (evening) — full-suite result matches the pilot: 99/100
+
+`colocated_suite_eval` (one container, one model load, 34.6 min):
+**libero_spatial 99/100 (99.0%)** — 10 tasks × init states 0-9, 250 control
+steps, env.seed(7), settle 10. Per-task: 10/10 on nine tasks, 9/10 on task 3.
+This is the SAME number the physical-ai-evals pilot produced (99/100) on the
+identical 10×10 protocol through a completely independent serving stack
+(lerobot port there; upstream's own websocket server here) — two-stack
+agreement is strong evidence the harness is faithful. Remaining for a citable
+benchmark row: the published 50-trials/task protocol (gate #8's N), which is
+now purely a matter of GPU-hours (~2.5 h at measured throughput).
+
 ## Update 2026-07-16 (later) — gate #1 CLOSED: first real number, root cause found
 
 The 0% mystery below is solved and **the first genuine archetype-native
@@ -57,7 +84,7 @@ point gate #1 said was "one run away"). Verified 2026-07-15/16 on L40S
   overclaim pattern this document warned about). Next probes, in order:
   (1) run upstream's own `eval_libero.py` inside the colocated image — zero
   new code, cleanly splits stack-vs-harness; (2) golden action-parity between
-  the resurrected June worker (git history) and the colocated server on
+  the resurrected June worker (git history) and the then-current colocated server on
   identical inputs.
 - **Housekeeping in the same pass:** the two-worker RPC path was deleted
   (`modal_worker.py`, `vla_jepa_worker.py`, e2e smokes, `video_rollout.py` —
@@ -76,7 +103,7 @@ Two top gating items are now **closed**, verified on Modal GPUs:
 - **Colocation ✅ — the Modal RPC is gone.** VLA-JEPA's pins (torch 2.6 /
   numpy 1.26.4 / transformers 4.57, no `python_requires`) coexist with LIBERO +
   Archetype in one py3.12 image (`vla_import_smoke`: `coexist=True`). The model
-  now loads **in-process** in the env container and infers via a localhost server
+  loaded **in-process** in the env container and, at that revision, inferred via a localhost server
   — `vla_smoke` returned a real 7-dim action with **no `.remote()`**. Two precise
   dep fixes got there: pin numpy `<2` (caught by the CPU import smoke before any
   GPU spend) and the flash-attn cu12/torch2.6/cp312 wheel (the torch-2.6 analogue

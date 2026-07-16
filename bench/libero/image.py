@@ -18,8 +18,8 @@ This file builds two images and every GPU entrypoint of the bench:
   LeRobot (all three pin robosuite 1.4.1).
 - ``colocated_image`` — the VLA-JEPA *inference slice* installed on top, so
   the **policy also runs in this container** (``InProcessVlaJepaPolicy``
-  proxies upstream's own model server over localhost; no cross-app RPC, no
-  frames Volume). The legacy two-worker RPC path (``modal_worker.py`` /
+  calls upstream's PyTorch model directly; no subprocess, socket, cross-app
+  RPC, or frames Volume). The legacy two-worker RPC path (``modal_worker.py`` /
   ``vla_jepa_worker.py``) was deleted 2026-07-15 — git history has it.
 
 Modal is used for exactly one reason: a Linux + EGL offscreen-render host with
@@ -30,22 +30,35 @@ states an intended result as achieved is a data-corruption bug: it poisons
 every future reader's model of reality. Update this table only after watching
 a run finish, never when writing new code.
 
-    vla_import_smoke     verified 2026-06-22 (CPU): coexist=True.
+    vla_import_smoke     predecessor verified 2026-06-22 (CPU): coexist=True.
+                         Direct-model import target NEVER RUN as of 2026-07-16.
     libero_smoke         verified 2026-06-22 (A10G, workspace everett-38139):
                          env loads, resets, steps under EGL on py3.12.
-    vla_smoke            verified 2026-06-22 (L40S, everett-38139): real 7-dim
-                         action from the in-process policy.
+    vla_smoke            direct-model version NEVER RUN as of 2026-07-16.
+                         Predecessor localhost-wrapper version verified
+                         2026-06-22 (L40S, everett-38139): real 7-dim action.
     eval_task            NEVER RUN as of 2026-07-16. Env-only by design.
     optimize_task        NEVER RUN as of 2026-07-16. Perturbation blocker open.
-    colocated_eval_task  VERIFIED 2026-07-16 (L40S, vangelis-tech): 3/3 on
+    colocated_eval_task  direct-model version NEVER RUN as of 2026-07-16.
+                         Predecessor localhost-wrapper version VERIFIED
+                         2026-07-16 (L40S, vangelis-tech): 3/3 on
                          libero_spatial task 0, mean length 77.7 (upstream's
                          own loop: 75), 110ms/inference, ~23 s/trial,
                          ~159 trials/GPU-hour — after fixing EGL thread
                          affinity (see its docstring for the debugging
                          record). Scope: n=3, one task; the published
                          protocol is 50 trials/task.
-    upstream_probe.py    the debugging instruments that found it — see that
-                         module's own RUN LEDGER.
+    colocated_suite_eval VERIFIED 2026-07-16 (L40S, vangelis-tech):
+                         libero_spatial 99/100 (99.0%) in 34.6 min, one model
+                         load — 10 tasks x init states 0-9, 250 control steps,
+                         env.seed(7), settle 10. Per-task: 10/10 on nine
+                         tasks, 9/10 on task 3 ("bowl on the cookie box").
+                         MATCHES the physical-ai-evals pilot (99/100, same
+                         10x10 protocol, lerobot serving) — two independent
+                         serving stacks, same number. Not yet the published
+                         50-trials/task protocol.
+    upstream_probe.py    the debugging instruments that found the EGL bug —
+                         see that module's own RUN LEDGER.
 
     modal run bench/libero/image.py                       # build + env smoke
     modal run bench/libero/image.py::vla_smoke            # one in-process action
@@ -239,11 +252,6 @@ colocated_image = (
         "eva-decord==0.6.1",  # decord 0.6.0 has no cp312 wheel; eva-decord is the cp312 fork
         "av==12.3.0",
         "albumentations==1.4.18",
-        # upstream websocket model server + client (not in requirements.txt)
-        "websockets",
-        "msgpack",
-        "msgpack-numpy",
-        "websocket-client==1.8.0",
         "huggingface_hub",
         # tracing backend for _obs.configure_tracing; inert without LOGFIRE_TOKEN
         "logfire",
@@ -308,11 +316,8 @@ def vla_import_smoke() -> dict:
         ("archetype", lambda: _ver("archetype")),
         ("libero.envs", lambda: _import_ok("libero.libero.envs", "OffScreenRenderEnv")),
         (
-            "vla_server_client",
-            lambda: _import_ok(
-                "deployment.model_server.tools.websocket_policy_client",
-                "WebsocketClientPolicy",
-            ),
+            "vla_model",
+            lambda: _import_ok("starVLA.model.framework.base_framework", "baseframework"),
         ),
         (
             "in_process_policy",
@@ -442,8 +447,8 @@ def optimize_task(
     best. Returns the full optimization trace and the winning instruction.
 
     COLOCATED: env + VLA-JEPA policy run in this one py3.12 container
-    (``InProcessVlaJepaPolicy``, a localhost model server) — no Modal ``.remote()``
-    and no frames Volume; the frames-visibility blocker is gone. ONE blocker
+    (``InProcessVlaJepaPolicy``, a direct PyTorch call) — no Modal ``.remote()``,
+    subprocess, socket, or frames Volume; the frames-visibility blocker is gone. ONE blocker
     remains for a *publishable* number (docs/planning/paper-readiness-dod.md):
     the token-toggle perturbation's reachable optimum is the base instruction, so
     it cannot exhibit positive lift — a real run needs a paraphrase/LLM strategy
@@ -541,11 +546,12 @@ def optimize_task(
     secrets=_obs_secrets,
 )
 def vla_smoke() -> dict:
-    """Colocation proof: launch the VLA-JEPA model server IN THIS container and
-    run one inference on a synthetic frame — no Modal ``.remote()``, no frames
-    Volume. If this returns a 7-dim action, the policy is in-process.
+    """Colocation proof: load VLA-JEPA and call it directly in this interpreter
+    on a synthetic frame — no Modal ``.remote()``, subprocess, socket, or frames
+    Volume. If this returns a 7-dim action, the policy is genuinely in-process.
 
-    RUN STATUS: verified 2026-06-22 on Modal L40S (see module RUN LEDGER).
+    RUN STATUS: direct-model version NEVER RUN as of 2026-07-16. Its
+    localhost-wrapper predecessor was verified 2026-06-22 (see RUN LEDGER).
     """
     import os  # noqa: PLC0415
 
@@ -569,9 +575,9 @@ def vla_smoke() -> dict:
     policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir=frames_dir)
     (action,) = policy.act([0], ["pick up the black bowl and place it on the plate"], [obs])
     assert len(action) == 7, f"expected 7-dim action, got {len(action)}"
-    print(f"VLA_SMOKE ok — in-process action (no Modal RPC): {action}")
+    print(f"VLA_SMOKE ok — direct in-process action: {action}")
     return {
-        "rpc": "none (in-process localhost server)",
+        "transport": "none (direct PyTorch call)",
         "action_dim": len(action),
         "action": action,
     }
@@ -598,15 +604,18 @@ def colocated_eval_task(
     breakdown (model-load, per-inference latency, per-trial and per-control-step
     wall-clock, trials/GPU-hour).
 
-    No Modal ``.remote()`` and no frames Volume: ``InProcessLiberoEnvClient``
-    writes frames to a local dir and ``InProcessVlaJepaPolicy`` (a localhost
-    model server) reads them from the same local dir. (``max_steps`` includes the
-    reset tick → ``max_steps - 1`` control steps.)
+    No Modal ``.remote()``, model subprocess, socket, or frames Volume:
+    ``InProcessLiberoEnvClient`` writes frames to a local dir and
+    ``InProcessVlaJepaPolicy`` calls the upstream PyTorch model directly after
+    reading them. (``max_steps`` includes the reset tick → ``max_steps - 1``
+    control steps.)
 
-    RUN STATUS: VERIFIED 2026-07-16 (L40S, vangelis-tech, watched) — 3/3 on
-    libero_spatial task 0, mean length 77.7 vs upstream's own loop at 75 on
-    the same init states, 110 ms/inference, ~23 s/trial, ~159 trials/GPU-hour.
-    Scope: n=3, one task; the published protocol is 50 trials/task.
+    RUN STATUS: direct-model version NEVER RUN as of 2026-07-16. The preceding
+    localhost-wrapper revision was VERIFIED 2026-07-16 (L40S, vangelis-tech,
+    watched) — 3/3 on libero_spatial task 0, mean length 77.7 vs upstream's own
+    loop at 75 on the same init states, 110 ms/inference, ~23 s/trial,
+    ~159 trials/GPU-hour. Scope: n=3, one task; the published protocol is 50
+    trials/task. Do not attribute that receipt to the direct-model revision.
 
     The debugging record (2026-07-15/16, 9 runs), kept because the failure
     mode WILL recur elsewhere: the first 5 executions scored 0 at the full
@@ -697,7 +706,7 @@ def colocated_eval_task(
                 "gpu_seconds_per_trial": round(steady_s / trials, 2) if trials else 0.0,
             }
             result = {
-                "policy": "InProcessVlaJepaPolicy (colocated, no Modal RPC)",
+                "policy": "InProcessVlaJepaPolicy (direct PyTorch, no transport)",
                 "gpu": gpu,
                 "suite": report.suite,
                 "task_id": report.task_id,
@@ -721,6 +730,133 @@ def colocated_eval_task(
             print(f"  mean_length: {result['mean_length']}")
             print(f"  profile: {profile}")
             return result
+        finally:
+            await container.shutdown()
+
+    return asyncio.run(_run())
+
+
+@app.function(
+    image=colocated_image,
+    gpu="L40S",
+    timeout=10800,
+    volumes={_VLA_CKPT_DIR: vla_ckpt_volume},
+    secrets=_obs_secrets,
+)
+def colocated_suite_eval(
+    suite: str = "libero_spatial",
+    trials: int = 10,
+    max_steps: int = 251,
+    tasks: str = "",
+) -> dict:
+    """Full-suite colocated eval: every task of ``suite`` x ``trials`` init
+    states, one container, one model load. ``trials=10`` with init states 0-9
+    is the same 100-episode protocol as the physical-ai-evals pilot
+    (VLA-JEPA 99/100), so the aggregate is directly comparable. ``max_steps``
+    includes the reset tick: 251 = the published 250 control steps for
+    libero_spatial. ``tasks`` is a comma-separated id subset; empty = all.
+
+    One resident policy model serves every task; ``policy.reset()`` runs between tasks
+    because chunk buffers key by env_key, which restarts at 0 each task — a
+    stale buffer would replay the previous task's actions.
+
+    RUN STATUS: VERIFIED 2026-07-16 (L40S, vangelis-tech, watched) —
+    libero_spatial **99/100 (99.0%) in 34.6 min** end to end, one model load.
+    10/10 on nine tasks; 9/10 on task 3. Matches the physical-ai-evals pilot
+    (99/100) on the identical 10-task x init-0-9 protocol through a fully
+    independent serving stack. Ledger-graded; per-task (world_id, run_id) in
+    the returned summary. Scope: pilot protocol, not yet the published
+    50-trials/task.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from archetype.app.container import ServiceContainer  # noqa: PLC0415
+    from archetype.core.config import StorageConfig  # noqa: PLC0415
+    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
+    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
+
+    local_frames = "/tmp/libero-suite-frames"
+
+    _configure_bench_tracing()
+
+    def _suite_task_ids() -> list[int]:
+        if tasks.strip():
+            return [int(t) for t in tasks.split(",")]
+        from bench.libero.in_process import _patch_torch_load_for_libero  # noqa: PLC0415
+
+        _patch_torch_load_for_libero()
+        from libero.libero import benchmark  # noqa: PLC0415
+
+        return list(range(benchmark.get_benchmark_dict()[suite]().n_tasks))
+
+    async def _run() -> dict:
+        container = ServiceContainer()
+        try:
+            task_ids = _suite_task_ids()
+            policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir=local_frames)
+            per_task: list[dict] = []
+            wall_start = time.monotonic()
+            for task_id in task_ids:
+                policy.reset()
+                env = InProcessLiberoEnvClient(
+                    suite=suite, task_id=task_id, with_frames=True, frames_dir=local_frames
+                )
+                storage = StorageConfig(
+                    uri="/tmp/libero-suite-store", namespace=f"suite_{suite}_t{task_id}"
+                )
+                report = await run_task_eval(
+                    world_service=container.world_service,
+                    simulation_service=container.simulation_service,
+                    eval_service=container.eval_service,
+                    env_client=env,
+                    policy_client=policy,
+                    suite=suite,
+                    task_id=task_id,
+                    trials=trials,
+                    max_steps=max_steps,
+                    storage=storage,
+                    with_frames=True,
+                )
+                successes = sum(1 for t in report.trials if t.success)
+                row = {
+                    "task_id": task_id,
+                    "instruction": report.instruction,
+                    "successes": successes,
+                    "trials": trials,
+                    "mean_length": round(report.mean_length, 1),
+                    "world_id": report.world_id,
+                    "run_id": report.run_id,
+                }
+                per_task.append(row)
+                print(
+                    f"SUITE_EVAL task {task_id}: {successes}/{trials} "
+                    f"mean_length={row['mean_length']}  {report.instruction!r}"
+                )
+            total_wall = time.monotonic() - wall_start
+            total_successes = sum(r["successes"] for r in per_task)
+            total_trials = trials * len(task_ids)
+            summary = {
+                "suite": suite,
+                "protocol": f"{len(task_ids)} tasks x init states 0-{trials - 1}, "
+                f"{max_steps - 1} control steps, env.seed(7), settle 10",
+                "total_successes": total_successes,
+                "total_trials": total_trials,
+                "success_rate": round(total_successes / total_trials, 4) if total_trials else 0.0,
+                "model_load_s": round(policy.startup_seconds, 2),
+                "total_wall_s": round(total_wall, 2),
+                "inference_calls": policy.infer_count,
+                "inference_mean_ms": round(policy.infer_seconds / policy.infer_count * 1000, 1)
+                if policy.infer_count
+                else 0.0,
+                "per_task": per_task,
+            }
+            print(
+                f"SUITE_EVAL TOTAL: {total_successes}/{total_trials} "
+                f"({summary['success_rate'] * 100:.1f}%) in {round(total_wall / 60, 1)} min"
+            )
+            return summary
         finally:
             await container.shutdown()
 

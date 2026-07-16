@@ -16,8 +16,8 @@ optimizer does not define (roadmap A3/H5, and the Limitations section).
 
 The plumbing under test is real: the instruction is a per-entity ``ManipTask``
 field that flows to the policy (``PolicyClient.act`` receives it; the real
-``VlaJepaPolicyClient`` forwards it into the VLA). Swap ``ScriptedReachEnv`` ->
-``InProcessLiberoEnvClient`` and the stand-in policy -> ``VlaJepaPolicyClient``
+``InProcessVlaJepaPolicy`` forwards it into the VLA). Swap ``ScriptedReachEnv`` ->
+``InProcessLiberoEnvClient`` and the stand-in policy -> ``InProcessVlaJepaPolicy``
 and the same sweep + optimizer run on real LIBERO on a Modal GPU container.
 """
 

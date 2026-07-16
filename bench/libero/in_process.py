@@ -324,6 +324,7 @@ class InProcessLiberoEnvSpec(EnvClientSpec):
     with_frames: bool = False
     frames_dir: str = "/tmp/archetype-libero-frames"
     settle_steps: int = 10
+    env_seed: int = 7
 
     def build(self) -> EnvClient:
         return InProcessLiberoEnvClient(
@@ -333,4 +334,5 @@ class InProcessLiberoEnvSpec(EnvClientSpec):
             with_frames=self.with_frames,
             frames_dir=self.frames_dir,
             settle_steps=self.settle_steps,
+            env_seed=self.env_seed,
         )

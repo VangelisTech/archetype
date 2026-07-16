@@ -1,18 +1,17 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Probe 1 from the colocated-eval elimination matrix: run UPSTREAM's own
-LIBERO eval inside our colocated image.
+"""LIBERO colocation debugging probes, retained as executable evidence tools.
 
-The colocated pipeline executes but scores 0 vs the published ~99% on
-libero_spatial task 0 (see the RUN LEDGER in ``image.py``). Every harness-side
-variable is eliminated with evidence; the open differential is the
-py3.12/torch2.6 stack itself, which has never had behavior-level validation.
-This probe splits stack-vs-harness with zero new inference code: upstream's
-``deployment/libero_eval`` scripts drive their own env construction, their own
-preprocessing, and their own server-side model — inside our image. If IT also
-scores ~0, the stack (or checkpoint interplay) is guilty and our port is
-exonerated; if it scores ~99, the residual is in our env/control-plane port.
+These probes closed the 2026-07-15/16 0% investigation. The upstream oracle
+scored 30/30 in this image, exonerating the py3.12/torch2.6 stack; the
+full-episode boundary diff then isolated thread-bound EGL rendering, fixed by
+``in_process.py::_EnvThread``. The resulting Archetype loop scored 3/3 on the
+same task and init states (see ``image.py``'s RUN LEDGER).
+
+The live probes call the same direct upstream ``baseframework`` model as
+``InProcessVlaJepaPolicy``. The localhost transport used during the original
+investigation has been retired.
 
 RUN LEDGER (same rule as image.py — update only from watched runs):
 
@@ -20,18 +19,24 @@ RUN LEDGER (same rule as image.py — update only from watched runs):
                     through examples/LIBERO/eval_libero.py (tyro CLI, per-step
                     M1Inference client, env.seed(7) constant, 256 render,
                     max_steps=250 for spatial, 10 wait steps).
-    upstream_eval   verified 2026-07-16 (L40S, vangelis-tech): libero_spatial,
+    upstream_eval   HISTORICAL VERIFIED RUN (entrypoint retired with the model
+                    server), 2026-07-16 (L40S, vangelis-tech): libero_spatial,
                     10 tasks x 3 episodes = 30/30 SUCCESS (100%) on the
-                    py3.12/torch2.6/flash-attn2.7 stack, same server launch and
+                    py3.12/torch2.6/flash-attn2.7 stack, same then-current model and
                     checkpoint volume as the colocated eval. First attempt
                     crashed on torch 2.6 weights_only loading LIBERO init-state
                     pickles in their fresh interpreter — fixed via
                     TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 (their code unmodified).
                     VERDICT: the stack is exonerated; the 0% defect is in our
-                    control-plane loop, not the image, server, or checkpoint.
+                    control-plane loop, not the image, model, or checkpoint.
+    ab_probe        direct-model version NEVER RUN as of 2026-07-16. Its
+                    predecessor proved step-0 inputs bit-identical.
+    ab_rollout      direct-model version NEVER RUN as of 2026-07-16. Its
+                    predecessor isolated EGL thread affinity as the defect.
 
     modal run bench/libero/upstream_probe.py::upstream_recon
-    modal run bench/libero/upstream_probe.py::upstream_eval
+    modal run bench/libero/upstream_probe.py::ab_probe
+    modal run bench/libero/upstream_probe.py::ab_rollout
 """
 
 import modal
@@ -80,14 +85,14 @@ def upstream_recon() -> dict:
     volumes={_VLA_CKPT_DIR: vla_ckpt_volume},
 )
 def ab_probe(task_id: int = 0) -> dict:
-    """Tensor-level A/B between upstream's input pipeline and ours, one server.
+    """Tensor-level A/B between upstream's input pipeline and ours, one model.
 
-    Upstream's eval scores 30/30 in this image while our loop scores 0, with
-    code-level parity everywhere — so diff the actual data. Builds the step-0
+    During the closed investigation, upstream scored 30/30 in this image while
+    our loop scored 0 despite code-level parity. This probe diffs the actual data by building the step-0
     model input both ways for the same task + init state (their way: fresh env,
     seed 7, 10 dummy steps, rotate+resize in memory; our way:
     ``InProcessLiberoEnvClient`` reset with settle steps -> PNG round-trip ->
-    ``_load_and_preprocess_ref``), sends both through the SAME server, and
+    ``_load_and_preprocess_ref``), sends both through the SAME direct model, and
     prints numerical diffs for every tensor plus both thumbnails.
     """
     import base64  # noqa: PLC0415
@@ -104,8 +109,6 @@ def ab_probe(task_id: int = 0) -> dict:
     from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
 
     policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir="/tmp/ab-frames")
-    policy._ensure_server()  # noqa: SLF001
-    client = policy._reg.client  # noqa: SLF001
 
     def thumb(tag: str, rgb224: "np.ndarray") -> None:
         t = cv2.resize(rgb224, (64, 64), interpolation=cv2.INTER_AREA)
@@ -114,16 +117,9 @@ def ab_probe(task_id: int = 0) -> dict:
             print(f"THUMB_{tag} {base64.b64encode(jpg.tobytes()).decode()}")
 
     def infer(agent224: "np.ndarray", wrist224: "np.ndarray", state8: list[float]) -> "np.ndarray":
-        payload = {
-            "batch_images": [[agent224, wrist224]],
-            "instructions": [instruction],
-            "unnorm_key": "franka",
-            "do_sample": False,
-            "use_ddim": True,
-            "num_ddim_steps": 10,
-            "state": [np.asarray(state8, dtype=np.float32)[None, :]],
-        }
-        return np.asarray(client.infer(payload)["data"]["normalized_actions"])[0]
+        return policy._predict_normalized(  # noqa: SLF001
+            instruction, agent224, wrist224, state8
+        )
 
     # ---- upstream side: their exact construction --------------------------
     _patch_torch_load_for_libero()
@@ -201,9 +197,8 @@ def ab_probe(task_id: int = 0) -> dict:
 )
 def ab_rollout(task_id: int = 0, max_steps: int = 250) -> dict:
     """Full-episode A/B: upstream's inline loop vs our run_task_eval, same
-    container, same server, same task + init state. Records every action on
-    both sides and reports the first step where the trajectories diverge —
-    step-0 parity is already proven (ab_probe), so the defect must appear here.
+    container, same direct model, same task + init state. Records every action on
+    both sides and reports the first step where the trajectories diverge.
     """
     import asyncio  # noqa: PLC0415
     import os  # noqa: PLC0415
@@ -222,8 +217,6 @@ def ab_rollout(task_id: int = 0, max_steps: int = 250) -> dict:
     from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
 
     policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir="/tmp/abr-frames")
-    policy._ensure_server()  # noqa: SLF001
-    client = policy._reg.client  # noqa: SLF001
 
     # ---- upstream inline episode (their loop, verbatim semantics) ----------
     _patch_torch_load_for_libero()
@@ -266,17 +259,8 @@ def ab_rollout(task_id: int = 0, max_steps: int = 250) -> dict:
                 }
             )
             boundary_u.append({"agent": agent, "wrist": wrist, "state": list(state)})
-            payload = {
-                "batch_images": [[agent, wrist]],
-                "instructions": [instruction],
-                "unnorm_key": "franka",
-                "do_sample": False,
-                "use_ddim": True,
-                "num_ddim_steps": 10,
-                "state": [np.asarray(state, dtype=np.float32)[None, :]],
-            }
-            normalized = np.clip(
-                np.asarray(client.infer(payload)["data"]["normalized_actions"])[0], -1, 1
+            normalized = policy._predict_normalized(  # noqa: SLF001
+                instruction, agent, wrist, state
             )
             rows = policy._unnormalize(normalized)  # noqa: SLF001
             chunk = [VlaJepaPolicyClient._convert_gripper(a) for a in rows]  # noqa: SLF001
@@ -398,85 +382,4 @@ def ab_rollout(task_id: int = 0, max_steps: int = 250) -> dict:
         "ours_success": report.success_rate,
         "ours_steps": len(actions_o),
         "first_divergence": first,
-    }
-
-
-@app.function(
-    gpu="L40S",
-    timeout=7200,
-    volumes={_VLA_CKPT_DIR: vla_ckpt_volume},
-)
-def upstream_eval(task_suite: str = "libero_spatial", trials: int = 3) -> dict:
-    """Upstream's own eval (examples/LIBERO/eval_libero.py at the pinned SHA)
-    against the same localhost model server our policy uses, in this image.
-
-    Their loop owns everything: env construction (env.seed(7), 256 render),
-    10 wait steps, per-step M1Inference client, chunk cadence from the ckpt
-    config, max_steps=250 for spatial. We only provide the server (reusing
-    ``InProcessVlaJepaPolicy``'s checkpoint/patch/launch machinery) and tyro.
-    Runs the full suite: n_tasks x ``trials`` episodes.
-    """
-    import os  # noqa: PLC0415
-    import re  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
-    import sys  # noqa: PLC0415
-
-    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
-
-    subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "tyro"],
-        check=True,
-        timeout=300,
-    )
-
-    # Same server, same checkpoint, same config patching as the colocated eval.
-    policy = InProcessVlaJepaPolicy(ckpt_dir=_VLA_CKPT_DIR, frames_dir="/tmp/unused")
-    policy._ensure_server()  # noqa: SLF001 — probe reuses the bench's own launcher
-
-    cmd = [
-        sys.executable,
-        "examples/LIBERO/eval_libero.py",
-        "--args.pretrained-path",
-        f"{_VLA_CKPT_DIR}/LIBERO/checkpoints/VLA-JEPA-LIBERO.pt",
-        "--args.host",
-        "127.0.0.1",
-        "--args.port",
-        "15084",
-        "--args.task-suite-name",
-        task_suite,
-        "--args.num-trials-per-task",
-        str(trials),
-        "--args.video-out-path",
-        "/tmp/upstream-videos",
-    ]
-    # Upstream ran on torch<2.6; LIBERO's init-state pickles trip torch 2.6's
-    # weights_only default in their fresh interpreter (our port patches
-    # torch.load in-process; their subprocess has no such patch). torch's own
-    # env escape hatch restores the old behavior without touching their code —
-    # the benchmark files are part of the trusted image.
-    env = os.environ | {"TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD": "1"}
-    proc = subprocess.Popen(  # noqa: S603
-        cmd,
-        cwd="/opt/VLA-JEPA",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-    )
-    lines: list[str] = []
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        print(line, end="")
-        lines.append(line)
-    code = proc.wait()
-
-    text = "".join(lines)
-    rates = re.findall(r"Total success rate: ([0-9.]+)", text)
-    episodes = re.findall(r"Total episodes: (\d+)", text)
-    return {
-        "exit_code": code,
-        "task_suite": task_suite,
-        "trials_per_task": trials,
-        "total_success_rate": float(rates[-1]) if rates else None,
-        "total_episodes": int(episodes[-1]) if episodes else None,
     }

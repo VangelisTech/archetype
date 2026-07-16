@@ -7,9 +7,9 @@ The research boundary, stated precisely: the natural-language instruction is a
 per-entity ``ManipTask`` field that flows, unchanged, to the policy.
 ``PolicyActionProcessor`` hands each entity's ``maniptask__instruction`` to
 ``PolicyClient.act(env_keys, instructions, observations)``; the real
-``VlaJepaPolicyClient`` forwards it straight into the VLA
-(``infer_refs(instruction=...)``). So "optimize the prompt for a VLA" is not a
-new mechanism — it is:
+``InProcessVlaJepaPolicy`` forwards it straight into the VLA
+(``predict_action(instructions=...)``). So "optimize the prompt for a VLA" is
+not a new mechanism — it is:
 
     spawn V instruction variants x S seeds as trial entities in ONE
     control-plane world, batch-step them, grade success-rate *per variant*
@@ -20,7 +20,7 @@ That is the same orchestration as :func:`bench.libero.eval_run.run_task_eval`
 single difference that the per-entity instruction varies. The scripted
 ``InstructionConditionedReachPolicy`` proves the loop end-to-end in CI (no GPU,
 no model, fully replayable); swapping in ``InProcessLiberoEnvClient`` +
-``VlaJepaPolicyClient`` runs the identical loop on real LIBERO on a Modal GPU
+``InProcessVlaJepaPolicy`` runs the identical loop on real LIBERO on a Modal GPU
 container, the orchestration untouched.
 
 The optimizer's ``evaluate`` callback is injectable. The default closes over a

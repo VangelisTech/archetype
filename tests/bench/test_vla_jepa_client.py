@@ -167,8 +167,8 @@ def test_act_keeps_independent_buffers_per_env_key():
 
 def test_in_process_clients_pickle_as_scalar_stubs():
     """The colocated env + policy run behind Daft ``@daft.cls`` UDFs, which
-    serialize the client. Their live state (MuJoCo envs / model subprocess) lives
-    in process-global registries, so the instances must pickle as scalars — this
+    serialize the client. Their live state (MuJoCo envs / direct torch model) lives
+    in process-global caches, so the instances must pickle as scalars — this
     is the regression guard for the serialization failure the first eval hit."""
     import pickle  # noqa: PLC0415
 
@@ -182,8 +182,80 @@ def test_in_process_clients_pickle_as_scalar_stubs():
     assert env2._suite_name == "libero_spatial" and env2._task_id == 2
     assert env2._frames_dir == "/frames" and env2._with_frames is True
 
-    policy = InProcessVlaJepaPolicy(ckpt_dir="/ckpts", port=15084, frames_dir="/frames")
+    policy = InProcessVlaJepaPolicy(ckpt_dir="/ckpts", frames_dir="/frames")
     policy._buffers = {0: [[1.0] * 7]}  # a buffered chunk must NOT cross the boundary
     policy2 = pickle.loads(pickle.dumps(policy))
-    assert policy2._port == 15084 and policy2._ckpt_dir == "/ckpts"
+    assert policy2._ckpt_dir == "/ckpts" and policy2._frames_dir == "/frames"
     assert policy2._buffers == {}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"use_bf16": False}, id="precision"),
+        pytest.param({"use_sdpa": True}, id="attention"),
+        pytest.param({"ckpt_dir": "/other-ckpts"}, id="checkpoint"),
+    ],
+)
+def test_in_process_policy_reloads_direct_model_when_load_config_changes(monkeypatch, overrides):
+    """Warm-container A/B calls must load the requested PyTorch configuration."""
+    import bench.libero.in_process_policy as policy_module  # noqa: PLC0415
+
+    launches = []
+
+    def _fake_load(self):
+        model = object()
+        launches.append((self._model_config, model))
+        return model
+
+    monkeypatch.setattr(policy_module, "_MODEL", None)
+    monkeypatch.setattr(policy_module, "_MODEL_CONFIG", None)
+    monkeypatch.setattr(policy_module.InProcessVlaJepaPolicy, "_load_model", _fake_load)
+
+    base_kwargs = {"ckpt_dir": "/ckpts", "use_bf16": True, "use_sdpa": False}
+    first = policy_module.InProcessVlaJepaPolicy(**base_kwargs)
+    first_model = first._ensure_model()
+
+    # An identical client reuses the resident direct model.
+    same_model = policy_module.InProcessVlaJepaPolicy(**base_kwargs)._ensure_model()
+    assert same_model is first_model
+    assert launches == [(first._model_config, first_model)]
+
+    # A load-time option change replaces it instead of silently absorbing the
+    # requested discriminator configuration.
+    changed = policy_module.InProcessVlaJepaPolicy(**(base_kwargs | overrides))
+    changed_model = changed._ensure_model()
+    assert changed_model is not first_model
+    assert launches == [
+        (first._model_config, first_model),
+        (changed._model_config, changed_model),
+    ]
+    assert policy_module._MODEL_CONFIG == changed._model_config
+    assert not hasattr(policy_module, "_POLICY_SERVERS")
+
+
+def test_in_process_policy_calls_upstream_model_directly(monkeypatch):
+    import numpy as np  # noqa: PLC0415
+    from PIL import Image  # noqa: PLC0415
+
+    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
+
+    class _FakeModel:
+        def __init__(self) -> None:
+            self.payload = None
+
+        def predict_action(self, **payload):
+            self.payload = payload
+            return {"normalized_actions": np.zeros((1, 7, 7), dtype=np.float32)}
+
+    model = _FakeModel()
+    policy = InProcessVlaJepaPolicy()
+    monkeypatch.setattr(policy, "_ensure_model", lambda: model)
+
+    rgb = np.zeros((224, 224, 3), dtype=np.uint8)
+    normalized = policy._predict_normalized("pick up the bowl", rgb, rgb, [0.0] * 8)
+
+    assert normalized.shape == (7, 7)
+    assert model.payload["instructions"] == ["pick up the bowl"]
+    assert all(isinstance(image, Image.Image) for image in model.payload["batch_images"][0])
+    assert np.asarray(model.payload["state"]).shape == (1, 1, 8)

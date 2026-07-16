@@ -58,7 +58,7 @@ def _quat_to_axis_angle(quat: list[float]) -> list[float]:
 # VlaJepaPolicyClient: chunk-buffered, ref-consuming
 # ---------------------------------------------------------------------------
 
-# Chunk length produced by VLA-JEPA (matches server response; currently 7).
+# Chunk length produced by VLA-JEPA's upstream ``predict_action`` (currently 7).
 _CHUNK_LEN = 7
 
 
@@ -201,8 +201,8 @@ class VlaJepaPolicyClient:
         """Return one action per env, popping from the chunk buffer.
 
         When a buffer is empty, calls ``infer_refs`` to refresh it with a
-        new chunk.  The chunk length equals the server's response length
-        (currently ``_CHUNK_LEN = 7``).
+        new chunk. The chunk length equals the model output length (currently
+        ``_CHUNK_LEN = 7``).
 
         Frame refs (``agentview_ref``, ``wrist_ref``) must be present in
         the observation dicts; they are forwarded to ``infer_refs`` for
