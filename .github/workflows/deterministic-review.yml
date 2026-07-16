@@ -100,8 +100,8 @@ jobs:
             structured output.
 
             The gate rejects the result unless it binds to the exact head,
-            covers every scoped file and detector category, places every file
-            in a context-relevant reviewed area, gives a substantive
+            lists every scoped file and detector category exactly once, places
+            every file in a context-relevant reviewed area, gives a substantive
             diff-specific summary, and anchors every finding to an actual
             changed line. An empty findings array is valid only after that
             complete review. Cover each changed file in at least one
