@@ -1,10 +1,18 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batched control-plane LIBERO eval — the clean replacement for eval_driver.
+"""Batched control-plane policy eval: N trials of one task in ONE world.
 
-What the old ``eval_driver.run_episode`` got wrong (and why the paper numbers
-were untrustworthy):
+Env- and policy-agnostic rollout orchestration — the machinery the LIBERO
+dogfood forced into existence, graduated from ``bench/libero/eval_run.py``
+into the package (2026-07-16) because nothing in it is LIBERO-specific: it
+composes ``EnvClient``/``PolicyClient`` (this package), the simulation
+service's episode contract, and ledger grading. Proven at scale the day it
+graduated (libero_spatial 99/100 across 100 episodes); the same code path
+drives the scripted contract env in CI.
+
+Design record — what the retired ``eval_driver.run_episode`` got wrong (and
+why its numbers were untrustworthy):
 
 - one **ephemeral world per trial**, ``destroy()``d after grading → the raw
   ``ManipStatus`` rows were orphaned under a ``(world_id, run_id)`` nobody
@@ -30,9 +38,9 @@ This module does it the Archetype-native way:
   not computed in the driver — so there is no ``EvalTrialResult`` summary to
   drift (E1: it is recomputable, hence legacy).
 
-The env client is injected, so this is identical for the in-process LIBERO
-client (``InProcessLiberoEnvClient``), the Modal client, or the scripted
-contract env — the orchestration never learns which.
+The env client is injected, so this is identical for a GPU simulator client
+(e.g. robot-evals' in-process LIBERO client) or the scripted contract env —
+the orchestration never learns which.
 """
 
 from __future__ import annotations

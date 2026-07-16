@@ -208,8 +208,8 @@ def ab_rollout(task_id: int = 0, max_steps: int = 250) -> dict:
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
+    from archetype.experiments.eval_rollouts import run_task_eval  # noqa: PLC0415
     from bench.libero.clients import VlaJepaPolicyClient  # noqa: PLC0415
-    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
     from bench.libero.in_process import (  # noqa: PLC0415
         InProcessLiberoEnvClient,
         _patch_torch_load_for_libero,

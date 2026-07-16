@@ -39,6 +39,7 @@ import uuid_utils as uuid
 
 from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.experiments.eval_rollouts import _final_row_per_entity
 from archetype.experiments.manipulation import (
     ACTION_DIM,
     EnvStepProcessor,
@@ -50,7 +51,6 @@ from archetype.experiments.manipulation import (
     ManipTask,
 )
 from archetype.experiments.policy import PolicyActionProcessor
-from bench.libero.eval_run import _final_row_per_entity
 
 # ---------------------------------------------------------------------------
 # Per-variant graded outcome

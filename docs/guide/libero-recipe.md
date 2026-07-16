@@ -44,7 +44,7 @@ and installs the VLA-JEPA inference slice into the same container:
 | `bench/libero/image.py` | Builds both images (`image`: py3.12 + modern torch/mujoco + robosuite 1.4.1 + LIBERO at a pinned SHA + Archetype editable-installed; `colocated_image`: the VLA-JEPA inference slice on top). Owns every GPU entrypoint and the RUN LEDGER. |
 | `bench/libero/in_process.py` | `InProcessLiberoEnvClient` — the in-process `EnvClient`. Drives LIBERO's `OffScreenRenderEnv` directly; no `.remote()`, no container split, no env-state-loss. |
 | `bench/libero/in_process_policy.py` | `InProcessVlaJepaPolicy` — loads upstream's `baseframework` and calls `predict_action` directly in the same interpreter. No subprocess, websocket, port, or polling loop. Reads frames from the same local dir the env writes. |
-| `bench/libero/eval_run.py` | `run_task_eval` — the batched control-plane orchestration. Env-client-agnostic. |
+| `archetype.experiments.eval_rollouts` | `run_task_eval` — the batched control-plane orchestration. Env-client-agnostic; graduated into the package 2026-07-16 (with `instruction_sweep`) because nothing in it is LIBERO-specific. |
 | `bench/libero/clients.py` | The tested VLA↔robosuite numerics reference (state vector, gripper sign, chunk cadence) that the in-process policy reuses. |
 
 `import archetype` and `import libero` share one interpreter. The env client owns
@@ -117,7 +117,7 @@ deprecation noise, not a wall. The smoke entrypoint confirms it.
 
 ## The architecture: one control-plane world, N trial entities
 
-`bench/libero/eval_run.py::run_task_eval` runs the eval the Archetype-native way.
+`archetype.experiments.eval_rollouts::run_task_eval` runs the eval the Archetype-native way.
 This is the clean replacement for the old `eval_driver.run_episode`, which
 produced untrustworthy paper numbers (one ephemeral world per trial, orphaned
 ledger rows, a hand-rolled episode loop, a manual quota reset).

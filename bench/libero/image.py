@@ -404,7 +404,7 @@ def eval_task(
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
-    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from archetype.experiments.eval_rollouts import run_task_eval  # noqa: PLC0415
     from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
 
     _configure_bench_tracing()
@@ -477,13 +477,13 @@ def optimize_task(
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
-    from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
-    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
-    from bench.libero.instruction_sweep import (  # noqa: PLC0415
+    from archetype.experiments.instruction_sweep import (  # noqa: PLC0415
         TemplatePerturbation,
         optimize_instruction,
         run_instruction_sweep,
     )
+    from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
+    from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
 
     local_frames = "/tmp/libero-opt-frames"
 
@@ -656,7 +656,7 @@ def colocated_eval_task(
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
-    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from archetype.experiments.eval_rollouts import run_task_eval  # noqa: PLC0415
     from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
     from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
 
@@ -789,7 +789,7 @@ def colocated_suite_eval(
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
-    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from archetype.experiments.eval_rollouts import run_task_eval  # noqa: PLC0415
     from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
     from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
 
@@ -914,7 +914,7 @@ def pro_eval_task(
 
     from archetype.app.container import ServiceContainer  # noqa: PLC0415
     from archetype.core.config import StorageConfig  # noqa: PLC0415
-    from bench.libero.eval_run import run_task_eval  # noqa: PLC0415
+    from archetype.experiments.eval_rollouts import run_task_eval  # noqa: PLC0415
     from bench.libero.in_process import InProcessLiberoEnvClient  # noqa: PLC0415
     from bench.libero.in_process_policy import InProcessVlaJepaPolicy  # noqa: PLC0415
     from bench.libero.pro_suite import download_libero_pro, register_libero_pro  # noqa: PLC0415
