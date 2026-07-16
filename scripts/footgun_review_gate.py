@@ -22,6 +22,7 @@ rendering GitHub review payloads, and verifying the posted evidence.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import re
@@ -85,7 +86,7 @@ def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
         "core.quotePath=false",
         "diff",
         "--name-only",
-        "--no-renames",
+        "--find-renames",
         "-z",
         comparison,
     )
@@ -99,8 +100,7 @@ def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
         "diff",
         "--no-ext-diff",
         "--no-color",
-        "--no-renames",
-        "--no-prefix",
+        "--find-renames",
         "--unified=3",
         comparison,
     ).decode("utf-8")
@@ -114,6 +114,19 @@ def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
     return scope, diff
 
 
+def _diff_path(value: str) -> str | None:
+    if value == "/dev/null":
+        return None
+    if value.startswith('"'):
+        try:
+            value = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as error:
+            raise GateError(f"invalid quoted path in unified diff: {value!r}") from error
+    if value.startswith(("a/", "b/")):
+        return value[2:]
+    return value
+
+
 def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
     """Return commentable changed lines as ``(path, side, line)`` tuples."""
     anchors: set[tuple[str, str, int]] = set()
@@ -125,12 +138,10 @@ def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
 
     for raw_line in diff.splitlines():
         if not in_hunk and raw_line.startswith("--- "):
-            value = raw_line[4:]
-            old_path = None if value == "/dev/null" else value
+            old_path = _diff_path(raw_line[4:])
             continue
         if not in_hunk and raw_line.startswith("+++ "):
-            value = raw_line[4:]
-            new_path = None if value == "/dev/null" else value
+            new_path = _diff_path(raw_line[4:])
             continue
 
         match = _HUNK_RE.match(raw_line)
@@ -146,14 +157,15 @@ def changed_line_anchors(diff: str) -> set[tuple[str, str, int]]:
             continue
 
         prefix = raw_line[:1]
+        comment_path = new_path or old_path
         if prefix == "-":
-            if old_path is not None:
-                anchors.add((old_path, "LEFT", old_line))
+            if comment_path is not None:
+                anchors.add((comment_path, "LEFT", old_line))
             old_line += 1
             old_remaining -= 1
         elif prefix == "+":
-            if new_path is not None:
-                anchors.add((new_path, "RIGHT", new_line))
+            if comment_path is not None:
+                anchors.add((comment_path, "RIGHT", new_line))
             new_line += 1
             new_remaining -= 1
         elif prefix == " ":

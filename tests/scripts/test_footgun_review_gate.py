@@ -41,23 +41,36 @@ from footgun_review_gate import (  # noqa: E402
 
 HEAD_SHA = "a" * 40
 DIFF = """\
-diff --git old.py old.py
+diff --git a/old.py b/old.py
 index 1111111..2222222 100644
---- old.py
-+++ old.py
+--- a/old.py
++++ b/old.py
 @@ -2,3 +2,3 @@
  keep
 -unsafe_call()
 +safe_call()
  tail
-diff --git new.py new.py
+diff --git a/new.py b/new.py
 new file mode 100644
 index 0000000..3333333
 --- /dev/null
-+++ new.py
++++ b/new.py
 @@ -0,0 +1,2 @@
 +first = 1
 +second = 2
+"""
+
+RENAMED_DIFF = """\
+diff --git a/old_name.py b/new_name.py
+similarity index 80%
+rename from old_name.py
+rename to new_name.py
+index 1111111..2222222 100644
+--- a/old_name.py
++++ b/new_name.py
+@@ -1 +1 @@
+-unsafe_call()
++safe_call()
 """
 
 
@@ -121,6 +134,13 @@ def test_changed_line_anchors_include_only_added_and_removed_lines():
         ("old.py", "RIGHT", 3),
         ("new.py", "RIGHT", 1),
         ("new.py", "RIGHT", 2),
+    }
+
+
+def test_renamed_file_anchors_use_githubs_new_path_on_both_sides():
+    assert changed_line_anchors(RENAMED_DIFF) == {
+        ("new_name.py", "LEFT", 1),
+        ("new_name.py", "RIGHT", 1),
     }
 
 
