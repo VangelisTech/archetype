@@ -39,15 +39,15 @@ a run finish, never when writing new code.
                          2026-06-22 (L40S, everett-38139): real 7-dim action.
     eval_task            NEVER RUN as of 2026-07-16. Env-only by design.
     optimize_task        NEVER RUN as of 2026-07-16. Perturbation blocker open.
-    colocated_eval_task  direct-model version NEVER RUN as of 2026-07-16.
-                         Predecessor localhost-wrapper version VERIFIED
-                         2026-07-16 (L40S, vangelis-tech): 3/3 on
-                         libero_spatial task 0, mean length 77.7 (upstream's
-                         own loop: 75), 110ms/inference, ~23 s/trial,
-                         ~159 trials/GPU-hour — after fixing EGL thread
-                         affinity (see its docstring for the debugging
-                         record). Scope: n=3, one task; the published
-                         protocol is 50 trials/task.
+    colocated_eval_task  direct-model version VERIFIED 2026-07-16 (L40S,
+                         vangelis-tech, watched; first LOGFIRE_TOKEN-traced
+                         run): 3/3 on libero_spatial task 0, mean length
+                         78.3, 122ms/inference, ~25 s/trial — behavior-
+                         equivalent to the localhost-wrapper predecessor
+                         (3/3, 77.7, verified same day after the EGL
+                         thread-affinity fix; upstream's own loop: 75).
+                         Scope: n=3, one task; published protocol is 50
+                         trials/task.
     colocated_suite_eval VERIFIED 2026-07-16 (L40S, vangelis-tech):
                          libero_spatial 99/100 (99.0%) in 34.6 min, one model
                          load — 10 tasks x init states 0-9, 250 control steps,
@@ -626,12 +626,12 @@ def colocated_eval_task(
     reading them. (``max_steps`` includes the reset tick → ``max_steps - 1``
     control steps.)
 
-    RUN STATUS: direct-model version NEVER RUN as of 2026-07-16. The preceding
-    localhost-wrapper revision was VERIFIED 2026-07-16 (L40S, vangelis-tech,
-    watched) — 3/3 on libero_spatial task 0, mean length 77.7 vs upstream's own
-    loop at 75 on the same init states, 110 ms/inference, ~23 s/trial,
-    ~159 trials/GPU-hour. Scope: n=3, one task; the published protocol is 50
-    trials/task. Do not attribute that receipt to the direct-model revision.
+    RUN STATUS: direct-model version VERIFIED 2026-07-16 (L40S, vangelis-tech,
+    watched; first LOGFIRE_TOKEN-traced run) — 3/3 on libero_spatial task 0,
+    mean length 78.3, 122 ms/inference, ~25 s/trial. Behavior-equivalent to the
+    localhost-wrapper predecessor verified the same day (3/3, 77.7; upstream's
+    own loop: 75 on the same init states). Scope: n=3, one task; the published
+    protocol is 50 trials/task.
 
     The debugging record (2026-07-15/16, 9 runs), kept because the failure
     mode WILL recur elsewhere: the first 5 executions scored 0 at the full
