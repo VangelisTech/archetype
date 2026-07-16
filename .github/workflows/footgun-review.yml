@@ -45,10 +45,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BOOTSTRAP_GATE_SHA256: 64b6ca1bf5852faa222897c845bdeb39df93844354791c4caac72c638253dd69
-          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           if git cat-file -e "${BASE_SHA}:scripts/footgun_review_gate.py" 2>/dev/null; then
             git show "${BASE_SHA}:scripts/footgun_review_gate.py" > "${GATE_SCRIPT}"
@@ -69,10 +67,6 @@ jobs:
             --head "${HEAD_SHA}" \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}"
-          gh api \
-            -H "Accept: application/vnd.github.v3.diff" \
-            "repos/${REPOSITORY}/compare/${BASE_SHA}...${HEAD_SHA}" \
-            > "${DIFF_FILE}"
           echo "schema=$(python3 "${GATE_SCRIPT}" schema)" >> "${GITHUB_OUTPUT}"
 
       - name: Run footgun detector
