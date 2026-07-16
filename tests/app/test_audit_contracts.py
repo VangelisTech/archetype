@@ -6,7 +6,7 @@
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.audit_log import AuditLog, make_audit_row
+from archetype.app.audit_log import AuditBackpressureError, AuditLog, make_audit_row
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
@@ -207,7 +207,7 @@ async def test_batch_threshold_creates_one_snapshot_per_batch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failed_flush_cannot_grow_pending_rows_beyond_one_batch(tmp_path):
+async def test_failed_flush_rejects_new_rows_without_unbounded_growth(tmp_path):
     class FailingContext:
         table = object()
 
@@ -231,6 +231,7 @@ async def test_failed_flush_cannot_grow_pending_rows_beyond_one_batch(tmp_path):
         await audit.record(make_audit_row(ctx, "second"))
     assert len(audit._pending) == 2
 
-    with pytest.raises(RuntimeError, match="storage unavailable"):
-        await audit.record(make_audit_row(ctx, "never-buffered"))
+    with pytest.raises(AuditBackpressureError, match="bounded pending batch"):
+        await audit.record(make_audit_row(ctx, "rejected"))
     assert len(audit._pending) == 2
+    assert audit.rejected_rows == 1

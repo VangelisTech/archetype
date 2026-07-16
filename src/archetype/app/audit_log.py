@@ -35,6 +35,10 @@ _AUDIT_TABLE = "audit_rows"
 DEFAULT_AUDIT_FLUSH_ROWS = 128
 
 
+class AuditBackpressureError(RuntimeError):
+    """The bounded audit buffer rejected a row while storage was unavailable."""
+
+
 def default_audit_storage() -> StorageConfig:
     """Return Archetype's concrete local audit lakehouse configuration."""
     return StorageConfig(
@@ -104,6 +108,12 @@ class AuditLog:
         self._context: IcebergCatalogContext | None = None
         self._table: Table | None = None
         self._lock = asyncio.Lock()
+        self._rejected_rows = 0
+
+    @property
+    def rejected_rows(self) -> int:
+        """Rows rejected before admission because the bounded batch was full."""
+        return self._rejected_rows
 
     async def _get_context(self) -> IcebergCatalogContext:
         if self._context is None:
@@ -133,7 +143,13 @@ class AuditLog:
             # it before accepting another row so a broken backend cannot turn
             # advisory telemetry into an unbounded memory sink.
             if len(self._pending) >= self._flush_rows:
-                await self._flush_locked()
+                try:
+                    await self._flush_locked()
+                except Exception as exc:
+                    self._rejected_rows += 1
+                    raise AuditBackpressureError(
+                        "audit row rejected: the bounded pending batch could not flush"
+                    ) from exc
             self._pending.append(row)
             if len(self._pending) >= self._flush_rows:
                 await self._flush_locked()

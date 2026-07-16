@@ -138,7 +138,7 @@ class CommandService:
             row = make_audit_row(ctx, command_type, world_id, **kw)
             await self._audit.record(row)
         except Exception:
-            logger.debug("audit emission failed", exc_info=True)
+            logger.warning("audit emission failed", exc_info=True)
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
 

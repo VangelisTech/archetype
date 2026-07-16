@@ -36,19 +36,28 @@ session into a second namespace.
 appended when it reaches the threshold; `flush()`, `query()`, and `shutdown()`
 also flush the current partial batch. One batch is one Iceberg append/snapshot,
 not one snapshot per audit row. If a threshold flush fails, the log retries
-that same bounded batch before accepting another row.
+that same bounded batch before accepting another row. If storage is still
+unavailable, the incoming row is rejected with `AuditBackpressureError`, the
+full batch remains intact, and `rejected_rows` increments. The log never grows
+an unbounded process-memory queue to conceal a storage outage.
 
 Concurrent processes append to the same table using Iceberg's optimistic
 commit protocol. A conflicting append refreshes table metadata and retries
 with bounded backoff; it does not create a process-local audit fork.
 
-Audit remains advisory at the command gate: `CommandService._emit` reports and
-suppresses an audit failure so telemetry cannot retroactively fail an applied
-operation. Facts and receipts remain the durable evidence boundary.
+Audit remains advisory at the command gate: `CommandService._emit` logs an
+audit failure at warning level and suppresses it so telemetry cannot
+retroactively fail an applied operation. Facts and receipts remain the durable
+evidence boundary. Deployments that require lossless audit must monitor
+`rejected_rows` and warning logs and restore storage before accepting more
+gated work; the built-in gate does not claim lossless delivery during an
+outage.
 
 ## 4. Audit unit
 
-Every gated call emits one audit row.
+Every gated call attempts exactly one audit emission. An accepted row is
+persisted once; a row rejected by bounded-buffer backpressure is observable as
+described above and is not represented as durable audit history.
 
 Multi-step gate methods still emit exactly one audit row:
 
