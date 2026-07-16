@@ -76,7 +76,7 @@ def _run_git(*args: str) -> bytes:
 
 
 def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
-    """Return the exact file/category manifest and no-rename unified diff."""
+    """Return the exact file/category manifest and rename-aware unified diff."""
     if not _SHA_RE.fullmatch(base_sha) or not _SHA_RE.fullmatch(head_sha):
         raise GateError("base and head must be full lowercase Git SHAs")
 
