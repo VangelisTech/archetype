@@ -149,9 +149,14 @@ class FactWriteReceipt:
     run_id: str
     table_name: str
     table_id: str
+    sources_matched: int | None
     rows_written: int
     snapshot_id: int | None
 
     @property
-    def duplicate(self) -> bool:
-        return self.rows_written == 0
+    def duplicate(self) -> bool | None:
+        if self.rows_written > 0:
+            return False
+        if self.sources_matched is None:
+            return None
+        return self.sources_matched > 0

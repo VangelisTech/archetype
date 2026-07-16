@@ -141,6 +141,20 @@ class FactService:
             sources = sources.with_column("source_uri", file_path(col("file")))
             sources = sources.with_column("content_hash", _file_content_hash(col("file")))
             sources = sources.select("file", "source_uri", "content_hash")
+            sources = sources.collect(num_preview_rows=0)
+            sources_matched = sources.count_rows()
+            if not sources_matched:
+                return self._receipt(
+                    wid,
+                    rid,
+                    table_name,
+                    table_id,
+                    table,
+                    iceberg,
+                    sources_matched,
+                    0,
+                )
+
             sources = sources.distinct("source_uri", "content_hash")
             if table is not None:
                 sources = self._anti_join_existing(
@@ -150,10 +164,19 @@ class FactService:
                     wid,
                     rid,
                 ).select("file", "source_uri", "content_hash")
-
             sources = sources.collect(num_preview_rows=0)
+
             if sources.count_rows() == 0:
-                return self._receipt(wid, rid, table_name, table_id, table, iceberg, 0)
+                return self._receipt(
+                    wid,
+                    rid,
+                    table_name,
+                    table_id,
+                    table,
+                    iceberg,
+                    sources_matched,
+                    0,
+                )
 
             facts = processor.process(sources)
             if not isinstance(facts, DataFrame):
@@ -167,6 +190,7 @@ class FactService:
                 world_id=wid,
                 run_id=rid,
                 iceberg=iceberg,
+                sources_matched=sources_matched,
             )
 
     async def write_facts(
@@ -195,6 +219,7 @@ class FactService:
                 world_id=wid,
                 run_id=rid,
                 iceberg=iceberg,
+                sources_matched=None,
             )
 
     async def read_facts(
@@ -347,6 +372,7 @@ class FactService:
         world_id: str,
         run_id: str,
         iceberg: IcebergCatalogContext,
+        sources_matched: int | None,
     ) -> FactWriteReceipt:
         key_count = col("source_uri").count().over(Window().partition_by(*FACT_KEY_COLUMNS))
         facts = payload.with_column(
@@ -386,6 +412,7 @@ class FactService:
             table_id,
             table,
             iceberg,
+            sources_matched,
             rows_written,
         )
 
@@ -415,6 +442,7 @@ class FactService:
         table_id: str,
         table: Table | None,
         iceberg: IcebergCatalogContext,
+        sources_matched: int | None,
         rows_written: int,
     ) -> FactWriteReceipt:
         snapshot_id = iceberg.current_snapshot_id(table) if table is not None else None
@@ -423,6 +451,7 @@ class FactService:
             run_id=run_id,
             table_name=table_name,
             table_id=table_id,
+            sources_matched=sources_matched,
             rows_written=rows_written,
             snapshot_id=snapshot_id,
         )

@@ -137,5 +137,6 @@
 | `run_id` | `str` | `required` |
 | `table_name` | `str` | `required` |
 | `table_id` | `str` | `required` |
+| `sources_matched` | `int \| None` | `required` |
 | `rows_written` | `int` | `required` |
 | `snapshot_id` | `int \| None` | `required` |

@@ -104,9 +104,15 @@ reason = "Storage write boundary: Daft has already committed the fact pipeline t
 
 [[entries]]
 path = "src/archetype/app/fact_service.py"
-line = 154
+line = 144
 method = "collect"
-reason = "File identity boundary: materializes only the current call's file references, source URIs, and content hashes so the emptiness check and processor reuse one execution. File contents stream through the hash UDF, and typed fact payload rows remain lazy through the Iceberg write."
+reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed fact payload rows remain lazy through the Iceberg write."
+
+[[entries]]
+path = "src/archetype/app/fact_service.py"
+line = 167
+method = "collect"
+reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed fact payload rows."
 
 [[entries]]
 path = "src/archetype/app/world_service.py"

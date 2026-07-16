@@ -221,6 +221,14 @@ Known logical keys are removed before the processor runs. A complete retry is
 therefore a no-op: it does not rerun the processor or create an empty Iceberg
 snapshot.
 
+`FactWriteReceipt.sources_matched` counts the file rows discovered before
+logical deduplication and the existing-key filter. `duplicate` is true only
+when that count is nonzero and the filter removes every source. An empty path
+match is therefore distinct
+from an idempotent retry. For `write_facts`, `sources_matched` is `None` because
+counting an arbitrary input pipeline separately would execute it twice; a
+zero-row direct write therefore reports `duplicate=None` rather than guessing.
+
 ## 11. Existing Daft pipelines
 
 Callers that already have a Daft pipeline use `write_facts`. The frame must

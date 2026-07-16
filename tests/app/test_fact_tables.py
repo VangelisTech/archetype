@@ -141,8 +141,30 @@ async def test_same_uri_and_content_is_noop_before_processor(tmp_path):
         retry = await container.fact_service.ingest_files(str(world.world_id), source, MustNotRun())
 
         assert first.rows_written == 1
+        assert first.sources_matched == 1
+        assert retry.sources_matched == 1
         assert retry.duplicate
         assert retry.snapshot_id == first.snapshot_id
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_empty_file_match_is_not_reported_as_duplicate(tmp_path):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+
+        receipt = await container.fact_service.ingest_files(
+            str(world.world_id), tmp_path / "missing" / "*.txt", TextFacts()
+        )
+
+        assert receipt.sources_matched == 0
+        assert receipt.rows_written == 0
+        assert receipt.duplicate is False
+        iceberg = await container.storage_service.get_iceberg_context(storage)
+        assert not iceberg.has_table("facts__documents")
     finally:
         await container.shutdown()
 
@@ -216,6 +238,10 @@ async def test_direct_pipeline_serializes_duplicate_writes(tmp_path):
         )
 
         assert sorted(receipt.rows_written for receipt in receipts) == [0, 1]
+        assert all(receipt.sources_matched is None for receipt in receipts)
+        receipts_by_rows = {receipt.rows_written: receipt for receipt in receipts}
+        assert receipts_by_rows[0].duplicate is None
+        assert receipts_by_rows[1].duplicate is False
         rows = await container.fact_service.read_facts(str(world.world_id), "temperatures")
         assert rows.count_rows() == 1
     finally:
