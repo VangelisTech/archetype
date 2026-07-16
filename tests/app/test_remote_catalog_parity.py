@@ -18,6 +18,7 @@ receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 import shutil
 import socket
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -51,6 +52,7 @@ def worker_url():
     if shutil.which("npx") is None:
         pytest.skip("npx unavailable; wrangler dev harness skipped")
     port = _free_port()
+    worker_log = tempfile.TemporaryFile(mode="w+")
     proc = subprocess.Popen(
         [
             "npx",
@@ -64,7 +66,7 @@ def worker_url():
             f"CATALOG_TOKEN:{WORKER_TOKEN}",
         ],
         cwd=WORKER_DIR,
-        stdout=subprocess.PIPE,
+        stdout=worker_log,
         stderr=subprocess.STDOUT,
         text=True,
     )
@@ -75,7 +77,8 @@ def worker_url():
         deadline = time.time() + 120
         while time.time() < deadline:
             if proc.poll() is not None:
-                out = proc.stdout.read() if proc.stdout else ""
+                worker_log.seek(0)
+                out = worker_log.read()
                 pytest.skip(f"wrangler dev exited early: {out[-400:]}")
             try:
                 response = httpx.get(
@@ -97,6 +100,7 @@ def worker_url():
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+        worker_log.close()
 
 
 def _remote(worker_url: str):
