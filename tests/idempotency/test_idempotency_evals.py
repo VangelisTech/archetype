@@ -8,8 +8,11 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+
 from evals.run import build_harness
 from evals.suites import idempotency
+from evals.suites.idempotency_process import _wait_for_markers
 
 
 def test_idempotency_eval_suite_is_registered_and_traceable() -> None:
@@ -46,3 +49,23 @@ def test_idempotency_contract_audit_detects_unmapped_spec_row(tmp_path, monkeypa
     checks = idempotency.traceability_checks()
 
     assert not checks["matrix_rows_match_eval_manifest"]
+
+
+def test_process_readiness_failure_reports_child_stderr(tmp_path) -> None:
+    marker = tmp_path / "never-ready"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('worker boom', file=sys.stderr); raise SystemExit(7)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    with pytest.raises(AssertionError, match="worker exited before readiness") as exc_info:
+        _wait_for_markers([marker], [process], timeout=5)
+
+    assert "returncode=7" in str(exc_info.value)
+    assert "worker boom" in str(exc_info.value)

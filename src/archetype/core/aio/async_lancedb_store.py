@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Protocol
@@ -27,6 +28,8 @@ from archetype.core.archetype import Archetype
 from archetype.core.interfaces import AppendReceipt, ArchetypeSignature, iAsyncStore
 
 logger = logging.getLogger(__name__)
+
+_INDEX_CREATE_ATTEMPTS = 6
 
 
 class _StorageContextLike(Protocol):
@@ -82,13 +85,13 @@ class AsyncLancedbStore(iAsyncStore):
         pyarrow_schema = Archetype.get_archetype_schema(sig)
 
         connection = await self._connect()
-
-        if table_name in await self._list_table_names():
-            try:
-                async_table = await connection.open_table(table_name)
-            except Exception as e:
-                raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
-
+        try:
+            async_table = await connection.open_table(table_name)
+        except (KeyError, ValueError):
+            async_table = None
+        except Exception as e:
+            raise RuntimeError(f"Error opening LanceDB table {table_name}: {e}") from e
+        if async_table is not None:
             self._known_sigs[table_name] = sig
             self._tables[table_name] = async_table
             return async_table
@@ -99,14 +102,17 @@ class AsyncLancedbStore(iAsyncStore):
                 schema=pyarrow_schema,
                 exist_ok=True,
             )
-            if os.environ.get("ARCT_LANCEDB_INDEX_ENTITY", "1") == "1":
-                await async_table.create_index(column="entity_id", config=BTree(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_WORLD", "1") == "1":
-                await async_table.create_index(column="world_id", config=Bitmap(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_RUN", "1") == "1":
-                await async_table.create_index(column="run_id", config=Bitmap(), replace=True)
-            if os.environ.get("ARCT_LANCEDB_INDEX_TICK", "1") == "1":
-                await async_table.create_index(column="tick", config=BTree(), replace=True)
+            indexes = (
+                ("ARCT_LANCEDB_INDEX_ENTITY", "entity_id", BTree()),
+                ("ARCT_LANCEDB_INDEX_WORLD", "world_id", Bitmap()),
+                ("ARCT_LANCEDB_INDEX_RUN", "run_id", Bitmap()),
+                ("ARCT_LANCEDB_INDEX_TICK", "tick", BTree()),
+            )
+            for setting, column, config in indexes:
+                if os.environ.get(setting, "1") == "1":
+                    async_table = await self._create_index(
+                        connection, async_table, table_name, column, config
+                    )
         except Exception as e:
             logger.error(f"Error creating LanceDB table {table_name}: {e}")
             raise RuntimeError(f"Error creating LanceDB table {table_name}: {e}") from e
@@ -114,6 +120,21 @@ class AsyncLancedbStore(iAsyncStore):
         self._known_sigs[table_name] = sig
         self._tables[table_name] = async_table
         return async_table
+
+    @staticmethod
+    async def _create_index(connection, table, table_name: str, column: str, config):
+        """Retry index transaction conflicts against a freshly opened handle."""
+        for attempt in range(_INDEX_CREATE_ATTEMPTS):
+            try:
+                await table.create_index(column=column, config=config, replace=True)
+                return table
+            except RuntimeError:
+                if attempt + 1 == _INDEX_CREATE_ATTEMPTS:
+                    raise
+                delay = min(0.01 * (2**attempt), 0.2) + (os.getpid() % 17) * 0.001
+                await asyncio.sleep(delay)
+                table = await connection.open_table(table_name)
+        raise AssertionError("unreachable")
 
     async def _connect(self):
         """Open the database connection without creating any user table.
@@ -322,11 +343,7 @@ class AsyncLancedbStore(iAsyncStore):
         return list(self._known_sigs.values())
 
     async def list_committed_signatures(self) -> list[ArchetypeSignature]:
-        """List only signatures that have been durably committed via append().
-
-        Excludes signatures that were only auto-created by get_archetype_df
-        (create-on-read).
-        """
+        """List signatures backed by a successful durable append."""
         return [sig for key, sig in self._known_sigs.items() if key in self._committed_sigs]
 
     async def append(self, sig, df: DataFrame) -> AppendReceipt:
@@ -345,11 +362,8 @@ class AsyncLancedbStore(iAsyncStore):
             return AppendReceipt(table_id=table_id, rows=0, durable=True)
 
         async_table = await self._ensure_table(sig)
-        # Record this sig as durably committed for list_committed_signatures().
-        self._committed_sigs.add(table_id)
-        # No local try/except: AsyncUpdateManager.update already logs + re-raises
-        # (the "loud failures" contract), so wrapping here would only double-log.
         result = await async_table.add(arrow_table, mode="append")
+        self._committed_sigs.add(table_id)
         # Backend version is an auxiliary diagnostic, never the visibility mechanism.
         version = getattr(result, "version", None)
         return AppendReceipt(
