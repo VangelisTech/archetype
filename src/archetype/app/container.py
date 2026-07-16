@@ -52,6 +52,7 @@ class ServiceContainer:
         self.broker = CommandBroker()
 
         # Leaf services
+        self._owns_storage_service = storage_service is None
         self.storage_service = storage_service if storage_service is not None else StorageService()
 
         # Storage-backed services
@@ -90,4 +91,5 @@ class ServiceContainer:
         """Gracefully shut down all services."""
         await self.audit_log.shutdown()
         await self.broker.clear()
-        await self.world_service.shutdown()
+        if self._owns_storage_service:
+            await self.world_service.shutdown()

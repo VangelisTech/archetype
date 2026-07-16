@@ -84,6 +84,7 @@ Annotated excerpt from `ServiceContainer.__init__` — param names match `interf
 
 ```python
 self.broker = CommandBroker()                          # → iCommandBroker
+self._owns_storage_service = storage_service is None
 self.storage_service = (                               # → iStorageService
     storage_service if storage_service is not None else StorageService()
 )
@@ -253,7 +254,7 @@ Only `iCommandService` accepts `ActorCtx` on its public surface. All other proto
 
 1. `iAuditLog.shutdown()` — flush pending rows
 2. `iCommandBroker.clear()` — drop queued commands
-3. `iWorldService.shutdown()` — destroy live worlds, then `iStorageService.shutdown()` on pooled stores
+3. `iWorldService.shutdown()` — close pooled stores only when the container created the `StorageService`; injected storage remains caller-owned
 
 ---
 

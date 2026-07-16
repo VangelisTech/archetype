@@ -66,6 +66,10 @@ authoritative. `StorageConfig.io_config` remains the single explicit entry
 point for object-data credentials passed to Daft reads and writes; Archetype
 does not translate it into catalog properties.
 
+An injected `StorageService` remains caller-owned. Container shutdown leaves
+it open so another container or host service can continue using it; the caller
+closes it after its final consumer stops.
+
 An injected session is bound to one configured storage URI and namespace.
 Create a separate `Session` and `StorageService` for another namespace;
 Archetype rejects a mismatch instead of mutating shared session state.

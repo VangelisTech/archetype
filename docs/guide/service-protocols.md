@@ -300,6 +300,7 @@ Pattern: pydantic `BaseModel` with `frozen=True`. Carry only metadata that's saf
 class ServiceContainer:
     def __init__(self, storage_service: StorageService | None = None):
         self.broker = CommandBroker()
+        self._owns_storage_service = storage_service is None
         self.storage_service = (
             storage_service if storage_service is not None else StorageService()
         )
@@ -322,10 +323,13 @@ class ServiceContainer:
         await self.broker.clear()
         await self.audit.flush()
         await self.audit.shutdown()
-        await self.world_service.shutdown()
+        if self._owns_storage_service:
+            await self.world_service.shutdown()
 ```
 
-Shutdown order matters: clear pending broker work; flush + close audit (write any buffered rows to permanent storage); close stores last.
+Shutdown order matters: clear pending broker work; flush + close audit; close
+container-owned stores last. An injected `StorageService` is caller-owned and
+remains open.
 
 ## 6. Companion specs
 

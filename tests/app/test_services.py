@@ -41,12 +41,30 @@ class TestServiceContainer:
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
 
-    def test_container_uses_injected_storage_service(self):
-        storage_service = StorageService()
+    @pytest.mark.asyncio
+    async def test_containers_borrow_shared_storage_service(self):
+        class TrackedStorageService(StorageService):
+            def __init__(self):
+                super().__init__()
+                self.shutdown_calls = 0
 
-        container = ServiceContainer(storage_service=storage_service)
+            async def shutdown(self):
+                self.shutdown_calls += 1
+                await super().shutdown()
 
-        assert container.storage_service is storage_service
+        storage_service = TrackedStorageService()
+
+        first = ServiceContainer(storage_service=storage_service)
+        second = ServiceContainer(storage_service=storage_service)
+
+        assert first.storage_service is storage_service
+        assert second.storage_service is storage_service
+        await first.shutdown()
+        await second.shutdown()
+        assert storage_service.shutdown_calls == 0
+
+        await storage_service.shutdown()
+        assert storage_service.shutdown_calls == 1
 
     @pytest.mark.asyncio
     async def test_container_shutdown(self):

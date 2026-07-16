@@ -488,12 +488,13 @@ CURRENT GAP:
 ### ServiceContainer and runtime lifetime
 
 - `ServiceContainer` is the process-scoped composition root.
-- It owns one shared `StorageService`, one shared `CommandBroker`, one
-  append-only audit log, and the world, mutation, command, simulation, and
-  query services built on top of them.
+- It owns one shared `CommandBroker`, one append-only audit log, and the world,
+  mutation, command, simulation, and query services built on top of them. It
+  owns a `StorageService` that it creates and borrows one supplied by a caller.
 - Container shutdown MUST be explicit and distinct from per-world removal.
 - Container shutdown order MUST clear broker state, flush/shut down audit, and
-  then shut down world and storage services.
+  then shut down storage the container owns. An injected `StorageService` MUST
+  remain open for its caller to manage.
 
 ## Multi-World Contracts
 
