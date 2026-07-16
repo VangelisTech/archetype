@@ -4,6 +4,33 @@ Source: a 22-agent adversarial review (10 dimension reviews + 3 deep
 testing/evals/repro audits → 8 independent reviewer-persona panelists →
 synthesis), run `wf_99544adc-08b`, 2026-06-21.
 
+## Update 2026-07-16 (later) — gate #1 CLOSED: first real number, root cause found
+
+The 0% mystery below is solved and **the first genuine archetype-native
+policy-driven LIBERO number exists**: `colocated_eval_task` scores **3/3 on
+libero_spatial task 0, mean length 77.7** (upstream's own loop: 75 on the same
+init states), ~23 s/trial, ~159 trials/GPU-hour, ledger-graded. Scope: n=3, one
+task — the published protocol is 50 trials/task, so this is a verified pipeline,
+not yet a citable benchmark row.
+
+**Root cause of the 0%**: OpenGL/EGL offscreen contexts are **thread-bound**.
+`reset()` rendered on the driver thread (clean frames — which is why every
+step-0 probe passed) while `step()` rendered on Daft UDF worker threads — every
+post-reset frame was EGL noise while physics/proprio stayed correct, so the
+policy solved its first chunk (inferred from the clean reset frame) and then
+went blind. Found by: upstream-oracle eval in the same image (30/30 — stack
+exonerated), full-episode action A/B (split at the second inference), then
+boundary-input bit-diff (state diff 1.5 mm, frame diff mean 65/255 — noise
+thumbnail in the run log). Fix: all MuJoCo calls marshal onto one persistent
+env thread (`in_process.py::_EnvThread`). The June two-worker demo never hit
+this because Modal's worker stepped single-threaded — the in-process rewrite
+introduced it, and nothing ever looked at a step frame until now.
+
+Protocol corrections that rode along: upstream's `num_steps_wait=10` settle
+(now inside `reset()`), 256-px render, constant `env.seed(7)`
+("seed seems to affect object positions even when using fixed initial state"
+— their code comment), per-suite `max_steps` (250 for spatial, not 520).
+
 ## Update 2026-07-16 — first colocated executions: pipeline real, behavior not reproduced
 
 Ground-truth audit + first watched runs of `colocated_eval_task` (the entry

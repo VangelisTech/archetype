@@ -691,3 +691,28 @@ once in **`docs/guide/libero-recipe.md`** — read it before touching anything i
 - **Architecture:** one control-plane world + N trial entities batch-stepped via
   `SimulationService.run_episode` (B1 quota reset + B2 all-done termination),
   graded from raw `ManipStatus` by the eval service. No `EvalTrialResult` (E1).
+
+## GL Rendering Is Thread-Bound — Daft UDF Threads Go Blind (Jul 2026)
+
+OpenGL/EGL offscreen contexts belong to the thread that created them. MuJoCo
+**physics** survives cross-thread calls; **rendering** from another thread
+silently returns garbage frames (static noise) with no exception. Inside
+archetype this is a landmine because Daft's native runner executes UDFs on
+worker threads: an env created/reset on the driver thread renders clean frames
+at reset and garbage on every UDF-thread `step()` — proprio stays perfectly
+correct, all files write successfully, every contract test passes, and a
+vision policy simply goes blind after its first chunk.
+
+This cost 5 GPU runs of 0% LIBERO success (2026-07-15/16) and survived a
+seven-way single-variable elimination because every step-0 probe (reset-path)
+was bit-perfect. It was caught only by a full-episode A/B against upstream's
+single-threaded loop: at the second inference, state diff 1.5 mm, frame diff
+mean 65/255 — the step-7 PNG was EGL noise.
+
+**Rule: any renderer (MuJoCo/EGL, OpenGL, most GPU sims) driven from archetype
+processors must marshal ALL calls — creation, reset, step — onto one
+persistent thread.** Reference implementation:
+`bench/libero/in_process.py::_EnvThread` (a daemon worker thread;
+`ThreadPoolExecutor` holds container shutdown hostage). Verification: dump an
+actual mid-episode frame and look at it — file-write success and correct
+proprio prove nothing about pixels.

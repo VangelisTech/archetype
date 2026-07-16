@@ -28,6 +28,10 @@ context works for local smoke tests at smaller scale.
 from __future__ import annotations
 
 import os
+import queue
+import threading
+from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +72,49 @@ def _patch_torch_load_for_libero() -> None:
 # the in-process analogue of the out-of-process LiberoEnvBatch keeping env state
 # in container memory: the env never crosses the serialization boundary.
 _ENV_POOLS: dict[tuple[str, int, int], _EnvPool] = {}
+
+# Every MuJoCo call (env creation, reset, step) is marshalled onto ONE
+# persistent thread. OpenGL/EGL offscreen contexts are THREAD-BOUND: physics
+# survives cross-thread calls but rendering silently returns garbage. The bug
+# this pins down was found 2026-07-16 at tensor level: reset() ran on the
+# driver thread (clean frames) while step() ran on Daft UDF worker threads —
+# every post-reset frame was EGL noise, the policy went blind after its first
+# chunk, and success was 0 while proprio stayed perfectly correct. Upstream's
+# single-threaded loop in the same image scored 30/30 (upstream_probe.py);
+# with this affinity our loop scores 3/3 on the same task + init states.
+# A daemon thread (not ThreadPoolExecutor) so container exit is not held
+# hostage by a live worker.
+class _EnvThread:
+    """One persistent daemon thread that owns every MuJoCo/EGL call."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._loop, name="libero-env", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while True:
+            fn, args, kwargs, fut = self._queue.get()
+            if not fut.set_running_or_notify_cancel():
+                continue
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except BaseException as exc:  # noqa: BLE001 — relayed to the caller
+                fut.set_exception(exc)
+
+    def submit(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Future:
+        fut: Future = Future()
+        self._queue.put((fn, args, kwargs, fut))
+        return fut
+
+
+_ENV_THREAD = _EnvThread()
+
+
+def _on_env_thread(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    if threading.current_thread().name == "libero-env":
+        return fn(*args, **kwargs)  # already on the env thread (nested call)
+    return _ENV_THREAD.submit(fn, *args, **kwargs).result()
 
 
 def _frame_rel_dir(session: str, env_key: int, episode: int) -> str:
@@ -128,6 +175,12 @@ class InProcessLiberoEnvClient:
         # settle steps run inside reset(), so tick 0 on the ledger is the
         # settled initial condition and they never count as control steps.
         settle_steps: int = 10,
+        # Upstream seeds the ENV with a constant (their eval_libero.py:
+        # "IMPORTANT: seed seems to affect object positions even when using
+        # fixed initial state", default seed=7) and varies episodes ONLY via
+        # init_states[episode_idx]. The per-trial seed passed to reset()
+        # selects the init state; this constant seeds the env itself.
+        env_seed: int = 7,
     ) -> None:
         self._suite_name = suite
         self._task_id = task_id
@@ -135,6 +188,7 @@ class InProcessLiberoEnvClient:
         self._with_frames = with_frames
         self._frames_dir = frames_dir
         self._settle_steps = settle_steps
+        self._env_seed = env_seed
         # Unique per client construction (computed before @daft.cls pickling,
         # so driver and worker copies agree): a fresh process or a fresh
         # client can never collide with frame refs persisted by an earlier
@@ -210,13 +264,17 @@ class InProcessLiberoEnvClient:
         return refs
 
     def reset(self, env_id: int, seed: int) -> dict[str, Any]:
+        """Reset one env (on the dedicated env thread — see ``_ENV_THREAD``)."""
+        return _on_env_thread(self._reset_impl, env_id, seed)
+
+    def _reset_impl(self, env_id: int, seed: int) -> dict[str, Any]:
         self._ensure_suite()
         pool = self._pool
         env = pool.envs.get(env_id)
         if env is None:
             env = self._make_env()
             pool.envs[env_id] = env
-        env.seed(seed)
+        env.seed(self._env_seed)
         env.reset()
         obs = env.set_init_state(pool.init_states[seed % len(pool.init_states)])
         # Settle action = zeros + gripper open (-1), exactly what the proven
@@ -231,6 +289,10 @@ class InProcessLiberoEnvClient:
         return out
 
     def step(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
+        """Step envs (on the dedicated env thread — see ``_ENV_THREAD``)."""
+        return _on_env_thread(self._step_impl, env_ids, actions)
+
+    def _step_impl(self, env_ids: list[int], actions: list[list[float]]) -> list[dict[str, Any]]:
         pool = self._pool
         results: list[dict[str, Any]] = []
         for env_id, action in zip(env_ids, actions, strict=True):

@@ -37,13 +37,15 @@ a run finish, never when writing new code.
                          action from the in-process policy.
     eval_task            NEVER RUN as of 2026-07-16. Env-only by design.
     optimize_task        NEVER RUN as of 2026-07-16. Perturbation blocker open.
-    colocated_eval_task  EXECUTES, DOES NOT REPRODUCE published behavior.
-                         5 runs 2026-07-15/16 (L40S, everett-38139; vangelis-tech
-                         refused: no payment method): pipeline runs end to end
-                         (batched world, 146ms/inference, ledger-graded, full
-                         profile) but success is 0 for every attempt vs ~99%
-                         published. See its docstring for the elimination
-                         matrix. Numbers from this entrypoint are NOT citable.
+    colocated_eval_task  VERIFIED 2026-07-16 (L40S, vangelis-tech): 3/3 on
+                         libero_spatial task 0, mean length 77.7 (upstream's
+                         own loop: 75), 110ms/inference, ~23 s/trial,
+                         ~159 trials/GPU-hour — after fixing EGL thread
+                         affinity (see its docstring for the debugging
+                         record). Scope: n=3, one task; the published
+                         protocol is 50 trials/task.
+    upstream_probe.py    the debugging instruments that found it — see that
+                         module's own RUN LEDGER.
 
     modal run bench/libero/image.py                       # build + env smoke
     modal run bench/libero/image.py::vla_smoke            # one in-process action
@@ -601,25 +603,28 @@ def colocated_eval_task(
     model server) reads them from the same local dir. (``max_steps`` includes the
     reset tick → ``max_steps - 1`` control steps.)
 
-    RUN STATUS (2026-07-15/16, L40S on everett-38139, watched): the pipeline
-    executes end to end — colocated env+policy, 3-trial batched world, correct
-    7-step chunk cadence, ~146 ms/inference, graded from the ledger, full cost
-    profile — but the policy does NOT reproduce published behavior: 0/3 and
-    0/1 at the 519-step horizon on libero_spatial task 0 (published ~99%; the
-    June two-worker demo solved this task in 69 steps). Eliminated with
-    evidence, one variable at a time: missing settle steps + camera 128 (both
-    fixed here, insufficient), 3-env batching (single trial fails identically),
-    bf16 (fp16 fails), flash-attn wheel (sdpa fails), model-input images (the
-    logged VLA_INPUT_THUMB_B64 matches the June demo's first frame exactly),
-    state vector (sane values logged per inference), payload/unnorm/gripper/
-    server-args/VLA-JEPA SHA (byte-identical to the proven worker, verified
-    from git history), HF checkpoint+configs (unchanged since 2026-03-25).
-    Open differential: this py3.12/torch2.6 stack has never had behavior-level
-    validation (June's success ran py3.10/torch2.5). Next probes: run
-    upstream's own eval_libero.py inside this image (splits stack-vs-harness
-    with zero new code), or golden action-parity against the resurrected
-    June worker (git history). DO NOT cite success rates from this entrypoint
-    until one of those lands.
+    RUN STATUS: VERIFIED 2026-07-16 (L40S, vangelis-tech, watched) — 3/3 on
+    libero_spatial task 0, mean length 77.7 vs upstream's own loop at 75 on
+    the same init states, 110 ms/inference, ~23 s/trial, ~159 trials/GPU-hour.
+    Scope: n=3, one task; the published protocol is 50 trials/task.
+
+    The debugging record (2026-07-15/16, 9 runs), kept because the failure
+    mode WILL recur elsewhere: the first 5 executions scored 0 at the full
+    horizon while every input looked sane. Eliminated one variable per run:
+    settle steps + camera 128→256 (real protocol fixes, insufficient), 3-env
+    batching, bf16, the flash-attn wheel (sdpa), step-0 model inputs (proven
+    BIT-IDENTICAL to upstream's), state vectors, payload/unnorm/gripper/SHA
+    (byte-identical to the proven worker), HF checkpoint drift (none), action
+    provenance (echo-env probe: exact a_t = pi(obs_{t-1}) pairing). The
+    upstream oracle (upstream_probe.py) then scored 30/30 in THIS image —
+    and the full-episode A/B found the split at the SECOND inference: state
+    diffs of 1.5mm with frame diffs of mean 65/255. The step-7 frame on disk
+    was EGL noise. ROOT CAUSE: OpenGL/EGL contexts are thread-bound — reset()
+    rendered on the driver thread (clean), step() rendered on Daft UDF worker
+    threads (garbage), physics stayed correct throughout, so proprio hid the
+    blindness. FIX: every MuJoCo call marshals onto one persistent env thread
+    (in_process.py `_ENV_THREAD`). The 3/3 receipt above is the first run
+    with the fix.
     """
     import asyncio  # noqa: PLC0415
     import time  # noqa: PLC0415
