@@ -1,6 +1,6 @@
 ---
 name: footgun-detector
-description: "Detect subtle bugs that pass CI but break at runtime. Invoke with /footgun to scan the current PR diff or staged changes for archetype-specific footguns."
+description: "Detect subtle bugs that pass CI but break at runtime. Invoke with /footgun-detector to scan the current PR diff or staged changes for archetype-specific footguns."
 user_invocable: true
 ---
 

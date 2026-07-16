@@ -15,71 +15,201 @@ concurrency:
 
 jobs:
   footgun:
-    # Skip PRs from forks — they don't get access to CLAUDE_CODE_OAUTH_TOKEN.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    name: footgun
     runs-on: ubuntu-latest
+    outputs:
+      artifact_digest: ${{ steps.prepare.outputs.artifact_digest }}
+      finding_count: ${{ steps.prepare.outputs.finding_count }}
+      head_sha: ${{ steps.prepare.outputs.head_sha }}
+    env:
+      DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
+      GATE_SCRIPT: ${{ github.workspace }}/.footgun-review-gate.py
+      REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
+      SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
     steps:
-      - name: Checkout repository
+      - name: Reject fork pull requests without review credentials
+        if: github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "Footgun review cannot authenticate for a fork pull request; failing closed."
+          exit 1
+
+      - name: Checkout exact pull request head
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Run footgun-detector
+      - name: Materialize deterministic review scope
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if git cat-file -e "${BASE_SHA}:scripts/footgun_review_gate.py" 2>/dev/null; then
+            git show "${BASE_SHA}:scripts/footgun_review_gate.py" > "${GATE_SCRIPT}"
+          else
+            # Bootstrap only: the gate PR's base does not contain this script yet.
+            cp scripts/footgun_review_gate.py "${GATE_SCRIPT}"
+          fi
+          python3 "${GATE_SCRIPT}" scope \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}"
+          echo "schema=$(python3 "${GATE_SCRIPT}" schema)" >> "${GITHUB_OUTPUT}"
+
+      - name: Run footgun detector
         id: footgun-detector
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
-          # Grant the tools the review needs; without --allowedTools the
-          # agent has nothing to call and can only reply with text (the
-          # failure mode that made every historical run a silent no-op).
           claude_args: |
-            --allowedTools "Task,Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),mcp__github_inline_comment__create_inline_comment"
+            --allowedTools "Agent,Task,Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --json-schema '${{ steps.scope.outputs.schema }}'
           prompt: |
-            You are running in CI on PR #${{ github.event.pull_request.number }}.
+            Review PR #${{ github.event.pull_request.number }} at the exact head
+            ${{ github.event.pull_request.head.sha }} for archetype-specific footguns.
 
-            Invoke the `footgun-detector` subagent (defined in
-            `.claude/agents/footgun-detector.md`) via the Task tool to review
-            this PR's diff. Pass the PR number so it fetches the diff with
-            `gh pr diff ${{ github.event.pull_request.number }}`.
+            Invoke the `footgun-detector` agent defined in
+            `.claude/agents/footgun-detector.md`. Give it the PR number and require
+            it to inspect the full diff and relevant surrounding code. Then convert
+            its result into the required structured output.
 
-            After the subagent returns, report its findings so the branch
-            ruleset's required-thread-resolution rule enforces them:
+            `.footgun-review-scope.json` is authoritative. The gate will reject the
+            result unless:
 
-            - If it reports one or more footguns, create one inline review
-              comment per finding with the
-              `mcp__github_inline_comment__create_inline_comment` tool (the
-              action batches them and posts a single review when you
-              finish). Each comment carries the full finding including its
-              `**Fix:**` verbatim, anchored to the finding's file and line
-              (the line must be part of the PR diff; anchor to the nearest
-              changed line in that file otherwise). Inline review comments
-              create resolvable threads, and the merge is blocked until
-              each is resolved. If the inline tool fails for a finding,
-              fall back to `gh pr comment` with the full findings so
-              nothing is lost.
-            - If it reports "No footguns detected in this diff.", post a
-              single short comment via `gh pr comment`:
-              `## Footgun review\n\nNo notes.` (No thread — nothing to
-              resolve.)
+            - `head_sha` exactly matches the scope.
+            - `reviewed_files` contains every scoped file exactly once.
+            - `reviewed_categories` contains every scoped category exactly once.
+            - `review_context` partitions every scoped file exactly once into
+              context-relevant areas, with a concrete assessment for each area.
+            - `summary` explains what this particular diff changes and what the
+              review established; a generic "No notes" does not pass.
+            - every finding uses a scoped category and file, and anchors to an
+              actual changed line in `.footgun-review.diff`. Use `RIGHT` for an
+              added line or `LEFT` for a removed line.
 
-            Do not edit any files. Do not run tests. Do not push commits.
-            Findings do not fail this job; enforcement happens through thread
-            resolution. An incomplete detector run does fail the required check.
+            An empty `findings` array means the complete scoped review found no
+            footguns. Do not post comments or reviews yourself. Do not edit files,
+            run tests, or push commits.
 
-      - name: Report footgun-detector failure
-        if: steps.footgun-detector.outcome == 'failure'
+      - name: Require detector completion
+        if: steps.footgun-detector.outcome != 'success'
+        run: |
+          echo "The detector did not return schema-valid structured output."
+          exit 1
+
+      - name: Validate and render exact review evidence
+        id: prepare
+        env:
+          STRUCTURED_OUTPUT: ${{ steps.footgun-detector.outputs.structured_output }}
+        run: |
+          mkdir -p "${REVIEW_DIR}"
+          printf '%s' "${STRUCTURED_OUTPUT}" > "${REVIEW_DIR}/structured-output.json"
+          python3 "${GATE_SCRIPT}" prepare \
+            --scope "${SCOPE_FILE}" \
+            --diff "${DIFF_FILE}" \
+            --result "${REVIEW_DIR}/structured-output.json" \
+            --output-dir "${REVIEW_DIR}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: Publish contextual no-findings evidence
+        if: steps.prepare.outputs.finding_count == '0'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "${PR_NUMBER}" --body-file "${REVIEW_DIR}/evidence.md"
+
+      - name: Publish findings as blocking review threads
+        if: steps.prepare.outputs.finding_count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api --method POST \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews" \
+            --input "${REVIEW_DIR}/review.json"
+
+      - name: Report incomplete review
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          cat > /tmp/footgun-review-failed.md <<EOF
-          ## Footgun review
+          {
+            echo "## Footgun review — incomplete"
+            echo
+            echo "The review for exact head \`${HEAD_SHA}\` did not produce verified completion evidence. Merge remains blocked."
+            echo
+            echo "[Inspect the failed workflow run](${RUN_URL})"
+          } > "${RUNNER_TEMP}/footgun-review-failed.md"
+          gh pr comment "${PR_NUMBER}" --body-file "${RUNNER_TEMP}/footgun-review-failed.md" || true
 
-          Footgun review did not complete, so the required check has failed. Inspect the workflow log, fix the failure, and rerun the check:
-          ${RUN_URL}
-          EOF
-          gh pr comment "${PR_NUMBER}" --body-file /tmp/footgun-review-failed.md
+  review-complete:
+    name: review-complete
+    needs: footgun
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Require successful footgun job
+        if: needs.footgun.result != 'success'
+        run: |
+          echo "Footgun review did not complete successfully."
           exit 1
+
+      - name: Checkout exact pull request head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Load trusted gate implementation
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GATE_SCRIPT: ${{ runner.temp }}/footgun_review_gate.py
+        run: |
+          if git cat-file -e "${BASE_SHA}:scripts/footgun_review_gate.py" 2>/dev/null; then
+            git show "${BASE_SHA}:scripts/footgun_review_gate.py" > "${GATE_SCRIPT}"
+          else
+            cp scripts/footgun_review_gate.py "${GATE_SCRIPT}"
+          fi
+
+      - name: Fetch posted review evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" \
+            > "${RUNNER_TEMP}/issue-comments.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            > "${RUNNER_TEMP}/reviews.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/comments?per_page=100" \
+            > "${RUNNER_TEMP}/review-comments.json"
+
+      - name: Verify exact review completion evidence
+        env:
+          ARTIFACT_DIGEST: ${{ needs.footgun.outputs.artifact_digest }}
+          FINDING_COUNT: ${{ needs.footgun.outputs.finding_count }}
+          GATE_SCRIPT: ${{ runner.temp }}/footgun_review_gate.py
+          HEAD_SHA: ${{ needs.footgun.outputs.head_sha }}
+        run: |
+          python3 "${GATE_SCRIPT}" verify \
+            --issue-comments "${RUNNER_TEMP}/issue-comments.json" \
+            --reviews "${RUNNER_TEMP}/reviews.json" \
+            --review-comments "${RUNNER_TEMP}/review-comments.json" \
+            --head "${HEAD_SHA}" \
+            --finding-count "${FINDING_COUNT}" \
+            --digest "${ARTIFACT_DIGEST}"
