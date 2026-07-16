@@ -548,10 +548,8 @@ class WorldService:
                 "persisted lineage rows; refusing to resume (corruption)"
             )
 
-        # Validation pass BEFORE fencing: rebuilding the snapshot here proves
-        # this process can faithfully reconstruct the world (classes present,
-        # descriptors resolvable) without side effects — a resume that fails
-        # validation must never stale a healthy incumbent writer.
+        # Preflight stable reconstruction failures before fencing. The world
+        # may still advance before the authoritative post-fence snapshot.
         snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
         self._resolve_live_signatures(snapshot.directory)
 
@@ -560,23 +558,32 @@ class WorldService:
         # stable — no window where a late-published tick slips between the
         # snapshot and the fence.
         epoch = await catalog.acquire_fence(wid, _writer_holder())
-        snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
-        entity2sig, _live_tables = self._resolve_live_signatures(snapshot.directory)
+        try:
+            snapshot = await self._resume_snapshot(catalog, store, wid, str(run_id), lineage)
+            entity2sig, _live_tables = self._resolve_live_signatures(snapshot.directory)
 
-        world = self._factory.create_async_world(
-            store,
-            WorldConfig(
-                world_id=wid,
-                name=record.name,
-                run_id=str(run_id),
-                tick=snapshot.resume_tick,
-                next_entity_id=snapshot.next_entity_id,
-                entity2sig=entity2sig,
-                lineage=lineage or [],
-            ),
-        )
-        world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
-        self._registry.insert(world)
+            world = self._factory.create_async_world(
+                store,
+                WorldConfig(
+                    world_id=wid,
+                    name=record.name,
+                    run_id=str(run_id),
+                    tick=snapshot.resume_tick,
+                    next_entity_id=snapshot.next_entity_id,
+                    entity2sig=entity2sig,
+                    lineage=lineage or [],
+                ),
+            )
+            world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+            self._registry.insert(world)
+        except Exception:
+            logger.exception(
+                "resume for world %s acquired fence epoch %d but failed before "
+                "installing its replacement writer; the previous writer is now stale",
+                wid,
+                epoch,
+            )
+            raise
         self._storage_configs[wid] = (storage_config, None)
         logger.info(
             "resumed world %s at tick %d (epoch %d, %d entities)",
@@ -607,14 +614,16 @@ class WorldService:
         state; the fork's own rows override by tick.
         """
         visible = await catalog.visible_tokens(world_id, run_id)
-        if visible:
-            resume_tick: int | None = max(visible) + 1
+        manifest_tick = await catalog.max_manifest_tick(world_id, run_id)
+        if visible is not None:
             tokens: list[str] | None = sorted(
                 {token for token_list in visible.values() for token in token_list}
             )
-        elif visible is not None:
-            resume_tick = (lineage[-1][2] + 1) if lineage else 0
-            tokens = []
+            resume_tick: int | None = (
+                manifest_tick + 1
+                if manifest_tick is not None
+                else ((lineage[-1][2] + 1) if lineage else 0)
+            )
         else:
             # Never-fenced legacy world: rows are implicitly visible and the
             # own-row head is the true head (resolved after the scan).
@@ -796,10 +805,10 @@ class WorldService:
         record = self._storage_configs.get(str(world_id))
         if record is None:
             return
-        world = self._orchestrator.get_world(UUID(str(world_id)))
-        if not world.run_id:
-            return
         try:
+            world = self._orchestrator.get_world(UUID(str(world_id)))
+            if not world.run_id:
+                return
             catalog = self._storage_service.get_control_catalog(record[0])
             await catalog.set_world_run(str(world_id), str(world.run_id))
         except Exception:

@@ -12,6 +12,7 @@ processors/resources/hooks reattach explicitly.
 """
 
 import json
+import logging
 import subprocess
 import sys
 import textwrap
@@ -146,6 +147,29 @@ async def test_resume_after_crash_resumes_at_last_visible_tick(tmp_path, monkeyp
         await fresh.simulation_service.step(wid, RunConfig())
         df = await fresh.query_service.query_components([Score], wid, rid, storage, ticks=[1])
         assert len(df.to_pylist()) == 1, "exactly one visible attempt at the retried tick"
+    finally:
+        await fresh.shutdown()
+
+
+async def test_fact_only_claim_does_not_advance_resume_tick(tmp_path):
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await c.world_service.create_world(WorldConfig(name="facts-first"), storage)
+        await c.ingestion_service.ingest_fact(
+            world.world_id,
+            [Score(points=42.0)],
+            external_id="before-first-step",
+            producer="sensor",
+        )
+        wid = str(world.world_id)
+    finally:
+        await c.shutdown()
+
+    fresh = ServiceContainer()
+    try:
+        resumed = await fresh.world_service.open_world_mutable(storage, wid)
+        assert resumed.tick == 0, "fact claims are visible but are not tick manifests"
     finally:
         await fresh.shutdown()
 
@@ -490,3 +514,40 @@ async def test_resume_snapshot_taken_after_fence_beats_racing_publisher(tmp_path
     finally:
         await a.shutdown()
         await b.shutdown()
+
+
+async def test_post_fence_resume_failure_is_operationally_loud(tmp_path, monkeypatch, caplog):
+    incumbent = ServiceContainer()
+    replacement = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await incumbent.world_service.create_world(WorldConfig(name="w"), storage)
+        await incumbent.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await incumbent.simulation_service.step(world.world_id, RunConfig())
+        wid = str(world.world_id)
+
+        real_resolve = replacement.world_service._resolve_live_signatures
+        calls = 0
+
+        def fail_after_fence(directory):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected post-fence reconstruction failure")
+            return real_resolve(directory)
+
+        monkeypatch.setattr(
+            replacement.world_service,
+            "_resolve_live_signatures",
+            fail_after_fence,
+        )
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError, match="post-fence reconstruction"):
+                await replacement.world_service.open_world_mutable(storage, wid)
+
+        assert "previous writer is now stale" in caplog.text
+        with pytest.raises((StaleWriterError, RuntimeError)):
+            await incumbent.simulation_service.step(wid, RunConfig())
+    finally:
+        await incumbent.shutdown()
+        await replacement.shutdown()
