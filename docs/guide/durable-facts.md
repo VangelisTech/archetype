@@ -228,6 +228,8 @@ match is therefore distinct
 from an idempotent retry. For `write_facts`, `sources_matched` is `None` because
 counting an arbitrary input pipeline separately would execute it twice; a
 zero-row direct write therefore reports `duplicate=None` rather than guessing.
+If that is the first write for the logical table, the service also unwinds the
+empty table registration so the no-op cannot lock in a speculative schema.
 
 ## 11. Existing Daft pipelines
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 import daft
+import pyarrow as pa
 import pytest
 
 import archetype.app.fact_service as fact_service_module
@@ -244,6 +245,49 @@ async def test_direct_pipeline_serializes_duplicate_writes(tmp_path):
         assert receipts_by_rows[1].duplicate is False
         rows = await container.fact_service.read_facts(str(world.world_id), "temperatures")
         assert rows.count_rows() == 1
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_zero_row_direct_write_does_not_create_or_lock_fact_table(tmp_path):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        empty = daft.from_arrow(
+            pa.table(
+                {
+                    "source_uri": pa.array([], type=pa.string()),
+                    "content_hash": pa.array([], type=pa.string()),
+                    "value": pa.array([], type=pa.string()),
+                }
+            )
+        )
+
+        receipt = await container.fact_service.write_facts(str(world.world_id), "periodic", empty)
+
+        iceberg = await container.storage_service.get_iceberg_context(storage)
+        assert receipt.rows_written == 0
+        assert receipt.snapshot_id is None
+        assert receipt.duplicate is None
+        assert not iceberg.has_table("facts__periodic")
+        with pytest.raises(KeyError, match="does not exist"):
+            await container.fact_service.read_facts(str(world.world_id), "periodic")
+
+        nonempty = daft.from_pydict(
+            {
+                "source_uri": ["sensor://periodic/1"],
+                "content_hash": [hashlib.sha256(b"periodic").hexdigest()],
+                "value": [1],
+            }
+        )
+        written = await container.fact_service.write_facts(
+            str(world.world_id), "periodic", nonempty
+        )
+        assert written.rows_written == 1
+        rows = await container.fact_service.read_facts(str(world.world_id), "periodic")
+        assert rows.select("value").to_pylist() == [{"value": 1}]
     finally:
         await container.shutdown()
 

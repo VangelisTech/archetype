@@ -398,13 +398,11 @@ class FactService:
             rows_written = await iceberg.append_counted(table, facts)
         except BaseException as exc:
             if created_table:
-                try:
-                    iceberg.drop_table(table_id)
-                except Exception as cleanup_error:
-                    exc.add_note(
-                        f"failed to remove newly created fact table {table_id!r}: {cleanup_error}"
-                    )
+                self._drop_created_table(iceberg, table_id, cause=exc)
             raise
+        if created_table and rows_written == 0:
+            self._drop_created_table(iceberg, table_id)
+            table = None
         return self._receipt(
             world_id,
             run_id,
@@ -415,6 +413,22 @@ class FactService:
             sources_matched,
             rows_written,
         )
+
+    @staticmethod
+    def _drop_created_table(
+        iceberg: IcebergCatalogContext,
+        table_id: str,
+        *,
+        cause: BaseException | None = None,
+    ) -> None:
+        try:
+            iceberg.drop_table(table_id)
+        except Exception as cleanup_error:
+            if cause is None:
+                raise
+            cause.add_note(
+                f"failed to remove newly created fact table {table_id!r}: {cleanup_error}"
+            )
 
     @staticmethod
     def _align_to_table_schema(
