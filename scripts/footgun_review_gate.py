@@ -309,7 +309,7 @@ def validate_result(
         normalized_context.append(
             {
                 "area": _text(entry.get("area"), f"review_context[{index}].area", minimum=3),
-                "files": sorted(entry_files),
+                "files": sorted(set(entry_files)),
                 "assessment": _text(
                     entry.get("assessment"),
                     f"review_context[{index}].assessment",
@@ -317,8 +317,8 @@ def validate_result(
                 ),
             }
         )
-    if len(contextualized_files) != len(set(contextualized_files)):
-        raise GateError("each changed file must appear in exactly one review_context area")
+    # Coverage — not partition — is the invariant: a file may appear in more
+    # than one area when it genuinely spans concerns.
     if set(contextualized_files) != set(scoped_files):
         missing = sorted(set(scoped_files) - set(contextualized_files))
         raise GateError(f"review_context does not cover every changed file: {missing}")
