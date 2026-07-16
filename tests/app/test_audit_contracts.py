@@ -37,6 +37,37 @@ def test_audit_configuration_fails_closed(tmp_path):
         AuditLog(storage_config=StorageConfig(uri=str(tmp_path / "lance")))
 
 
+@pytest.mark.asyncio
+async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
+    storage = _storage(tmp_path, namespace="managed")
+    storage_service = StorageService(session=configure_session(storage))
+    container = None
+    try:
+        with pytest.raises(ValueError, match="audit_storage_config is required"):
+            ServiceContainer(storage_service=storage_service)
+
+        container = ServiceContainer(
+            storage_service=storage_service,
+            audit_storage_config=storage,
+        )
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        world = await container.command_service.create_world(
+            ctx,
+            WorldConfig(name="managed"),
+            storage,
+        )
+        rows = (await container.audit_log.query(world_id=world.world_id)).to_pylist()
+        assert [row["command_type"] for row in rows] == ["create_world"]
+
+        different = storage.model_copy(update={"uri": str(tmp_path / "other")})
+        with pytest.raises(ValueError, match="configured for a different storage identity"):
+            await container.world_service.create_world(WorldConfig(name="other"), different)
+    finally:
+        if container is not None:
+            await container.shutdown()
+        await storage_service.shutdown()
+
+
 @pytest.fixture(autouse=True)
 def _reset_quotas():
     reset_tick_counters()

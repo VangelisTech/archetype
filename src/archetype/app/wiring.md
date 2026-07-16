@@ -88,6 +88,8 @@ self._owns_storage_service = storage_service is None
 self.storage_service = (                               # → iStorageService
     storage_service if storage_service is not None else StorageService()
 )
+# An injected-session service also requires audit_storage_config; the
+# container constrains that single catalog identity before wiring services.
 
 self.world_service = WorldService(                     # → iWorldService
     self.storage_service,                              #   storage_service: iStorageService

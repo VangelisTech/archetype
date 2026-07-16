@@ -109,6 +109,7 @@ class StorageService:
         """Create a pool around an optional caller-configured Daft session."""
         self._session = session
         self._session_identity: tuple[str, str] | None = None
+        self._required_session_identity: tuple[str, str] | None = None
         self._session_lock = asyncio.Lock()
         self._instances: dict[str, iAsyncStore] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -117,6 +118,33 @@ class StorageService:
         # authoritative for discovery, and its location is a pure function
         # of the storage identity (see app/_catalog.py).
         self._catalogs: dict[str, ControlCatalog] = {}
+
+    @property
+    def has_injected_session(self) -> bool:
+        """Whether this service is restricted to one caller-owned catalog."""
+        return self._session is not None
+
+    def require_iceberg_identity(self, storage_config: StorageConfig) -> None:
+        """Constrain an injected session before any store binds it."""
+        if self._session is None:
+            return
+        if storage_config.backend != StorageBackend.ICEBERG:
+            raise ValueError("an injected Daft Session requires backend=iceberg")
+        _validate_session_namespace(self._session, storage_config)
+        requested = (str(storage_config.uri), storage_config.namespace)
+        bound = self._session_identity
+        required = self._required_session_identity
+        if bound is not None and requested != bound:
+            raise ValueError(
+                "injected Daft Session is already bound to a different storage identity; "
+                f"bound={bound}, requested={requested}"
+            )
+        if required is not None and requested != required:
+            raise ValueError(
+                "injected Daft Session already requires a different storage identity; "
+                f"required={required}, requested={requested}"
+            )
+        self._required_session_identity = requested
 
     def get_control_catalog(self, storage_config: StorageConfig):
         """The durable control catalog for a storage location (pooled).
@@ -226,6 +254,14 @@ class StorageService:
         assert self._session is not None
         _validate_session_namespace(self._session, storage_config)
         requested = (str(storage_config.uri), storage_config.namespace)
+        if (
+            self._required_session_identity is not None
+            and requested != self._required_session_identity
+        ):
+            raise ValueError(
+                "injected Daft Session is configured for a different storage identity; "
+                f"required={self._required_session_identity}, requested={requested}"
+            )
         if self._session_identity is not None and requested != self._session_identity:
             raise ValueError(
                 "one injected Daft Session cannot serve multiple storage identities; "

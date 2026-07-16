@@ -37,7 +37,9 @@ The built-in Iceberg factory is a concrete local SQLite-catalog lakehouse.
 Managed or remote Iceberg enters through a caller-configured Daft `Session`;
 `IOConfig` passes directly to Daft data I/O. Leaf service — no required
 dependencies. One injected session serves one storage URI and namespace;
-mismatches fail closed.
+mismatches fail closed. A `ServiceContainer` borrowing an injected-session
+service requires `audit_storage_config`; construction constrains the shared
+session to that same identity before any world can bind it elsewhere.
 
 ```python
 async def get_or_create_store(storage_config, cache_config=None) -> iAsyncStore

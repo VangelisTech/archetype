@@ -53,6 +53,14 @@ class ServiceContainer:
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
     ):
+        if storage_service is not None and storage_service.has_injected_session:
+            if audit_storage_config is None:
+                raise ValueError(
+                    "audit_storage_config is required when ServiceContainer uses an "
+                    "injected Daft Session"
+                )
+            storage_service.require_iceberg_identity(audit_storage_config)
+
         # Infrastructure
         self.broker = CommandBroker()
 
