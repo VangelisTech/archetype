@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -336,3 +337,28 @@ def test_digest_is_canonical_across_dictionary_key_order():
     reordered = json.loads('{"a":{"c":3,"d":4},"b":[2]}')
 
     assert artifact_digest(value) == artifact_digest(reordered)
+
+
+def _skill_category_slugs() -> tuple[str, ...]:
+    skill = (
+        Path(__file__).resolve().parents[2] / ".claude" / "skills" / "footgun-detector" / "SKILL.md"
+    )
+    section = re.search(
+        r"^### Footgun categories$(.*?)^## ",
+        skill.read_text(encoding="utf-8"),
+        re.MULTILINE | re.DOTALL,
+    )
+    assert section is not None, "skill file lost its 'Footgun categories' section"
+    headings = re.findall(r"^#### (.+)$", section.group(1), re.MULTILINE)
+    return tuple(re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-") for heading in headings)
+
+
+def test_required_categories_track_the_skill_rulebook():
+    """The skill file is the single source of truth for footgun categories.
+
+    REQUIRED_CATEGORIES is the merge gate's machine-readable copy of the
+    category headings in .claude/skills/footgun-detector/SKILL.md. Adding,
+    removing, renaming, or reordering a category in one place without the
+    other silently changes what the gate enforces — so drift fails here.
+    """
+    assert _skill_category_slugs() == REQUIRED_CATEGORIES

@@ -60,7 +60,7 @@ Calling a function with wrong keyword arguments — especially `fork_world()`, `
 #### Private API coupling
 Code outside `core/` accessing private attributes: `_live`, `_spawn_cache`, `_despawn_cache`, `_entity2sig`, `_next_entity_id`. Use the public API (`get_components()`, `spawn()`, `despawn()`).
 
-#### Monotonic state / predicate accumulation
+#### Monotonic state
 Boolean or filter columns that AND onto existing state instead of recomputing from config each tick. This causes state to monotonically narrow (e.g., once `sampled=False`, always False). The fix: recompute predicates from source data each tick.
 
 #### Shared mutable state across forks
