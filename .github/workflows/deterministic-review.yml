@@ -3,6 +3,10 @@ name: Deterministic Review Gate
 on:
   # zizmor: ignore[dangerous-triggers] Base stays at the workspace root; the
   # candidate is data-only, and the detector job has no write permissions.
+  # Reviews are further restricted to maintainer-authored PRs: everyone else
+  # fails closed in the first step, before any checkout, API call, or model
+  # spend. (A failing step, not a job-level `if` — skipped required checks
+  # count as satisfied, which would fail open.)
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
@@ -25,6 +29,13 @@ jobs:
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
     steps:
+      - name: Restrict to maintainer PRs
+        if: github.event.pull_request.user.login != 'everettVT'
+        run: |
+          echo "Deterministic footgun review only runs for PRs authored by everettVT."
+          echo "This PR fails closed: no review ran and merge stays blocked."
+          exit 1
+
       - name: Checkout trusted base
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -266,7 +277,9 @@ jobs:
           exit 1
 
       - name: Report incomplete review
-        if: failure() && steps.finding_gate.outcome != 'failure'
+        if: >-
+          failure() && steps.finding_gate.outcome != 'failure' &&
+          github.event.pull_request.user.login == 'everettVT'
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
