@@ -27,9 +27,9 @@ import pytest
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
 from archetype.core.config import StorageConfig
+from archetype.experiments.eval_rollouts import run_task_eval
 from archetype.experiments.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
 from archetype.experiments.policy import ScriptedReachPolicy
-from bench.libero.eval_run import run_task_eval
 
 # Proportional-controller params shared by the policy, the env, and the replay.
 GAIN = 0.5

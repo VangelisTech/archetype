@@ -1,5 +1,11 @@
 # Eval + LIBERO Roadmap (living plan)
 
+> **2026-07-15 note:** the bench surface was truth-labeled — the two-worker RPC
+> path this plan references (`modal_worker.py`, `vla_jepa_worker.py`, the e2e
+> smokes, `video_rollout.py`) is deleted (git history), and execution status
+> for every GPU entrypoint now lives in the RUN LEDGER at the top of
+> `bench/libero/image.py`. Treat file references below as historical.
+
 Working plan for: dogfooding the eval service, redoing the LIBERO/VLA-JEPA
 bench cleanly, and the cleanups that fall out. Iterate freely — status markers
 at each item. Lens throughout: the infra failure-mode catalog

@@ -1,33 +1,27 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Harness-side LIBERO/VLA-JEPA clients and their Resources specs.
+"""VLA-JEPA action/state numerics shared by every policy client.
 
-This is the benchmark half of the env/policy boundary. The framework
-(``archetype.experiments.manipulation`` / ``.policy``) defines the
-``EnvClient`` / ``PolicyClient`` protocols, the processors that drive them,
-and the *abstract* ``EnvClientSpec`` / ``PolicyClientSpec`` Resources keys.
-Everything LIBERO/robosuite/VLA-JEPA/Modal-specific — the things that need a
-GPU or pin incompatible dependencies — lives here, so nothing under
-``src/archetype`` imports a simulator or a model.
+This module is the tested reference for the translation layer between VLA-JEPA
+and robosuite — the 8-dim state vector, quaternion→axis-angle, the gripper sign
+convention, and the 7-step chunk-buffer cadence (13 tests in
+``tests/bench/test_vla_jepa_client.py``). ``InProcessVlaJepaPolicy``
+(``in_process_policy.py``, the live path) reuses the static helpers here.
 
-Wiring (Resources-spec path)::
-
-    world.resources.insert_as(LiberoEnvSpec(suite="libero_spatial"), EnvClientSpec)
-    world.resources.insert_as(LiberoVlaPolicySpec(suite="libero_spatial"), PolicyClientSpec)
-    # processors built with client=None then build() these on first use.
-
-Or pass the clients directly (constructor injection), as ``eval_driver`` does.
+``VlaJepaPolicyClient`` itself is the client of the RETIRED two-worker Modal
+RPC deployment (``modal_worker.py`` / ``vla_jepa_worker.py``, deleted
+2026-07-15 — git history has them, along with the ``LiberoEnvSpec`` /
+``LiberoVlaPolicySpec`` Resources builders that constructed them). It is kept
+because its numerics and buffer semantics are the verified contract, not
+because the deployment it targets still exists. Do not wire it into new code;
+use ``InProcessVlaJepaPolicy``.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from typing import Any
-
-from archetype.experiments.manipulation import EnvClient, EnvClientSpec
-from archetype.experiments.policy import PolicyClient, PolicyClientSpec
 
 # ---------------------------------------------------------------------------
 # Quaternion helper (robosuite convention)
@@ -64,12 +58,14 @@ def _quat_to_axis_angle(quat: list[float]) -> list[float]:
 # VlaJepaPolicyClient: chunk-buffered, ref-consuming
 # ---------------------------------------------------------------------------
 
-# Chunk length produced by VLA-JEPA (matches server response; currently 7).
+# Chunk length produced by VLA-JEPA's upstream ``predict_action`` (currently 7).
 _CHUNK_LEN = 7
 
 
 class VlaJepaPolicyClient:
-    """``PolicyClient`` wrapping the deployed VLA-JEPA Modal worker.
+    """``PolicyClient`` wrapping the deployed VLA-JEPA Modal worker (LEGACY —
+    the deployment path is retired; see module docstring. The numerics below
+    are the live, tested contract that ``InProcessVlaJepaPolicy`` reuses).
 
     Chunk-buffered: ``VlaJepaPolicy.infer_refs`` returns a full action chunk
     (``_CHUNK_LEN`` steps) per inference call.  This client maintains a
@@ -88,8 +84,8 @@ class VlaJepaPolicyClient:
         The VLA-JEPA model emits gripper **open** value in {0, 1} (binary,
         after dataset-statistics binarization inside the worker's
         ``_unnormalize``).  Robosuite expects ``{-1: open, +1: close}``.
-        Upstream reference (``bench/libero/video_rollout.py``,
-        ``_binarize_gripper_open``)::
+        Upstream reference (``_binarize_gripper_open`` in the retired
+        ``video_rollout.py`` demo — git history)::
 
             gripper_robosuite = 1 - 2 * (gripper_model > 0.5)
 
@@ -186,7 +182,7 @@ class VlaJepaPolicyClient:
           - 0 means "close" → robosuite +1
 
         Formula (applied to action dim index 6, matching upstream
-        ``bench/libero/video_rollout.py`` / ``_binarize_gripper_open``)::
+        ``_binarize_gripper_open`` — retired ``video_rollout.py``, git history)::
 
             gripper_robosuite = 1 - 2 * (gripper_model > 0.5)
 
@@ -205,8 +201,8 @@ class VlaJepaPolicyClient:
         """Return one action per env, popping from the chunk buffer.
 
         When a buffer is empty, calls ``infer_refs`` to refresh it with a
-        new chunk.  The chunk length equals the server's response length
-        (currently ``_CHUNK_LEN = 7``).
+        new chunk. The chunk length equals the model output length (currently
+        ``_CHUNK_LEN = 7``).
 
         Frame refs (``agentview_ref``, ``wrist_ref``) must be present in
         the observation dicts; they are forwarded to ``infer_refs`` for
@@ -231,55 +227,3 @@ class VlaJepaPolicyClient:
             self._buffers[env_key] = buf
             actions.append(action)
         return actions
-
-
-# ---------------------------------------------------------------------------
-# Concrete Resources specs (the inversion point)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class LiberoEnvSpec(EnvClientSpec):
-    """Picklable recipe for the LIBERO env worker behind ``EnvClient``.
-
-    ``build()`` constructs a ``ModalEnvClient`` (harness-side adapter over the
-    deployed ``LiberoEnvBatch``). Only plain scalars are stored, so the spec
-    survives pickle to a Daft worker; the live Modal handle is built lazily by
-    ``ModalEnvClient`` after unpickling.
-    """
-
-    suite: str = "libero_spatial"
-    task_id: int = 0
-    with_frames: bool = False
-
-    def build(self) -> EnvClient:
-        # Lazy so importing this module never requires `modal` to be installed;
-        # the Modal dependency is paid only when a live client is built.
-        try:
-            from bench.libero.modal_worker import ModalEnvClient  # noqa: PLC0415
-        except ImportError:  # bench/libero on sys.path directly (script context)
-            from modal_worker import (
-                ModalEnvClient,  # type: ignore[import-untyped,no-redef]  # noqa: PLC0415
-            )
-
-        return ModalEnvClient(
-            suite=self.suite,
-            task_id=self.task_id,
-            with_frames=self.with_frames,
-        )
-
-
-@dataclass
-class LiberoVlaPolicySpec(PolicyClientSpec):
-    """Picklable recipe for the VLA-JEPA policy behind ``PolicyClient``."""
-
-    suite: str = "libero_spatial"
-    task_id: int = 0
-    app_name: str = "archetype-vla-jepa"
-
-    def build(self) -> PolicyClient:
-        return VlaJepaPolicyClient(
-            suite=self.suite,
-            task_id=self.task_id,
-            app_name=self.app_name,
-        )
