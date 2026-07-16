@@ -93,7 +93,9 @@ jobs:
             partitions every file into a context-relevant reviewed area, gives
             a substantive diff-specific summary, and anchors every finding to
             an actual changed line. An empty findings array is valid only after
-            that complete review.
+            that complete review. Put each changed file in exactly one
+            review_context entry; combine multiple concerns for the same file
+            into that single entry.
 
             Use only Read, Grep, and Glob. Do not attempt Bash or any other
             unavailable tool, and reserve enough turns to return the required
