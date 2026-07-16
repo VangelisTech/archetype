@@ -6,16 +6,16 @@ Read these before doing anything:
 - `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory before writing a processor.**
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions, dev workflow.
 
-Skills in `.claude/skills/` enforce framework rules automatically. They fire based on file paths — you don't need to invoke them manually.
+Skills in `.claude/skills/` are the framework rulebooks. Nothing fires on file paths alone: a skill loads when you invoke it by name or when the agent matches its description to the task at hand. Before editing Python under `src/`, `tests/`, or `examples/`, load the relevant skill — the deterministic footgun gate in CI reviews every PR against the same rules, so skipping them locally just moves the failure to review.
 
 ## Skills index
 
-| Skill | How it fires | What it enforces |
+| Skill | How it loads | What it enforces |
 |-------|--------------|------------------|
-| `daft-patterns` | auto (Python files) | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
-| `archetype-components` | auto (Python files) | Component definitions, Arrow serialization, field conventions |
-| `archetype-processors` | auto (Python files) | AsyncProcessor patterns, priority ordering, resource access |
-| `footgun-detector` | `/footgun` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
+| `daft-patterns` | `/daft-patterns`, or model-invoked for Daft/DataFrame/UDF code | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
+| `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code | Component definitions, Arrow serialization, field conventions |
+| `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code | AsyncProcessor patterns, priority ordering, resource access |
+| `footgun-detector` | `/footgun-detector` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
 
 ## Agents
 
