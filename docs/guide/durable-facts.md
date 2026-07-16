@@ -91,8 +91,8 @@ receipt = await world.ingest(
 The receipt is the durable outcome: commit token, fact entity id, tick,
 table, digest, and whether this call deduplicated against an existing
 visible fact. Ingestion works against live worlds and cold (catalog-
-recorded) ones; facts land at the world's last visible tick and never
-advance it.
+recorded) ones; facts land at the latest manifest tick, falling back to the
+recorded fork/genesis head before the first manifest, and never advance it.
 
 ## 7. Evaluation receipts: claim-before-grade
 

@@ -165,6 +165,8 @@ class IngestionService:
         run_id = record.run_id
         if not run_id:
             raise RuntimeError(f"world {wid} has no recorded run; nothing to attach facts to")
+        manifest_tick = await catalog.max_manifest_tick(wid, str(run_id))
+        claim_tick = record.tick_head if manifest_tick is None else manifest_tick
         sig, table_id, signature_record = self._signature(component_types)
 
         claimant = f"{socket.gethostname()}:{os.getpid()}:{uuid7().hex[:8]}"
@@ -179,7 +181,7 @@ class IngestionService:
                     external_id=external_id,
                     payload_digest=payload_digest,
                     claimant=claimant,
-                    tick=record.tick_head,
+                    tick=claim_tick,
                     lease_seconds=lease_seconds,
                 )
             except ClaimPendingError:

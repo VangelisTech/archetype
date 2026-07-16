@@ -174,6 +174,7 @@ async def test_fence_and_manifest_parity(tmp_path, worker_url):
         assert await catalog.acquire_fence("w1", "h1") == 1
         assert await catalog.acquire_fence("w1", "h2") == 2
         assert await catalog.current_fence_epoch("w1") == 2
+        assert await catalog.max_manifest_tick("w1", "r1") is None
 
         # Stale epoch fails closed.
         with pytest.raises(StaleWriterError):
@@ -188,6 +189,7 @@ async def test_fence_and_manifest_parity(tmp_path, worker_url):
         manifests = await catalog.list_manifests("w1", "r1")
         assert [(m.tick, m.commit_token) for m in manifests] == [(0, "tok-a"), (1, "tok-c")]
         assert manifests[1].table_ids == ("t1", "t2")
+        assert await catalog.max_manifest_tick("w1", "r1") == 1
         # Publication advances the durable head on both backends.
         assert (await catalog.get_world("w1")).tick_head == 1
         await catalog.close()

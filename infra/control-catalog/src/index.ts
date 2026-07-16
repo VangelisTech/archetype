@@ -269,6 +269,15 @@ export class WorldCommitDO implements DurableObject {
       return json({ epoch: rows.length ? Number((rows[0] as Record<string, unknown>).epoch) : null });
     }
 
+    if (route[0] === "manifest-head" && method === "GET") {
+      const run = url.searchParams.get("run") ?? "";
+      const rows = this.sql
+        .exec("SELECT MAX(tick) AS tick FROM manifests WHERE run_id = ?", run)
+        .toArray();
+      const tick = rows.length ? (rows[0] as Record<string, unknown>).tick : null;
+      return json({ tick: tick === null ? null : Number(tick) });
+    }
+
     if (route[0] === "manifests" && method === "POST") {
       const m = (await request.json()) as Record<string, unknown>;
       const fence = this.sql.exec("SELECT epoch FROM fence WHERE singleton = 1").toArray();
