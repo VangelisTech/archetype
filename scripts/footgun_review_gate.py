@@ -75,11 +75,29 @@ def _run_git(*args: str) -> bytes:
     return completed.stdout
 
 
-def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
-    """Return the exact file/category manifest and rename-aware unified diff."""
+def _validate_shas(base_sha: str, head_sha: str) -> None:
     if not _SHA_RE.fullmatch(base_sha) or not _SHA_RE.fullmatch(head_sha):
         raise GateError("base and head must be full lowercase Git SHAs")
 
+
+def _scope_payload(base_sha: str, head_sha: str, files: Sequence[str]) -> dict[str, Any]:
+    _validate_shas(base_sha, head_sha)
+    if not files:
+        raise GateError("the pull request has no changed files to review")
+    if len(files) != len(set(files)):
+        raise GateError("the pull request file manifest contains duplicates")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "files": sorted(files),
+        "categories": list(REQUIRED_CATEGORIES),
+    }
+
+
+def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
+    """Return the exact file/category manifest and rename-aware unified diff."""
+    _validate_shas(base_sha, head_sha)
     comparison = f"{base_sha}...{head_sha}"
     names = _run_git(
         "-c",
@@ -91,9 +109,6 @@ def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
         comparison,
     )
     files = sorted(path.decode("utf-8") for path in names.rstrip(b"\0").split(b"\0") if path)
-    if not files:
-        raise GateError("the pull request has no changed files to review")
-
     diff = _run_git(
         "-c",
         "core.quotePath=false",
@@ -104,14 +119,58 @@ def build_scope(base_sha: str, head_sha: str) -> tuple[dict[str, Any], str]:
         "--unified=3",
         comparison,
     ).decode("utf-8")
-    scope = {
-        "schema_version": SCHEMA_VERSION,
-        "base_sha": base_sha,
-        "head_sha": head_sha,
-        "files": files,
-        "categories": list(REQUIRED_CATEGORIES),
-    }
-    return scope, diff
+    return _scope_payload(base_sha, head_sha, files), diff
+
+
+def build_github_scope(
+    *,
+    repository: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    file_pages: Any,
+    diff: str,
+) -> dict[str, Any]:
+    """Validate an API-fetched PR snapshot and return its deterministic scope."""
+
+    def validate_metadata(metadata: Mapping[str, Any], label: str) -> int:
+        base = _expect_mapping(metadata.get("base"), f"{label}.base")
+        base_repo = _expect_mapping(base.get("repo"), f"{label}.base.repo")
+        head = _expect_mapping(metadata.get("head"), f"{label}.head")
+        if metadata.get("number") != pr_number:
+            raise GateError(f"{label} pull request number does not match the event")
+        if metadata.get("state") != "open":
+            raise GateError(f"{label} pull request is not open")
+        if str(base_repo.get("full_name", "")).casefold() != repository.casefold():
+            raise GateError(f"{label} base repository does not match the event")
+        if base.get("sha") != base_sha or head.get("sha") != head_sha:
+            raise GateError(f"{label} base/head does not match the event")
+        changed_files = metadata.get("changed_files")
+        if not isinstance(changed_files, int) or isinstance(changed_files, bool):
+            raise GateError(f"{label}.changed_files must be an integer")
+        return changed_files
+
+    before_count = validate_metadata(before, "before")
+    after_count = validate_metadata(after, "after")
+    if before_count != after_count:
+        raise GateError("pull request changed while the review scope was fetched")
+
+    file_items = _flatten_pages(file_pages, "files")
+    files: list[str] = []
+    for index, item in enumerate(file_items):
+        filename = item.get("filename")
+        if not isinstance(filename, str) or not filename:
+            raise GateError(f"files[{index}].filename must be a non-empty string")
+        files.append(filename)
+    if len(files) != before_count:
+        raise GateError(
+            "the fetched file manifest does not match the pull request changed-file count"
+        )
+    if not diff.strip():
+        raise GateError("the fetched pull request diff is empty")
+    return _scope_payload(base_sha, head_sha, files)
 
 
 def _diff_path(value: str) -> str | None:
@@ -572,6 +631,20 @@ def _scope_command(args: argparse.Namespace) -> None:
     args.diff.write_text(diff, encoding="utf-8")
 
 
+def _github_scope_command(args: argparse.Namespace) -> None:
+    scope = build_github_scope(
+        repository=args.repository,
+        pr_number=args.pr_number,
+        base_sha=args.base,
+        head_sha=args.head,
+        before=_expect_mapping(_load_json(args.before), "before"),
+        after=_expect_mapping(_load_json(args.after), "after"),
+        file_pages=_load_json(args.files),
+        diff=args.diff.read_text(encoding="utf-8"),
+    )
+    _write_json(args.scope, scope)
+
+
 def _prepare_command(args: argparse.Namespace) -> None:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     raw_result = _expect_mapping(_load_json(args.result), "result")
@@ -626,6 +699,20 @@ def _parser() -> argparse.ArgumentParser:
     scope.add_argument("--scope", type=Path, required=True)
     scope.add_argument("--diff", type=Path, required=True)
     scope.set_defaults(handler=_scope_command)
+
+    github_scope = subparsers.add_parser(
+        "github-scope", help="validate an API-fetched PR review scope"
+    )
+    github_scope.add_argument("--repository", required=True)
+    github_scope.add_argument("--pr-number", type=int, required=True)
+    github_scope.add_argument("--base", required=True)
+    github_scope.add_argument("--head", required=True)
+    github_scope.add_argument("--before", type=Path, required=True)
+    github_scope.add_argument("--after", type=Path, required=True)
+    github_scope.add_argument("--files", type=Path, required=True)
+    github_scope.add_argument("--diff", type=Path, required=True)
+    github_scope.add_argument("--scope", type=Path, required=True)
+    github_scope.set_defaults(handler=_github_scope_command)
 
     prepare = subparsers.add_parser("prepare", help="validate and render structured output")
     prepare.add_argument("--scope", type=Path, required=True)

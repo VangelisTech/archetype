@@ -31,6 +31,7 @@ from footgun_review_gate import (  # noqa: E402
     REQUIRED_CATEGORIES,
     GateError,
     artifact_digest,
+    build_github_scope,
     changed_line_anchors,
     evidence_marker,
     render_evidence,
@@ -40,6 +41,7 @@ from footgun_review_gate import (  # noqa: E402
 )
 
 HEAD_SHA = "a" * 40
+BASE_SHA = "b" * 40
 DIFF = """\
 diff --git a/old.py b/old.py
 index 1111111..2222222 100644
@@ -77,7 +79,7 @@ index 1111111..2222222 100644
 def _scope() -> dict:
     return {
         "schema_version": 1,
-        "base_sha": "b" * 40,
+        "base_sha": BASE_SHA,
         "head_sha": HEAD_SHA,
         "files": ["new.py", "old.py"],
         "categories": list(REQUIRED_CATEGORIES),
@@ -126,6 +128,67 @@ def _finding(**overrides) -> dict:
 
 def _bot_item(**values) -> dict:
     return {"user": {"login": BOT_LOGIN}, **values}
+
+
+def _pr_metadata(**overrides) -> dict:
+    metadata = {
+        "number": 299,
+        "state": "open",
+        "changed_files": 2,
+        "base": {
+            "sha": BASE_SHA,
+            "repo": {"full_name": "VangelisTech/archetype"},
+        },
+        "head": {"sha": HEAD_SHA},
+    }
+    metadata.update(overrides)
+    return metadata
+
+
+def test_github_scope_binds_api_snapshot_to_event_identity():
+    scope = build_github_scope(
+        repository="VangelisTech/archetype",
+        pr_number=299,
+        base_sha=BASE_SHA,
+        head_sha=HEAD_SHA,
+        before=_pr_metadata(),
+        after=_pr_metadata(),
+        file_pages=[[{"filename": "old.py"}, {"filename": "new.py"}]],
+        diff=DIFF,
+    )
+
+    assert scope == _scope()
+
+
+def test_github_scope_rejects_head_change_during_fetch():
+    after = _pr_metadata()
+    after["head"] = {"sha": "c" * 40}
+
+    with pytest.raises(GateError, match="after base/head"):
+        build_github_scope(
+            repository="VangelisTech/archetype",
+            pr_number=299,
+            base_sha=BASE_SHA,
+            head_sha=HEAD_SHA,
+            before=_pr_metadata(),
+            after=after,
+            file_pages=[[{"filename": "old.py"}, {"filename": "new.py"}]],
+            diff=DIFF,
+        )
+
+
+def test_github_scope_rejects_incomplete_file_manifest():
+    with pytest.raises(GateError, match="changed-file count"):
+        build_github_scope(
+            repository="VangelisTech/archetype",
+            pr_number=299,
+            base_sha=BASE_SHA,
+            head_sha=HEAD_SHA,
+            before=_pr_metadata(),
+            after=_pr_metadata(),
+            file_pages=[[{"filename": "old.py"}]],
+            diff=DIFF,
+        )
 
 
 def test_changed_line_anchors_include_only_added_and_removed_lines():

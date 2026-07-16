@@ -22,50 +22,46 @@ jobs:
       pull-requests: read # Supply PR metadata to the read-only detector.
     env:
       DIFF_FILE: ${{ github.workspace }}/.footgun-review.diff
-      HEAD_DIR: ${{ github.workspace }}/pr-head
       REVIEW_DIR: ${{ github.workspace }}/.footgun-review-output
       SCOPE_FILE: ${{ github.workspace }}/.footgun-review-scope.json
     steps:
       - name: Checkout trusted base
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
-
-      - name: Checkout exact pull request head as data
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          fetch-depth: 0
-          path: pr-head
-          persist-credentials: false
-          ref: refs/pull/${{ github.event.pull_request.number }}/head
 
       - name: Materialize deterministic review scope
         id: scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          checked_out_head="$(git -C "${HEAD_DIR}" rev-parse HEAD)"
-          if [[ "${checked_out_head}" != "${HEAD_SHA}" ]]; then
-            echo "::error::Checked-out pull request head does not match the event head."
-            exit 1
-          fi
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-before.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api -H "Accept: application/vnd.github.diff" \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${DIFF_FILE}"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-after.json"
 
-          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
-          fetched_head="$(git rev-parse FETCH_HEAD)"
-          if [[ "${fetched_head}" != "${HEAD_SHA}" ]]; then
-            echo "::error::Fetched pull request head does not match the event head."
-            exit 1
-          fi
-
-          python3 scripts/footgun_review_gate.py scope \
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" \
+            --pr-number "${PR_NUMBER}" \
             --base "${BASE_SHA}" \
             --head "${HEAD_SHA}" \
-            --scope "${SCOPE_FILE}" \
-            --diff "${DIFF_FILE}"
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" \
+            --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
           echo "schema=$(python3 scripts/footgun_review_gate.py schema)" >> "${GITHUB_OUTPUT}"
 
       - name: Run read-only footgun detector
@@ -76,21 +72,20 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
           claude_args: |
-            --add-dir pr-head
             --allowedTools "Agent,Task,Read,Grep,Glob"
             --max-turns 20
             --json-schema '${{ steps.scope.outputs.schema }}'
           prompt: |
             Review PR #${{ github.event.pull_request.number }} at exact head
             ${{ github.event.pull_request.head.sha }} for archetype-specific
-            footguns. The protected base is the working directory; the exact
-            candidate tree is read-only under `pr-head/`.
+            footguns. The protected base is the working directory. The exact
+            candidate changes are inert data in `.footgun-review.diff`.
 
             Invoke the trusted `footgun-detector` agent from the protected base.
             `.footgun-review-scope.json` and `.footgun-review.diff` are the
-            authoritative scope and diff. Inspect every scoped file in
-            `pr-head/` plus relevant protected-base context, then convert the
-            result into the required structured output.
+            authoritative scope and diff. Inspect every change plus relevant
+            protected-base context, then convert the result into the required
+            structured output.
 
             The gate rejects the result unless it binds to the exact head,
             covers every scoped file and detector category exactly once,
@@ -154,28 +149,39 @@ jobs:
       - name: Checkout trusted base
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Materialize exact review scope
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
         run: |
-          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
-          fetched_head="$(git rev-parse FETCH_HEAD)"
-          if [[ "${fetched_head}" != "${HEAD_SHA}" ]]; then
-            echo "::error::Fetched pull request head does not match the event head."
-            exit 1
-          fi
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-before.json"
+          gh api --paginate --slurp \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
+            > "${RUNNER_TEMP}/pr-files.json"
+          gh api -H "Accept: application/vnd.github.diff" \
+            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${DIFF_FILE}"
+          gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+            > "${RUNNER_TEMP}/pr-after.json"
 
-          python3 scripts/footgun_review_gate.py scope \
+          python3 scripts/footgun_review_gate.py github-scope \
+            --repository "${REPOSITORY}" \
+            --pr-number "${PR_NUMBER}" \
             --base "${BASE_SHA}" \
             --head "${HEAD_SHA}" \
-            --scope "${SCOPE_FILE}" \
-            --diff "${DIFF_FILE}"
+            --before "${RUNNER_TEMP}/pr-before.json" \
+            --after "${RUNNER_TEMP}/pr-after.json" \
+            --files "${RUNNER_TEMP}/pr-files.json" \
+            --diff "${DIFF_FILE}" \
+            --scope "${SCOPE_FILE}"
 
       - name: Download detector result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
