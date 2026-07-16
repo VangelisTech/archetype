@@ -28,7 +28,9 @@ export ARCHETYPE_CONTROL_CATALOG_TOKEN=<the secret>
 ```
 
 Every coordinated world in that process now fences, publishes, and claims
-through the worker. Parity with the SQLite reference is enforced by
-`tests/app/test_remote_catalog_parity.py` (runs the worker under
-`wrangler dev`); the owner-facing end-to-end proof is
-`scripts/validate_r2_substrate.py`.
+through the worker. The Worker returns a configuration error when
+`CATALOG_TOKEN` is absent, and the Python host fails during catalog setup
+when the URL is configured without the matching token. Parity with the
+SQLite reference is enforced by `tests/app/test_remote_catalog_parity.py`
+(runs the worker under `wrangler dev`); the owner-facing end-to-end proof
+is `scripts/validate_r2_substrate.py`.
