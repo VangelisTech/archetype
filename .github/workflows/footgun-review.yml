@@ -2,7 +2,7 @@ name: Footgun Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -65,12 +65,11 @@ jobs:
               resolve.)
 
             Do not edit any files. Do not run tests. Do not push commits.
-            This job is advisory and must not fail the build on findings —
-            enforcement happens through thread resolution, not job status.
+            Findings do not fail this job; enforcement happens through thread
+            resolution. An incomplete detector run does fail the required check.
 
       - name: Report footgun-detector failure
         if: steps.footgun-detector.outcome == 'failure'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -79,7 +78,8 @@ jobs:
           cat > /tmp/footgun-review-failed.md <<EOF
           ## Footgun review
 
-          Footgun review did not complete. This advisory check is non-blocking; inspect the workflow log for details:
+          Footgun review did not complete, so the required check has failed. Inspect the workflow log, fix the failure, and rerun the check:
           ${RUN_URL}
           EOF
           gh pr comment "${PR_NUMBER}" --body-file /tmp/footgun-review-failed.md
+          exit 1

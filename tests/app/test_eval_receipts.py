@@ -113,6 +113,73 @@ async def test_replay_returns_original_receipt_without_regrading(tmp_path):
         await c.shutdown()
 
 
+async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, monkeypatch):
+    """A step between snapshot capture and grading cannot change the subject rows."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(c, storage)
+        original_snapshot_ref = c.ingestion_service.snapshot_ref
+
+        async def _capture_then_advance(*args, **kwargs):
+            snapshot = await original_snapshot_ref(*args, **kwargs)
+            await c.simulation_service.step(world.world_id, RunConfig())
+            return snapshot
+
+        monkeypatch.setattr(c.ingestion_service, "snapshot_ref", _capture_then_advance)
+        graded_ticks: list[int] = []
+
+        def grader(df):
+            rows = df.to_pylist()
+            graded_ticks.extend(int(row["tick"]) for row in rows)
+            return Outcome(status="pass", score=1.0)
+
+        await c.command_service.evaluate(
+            _ctx(),
+            world.world_id,
+            [Telemetry],
+            contract=_contract(),
+            grader=grader,
+            evaluation_id="pinned-while-advancing",
+        )
+
+        assert graded_ticks == [0], "the later tick must not leak into the pinned evaluation"
+    finally:
+        await c.shutdown()
+
+
+async def test_grader_snapshot_includes_completed_fact_claims(tmp_path):
+    """Pinned reads retain durable facts visible when the snapshot is captured."""
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _seeded_world(c, storage)
+        await c.ingestion_service.ingest_fact(
+            str(world.world_id),
+            [Telemetry(reading=1.2)],
+            external_id="sensor-reading-1",
+            producer="sensor",
+        )
+        graded_readings: list[float] = []
+
+        def grader(df):
+            graded_readings.extend(float(row["telemetry__reading"]) for row in df.to_pylist())
+            return Outcome(status="pass", score=1.0)
+
+        await c.command_service.evaluate(
+            _ctx(),
+            world.world_id,
+            [Telemetry],
+            contract=_contract(),
+            grader=grader,
+            evaluation_id="fact-aware-snapshot",
+        )
+
+        assert sorted(graded_readings) == [0.8, 1.2]
+    finally:
+        await c.shutdown()
+
+
 async def test_new_trials_of_nondeterministic_graders_are_new_receipts(tmp_path):
     c = ServiceContainer()
     try:
@@ -169,9 +236,8 @@ async def test_same_id_different_contract_conflicts_loudly(tmp_path):
         await c.shutdown()
 
 
-async def test_crash_after_grade_before_persist_reruns_at_most_once(tmp_path, monkeypatch):
-    """Crash between complete-side steps: takeover finds the orphan by token
-    and completes WITHOUT re-grading (the claim-before-grade payoff)."""
+async def test_recovery_registers_orphaned_receipt_before_completion(tmp_path, monkeypatch):
+    """Takeover restores cold discovery without re-running the grader."""
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
@@ -180,13 +246,13 @@ async def test_crash_after_grade_before_persist_reruns_at_most_once(tmp_path, mo
         calls: list[int] = []
         grader = _counting_grader(calls, Outcome(status="pass", score=1.0))
 
-        real_complete = SqliteControlCatalog.complete_claim
+        real_register = SqliteControlCatalog.register_signature
 
         async def _crash(self, *args, **kwargs):
-            raise RuntimeError("injected crash after grade+append, before complete")
+            raise RuntimeError("injected crash after append, before signature registration")
 
-        monkeypatch.setattr(SqliteControlCatalog, "complete_claim", _crash)
-        with pytest.raises(RuntimeError, match="injected crash"):
+        monkeypatch.setattr(SqliteControlCatalog, "register_signature", _crash)
+        with pytest.raises(RuntimeError, match="before signature registration"):
             await c.command_service.evaluate(
                 _ctx(),
                 wid,
@@ -195,12 +261,17 @@ async def test_crash_after_grade_before_persist_reruns_at_most_once(tmp_path, mo
                 grader=grader,
                 evaluation_id="crashy",
             )
-        monkeypatch.setattr(SqliteControlCatalog, "complete_claim", real_complete)
+        monkeypatch.setattr(SqliteControlCatalog, "register_signature", real_register)
         assert len(calls) == 1
 
         # Expire the lease: the owner is presumed dead.
         catalog = c.storage_service.get_control_catalog(storage)
         scope = claim_scope_key(wid, str(world.run_id), "evals", "crashy")
+        orphaned_claim = await catalog.get_claim(wid, scope)
+        assert orphaned_claim is not None and orphaned_claim.table_id
+        assert orphaned_claim.table_id not in {
+            record.table_id for record in await catalog.list_signatures()
+        }
 
         def _expire():
             conn = catalog._connect_sync()
@@ -219,9 +290,18 @@ async def test_crash_after_grade_before_persist_reruns_at_most_once(tmp_path, mo
         )
         assert not receipt.duplicate
         assert len(calls) == 1, "orphan found by token: the grader must NOT re-run"
+        assert receipt.table_id in {record.table_id for record in await catalog.list_signatures()}
 
-        df = await c.query_service.query_components([EvalReceipt], wid, str(world.run_id), storage)
-        assert len(df.to_pylist()) == 1, "exactly one visible receipt"
+        # A fresh service has no live signature registry. It must discover the
+        # recovered receipt table from the catalog record published by takeover.
+        cold = ServiceContainer()
+        try:
+            df = await cold.query_service.query_components(
+                [EvalReceipt], wid, str(world.run_id), storage
+            )
+            assert len(df.to_pylist()) == 1, "exactly one cold-visible receipt"
+        finally:
+            await cold.shutdown()
     finally:
         await c.shutdown()
 

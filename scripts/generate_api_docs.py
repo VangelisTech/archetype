@@ -128,9 +128,9 @@ def render_operation(
     summary = operation.get("summary", operation.get("operationId", ""))
     lines.append(f"### {summary}")
     lines.append("")
-    lines.append(f"```text")
+    lines.append("```text")
     lines.append(f"{method.upper()} {path}")
-    lines.append(f"```")
+    lines.append("```")
     lines.append("")
 
     desc = operation.get("description", "")

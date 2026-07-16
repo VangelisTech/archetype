@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pathlib
 from urllib.parse import urlparse
 
 from daft.session import Session
 
-from archetype.app._catalog import SqliteControlCatalog, catalog_path_for
+from archetype.app._catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
@@ -93,10 +94,35 @@ class StorageService:
         # The catalog is an implementation resource of this service — it is
         # authoritative for discovery, and its location is a pure function
         # of the storage identity (see app/_catalog.py).
-        self._catalogs: dict[str, SqliteControlCatalog] = {}
+        self._catalogs: dict[str, ControlCatalog] = {}
 
-    def get_control_catalog(self, storage_config: StorageConfig) -> SqliteControlCatalog:
-        """The durable control catalog for a storage location (pooled)."""
+    def get_control_catalog(self, storage_config: StorageConfig):
+        """The durable control catalog for a storage location (pooled).
+
+        Default: the local SQLite catalog (the reference implementation,
+        single-host authority). Setting ``ARCHETYPE_CONTROL_CATALOG_URL``
+        (+ optional ``ARCHETYPE_CONTROL_CATALOG_TOKEN``) selects the remote
+        Durable Objects catalog (issue #281), namespaced by the storage
+        fingerprint — the same identity key both implementations pool by,
+        so a config resolves to ONE catalog whichever backend serves it.
+        """
+        remote_url = os.environ.get("ARCHETYPE_CONTROL_CATALOG_URL", "").strip()
+        if remote_url:
+            from archetype.app._catalog import storage_fingerprint
+            from archetype.app._remote_catalog import RemoteControlCatalog
+
+            namespace = storage_fingerprint(storage_config)[:24]
+            key = f"{remote_url}::{namespace}"
+            catalog = self._catalogs.get(key)
+            if catalog is None:
+                catalog = RemoteControlCatalog(
+                    remote_url,
+                    namespace,
+                    token=os.environ.get("ARCHETYPE_CONTROL_CATALOG_TOKEN") or None,
+                )
+                self._catalogs[key] = catalog
+            return catalog
+
         path = catalog_path_for(storage_config)
         key = str(path)
         catalog = self._catalogs.get(key)
@@ -171,11 +197,11 @@ class StorageService:
                 logger.exception("Failed to shut down store %r", store)
                 errors.append(e)
 
-        for catalog in self._catalogs.values():
+        for key, catalog in self._catalogs.items():
             try:
                 await catalog.close()
             except Exception as e:
-                logger.exception("Failed to close control catalog %r", catalog.path)
+                logger.exception("Failed to close control catalog %r", key)
                 errors.append(e)
 
         self._instances.clear()

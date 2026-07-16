@@ -572,7 +572,7 @@ class SqliteControlCatalog:
 
         return await self._run(_acquire)
 
-    async def record_claim_table(self, scope_key: str, table_id: str) -> None:
+    async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
         """Record where a claim's rows will land, BEFORE the append.
 
         Lets lease-takeover recovery probe the exact table for orphan rows
@@ -589,7 +589,9 @@ class SqliteControlCatalog:
 
         await self._run(_record)
 
-    async def complete_claim(self, scope_key: str, claimant: str, table_id: str) -> None:
+    async def complete_claim(
+        self, world_id: str, scope_key: str, claimant: str, table_id: str
+    ) -> None:
         """Publish the fact's visibility and complete the claim — one CAS.
 
         Verifies the caller still holds the claim (PENDING + claimant match);
@@ -621,7 +623,7 @@ class SqliteControlCatalog:
 
         await self._run(_complete)
 
-    async def get_claim(self, scope_key: str) -> ClaimRecord | None:
+    async def get_claim(self, world_id: str, scope_key: str) -> ClaimRecord | None:
         def _get() -> ClaimRecord | None:
             conn = self._connect_sync()
             row = conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()

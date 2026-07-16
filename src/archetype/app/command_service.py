@@ -448,29 +448,33 @@ class CommandService:
             )
 
         wid = str(world_id)
-        run_id, snap_tick, snap_tokens, effective = await ingestion.snapshot_ref(
-            wid, storage_config
-        )
+        snapshot = await ingestion.snapshot_ref(wid, storage_config)
         subject = subject_digest(
             wid,
-            run_id,
-            snapshot_tick=snap_tick,
-            snapshot_tokens=snap_tokens,
+            snapshot.run_id,
+            snapshot_tick=snapshot.tick,
+            snapshot_tokens=list(snapshot.head_tokens),
             component_names=[c.__name__ for c in components],
             ticks=ticks,
             entity_ids=entity_ids,
         )
         contract_digest = contract.digest()
         identity = evaluation_identity_digest(subject, contract_digest)
+        snapshot_ticks = (
+            [tick for tick in ticks if tick <= snapshot.tick]
+            if ticks is not None
+            else list(range(snapshot.tick + 1))
+        )
 
         async def _grade_and_build(_claim) -> list:
             df = await self._queries.query_components(
                 components,
                 wid,
-                run_id,
-                effective,
-                ticks=ticks,
+                snapshot.run_id,
+                snapshot.storage_config,
+                ticks=snapshot_ticks,
                 entity_ids=entity_ids,
+                visibility_tokens=list(snapshot.visibility_tokens),
             )
             outputs = await evals.run_graders(df, [grader])
             typed = [o for o in outputs if isinstance(o, Outcome)]
@@ -503,8 +507,9 @@ class CommandService:
             evaluation_id=evaluation_id,
             producer=producer,
             identity_digest=identity,
+            component_types=[EvalReceipt],
             build_components=_grade_and_build,
-            storage_config=storage_config,
+            storage_config=snapshot.storage_config,
         )
         await self._emit(
             ctx,

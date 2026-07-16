@@ -109,6 +109,7 @@ class QueryService:
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
         lineage: list[tuple[str, str, int]] | None = None,
+        visibility_tokens: list[str] | None = None,
     ) -> DataFrame:
         """Query all entities that contain the requested component types.
 
@@ -117,12 +118,24 @@ class QueryService:
 
         When `lineage` is provided (a fork's ancestor segments), pre-fork
         ticks are read from the owning ancestor's run and unioned in.
+
+        ``visibility_tokens`` is the fail-closed immutable-read seam used by
+        persisted evaluations. When supplied, it replaces the moving catalog
+        lookup with that exact allowlist. A single allowlist cannot describe
+        multiple lineage segments, so combining the two is rejected.
         """
+        if visibility_tokens is not None and lineage:
+            raise ValueError("visibility_tokens cannot be combined with lineage")
         effective_config, store, querier = await self._querier_for(storage_config)
         catalog_records = await self._catalog_candidates(effective_config, components)
+        pinned_tokens = list(visibility_tokens) if visibility_tokens is not None else None
 
         async def _read(seg_world: str, seg_run: str, seg_ticks: list[int] | None):
-            tokens = await self._visible_tokens(effective_config, seg_world, seg_run, seg_ticks)
+            tokens = (
+                pinned_tokens
+                if visibility_tokens is not None
+                else await self._visible_tokens(effective_config, seg_world, seg_run, seg_ticks)
+            )
             return await self._components_frame(
                 querier,
                 store,
