@@ -366,7 +366,7 @@ class FactService:
         facts = facts.select(*FACT_ENVELOPE_COLUMNS, *user_columns)
         if table is None:
             table = iceberg.create_table_if_not_exists(table_id, facts.schema())
-        self._require_compatible_schema(table, facts, iceberg, table_name)
+        facts = self._align_to_table_schema(table, facts, iceberg, table_name)
         rows_written = await iceberg.append_counted(table, facts)
         return self._receipt(
             world_id,
@@ -379,21 +379,22 @@ class FactService:
         )
 
     @staticmethod
-    def _require_compatible_schema(
+    def _align_to_table_schema(
         table: Table,
         facts: DataFrame,
         iceberg: IcebergCatalogContext,
         table_name: str,
-    ) -> None:
+    ) -> DataFrame:
         existing = iceberg.read(table).schema().to_pyarrow_schema()
         incoming = facts.schema().to_pyarrow_schema()
-        existing_shape = [(field.name, field.type) for field in existing]
-        incoming_shape = [(field.name, field.type) for field in incoming]
+        existing_shape = {field.name: field.type for field in existing}
+        incoming_shape = {field.name: field.type for field in incoming}
         if existing_shape != incoming_shape:
             raise ValueError(
                 f"fact table {table_name!r} already has a different typed schema: "
                 f"existing={existing_shape!r}, incoming={incoming_shape!r}"
             )
+        return facts.select(*existing_shape)
 
     @staticmethod
     def _receipt(

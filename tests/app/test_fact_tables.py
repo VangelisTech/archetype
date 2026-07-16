@@ -333,6 +333,45 @@ async def test_typed_fact_visibility_is_fork_local(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fact_table_accepts_compatible_schema_in_different_column_order(tmp_path):
+    container = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await _world(container, storage)
+        digest = hashlib.sha256(b"compatible").hexdigest()
+        first = daft.from_pydict(
+            {
+                "source_uri": ["sensor://ordered/1"],
+                "content_hash": [digest],
+                "label": ["first"],
+                "value": [1],
+            }
+        )
+        reordered = daft.from_pydict(
+            {
+                "content_hash": [digest],
+                "value": [2],
+                "source_uri": ["sensor://ordered/2"],
+                "label": ["second"],
+            }
+        )
+
+        await container.fact_service.write_facts(str(world.world_id), "ordered", first)
+        receipt = await container.fact_service.write_facts(
+            str(world.world_id), "ordered", reordered
+        )
+
+        assert receipt.rows_written == 1
+        rows = await container.fact_service.read_facts(str(world.world_id), "ordered")
+        assert {(row["label"], row["value"]) for row in rows.to_pylist()} == {
+            ("first", 1),
+            ("second", 2),
+        }
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_fact_table_rejects_schema_drift_and_duplicate_keys(tmp_path):
     container = ServiceContainer()
     try:
