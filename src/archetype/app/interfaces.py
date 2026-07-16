@@ -23,6 +23,7 @@ Service dependency graph (providers point to consumers)::
     iStorageService -> iWorldService -> iMutationService
                                   +---> iSimulationService
                     -> iQueryService -> iEvalService
+                    -> iFactService
                     -> iAuditLog
 
     iWorldService + iMutationService + iSimulationService + iQueryService
@@ -37,9 +38,12 @@ from typing import TYPE_CHECKING, Protocol
 from daft import DataFrame
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from uuid_utils import UUID
 
     from archetype.app.auth.models import ActorCtx
+    from archetype.app.facts import FactProcessor, FactWriteReceipt
     from archetype.app.iceberg import IcebergCatalogContext
     from archetype.app.models import (
         AuditRow,
@@ -290,6 +294,42 @@ class iEvalService(Protocol):
     ) -> list[object]: ...
 
 
+class iFactService(Protocol):
+    """Typed external facts stored alongside a world's Iceberg tables."""
+
+    def __init__(
+        self,
+        storage_service: iStorageService,
+        world_service: iWorldService,
+    ) -> None: ...
+
+    async def ingest_files(
+        self,
+        world_id: str,
+        paths: str | Path | list[str | Path],
+        processor: FactProcessor,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt: ...
+
+    async def write_facts(
+        self,
+        world_id: str,
+        table_name: str,
+        facts: DataFrame,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt: ...
+
+    async def read_facts(
+        self,
+        world_id: str,
+        table_name: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Command broker — pure queue. No RBAC. No ActorCtx.
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -353,7 +393,7 @@ class iCommandService(Protocol):
     """Policy enforcement point. Every external operation flows through here.
 
     Depends on: iMutationService, iWorldService, iSimulationService,
-                iQueryService, iCommandBroker, iAuditLog
+                iQueryService, iFactService, iCommandBroker, iAuditLog
     """
 
     def __init__(
@@ -364,6 +404,7 @@ class iCommandService(Protocol):
         queries: iQueryService,
         broker: iCommandBroker,
         audit: iAuditLog,
+        facts: iFactService | None = None,
     ) -> None: ...
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
@@ -391,6 +432,32 @@ class iCommandService(Protocol):
     async def remove_processor(
         self, ctx: ActorCtx, world_id: str | UUID, proc_type: type[iAsyncProcessor]
     ) -> None: ...
+    async def ingest_files(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        paths: str | Path | list[str | Path],
+        processor: FactProcessor,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt: ...
+    async def write_facts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        table_name: str,
+        facts: DataFrame,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt: ...
+    async def query_facts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        table_name: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame: ...
 
     # ── Lifecycle (gated, direct) — returns WorldInfo, never iWorld ────────
 

@@ -60,6 +60,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "RolloutConfig",
             "RolloutResult",
             "FactReceipt",
+            "FactWriteReceipt",
         ),
     ),
     ReferencePage(
@@ -67,7 +68,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Building blocks",
         "Extension API",
         "Use these types to define component data, processors, and processor resources.",
-        ("Component", "AsyncProcessor", "Resources"),
+        ("Component", "AsyncProcessor", "FactProcessor", "Resources"),
     ),
     ReferencePage(
         "hooks",
@@ -123,6 +124,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "WorldService",
             "SimulationService",
             "QueryService",
+            "FactService",
             "StorageService",
             "CommandBroker",
             "Command",
@@ -215,6 +217,7 @@ RECORDS = frozenset(
         "RolloutConfig",
         "RolloutResult",
         "FactReceipt",
+        "FactWriteReceipt",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -241,6 +244,7 @@ RECORDS = frozenset(
 EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
+    "FactWriteReceipt": ("duplicate",),
     "GraderContract": ("digest",),
 }
 

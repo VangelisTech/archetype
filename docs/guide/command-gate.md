@@ -50,6 +50,7 @@ Roles are flat. A user with `{operator}` is NOT also `viewer` — they get whate
 | `list_signatures` | ✓ | ✓ | ✓ | ✓ |
 | `get_world_info` | ✓ | ✓ | ✓ | ✓ |
 | `get_audit_history` | ✓ | ✓ | ✓ | ✓ |
+| `query_facts` | ✓ | ✓ | ✓ | ✓ |
 | `list_worlds` | ✓ | ✓ | ✓ | ✓ |
 | `list_processors` | ✓ | ✓ | ✓ | ✓ |
 | `list_hooks` | ✓ | ✓ | ✓ | ✓ |
@@ -99,6 +100,8 @@ A `player` does not advance the world — they participate in the world that som
 | `fork_world` | — | — | ✓ | ✓ |
 | `destroy_world` | — | — | ✓ | ✓ |
 | `ingest_fact` | — | — | ✓ | ✓ |
+| `ingest_files` | — | — | ✓ | ✓ |
+| `write_facts` | — | — | ✓ | ✓ |
 | `evaluate` | — | — | ✓ | ✓ |
 
 The asymmetry is intentional. `create_world` establishes new platform-level identity → admin-only. `fork_world` and `destroy_world` are operator-territory because operators routinely fork (rollouts) and destroy (cleanup). Forks and destroys never delete persistent data (append-only invariant), so this is safe.

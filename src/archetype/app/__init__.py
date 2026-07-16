@@ -25,6 +25,7 @@ Services:
 - SimulationService: Execution (step/run with broker drain)
 - QueryService: Time-travel reads
 - EvalService: Query-backed evaluation over persisted components
+- FactService: Typed external facts in the world's Iceberg catalog
 - ServiceContainer: Wires everything together
 """
 
@@ -32,7 +33,8 @@ from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.eval_service import EvalService
-from archetype.app.facts import FactReceipt
+from archetype.app.fact_service import FactService
+from archetype.app.facts import FactProcessor, FactReceipt, FactWriteReceipt
 from archetype.app.models import (
     AuditRow,
     Command,
@@ -62,6 +64,7 @@ __all__ = [
     "SimulationService",
     "QueryService",
     "EvalService",
+    "FactService",
     "StorageService",
     "ServiceContainer",
     # Infrastructure
@@ -75,6 +78,8 @@ __all__ = [
     "RolloutConfig",
     "RolloutResult",
     "FactReceipt",
+    "FactWriteReceipt",
+    "FactProcessor",
     "AuditRow",
     "WorldInfo",
     "RunResult",

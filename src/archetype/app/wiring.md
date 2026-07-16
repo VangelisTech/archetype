@@ -18,6 +18,7 @@ Construction lives in [`container.py`](container.py). Normative signatures live 
 | `iAuditLog` | `AuditLog` | `audit_log.py` | `storage_service` → `iStorageService` |
 | `iQueryService` | `QueryService` | `query_service.py` | `storage_service` → `iStorageService` |
 | `iEvalService` | `EvalService` | `eval_service.py` | `query_service` → `iQueryService` |
+| `iFactService` | `FactService` | `fact_service.py` | `storage_service` → `iStorageService`; `world_service` → `iWorldService` |
 | `iMutationService` | `MutationService` | `mutation_service.py` | `world_service` → `iWorldService` |
 | `iSimulationService` | `SimulationService` | `simulation_service.py` | `world_service` → `iWorldService` |
 | `iCommandService` | `CommandService` | `command_service.py` | see [gate wiring](#gate-wiring-icommandservice) |
@@ -43,6 +44,7 @@ flowchart BT
     iQS["iQueryService<br/>QueryService"]
 
     iEV["iEvalService<br/>EvalService"]
+    iFS["iFactService<br/>FactService"]
 
     iMS["iMutationService<br/>MutationService"]
     iSIM["iSimulationService<br/>SimulationService"]
@@ -54,6 +56,8 @@ flowchart BT
     iQS -->|"storage_service: iStorageService"| iSS
 
     iEV -->|"query_service: iQueryService"| iQS
+    iFS -->|"storage_service: iStorageService"| iSS
+    iFS -->|"world_service: iWorldService"| iWS
 
     iMS -->|"world_service: iWorldService"| iWS
     iSIM -->|"world_service: iWorldService"| iWS
@@ -64,6 +68,7 @@ flowchart BT
     iCS -->|"queries: iQueryService"| iQS
     iCS -->|"broker: iCommandBroker"| iBR
     iCS -->|"audit: iAuditLog"| iAL
+    iCS -->|"facts: iFactService"| iFS
 
     iSIM -.->|"set_command_drain → drain_and_apply"| iCS
 
@@ -105,6 +110,10 @@ self.query_service = QueryService(                      # → iQueryService
 self.eval_service = EvalService(                        # → iEvalService
     self.query_service,                                #   query_service: iQueryService
 )
+self.fact_service = FactService(                        # → iFactService
+    self.storage_service,                              #   storage_service: iStorageService
+    self.world_service,                                #   world_service: iWorldService
+)
 
 self.mutation_service = MutationService(               # → iMutationService
     self.world_service,                                #   world_service: iWorldService
@@ -120,6 +129,7 @@ self.command_service = CommandService(                 # → iCommandService
     queries=self.query_service,                        #   queries: iQueryService
     broker=self.broker,                                #   broker: iCommandBroker
     audit=self.audit_log,                              #   audit: iAuditLog
+    facts=self.fact_service,                           #   facts: iFactService
 )
 self.simulation_service.set_command_drain(
     self.command_service.drain_and_apply,              #   callback, not in Protocol
@@ -150,6 +160,7 @@ flowchart LR
     G -->|queries| iQS[iQueryService]
     G -->|submit / drain| iBR[iCommandBroker]
     G -->|record / get_audit_history| iAL[iAuditLog]
+    G -->|ingest_files / write_facts / query_facts| iFS[iFactService]
 
     classDef gateNode fill:#78350f,stroke:#fbbf24,color:#fef3c7
     class G gateNode
@@ -163,7 +174,9 @@ Hosts (`ArchetypeRuntime`, FastAPI) hold a `ServiceContainer` and call **`iComma
 | FastAPI | `api/deps.py` | `iCommandService` |
 | Tests / lower-level scripts | `ServiceContainer(storage_service=...)` | any protocol, as needed |
 
-`iEvalService` and `AutoResearchService` sit on the container but **outside** the gate — callers use them directly for grading loops and experiment orchestration.
+`iEvalService` and `AutoResearchService` sit on the container but **outside**
+the gate for internal grading and experiment orchestration. User-visible fact
+operations reach `iFactService` through the gate.
 
 ---
 
@@ -201,6 +214,7 @@ These types are **not** container-visible protocols — they live inside impleme
 | `CommandService` | `auth.guard.guardrail_allow`, delegate routing, audit emit |
 | `CommandBroker` | per-world priority heaps, pending/history |
 | `AuditLog` | bounded batch → Iceberg `audit_rows` table |
+| `FactService` | Daft file pipeline, logical-key filtering, typed Iceberg append |
 
 ---
 

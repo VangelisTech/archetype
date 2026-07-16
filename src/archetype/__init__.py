@@ -91,6 +91,8 @@ __all__ = [
     "RolloutConfig",
     "RolloutResult",
     "FactReceipt",
+    "FactWriteReceipt",
+    "FactProcessor",
     # App layer services
     "CommandBroker",
     "WorldService",
@@ -98,6 +100,7 @@ __all__ = [
     "CommandService",
     "SimulationService",
     "QueryService",
+    "FactService",
     "ServiceContainer",
     # Models
     "Command",
@@ -164,6 +167,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
     "RolloutResult": ("archetype.app.models", "RolloutResult"),
     "FactReceipt": ("archetype.app.facts", "FactReceipt"),
+    "FactWriteReceipt": ("archetype.app.facts", "FactWriteReceipt"),
+    "FactProcessor": ("archetype.app.facts", "FactProcessor"),
     # App layer
     "CommandBroker": ("archetype.app", "CommandBroker"),
     "WorldService": ("archetype.app", "WorldService"),
@@ -171,6 +176,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CommandService": ("archetype.app", "CommandService"),
     "SimulationService": ("archetype.app", "SimulationService"),
     "QueryService": ("archetype.app", "QueryService"),
+    "FactService": ("archetype.app", "FactService"),
     "ServiceContainer": ("archetype.app", "ServiceContainer"),
     "Command": ("archetype.app", "Command"),
     "CommandType": ("archetype.app", "CommandType"),

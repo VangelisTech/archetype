@@ -1,7 +1,7 @@
 # Durable Facts
 
 **Document type:** Normative.
-**Scope:** `IngestionService`, fact claims, exactly-once visibility, asset references, evaluation receipts. Issues #274 and #275 (v0.3.0 slices B and C). Builds on [Atomic Visibility](atomic-visibility.md).
+**Scope:** claim-backed `IngestionService` facts, asset references, evaluation\nreceipts, and typed Iceberg fact tables. Builds on\n[Atomic Visibility](atomic-visibility.md).
 
 ## 1. What a fact is
 
@@ -131,3 +131,143 @@ finite score — and empty outcome sets fail closed.
 fields — no accepted, no promote, no approved, no allowed_next_action —
 enforced by the spec-contract eval suite. A PASS means one grader passed
 under one pinned contract; the layer above owns what that means.
+
+## 8. Typed Iceberg fact tables
+
+New general-purpose facts live in typed Iceberg tables beside the world's ECS
+tables. They do not become entities, enter `entity2sig`, run through simulation
+processors, or advance a world tick.
+
+Every typed fact table has this service-owned envelope:
+
+| Column | Meaning |
+|---|---|
+| `fact_id` | UUIDv7 assigned when the row is written |
+| `world_id` | world that owns the fact |
+| `run_id` | run that owns the fact |
+| `source_uri` | canonical source location |
+| `content_hash` | lowercase SHA-256 digest of the source content |
+
+The logical key is
+`(world_id, run_id, source_uri, content_hash)`. The UUIDv7 is row identity,
+not the deduplication key. Changed bytes at one URI create another fact; equal
+bytes at different URIs also create distinct facts. There is no generic
+`observed_at` column. Domains that need source event time add a typed payload
+column with the precise semantics they require.
+
+Typed fact visibility is local to that `world_id` and `run_id`. ECS tick
+lineage is not applied to fact tables: a fork starts with an empty typed-fact
+view and may ingest the same source under its new identity. Inheriting ancestor
+facts without a fact-time boundary would incorrectly expose facts added to the
+ancestor after the fork.
+
+Each logical name maps to `facts__<table_name>` in the same catalog and
+namespace as the world. The remaining columns are the domain schema. Schema
+drift fails before append; fact tables do not silently widen or coerce.
+
+## 9. Authoritative storage boundary
+
+Typed facts require `StorageBackend.ICEBERG`. `FactService` obtains the
+world's `IcebergCatalogContext` from `StorageService`, so catalog selection
+and data-plane credentials have one source of truth:
+
++ the caller-configured Daft `Session` owns the catalog;
++ the caller's Daft `IOConfig` passes directly to file reads and Iceberg I/O;
++ Archetype does not translate environment variables or reconstruct managed
+  service credentials;
++ the built-in factory remains the concrete local SQLite-catalog option.
+
+LanceDB remains supported by the claim-backed compatibility path, not by typed
+fact tables.
+
+## 10. Daft file processors
+
+`ingest_files` builds a lazy Daft pipeline with `daft.from_files`. Each input
+row contains:
+
++ `file`: a lazy `daft.File` reference;
++ `source_uri`: derived with `daft.functions.file_path`;
++ `content_hash`: SHA-256 streamed through `File.open()`.
+
+A `FactProcessor` declares `table_name` and transforms each input into
+exactly one typed output row. It must preserve `source_uri` and
+`content_hash`. `FactService` verifies the one-to-one identity mapping,
+removes the execution-only `file` column, and assigns `world_id`, `run_id`,
+and `fact_id`.
+
+```python
+import daft
+from daft import col
+
+
+@daft.func(return_dtype=daft.DataType.string())
+def read_text(file: daft.File) -> str:
+    with file.open() as stream:
+        return stream.read().decode("utf-8")
+
+
+class Documents:
+    table_name = "documents"
+
+    def process(self, files: daft.DataFrame) -> daft.DataFrame:
+        return files.with_column("text", read_text(col("file")))
+
+
+receipt = await world.ingest_files("notes/**/*.md", Documents())
+documents = await world.facts("documents")
+```
+
+Known logical keys are removed before the processor runs. A complete retry is
+therefore a no-op: it does not rerun the processor or create an empty Iceberg
+snapshot.
+
+`FactWriteReceipt.sources_matched` counts the file rows discovered before
+logical deduplication and the existing-key filter. `duplicate` is true only
+when that count is nonzero and the filter removes every source. An empty path
+match is therefore distinct
+from an idempotent retry. For `write_facts`, `sources_matched` is `None` because
+counting an arbitrary input pipeline separately would execute it twice; a
+zero-row direct write therefore reports `duplicate=None` rather than guessing.
+If that is the first write for the logical table, the service also unwinds the
+empty table registration so the no-op cannot lock in a speculative schema.
+
+## 11. Existing Daft pipelines
+
+Callers that already have a Daft pipeline use `write_facts`. The frame must
+contain `source_uri`, `content_hash`, and at least one typed payload column.
+The service adds the rest of the envelope.
+
+```python
+facts = daft.from_pydict(
+    {
+        "source_uri": ["sensor://room-1/reading-9"],
+        "content_hash": [digest],
+        "temperature_c": [21.5],
+    }
+)
+receipt = await world.write_facts("temperatures", facts)
+```
+
+`world.facts(table_name)` returns a lazy frame filtered to the handle's
+current `world_id` and `run_id`.
+
+## 12. Commit and concurrency semantics
+
+One non-empty service call appends its rows in one Iceberg commit, not one
+snapshot per row. `FactService` does not automatically re-execute an arbitrary
+Daft pipeline after a commit conflict; the single-writer requirement below
+makes such a conflict an operational error for the caller to resolve. Fact
+ingestion does not perform compaction; compaction is a separate table-
+maintenance feature.
+
+Within one `FactService`, writes to a physical fact table are serialized
+around the existing-key check and append. This gives deterministic idempotency
+for callers sharing that service. Iceberg append tables do not enforce unique
+constraints: independent processes writing the same table must use an external
+single-writer lease until Archetype provides a catalog-coordinated
+multi-process fact writer. The API does not claim global exactly-once behavior
+without that serialization.
+
+Iceberg commits are atomic. After a crash, a visible append is found by its
+logical keys on retry; an uncommitted append is absent and can be attempted
+again.

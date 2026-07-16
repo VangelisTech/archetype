@@ -142,6 +142,18 @@ Scripts own their stdout: no span or log output unless asked. `ARCHETYPE_LOG=deb
 
 Archetype emits spans through the OpenTelemetry *API* only (`archetype._obs`); installing archetype pulls no telemetry vendor. Backend selection happens once, at the runtime boundary, in this order: a provider the host application already registered is respected untouched; `LOGFIRE_TOKEN`/`LOGFIRE_API_KEY`/`LOGFIRE_SEND_TO_LOGFIRE` select Logfire when the `archetype-ecs[logfire]` extra is installed (Logfire is itself an OTel SDK); `OTEL_EXPORTER_OTLP_ENDPOINT` selects the standard OTLP exporter (`archetype-ecs[otlp]`) and works with any collector; `ARCHETYPE_LOG=debug` gets a terse one-line console exporter on stderr with no extras at all; otherwise the no-op OTel API stays and tracing costs nothing. Nothing under `src/` may import `logfire` except the guarded backend selection and `contrib/logfire_observer`.
 
+### R18 — Typed facts are explicit Iceberg surfaces
+
+`world.ingest_files(paths, processor)` and `world.write_facts(table_name, df)`
+delegate to `iFactService` through the gate. `world.facts(table_name)` is the
+corresponding gated read. The runtime does not inspect files, compute content
+identity, translate credentials, or touch a catalog directly. Async and sync
+handles expose identical fact surfaces. The older
+`world.ingest(..., external_id=...)` remains the claim-backed compatibility
+path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
+the handle's current world and run; fork handles do not inherit ancestor fact
+rows.
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:
@@ -159,6 +171,10 @@ await world.despawn(eid)
 await world.update(eid, Position(x=10))                  # OVERLAY values
 await world.add_components(eid, Health(hp=100))          # EXTEND schema
 await world.remove_components(eid, Position, Velocity)
+
+# External facts (Iceberg)
+receipt = await world.ingest_files("inputs/**/*.json", JsonFacts())
+receipt = await world.write_facts("measurements", existing_daft_pipeline)
 
 # Processors
 await world.add_processor(MyProcessor())
@@ -182,6 +198,7 @@ df = await world.query(Position, Velocity)
 outs = await world.grade(Position, graders=[my_grader])  # query + graders
 info = await world.info()                                # WorldInfo snapshot
 df = await world.history(limit=100)
+df = await world.facts("measurements")
 procs = await world.list_processors()
 hooks = await world.list_hooks()
 res = await world.list_resources()

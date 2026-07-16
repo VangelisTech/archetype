@@ -45,6 +45,7 @@ from archetype.app.models import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from daft import DataFrame
 
@@ -60,7 +61,8 @@ if TYPE_CHECKING:
     )
     from archetype.app.broker import CommandBroker
     from archetype.app.eval_service import EvalService
-    from archetype.app.facts import FactReceipt
+    from archetype.app.fact_service import FactService
+    from archetype.app.facts import FactProcessor, FactReceipt, FactWriteReceipt
     from archetype.app.ingestion_service import IngestionService
     from archetype.app.models import (
         EpisodeConfig,
@@ -98,6 +100,7 @@ class CommandService:
         broker: CommandBroker,
         audit: AuditLog | None = None,
         autoresearch: AutoResearchService | None = None,
+        facts: FactService | None = None,
         ingestion: IngestionService | None = None,
         evals: EvalService | None = None,
     ) -> None:
@@ -108,6 +111,7 @@ class CommandService:
         self._broker = broker
         self._audit = audit
         self._autoresearch = autoresearch
+        self._facts = facts
         self._ingestion = ingestion
         self._evals = evals
 
@@ -403,6 +407,73 @@ class CommandService:
         )
         await self._emit(ctx, "ingest_fact", world_id)
         return receipt
+
+    @instrument("gate.ingest_files")
+    async def ingest_files(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        paths: str | Path | list[str | Path],
+        processor: FactProcessor,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt:
+        """Run a ``daft.File`` processor into its typed Iceberg fact table."""
+        if self._facts is None:
+            raise RuntimeError("fact service is not wired")
+        self._gate(Command(type=CommandType.INGEST_FACT), ctx)
+        receipt = await self._facts.ingest_files(
+            str(world_id),
+            paths,
+            processor,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "ingest_files", world_id)
+        return receipt
+
+    @instrument("gate.write_facts")
+    async def write_facts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        table_name: str,
+        facts: DataFrame,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> FactWriteReceipt:
+        """Write an existing Daft pipeline to a typed Iceberg fact table."""
+        if self._facts is None:
+            raise RuntimeError("fact service is not wired")
+        self._gate(Command(type=CommandType.INGEST_FACT), ctx)
+        receipt = await self._facts.write_facts(
+            str(world_id),
+            table_name,
+            facts,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "write_facts", world_id)
+        return receipt
+
+    @instrument("gate.query_facts")
+    async def query_facts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        table_name: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> DataFrame:
+        """Read a typed fact table through the standard viewer gate."""
+        if self._facts is None:
+            raise RuntimeError("fact service is not wired")
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        facts = await self._facts.read_facts(
+            str(world_id),
+            table_name,
+            storage_config=storage_config,
+        )
+        await self._emit(ctx, "query_facts", world_id)
+        return facts
 
     @instrument("gate.evaluate")
     async def evaluate(

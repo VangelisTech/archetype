@@ -26,6 +26,7 @@ from archetype.app.autoresearch_service import AutoResearchService
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.eval_service import EvalService
+from archetype.app.fact_service import FactService
 from archetype.app.ingestion_service import IngestionService
 from archetype.app.mutation_service import MutationService
 from archetype.app.query_service import QueryService
@@ -73,6 +74,7 @@ class ServiceContainer:
         self.audit_log = AuditLog(self.storage_service, audit_storage_config)
         self.query_service = QueryService(self.storage_service, self.audit_log)
         self.eval_service = EvalService(self.query_service)
+        self.fact_service = FactService(self.storage_service, self.world_service)
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -81,7 +83,7 @@ class ServiceContainer:
         # AutoResearch — depends on WorldService + SimulationService
         self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
-        # Ingestion — durable external facts (issue #274)
+        # Claim-backed component ingestion remains the evaluation-receipt path.
         self.ingestion_service = IngestionService(self.storage_service, self.world_service)
 
         # The gate — depends on everything
@@ -92,6 +94,7 @@ class ServiceContainer:
             queries=self.query_service,
             broker=self.broker,
             audit=self.audit_log,
+            facts=self.fact_service,
             ingestion=self.ingestion_service,
             evals=self.eval_service,
             autoresearch=self.autoresearch_service,

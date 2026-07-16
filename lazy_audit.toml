@@ -97,6 +97,24 @@ method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
+path = "src/archetype/app/iceberg.py"
+line = 75
+method = "collect"
+reason = "Storage write boundary: Daft has already committed the fact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No fact-row payload is materialized."
+
+[[entries]]
+path = "src/archetype/app/fact_service.py"
+line = 144
+method = "collect"
+reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed fact payload rows remain lazy through the Iceberg write."
+
+[[entries]]
+path = "src/archetype/app/fact_service.py"
+line = 167
+method = "collect"
+reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed fact payload rows."
+
+[[entries]]
 path = "src/archetype/app/world_service.py"
 line = 701
 method = "to_pylist"

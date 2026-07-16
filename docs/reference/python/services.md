@@ -14,6 +14,8 @@
 
 ::: archetype.app.QueryService
 
+::: archetype.app.FactService
+
 ::: archetype.app.StorageService
 
 ::: archetype.app.CommandBroker
