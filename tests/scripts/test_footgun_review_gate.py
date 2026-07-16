@@ -216,6 +216,21 @@ def test_no_findings_result_requires_exact_file_category_and_context_coverage():
     assert normalized["findings"] == []
 
 
+def test_file_spanning_multiple_context_areas_is_accepted():
+    result = _result()
+    result["review_context"].append(
+        {
+            "area": "Cross-cutting notes",
+            "files": ["old.py"],
+            "assessment": "The same module also carries cross-cutting notes that span both reviewed areas.",
+        }
+    )
+
+    normalized = validate_result(result, _scope(), DIFF)
+
+    assert normalized["review_context"][2]["files"] == ["old.py"]
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
