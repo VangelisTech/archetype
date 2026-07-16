@@ -165,11 +165,11 @@ Typed facts require `StorageBackend.ICEBERG`. `FactService` obtains the
 world's `IcebergCatalogContext` from `StorageService`, so catalog selection
 and data-plane credentials have one source of truth:
 
-- the caller-configured Daft `Session` owns the catalog;
-- the caller's Daft `IOConfig` passes directly to file reads and Iceberg I/O;
-- Archetype does not translate environment variables or reconstruct managed
++ the caller-configured Daft `Session` owns the catalog;
++ the caller's Daft `IOConfig` passes directly to file reads and Iceberg I/O;
++ Archetype does not translate environment variables or reconstruct managed
   service credentials;
-- the built-in factory remains the concrete local SQLite-catalog option.
++ the built-in factory remains the concrete local SQLite-catalog option.
 
 LanceDB remains supported by the claim-backed compatibility path, not by typed
 fact tables.
@@ -179,9 +179,9 @@ fact tables.
 `ingest_files` builds a lazy Daft pipeline with `daft.from_files`. Each input
 row contains:
 
-- `file`: a lazy `daft.File` reference;
-- `source_uri`: derived with `daft.functions.file_path`;
-- `content_hash`: SHA-256 streamed through `File.open()`.
++ `file`: a lazy `daft.File` reference;
++ `source_uri`: derived with `daft.functions.file_path`;
++ `content_hash`: SHA-256 streamed through `File.open()`.
 
 A `FactProcessor` declares `table_name` and transforms each input into
 exactly one typed output row. It must preserve `source_uri` and
