@@ -150,13 +150,37 @@ async def test_unknown_signature_raises_distinctly_from_empty_tick(tmp_path):
 
         # Querying a sig that was NEVER spawned must raise UnknownSignatureError
         never_spawned_sig = (Gamma, Delta)  # these components were never spawned
-        with pytest.raises(UnknownSignatureError, match="never been registered"):
+        with pytest.raises(UnknownSignatureError, match="never been written or spawned"):
             await world.query_archetype(
                 sig=never_spawned_sig,
                 run_id=world.run_id,
                 ticks=[0],
             )
 
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_read_created_signature_does_not_become_known_after_real_spawn(tmp_path):
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await ws.create_world(
+            WorldConfig(name="w"), storage_config=storage, system=AsyncSystem()
+        )
+        probed_sig = (Gamma, Delta)
+
+        probe = await world.query_archetype(probed_sig, run_id="probe", ticks=[0])
+        assert probe.count_rows() == 0
+        assert _canonicalize(probed_sig) in await world.querier.list_signatures()
+        assert _canonicalize(probed_sig) not in await world.querier.list_committed_signatures()
+
+        await world.create_entity([Alpha(a=1.0), Beta(b=2.0)])
+        await world.run(RunConfig(num_steps=1))
+
+        with pytest.raises(UnknownSignatureError, match="never been written or spawned"):
+            await world.query_archetype(probed_sig, run_id=world.run_id, ticks=[0])
     finally:
         await ws.shutdown()
 
@@ -183,7 +207,7 @@ async def test_unknown_signature_message_is_descriptive(tmp_path):
 
         msg = str(exc_info.value)
         assert "Beta" in msg or "Gamma" in msg, f"error message does not name components: {msg!r}"
-        assert "never been registered" in msg or "never" in msg
+        assert "never been written or spawned" in msg
 
     finally:
         await ws.shutdown()

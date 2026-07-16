@@ -9,11 +9,14 @@ rows on disk but never in a manifest — invisible by construction. Exactly
 one commit attempt per tick ever becomes visible.
 """
 
+import asyncio
+
 import pytest
 
 from archetype.app._catalog import SqliteControlCatalog
 from archetype.app._commit import CatalogCommitCoordinator
 from archetype.app.container import ServiceContainer
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
@@ -22,6 +25,10 @@ pytestmark = pytest.mark.asyncio
 
 
 class Counter(Component):
+    value: float = 0.0
+
+
+class Gauge(Component):
     value: float = 0.0
 
 
@@ -35,9 +42,15 @@ async def _spawn_and_step(c: ServiceContainer, world, n_steps: int = 1) -> None:
         await c.simulation_service.step(world.world_id, RunConfig())
 
 
-async def _visible_rows(c: ServiceContainer, world, storage, ticks=None) -> list[dict]:
+async def _visible_rows(
+    c: ServiceContainer,
+    world,
+    storage,
+    ticks=None,
+    component: type[Component] = Counter,
+) -> list[dict]:
     df = await c.query_service.query_components(
-        [Counter], str(world.world_id), str(world.run_id), storage, ticks=ticks
+        [component], str(world.world_id), str(world.run_id), storage, ticks=ticks
     )
     return df.to_pylist()
 
@@ -98,6 +111,46 @@ async def test_failed_publish_leaves_tick_invisible_and_retry_wins(tmp_path, mon
             f"exactly one visible row despite two physical attempts, saw {len(rows)}"
         )
         assert rows[0]["counter__value"] == 1.0
+    finally:
+        await c.shutdown()
+
+
+async def test_partial_archetype_append_is_invisible_and_retry_is_atomic(tmp_path, monkeypatch):
+    c = ServiceContainer()
+    try:
+        storage = _storage(tmp_path)
+        world = await c.world_service.create_world(WorldConfig(name="w"), storage)
+        await c.mutation_service.create_entity(world.world_id, [Counter(value=1.0)])
+        await c.mutation_service.create_entity(world.world_id, [Gauge(value=2.0)])
+
+        store = world.updater.store
+        real_append = store.append
+        counter_table = Archetype.get_name(Archetype.sig_from_components([Counter()]))
+        counter_committed = asyncio.Event()
+
+        async def fail_after_counter(sig, frame):
+            if Archetype.get_name(sig) == counter_table:
+                receipt = await real_append(sig, frame)
+                counter_committed.set()
+                return receipt
+            await counter_committed.wait()
+            raise RuntimeError("injected second-archetype append failure")
+
+        monkeypatch.setattr(store, "append", fail_after_counter)
+        with pytest.raises(RuntimeError, match="second-archetype append failure"):
+            await c.simulation_service.step(world.world_id, RunConfig())
+
+        assert world.tick == 0
+        assert await _visible_rows(c, world, storage, component=Counter) == []
+
+        monkeypatch.setattr(store, "append", real_append)
+        await c.simulation_service.step(world.world_id, RunConfig())
+
+        assert len(await _visible_rows(c, world, storage, ticks=[0], component=Counter)) == 1
+        assert len(await _visible_rows(c, world, storage, ticks=[0], component=Gauge)) == 1
+        catalog = c.storage_service.get_control_catalog(storage)
+        manifests = await catalog.list_manifests(str(world.world_id), str(world.run_id))
+        assert [manifest.tick for manifest in manifests] == [0]
     finally:
         await c.shutdown()
 

@@ -18,6 +18,7 @@ from evals.types import GraderResult
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKER_MODULE = "evals.infra.idempotency_worker"
+_READY_TIMEOUT_SECONDS = 90.0
 
 
 def _env() -> dict[str, str]:
@@ -90,12 +91,38 @@ def _spawn(action: str, uri: str, namespace: str, *args: str) -> subprocess.Pope
     )
 
 
-def _wait_for_markers(markers: list[Path], timeout: float = 30.0) -> None:
+def _failed_process_report(processes: list[subprocess.Popen]) -> str:
+    for proc in processes:
+        if proc.poll() is None:
+            proc.terminate()
+
+    reports: list[str] = []
+    for proc in processes:
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=5)
+        reports.append(
+            f"pid={proc.pid} returncode={proc.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+    return "\n\n".join(reports)
+
+
+def _wait_for_markers(
+    markers: list[Path],
+    processes: list[subprocess.Popen],
+    timeout: float = _READY_TIMEOUT_SECONDS,
+) -> None:
     deadline = time.monotonic() + timeout
     while not all(marker.exists() for marker in markers):
+        if any(proc.poll() is not None for proc in processes):
+            report = _failed_process_report(processes)
+            raise AssertionError(f"worker exited before readiness\n{report}")
         if time.monotonic() >= deadline:
             missing = [str(marker) for marker in markers if not marker.exists()]
-            raise TimeoutError(f"workers did not become ready: {missing}")
+            report = _failed_process_report(processes)
+            raise TimeoutError(f"workers did not become ready: {missing}\n{report}")
         time.sleep(0.01)
 
 
@@ -175,7 +202,7 @@ def task_process_writer_fence_race() -> list[GraderResult]:
             for marker in ready
         ]
         try:
-            _wait_for_markers(ready)
+            _wait_for_markers(ready, processes)
             epochs = sorted(json.loads(marker.read_text())["epoch"] for marker in ready)
             go.write_text("go")
             results = _collect(processes)
@@ -231,7 +258,7 @@ def task_process_fact_replay() -> list[GraderResult]:
             for marker in ready
         ]
         try:
-            _wait_for_markers(ready)
+            _wait_for_markers(ready, processes)
             go.write_text("go")
             results = _collect(processes)
         finally:
@@ -291,7 +318,7 @@ def task_process_evaluation_replay() -> list[GraderResult]:
             for marker in ready
         ]
         try:
-            _wait_for_markers(ready)
+            _wait_for_markers(ready, processes)
             go.write_text("go")
             results = _collect(processes)
         finally:

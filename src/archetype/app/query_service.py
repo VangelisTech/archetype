@@ -211,10 +211,10 @@ class QueryService:
         entity_ids: list[int] | None,
         commit_tokens: list[str] | None = None,
     ) -> DataFrame:
-        """Live subset query unioned with catalog-discovered tables.
+        """Process-local subset query unioned with catalog-discovered tables.
 
-        The live path is unchanged. Catalog tables not already covered by a
-        live signature are read through the open-never-create store seam and
+        Catalog tables not already covered by a successfully written signature
+        are read through the open-never-create store seam and
         projected from their durable schema — no Python classes required
         beyond the ones the caller asked for. A fingerprint mismatch between
         the catalog descriptor and the physical table fails closed.
@@ -229,9 +229,9 @@ class QueryService:
         full_schema = Archetype.get_archetype_schema(output_sig)
         schema = pa.schema([full_schema.field(name) for name in proj_cols])
 
-        live_sigs = await querier.list_signatures()
-        live_tables = {Archetype.get_name(sig) for sig in live_sigs}
-        extra_records = [r for r in catalog_records if r.table_id not in live_tables]
+        written_sigs = await querier.list_committed_signatures()
+        written_tables = {Archetype.get_name(sig) for sig in written_sigs}
+        extra_records = [r for r in catalog_records if r.table_id not in written_tables]
 
         try:
             result = await querier.query_components(
@@ -243,7 +243,7 @@ class QueryService:
                 commit_tokens=commit_tokens,
             )
         except KeyError:
-            # The live registry has signatures but none satisfy the request.
+            # The process-local registry has signatures but none satisfy the request.
             # Durable tables may still: fall through to the catalog union,
             # re-raising only when the catalog cannot help either.
             if not extra_records:
