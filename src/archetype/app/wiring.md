@@ -88,12 +88,15 @@ self._owns_storage_service = storage_service is None
 self.storage_service = (                               # → iStorageService
     storage_service if storage_service is not None else StorageService()
 )
+# An injected-session service also requires audit_storage_config; the
+# container constrains that single catalog identity before wiring services.
 
 self.world_service = WorldService(                     # → iWorldService
     self.storage_service,                              #   storage_service: iStorageService
 )
 self.audit_log = AuditLog(                             # → iAuditLog
     self.storage_service,                              #   storage_service: iStorageService
+    audit_storage_config,                              #   explicit Iceberg table location
 )
 self.query_service = QueryService(                      # → iQueryService
     self.storage_service,                              #   storage_service: iStorageService
@@ -194,10 +197,10 @@ These types are **not** container-visible protocols — they live inside impleme
 | Implementation | Internal pieces |
 |----------------|-----------------|
 | `WorldService` | `WorldFactory`, `WorldRegistry`, `WorldOrchestrator`, `_storage_configs` |
-| `StorageService` | store pool (multiton), `create_async_store` |
+| `StorageService` | store pool (multiton), `create_async_store`, configured Iceberg context |
 | `CommandService` | `auth.guard.guardrail_allow`, delegate routing, audit emit |
 | `CommandBroker` | per-world priority heaps, pending/history |
-| `AuditLog` | in-memory buffer → LanceDB `audit_rows` table |
+| `AuditLog` | bounded batch → Iceberg `audit_rows` table |
 
 ---
 

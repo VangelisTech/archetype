@@ -32,6 +32,7 @@ from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
+from archetype.core.config import StorageConfig
 
 
 class ServiceContainer:
@@ -47,7 +48,19 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
     """
 
-    def __init__(self, storage_service: StorageService | None = None):
+    def __init__(
+        self,
+        storage_service: StorageService | None = None,
+        audit_storage_config: StorageConfig | None = None,
+    ):
+        if storage_service is not None and storage_service.has_injected_session:
+            if audit_storage_config is None:
+                raise ValueError(
+                    "audit_storage_config is required when ServiceContainer uses an "
+                    "injected Daft Session"
+                )
+            storage_service.require_iceberg_identity(audit_storage_config)
+
         # Infrastructure
         self.broker = CommandBroker()
 
@@ -57,7 +70,7 @@ class ServiceContainer:
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
-        self.audit_log = AuditLog(self.storage_service)
+        self.audit_log = AuditLog(self.storage_service, audit_storage_config)
         self.query_service = QueryService(self.storage_service, self.audit_log)
         self.eval_service = EvalService(self.query_service)
 

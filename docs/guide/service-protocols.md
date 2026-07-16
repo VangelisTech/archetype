@@ -37,10 +37,13 @@ The built-in Iceberg factory is a concrete local SQLite-catalog lakehouse.
 Managed or remote Iceberg enters through a caller-configured Daft `Session`;
 `IOConfig` passes directly to Daft data I/O. Leaf service — no required
 dependencies. One injected session serves one storage URI and namespace;
-mismatches fail closed.
+mismatches fail closed. A `ServiceContainer` borrowing an injected-session
+service requires `audit_storage_config`; construction constrains the shared
+session to that same identity before any world can bind it elsewhere.
 
 ```python
 async def get_or_create_store(storage_config, cache_config=None) -> iAsyncStore
+async def get_iceberg_context(storage_config) -> IcebergCatalogContext
 async def shutdown() -> None
 ```
 
@@ -160,13 +163,15 @@ Concurrency: implementations MUST be safe for concurrent enqueue/dequeue from mu
 
 ### `iAuditLog`
 
-Append-only record of accepted-and-applied commands. Schema is fixed in [Audit Log](audit-log.md).
+Append-only record of accepted-and-applied commands. Rows are buffered in a
+bounded batch and appended to a dedicated Iceberg table. Schema is fixed in
+[Audit Log](audit-log.md).
 
 ```python
 async def record(row: AuditRow) -> None
 async def flush() -> None
 async def query(world_id=None, *, tick_range=None, actor_id=None,
-                 idempotency_key=None, limit=None) -> DataFrame
+                 idempotency_key=None, status=None, limit=None) -> DataFrame
 async def shutdown() -> None
 ```
 
@@ -298,13 +303,17 @@ Pattern: pydantic `BaseModel` with `frozen=True`. Carry only metadata that's saf
 
 ```python
 class ServiceContainer:
-    def __init__(self, storage_service: StorageService | None = None):
+    def __init__(
+        self,
+        storage_service: StorageService | None = None,
+        audit_storage_config: StorageConfig | None = None,
+    ):
         self.broker = CommandBroker()
         self._owns_storage_service = storage_service is None
         self.storage_service = (
             storage_service if storage_service is not None else StorageService()
         )
-        self.audit = AuditLog(self.storage_service)
+        self.audit = AuditLog(self.storage_service, audit_storage_config)
         self.world_service = WorldService(self.storage_service)
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)

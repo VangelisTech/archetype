@@ -91,6 +91,12 @@ method = "to_pylist"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 
 [[entries]]
+path = "src/archetype/app/query_service.py"
+line = 335
+method = "to_pylist"
+reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
+
+[[entries]]
 path = "src/archetype/app/world_service.py"
 line = 701
 method = "to_pylist"

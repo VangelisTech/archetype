@@ -122,10 +122,9 @@ class TestActorBinding:
 
             # Query audit log — filter by the sibling's actor_id
             audit = rt._container.audit_log
-            rows = audit._rows
-            sibling_rows = [r for r in rows if str(r.actor_id) == str(player_ctx.id)]
+            sibling_rows = (await audit.query(actor_id=player_ctx.id)).to_pylist()
             assert len(sibling_rows) >= 1, "Sibling operation should appear in audit log"
-            assert sibling_rows[0].command_type == "spawn"
+            assert sibling_rows[0]["command_type"] == "spawn"
 
 
 # ── 3. Default admin identity ───────────────────────────────────────────
