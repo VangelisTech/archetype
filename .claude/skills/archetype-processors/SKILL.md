@@ -1,7 +1,7 @@
 ---
 name: archetype-processors
-description: Enforces correct Processor implementation. Auto-triggers when creating or editing AsyncProcessor subclasses, process methods, or pipeline stages.
-paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
+description: Enforces correct Processor implementation. Use when creating or editing AsyncProcessor subclasses, process methods, or pipeline stages — anywhere under src/, tests/, or examples/.
+user_invocable: true
 ---
 
 ## Rules

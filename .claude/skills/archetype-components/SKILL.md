@@ -1,7 +1,7 @@
 ---
 name: archetype-components
-description: Enforces correct Component definitions. Auto-triggers when creating or editing Component subclasses, ECS entities, or archetype schema code.
-paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
+description: Enforces correct Component definitions. Use when creating or editing Component subclasses, ECS entities, or archetype schema code — anywhere under src/, tests/, or examples/.
+user_invocable: true
 ---
 
 ## Rules
