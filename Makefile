@@ -39,7 +39,9 @@ help:
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
+	@echo "  make eval-idem      Run idempotency suite only"
 	@echo "  make eval-cap       Run capability suite only"
+	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
@@ -75,11 +77,15 @@ sync-dev:
 
 .PHONY: format
 format:
-	@uv run ruff format src tests
+	@uv run ruff format src tests evals/suites/idempotency.py \
+		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
+		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
 
 .PHONY: lint
-lint: lazy-audit api-boundary-audit
-	@uv run ruff check src tests
+lint: lazy-audit api-boundary-audit idempotency-audit
+	@uv run ruff check src tests evals/suites/idempotency.py \
+		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
+		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
 
 .PHONY: lint-fix
 lint-fix:
@@ -87,7 +93,9 @@ lint-fix:
 
 .PHONY: format-check
 format-check:
-	@uv run ruff format --check src tests
+	@uv run ruff format --check src tests evals/suites/idempotency.py \
+		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
+		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
 
 .PHONY: check
 check: format lint
@@ -102,6 +110,12 @@ lazy-audit:
 .PHONY: api-boundary-audit
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
+
+# Keep every normative idempotency-matrix row mapped to a registered eval.
+# This is static and fast; make eval-idem executes the behavioral scenarios.
+.PHONY: idempotency-audit
+idempotency-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_idempotency_contracts.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
@@ -153,7 +167,7 @@ test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 .PHONY: ci
-ci: format-check lint lock-check test-cov eval-reg
+ci: format-check lint lock-check test-cov eval-reg eval-idem
 	@echo "CI gate passed"
 
 # Mutation testing (mutmut). Not part of `make ci` — each mutation runs the
@@ -198,9 +212,17 @@ eval:
 eval-reg:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite regression
 
+.PHONY: eval-idem
+eval-idem:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite idempotency
+
 .PHONY: eval-cap
 eval-cap:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite capability
+
+.PHONY: test-infra
+test-infra:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest -q tests/infrastructure
 
 # ------------------------------------------------------------------------------
 # Build & Release
