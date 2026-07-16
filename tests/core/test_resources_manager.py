@@ -173,8 +173,8 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_iceberg_pool_distinguishes_io_config_identity(tmp_path):
-    """Explicit I/O credentials must not be replaced by an earlier caller's config."""
+async def test_iceberg_pool_uses_daft_io_config_fingerprint(tmp_path):
+    """Equivalent Daft I/O configs pool while distinct credentials stay isolated."""
     from daft.io import IOConfig
 
     svc = make_storage_service()
@@ -184,16 +184,17 @@ async def test_iceberg_pool_distinguishes_io_config_identity(tmp_path):
         backend=StorageBackend.ICEBERG,
     )
     first_io = IOConfig()
-    second_io = IOConfig()
+    equivalent_io = IOConfig()
+    distinct_io = IOConfig(disable_suffix_range=True)
     try:
         first = await svc.get_or_create_store(StorageConfig(**shared, io_config=first_io))
-        same = await svc.get_or_create_store(StorageConfig(**shared, io_config=first_io))
-        second = await svc.get_or_create_store(StorageConfig(**shared, io_config=second_io))
+        equivalent = await svc.get_or_create_store(StorageConfig(**shared, io_config=equivalent_io))
+        distinct = await svc.get_or_create_store(StorageConfig(**shared, io_config=distinct_io))
 
-        assert first is same
-        assert first is not second
+        assert first is equivalent
+        assert first is not distinct
         assert first.io_config is first_io
-        assert second.io_config is second_io
+        assert distinct.io_config is distinct_io
     finally:
         await svc.shutdown()
 
@@ -241,6 +242,43 @@ async def test_injected_session_rejects_external_namespace_drift(tmp_path):
 
         with pytest.raises(ValueError, match="namespace mismatch"):
             await service.get_or_create_store(config)
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_store_creation_does_not_bind_injected_session(tmp_path, monkeypatch):
+    from archetype.app import storage_service
+    from archetype.app.storage_service import StorageService
+    from archetype.runtime.session import configure_session
+
+    first = StorageConfig(
+        uri=str(tmp_path / "first"),
+        namespace="managed",
+        backend=StorageBackend.ICEBERG,
+    )
+    corrected = first.model_copy(update={"uri": str(tmp_path / "corrected")})
+    session = configure_session(first)
+    service = StorageService(session=session)
+    real_create = storage_service.create_async_store
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("catalog unavailable")
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(storage_service, "create_async_store", fail_once)
+    try:
+        with pytest.raises(RuntimeError, match="catalog unavailable"):
+            await service.get_or_create_store(first)
+
+        store = await service.get_or_create_store(corrected)
+
+        assert isinstance(store, AsyncStore)
+        assert service._session_identity == (str(corrected.uri), corrected.namespace)
     finally:
         await service.shutdown()
 

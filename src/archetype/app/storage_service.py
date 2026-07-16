@@ -101,13 +101,14 @@ class StorageService:
     """Creates and pools async stores. Manages storage lifecycle.
 
     Multiton semantics: stores with the same location, backend, cache, and
-    in-process ``IOConfig`` identity share one instance.
+    effective Daft ``IOConfig`` share one instance.
     """
 
     def __init__(self, session: Session | None = None) -> None:
         """Create a pool around an optional caller-configured Daft session."""
         self._session = session
         self._session_identity: tuple[str, str] | None = None
+        self._session_lock = asyncio.Lock()
         self._instances: dict[str, iAsyncStore] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         # Control catalogs, pooled by resolved catalog path (issue #272).
@@ -172,7 +173,7 @@ class StorageService:
             )
 
         io_config_part = (
-            f"identity={id(storage_config.io_config)}"
+            f"fingerprint={hash(storage_config.io_config)}"
             if storage_config.backend == StorageBackend.ICEBERG
             and storage_config.io_config is not None
             else "none"
@@ -196,8 +197,11 @@ class StorageService:
         Creates the store on first call for a given config key.
         Subsequent calls with the same config return the cached instance.
         """
-        self._bind_injected_session(storage_config)
         key = self._pool_key(storage_config, cache_config)
+
+        if self._session is not None and storage_config.backend == StorageBackend.ICEBERG:
+            async with self._session_lock:
+                return self._get_or_create_injected_store(key, storage_config, cache_config)
 
         if key not in self._instances:
             if key not in self._locks:
@@ -211,20 +215,29 @@ class StorageService:
 
         return self._instances[key]
 
-    def _bind_injected_session(self, storage_config: StorageConfig) -> None:
-        """Bind one injected session to one Iceberg location and namespace."""
-        if self._session is None or storage_config.backend != StorageBackend.ICEBERG:
-            return
+    def _get_or_create_injected_store(
+        self,
+        key: str,
+        storage_config: StorageConfig,
+        cache_config: CacheConfig | None,
+    ) -> iAsyncStore:
+        """Create successfully before committing an injected session binding."""
+        assert self._session is not None
         _validate_session_namespace(self._session, storage_config)
         requested = (str(storage_config.uri), storage_config.namespace)
-        if self._session_identity is None:
-            self._session_identity = requested
-        elif requested != self._session_identity:
+        if self._session_identity is not None and requested != self._session_identity:
             raise ValueError(
                 "one injected Daft Session cannot serve multiple storage identities; "
                 f"bound={self._session_identity}, requested={requested}. "
                 "Use a separate StorageService and Session."
             )
+
+        store = self._instances.get(key)
+        if store is None:
+            store = create_async_store(storage_config, self._session, cache_config)
+            self._instances[key] = store
+            self._session_identity = requested
+        return store
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""

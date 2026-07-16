@@ -375,7 +375,7 @@ CURRENT GAP:
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
 - Worlds sharing the same effective storage pool key `(uri, namespace, backend,
-  in-process IOConfig identity, cache config)` MUST reuse the same backend
+  Daft IOConfig fingerprint, cache config)` MUST reuse the same backend
   triplet.
 - Concurrent backend acquisition for the same key MUST single-flight so only
   one backend is built.
@@ -853,7 +853,7 @@ the constraints that any acceptable design must satisfy.
 
 | Operation | Expected contract |
 |---|---|
-| `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, in-process IOConfig identity, cache config)` within one service instance |
+| `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, Daft IOConfig fingerprint, cache config)` within one service instance |
 | `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
 | `WorldService.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |

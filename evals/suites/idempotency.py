@@ -77,7 +77,7 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
     IdempotencyCase(
         operation="`StorageService.get_or_create_store(key)`",
         expected_contract=(
-            "Idempotent per `(uri, namespace, backend, in-process IOConfig identity, cache config)` "
+            "Idempotent per `(uri, namespace, backend, Daft IOConfig fingerprint, cache config)` "
             "within one service instance"
         ),
         task_id="idempotency.storage_pooling_and_shutdown",
@@ -367,7 +367,8 @@ async def _task_storage_pooling_and_shutdown() -> list[GraderResult]:
         io_config = IOConfig()
         storage = base_storage.model_copy(update={"io_config": io_config})
         other_namespace = storage.model_copy(update={"namespace": "idem_other"})
-        other_io = storage.model_copy(update={"io_config": IOConfig()})
+        equivalent_io = storage.model_copy(update={"io_config": IOConfig()})
+        other_io = storage.model_copy(update={"io_config": IOConfig(disable_suffix_range=True)})
         cache = CacheConfig(flush_rows=10_000, flush_mb=10_000, global_mb=10_000, idle_sec=3600)
         try:
             plain_a = await service.get_or_create_store(storage)
@@ -379,6 +380,7 @@ async def _task_storage_pooling_and_shutdown() -> list[GraderResult]:
                 other_namespace_rejected = False
             except ValueError:
                 other_namespace_rejected = True
+            equivalent_credentials = await service.get_or_create_store(equivalent_io)
             different_credentials = await service.get_or_create_store(other_io)
 
             # The cached store itself owns an idempotent shutdown contract.
@@ -396,7 +398,8 @@ async def _task_storage_pooling_and_shutdown() -> list[GraderResult]:
                         "same_cache_config_reuses_cached_store": cached_a is cached_b,
                         "cache_config_is_part_of_pool_key": plain_a is not cached_a,
                         "injected_session_rejects_other_namespace": (other_namespace_rejected),
-                        "io_config_identity_is_part_of_pool_key": (
+                        "equivalent_io_config_reuses_store": (plain_a is equivalent_credentials),
+                        "io_config_fingerprint_is_part_of_pool_key": (
                             plain_a is not different_credentials
                         ),
                     },

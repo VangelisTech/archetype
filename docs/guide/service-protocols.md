@@ -32,7 +32,7 @@ Each entry below is a one-line summary. The full signatures live in `app/interfa
 ### `iStorageService`
 
 Creates and pools async stores. Multiton on
-`(uri, namespace, backend, IOConfig identity, cache)` within one process.
+`(uri, namespace, backend, Daft IOConfig fingerprint, cache)` within one process.
 The built-in Iceberg factory is a concrete local SQLite-catalog lakehouse.
 Managed or remote Iceberg enters through a caller-configured Daft `Session`;
 `IOConfig` passes directly to Daft data I/O. Leaf service — no required
