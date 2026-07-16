@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from uuid_utils import UUID
 
     from archetype.app.auth.models import ActorCtx
+    from archetype.app.iceberg import IcebergCatalogContext
     from archetype.app.models import (
         AuditRow,
         Command,
@@ -77,6 +78,11 @@ class iStorageService(Protocol):
         storage_config: StorageConfig,
         cache_config: CacheConfig | None = None,
     ) -> iAsyncStore: ...
+
+    async def get_iceberg_context(
+        self,
+        storage_config: StorageConfig,
+    ) -> IcebergCatalogContext: ...
 
     async def shutdown(self) -> None: ...
 
@@ -331,6 +337,7 @@ class iAuditLog(Protocol):
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
         idempotency_key: str | None = None,
+        status: str | None = None,
         limit: int | None = None,
     ) -> DataFrame: ...
 

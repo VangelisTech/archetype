@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 
 from daft import DataFrame, col, lit
+from uuid_utils import UUID
 
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
@@ -330,16 +331,16 @@ class QueryService:
         if self._audit is None:
             return []
 
-        rows = [
-            row
-            for row in self._audit._rows
-            if str(row.world_id) == str(world_id) and row.status == "queued"
-        ][-limit:]
+        frame = await self._audit.query(world_id=world_id, status="queued", limit=limit)
+        rows = frame.to_pylist()
         result: list[Command] = []
         for row in rows:
+            command_id = row["command_id"]
+            if command_id is None:
+                raise ValueError("queued audit row is missing command_id")
             try:
-                command_type = CommandType(row.command_type)
+                command_type = CommandType(row["command_type"])
             except ValueError:
                 command_type = CommandType.CUSTOM
-            result.append(Command(id=row.command_id, type=command_type))
+            result.append(Command(id=UUID(str(command_id)), type=command_type))
         return result

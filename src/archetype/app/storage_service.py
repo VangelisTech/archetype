@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from daft.session import Session
 
 from archetype.app._catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
+from archetype.app.iceberg import IcebergCatalogContext
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
@@ -238,6 +239,18 @@ class StorageService:
             self._instances[key] = store
             self._session_identity = requested
         return store
+
+    async def get_iceberg_context(
+        self,
+        storage_config: StorageConfig,
+    ) -> IcebergCatalogContext:
+        """Return the authoritative Daft catalog context for an Iceberg config."""
+        if storage_config.backend != StorageBackend.ICEBERG:
+            raise ValueError("Iceberg catalog context requires backend=iceberg")
+        store = await self.get_or_create_store(storage_config, cache_config=None)
+        if not isinstance(store, AsyncStore):
+            raise TypeError(f"expected AsyncStore for Iceberg, got {type(store).__name__}")
+        return IcebergCatalogContext(session=store.session, io_config=store.io_config)
 
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""

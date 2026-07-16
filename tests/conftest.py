@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 # Disable Daft's Scarf telemetry before anything imports daft. It does a blocking
 # urlopen per runner/op; with Daft on every world.step it added seconds of stall
 # per gated op (a single test: 44s -> 1.6s). Set in the root conftest so it lands
@@ -13,6 +15,21 @@ os.environ.setdefault("DO_NOT_TRACK", "1")
 
 from archetype.app.storage_service import StorageService  # noqa: E402
 from archetype.app.world_service import WorldService  # noqa: E402
+from archetype.core.config import StorageBackend, StorageConfig  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def isolate_default_audit_storage(tmp_path, monkeypatch):
+    """Keep each test's default audit catalog isolated and disposable."""
+    config = StorageConfig(
+        uri=str(tmp_path / "audit"),
+        namespace="audit",
+        backend=StorageBackend.ICEBERG,
+    )
+    monkeypatch.setattr(
+        "archetype.app.audit_log.default_audit_storage",
+        lambda: config,
+    )
 
 
 def make_storage_service() -> StorageService:

@@ -12,49 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Audit Log
-
-Append-only record of accepted-and-applied commands.
-In-memory buffer with flush-to-storage capability.
-"""
+"""Batched, append-only audit rows in a dedicated Iceberg table."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 import daft
-import lancedb
 import pyarrow as pa
+from daft import Expression, Schema
+from daft.catalog import Table
 from uuid_utils import UUID
 
+from archetype.app.iceberg import IcebergCatalogContext
 from archetype.app.models import AuditRow
-from archetype.app.storage_service import _resolve_uri
-from archetype.core.config import StorageConfig
-
-if TYPE_CHECKING:
-    from archetype.app.storage_service import StorageService
-
-logger = logging.getLogger(__name__)
+from archetype.app.storage_service import StorageService
+from archetype.core.config import StorageBackend, StorageConfig
 
 _AUDIT_TABLE = "audit_rows"
-_AUDIT_COLUMNS = (
-    "audit_id",
-    "command_id",
-    "world_id",
-    "actor_id",
-    "command_type",
-    "status",
-    "payload_json",
-    "accepted_at",
-    "applied_at",
-    "idempotency_key",
-)
+DEFAULT_AUDIT_FLUSH_ROWS = 128
+
+
+def default_audit_storage() -> StorageConfig:
+    """Return Archetype's concrete local audit lakehouse configuration."""
+    return StorageConfig(
+        uri="./archetype_data",
+        namespace="audit",
+        backend=StorageBackend.ICEBERG,
+    )
 
 
 def _audit_schema() -> pa.Schema:
@@ -74,7 +61,7 @@ def _audit_schema() -> pa.Schema:
     )
 
 
-def _row_to_dict(row: AuditRow) -> dict:
+def _row_to_dict(row: AuditRow) -> dict[str, str | None]:
     return {
         "audit_id": str(row.audit_id),
         "command_id": str(row.command_id) if row.command_id else None,
@@ -89,109 +76,81 @@ def _row_to_dict(row: AuditRow) -> dict:
     }
 
 
-def _rows_to_frame(rows: list[dict]) -> daft.DataFrame:
-    if not rows:
-        return daft.from_pydict({column: [] for column in _AUDIT_COLUMNS})
-    return daft.from_pydict(
-        {column: [row.get(column) for row in rows] for column in _AUDIT_COLUMNS}
-    )
+def _rows_to_frame(rows: Sequence[AuditRow]) -> daft.DataFrame:
+    arrow = pa.Table.from_pylist([_row_to_dict(row) for row in rows], schema=_audit_schema())
+    return daft.from_arrow(arrow)
 
 
 class AuditLog:
-    """Append-only audit log backed by dedicated storage.
-
-    Rows are kept in memory for current-process observability and persisted to
-    a dedicated LanceDB table under the configured audit namespace.
-    """
+    """Append audit telemetry to one dedicated Iceberg table in bounded batches."""
 
     def __init__(
         self,
         storage_service: StorageService | None = None,
         storage_config: StorageConfig | None = None,
+        *,
+        flush_rows: int = DEFAULT_AUDIT_FLUSH_ROWS,
     ) -> None:
-        self._storage_service = storage_service
-        self._storage_config = storage_config or StorageConfig(
-            uri="./archetype_data", namespace="audit"
-        )
-        self._rows: list[AuditRow] = []
+        if flush_rows < 1:
+            raise ValueError("flush_rows must be at least 1")
+        effective_config = storage_config or default_audit_storage()
+        if effective_config.backend != StorageBackend.ICEBERG:
+            raise ValueError("audit storage requires backend=iceberg")
+        self._owns_storage_service = storage_service is None
+        self._storage_service = storage_service if storage_service is not None else StorageService()
+        self._storage_config = effective_config
+        self._flush_rows = flush_rows
         self._pending: list[AuditRow] = []
-        self._db = None
-        self._table = None
+        self._context: IcebergCatalogContext | None = None
+        self._table: Table | None = None
         self._lock = asyncio.Lock()
 
-    async def _connect(self):
-        if self._db is not None:
-            return self._db
+    async def _get_context(self) -> IcebergCatalogContext:
+        if self._context is None:
+            self._context = await self._storage_service.get_iceberg_context(self._storage_config)
+        return self._context
 
-        uri = _resolve_uri(str(self._storage_config.uri))
-        subdir = os.environ.get("ARCT_LANCEDB_SUBDIR", "lance")
-        path = Path(uri) / self._storage_config.namespace / subdir
-        path.mkdir(parents=True, exist_ok=True)
-        self._db = await lancedb.connect_async(str(path))
-        return self._db
+    async def _ensure_table(self) -> Table:
+        if self._table is None:
+            context = await self._get_context()
+            schema = Schema.from_pyarrow_schema(_audit_schema())
+            self._table = context.create_table_if_not_exists(_AUDIT_TABLE, schema)
+        return self._table
 
-    async def _list_table_names(self) -> list[str]:
-        db = await self._connect()
-        list_tables = getattr(db, "list_tables", None)
-        if list_tables is not None:
-            response = await list_tables()
-            if hasattr(response, "tables"):
-                return list(response.tables)
-            return list(response)
-        return list(await db.table_names())
-
-    async def _ensure_table(self):
+    async def _existing_table(self) -> Table | None:
         if self._table is not None:
             return self._table
-
-        db = await self._connect()
-        if _AUDIT_TABLE in await self._list_table_names():
-            self._table = await db.open_table(_AUDIT_TABLE)
-            return self._table
-
-        self._table = await db.create_table(
-            name=_AUDIT_TABLE,
-            schema=_audit_schema(),
-            exist_ok=True,
-        )
+        context = await self._get_context()
+        if not context.has_table(_AUDIT_TABLE):
+            return None
+        self._table = context.get_table(_AUDIT_TABLE)
         return self._table
 
     async def record(self, row: AuditRow) -> None:
-        """Append one audit row to memory and durable audit storage."""
-        self._rows.append(row)
-        self._pending.append(row)
-        await self.flush()
+        """Buffer one row, flushing at the configured batch boundary."""
+        async with self._lock:
+            # A failed threshold flush leaves exactly one bounded batch. Retry
+            # it before accepting another row so a broken backend cannot turn
+            # advisory telemetry into an unbounded memory sink.
+            if len(self._pending) >= self._flush_rows:
+                await self._flush_locked()
+            self._pending.append(row)
+            if len(self._pending) >= self._flush_rows:
+                await self._flush_locked()
 
-    async def flush(self) -> None:
-        """Flush buffered rows to the dedicated audit table."""
+    async def _flush_locked(self) -> None:
         if not self._pending:
             return
-
-        async with self._lock:
-            if not self._pending:
-                return
-            pending = list(self._pending)
-            table = await self._ensure_table()
-            arrow_table = pa.Table.from_pylist(
-                [_row_to_dict(row) for row in pending],
-                schema=_audit_schema(),
-            )
-            await table.add(arrow_table, mode="append")
-            del self._pending[: len(pending)]
-
-    async def _read_persisted_rows(self) -> list[dict]:
-        if _AUDIT_TABLE not in await self._list_table_names():
-            return []
+        pending = tuple(self._pending)
+        context = await self._get_context()
         table = await self._ensure_table()
-        arrow_table = await table.query().to_arrow()
-        columns = arrow_table.to_pydict()
-        if not columns:
-            return []
-        row_count = len(next(iter(columns.values())))
-        return [
-            {column: values[index] for column, values in columns.items()}
-            for index in range(row_count)
-        ]
+        await context.append(table, _rows_to_frame(pending))
+        del self._pending[: len(pending)]
+
+    async def flush(self) -> None:
+        """Persist the current batch as one Iceberg append/snapshot."""
+        async with self._lock:
+            await self._flush_locked()
 
     async def query(
         self,
@@ -200,55 +159,54 @@ class AuditLog:
         tick_range: tuple[int, int] | None = None,
         actor_id: str | UUID | None = None,
         idempotency_key: str | None = None,
+        status: str | None = None,
         limit: int | None = None,
     ) -> daft.DataFrame:
-        """Query the audit log with optional filters. Returns a Daft DataFrame."""
-        try:
-            await self.flush()
-            rows = await self._read_persisted_rows()
-        except Exception:
-            logger.debug(
-                "audit storage query failed; falling back to in-memory rows", exc_info=True
-            )
-            rows = [_row_to_dict(row) for row in self._rows]
+        """Return a lazy, deterministically ordered query over persisted rows."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
 
-        if self._pending:
-            seen = {row["audit_id"] for row in rows}
-            rows.extend(_row_to_dict(row) for row in self._pending if str(row.audit_id) not in seen)
-
-        predicates = []
+        await self.flush()
+        table = await self._existing_table()
+        if table is None:
+            frame = _rows_to_frame(())
+        else:
+            context = await self._get_context()
+            frame = context.read(table)
 
         if world_id is not None:
-            wid = str(world_id)
-            predicates.append(lambda row, wid=wid: row["world_id"] == wid)
-
+            frame = frame.where(
+                frame["world_id"] == str(world_id)  # ty: ignore[invalid-argument-type]
+            )
         if actor_id is not None:
-            aid = str(actor_id)
-            predicates.append(lambda row, aid=aid: row["actor_id"] == aid)
-
+            frame = frame.where(
+                frame["actor_id"] == str(actor_id)  # ty: ignore[invalid-argument-type]
+            )
         if idempotency_key is not None:
-            predicates.append(lambda row: row["idempotency_key"] == idempotency_key)
+            frame = frame.where(
+                frame["idempotency_key"] == idempotency_key  # ty: ignore[invalid-argument-type]
+            )
+        if status is not None:
+            frame = frame.where(
+                frame["status"] == status  # ty: ignore[invalid-argument-type]
+            )
 
-        del tick_range  # Audit rows do not yet carry tick; accepted for API contract compatibility.
+        del tick_range  # Accepted compatibility parameter; AuditRow has no tick field.
 
-        filtered = [row for row in rows if all(predicate(row) for predicate in predicates)]
-
+        order: list[Expression | str] = ["accepted_at", "audit_id"]
         if limit is not None:
-            filtered = filtered[-limit:]
-
-        return _rows_to_frame(filtered)
+            if limit == 0:
+                return frame.limit(0)
+            frame = frame.sort(order, desc=[True, True]).limit(limit)
+        return frame.sort(order)
 
     async def shutdown(self) -> None:
-        """Flush and close. Idempotent."""
+        """Flush pending rows and release standalone storage ownership."""
         await self.flush()
-        if self._db is not None:
-            close = getattr(self._db, "close", None)
-            if close:
-                result = close()
-                if hasattr(result, "__await__"):
-                    await result
-            self._db = None
-            self._table = None
+        self._table = None
+        self._context = None
+        if self._owns_storage_service:
+            await self._storage_service.shutdown()
 
 
 def make_audit_row(
@@ -260,7 +218,7 @@ def make_audit_row(
     status: str = "applied",
     payload_json: str = "{}",
 ) -> AuditRow:
-    """Helper to build an AuditRow from a gate operation."""
+    """Build an ``AuditRow`` from one gate operation."""
     now = datetime.now(UTC).isoformat()
     return AuditRow(
         command_id=command_id,

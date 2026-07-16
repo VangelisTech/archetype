@@ -1,6 +1,6 @@
 import pytest
 
-from archetype.app.storage_service import AsyncLancedbStore, create_async_store
+from archetype.app.storage_service import AsyncLancedbStore, StorageService, create_async_store
 from archetype.core.aio import AsyncQueryManager, AsyncStore, AsyncUpdateManager
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from tests.conftest import make_storage_service
@@ -173,6 +173,40 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_iceberg_context_uses_pooled_store_session_and_io_config(tmp_path):
+    from daft.io import IOConfig
+
+    from archetype.runtime.session import configure_session
+
+    io_config = IOConfig()
+    config = StorageConfig(
+        uri=str(tmp_path / "managed-catalog"),
+        namespace="managed",
+        backend=StorageBackend.ICEBERG,
+        io_config=io_config,
+    )
+    session = configure_session(config)
+    service = StorageService(session=session)
+    try:
+        context = await service.get_iceberg_context(config)
+
+        assert context.session is session
+        assert context.io_config is io_config
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_iceberg_context_rejects_lance_backend(tmp_path):
+    service = make_storage_service()
+    try:
+        with pytest.raises(ValueError, match="backend=iceberg"):
+            await service.get_iceberg_context(StorageConfig(uri=str(tmp_path / "lance")))
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_iceberg_pool_uses_daft_io_config_fingerprint(tmp_path):
     """Equivalent Daft I/O configs pool while distinct credentials stay isolated."""
     from daft.io import IOConfig
@@ -201,7 +235,6 @@ async def test_iceberg_pool_uses_daft_io_config_fingerprint(tmp_path):
 
 @pytest.mark.asyncio
 async def test_injected_session_rejects_second_storage_identity(tmp_path):
-    from archetype.app.storage_service import StorageService
     from archetype.runtime.session import configure_session
 
     first = StorageConfig(
@@ -225,7 +258,6 @@ async def test_injected_session_rejects_second_storage_identity(tmp_path):
 
 @pytest.mark.asyncio
 async def test_injected_session_rejects_external_namespace_drift(tmp_path):
-    from archetype.app.storage_service import StorageService
     from archetype.runtime.session import configure_session
 
     config = StorageConfig(
