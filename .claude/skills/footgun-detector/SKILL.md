@@ -14,11 +14,14 @@ You are reviewing code changes in the **archetype** repository for **footguns** 
 
 Determine what to scan, in priority order:
 
-1. If the user provided a PR number or URL, fetch that diff: `gh pr diff <number>`
-2. If on a feature branch with commits ahead of `main`, use: `git diff main...HEAD`
-3. If there are staged changes: `git diff --cached`
-4. If there are unstaged changes: `git diff`
-5. If the working tree is clean and on `main`, tell the user there's nothing to scan.
+1. If `.footgun-review-scope.json` and `.footgun-review.diff` exist, read them
+   directly. They are the authoritative exact-head CI scope and diff; do not
+   fetch or execute candidate code.
+2. If the user provided a PR number or URL, fetch that diff: `gh pr diff <number>`
+3. If on a feature branch with commits ahead of `main`, use: `git diff main...HEAD`
+4. If there are staged changes: `git diff --cached`
+5. If there are unstaged changes: `git diff`
+6. If the working tree is clean and on `main`, tell the user there's nothing to scan.
 
 ## Step 2: Load the knowledge base
 
@@ -35,6 +38,10 @@ You do NOT need to read these if you already have them in context from this sess
 ## Step 3: Scan for footguns
 
 Check every changed file in the diff against the categories below. For each file, read enough surrounding context (the full file or relevant functions) to understand intent — don't just pattern-match on the diff lines.
+
+In deterministic CI, the working tree is the protected base. Use it for
+surrounding context and `.footgun-review.diff` for the exact candidate changes;
+a newly added file is represented in full by its diff.
 
 ### Footgun categories
 
