@@ -84,7 +84,9 @@ Annotated excerpt from `ServiceContainer.__init__` — param names match `interf
 
 ```python
 self.broker = CommandBroker()                          # → iCommandBroker
-self.storage_service = StorageService()                # → iStorageService
+self.storage_service = (                               # → iStorageService
+    storage_service if storage_service is not None else StorageService()
+)
 
 self.world_service = WorldService(                     # → iWorldService
     self.storage_service,                              #   storage_service: iStorageService
@@ -155,7 +157,7 @@ Hosts (`ArchetypeRuntime`, FastAPI) hold a `ServiceContainer` and call **`iComma
 |------|------|----------|
 | `ArchetypeRuntime` | `runtime/runtime.py` | `iCommandService` |
 | FastAPI | `api/deps.py` | `iCommandService` |
-| Tests / lower-level scripts | `ServiceContainer()` | any protocol, as needed |
+| Tests / lower-level scripts | `ServiceContainer(storage_service=...)` | any protocol, as needed |
 
 `iEvalService` and `AutoResearchService` sit on the container but **outside** the gate — callers use them directly for grading loops and experiment orchestration.
 

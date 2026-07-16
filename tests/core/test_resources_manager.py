@@ -145,10 +145,17 @@ async def test_lancedb_backend_does_not_construct_daft_iceberg_session(tmp_path,
 
 def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
     from daft.io import IOConfig
-    from daft.session import Session
+
+    from archetype.runtime.session import configure_session
 
     io_config = IOConfig()
-    session = Session()
+    cfg = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="ns",
+        backend=StorageBackend.ICEBERG,
+        io_config=io_config,
+    )
+    session = configure_session(cfg)
     seen = {}
 
     class FakeStore:
@@ -158,18 +165,84 @@ def test_iceberg_backend_passes_io_config_to_async_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr("archetype.app.storage_service.AsyncStore", FakeStore)
 
-    cfg = StorageConfig(
-        uri=str(tmp_path / "store"),
-        namespace="ns",
-        backend=StorageBackend.ICEBERG,
-        io_config=io_config,
-    )
-
     store = create_async_store(cfg, session=session, cache_config=None)
 
     assert isinstance(store, FakeStore)
     assert seen["session"] is session
     assert seen["io_config"] is io_config
+
+
+@pytest.mark.asyncio
+async def test_iceberg_pool_distinguishes_io_config_identity(tmp_path):
+    """Explicit I/O credentials must not be replaced by an earlier caller's config."""
+    from daft.io import IOConfig
+
+    svc = make_storage_service()
+    shared = dict(
+        uri=str(tmp_path / "store"),
+        namespace="ns",
+        backend=StorageBackend.ICEBERG,
+    )
+    first_io = IOConfig()
+    second_io = IOConfig()
+    try:
+        first = await svc.get_or_create_store(StorageConfig(**shared, io_config=first_io))
+        same = await svc.get_or_create_store(StorageConfig(**shared, io_config=first_io))
+        second = await svc.get_or_create_store(StorageConfig(**shared, io_config=second_io))
+
+        assert first is same
+        assert first is not second
+        assert first.io_config is first_io
+        assert second.io_config is second_io
+    finally:
+        await svc.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_injected_session_rejects_second_storage_identity(tmp_path):
+    from archetype.app.storage_service import StorageService
+    from archetype.runtime.session import configure_session
+
+    first = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="first",
+        backend=StorageBackend.ICEBERG,
+    )
+    service = StorageService(session=configure_session(first))
+    try:
+        await service.get_or_create_store(first)
+
+        with pytest.raises(ValueError, match="namespace mismatch"):
+            await service.get_or_create_store(first.model_copy(update={"namespace": "second"}))
+        with pytest.raises(ValueError, match="cannot serve multiple storage identities"):
+            await service.get_or_create_store(
+                first.model_copy(update={"uri": str(tmp_path / "other")})
+            )
+    finally:
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_injected_session_rejects_external_namespace_drift(tmp_path):
+    from archetype.app.storage_service import StorageService
+    from archetype.runtime.session import configure_session
+
+    config = StorageConfig(
+        uri=str(tmp_path / "store"),
+        namespace="first",
+        backend=StorageBackend.ICEBERG,
+    )
+    session = configure_session(config)
+    service = StorageService(session=session)
+    try:
+        await service.get_or_create_store(config)
+        session.create_namespace_if_not_exists("second")
+        session.set_namespace("second")
+
+        with pytest.raises(ValueError, match="namespace mismatch"):
+            await service.get_or_create_store(config)
+    finally:
+        await service.shutdown()
 
 
 @pytest.mark.asyncio

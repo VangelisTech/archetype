@@ -47,12 +47,12 @@ class ServiceContainer:
         await container.simulation_service.step(world.world_id, run_config)
     """
 
-    def __init__(self):
+    def __init__(self, storage_service: StorageService | None = None):
         # Infrastructure
         self.broker = CommandBroker()
 
         # Leaf services
-        self.storage_service = StorageService()
+        self.storage_service = storage_service if storage_service is not None else StorageService()
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)

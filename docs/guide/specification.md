@@ -142,6 +142,12 @@ Each layer may depend downward. No lower layer may depend upward.
 
 - The store MUST be append-only. Updating a world means appending new rows, not
   mutating prior rows in place.
+- Archetype's built-in Iceberg factory MUST create only its concrete local
+  SQLite-catalog lakehouse. It MUST NOT pair remote data with a hidden
+  host-local metadata catalog.
+- Remote or managed Iceberg MUST enter through a caller-configured Daft
+  `Session`. `StorageConfig.io_config` is passed directly to Daft data I/O and
+  MUST NOT be translated into catalog credential properties.
 - A store MUST create archetype tables on demand from the signature schema.
 - Store reads MUST be scoped by `world_id` and `run_id`.
 - Store writes MUST resolve through the same table identity as reads for the
@@ -369,7 +375,8 @@ CURRENT GAP:
 - `StorageService` is the multiton owner for backend triplets:
   `(store, querier, updater)`.
 - Worlds sharing the same effective storage pool key `(uri, namespace, backend,
-  cache config)` MUST reuse the same backend triplet.
+  in-process IOConfig identity, cache config)` MUST reuse the same backend
+  triplet.
 - Concurrent backend acquisition for the same key MUST single-flight so only
   one backend is built.
 - Backend selection and storage-resource construction are app/runtime
@@ -378,6 +385,11 @@ CURRENT GAP:
   storage context.
 - The default catalog-backed path MAY construct a Daft `Session` and Daft
   `Catalog` through `StorageService`.
+- A caller-configured `Session` MUST pass through unchanged; its attached
+  catalog, namespace, and catalog credentials are authoritative.
+- One injected `Session` MUST be bound to one storage URI and namespace.
+  `StorageService` MUST reject a mismatched config rather than mutate the
+  shared session namespace or silently route tables to the wrong namespace.
 - When `StorageConfig.io_config` is provided for catalog-backed storage, it
   MUST be bound to the store and passed explicitly to Daft Iceberg
   read/write operations.
@@ -841,7 +853,7 @@ the constraints that any acceptable design must satisfy.
 
 | Operation | Expected contract |
 |---|---|
-| `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, cache config)` within one service instance |
+| `StorageService.get_or_create_store(key)` | Idempotent per `(uri, namespace, backend, in-process IOConfig identity, cache config)` within one service instance |
 | `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
 | `WorldService.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |

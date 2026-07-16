@@ -1,42 +1,48 @@
-import pathlib
-import shutil
+from pathlib import Path
 
 import pytest
-from daft.session import Session
+from daft.io import IOConfig, UnityConfig
 
-from archetype.core.config import StorageConfig
+from archetype.app.storage_service import create_async_store
+from archetype.core.aio import AsyncStore
+from archetype.core.config import StorageBackend, StorageConfig
 from archetype.runtime.session import configure_session
 
-# These tests mutate the repository-relative .archetype_meta/catalog.db; under
-# xdist they must share one worker (--dist loadgroup in the Makefile) so they
-# serialize against each other instead of racing on the shared catalog.
-pytestmark = pytest.mark.xdist_group("archetype-meta")
+
+def test_builtin_iceberg_factory_rejects_remote_uri(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config = StorageConfig(
+        uri="s3://bucket/prefix",
+        namespace="ns",
+        backend=StorageBackend.ICEBERG,
+    )
+
+    with pytest.raises(ValueError, match="preconfigured Daft Session"):
+        configure_session(config)
+
+    assert not Path(".archetype_meta").exists()
 
 
-def test_configure_session_remote_uri_uses_meta_dir(tmp_path):
-    """Remote URIs should not be created locally; local sqlite catalog should be under .archetype_meta."""
-    remote_uri = "s3://bucket/prefix"
-    # Ensure we start clean
-    meta_dir = pathlib.Path(".archetype_meta")
-    if meta_dir.exists():
-        shutil.rmtree(meta_dir)
+def test_preconfigured_session_and_io_config_pass_through_for_remote_iceberg(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    io_config = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
+    session = configure_session(
+        StorageConfig(
+            uri=str(tmp_path / "catalog"),
+            namespace="managed",
+            backend=StorageBackend.ICEBERG,
+        )
+    )
+    config = StorageConfig(
+        uri="s3://bucket/prefix",
+        namespace="managed",
+        backend=StorageBackend.ICEBERG,
+        io_config=io_config,
+    )
 
-    cfg = StorageConfig(uri=remote_uri, namespace="ns")
-    session = configure_session(cfg)
-    # Local meta dir created
-    assert pathlib.Path(".archetype_meta").exists()
-    # Session returned successfully
-    assert isinstance(session, Session)
+    store = create_async_store(config, session=session)
 
-
-def test_configure_session_preserves_io_config_on_storage_config():
-    """StorageConfig.io_config stays available for explicit Daft Iceberg read/write calls."""
-    from daft.io import IOConfig, UnityConfig
-
-    io = IOConfig(unity=UnityConfig(endpoint="https://example", token="t"))
-
-    cfg = StorageConfig(uri="s3://bucket/prefix", namespace="ns", io_config=io)
-    session = configure_session(cfg)
-    assert isinstance(session, Session)
-    # io_config is on the config object, not consumed by configure_session
-    assert cfg.io_config is io
+    assert isinstance(store, AsyncStore)
+    assert store.session is session
+    assert store.io_config is io_config
+    assert not (tmp_path / ".archetype_meta").exists()

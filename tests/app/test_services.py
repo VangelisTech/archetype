@@ -41,6 +41,13 @@ class TestServiceContainer:
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
 
+    def test_container_uses_injected_storage_service(self):
+        storage_service = StorageService()
+
+        container = ServiceContainer(storage_service=storage_service)
+
+        assert container.storage_service is storage_service
+
     @pytest.mark.asyncio
     async def test_container_shutdown(self):
         container = ServiceContainer()

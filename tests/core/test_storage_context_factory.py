@@ -26,3 +26,13 @@ def test_configure_session_builds_local_and_creates_dirs(tmp_path):
     assert isinstance(session, Session)
     # io_config stays on the config, not the session
     assert cfg.io_config is None
+
+
+def test_configure_session_preserves_public_local_session_argument(tmp_path):
+    """The exported helper still configures and returns a supplied local session."""
+    supplied = Session()
+    cfg = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+    configured = configure_session(cfg, supplied)
+
+    assert configured is supplied
