@@ -1,7 +1,7 @@
 ---
 name: daft-patterns
-description: Enforces correct Daft DataFrame patterns. Auto-triggers when writing or editing Python files that use Daft, DataFrames, UDFs, or column expressions.
-paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
+description: Enforces correct Daft DataFrame patterns. Use when writing or editing Python that touches Daft, DataFrames, UDFs, or column expressions — anywhere under src/, tests/, or examples/.
+user_invocable: true
 ---
 
 ## Daft built-ins to reach for first
