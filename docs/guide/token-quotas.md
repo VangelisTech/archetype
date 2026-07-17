@@ -3,36 +3,48 @@ title: Token Costs and Quotas
 description: Gate-level quota system, token costs per command, and rate limits
 ---
 
-Every gated command has a token cost. `guardrail_allow()` enforces role permissions, per-tick command limits, and daily token budgets before the operation is accepted.
+Every gated command has a token-cost estimate. `guardrail_allow()` enforces role
+permissions, per-tick command limits, and daily token budgets before the
+operation is accepted.
 
 The command gate is `iCommandService`; the broker is only used for tick-deferred queueing.
 
 ## Token Costs
 
-Each command type has a fixed token cost:
+Most command types have a fixed cost. `autoresearch` scales with its requested
+iteration count because its internal rollouts are not gated separately:
 
 | Command Type | Token Cost | Description |
 |---|---:|---|
+| `get_world_info` | 2 | Read world identity/tick info |
+| `list_signatures` | 2 | List known archetype signatures |
+| `list_worlds` | 2 | List live world identities |
+| `list_processors` | 2 | List world processors |
+| `list_hooks` | 2 | List world hooks |
+| `list_resources` | 2 | List world resources |
 | `message` | 3 | Agent-to-agent messaging |
 | `despawn` | 5 | Remove an entity |
 | `remove_component` | 5 | Remove a component type from an entity |
 | `remove_processor` | 5 | Remove a processor |
 | `query_world` | 5 | Read world state |
-| `get_world_info` | 5 | Read world identity/tick info |
 | `get_audit_history` | 5 | Read audit history |
+| `remove_hook` | 5 | Remove a hook |
 | `update` | 8 | Overlay existing component values |
 | `add_component` | 8 | Extend an entity archetype |
+| `ingest_fact` | 10 | Append a durable external fact |
+| `evaluate` | 10 | Claim and grade one evaluation |
 | `spawn` | 10 | Create a new entity |
-| `custom` | 10 | User-defined command |
+| `custom` | 10 | Submit an application-defined command |
 | `destroy_world` | 10 | Destroy live world state; persisted rows remain |
+| `step` | 10 | Execute one tick |
+| `add_hook` | 10 | Register a hook |
+| `add_resource` | 10 | Attach a resource |
 | `add_processor` | 15 | Register a processor |
-| `add_hook` | 15 | Register a hook |
-| `add_resource` | 15 | Attach a resource |
-| `step` | 25 | Execute one tick |
 | `run` | 50 | Execute N steps |
 | `create_world` | 50 | Create a world identity |
 | `fork_world` | 100 | Fork world state |
 | `run_rollout` | 200 | Run N forked episodes |
+| `autoresearch` | 200 per iteration | Run the optimization loop over rollouts |
 | `run_episode` | 500 | Run until termination or cap on one world |
 
 Unknown command types default to a cost of 10.
@@ -44,9 +56,13 @@ Two quotas are enforced per actor:
 | Quota | Limit | Scope |
 |---|---:|---|
 | Per-tick | 500 commands | Reset at tick boundary |
-| Daily | 200,000 tokens | Reset at day boundary |
+| Daily | 200,000 tokens | Reset at midnight UTC |
 
 Both direct gated calls and tick-deferred `submit` calls consume quota.
+`submit_batch` counts and charges every command, and rejects the whole batch
+without a partial debit when its projected total would cross either limit.
+Counters are process-local and keyed by actor identity; see the durability
+posture in the [Specification](specification.md#durability-posture-v03-issue-276).
 
 ## Enforcement Flow
 

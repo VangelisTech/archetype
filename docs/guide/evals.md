@@ -117,6 +117,7 @@ renaming a task requires updating this table in the same change.
 | `regression` | `command_pipeline` | Submit → broker → step → history, with RBAC at the service boundary |
 | `regression` | `query_correctness` | Cold gated reads union component subsets, honor filters/projection, and discover durable signatures |
 | `regression` | `tick_quota_resets` | Per-tick command quotas reset at each tick rather than process-wide |
+| `regression` | `quota_boundaries` | Exact 499/500/501 limits, atomic bulk accounting, actor isolation, and UTC daily rollover |
 | `regression` | `episode_value_termination` | Value-based episode termination stops before the defensive cap |
 | `regression` | `poison_in_batch` | A malformed command does not block valid commands in the same drain |
 | `regression` | `missing_payload_keys` | Missing required keys do not corrupt world state |

@@ -999,6 +999,7 @@ all of the following:
 - stable cross-archetype execution without world bookkeeping corruption
 - stable reserved-entity spawn semantics through the broker
 - explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
+- exact actor-local quota boundaries and UTC rollover (`quota_boundaries` regression eval)
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
 
