@@ -42,11 +42,28 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      # Verified by postcondition, not exit code: `--disable-auto` exits
+      # nonzero on the benign "wasn't armed" no-op, but swallowing every
+      # failure (`|| true`) would also swallow a transient API failure and
+      # leave a prior head's arm in force across the new, unreviewed push —
+      # and merge-group runs skip the review checks, so nothing downstream
+      # would catch it. Retry, then require the PR to actually be unarmed.
       - name: Disable auto-merge pending review
         env:
           GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --disable-auto "$PR_URL" || true
+        run: |
+          for attempt in 1 2 3; do
+            gh pr merge --disable-auto "$PR_URL" || true
+            armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest // empty')
+            if [ -z "$armed" ]; then
+              echo "auto-merge disarmed (attempt ${attempt})."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::auto-merge still armed after 3 disarm attempts; a stale arm may carry this unreviewed head into the queue."
+          exit 1
 
   arm:
     name: Arm auto-merge for maintainer PRs
