@@ -117,6 +117,54 @@ class TestWorldRouteErrors:
         resp = client.get(f"/worlds/{world_id}")
         assert resp.status_code == 404
 
+    def test_create_world_duplicate_name_conflict(self, client, tmp_path):
+        """Issue #180: duplicate world name is a 409, not a 500."""
+        body = {"name": "dup_name", "storage_uri": str(tmp_path / "store")}
+        assert client.post("/worlds", json=body).status_code == 201
+        resp = client.post("/worlds", json=body)
+        assert resp.status_code == 409
+        assert "dup_name" in resp.json()["detail"]
+
+    def test_delete_world_invalid_uuid(self, client):
+        """Issue #180: an unparsable id is a client error, not a silent no-op.
+
+        The safe-no-op destroy contract covers *missing* worlds; an id that can
+        never name a world must be rejected like the sibling GET route does.
+        """
+        resp = client.delete("/worlds/not-a-uuid")
+        assert resp.status_code == 400
+
+    def test_submit_command_unknown_world_is_404(self, client):
+        """Issue #180: WorldNotFoundError maps to 404, not 500."""
+        resp = client.post(
+            "/worlds/00000000-0000-0000-0000-000000000000/commands",
+            json={"type": "despawn", "payload": {"entity_id": 1}},
+        )
+        assert resp.status_code == 404, resp.text
+
+    def test_submit_command_invalid_uuid_world_is_404(self, client):
+        """An id that can never exist in the registry is not-found, not a 500."""
+        resp = client.post(
+            "/worlds/not-a-uuid/commands",
+            json={"type": "despawn", "payload": {"entity_id": 1}},
+        )
+        assert resp.status_code == 404, resp.text
+
+    def test_submit_batch_unknown_world_is_404(self, client):
+        resp = client.post(
+            "/worlds/00000000-0000-0000-0000-000000000000/commands/batch",
+            json={"commands": [{"type": "despawn", "payload": {"entity_id": 1}}]},
+        )
+        assert resp.status_code == 404, resp.text
+
+    def test_entity_and_simulation_routes_unknown_world_are_404(self, client):
+        phantom = "00000000-0000-0000-0000-000000000000"
+        assert (
+            client.post(f"/worlds/{phantom}/entities", json={"components": []}).status_code == 404
+        )
+        assert client.delete(f"/worlds/{phantom}/entities/1").status_code == 404
+        assert client.post(f"/worlds/{phantom}/simulation/step", json={}).status_code == 404
+
 
 class TestCommandRoutes:
     def test_submit_command(self, client, tmp_path):
@@ -133,6 +181,13 @@ class TestCommandRoutes:
         )
         assert resp.status_code == 200
         assert resp.json()["type"] == "spawn"
+
+    def test_submit_unknown_world_is_not_found(self, client):
+        resp = client.post(
+            "/worlds/00000000-0000-0000-0000-000000000000/commands",
+            json={"type": "spawn", "payload": {"components": []}},
+        )
+        assert resp.status_code == 404
 
     def test_submit_invalid_command_type(self, client, tmp_path):
         create_resp = client.post(
@@ -329,6 +384,38 @@ class TestQueryRoutes:
         resp = client.get(f"/signatures?storage_uri={tmp_path / 'store'}&namespace=ns")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    @pytest.mark.parametrize(
+        ("query", "expected_uri", "expected_namespace"),
+        (
+            ("storage_uri=&namespace=custom", None, "custom"),
+            ("storage_uri=/tmp/custom&namespace=", "/tmp/custom", None),
+        ),
+    )
+    def test_signatures_treats_empty_storage_fields_as_missing(
+        self,
+        client,
+        monkeypatch,
+        query,
+        expected_uri,
+        expected_namespace,
+    ):
+        from archetype.app.command_service import CommandService
+        from archetype.core.config import StorageConfig
+
+        captured = {}
+
+        async def list_signatures(_self, _ctx, storage_config):
+            captured["config"] = storage_config
+            return []
+
+        monkeypatch.setattr(CommandService, "list_signatures", list_signatures)
+        assert client.get(f"/signatures?{query}").status_code == 200
+
+        defaults = StorageConfig()
+        config = captured["config"]
+        assert config.uri == (expected_uri or defaults.uri)
+        assert config.namespace == (expected_namespace or defaults.namespace)
 
     def test_create_world_request_defaults_match_storage_config(self):
         """The API's `CreateWorldRequest` shorthand defaults must match

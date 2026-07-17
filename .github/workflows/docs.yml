@@ -11,6 +11,9 @@ on:
       # The generated Python, CLI, and REST references derive from source.
       - "src/archetype/**"
       - ".github/workflows/docs.yml"
+  # Merge queue: required contexts must report on the queue's merge groups
+  # (path filters are not supported on merge_group; the jobs are fast).
+  merge_group:
   # No path filter on pull_request: Spelling, Markdown lint, and Build docs
   # are required status checks on main, and a required check that never runs
   # blocks the merge forever. The jobs cost ~30s combined per PR.
@@ -310,14 +313,16 @@ jobs:
             });
 
       - name: Update deployment status (failure)
-        if: failure()
+        if: failure() && steps.gh-deploy.outputs.deployment-id != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        env:
+          DEPLOYMENT_ID: ${{ steps.gh-deploy.outputs.deployment-id }}
         with:
           script: |
             await github.rest.repos.createDeploymentStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              deployment_id: ${{ steps.gh-deploy.outputs.deployment-id }},
+              deployment_id: Number(process.env.DEPLOYMENT_ID),
               state: 'failure',
               log_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
               description: 'Cloudflare Pages deploy failed',

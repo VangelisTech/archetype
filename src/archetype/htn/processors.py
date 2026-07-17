@@ -146,6 +146,8 @@ class EffectProcessor(AsyncProcessor):
                 col("branch__status"),
                 col("branch__fail_reason"),
                 col("branch__pre_state_sig"),
+                col("branch__depth"),
+                col("branch__max_depth"),
                 col("branch__ready_kind"),
                 col("branch__ready_node_id"),
                 col("branch__ready_op_name"),
