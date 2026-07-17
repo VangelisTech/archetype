@@ -28,8 +28,8 @@ The episode contract mirrors Stage 1's physics contract:
 - Each tick, ``EnvStepProcessor`` sends the current action to the env and
   records the returned observation: row at tick t+1 is exactly
   ``env.step(action_t)``.
-- ``done`` rows are frozen: the env is not stepped again and the terminal
-  state persists unchanged, so success is latched on the ledger.
+- ``done`` or inactive rows are frozen: the env is not stepped again and the
+  terminal state persists unchanged, so success is latched on the ledger.
 
 One Archetype tick = one control step. Action *chunks* (Stage 3) execute
 inside the env worker between control steps, exactly like Stage 1's
@@ -182,6 +182,11 @@ _FRAMED_STEP_STRUCT = DataType.struct(
 )
 
 
+def _steppable_indices(rows: list[dict[str, Any]]) -> list[int]:
+    """Select rows whose live external episode may advance."""
+    return [i for i, row in enumerate(rows) if row["is_active"] and not row["done"]]
+
+
 @daft.cls()
 class _EnvStepper:
     """The env RPC boundary as a batch UDF: one client call per batch.
@@ -206,6 +211,7 @@ class _EnvStepper:
         done: Series,
         success: Series,
         env_step: Series,
+        is_active: Series,
     ) -> Series:
         rows = series_to_rows(
             [
@@ -219,6 +225,7 @@ class _EnvStepper:
                 "done",
                 "success",
                 "env_step",
+                "is_active",
             ],
             env_key,
             action,
@@ -230,10 +237,10 @@ class _EnvStepper:
             done,
             success,
             env_step,
+            is_active,
         )
 
-        # Done rows are frozen: never step a finished episode.
-        live = [i for i, row in enumerate(rows) if not row["done"]]
+        live = _steppable_indices(rows)
         stepped: dict[int, dict[str, Any]] = {}
         if live:
             results = self._client.step(
@@ -337,6 +344,7 @@ class EnvStepProcessor(AsyncProcessor):
             col("manipstatus__done"),
             col("manipstatus__success"),
             col("manipstatus__env_step"),
+            col("is_active"),
         )
         return unpack_struct(
             df.with_column("_env_next", nxt),
@@ -380,6 +388,7 @@ class _FramedEnvStepper:
         env_step: Series,
         agentview_ref: Series,
         wrist_ref: Series,
+        is_active: Series,
     ) -> Series:
         rows = series_to_rows(
             [
@@ -395,6 +404,7 @@ class _FramedEnvStepper:
                 "env_step",
                 "agentview_ref",
                 "wrist_ref",
+                "is_active",
             ],
             env_key,
             action,
@@ -408,9 +418,10 @@ class _FramedEnvStepper:
             env_step,
             agentview_ref,
             wrist_ref,
+            is_active,
         )
 
-        live = [i for i, row in enumerate(rows) if not row["done"]]
+        live = _steppable_indices(rows)
         stepped: dict[int, dict[str, Any]] = {}
         if live:
             results = self._client.step(
@@ -512,6 +523,7 @@ class FramedEnvStepProcessor(AsyncProcessor):
             col("manipstatus__env_step"),
             col("manipframeref__agentview_ref"),
             col("manipframeref__wrist_ref"),
+            col("is_active"),
         )
         return unpack_struct(
             df.with_column("_env_next", nxt),
