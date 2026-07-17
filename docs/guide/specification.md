@@ -121,6 +121,8 @@ Each layer may depend downward. No lower layer may depend upward.
   `<component_name_lower>__<field_name>`.
 - `Component.to_payload()` MUST include a `"type"` discriminator so the app
   layer can reconstruct the original concrete component type.
+- `"type"` is reserved payload metadata; component subclasses MUST NOT
+  declare it as a model field.
 - Untyped payload dicts MUST fail loudly rather than silently degrading to the
   base `Component`.
 
@@ -381,10 +383,11 @@ One tick MUST follow this order:
 - Public cross-service error contracts MUST live in `archetype.app.errors`.
   Private service implementations subclass those contracts; transport adapters
   MUST NOT import private implementation modules to classify failures.
-- The REST adapter maps `WorldNotFoundError` to HTTP 404 and `ConflictError` to
-  HTTP 409. Conflict responses expose only the contract's client-safe
-  `public_detail`; internal exception text remains server-side. App services
-  remain transport-agnostic and do not depend on HTTP.
+- The REST adapter maps `WorldNotFoundError` to HTTP 404, `ConflictError` to
+  HTTP 409, and `AvailabilityError` to HTTP 503. Conflict and availability
+  responses expose only the contract's client-safe `public_detail`; internal
+  exception text remains server-side. App services remain transport-agnostic
+  and do not depend on HTTP.
 - Errors without a public client-recovery contract fail closed as HTTP 500.
   `CatalogSchemaMismatchError` is an integrity failure in this category; its
   internal detail MUST NOT be exposed to the client. This includes a durable
