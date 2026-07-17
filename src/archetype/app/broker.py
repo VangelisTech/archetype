@@ -69,10 +69,10 @@ class CommandBroker:
         Enqueue a single command for a specific world.
         If ctx is provided, validates RBAC permissions and quotas.
         """
-        if ctx is not None:
-            guardrail_allow(cmd, ctx)
-
         async with self._lock:
+            if ctx is not None:
+                guardrail_allow(cmd, ctx)
+
             key = str(world_id)
             if key not in self._queues:
                 self._queues[key] = []
@@ -99,24 +99,18 @@ class CommandBroker:
         debits quota only once the entire bulk has passed validation. A
         partial RBAC or quota failure leaves the actor's counters untouched.
         """
-        if ctx is not None:
-            # Pure validation pass: stacks projected debits across the bulk
-            # without mutating global counters so a mid-bulk failure does
-            # not burn quota on commands that never get enqueued.
-            projected_tokens = 0
-            for i, cmd in enumerate(cmds):
-                projected_tokens += guardrail_check(
-                    cmd,
-                    ctx,
-                    projected_count=i,
-                    projected_tokens=projected_tokens,
-                )
-            # All commands allowed — commit the debit before acquiring the
-            # queue lock so subsequent guardrail_check calls observe the
-            # updated counters.
-            guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
-
         async with self._lock:
+            if ctx is not None:
+                projected_tokens = 0
+                for i, cmd in enumerate(cmds):
+                    projected_tokens += guardrail_check(
+                        cmd,
+                        ctx,
+                        projected_count=i,
+                        projected_tokens=projected_tokens,
+                    )
+                guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
+
             key = str(world_id)
             if key not in self._queues:
                 self._queues[key] = []
