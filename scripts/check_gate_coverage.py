@@ -153,15 +153,12 @@ def check_command_dispositions() -> list[str]:
 # a rationale and an issue; a stale entry (class gone or now mapped) fails
 # the audit so the manifest cannot rot.
 INTENTIONAL_UNMAPPED = {
-    "archetype.app._catalog.CatalogConflictError": "conflict mapping tracked in #413",
     "archetype.app._catalog.CatalogSchemaMismatchError": (
-        "integrity violation; 500 may be correct — decision tracked in #413"
+        "integrity violation intentionally surfaces as 500; decision recorded in #413"
     ),
-    "archetype.app._catalog.ClaimConflictError": "conflict mapping tracked in #413",
-    "archetype.app._catalog.ClaimPendingError": "conflict/pending mapping tracked in #413",
     "archetype.app.audit_log.AuditBackpressureError": (
         "observable backpressure per the durability posture; 503-shaped, "
-        "mapping decision tracked in #413"
+        "public mapping tracked in #419"
     ),
 }
 

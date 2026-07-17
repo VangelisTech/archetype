@@ -55,6 +55,7 @@ from typing import Protocol
 import pyarrow as pa
 
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
+from archetype.app.errors import ConflictError
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import require_safe_namespace, resolve_local_root
@@ -65,8 +66,10 @@ _SCHEMA_VERSION = 3
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
-class CatalogConflictError(RuntimeError):
+class CatalogConflictError(ConflictError):
     """Same identity registered with different content — never silently resolved."""
+
+    public_detail = "Catalog entry conflicts with existing state"
 
 
 class CatalogSchemaMismatchError(RuntimeError):
@@ -211,12 +214,16 @@ class ManifestRecord:
     created_at: str
 
 
-class ClaimConflictError(RuntimeError):
+class ClaimConflictError(ConflictError):
     """Same external id claimed/completed with a different payload digest."""
 
+    public_detail = "Claim conflicts with existing state"
 
-class ClaimPendingError(RuntimeError):
+
+class ClaimPendingError(ConflictError):
     """A live lease holds this claim; back off — never blind-retry."""
+
+    public_detail = "Claim is currently pending"
 
 
 @dataclass(frozen=True)
