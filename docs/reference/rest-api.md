@@ -625,7 +625,8 @@ DELETE /worlds/{world_id}
 
 Drop the in-memory world instance. Persisted storage and audit rows are retained.
 
-Requires operator or admin. Destroying an unknown world is a no-op.
+Requires operator or admin. Destroying an unknown world is a no-op; an
+unparsable world id is rejected as a client error.
 
 **Path parameters:**
 

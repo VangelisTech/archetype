@@ -5,6 +5,23 @@ recommended pattern is `ArchetypeRuntime` for scripts. A small number of
 examples intentionally call the service layer when they need lower-level
 storage or queue control.
 
+## 0. Quickstart
+
+The smallest complete simulation defines one component and one processor,
+then runs through the public runtime surface. It stays below 30 non-comment
+source lines and is part of the credential-free example smoke suite.
+
+```bash
+uv run python examples/00_quickstart.py
+```
+
+Source: [`examples/00_quickstart.py`](https://github.com/VangelisTech/archetype/blob/main/examples/00_quickstart.py)
+
+The script prints `3`: the initial state is persisted first, then the
+processor increments the counter on three subsequent ticks.
+
+---
+
 ## 1. World Mutations
 
 Demonstrates every mutation type: spawn entities with components, inject processors at runtime, RBAC permission checks, fork a world, and query the full command audit trail.

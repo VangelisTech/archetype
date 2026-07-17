@@ -8,6 +8,7 @@ uv run python examples/<filename>.py
 
 | # | Example | Description | Requires |
 |---|---------|-------------|----------|
+| 0 | [`00_quickstart.py`](00_quickstart.py) | Smallest complete component + processor + runtime simulation | None |
 | 1 | [`01_world_mutations.py`](01_world_mutations.py) | Every mutation type: spawn, despawn, add_processor, RBAC, fork, audit history | None |
 | 2 | [`02_fork_counterfactual.py`](02_fork_counterfactual.py) | Fork a world three times, run each branch, compare results | None |
 | 3 | [`03_time_travel.py`](03_time_travel.py) | Rewind to any past tick by filtering the `tick` column, then fork a counterfactual branch and diff it against the source | None |
