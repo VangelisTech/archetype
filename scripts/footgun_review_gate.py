@@ -456,19 +456,19 @@ def _markdown_code(value: str) -> str:
     return value.replace("`", "\\`")
 
 
-# GitHub caps comment bodies at 65536 characters; leave headroom for the
-# summary, context, and category sections that share the body.
-_INLINE_ARTIFACT_LIMIT = 45000
+_PUBLISHED_BODY_LIMIT = 60000
 
 
-def _artifact_section(result: Mapping[str, Any], run_url: str | None) -> list[str]:
-    payload = json.dumps(result, indent=2, ensure_ascii=False)
+def _artifact_section(
+    result: Mapping[str, Any], run_url: str | None, *, inline: bool
+) -> list[str]:
     lines = [
         "<details>",
         "<summary>Validated review artifact</summary>",
         "",
     ]
-    if len(payload) <= _INLINE_ARTIFACT_LIMIT:
+    if inline:
+        payload = json.dumps(result, indent=2, ensure_ascii=False)
         # Findings may quote code fences; the outer fence must be longer than
         # any backtick run inside the payload.
         longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
@@ -530,12 +530,28 @@ def render_evidence(result: Mapping[str, Any], digest: str, run_url: str | None 
             "",
             "</details>",
             "",
-            *_artifact_section(result, run_url),
-            "",
-            evidence_marker(head_sha, finding_count, digest),
         ]
     )
-    return "\n".join(lines)
+    marker = evidence_marker(head_sha, finding_count, digest)
+
+    def body_with_artifact(*, inline: bool) -> str:
+        return "\n".join(
+            [
+                *lines,
+                *_artifact_section(result, run_url, inline=inline),
+                "",
+                marker,
+            ]
+        )
+
+    rendered = body_with_artifact(inline=True)
+    if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
+        return rendered
+
+    rendered = body_with_artifact(inline=False)
+    if len(rendered.encode("utf-8")) > _PUBLISHED_BODY_LIMIT:
+        raise GateError("rendered review evidence exceeds the published body limit")
+    return rendered
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:

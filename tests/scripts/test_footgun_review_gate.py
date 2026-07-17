@@ -298,12 +298,17 @@ def test_inline_artifact_fence_outruns_backticks_in_findings():
     assert rendered.count("````") == 2
 
 
-def test_oversized_artifact_defers_to_the_workflow_run(monkeypatch):
-    monkeypatch.setattr(gate, "_INLINE_ARTIFACT_LIMIT", 10)
+def test_full_published_body_budget_defers_duplicated_artifact_to_workflow_run():
     normalized = validate_result(_result(), _scope(), DIFF)
+    normalized["summary"] = "s" * 20000
+    normalized["review_context"][0]["assessment"] = "c" * 20000
     digest = artifact_digest(normalized)
     rendered = render_evidence(normalized, digest, run_url="https://example.test/runs/7")
 
+    assert (
+        len(json.dumps(normalized, ensure_ascii=False).encode("utf-8")) < gate._PUBLISHED_BODY_LIMIT
+    )
+    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
     assert "exceeds the inline comment budget" in rendered
     assert "```json" not in rendered
     assert "[workflow run](https://example.test/runs/7)" in rendered
