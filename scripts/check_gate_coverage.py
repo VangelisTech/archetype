@@ -197,15 +197,19 @@ def _app_exception_classes() -> dict[str, type[Exception]]:
 
     import archetype.app as app_pkg
 
+    # walk_packages yields children only, never the anchor package itself —
+    # include archetype/app/__init__.py explicitly so an exception defined
+    # there cannot escape the scan.
+    module_names = ["archetype.app"]
+    module_names += [
+        module_info.name
+        for module_info in pkgutil.walk_packages(app_pkg.__path__, "archetype.app.")
+    ]
     classes: dict[str, type[Exception]] = {}
-    for module_info in pkgutil.walk_packages(app_pkg.__path__, "archetype.app."):
-        module = importlib.import_module(module_info.name)
+    for name in module_names:
+        module = importlib.import_module(name)
         for obj in vars(module).values():
-            if (
-                isinstance(obj, type)
-                and issubclass(obj, Exception)
-                and obj.__module__ == module_info.name
-            ):
+            if isinstance(obj, type) and issubclass(obj, Exception) and obj.__module__ == name:
                 classes[f"{obj.__module__}.{obj.__name__}"] = obj
     return classes
 
