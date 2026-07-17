@@ -150,7 +150,9 @@ apply on the following tick — the table contains `x_0, f(x_0), f^2(x_0), ...`.
 
 ## 4. Agent Messaging
 
-Three agents send greetings to each other via tick-deferred `MESSAGE` commands. Mood and energy update based on messages received.
+Three agents exchange greetings through an example-local shared `Mailbox`.
+Priority-ordered processors realize pending messages on the following tick,
+then update mood and energy from each inbox.
 
 ```bash
 uv run python examples/04_messaging.py
@@ -161,23 +163,31 @@ Source: [`examples/04_messaging.py`](https://github.com/VangelisTech/archetype/b
 **What it demonstrates:**
 
 - **Components**: `AgentState` (name, mood, energy), `Inbox`, `Outbox`
-- **Resources**: `SimConfig` for shared parameters, `CommandBroker` for message routing
-- **Processors**: `GreetingProcessor` (sends messages), `MessageRealizationProcessor` (drains broker into inboxes), `MoodProcessor` (updates mood based on inbox)
+- **Resources**: `SimConfig` for shared parameters, `Mailbox` for pending messages
+- **Processors**: `GreetingProcessor` (deposits messages), `MessageRealizationProcessor` (drains the mailbox into inboxes), `MoodProcessor` (updates mood based on inbox)
 - **Hooks**: `PreTick` and `PostTick` lifecycle callbacks
 
-Output:
+Selected output (earlier history rows omitted):
 
 ```text
-Archetype Messaging Demo: Resources + MESSAGE + Hooks
+Archetype Messaging Demo: Resources + Shared Mailbox + Hooks
 
--> Pre-tick 0: Starting processing...
-<- Post-tick 1: Completed!
-   Messages pending in broker: 6
+-> Pre-tick 1: Starting processing...
+<- Post-tick 2: Completed!
+   Messages delivered so far: 0
+   Messages pending in mailbox: 6
 
-Final State:
-  Alice:   mood=happy, energy=130.0, 2 messages received
-  Bob:     mood=happy, energy=130.0, 2 messages received
-  Charlie: mood=happy, energy=130.0, 2 messages received
+-> Pre-tick 2: Starting processing...
+<- Post-tick 3: Completed!
+   Messages delivered so far: 6
+   Messages pending in mailbox: 6
+
+Message counts:
+  Alice: 2 messages received
+  Bob: 2 messages received
+  Charlie: 2 messages received
+
+Total messages delivered: 6
 ```
 
 ---
