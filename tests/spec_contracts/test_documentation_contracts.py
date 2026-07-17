@@ -62,3 +62,12 @@ def test_curated_example_command_roles_follow_permissions() -> None:
         assert documented == expected, (
             f"{command.value}: documented {documented}, expected {expected}"
         )
+
+
+def test_current_robotics_guides_do_not_reference_extracted_libero_paths() -> None:
+    """Current guidance must point into robot-evals, not the removed bench tree."""
+    guides = (Path("LEARNINGS.md"), _GUIDE_ROOT / "autoresearch.md")
+
+    stale = [str(path) for path in guides if "bench/libero/" in path.read_text()]
+
+    assert not stale, f"current guides reference the extracted bench/libero tree: {stale}"

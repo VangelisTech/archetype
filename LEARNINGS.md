@@ -719,11 +719,12 @@ recipe before touching torch pins or arguing about a Modal split. Highlights
 (still true, recorded here because the lessons are archetype-shaped):
 
 - **LIBERO and the VLA-JEPA policy run in-process**, one Python 3.12
-  interpreter shared with Archetype. `bench/libero/image.py` builds both images
-  and owns the **RUN LEDGER** (what has actually executed, with dates — check
-  it before citing any number from this surface); `in_process.py` drives
-  `OffScreenRenderEnv` directly; `in_process_policy.py` runs the VLA in the
-  same container. **No Modal interpreter split** —
+  interpreter shared with Archetype. In robot-evals,
+  `src/robot_evals/image.py` builds both images and owns the **RUN LEDGER**
+  (what has actually executed, with dates — check it before citing any number
+  from this surface); `src/robot_evals/in_process.py` drives
+  `OffScreenRenderEnv` directly; `src/robot_evals/in_process_policy.py` runs
+  the VLA in the same container. **No Modal interpreter split** —
   `modal_worker.py`/`vla_jepa_worker.py` were deleted 2026-07-15 (git history).
 - **Two commands** (in robot-evals): `modal run src/robot_evals/image.py`
   (env-only smoke) and `...::colocated_eval_task` (policy-driven eval).
@@ -756,8 +757,8 @@ mean 65/255 — the step-7 PNG was EGL noise.
 
 **Rule: any renderer (MuJoCo/EGL, OpenGL, most GPU sims) driven from archetype
 processors must marshal ALL calls — creation, reset, step — onto one
-persistent thread.** Reference implementation:
-`bench/libero/in_process.py::_EnvThread` (a daemon worker thread;
+persistent thread.** Reference implementation (in `everettVT/robot-evals`):
+`src/robot_evals/in_process.py::_EnvThread` (a daemon worker thread;
 `ThreadPoolExecutor` holds container shutdown hostage). Verification: dump an
 actual mid-episode frame and look at it — file-write success and correct
 proprio prove nothing about pixels.
