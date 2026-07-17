@@ -16,31 +16,11 @@
 
 from __future__ import annotations
 
-import pathlib
-from urllib.parse import urlparse
-
 from daft.catalog import Catalog
 from daft.session import Session
 
+from archetype._storage_uri import local_storage_path
 from archetype.core.config import StorageConfig
-
-
-def _resolve_storage_uri(uri: str) -> tuple[str, bool]:
-    """Resolve local storage paths while preserving remote object-store URIs.
-
-    Returns (resolved_uri, is_remote).
-    """
-    scheme = urlparse(uri).scheme.lower()
-    is_remote = scheme not in ("", "file")
-
-    if is_remote:
-        return uri, True
-
-    base_path = pathlib.Path(uri)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
-    base_path.mkdir(parents=True, exist_ok=True)
-    return str(base_path), False
 
 
 def configure_session(
@@ -64,18 +44,18 @@ def configure_session(
     """
     from pyiceberg.catalog.sql import SqlCatalog
 
-    resolved_uri, is_remote = _resolve_storage_uri(str(config.uri))
-    if is_remote:
+    base_path = local_storage_path(str(config.uri))
+    if base_path is None:
         raise ValueError(
             "Archetype's built-in Iceberg factory supports local paths only; "
             "inject a preconfigured Daft Session through StorageService for "
             "remote or managed catalogs"
         )
 
+    base_path.mkdir(parents=True, exist_ok=True)
     session = session if session is not None else Session()
-    base_path = pathlib.Path(resolved_uri)
     sqlite_db_path = base_path / "catalog.db"
-    warehouse_uri = f"file://{base_path}"
+    warehouse_uri = base_path.as_uri()
 
     catalog = Catalog.from_iceberg(
         SqlCatalog(
