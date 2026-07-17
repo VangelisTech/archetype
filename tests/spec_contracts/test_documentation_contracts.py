@@ -16,6 +16,11 @@ _COMMAND_TOTAL_PATTERNS = (
     re.compile(r"\b(\d+)\s+command\s+types?\b", re.IGNORECASE),
     re.compile(r"\bcommand\s+types?\*{0,2}\s*\((\d+)\s+total\b", re.IGNORECASE),
 )
+_DESIGN_ONLY_MESSAGING_TYPES = (
+    "MessageDeliveryProcessor",
+    "DeliveryReceipt",
+    "ChatGraphRegistry",
+)
 
 
 def test_numeric_command_type_claims_match_the_enum() -> None:
@@ -73,17 +78,15 @@ def test_current_robotics_guides_do_not_reference_extracted_libero_paths() -> No
     assert not stale, f"current guides reference the extracted bench/libero tree: {stale}"
 
 
-def test_messaging_examples_are_labeled_as_application_defined() -> None:
-    """Design-sketch names must not read like exported framework contracts."""
-    guides = (Path("LEARNINGS.md"), _GUIDE_ROOT / "system-execution.md")
-    example_names = ("DeliveryReceipt", "MessageDeliveryProcessor", "ChatGraphRegistry")
+def test_docs_do_not_claim_design_only_messaging_types() -> None:
+    """Unimplemented design sketches must not read as framework contracts."""
+    paths = [Path("LEARNINGS.md"), *sorted(_GUIDE_ROOT.glob("*.md"))]
+    stale: list[str] = []
 
-    for path in guides:
+    for path in paths:
         text = path.read_text()
-        boundary_match = re.search(r"does not\s+export", text)
-        assert boundary_match is not None, f"{path} is missing the export boundary"
-        boundary = boundary_match.start()
-        first_example = min(text.find(name) for name in example_names if name in text)
-        assert boundary < first_example, (
-            f"{path} must label messaging examples before presenting their type names"
-        )
+        for type_name in _DESIGN_ONLY_MESSAGING_TYPES:
+            if type_name in text:
+                stale.append(f"{path}: presents design-only {type_name}")
+
+    assert not stale, "stale messaging infrastructure claims:\n" + "\n".join(stale)

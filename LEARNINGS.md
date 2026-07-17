@@ -456,56 +456,46 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 
 ---
 
-## Agent Communication: Processor-Driven Messaging Sketch (Mar 2026)
+## Agent Communication: Queueing vs Delivery (updated Jul 2026)
 
-This is an application-level design sketch, not implemented framework
-infrastructure. Archetype exposes brokered `MESSAGE` commands, but it does not
-export `Outbox`, `Inbox`, `DeliveryReceipt`, `MessageDeliveryProcessor`, or
-`ChatGraphRegistry`. Applications can define those types when they want
-mailboxes and conversation graphs represented in ECS state.
+Archetype provides messaging mechanisms, not a framework delivery policy:
 
-In this sketch, **the broker is governance only** — RBAC, quotas, and command
-queuing. The application-level processor owns message delivery and
-conversation structure.
+- `CommandType.MESSAGE` is an RBAC-visible command envelope.
+- `CommandBroker` can queue, order, and record recent in-memory enqueue history.
+- `Resources`, processors, and hooks are the primitives applications can
+  compose into routing and realization behavior.
 
-**Components:**
+The framework does not define a message payload schema, recipient validation,
+inbox/outbox components, delivery receipts, channels, or a conversation graph.
+The command-service drain also has no `MESSAGE` application branch, so
+submitting a message command is not equivalent to delivering it to an entity.
+A host that uses brokered message envelopes must supply the consumer and its
+delivery semantics.
 
-```python
-class Outbox(Component):
-    messages: list[str] = []  # JSON-encoded: {"receiver_id": int, "channel": str, "content": str}
-
-class Inbox(Component):
-    messages: list[str] = []  # JSON-encoded: {"sender_id": int, "channel": str, "content": str, "tick": int}
-```
-
-**Delivery pipeline:**
+[`examples/04_messaging.py`](examples/04_messaging.py) demonstrates one such
+policy entirely in application code:
 
 ```text
-Agent processor writes to Outbox (priority 10+)
-        ↓
-MessageDeliveryProcessor (priority -100, runs first next tick)
-  ├── reads Outbox via DataFrame
-  ├── validates: receiver exists? not self-messaging?
-  ├── routes to recipient Inbox via @daft.func
-  ├── updates ChatGraph Resource (if present)
-  └── rejected → sender's DeliveryReceipt
-        ↓
-Downstream processors read Inbox for LLM context
+MessageRealizationProcessor (priority -100)
+  └── drains the example-local Mailbox resource into Inbox components
+GreetingProcessor (priority 10)
+  └── deposits new greetings into Mailbox
+MoodProcessor (priority 20)
+  └── reads the realized Inbox state
 ```
 
-**Key insight:** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. This enforces causal ordering — no agent can read a message from the same tick it was sent.
+Because realization runs before greeting generation, work deposited during
+tick N remains pending until the realization pass in tick N+1. That causal
+delay is a property of this example's priorities and shared `Mailbox`; it is
+not an automatic guarantee of `CommandType.MESSAGE`. The example's `Mailbox`,
+`Inbox`, `Outbox`, and processors are local definitions, not exports from
+`archetype`.
 
-**ChatGraph** is a Resource (not entity data). It tracks conversation structure as a DAG per (world, channel):
-
-```python
-registry = resources.require(ChatGraphRegistry)
-graph = registry.channel(world_id, "strategy")
-context = graph.active_path()  # root → cursor, for LLM context windows
-```
-
-**Channels** are first-class routing keys. Each channel gets its own independent conversation graph. Default is `"general"`.
-
-**`append_history` toggle:** a command with `payload={"append_history": False}` (or equivalent) makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
+The mailbox is also mutable world-shared state. The demo keeps all agents in
+one archetype table. A composition that accesses the same mailbox from
+multiple table tasks must add synchronization or use another explicit
+deferred boundary; processor priority orders work within a table, not across
+concurrent table tasks.
 
 ---
 
@@ -540,8 +530,6 @@ Enable with `run_config.debug = True`:
 [archetype] {"event": "tick_start", "world_id": "...", "tick": 0}
 [archetype] processor_start: PhysicsProcessor (priority=10)
 [archetype] processor_end: PhysicsProcessor (rows_out=100)
-[broker] enqueue: world=demo, type=message, pending=6
-[broker] dequeue: world=demo, returned=6, types={'message': 6}
 ```
 
 ---
@@ -649,8 +637,8 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging design sketch** — applications may define Outbox/Inbox
-    components and a delivery processor
+10. **Messaging delivery is application composition** — the broker queues
+    `MESSAGE` envelopes; applications define payloads, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 
