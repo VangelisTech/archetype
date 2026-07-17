@@ -365,32 +365,46 @@ class AsyncWorld(iAsyncWorld):
         """
         Returns a row dict that is valid for the NEW archetype.
         Any field that is NOT in `mutated_components` is read from the
-        previous most-recent row in the OLD archetype.
+        entity's freshest pending row in the OLD archetype, falling back
+        to the previous most-recent persisted row.
         """
 
-        # 1) fetch *only* the single entity from old archetype's previous tick
-        df = await self.query_archetype(
-            sig=old_sig,
-            run_id=self.run_id,
-            ticks=[self.tick - 1],
-            entity_ids=[entity_id],
-            components=None,
-        )
+        # 1) a same-drain mutation may already have parked this entity's
+        # freshest row in spawn_cache; the store only has last tick's state.
+        # Consume the pending row so chained mutations compose (UPDATE then
+        # ADD_COMPONENT in one drain) and no ghost row is left under the old
+        # signature when the entity moves.
+        row_dict: dict[str, Any] | None = None
+        pending_rows = self.spawn_cache.get(old_sig, [])
+        for index in range(len(pending_rows) - 1, -1, -1):
+            if pending_rows[index].get("entity_id") == entity_id:
+                row_dict = dict(pending_rows.pop(index))
+                break
 
-        row_list = df.to_pylist()
-        if len(row_list) == 0:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}"
+        if row_dict is None:
+            # 2) fetch *only* the single entity from old archetype's previous tick
+            df = await self.query_archetype(
+                sig=old_sig,
+                run_id=self.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=[entity_id],
+                components=None,
             )
-            return {}
-        if len(row_list) > 1:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}"
-            )
-            return {}
 
-        # We should never have multiple entities with the same entity_id in the same tick.
-        row_dict = row_list[0]
+            row_list = df.to_pylist()
+            if len(row_list) == 0:
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}"
+                )
+                return {}
+            if len(row_list) > 1:
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}"
+                )
+                return {}
+
+            # We should never have multiple entities with the same entity_id in the same tick.
+            row_dict = row_list[0]
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)
         for c in mutated_components:

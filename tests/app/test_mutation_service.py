@@ -209,7 +209,7 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
             world.world_id,
             Command(
                 type=CommandType.REMOVE_COMPONENT,
-                payload={"entity_id": str(eid), "component_types": ["Velocity"]},
+                payload={"entity_id": str(eid), "component_types": [Velocity]},
             ),
         )
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
@@ -223,5 +223,80 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
         )
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
         assert eid not in world.entity2sig
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_brokered_update_is_applied(tmp_path):
+    """A submitted UPDATE command changes component state after step (#193).
+
+    UPDATE had no case in the drain dispatcher: submit() gated it, queued it,
+    emitted "queued" — and _apply dropped it at a warn-level log.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await container.command_service.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.UPDATE,
+                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        rows = (await world.get_components([Position])).collect().to_pylist()
+        row = next(r for r in rows if r["entity_id"] == eid)
+        assert row["position__x"] == 99.0
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path):
+    """#193: UPDATE then ADD_COMPONENT in one drain — the widened row composes.
+
+    _move_entity read the entity's row from tick-1 in the store, ignoring the
+    freshest same-drain row parked in spawn_cache, so the migration forked
+    from stale pre-update state.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cs = container.command_service
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.UPDATE,
+                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
+            ),
+        )
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={"entity_id": str(eid), "components": [Velocity(vx=5.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        rows = (await world.get_components([Position, Velocity])).collect().to_pylist()
+        row = next(r for r in rows if r["entity_id"] == eid)
+        assert row["velocity__vx"] == 5.0
+        assert row["position__x"] == 99.0, "widened row was built from stale pre-update state"
     finally:
         await container.shutdown()
