@@ -460,7 +460,11 @@ _PUBLISHED_BODY_LIMIT = 60000
 
 
 def _artifact_section(
-    result: Mapping[str, Any], run_url: str | None, *, inline: bool
+    result: Mapping[str, Any],
+    run_url: str | None,
+    artifact_name: str | None,
+    *,
+    inline: bool,
 ) -> list[str]:
     lines = [
         "<details>",
@@ -475,20 +479,35 @@ def _artifact_section(
         fence = "`" * max(3, longest_run + 1)
         lines.extend([f"{fence}json", payload, fence, ""])
     else:
+        if not run_url or not artifact_name:
+            raise GateError(
+                "oversized review evidence requires a named validated artifact"
+            )
         lines.extend(
             [
                 "The validated structured output exceeds the inline comment budget; "
-                "download it from the workflow run instead.",
+                "download the named validated artifact instead.",
                 "",
             ]
         )
-    if run_url:
-        lines.extend([f"Uploaded artifact: [workflow run]({run_url}) (1-day retention).", ""])
+    if run_url and artifact_name:
+        lines.extend(
+            [
+                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) "
+                "(1-day retention).",
+                "",
+            ]
+        )
     lines.append("</details>")
     return lines
 
 
-def render_evidence(result: Mapping[str, Any], digest: str, run_url: str | None = None) -> str:
+def render_evidence(
+    result: Mapping[str, Any],
+    digest: str,
+    run_url: str | None = None,
+    artifact_name: str | None = None,
+) -> str:
     findings = _expect_list(result.get("findings"), "findings")
     files = _expect_list(result.get("reviewed_files"), "reviewed_files")
     categories = _expect_list(result.get("reviewed_categories"), "reviewed_categories")
@@ -538,7 +557,7 @@ def render_evidence(result: Mapping[str, Any], digest: str, run_url: str | None 
         return "\n".join(
             [
                 *lines,
-                *_artifact_section(result, run_url, inline=inline),
+                *_artifact_section(result, run_url, artifact_name, inline=inline),
                 "",
                 marker,
             ]
@@ -572,7 +591,10 @@ def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
 
 
 def review_payload(
-    result: Mapping[str, Any], digest: str, run_url: str | None = None
+    result: Mapping[str, Any],
+    digest: str,
+    run_url: str | None = None,
+    artifact_name: str | None = None,
 ) -> dict[str, Any]:
     head_sha = str(result["head_sha"])
     findings = _expect_list(result.get("findings"), "findings")
@@ -581,7 +603,7 @@ def review_payload(
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
-        "body": render_evidence(result, digest, run_url),
+        "body": render_evidence(result, digest, run_url, artifact_name),
         "comments": [
             {
                 "path": finding["path"],
@@ -708,10 +730,14 @@ def _prepare_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.output_dir / "normalized.json", result)
     (args.output_dir / "evidence.md").write_text(
-        render_evidence(result, digest, args.run_url) + "\n", encoding="utf-8"
+        render_evidence(result, digest, args.run_url, args.artifact_name) + "\n",
+        encoding="utf-8",
     )
     if finding_count:
-        _write_json(args.output_dir / "review.json", review_payload(result, digest, args.run_url))
+        _write_json(
+            args.output_dir / "review.json",
+            review_payload(result, digest, args.run_url, args.artifact_name),
+        )
 
     _append_github_outputs(
         args.github_output,
@@ -772,6 +798,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--result", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--github-output", type=Path, required=True)
+    prepare.add_argument("--artifact-name", default=None)
     prepare.add_argument("--run-url", default=None)
     prepare.set_defaults(handler=_prepare_command)
 
