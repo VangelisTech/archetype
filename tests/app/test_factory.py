@@ -33,6 +33,22 @@ def test_resolve_remote_uri_passes_through():
     assert _resolve_uri("s3://bucket/prefix") == "s3://bucket/prefix"
 
 
+@pytest.mark.asyncio
+async def test_equivalent_file_uri_shares_store_and_catalog(tmp_path):
+    service = StorageService()
+    target = tmp_path / "file store"
+    path_config = StorageConfig(uri=str(target), namespace="ns")
+    uri_config = StorageConfig(uri=target.as_uri(), namespace="ns")
+    try:
+        path_store = await service.get_or_create_store(path_config)
+        uri_store = await service.get_or_create_store(uri_config)
+
+        assert uri_store is path_store
+        assert service.get_control_catalog(uri_config) is service.get_control_catalog(path_config)
+    finally:
+        await service.shutdown()
+
+
 class TestWorldFactory:
     @pytest.mark.asyncio
     async def test_creates_async_world(self, tmp_path):

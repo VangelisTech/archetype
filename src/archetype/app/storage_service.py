@@ -24,12 +24,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import pathlib
-import re
-from urllib.parse import unquote, urlparse
 
 from daft.session import Session
 
+from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.app._catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
 from archetype.app.iceberg import IcebergCatalogContext
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
@@ -53,24 +51,9 @@ def _validate_session_namespace(session: Session, config: StorageConfig) -> None
 
 def _resolve_uri(uri: str) -> str:
     """Resolve local storage paths to absolute. Remote URIs pass through."""
-    parsed = urlparse(uri)
-    scheme = parsed.scheme.lower()
-    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", uri))
-    if scheme not in ("", "file") and not windows_drive:
+    base_path = local_storage_path(uri)
+    if base_path is None:
         return uri
-
-    if scheme == "file":
-        path = unquote(parsed.path)
-        if parsed.netloc and parsed.netloc != "localhost":
-            path = f"//{parsed.netloc}{path}"
-        if os.name == "nt" and re.match(r"^/[A-Za-z]:[\\/]", path):
-            path = path[1:]
-    else:
-        path = uri
-
-    base_path = pathlib.Path(path)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
     base_path.mkdir(parents=True, exist_ok=True)
     return str(base_path)
 
@@ -143,7 +126,10 @@ class StorageService:
         if storage_config.backend != StorageBackend.ICEBERG:
             raise ValueError("an injected Daft Session requires backend=iceberg")
         _validate_session_namespace(self._session, storage_config)
-        requested = (str(storage_config.uri), storage_config.namespace)
+        requested = (
+            normalized_storage_uri(str(storage_config.uri)),
+            storage_config.namespace,
+        )
         bound = self._session_identity
         required = self._required_session_identity
         if bound is not None and requested != bound:
@@ -227,7 +213,7 @@ class StorageService:
         )
 
         return (
-            f"{storage_config.uri}"
+            f"{normalized_storage_uri(str(storage_config.uri))}"
             f"::{storage_config.namespace}"
             f"::backend={storage_config.backend.value}"
             f"::io_config({io_config_part})"
@@ -271,7 +257,10 @@ class StorageService:
         """Create successfully before committing an injected session binding."""
         assert self._session is not None
         _validate_session_namespace(self._session, storage_config)
-        requested = (str(storage_config.uri), storage_config.namespace)
+        requested = (
+            normalized_storage_uri(str(storage_config.uri)),
+            storage_config.namespace,
+        )
         if (
             self._required_session_identity is not None
             and requested != self._required_session_identity
