@@ -156,6 +156,9 @@ exclude-newer = "2026-06-12T00:00:00Z"
 # admitted explicitly (Everett, 2026-07-14) for the 0.2.0 release.
 [tool.uv.exclude-newer-package]
 daft = "2026-07-11T00:00:00Z"
+# starlette 1.3.1 released 2026-06-12, 9h past the freeze; admitted for the
+# CVE-2026-54283 fix — dependabot alert #95 (security bumps, 2026-07-16).
+starlette = "2026-06-13T00:00:00Z"
 
 [tool.ruff]
 target-version = "py312"
