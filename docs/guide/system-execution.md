@@ -28,16 +28,18 @@ When you spawn an entity, its component types determine which **archetype** it b
 `Archetype.sig_from_components()` sorts component types alphabetically by class name to produce a canonical **signature** — a tuple of types:
 
 ```python
-# Entity spawned with [Outbox(), Inbox()]
-sig = Archetype.sig_from_components([Outbox(), Inbox()])
-# => (Inbox, Outbox)  — sorted alphabetically
+# Entity spawned with [Velocity(), Position()]
+sig = Archetype.sig_from_components([Velocity(), Position()])
+# => (Position, Velocity)  — sorted alphabetically
 
-# Entity spawned with [Outbox(), Inbox(), DeliveryReceipt()]
-sig = Archetype.sig_from_components([Outbox(), Inbox(), DeliveryReceipt()])
-# => (DeliveryReceipt, Inbox, Outbox)  — DIFFERENT signature
+# Entity spawned with [Velocity(), Position(), Health()]
+sig = Archetype.sig_from_components([Velocity(), Position(), Health()])
+# => (Health, Position, Velocity)  — DIFFERENT signature
 ```
 
-Sorting ensures that `[Inbox(), Outbox()]` and `[Outbox(), Inbox()]` produce the same signature. Order of construction doesn't matter — only the set of types.
+Sorting ensures that `[Position(), Velocity()]` and `[Velocity(), Position()]`
+produce the same signature. Order of construction doesn't matter — only the
+set of types.
 
 ### Step 2: Schema Construction
 
@@ -49,20 +51,20 @@ BASE_SCHEMA:
   tick (int32), is_active (bool), commit_token (string),
   writer_epoch (int64)
 
-+ Inbox.get_prefixed_schema():
-  inbox__messages (list<string>)
++ Position.get_prefixed_schema():
+  position__x (double), position__y (double)
 
-+ Outbox.get_prefixed_schema():
-  outbox__messages (list<string>)
++ Velocity.get_prefixed_schema():
+  velocity__dx (double), velocity__dy (double)
 
 = Full archetype schema
 ```
 
 Each component class generates its prefix via `Component.get_prefix()`:
 
-- `Inbox` becomes `inbox__`
-- `Outbox` becomes `outbox__`
-- `DeliveryReceipt` becomes `deliveryreceipt__`
+- `Position` becomes `position__`
+- `Velocity` becomes `velocity__`
+- `Health` becomes `health__`
 
 ### Step 3: Archetype Naming
 
@@ -123,10 +125,10 @@ PhysicsProcessor(components=(Position, Velocity))
     runs on (Accel, Position, Velocity)               # superset matches
     skipped for (Position,)                           # missing Velocity
 
-MessageDeliveryProcessor(components=(DeliveryReceipt, Inbox, Outbox))
-    runs on (DeliveryReceipt, Inbox, Outbox)          # exact match
-    runs on (Agent, DeliveryReceipt, Inbox, Outbox)   # superset matches
-    skipped for (Inbox, Outbox)                       # missing DeliveryReceipt
+HealthProcessor(components=(Health,))
+    runs on (Health,)                                 # exact match
+    runs on (Health, Position, Velocity)              # superset matches
+    skipped for (Position, Velocity)                  # missing Health
 
 ObserverProcessor(components=())
     runs on EVERY archetype                           # empty set is subset of all
@@ -175,13 +177,17 @@ Typical priority ranges:
 
 | Range | Use |
 |-------|-----|
-| -100 to -1 | Infrastructure (message delivery, command draining) |
+| -100 to -1 | Application-defined staging or input realization |
 | 1 to 9 | Input gathering, sensor reads |
 | 10 to 49 | Core logic (agent thinking, physics) |
 | 50 to 99 | Output, side effects |
 | 100+ | Cleanup, metrics, bookkeeping |
 
-Example: `MessageDeliveryProcessor` at priority -100 populates inboxes before agent processors at priority 10+ read them. This ensures messages sent in tick N are available in tick N+1.
+For a concrete composition, `examples/04_messaging.py` defines an
+example-local `MessageRealizationProcessor` at priority -100. It drains that
+example's shared `Mailbox` before `GreetingProcessor` at priority 10 deposits
+new work. The resulting one-tick delay belongs to that processor/resource
+composition; `CommandType.MESSAGE` does not install a delivery pipeline.
 
 ## SyncSystem vs AsyncSystem
 
@@ -275,7 +281,11 @@ sharing boundary created by world forks.
 
 **Unnecessary defensive checks.** If your processor runs, the columns exist. Don't add `if "col" in df.columns` guards — they're dead code by construction.
 
-**Not understanding tick boundaries.** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. Spawned entities appear next tick. These are features, not bugs — they ensure causal ordering.
+**Assuming every deferred behavior is built in.** Spawned entities materialize
+at the next tick boundary. Message delivery does not: `CommandType.MESSAGE`
+is a queueable command envelope, not a recipient schema or delivery policy.
+Applications that need inboxes, routing, or a one-tick communication delay
+must compose those semantics explicitly, as `examples/04_messaging.py` does.
 
 **Forgetting that `components=()` matches everything.** An observer processor with an empty components tuple will run on every archetype table. This is useful for metrics but can be surprising if unintentional.
 
@@ -299,3 +309,4 @@ order.
 | `src/archetype/core/aio/async_system.py` | Async subset matching and keyword filtering |
 | `src/archetype/core/aio/async_world.py` | Signature interning and two-phase per-table scheduling |
 | `src/archetype/core/resources.py` | Mutable world-shared resource container |
+| `examples/04_messaging.py` | Application-local mailbox and message-realization composition |
