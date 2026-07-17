@@ -73,7 +73,7 @@ class CatalogConflictError(ConflictError):
 
 
 class CatalogSchemaMismatchError(RuntimeError):
-    """A stored signature descriptor disagrees with the physical table schema."""
+    """Durable catalog schema is incompatible with this build or physical data."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -368,7 +368,8 @@ class SqliteControlCatalog:
             conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[0]
         )
         if version > _SCHEMA_VERSION:
-            raise CatalogConflictError(
+            conn.close()
+            raise CatalogSchemaMismatchError(
                 f"catalog {self.path} has schema_version={version}, "
                 f"this build expects {_SCHEMA_VERSION}"
             )
