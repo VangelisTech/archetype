@@ -15,9 +15,21 @@
 """Service-layer error types.
 
 Auth-specific errors live in ``archetype.app.auth.errors``. This module holds
-the cross-service exception types that ``CommandService`` (and any future
-gated surface) raise as part of their public contract.
+cross-service exception contracts that gates and transport adapters may depend
+on without importing concrete service implementations.
 """
+
+
+class ConflictError(RuntimeError):
+    """A requested operation conflicts with existing service state.
+
+    Concrete services subclass this public contract so transport adapters can
+    map conflicts without depending on private implementation modules. The
+    internal exception message may contain diagnostic context; adapters expose
+    only ``public_detail``.
+    """
+
+    public_detail = "Request conflicts with existing state"
 
 
 class WorldNotFoundError(LookupError):
