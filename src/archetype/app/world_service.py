@@ -430,9 +430,10 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         # Same authoritative-identity contract as create_world: a fork the
-        # catalog cannot describe must not survive as a live world.
-        catalog = self._storage_service.get_control_catalog(storage_config)
+        # catalog cannot describe must not survive as a live world. Catalog
+        # acquisition sits inside the unwind for the same reason (issue #327).
         try:
+            catalog = self._storage_service.get_control_catalog(storage_config)
             await catalog.register_world(
                 WorldRecord(
                     world_id=str(fork.world_id),

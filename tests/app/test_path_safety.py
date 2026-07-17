@@ -196,6 +196,33 @@ class TestCreateWorldUnwind:
         finally:
             await ws.shutdown()
 
+    @pytest.mark.asyncio
+    async def test_catalog_failure_unwinds_fork_registry(self, tmp_path, monkeypatch):
+        """fork_world shares create_world's unwind contract: a raise from
+        catalog acquisition must not leave the fork live in the registry."""
+        from archetype.core.config import WorldConfig
+        from tests.conftest import make_world_service
+
+        ws = make_world_service()
+        try:
+            config = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            source = await ws.create_world(WorldConfig(name="source"), config)
+
+            def boom(storage_config):
+                raise ValueError("catalog path rejected")
+
+            monkeypatch.setattr(ws._storage_service, "get_control_catalog", boom)
+
+            with pytest.raises(ValueError, match="catalog path rejected"):
+                await ws.fork_world(source.world_id)
+
+            live = {str(w.world_id) for w in ws.list_worlds()}
+            assert live == {str(source.world_id)}, (
+                "failed fork left a live, mutable world in the registry"
+            )
+        finally:
+            await ws.shutdown()
+
 
 class TestApiSurface:
     def test_create_world_with_traversal_namespace_is_client_error(self, tmp_path):
