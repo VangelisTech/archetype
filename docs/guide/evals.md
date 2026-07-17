@@ -86,10 +86,11 @@ Code-based graders live in `evals/graders.py`:
 - `crap_score` combines cyclomatic complexity and coverage for code-quality
   evaluation.
 
-**Current gap (#410):** an empty grader list receives a zero score but can
-still pass through Python's vacuous `all([])` behavior. Until the harness fails
-closed, every task must return at least one meaningful `GraderResult`; a task
-that observes nothing is not an oracle.
+Every trial must produce at least one meaningful `GraderResult`; a task that
+observes nothing is not an oracle. An empty result list fails the trial with a
+`TrialResult.error`, and `state_check` rejects an empty check mapping. A
+required-suite run therefore exits nonzero instead of accepting Python's
+vacuous `all([])` result or a grader that wraps equally vacuous state evidence.
 
 ## Registered task manifest
 
