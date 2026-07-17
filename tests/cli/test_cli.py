@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from click import unstyle
 from click.exceptions import Exit as ClickExit
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -95,12 +96,13 @@ class TestCLI:
         assert result.exit_code == 0
 
     def test_query_help_exposes_lazy_terminals(self):
-        result = runner.invoke(app, ["query", "--help"])
+        result = runner.invoke(app, ["query", "--help"], color=True)
         assert result.exit_code == 0, result.output
-        assert "COMPONENT_TYPES" in result.output
-        assert "--show" in result.output
-        assert "--count" in result.output
-        assert "--where" in result.output
+        output = unstyle(result.output)
+        assert "COMPONENT_TYPES" in output
+        assert "--show" in output
+        assert "--count" in output
+        assert "--where" in output
 
     def test_query_forwards_positional_components_and_options(self, monkeypatch):
         captured = {}
