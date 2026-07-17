@@ -32,8 +32,9 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
-from archetype.app._catalog import SignatureRecord, WorldRecord, schema_fingerprint
+from archetype.app._catalog import SignatureRecord, WorldRecord
 from archetype.app._commit import CatalogCommitCoordinator
+from archetype.app._signature_resolution import resolve_signature_records
 from archetype.app.models import WorldInfo
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import (
@@ -42,8 +43,6 @@ from archetype.core.aio import (
     AsyncUpdateManager,
     AsyncWorld,
 )
-from archetype.core.archetype import Archetype
-from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem
@@ -54,26 +53,6 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
-
-
-def _component_classes_by_name() -> dict[str, list[type[Component]]]:
-    """All importable Component subclasses, keyed by class name.
-
-    Distinct classes may share a name across modules (test doubles, forks of
-    an old component). Resume disambiguates by schema fingerprint — identity
-    is the schema, never the name alone.
-    """
-    classes: dict[str, list[type[Component]]] = {}
-    stack: list[type[Component]] = list(Component.__subclasses__())
-    seen: set[type[Component]] = set()
-    while stack:
-        cls = stack.pop()
-        if cls in seen:
-            continue
-        seen.add(cls)
-        stack.extend(cls.__subclasses__())
-        classes.setdefault(cls.__name__, []).append(cls)
-    return classes
 
 
 @dataclass(frozen=True)
@@ -759,50 +738,7 @@ class WorldService:
         the rows were written is refused rather than silently misread.
         Fails loudly, naming every table it cannot faithfully resolve.
         """
-        from itertools import product
-
-        available = _component_classes_by_name()
-        resolved: dict[str, tuple] = {}
-        problems: dict[str, str] = {}
-        for rec in directory.values():
-            if rec.table_id in resolved or rec.table_id in problems:
-                continue
-            missing = sorted(n for n in rec.component_names if not available.get(n))
-            if missing:
-                problems[rec.table_id] = (
-                    f"component class(es) {', '.join(missing)} are not imported"
-                )
-                continue
-            matches: list[tuple] = []
-            candidates = (
-                sorted(available[n], key=lambda t: (t.__module__, t.__qualname__))
-                for n in rec.component_names
-            )
-            for combo in product(*candidates):
-                sig = tuple(sorted(set(combo), key=lambda t: t.__name__))
-                try:
-                    fingerprint = schema_fingerprint(Archetype.get_archetype_schema(sig))
-                except Exception:
-                    continue
-                if fingerprint == rec.fingerprint and sig not in matches:
-                    matches.append(sig)
-            if matches:
-                # Multiple matches are interchangeable BY CONSTRUCTION: the
-                # fingerprint covers every column name and type, so any
-                # matching combination reads and writes this table
-                # faithfully. Candidate order makes the pick deterministic.
-                resolved[rec.table_id] = matches[0]
-            else:
-                problems[rec.table_id] = (
-                    "no imported class combination matches the stored schema "
-                    "(the definitions may have drifted since the rows were written)"
-                )
-        if problems:
-            detail = "; ".join(f"table {tid}: {msg}" for tid, msg in sorted(problems.items()))
-            raise RuntimeError(
-                f"cannot resume: {detail} (code is not rows — import the exact component "
-                "definitions before resuming)"
-            )
+        resolved = resolve_signature_records(directory.values(), operation="resume")
         entity2sig = {eid: resolved[rec.table_id] for eid, rec in directory.items()}
         return entity2sig, set(resolved)
 

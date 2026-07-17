@@ -510,8 +510,14 @@ CURRENT GAPS:
 - Coordinated reads MUST restrict results to catalog-published commit tokens.
 - Fork-aware reads MUST compose persisted lineage segments with the fork's own
   rows without requiring a live source world.
-- `get_lineage()` reads persisted ancestry, and `list_signatures()` reads the
-  selected store's registered archetypes.
+- `get_lineage()` reads persisted ancestry. `list_signatures()` combines the
+  selected store's process-local registry with its durable control-catalog
+  records, resolving imported component classes by schema fingerprint and
+  exact durable table identity. Unresolvable historical records emit a warning
+  and are skipped so unrelated schema drift cannot disable storage-wide
+  discovery. Exact process-local class identities take precedence over catalog
+  reconstruction. Catalog outages degrade discovery to the process-local
+  subset; mutable resume and commit-visibility checks remain strict.
 - Audit history is served by `iAuditLog` through `iCommandService`.
   `QueryService.get_command_history()` remains a compatibility read over queued
   audit rows, not an in-memory broker-history contract.

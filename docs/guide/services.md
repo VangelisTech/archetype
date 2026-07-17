@@ -109,6 +109,7 @@ See [Execution Hierarchy](execution-hierarchy.md).
 External reads go through `iCommandService`:
 
 - `query_archetype`
+- `query_components`
 - `list_signatures`
 - `get_world_info`
 - `get_audit_history`
