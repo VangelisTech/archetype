@@ -17,7 +17,13 @@ pytest.importorskip("httpx", reason="httpx required for API tests")
 
 from fastapi.testclient import TestClient
 
+from archetype import Component
+
 ROLES = ("admin", "operator", "player", "viewer")
+
+
+class QueryRouteMetric104(Component):
+    value: float = 0.0
 
 
 @pytest.fixture(autouse=True)
@@ -360,6 +366,121 @@ class TestSimulationRoutes:
 
 
 class TestQueryRoutes:
+    @staticmethod
+    def _create_metric_world(client, tmp_path) -> str:
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "query-options", "storage_uri": str(tmp_path / "store")},
+        )
+        assert create_resp.status_code == 201, create_resp.text
+        world_id = create_resp.json()["world_id"]
+
+        for value in range(5):
+            spawn = client.post(
+                f"/worlds/{world_id}/entities",
+                json={"components": [QueryRouteMetric104(value=value).to_payload()]},
+            )
+            assert spawn.status_code == 201, spawn.text
+
+        step = client.post(f"/worlds/{world_id}/step", json={})
+        assert step.status_code == 200, step.text
+        return world_id
+
+    def test_component_query_filters_before_show(self, client, tmp_path):
+        world_id = self._create_metric_world(client, tmp_path)
+        response = client.get(
+            f"/worlds/{world_id}/components",
+            params={
+                "types": "QueryRouteMetric104",
+                "where": "queryroutemetric104__value >= 2",
+                "show": 2,
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        rows = response.json()
+        assert len(rows) == 2
+        assert all(row["queryroutemetric104__value"] >= 2 for row in rows)
+
+    def test_component_query_count_is_a_distinct_terminal(self, client, tmp_path, monkeypatch):
+        world_id = self._create_metric_world(client, tmp_path)
+
+        def forbid_row_materialization(_frame):
+            pytest.fail("count queries must not serialize rows")
+
+        monkeypatch.setattr(
+            "archetype.api.routes.query.dataframe_to_rows",
+            forbid_row_materialization,
+        )
+        response = client.get(
+            f"/worlds/{world_id}/components",
+            params={
+                "types": "QueryRouteMetric104",
+                "where": "queryroutemetric104__value > 1",
+                "count": True,
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"count": 3}
+
+    def test_component_query_tick_selects_a_historical_snapshot(self, client, tmp_path):
+        world_id = self._create_metric_world(client, tmp_path)
+        spawn = client.post(
+            f"/worlds/{world_id}/entities",
+            json={"components": [QueryRouteMetric104(value=5).to_payload()]},
+        )
+        assert spawn.status_code == 201, spawn.text
+        step = client.post(f"/worlds/{world_id}/step", json={})
+        assert step.status_code == 200, step.text
+
+        counts = []
+        for tick in (0, 1):
+            response = client.get(
+                f"/worlds/{world_id}/components",
+                params={"types": "QueryRouteMetric104", "tick": tick, "count": True},
+            )
+            assert response.status_code == 200, response.text
+            counts.append(response.json()["count"])
+
+        assert counts == [5, 6]
+
+    @pytest.mark.parametrize(
+        ("params", "detail"),
+        (
+            (
+                {"types": "QueryRouteMetric104", "where": "value > 1 and value < 4"},
+                "Invalid where expression",
+            ),
+            (
+                {"types": "QueryRouteMetric104", "where": "missing__value > 1"},
+                "Unknown query column",
+            ),
+            (
+                {"types": "QueryRouteMetric104", "count": True, "show": 2},
+                "mutually exclusive",
+            ),
+            (
+                {"count": True},
+                "require at least one component type",
+            ),
+            (
+                {"show": 2},
+                "require at least one component type",
+            ),
+            (
+                {"where": "entity_id > 0"},
+                "require at least one component type",
+            ),
+        ),
+    )
+    def test_component_query_rejects_invalid_options(self, client, tmp_path, params, detail):
+        world_id = self._create_metric_world(client, tmp_path)
+        response = client.get(f"/worlds/{world_id}/components", params=params)
+
+        assert response.status_code == 400, response.text
+        assert detail in response.json()["detail"]
+
     def test_history_accepts_tick_range(self, client, tmp_path):
         create_resp = client.post(
             "/worlds",

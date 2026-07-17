@@ -133,7 +133,7 @@ class TriageProcessor(AsyncProcessor):
     async def process(self, df: DataFrame, **kwargs) -> DataFrame:
         @daft.func
         def decide(state: str, staleness: float, risk: str) -> str:
-            if state == "MERGED":
+            if state in ("CLOSED", "MERGED"):
                 return "done"
             if staleness > 0.7:
                 return "close"

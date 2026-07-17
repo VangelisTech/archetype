@@ -16,11 +16,13 @@
 
 from typing import Any
 
+from daft import DataFrame
 from fastapi import APIRouter, Depends, Query
 
 from archetype.api.deps import get_actor_ctx, get_command_service
 from archetype.api.errors import raise_api_error
-from archetype.api.models import dataframe_to_rows, hydrate_component_types
+from archetype.api.models import QueryCountResponse, dataframe_to_rows, hydrate_component_types
+from archetype.api.query_filter import parse_where
 from archetype.app.auth.models import ActorCtx
 from archetype.app.command_service import CommandService
 from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
@@ -85,6 +87,29 @@ async def _query_ids(cs: CommandService, ctx: ActorCtx, world_id: str) -> tuple[
     return str(info.world_id), str(info.run_id or "")
 
 
+async def _query_components_frame(
+    cs: CommandService,
+    ctx: ActorCtx,
+    world_id: str,
+    *,
+    component_names: list[str],
+    tick: int | None = None,
+    entity_ids: list[int] | None = None,
+) -> DataFrame | None:
+    if not component_names:
+        return None
+    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
+    component_types = hydrate_component_types(component_names)
+    return await cs.query_components(
+        ctx,
+        component_types,
+        query_world_id,
+        run_id,
+        ticks=[tick] if tick is not None else None,
+        entity_ids=entity_ids,
+    )
+
+
 async def _query_components(
     cs: CommandService,
     ctx: ActorCtx,
@@ -93,20 +118,16 @@ async def _query_components(
     component_names: list[str],
     tick: int | None = None,
     entity_ids: list[int] | None = None,
-):
-    if not component_names:
-        return []
-    query_world_id, run_id = await _query_ids(cs, ctx, world_id)
-    component_types = hydrate_component_types(component_names)
-    df = await cs.query_components(
+) -> list[dict[str, Any]]:
+    frame = await _query_components_frame(
+        cs,
         ctx,
-        component_types,
-        query_world_id,
-        run_id,
-        ticks=[tick] if tick is not None else None,
+        world_id,
+        component_names=component_names,
+        tick=tick,
         entity_ids=entity_ids,
     )
-    return dataframe_to_rows(df)
+    return [] if frame is None else dataframe_to_rows(frame)
 
 
 @router.get("/worlds/{world_id}/state", response_model=list[dict[str, Any]])
@@ -164,25 +185,65 @@ async def get_entity(
         raise_api_error(exc)
 
 
-@router.get("/worlds/{world_id}/components", response_model=list[dict[str, Any]])
+@router.get(
+    "/worlds/{world_id}/components",
+    response_model=list[dict[str, Any]] | QueryCountResponse,
+)
 async def get_components(
     world_id: str,
     types: str = Query("", description="Comma-separated component type names"),
     tick: int | None = None,
     entity_ids: str | None = None,
+    show: int | None = Query(
+        None,
+        ge=1,
+        description="Maximum matching rows to return; requires types",
+    ),
+    count: bool = Query(
+        False,
+        description="Return the matching row count instead of rows; requires types",
+    ),
+    where: str | None = Query(
+        None,
+        description="One column comparison, for example score__value > 0.5; requires types",
+    ),
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read entities containing component types. Requires viewer, player, operator, or admin."""
     try:
-        return await _query_components(
+        if count and show is not None:
+            raise ValueError("count and show are mutually exclusive terminal operations")
+
+        component_names = _split_csv(types)
+        if not component_names and (show is not None or count or where):
+            raise ValueError("show, count, and where require at least one component type")
+
+        frame = await _query_components_frame(
             cs,
             ctx,
             world_id,
-            component_names=_split_csv(types),
+            component_names=component_names,
             tick=tick,
             entity_ids=_entity_ids(entity_ids),
         )
+        if frame is None:
+            return []
+
+        if where:
+            parsed = parse_where(where)
+            if parsed.column not in frame.column_names:
+                raise ValueError(
+                    f"Unknown query column {parsed.column!r}; available columns: "
+                    + ", ".join(frame.column_names)
+                )
+            frame = frame.where(parsed.expression)
+
+        if count:
+            return QueryCountResponse(count=frame.count_rows())
+        if show is not None:
+            frame = frame.limit(show)
+        return dataframe_to_rows(frame)
     except Exception as exc:
         raise_api_error(exc)
 
