@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from urllib.parse import urlparse
 
 from daft.session import Session
@@ -79,9 +80,18 @@ def create_async_store(
     catalog, namespace, and credentials and passes through unchanged.
     """
     store: iAsyncStore
+    # Unconditional: the injected-session Iceberg branch must reject an unsafe
+    # namespace here too, before any world can bind to the store — the catalog
+    # path derived from the same config validates it either way (issue #327).
+    namespace = require_safe_namespace(config.namespace)
     if config.backend == StorageBackend.LANCEDB:
         uri = _resolve_uri(str(config.uri))
-        store = AsyncLancedbStore(uri, require_safe_namespace(config.namespace))
+        if urlparse(str(config.uri)).scheme.lower() in ("", "file"):
+            # A pre-planted symlink at <uri>/<namespace> could redirect writes
+            # outside ARCHETYPE_DATA_ROOT even with a safe segment name;
+            # resolve the namespace directory under the same containment rule.
+            resolve_local_root(str(Path(uri) / namespace))
+        store = AsyncLancedbStore(uri, namespace)
     else:
         from archetype.runtime.session import configure_session
 

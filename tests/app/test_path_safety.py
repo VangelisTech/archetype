@@ -116,6 +116,68 @@ class TestStoreConstructionGuards:
         resolved, is_remote = _resolve_storage_uri("s3://bucket/prefix")
         assert is_remote and resolved == "s3://bucket/prefix"
 
+    def test_injected_session_branch_rejects_traversal_namespace(self, tmp_path):
+        """Footgun-review finding: the injected-session Iceberg branch skipped
+        every namespace check, deferring the raise past world registration."""
+        from unittest.mock import Mock
+
+        config = StorageConfig(
+            uri=str(tmp_path / "store"),
+            namespace="../../evil",
+            backend=StorageBackend.ICEBERG,
+        )
+        session = Mock()
+        with pytest.raises(ValueError, match="namespace"):
+            create_async_store(config, session=session)
+        session.current_namespace.assert_not_called()
+
+    def test_lance_namespace_symlink_escape_rejected(self, tmp_path, monkeypatch):
+        """A pre-planted symlink at <uri>/<namespace> must not redirect writes
+        outside ARCHETYPE_DATA_ROOT (Codex P2 on PR #379)."""
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        store_dir = root / "store"
+        store_dir.mkdir(parents=True)
+        outside.mkdir()
+        (store_dir / "ns").symlink_to(outside)
+        monkeypatch.setenv("ARCHETYPE_DATA_ROOT", str(root))
+
+        config = StorageConfig(uri=str(store_dir), namespace="ns", backend=StorageBackend.LANCEDB)
+        with pytest.raises(ValueError, match="escapes ARCHETYPE_DATA_ROOT"):
+            create_async_store(config)
+
+        # Without the symlink the same config constructs fine.
+        (store_dir / "ns").unlink()
+        assert create_async_store(config) is not None
+
+
+class TestCreateWorldUnwind:
+    @pytest.mark.asyncio
+    async def test_catalog_failure_unwinds_registry(self, tmp_path, monkeypatch):
+        """Footgun-review finding on PR #379: a raise from control-catalog
+        acquisition (path/namespace resolution) after the orchestrator inserted
+        the world must unwind the registry — no live orphan world."""
+        from archetype.core.config import WorldConfig
+        from tests.conftest import make_world_service
+
+        ws = make_world_service()
+        try:
+
+            def boom(storage_config):
+                raise ValueError("catalog path rejected")
+
+            monkeypatch.setattr(ws._storage_service, "get_control_catalog", boom)
+            config = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+
+            with pytest.raises(ValueError, match="catalog path rejected"):
+                await ws.create_world(WorldConfig(name="orphan"), config)
+
+            assert ws.list_worlds() == [], (
+                "failed create left a live, mutable world in the registry"
+            )
+        finally:
+            await ws.shutdown()
+
 
 class TestApiSurface:
     def test_create_world_with_traversal_namespace_is_client_error(self, tmp_path):
