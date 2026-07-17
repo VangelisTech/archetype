@@ -34,6 +34,7 @@ Features:
 import asyncio
 import heapq
 import logging
+from collections import deque
 
 from uuid_utils import UUID
 
@@ -51,13 +52,25 @@ class CommandBroker:
     The broker mediates all external and agent-initiated commands with RBAC enforcement.
     """
 
-    def __init__(self, max_dequeue: int = 50_000, debug: bool = False):
+    def __init__(
+        self,
+        max_dequeue: int = 50_000,
+        debug: bool = False,
+        max_history: int = 50_000,
+    ):
+        if max_history < 1:
+            raise ValueError(f"max_history must be at least 1, got {max_history}")
         self._queues: dict[str, list[Command]] = {}  # world_id -> priority queue
         self._pending: dict[UUID, Command] = {}
-        self._history: dict[str, list[Command]] = {}
+        self._history: dict[str, deque[Command]] = {}
         self._lock = asyncio.Lock()
         self._max_dequeue = max_dequeue
+        self._max_history = max_history
         self._debug = debug
+
+    def _record_history(self, world_id: str, cmd: Command) -> None:
+        history = self._history.setdefault(world_id, deque(maxlen=self._max_history))
+        history.append(cmd)
 
     async def enqueue(
         self,
@@ -79,7 +92,7 @@ class CommandBroker:
 
             heapq.heappush(self._queues[key], cmd)
             self._pending[cmd.id] = cmd
-            self._history.setdefault(key, []).append(cmd)
+            self._record_history(key, cmd)
 
             if self._debug:
                 logger.debug(
@@ -118,7 +131,7 @@ class CommandBroker:
             for cmd in cmds:
                 heapq.heappush(self._queues[key], cmd)
                 self._pending[cmd.id] = cmd
-                self._history.setdefault(key, []).append(cmd)
+                self._record_history(key, cmd)
 
     async def dequeue(self, world_id: str | UUID, max_items: int | None = None) -> list[Command]:
         """Dequeue commands for a specific world (all pending, regardless of tick)."""
@@ -220,10 +233,10 @@ class CommandBroker:
     async def get_history(self, world_id: str | UUID, limit: int = 100) -> list[Command]:
         """Return recent enqueued commands for a world (most recent last)."""
         async with self._lock:
-            items = self._history.get(str(world_id), [])
+            items = self._history.get(str(world_id))
             if not items:
                 return []
-            return items[-limit:]
+            return list(items)[-limit:]
 
     async def clear(self, world_id: str | UUID | None = None):
         """Clear pending commands."""
