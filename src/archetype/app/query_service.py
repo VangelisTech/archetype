@@ -26,7 +26,7 @@ import logging
 from daft import DataFrame, col, lit
 from uuid_utils import UUID
 
-from archetype.app._signature_resolution import resolve_signature_records
+from archetype.app._signature_resolution import match_signature_records
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
@@ -321,10 +321,12 @@ class QueryService:
     ) -> list[ArchetypeSignature]:
         """List process-local and durably cataloged archetype signatures.
 
-        A store's Python signature registry is only a cache.  A fresh process
-        therefore resolves the control catalog's schema-identified records
-        against imported Component classes, then unions any compatible local
-        entries (including legacy/read-created signatures).
+        A store's Python signature registry is only a cache. A fresh process
+        therefore matches control-catalog records against imported Component
+        classes by both schema fingerprint and durable table identity, then
+        unions compatible local entries (including legacy/read-created
+        signatures). Unrelated historical records that can no longer be
+        resolved are skipped with an observable warning.
         """
         effective_config, _store, querier = await self._querier_for(storage_config)
         signatures = {
@@ -333,7 +335,17 @@ class QueryService:
         }
         catalog = self._storage_service.get_control_catalog(effective_config)
         records = await catalog.list_signatures()
-        signatures.update(resolve_signature_records(records, operation="list signatures"))
+        discovered, problems = match_signature_records(records)
+        if problems:
+            detail = "; ".join(
+                f"{table_id}: {message}" for table_id, message in sorted(problems.items())
+            )
+            logger.warning(
+                "list_signatures skipped %d unresolved durable record(s): %s",
+                len(problems),
+                detail,
+            )
+        signatures.update(discovered)
         return [signature for _table_id, signature in sorted(signatures.items())]
 
     async def get_command_history(

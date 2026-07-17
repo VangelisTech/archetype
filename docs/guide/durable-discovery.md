@@ -112,8 +112,11 @@ df = await container.command_service.query_components(
 process-local cache with every durable catalog record. Listing a complete
 Python signature requires the corresponding component classes to be imported;
 records are matched to those classes by full schema fingerprint, never by name
-alone. A missing or drifted definition fails loudly instead of silently
-omitting the persisted archetype.
+alone, and the recomputed table identity must equal the durable `table_id`.
+Missing, drifted, or identity-mismatched historical records are skipped with a
+warning so one unrelated old world cannot block storage-wide discovery. Mutable
+world resume remains strict because it resolves only the target world's live
+entity signatures.
 
 ## 5. Fail-closed schema check
 

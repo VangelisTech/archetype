@@ -25,11 +25,14 @@ from archetype.app._catalog import (
     SignatureRecord,
     SqliteControlCatalog,
     WorldRecord,
+    arrow_schema_descriptor,
     catalog_path_for,
     schema_fingerprint,
     storage_fingerprint,
 )
+from archetype.app._signature_resolution import match_signature_records
 from archetype.app.container import ServiceContainer
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -337,6 +340,50 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplog):
+    """One unrelated stale record cannot poison storage-wide discovery."""
+    storage = _storage(tmp_path)
+    writer = ServiceContainer()
+    try:
+        world = await writer.world_service.create_world(WorldConfig(name="current"), storage)
+        await writer.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await writer.simulation_service.step(world.world_id, RunConfig())
+
+        schema = Archetype.get_archetype_schema((Score,))
+        catalog = writer.storage_service.get_control_catalog(storage)
+        await catalog.register_signature(
+            SignatureRecord(
+                table_id="a_removed_history",
+                component_names=("RemovedQueryHistoryComponent",),
+                schema_json="{}",
+                fingerprint="removed",
+            )
+        )
+        await catalog.register_signature(
+            SignatureRecord(
+                table_id="a_schema_match_wrong_identity",
+                component_names=("Score",),
+                schema_json=json.dumps(arrow_schema_descriptor(schema)),
+                fingerprint=schema_fingerprint(schema),
+            )
+        )
+    finally:
+        await writer.shutdown()
+
+    reader = ServiceContainer()
+    try:
+        with caplog.at_level(logging.WARNING, logger="archetype.app.query_service"):
+            signatures = await reader.query_service.list_signatures(storage)
+
+        names = {tuple(component.__name__ for component in sig) for sig in signatures}
+        assert ("Score",) in names
+        assert "a_removed_history" in caplog.text
+        assert "a_schema_match_wrong_identity" in caplog.text
+    finally:
+        await reader.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_p0_stale_descriptor_fails_closed(tmp_path):
     """A catalog descriptor whose fingerprint disagrees with the physical
     table must refuse to read — never an empty frame, never a created table."""
@@ -440,6 +487,22 @@ async def test_signature_record_roundtrip(tmp_path):
             )
         )
     await catalog.close()
+
+
+def test_signature_resolution_requires_durable_table_identity():
+    """A normalized schema match cannot redirect a read to a new table id."""
+    schema = Archetype.get_archetype_schema((Score,))
+    record = SignatureRecord(
+        table_id="a_schema_match_wrong_identity",
+        component_names=("Score",),
+        schema_json=json.dumps(arrow_schema_descriptor(schema)),
+        fingerprint=schema_fingerprint(schema),
+    )
+
+    resolved, problems = match_signature_records([record])
+
+    assert resolved == {}
+    assert "different table identity" in problems[record.table_id]
 
 
 @pytest.mark.asyncio

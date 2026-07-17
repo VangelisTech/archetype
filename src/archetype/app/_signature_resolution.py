@@ -36,18 +36,18 @@ def _component_classes_by_name() -> dict[str, list[type[Component]]]:
     return classes
 
 
-def resolve_signature_records(
+def match_signature_records(
     records: Iterable[SignatureRecord],
-    *,
-    operation: str,
-) -> dict[str, ArchetypeSignature]:
-    """Resolve catalog records by full schema identity or fail loudly.
+) -> tuple[dict[str, ArchetypeSignature], dict[str, str]]:
+    """Partition catalog records into exact matches and diagnosed problems.
 
     Multiple imported classes with the same name are harmless when their
-    complete archetype schema has the recorded fingerprint: they are
-    interchangeable for reads.  A missing or drifted definition is not
-    guessed because doing so would make code, rather than the stored schema,
-    silently reinterpret durable rows.
+    complete archetype schema and table identity match the durable record.
+    A missing or drifted definition is not guessed because doing so would
+    make code, rather than the stored schema, silently reinterpret rows.
+
+    The non-raising partition lets discovery skip unrelated historical drift
+    while strict lifecycle callers use :func:`resolve_signature_records`.
     """
     available = _component_classes_by_name()
     resolved: dict[str, ArchetypeSignature] = {}
@@ -63,6 +63,7 @@ def resolve_signature_records(
             continue
 
         matches: list[ArchetypeSignature] = []
+        mismatched_table_ids: set[str] = set()
         candidates = (
             sorted(available[name], key=lambda cls: (cls.__module__, cls.__qualname__))
             for name in record.component_names
@@ -70,21 +71,45 @@ def resolve_signature_records(
         for combination in product(*candidates):
             signature = tuple(sorted(set(combination), key=lambda cls: cls.__name__))
             try:
-                fingerprint = schema_fingerprint(Archetype.get_archetype_schema(signature))
+                schema = Archetype.get_archetype_schema(signature)
+                fingerprint = schema_fingerprint(schema)
+                table_id = Archetype.get_name(signature)
             except Exception:
                 continue
-            if fingerprint == record.fingerprint and signature not in matches:
+            if fingerprint != record.fingerprint:
+                continue
+            if table_id != record.table_id:
+                mismatched_table_ids.add(table_id)
+                continue
+            if signature not in matches:
                 matches.append(signature)
 
         if matches:
             # Candidate ordering makes the representative deterministic.
             # Every match is interchangeable by the complete fingerprint.
             resolved[record.table_id] = matches[0]
+        elif mismatched_table_ids:
+            rendered = ", ".join(sorted(mismatched_table_ids))
+            problems[record.table_id] = (
+                "schema-compatible imported class combination resolves to different "
+                f"table identity: {rendered}"
+            )
         else:
             problems[record.table_id] = (
                 "no imported class combination matches the stored schema "
                 "(the definitions may have drifted since the rows were written)"
             )
+
+    return resolved, problems
+
+
+def resolve_signature_records(
+    records: Iterable[SignatureRecord],
+    *,
+    operation: str,
+) -> dict[str, ArchetypeSignature]:
+    """Resolve every record exactly or fail the bounded lifecycle operation."""
+    resolved, problems = match_signature_records(records)
 
     if problems:
         detail = "; ".join(
