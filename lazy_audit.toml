@@ -44,7 +44,7 @@ reason = "Storage write boundary: materialize the incoming frame once for the em
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 380
+line = 409
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -56,7 +56,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 270
+line = 289
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
