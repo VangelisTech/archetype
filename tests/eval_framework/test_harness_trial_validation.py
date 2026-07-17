@@ -6,12 +6,14 @@ and pass-rate reporting semantics (issue #144)."""
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 
 import pytest
 
 from evals.harness import EvalHarness
+from evals.run import _configure_eval_logging, _ExpectedEvalNoiseFilter
 from evals.types import GraderResult, TaskResult, TrialResult
 
 
@@ -111,3 +113,56 @@ def test_run_cli_rejects_negative_trials() -> None:
 def test_run_cli_rejects_non_integer_trials() -> None:
     proc = _run_cli("--trials", "abc")
     assert proc.returncode != 0
+
+
+def test_regression_cli_reports_poison_outcomes_without_library_tracebacks() -> None:
+    proc = _run_cli("--suite", "regression")
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stderr == ""
+    assert "Traceback" not in proc.stdout
+    assert "[PASS] poison_in_batch" in proc.stdout
+    assert "[PASS] despawn_nonexistent" in proc.stdout
+
+
+def _apply_failure_record(error: Exception) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="archetype.app.command_service",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="Failed to apply command command-id (spawn)",
+        args=(),
+        exc_info=(type(error), error, None),
+    )
+
+
+def test_eval_log_filter_quiets_reserved_spawn_replay() -> None:
+    error = ValueError(
+        "Entity 77 is already registered. "
+        "Use update_entity to change component values on a live entity."
+    )
+
+    assert not _ExpectedEvalNoiseFilter().filter(_apply_failure_record(error))
+
+
+def test_eval_log_filter_keeps_unexpected_apply_failures_visible() -> None:
+    error = RuntimeError("unexpected storage failure")
+
+    assert _ExpectedEvalNoiseFilter().filter(_apply_failure_record(error))
+
+
+def test_eval_logging_honors_handler_inherited_from_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_logger = logging.getLogger("archetype")
+    root_logger = logging.getLogger()
+    root_handler = logging.NullHandler()
+    monkeypatch.setattr(package_logger, "handlers", [])
+    monkeypatch.setattr(package_logger, "propagate", True)
+    monkeypatch.setattr(root_logger, "handlers", [root_handler])
+
+    _configure_eval_logging()
+
+    assert package_logger.handlers == []
+    assert package_logger.propagate is True
