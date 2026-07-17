@@ -83,6 +83,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DIRECT_LIFECYCLE_COMMANDS = frozenset(
+    {
+        CommandType.CREATE_WORLD,
+        CommandType.FORK_WORLD,
+        CommandType.DESTROY_WORLD,
+    }
+)
+
 
 class CommandService:
     """Policy enforcement point.
@@ -118,6 +126,14 @@ class CommandService:
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
+
+    @staticmethod
+    def _validate_deferred_command(cmd: Command) -> None:
+        if cmd.type in _DIRECT_LIFECYCLE_COMMANDS:
+            raise ValueError(
+                f"{cmd.type.value} is a direct gated lifecycle operation; "
+                "it cannot be submitted through the tick-deferred broker"
+            )
 
     def _require_world(self, world_id: str | UUID) -> None:
         """Reject submissions to worlds not in the registry.
@@ -1001,6 +1017,7 @@ class CommandService:
         """Gate, then enqueue for application at cmd.tick."""
         ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
         self._require_world(world_id)
+        self._validate_deferred_command(cmd)
         self._gate(cmd, ctx)
         await self._broker.enqueue(world_id, cmd)
         await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
@@ -1015,6 +1032,8 @@ class CommandService:
         """Gate all-or-nothing, then enqueue atomically."""
         ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
         self._require_world(world_id)
+        for cmd in cmds:
+            self._validate_deferred_command(cmd)
         for cmd in cmds:
             self._gate(cmd, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)

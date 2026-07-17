@@ -929,7 +929,7 @@ behavior and an executable oracle.
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
-| 2 | Open | Define truthful ack semantics for world-lifecycle command types submitted through the tick-deferred broker. | Issue #368 |
+| 2 | Closed | Tick-deferred submission rejects world-lifecycle command types before authorization, audit, or enqueue; callers use the direct gated lifecycle methods. | Issue #368 |
 | 3 | Resolved | `CommandService.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |

@@ -14,6 +14,7 @@ from uuid_utils import uuid7
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -90,6 +91,54 @@ async def test_submit_to_unknown_world_rejected():
 
         # Broker holds no orphan queue for the phantom world.
         assert await c.broker.get_pending_count(phantom) == 0
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_type",
+    [CommandType.CREATE_WORLD, CommandType.FORK_WORLD, CommandType.DESTROY_WORLD],
+)
+async def test_lifecycle_commands_cannot_enter_tick_deferred_broker(tmp_path, command_type):
+    """Lifecycle operations use their direct gated methods and cannot be acked as queue work."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="lifecycle-submit"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+
+        with pytest.raises(ValueError, match="direct gated lifecycle operation"):
+            await c.command_service.submit(ctx, world.world_id, Command(type=command_type))
+
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
+    """Batch validation happens before any command is gated, audited, or enqueued."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="lifecycle-batch"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        commands = [
+            Command(type=CommandType.CUSTOM),
+            Command(type=CommandType.FORK_WORLD),
+        ]
+
+        with pytest.raises(ValueError, match="direct gated lifecycle operation"):
+            await c.command_service.submit_batch(ctx, world.world_id, commands)
+
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
     finally:
         await c.shutdown()
 
