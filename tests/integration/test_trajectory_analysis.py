@@ -121,6 +121,27 @@ async def test_sampling_processor_caps_distinct_trajectories():
 
 
 @pytest.mark.asyncio
+async def test_sampling_cap_counts_only_filter_eligible_trajectories():
+    resources = Resources()
+    resources.insert(SamplingConfig(min_turns=3, max_trajectories=1))
+    df = daft.from_pydict(
+        {
+            "sessiontrajectory__trajectory_id": ["trajectory-a", "trajectory-b"],
+            "sessiontrajectory__total_turns": [1, 5],
+            "sessiontrajectory__outcome": ["ok", "ok"],
+            "sessiontrajectory__tags_json": ["[]", "[]"],
+            "label__technique": ["correctness", "correctness"],
+            "label__sampled": [True, True],
+        }
+    )
+
+    rows = (await SamplingProcessor().process(df, resources=resources)).collect().to_pylist()
+    sampled_by_id = {row["sessiontrajectory__trajectory_id"]: row["label__sampled"] for row in rows}
+
+    assert sampled_by_id == {"trajectory-a": False, "trajectory-b": True}
+
+
+@pytest.mark.asyncio
 async def test_sampling_processor_filters_by_min_turns(tmp_path):
     """SamplingProcessor marks entities with fewer turns than min_turns as not sampled."""
     container = ServiceContainer()

@@ -241,20 +241,19 @@ class SamplingProcessor(AsyncProcessor):
                     col("sessiontrajectory__tags_json"), daft.lit(tag)
                 )
 
-        df = df.with_columns({"label__sampled": sampled})
+        if config.max_trajectories <= 0:
+            return df.with_column("label__sampled", sampled)
 
-        if config.max_trajectories > 0:
-            trajectory_rank = dense_rank().over(
-                daft.Window().order_by("sessiontrajectory__trajectory_id")
-            )
-            df = df.with_columns(
-                {
-                    "label__sampled": col("label__sampled")
-                    & (trajectory_rank <= config.max_trajectories),
-                }
-            )
-
-        return df
+        df = df.with_column("_sampling_eligible", sampled)
+        trajectory_rank = dense_rank().over(
+            daft.Window()
+            .partition_by("_sampling_eligible")
+            .order_by("sessiontrajectory__trajectory_id")
+        )
+        return df.with_column(
+            "label__sampled",
+            col("_sampling_eligible") & (trajectory_rank <= config.max_trajectories),
+        ).exclude("_sampling_eligible")
 
 
 class LabelingProcessor(AsyncProcessor):
