@@ -225,7 +225,7 @@ class WorldOrchestrator:
         self._registry.insert(world)
         return world
 
-    def get_world(self, world_id: UUID) -> AsyncWorld:
+    def get_world(self, world_id: str | UUID) -> AsyncWorld:
         return self._registry.get(world_id)
 
     def get_world_by_name(self, name: str) -> AsyncWorld:
