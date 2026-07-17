@@ -97,10 +97,16 @@ See [Execution Hierarchy](execution-hierarchy.md).
 |---|---|---|
 | `/worlds/{id}/state` | GET | Query world state through the gate |
 | `/worlds/{id}/entities/{eid}` | GET | Query one entity projection |
-| `/worlds/{id}/components` | GET | Query component projections |
+| `/worlds/{id}/components` | GET | Lazily filter, limit, or count component projections |
 | `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
 Reads are authorized at `iCommandService`; `iQueryService` remains the internal read implementation.
+The component route accepts one inert comparison through `where`, then applies either the
+`show` row limit or the `count` terminal. Filtering happens before either terminal and before
+row serialization. All three options require at least one component type; `show` and `count` are
+mutually exclusive. The filter grammar is deliberately small: one component column, one of `>`,
+`>=`, `<`, `<=`, `==`, or `!=`, and one scalar value. Calls, attribute access, arithmetic, and
+Boolean composition are rejected rather than evaluated.
 
 See the [REST API Reference](../reference/rest-api.md) for generated schemas.
 
@@ -145,7 +151,7 @@ archetype step               POST /worlds/{id}/step
 archetype run                POST /worlds/{id}/run
 archetype episode            POST /worlds/{id}/episode
 archetype rollout            POST /worlds/{id}/rollout
-archetype query              GET /worlds/{id}/state
+archetype query              GET /worlds/{id}/state or /worlds/{id}/components
 archetype history            GET /worlds/{id}/history
 archetype processors list    GET /worlds/{id}/processors
 archetype hooks list         GET /worlds/{id}/hooks
@@ -155,6 +161,16 @@ archetype resources list     GET /worlds/{id}/resources
 The server URL defaults to `http://localhost:8000` and can be overridden with
 `ARCHETYPE_URL` or per command with `--url`. HTTP commands accept the developer
 auth shortcut `--role` / `-r` and the bearer-token option `--token`.
+
+Without component types, `query` returns the world-state projection. Pass comma-separated
+component types positionally to use the lazy component-query path:
+
+```bash
+archetype query <world-id> Agent,Score --where "score__value > 0.5" --show 5
+archetype query <world-id> Agent,Score --where "score__value > 0.5" --count
+```
+
+`--types` remains available as a compatibility spelling for the positional component list.
 
 ## Source Reference
 

@@ -67,10 +67,10 @@ archetype history <WORLD_ID> [OPTIONS]
 
 ### `archetype query`
 
-Query world state.
+Query world state or lazily filter matching component rows.
 
 ```bash
-archetype query <WORLD_ID> [OPTIONS]
+archetype query <WORLD_ID> [COMPONENT_TYPES] [OPTIONS]
 ```
 
 **Arguments:**
@@ -78,6 +78,7 @@ archetype query <WORLD_ID> [OPTIONS]
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `WORLD_ID` | text | Yes | World ID |
+| `COMPONENT_TYPES` | text | No | Comma-separated component types, for example Agent,Score |
 
 **Options:**
 
@@ -87,6 +88,9 @@ archetype query <WORLD_ID> [OPTIONS]
 | `--tick` / `-t` | integer | — | Tick to query |
 | `--ticks` | text | — | Comma-separated ticks; first is used |
 | `--entity-ids` | text | — | Comma-separated entity IDs |
+| `--show` / `-s` | integer range | — | Limit to N rows |
+| `--count` / `-c` | boolean | `False` | Return the row count only |
+| `--where` / `-w` | text | — | Filter with one comparison, for example "score__value > 0.5" |
 | `--url` | text | — | Override ARCHETYPE_URL for this command |
 | `--role` / `-r` | choice | — | Developer role shortcut; production callers should use --token |
 | `--token` | text | — | Bearer token to send verbatim |

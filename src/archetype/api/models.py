@@ -86,6 +86,10 @@ class EntityResponse(BaseModel):
     entity_id: int
 
 
+class QueryCountResponse(BaseModel):
+    count: int
+
+
 class SubmitCommandRequest(BaseModel):
     type: str = "custom"
     tick: int = 0
@@ -172,6 +176,7 @@ __all__ = [
     "EntityResponse",
     "EpisodeConfig",
     "ForkWorldRequest",
+    "QueryCountResponse",
     "RolloutConfig",
     "RunConfig",
     "RunRequest",

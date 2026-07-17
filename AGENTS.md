@@ -128,7 +128,7 @@ See `LEARNINGS.md` for the data-centric principle and the UDF decision tree. Bot
 archetype serve                    # Start API server
 archetype world create my-sim      # Create world
 archetype run <world-id> --steps 10
-archetype query <world-id>
+archetype query <world-id> [ComponentTypes] [--where EXPR] [--show N | --count]
 archetype history <world-id>
 ```
 
