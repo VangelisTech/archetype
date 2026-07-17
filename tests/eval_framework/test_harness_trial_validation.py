@@ -12,8 +12,10 @@ import sys
 
 import pytest
 
+from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.run import _configure_eval_logging, _ExpectedEvalNoiseFilter
+from evals.run import main as run_main
 from evals.types import GraderResult, TaskResult, TrialResult
 
 
@@ -89,6 +91,51 @@ def test_harness_run_records_grader_outcomes_across_trials() -> None:
     assert result.pass_pow_k == 0.0
 
 
+def test_harness_run_fails_trial_without_grader_evidence() -> None:
+    harness = EvalHarness()
+    harness.add("empty_task", suite="regression", fn=lambda: [])
+
+    [result] = harness.run()
+    [trial] = result.trials
+
+    assert trial.passed is False
+    assert trial.score == 0.0
+    assert trial.grader_results == []
+    assert trial.error == "task 'empty_task' produced no grader evidence"
+    assert result.pass_at_k == 0.0
+    assert result.all_passed is False
+
+
+def test_harness_run_preserves_multi_grader_aggregation() -> None:
+    grader_results = [
+        GraderResult(grader_name="passing", passed=True, score=0.25),
+        GraderResult(grader_name="failing", passed=False, score=0.75),
+    ]
+    harness = EvalHarness()
+    harness.add("multi_grader", suite="regression", fn=lambda: grader_results)
+
+    [result] = harness.run()
+    [trial] = result.trials
+
+    assert trial.passed is False
+    assert trial.score == pytest.approx(0.5)
+    assert trial.grader_results == grader_results
+    assert trial.error is None
+
+
+def test_state_check_rejects_empty_evidence() -> None:
+    with pytest.raises(ValueError, match="requires at least one check"):
+        state_check({})
+
+
+def test_state_check_preserves_partial_credit_for_nonempty_checks() -> None:
+    result = state_check({"materialized": True, "persisted": False})
+
+    assert result.passed is False
+    assert result.score == pytest.approx(0.5)
+    assert result.details == "failed: {'persisted'}"
+
+
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "evals.run", *args],
@@ -113,6 +160,21 @@ def test_run_cli_rejects_negative_trials() -> None:
 def test_run_cli_rejects_non_integer_trials() -> None:
     proc = _run_cli("--trials", "abc")
     assert proc.returncode != 0
+
+
+def test_run_cli_fails_required_task_without_grader_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = EvalHarness()
+    harness.add("empty_task", suite="regression", fn=lambda: [])
+    monkeypatch.setattr("evals.run.build_harness", lambda trials=1: harness)
+    monkeypatch.setattr(sys, "argv", ["evals.run", "--suite", "regression"])
+
+    assert run_main() == 1
+    report = capsys.readouterr().out
+    assert "[FAIL] empty_task" in report
+    assert "error: task 'empty_task' produced no grader evidence" in report
 
 
 def test_regression_cli_reports_poison_outcomes_without_library_tracebacks() -> None:
