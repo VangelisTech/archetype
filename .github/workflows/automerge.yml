@@ -25,21 +25,27 @@ name: Auto-merge
 
 on:
   # Every new head invalidates the previous head's review verdict.
+  # auto_merge_enabled feeds the guard job only: a manual `gh pr merge
+  # --auto` ahead of the verdict is reverted, closing the last arming path
+  # this workflow does not control.
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, auto_merge_enabled]
   # The review gate's completion is the arming signal.
   workflow_run:
     workflows: ["Deterministic Review Gate"]
     types: [completed]
 
 permissions:
+  checks: read # Guard queries review-complete check runs on the armed head.
   contents: write
   pull-requests: write
 
 jobs:
   disarm:
     name: Disarm until the head's review completes
-    if: github.event_name == 'pull_request'
+    # Not on auto_merge_enabled: that event is the guard job's input, and
+    # unconditional disarm there would also revert the arm job's own arming.
+    if: github.event_name == 'pull_request' && github.event.action != 'auto_merge_enabled'
     runs-on: ubuntu-latest
     steps:
       # Verified by postcondition, not exit code: `--disable-auto` exits
@@ -63,6 +69,46 @@ jobs:
             sleep 5
           done
           echo "::error::auto-merge still armed after 3 disarm attempts; a stale arm may carry this unreviewed head into the queue."
+          exit 1
+
+  guard:
+    name: Revert premature arming
+    if: github.event_name == 'pull_request' && github.event.action == 'auto_merge_enabled'
+    runs-on: ubuntu-latest
+    steps:
+      # Arming is the review gate (see header). The arm job below is the
+      # sanctioned arming path and always follows a green review, so this
+      # guard sees its arms as legitimate no-ops. A manual arm ahead of the
+      # verdict is reverted here; when the review later succeeds on this
+      # head, the arm job re-arms — nothing legitimate slows down.
+      - name: Disarm unless the head's review has passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          # LATEST run only: a head's review can be re-triggered without a
+          # new commit (reopen, manual re-run), and a stale success must not
+          # outvote a newer failure. `|| latest=""` keeps an API failure
+          # from tripping -e before the revert loop — failure to positively
+          # confirm the verdict falls through to the revert (fail closed).
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=review-complete&per_page=100" \
+            --jq '[.check_runs[]] | sort_by(.started_at) | last | .conclusion // empty') || latest=""
+          if [ "$latest" = "success" ]; then
+            echo "latest review-complete on ${HEAD_SHA} succeeded; arming is legitimate."
+            exit 0
+          fi
+          echo "No authoritative passing review-complete on ${HEAD_SHA} (latest: ${latest:-none}); reverting premature arming."
+          for attempt in 1 2 3; do
+            gh pr merge --disable-auto "$PR_URL" || true
+            armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest // empty')
+            if [ -z "$armed" ]; then
+              echo "premature arm reverted (attempt ${attempt})."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::could not revert a premature arm; this head may enter the queue unreviewed."
           exit 1
 
   arm:
