@@ -20,7 +20,7 @@ jobs:
   footgun-review:
     name: footgun-review
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     permissions:
       contents: read
       pull-requests: read # Supply PR metadata to the read-only detector.
@@ -75,6 +75,21 @@ jobs:
             --scope "${SCOPE_FILE}"
           echo "schema=$(python3 scripts/footgun_review_gate.py schema)" >> "${GITHUB_OUTPUT}"
 
+      - name: Compute turn budget from scope
+        id: budget
+        run: |
+          python3 - <<'EOF' >> "${GITHUB_OUTPUT}"
+          import json, os
+          scope = json.load(open(os.environ["SCOPE_FILE"]))
+          n = len(scope["files"])
+          # A flat 40 turns starved dense diffs (the detector died at ~8 min
+          # on PR #375/#303-class heads with no structured output, while
+          # deletion-heavy #333 finished in 2m36s). Read/Grep/Glob coverage of
+          # every scoped file across all detector categories costs turns
+          # roughly linear in file count; scale with scope and cap the spend.
+          print(f"turns={min(120, max(40, 24 + 6 * n))}")
+          EOF
+
       - name: Run read-only footgun detector
         id: detector
         continue-on-error: true
@@ -84,7 +99,7 @@ jobs:
           github_token: ${{ github.token }}
           claude_args: |
             --allowedTools "Read,Grep,Glob"
-            --max-turns 40
+            --max-turns ${{ steps.budget.outputs.turns }}
             --json-schema '${{ steps.scope.outputs.schema }}'
           prompt: |
             Review PR #${{ github.event.pull_request.number }} at exact head
