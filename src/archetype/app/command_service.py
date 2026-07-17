@@ -181,14 +181,30 @@ class CommandService:
         if not self._worlds.has_world(world_id):
             raise WorldNotFoundError(world_id)
 
-    async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
+    async def _emit(
+        self,
+        ctx: ActorCtx,
+        command_type: str,
+        world_id: str | UUID | None = None,
+        *,
+        command_id: UUID | None = None,
+        status: str = "applied",
+        payload_json: str = "{}",
+    ) -> None:
         """Emit one audit row. Best-effort — never raises."""
         if self._audit is None:
             return
         try:
             from archetype.app.audit_log import make_audit_row
 
-            row = make_audit_row(ctx, command_type, world_id, **kw)
+            row = make_audit_row(
+                ctx,
+                command_type,
+                world_id,
+                command_id=command_id,
+                status=status,
+                payload_json=payload_json,
+            )
             await self._audit.record(row)
         except Exception:
             logger.warning("audit emission failed", exc_info=True)
@@ -217,7 +233,12 @@ class CommandService:
         """Batch-spawn entities. Applies one RBAC gate check for the batch."""
         self._gate(Command(type=CommandType.SPAWN), ctx)
         result = await self._mutations.create_entities(world_id, entities)
-        await self._emit(ctx, "spawn_batch", world_id, count=len(entities))
+        await self._emit(
+            ctx,
+            "spawn_batch",
+            world_id,
+            payload_json=json.dumps({"count": len(entities)}),
+        )
         return result
 
     @instrument("gate.reserve_entity_ids")
@@ -242,7 +263,12 @@ class CommandService:
         """Materialise a previously reserved entity ID."""
         self._gate(Command(type=CommandType.SPAWN), ctx)
         await self._mutations.spawn_with_reserved_id(world_id, entity_id, components)
-        await self._emit(ctx, "spawn_reserved", world_id, entity_id=entity_id)
+        await self._emit(
+            ctx,
+            "spawn_reserved",
+            world_id,
+            payload_json=json.dumps({"entity_id": entity_id}),
+        )
 
     @instrument("gate.remove_entity")
     async def remove_entity(
