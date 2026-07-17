@@ -515,7 +515,8 @@ CURRENT GAPS:
   records, resolving imported component classes by schema fingerprint and
   exact durable table identity. Unresolvable historical records emit a warning
   and are skipped so unrelated schema drift cannot disable storage-wide
-  discovery; mutable resume remains strict for the target world's live rows.
+  discovery. Exact process-local class identities take precedence over catalog
+  reconstruction; mutable resume remains strict for the target world's live rows.
 - Audit history is served by `iAuditLog` through `iCommandService`.
   `QueryService.get_command_history()` remains a compatibility read over queued
   audit rows, not an in-memory broker-history contract.

@@ -9,6 +9,7 @@ committed there. P0 tests use true subprocess restarts — same-process
 container recycling would not prove cold discovery.
 """
 
+import gc
 import json
 import logging
 import multiprocessing
@@ -381,6 +382,40 @@ async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplo
         assert "a_schema_match_wrong_identity" in caplog.text
     finally:
         await reader.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
+    """Catalog ambiguity fills cold gaps but cannot replace an exact local class."""
+    storage = _storage(tmp_path)
+    container = ServiceContainer()
+    shadow_score_type: type[Component] | None = None
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
+        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        shadow_score_type = type(
+            "Score",
+            (Component,),
+            {
+                "__module__": "aaa_catalog_shadow",
+                "__annotations__": {"points": float},
+                "points": 0.0,
+            },
+        )
+        assert Archetype.get_name((shadow_score_type,)) == Archetype.get_name((Score,))
+
+        signatures = await container.query_service.list_signatures(storage)
+        score_table_id = Archetype.get_name((Score,))
+        by_table_id = {Archetype.get_name(signature): signature for signature in signatures}
+
+        assert by_table_id[score_table_id] == (Score,)
+        assert by_table_id[score_table_id] != (shadow_score_type,)
+    finally:
+        shadow_score_type = None
+        gc.collect()
+        await container.shutdown()
 
 
 @pytest.mark.asyncio

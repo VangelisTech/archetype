@@ -323,10 +323,10 @@ class QueryService:
 
         A store's Python signature registry is only a cache. A fresh process
         therefore matches control-catalog records against imported Component
-        classes by both schema fingerprint and durable table identity, then
-        unions compatible local entries (including legacy/read-created
-        signatures). Unrelated historical records that can no longer be
-        resolved are skipped with an observable warning.
+        classes by both schema fingerprint and durable table identity. Durable
+        matches fill gaps without replacing exact process-local class objects.
+        Unrelated historical records that can no longer be resolved are
+        skipped with an observable warning.
         """
         effective_config, _store, querier = await self._querier_for(storage_config)
         signatures = {
@@ -345,7 +345,7 @@ class QueryService:
                 len(problems),
                 detail,
             )
-        signatures.update(discovered)
+        signatures = discovered | signatures
         return [signature for _table_id, signature in sorted(signatures.items())]
 
     async def get_command_history(

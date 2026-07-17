@@ -116,7 +116,8 @@ alone, and the recomputed table identity must equal the durable `table_id`.
 Missing, drifted, or identity-mismatched historical records are skipped with a
 warning so one unrelated old world cannot block storage-wide discovery. Mutable
 world resume remains strict because it resolves only the target world's live
-entity signatures.
+entity signatures. When both sources know a table, the exact process-local
+class identity takes precedence over an ambiguous catalog reconstruction.
 
 ## 5. Fail-closed schema check
 
