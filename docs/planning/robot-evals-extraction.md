@@ -15,7 +15,18 @@ needs a GPU moves; anything any benchmark needs stays.**
 - `EnvClient`/`PolicyClient` protocols, processors, Manip components were
   already in `src/archetype/experiments/`.
 
-## Phase 2 — extract (run AFTER PR #303 merges to main)
+## Phase 2 — extract — DONE 2026-07-16
+
+Executed as written below: history filtered through PR #303, pushed to
+`everettVT/robot-evals` main, archetype consumed as a package dependency
+(26+ tests green there against the installed package), and the archetype-side
+deletion landed with this note. robot-evals has since grown beyond the
+snapshot: LIBERO-PRO fork image (object/swap/task axes), R2-persisted
+ledgers, a LeRobot v3 episode writer (round-trip-tested against
+daft.datasets.lerobot.read), and per-env-thread + batched-inference
+GPU-utilization fixes.
+
+## Phase 2 — the original runbook (executed)
 
 What moves (with history, via `git filter-repo`):
 

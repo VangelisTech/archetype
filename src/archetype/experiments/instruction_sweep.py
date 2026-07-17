@@ -15,7 +15,7 @@ not a new mechanism — it is:
     control-plane world, batch-step them, grade success-rate *per variant*
     from the persisted ledger, then mutate the winner and repeat.
 
-That is the same orchestration as :func:`bench.libero.eval_run.run_task_eval`
+That is the same orchestration as :func:`archetype.experiments.eval_rollouts.run_task_eval`
 — one world, N entities, batch-stepped, graded by the eval service — with the
 single difference that the per-entity instruction varies. The scripted
 ``InstructionConditionedReachPolicy`` proves the loop end-to-end in CI (no GPU,
