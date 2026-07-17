@@ -306,12 +306,6 @@ One tick MUST follow this order:
 - Store-backed reads are the durability path.
 - `get_components()` is a live-snapshot API, not a historical store query.
 
-CURRENT GAP:
-
-- `RunConfig.prefer_live_reads` exists, but current async world behavior
-  effectively prefers `_live` whenever it is available. The config flag should
-  either be enforced or removed.
-
 ### Run contract
 
 - A `RunConfig` describes a sequence of steps that share one `run_id`.
@@ -360,8 +354,9 @@ CURRENT GAP:
 CURRENT GAP:
 
 - `AsyncWorld._move_entity()` can currently return an empty row when the old
-  entity is not found in `_live`, and callers do not validate this before
-  staging a spawn. That boundary needs an explicit error or no-op contract.
+  entity is not found. `update_entity()` guards that return, but
+  `add_components()` and `remove_components()` still stage it. Those two paths
+  need an explicit error or no-op contract.
 
 ## Lifecycle Hook Contracts
 
@@ -417,17 +412,18 @@ CURRENT GAP:
 - `create_world()` MUST be idempotent by explicit `world_id`.
 - Name lookup is a convenience index; names are unique, but they are not the
   idempotency key.
+- Duplicate-name validation MUST happen before a new world is inserted into the
+  live registry. A rejected create MUST leave both the ID and name indexes
+  unchanged.
+- If durable catalog registration or writer-fence acquisition fails after
+  construction, `create_world()` MUST remove the new live world before
+  propagating the failure.
 - Broker injection into world resources is an app-layer responsibility.
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
 - Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
   the next tick materializes in both worlds.
-
-CURRENT GAP:
-
-- `create_world()` currently inserts the world into `_worlds` before duplicate
-  name validation, which can leave behind an unintended cached world on error.
 
 ### CommandBroker
 
@@ -480,16 +476,17 @@ CURRENT GAPS:
 
 - `QueryService` is the internal read facade below the gate.
 - External reads go through `iCommandService`.
-- Read behavior SHOULD be consistent with the underlying core world and querier
-  contracts.
-- Query methods SHOULD either validate world existence consistently or
-  intentionally document which routes are world-agnostic.
-
-CURRENT GAP:
-
-- Most read methods are currently stubs that echo metadata rather than querying
-  actual world state.
+- Archetype and component reads MUST resolve storage per call and query durable
+  rows by `world_id` and `run_id`; they do not require the world to be live in
+  the process registry.
+- Coordinated reads MUST restrict results to catalog-published commit tokens.
+- Fork-aware reads MUST compose persisted lineage segments with the fork's own
+  rows without requiring a live source world.
+- `get_lineage()` reads persisted ancestry, and `list_signatures()` reads the
+  selected store's registered archetypes.
 - Audit history is served by `iAuditLog` through `iCommandService`.
+  `QueryService.get_command_history()` remains a compatibility read over queued
+  audit rows, not an in-memory broker-history contract.
 
 ### ServiceContainer and runtime lifetime
 
@@ -511,12 +508,11 @@ CURRENT GAP:
 - A fork shares runtime infrastructure, but not world identity.
 - Shutting down or destroying one world MUST NOT invalidate sibling worlds that
   share the same runtime.
-
-CURRENT GAP:
-
-- `destroy_world()` only removes the world from the world catalog and registry.
-  It does not explicitly clear per-world broker state or provide true
-  world-local shutdown semantics.
+- The gated `CommandService.destroy_world()` path MUST clear the target world's
+  pending and historical broker state before delegating world removal.
+- World removal MUST preserve durable rows, lineage, audit history, shared
+  storage backends, and sibling-world state. The durable catalog records the
+  world as destroyed rather than deleting its identity.
 
 ## Top-Level Runtime Contracts
 
@@ -926,24 +922,20 @@ I/O and commit visibility, not the Cloudflare Data Catalog control plane.
 
 ## Required Hardening Work
 
-The following items should be treated as implementation requirements for a
-coherent engine contract:
+This register retains stable item numbers used by issues and tests. `Open`
+means the contract is not yet implemented; `Resolved` requires both shipped
+behavior and an executable oracle.
 
-1. Make updater durability failures explicit instead of log-only.
-2. Define and implement world-lifecycle command ack semantics so API create,
-   destroy, and fork are not left in ambiguous broker state.
-3. ~~Decide whether command submission to an unknown world is allowed; if not,
-   reject at submit time.~~ Resolved: `CommandService.submit*` raise
-   `archetype.app.errors.WorldNotFoundError` before any side effect.
-4. Fix `WorldService.create_world()` duplicate-name failure ordering so failed
-   creation does not cache a hidden world.
-5. Align hook documentation and implementation for spawn/despawn lifecycle
-   events.
-6. Give `QueryService` a real read contract or clearly mark it as provisional.
-7. Define world-local teardown semantics that do not leak broker or shared
-   runtime state.
-8. Resolve or explicitly codify same-entity same-tick mutation composition so
-   broker command order and final materialized state cannot diverge silently.
+| Item | Status | Contract or remaining work | Oracle or tracking |
+|---|---|---|---|
+| 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
+| 2 | Open | Define truthful ack semantics for world-lifecycle command types submitted through the tick-deferred broker. | Issue #368 |
+| 3 | Resolved | `CommandService.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
+| 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
+| 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
+| 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/app/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
+| 7 | Resolved | Gated destroy clears only the target world's broker state and preserves shared runtime and durable state. | `tests/integration/test_fork_destroy_contracts.py` |
+| 8 | Open | Make same-entity, same-tick mutations compose in broker order or explicitly codify weaker behavior. | Issue #193 |
 
 ## Durability Posture (v0.3, issue #276)
 
