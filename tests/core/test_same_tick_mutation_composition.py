@@ -113,6 +113,26 @@ async def test_spawn_then_add_component_before_first_step(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_empty_spawn_then_add_component_before_first_step(tmp_path):
+    ws = make_world_service()
+    try:
+        world = await _make_world(ws, tmp_path)
+        eid = await world.create_entity([])
+
+        await world.add_components(eid, [ComposeVel(vx=4.0)])
+
+        assert () not in world.spawn_cache
+        await world.step(RunConfig())
+
+        rows = (await world.query_archetype(sig=(ComposeVel,), ticks=[0])).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["entity_id"] == eid
+        assert rows[0]["composevel__vx"] == 4.0
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_add_components_without_prior_row_is_noop(tmp_path):
     """Issue #367: no staged row + no persisted row -> logged no-op."""
     ws = make_world_service()

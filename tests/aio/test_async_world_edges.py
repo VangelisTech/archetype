@@ -57,6 +57,19 @@ async def test_add_components_before_first_step_handles_empty_live(world):
 
 
 @pytest.mark.asyncio
+async def test_empty_signature_entity_can_receive_first_component(world):
+    ent = await world.create_entity([])
+    await world.step(RunConfig())
+
+    await world.add_components(ent, [Position(x=2, y=3)])
+    await world.step(RunConfig())
+
+    df = await world.get_components([Position], entity_ids=[ent])
+    assert df is not None
+    assert df.collect().to_pylist()[0]["position__x"] == 2
+
+
+@pytest.mark.asyncio
 async def test_remove_nonexistent_entity_is_noop(world):
     # Removing an unknown entity should not crash
     await world.remove_entity(999999)

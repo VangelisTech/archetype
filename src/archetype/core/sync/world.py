@@ -434,7 +434,7 @@ class SyncWorld(iWorld):
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""
         old_sig = self.entity2sig.get(entity_id)
-        if not old_sig:
+        if old_sig is None:
             logger.warning(f"add_components: entity {entity_id} not found")
             return
 
