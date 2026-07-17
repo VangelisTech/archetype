@@ -228,6 +228,20 @@ class TestBrokerEdgeCases:
         await broker.remove("w", uuid7())
         assert len(broker._queues["w"]) == 1
 
+    @pytest.mark.asyncio
+    async def test_history_is_bounded_per_world(self):
+        broker = CommandBroker(max_history=2)
+        commands = [Command(type=CommandType.CUSTOM, payload={"i": i}) for i in range(3)]
+
+        for command in commands:
+            await broker.enqueue("world", command)
+
+        assert await broker.get_history("world", limit=100) == commands[-2:]
+
+    def test_history_bound_must_be_positive(self):
+        with pytest.raises(ValueError, match="max_history must be at least 1"):
+            CommandBroker(max_history=0)
+
 
 class TestBrokerConcurrency:
     @pytest.mark.asyncio
