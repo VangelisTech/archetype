@@ -1,13 +1,10 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Code-based graders for agent evals.
+"""Deterministic outcome checks for Archetype's repository scenarios.
 
-Per the Anthropic eval guide, code-based graders are:
-- Fast, cheap, objective, reproducible, easy to debug
-- Best for deterministic verification of outcomes
-
-These grade the OUTCOME, not the path the agent took.
+These checks grade the externally observable result, not the implementation
+path that produced it.
 """
 
 from __future__ import annotations

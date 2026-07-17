@@ -8,8 +8,7 @@ Usage:
     python -m evals.run --list [--suite SUITE]
 
 Reports the trial count, pass rate, average grader score, and whether every
-trial passed. Required groups fail on a missed grader; the advisory capability
-group fails only when a scenario crashes.
+trial passed. Every group fails on a missed grader or scenario error.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from evals.harness import EvalHarness
 from evals.suites import capability, idempotency, poison_command, regression, spec_contracts
 from evals.types import TaskResult
 
-REQUIRED_SUITES = frozenset({"regression", "spec", "idempotency"})
+REQUIRED_SUITES = frozenset({"regression", "spec", "idempotency", "capability"})
 KNOWN_SUITES = ("regression", "spec", "idempotency", "capability")
 
 
@@ -118,7 +117,7 @@ def print_report(results: list[TaskResult]) -> None:
         suites.setdefault(r.suite, []).append(r)
 
     print("\n" + "=" * 72)
-    print("EVAL RESULTS")
+    print("REPOSITORY CHECK RESULTS")
     print("=" * 72)
 
     for suite_name in KNOWN_SUITES:
@@ -231,12 +230,7 @@ def main() -> int:
 
     suite_status: dict[str, bool] = {}
     for suite_name, tasks in by_suite.items():
-        if suite_name in REQUIRED_SUITES:
-            suite_status[suite_name] = all(task.all_passed for task in tasks)
-        else:
-            suite_status[suite_name] = all(
-                not any(trial.error for trial in task.trials) for task in tasks
-            )
+        suite_status[suite_name] = all(task.all_passed for task in tasks)
 
     return 0 if all(suite_status[suite_name] for suite_name in required_to_pass) else 1
 

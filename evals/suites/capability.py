@@ -1,10 +1,11 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Broader end-to-end repository scenarios with advisory grader outcomes.
+"""Broader end-to-end repository scenarios with blocking grader outcomes.
 
-The CLI reports failed checks in this group but reserves a nonzero exit for
-scenario crashes. This is an execution policy, not a product capability model.
+These deterministic checks assert architectural behavior, so a missed grader
+fails the repository-check command. This is an execution policy, not a product
+capability model.
 """
 
 from __future__ import annotations

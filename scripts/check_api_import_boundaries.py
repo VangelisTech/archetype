@@ -187,7 +187,7 @@ def _public_api_violations(path: Path) -> list[str]:
     rel = str(path.relative_to(ROOT))
     violations: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             if _is_public_api_decorated(node):
                 violations += _signature_violations(rel, node.name, node)
         elif isinstance(node, ast.ClassDef) and _is_public_api_decorated(node):
@@ -195,7 +195,7 @@ def _public_api_violations(path: Path) -> list[str]:
             # signature surface, so a @public_api class taking a raw service
             # in __init__/__new__ is the same bypass in a different costume.
             for member in node.body:
-                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in (
+                if isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef) and member.name in (
                     "__init__",
                     "__new__",
                 ):

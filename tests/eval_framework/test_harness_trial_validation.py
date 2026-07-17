@@ -178,7 +178,7 @@ def test_run_cli_lists_the_live_registry_without_executing_tasks() -> None:
     ]
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert proc.stdout.startswith("suite\ttask\tdescription\n")
-    assert "EVAL RESULTS" not in proc.stdout
+    assert "REPOSITORY CHECK RESULTS" not in proc.stdout
     assert expected
     assert all(f"capability\t{task_id}\t" in proc.stdout for task_id in expected)
 
@@ -196,6 +196,32 @@ def test_run_cli_fails_required_task_without_grader_evidence(
     report = capsys.readouterr().out
     assert "[FAIL] empty_task" in report
     assert "error: task 'empty_task' produced no grader evidence" in report
+
+
+def test_run_cli_fails_capability_task_with_missed_grader(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    harness = EvalHarness()
+    harness.add(
+        "architectural_invariant",
+        suite="capability",
+        fn=lambda: [
+            GraderResult(
+                grader_name="observable_outcome",
+                passed=False,
+                score=0.0,
+                details="invariant did not hold",
+            )
+        ],
+    )
+    monkeypatch.setattr("evals.run.build_harness", lambda trials=1: harness)
+    monkeypatch.setattr(sys, "argv", ["evals.run", "--suite", "capability"])
+
+    assert run_main() == 1
+    report = capsys.readouterr().out
+    assert "[FAIL] architectural_invariant" in report
+    assert "invariant did not hold" in report
 
 
 def test_regression_cli_reports_poison_outcomes_without_library_tracebacks() -> None:
