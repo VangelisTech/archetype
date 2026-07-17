@@ -123,16 +123,18 @@ SPEC_CASES: tuple[SpecCase, ...] = (
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
-_RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
+_RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
+    {
+        "archetype.app.autoresearch_service",
+        "archetype.app.eval_service",
+    }
+)
+_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     {
         "archetype.app.command_service",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.auth.models",
-        # Type-only signature references; the operations themselves route
-        # through the gate (CommandType.AUTORESEARCH, QUERY_WORLD).
-        "archetype.app.autoresearch_service",
-        "archetype.app.eval_service",
     }
 )
 
@@ -275,6 +277,18 @@ def _in_ranges(lineno: int, ranges: list[tuple[int, int]]) -> bool:
     return any(start <= lineno <= end for start, end in ranges)
 
 
+def _is_app_module(module: str) -> bool:
+    return module == "archetype.app" or module.startswith("archetype.app.")
+
+
+def _runtime_app_import_is_allowed(
+    module: str, lineno: int, type_checking_ranges: list[tuple[int, int]]
+) -> bool:
+    return module in _RUNTIME_ALLOWED_APP_IMPORTS and (
+        module not in _RUNTIME_TYPE_ONLY_APP_IMPORTS or _in_ranges(lineno, type_checking_ranges)
+    )
+
+
 def _called_attr_name(call: ast.Call) -> str | None:
     if isinstance(call.func, ast.Attribute):
         return call.func.attr
@@ -382,9 +396,11 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
         rel = py.relative_to(ROOT)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith("archetype.app"):
+                if _is_app_module(node.module):
                     key = f"{rel}:{node.lineno}:allowed_app_import:{node.module}"
-                    import_checks[key] = node.module in _RUNTIME_ALLOWED_APP_IMPORTS
+                    import_checks[key] = _runtime_app_import_is_allowed(
+                        node.module, node.lineno, tc_ranges
+                    )
                 for alias in node.names:
                     if alias.name in {"iWorld", "AsyncWorld"}:
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
@@ -392,6 +408,11 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
 
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    if _is_app_module(alias.name):
+                        key = f"{rel}:{node.lineno}:allowed_app_import:{alias.name}"
+                        import_checks[key] = _runtime_app_import_is_allowed(
+                            alias.name, node.lineno, tc_ranges
+                        )
                     if alias.name in {"iWorld", "AsyncWorld"}:
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
                         world_ref_checks[key] = _in_ranges(node.lineno, tc_ranges)

@@ -113,12 +113,16 @@ def _imported_modules(node: ast.AST) -> list[str]:
     return []
 
 
+def _is_app_module(module: str) -> bool:
+    return module == "archetype.app" or module.startswith("archetype.app.")
+
+
 def _import_violations(path: Path, allowed: set[str], forbidden: set[str], scope: str) -> list[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
     violations: list[str] = []
     for node in ast.walk(tree):
         for module in _imported_modules(node):
-            if not module.startswith("archetype.app"):
+            if not _is_app_module(module):
                 continue
             if module in forbidden:
                 violations.append(
