@@ -26,6 +26,7 @@ from weakref import WeakSet
 from uuid_utils import UUID
 
 from archetype import _obs
+from archetype.app.artifacts import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import WorldInfo
@@ -82,7 +83,14 @@ class ArchetypeRuntime:
         ...     result = await world.run(steps=10)
     """
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        actor_ctx: ActorCtx | None = None,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+    ) -> None:
         """Initialize the runtime.
 
         Args:
@@ -91,6 +99,11 @@ class ArchetypeRuntime:
             log: Package log level: `debug`, `info`, `warning`, or `error`.
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
+            artifact_store: Optional durable object/index configuration for
+                `RuntimeWorld.publish_artifacts()` and `.artifacts()`.
+            artifact_source_resolver: Optional provider adapter for immutable
+                checkpoint references. Local files and Apple Container rootfs
+                exports are supported by default.
         """
         # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
         # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
@@ -109,7 +122,10 @@ class ArchetypeRuntime:
             debug_console=level == logging.DEBUG,
         )
 
-        self._container = ServiceContainer()
+        self._container = ServiceContainer(
+            artifact_store_config=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
         self._actor_ctx = actor_ctx or default_actor_ctx()
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
         self._closed = False
@@ -277,10 +293,20 @@ class ArchetypeRuntime:
 
     @classmethod
     def sync(
-        cls, *, actor_ctx: ActorCtx | None = None, log: str | None = None
+        cls,
+        *,
+        actor_ctx: ActorCtx | None = None,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ) -> SyncArchetypeRuntime:
         """Create the synchronous runtime facade."""
-        return SyncArchetypeRuntime(actor_ctx=actor_ctx, log=log)
+        return SyncArchetypeRuntime(
+            actor_ctx=actor_ctx,
+            log=log,
+            artifact_store=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
         self._handles.add(handle)
@@ -300,8 +326,20 @@ class SyncArchetypeRuntime:
     `ArchetypeRuntime` directly.
     """
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
-        self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx, log=log)
+    def __init__(
+        self,
+        *,
+        actor_ctx: ActorCtx | None = None,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+    ) -> None:
+        self._runtime = ArchetypeRuntime(
+            actor_ctx=actor_ctx,
+            log=log,
+            artifact_store=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
         self._runner: asyncio.Runner | None = None
 
     def __enter__(self) -> SyncArchetypeRuntime:

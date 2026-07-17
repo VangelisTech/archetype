@@ -28,6 +28,10 @@ help:
 	@echo "  make test           Run tests (fast)"
 	@echo "  make test-cov       Run tests with coverage"
 	@echo "  make test-all       Run all tests verbose"
+	@echo "  make test-apple-container Run live local Apple Container integration"
+	@echo "  make test-modal     Run all live Modal coding-agent integrations"
+	@echo "  make test-modal-sandbox Run live Modal CLI/filesystem/snapshot integration"
+	@echo "  make test-modal-agent Run paid API-backed Claude Code + Codex integration"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
 	@echo "  make mutmut-results Show mutmut survivors from the last run"
@@ -138,7 +142,8 @@ complexity:
 
 .PHONY: test
 test:
-	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup \
+		-m "not modal and not apple_container"
 
 # Narrow test target: run a specific path/file/nodeid.
 # Usage: make test-mod MOD=tests/lifecycle/
@@ -156,6 +161,7 @@ test-mod:
 test-cov:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest \
 		-n auto --dist loadgroup \
+		-m "not modal and not apple_container" \
 		--cov=archetype \
 		--cov-branch \
 		--cov-report=term-missing:skip-covered \
@@ -164,7 +170,34 @@ test-cov:
 
 .PHONY: test-all
 test-all:
-	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short \
+		-m "not modal and not apple_container"
+
+.PHONY: test-apple-container
+test-apple-container:
+	@ARCHETYPE_RUN_APPLE_CONTAINER_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run pytest -q -m apple_container \
+		tests/integration/test_apple_container_coding_agent_live.py
+
+.PHONY: test-modal
+test-modal:
+	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 \
+		ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION=1 \
+		PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-agent
+test-modal-agent:
+	@ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-sandbox
+test-modal-sandbox:
+	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
 
 .PHONY: ci
 ci: format-check lint lock-check test-cov eval-reg eval-idem

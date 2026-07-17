@@ -17,9 +17,10 @@ iStorageService -> iWorldService -> iMutationService
                 -> iQueryService -> iEvalService
                 -> iAuditLog
 iStorageService + iWorldService -> iFactService
+iStorageService + iWorldService -> iArtifactService
 
 iWorldService + iMutationService + iSimulationService + iQueryService
-    + iFactService + iAuditLog + iCommandBroker
+    + iFactService + iArtifactService + iAuditLog + iCommandBroker
     -> iCommandService (the ActorCtx-aware gate)
 ```
 
@@ -162,6 +163,28 @@ async def read_facts(world_id, table_name,
 The envelope, logical key, batching, schema, and writer-concurrency contracts
 are normative in [Durable Facts](durable-facts.md).
 
+### `iArtifactService`
+
+Publishes checkpoint-qualified sandbox evidence to object storage and a
+dedicated Iceberg index. It depends on `iStorageService` for the artifact index
+and world control catalog, and on `iWorldService` only to resolve a live
+world's storage identity. It owns no sandbox provider SDK; immutable source
+references are materialized through an injected `ArtifactSourceResolver`.
+
+```python
+async def publish(request, storage_config=None) -> ArtifactPublishReceipt
+async def query(world_id, run_id, *, attempt_id=None, kinds=None) -> DataFrame
+async def reconcile(world_id, *, storage_config=None,
+                    limit=100) -> ArtifactReconcileResult
+```
+
+Publication is claim-before-I/O and moves through `PENDING`, `UPLOADED`, and
+`INDEXED`. The canonical replay request is durable in `PENDING`; complete
+uploaded-object metadata is durable in `UPLOADED`. Queries read the Iceberg
+index and do not require a live world or sandbox. The complete state machine,
+schemas, R2 layout, lifecycle, and crash matrix are normative in
+[Artifact Finalization](artifact-finalization.md).
+
 ### `iCommandBroker`
 
 Priority queue + history of submitted commands. Pure queue — RBAC, quotas, and audit emission happen at the gate, not here.
@@ -213,6 +236,7 @@ def __init__(
     broker: iCommandBroker,
     audit: iAuditLog,
     facts: iFactService,
+    artifacts: iArtifactService,
 ) -> None: ...
 ```
 
@@ -229,6 +253,10 @@ async def ingest_files(ctx, world_id, paths, processor,
                        storage_config=None) -> FactWriteReceipt
 async def write_facts(ctx, world_id, table_name, facts,
                       storage_config=None) -> FactWriteReceipt
+async def publish_artifacts(ctx, world_id, request,
+                            storage_config=None) -> ArtifactPublishReceipt
+async def reconcile_artifacts(ctx, world_id, storage_config=None,
+                              limit=100) -> ArtifactReconcileResult
 ```
 
 #### Lifecycle (return WorldInfo, not iWorld)
@@ -260,6 +288,8 @@ async def query_archetype(ctx, sig, world_id, run_id, storage_config=None,
 async def list_signatures(ctx, storage_config=None) -> list[ArchetypeSignature]
 async def query_facts(ctx, world_id, table_name,
                       storage_config=None) -> DataFrame
+async def query_artifacts(ctx, world_id, run_id, *,
+                          attempt_id=None, kinds=None) -> DataFrame
 ```
 
 #### Resource attachment
@@ -317,7 +347,8 @@ Adding a method to `iCommandService` requires:
 
 - A corresponding `CommandType` entry in `app/models.py`, or explicit reuse of
   an existing command type when the new surface has the same permission class
-  (typed fact writes reuse `INGEST_FACT`; fact reads reuse `QUERY_WORLD`).
+  (typed fact and artifact writes/reconciliation reuse `INGEST_FACT`; fact and
+  artifact reads reuse `QUERY_WORLD`).
 - An entry in `COMMANDS_BY_ROLE` (see `command-gate.md`).
 - A test in the role-permissions parametrized suite.
 - The thin proxy implementation: `guardrail_allow → delegate → audit.record`.
@@ -336,6 +367,8 @@ class ServiceContainer:
         self,
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
+        artifact_store_config: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ):
         self.broker = CommandBroker()
         self._owns_storage_service = storage_service is None
@@ -349,6 +382,12 @@ class ServiceContainer:
         self.query_service = QueryService(self.storage_service)
         self.eval_service = EvalService(self.query_service)
         self.fact_service = FactService(self.storage_service, self.world_service)
+        self.artifact_service = ArtifactService(
+            self.storage_service,
+            self.world_service,
+            artifact_store_config,
+            artifact_source_resolver,
+        )
         self.command_service = CommandService(
             mutations=self.mutation_service,
             worlds=self.world_service,
@@ -357,6 +396,7 @@ class ServiceContainer:
             broker=self.broker,
             audit=self.audit,
             facts=self.fact_service,
+            artifacts=self.artifact_service,
         )
 
     async def shutdown(self) -> None:
@@ -376,5 +416,6 @@ remains open.
 - `runtime.md` — what the runtime calls into.
 - `command-gate.md` — `ActorCtx`, roles, audit emission shape.
 - `audit-log.md` — append-only audit row schema and query semantics.
+- `artifact-finalization.md` — sandbox checkpoint, object bundle, index, and reconciler semantics.
 - `execution-hierarchy.md` — what `iSimulationService` does in detail.
 - `world-lifecycle.md` — what `iWorldService` does in detail.

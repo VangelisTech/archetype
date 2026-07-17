@@ -24,6 +24,7 @@ The runtime module imports from `archetype.app` ONLY:
 - `archetype.app.container`
 - `archetype.app.models`
 - `archetype.app.auth.models`
+- `archetype.app.artifacts` (immutable artifact contracts only)
 
 Imports from `archetype.app.{mutation_service, simulation_service, query_service, world_service, broker}` are forbidden. Any such import is a spec violation; the gate is leaking.
 
@@ -154,6 +155,17 @@ path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
 the handle's current world and run; fork handles do not inherit ancestor fact
 rows.
 
+### R19 — Artifact finalization is an optional gated surface
+
+`ArchetypeRuntime(artifact_store=...)` configures one process-level
+`iArtifactService`. `world.publish_artifacts(request)` and
+`world.reconcile_artifacts()` use the operator `INGEST_FACT` permission class;
+`world.artifacts()` uses the viewer `QUERY_WORLD` permission class. The handle
+verifies that the immutable request's world and run match its own identity, but
+does not inspect, upload, or index bytes itself. Async and sync handles expose
+the same methods. The full provider-checkpoint, publication, and lifecycle
+contract is [Artifact Finalization](artifact-finalization.md).
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:
@@ -175,6 +187,10 @@ await world.remove_components(eid, Position, Velocity)
 # External facts (Iceberg)
 receipt = await world.ingest_files("inputs/**/*.json", JsonFacts())
 receipt = await world.write_facts("measurements", existing_daft_pipeline)
+
+# Sandbox evidence (requires ArchetypeRuntime(artifact_store=...))
+receipt = await world.publish_artifacts(bundle_request)
+result = await world.reconcile_artifacts(limit=100)
 
 # Processors
 await world.add_processor(MyProcessor())
@@ -199,6 +215,7 @@ outs = await world.grade(Position, graders=[my_grader])  # query + graders
 info = await world.info()                                # WorldInfo snapshot
 df = await world.history(limit=100)
 df = await world.facts("measurements")
+df = await world.artifacts(attempt_id="attempt-1")
 procs = await world.list_processors()
 hooks = await world.list_hooks()
 res = await world.list_resources()
@@ -337,3 +354,4 @@ with ArchetypeRuntime.sync() as runtime:
 - `world-lifecycle.md` — Fork, destroy, info-class downgrade, append-only invariant.
 - `service-protocols.md` — `iCommandService` and the services it gates.
 - `audit-log.md` — Append-only audit row schema and query semantics.
+- `artifact-finalization.md` — Sandbox checkpoints, artifact bundles, indexing, and reconciliation.

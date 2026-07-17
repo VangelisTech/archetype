@@ -24,6 +24,7 @@ Service dependency graph (providers point to consumers)::
                                   +---> iSimulationService
                     -> iQueryService -> iEvalService
                     -> iFactService
+                    -> iArtifactService
                     -> iAuditLog
 
     iWorldService + iMutationService + iSimulationService + iQueryService
@@ -42,6 +43,13 @@ if TYPE_CHECKING:
 
     from uuid_utils import UUID
 
+    from archetype.app.artifacts import (
+        ArtifactBundleRequest,
+        ArtifactPublishReceipt,
+        ArtifactReconcileResult,
+        ArtifactSourceResolver,
+        ArtifactStoreConfig,
+    )
     from archetype.app.auth.models import ActorCtx
     from archetype.app.facts import FactProcessor, FactWriteReceipt
     from archetype.app.iceberg import IcebergCatalogContext
@@ -330,6 +338,45 @@ class iFactService(Protocol):
     ) -> DataFrame: ...
 
 
+class iArtifactService(Protocol):
+    """Durable object publication and queryable artifact indexing.
+
+    Depends on: ``iStorageService``, ``iWorldService``
+    """
+
+    def __init__(
+        self,
+        storage_service: iStorageService,
+        world_service: iWorldService,
+        config: ArtifactStoreConfig | None = None,
+        source_resolver: ArtifactSourceResolver | None = None,
+    ) -> None: ...
+
+    async def publish(
+        self,
+        request: ArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt: ...
+
+    async def query(
+        self,
+        world_id: str,
+        run_id: str,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame: ...
+
+    async def reconcile(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+    ) -> ArtifactReconcileResult: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Command broker — pure queue. No RBAC. No ActorCtx.
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -393,7 +440,8 @@ class iCommandService(Protocol):
     """Policy enforcement point. Every external operation flows through here.
 
     Depends on: iMutationService, iWorldService, iSimulationService,
-                iQueryService, iFactService, iCommandBroker, iAuditLog
+                iQueryService, iFactService, iArtifactService,
+                iCommandBroker, iAuditLog
     """
 
     def __init__(
@@ -405,6 +453,7 @@ class iCommandService(Protocol):
         broker: iCommandBroker,
         audit: iAuditLog,
         facts: iFactService | None = None,
+        artifacts: iArtifactService | None = None,
     ) -> None: ...
 
     # ── Mutations (gated, direct) ─────────────────────────────────────────
@@ -458,6 +507,31 @@ class iCommandService(Protocol):
         *,
         storage_config: StorageConfig | None = None,
     ) -> DataFrame: ...
+    async def publish_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        request: ArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt: ...
+    async def query_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        run_id: str,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame: ...
+    async def reconcile_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+    ) -> ArtifactReconcileResult: ...
 
     # ── Lifecycle (gated, direct) — returns WorldInfo, never iWorld ────────
 

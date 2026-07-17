@@ -147,7 +147,7 @@ class Run(Component):
         experiment_name: Experiment this run belongs to (free-form label)
         vm_name:         masterblaster VM name backing this run
         status:          One of the RunStatus values (stored as string)
-        harness:         'claude-code' | 'opencode' | 'hermes'
+        harness:         'codex' | 'claude-code' | 'opencode' | 'hermes'
         repo_url:        Git repository URL
         branch:          Git branch
         task:            Natural-language task prompt given to the agent

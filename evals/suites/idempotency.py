@@ -23,6 +23,12 @@ from pathlib import Path
 from daft.io import IOConfig
 from uuid_utils import uuid7
 
+from archetype.app._catalog import ArtifactPublicationConflictError
+from archetype.app.artifacts import (
+    ArtifactBundleRequest,
+    ArtifactCandidate,
+    ArtifactStoreConfig,
+)
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
@@ -238,6 +244,14 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
             "Same evaluation identity, subject, and contract returns one receipt without re-grading"
         ),
         task_id="idempotency.evaluation_receipt_replay",
+    ),
+    IdempotencyCase(
+        operation="`ArtifactService.publish()` replay",
+        expected_contract=(
+            "Same checkpoint-qualified request returns the original receipt and one logical "
+            "index row set; changed canonical request conflicts"
+        ),
+        task_id="idempotency.artifact_publication_replay",
     ),
     IdempotencyCase(
         operation="Hard process crash and cold resume",
@@ -1042,6 +1056,85 @@ async def _task_step_and_run_are_not_idempotent() -> list[GraderResult]:
             await container.shutdown()
 
 
+def task_artifact_publication_replay() -> list[GraderResult]:
+    """Artifact bundle replay converges and changed requests fail closed."""
+    return asyncio.run(_task_artifact_publication_replay())
+
+
+async def _task_artifact_publication_replay() -> list[GraderResult]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "result.json"
+        source.write_text('{"passed":true}\n')
+        artifact_store = ArtifactStoreConfig.local(root / "artifacts")
+        storage = StorageConfig(uri=root / "world", namespace="artifact_idempotency")
+        container = ServiceContainer(artifact_store_config=artifact_store)
+        try:
+            world = await container.world_service.create_world(
+                WorldConfig(name="artifact-idempotency"), storage
+            )
+            request = ArtifactBundleRequest(
+                world_id=str(world.world_id),
+                run_id=str(world.run_id),
+                tick=0,
+                attempt_id="attempt-1",
+                idempotency_key="bundle-1",
+                checkpoint_ref="test-checkpoint://snapshot-1",
+                checkpoint_provider="test",
+                artifacts=(
+                    ArtifactCandidate(
+                        source_ref=str(source),
+                        logical_path="result.json",
+                    ),
+                ),
+            )
+            first = await container.artifact_service.publish(request, storage_config=storage)
+            files_before = sorted(
+                path for path in Path(artifact_store.object_uri).rglob("*") if path.is_file()
+            )
+            replay = await container.artifact_service.publish(request, storage_config=storage)
+            files_after = sorted(
+                path for path in Path(artifact_store.object_uri).rglob("*") if path.is_file()
+            )
+            changed_conflicts = False
+            changed = request.model_copy(
+                update={
+                    "artifacts": (
+                        ArtifactCandidate(
+                            source_ref=str(source),
+                            logical_path="changed.json",
+                        ),
+                    )
+                }
+            )
+            try:
+                await container.artifact_service.publish(changed, storage_config=storage)
+            except ArtifactPublicationConflictError:
+                changed_conflicts = True
+            rows = (
+                await container.artifact_service.query(
+                    request.world_id,
+                    request.run_id,
+                    attempt_id=request.attempt_id,
+                )
+            ).to_pylist()
+            return [
+                state_check(
+                    {
+                        "first_is_indexed": first.status == "indexed",
+                        "replay_is_original_receipt": replay.duplicate
+                        and replay.records == first.records,
+                        "replay_writes_no_objects": files_after == files_before,
+                        "one_logical_bundle_row_set": len(rows) == 3,
+                        "changed_request_conflicts": changed_conflicts,
+                    },
+                    name="artifact_publication_replay",
+                )
+            ]
+        finally:
+            await container.shutdown()
+
+
 def register(harness: EvalHarness) -> None:
     """Register all idempotency tasks on the harness."""
     harness.add(
@@ -1151,6 +1244,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_evaluation_receipt_replay,
         desc="Evaluation replay returns one receipt without re-running the grader.",
+    )
+    harness.add(
+        "idempotency.artifact_publication_replay",
+        suite=SUITE,
+        fn=task_artifact_publication_replay,
+        desc="Artifact bundle replay returns one logical index set and rejects changed input.",
     )
     harness.add(
         "idempotency.process_crash_cold_resume",

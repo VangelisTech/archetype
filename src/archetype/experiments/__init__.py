@@ -23,6 +23,10 @@ Ingestion from archetype-runner's SQLite registry is provided by
 :func:`load_runner_state_db` and :func:`ingest_runner_state`.
 """
 
+from archetype.experiments.apple_container_coding_agent import (
+    AppleContainerSandboxClient,
+    AppleContainerSandboxSpec,
+)
 from archetype.experiments.claude_sessions import (
     load_claude_session,
     load_claude_sessions,
@@ -38,6 +42,15 @@ from archetype.experiments.loaders import (
     ingest_runner_state,
     load_runner_state_db,
 )
+from archetype.experiments.modal_coding_agent import (
+    AgentHarness,
+    CodingAgentSandboxClient,
+    GateFailedError,
+    ModalArtifactSourceResolver,
+    ModalSandboxClient,
+    ModalSandboxSpec,
+    ValidatorSpec,
+)
 from archetype.experiments.trajectories import (
     Trajectory,
     TrajectoryAction,
@@ -50,8 +63,16 @@ from archetype.experiments.trajectories import (
 )
 
 __all__ = [
+    "AgentHarness",
+    "AppleContainerSandboxClient",
+    "AppleContainerSandboxSpec",
     "BranchHead",
+    "CodingAgentSandboxClient",
     "Experiment",
+    "GateFailedError",
+    "ModalArtifactSourceResolver",
+    "ModalSandboxClient",
+    "ModalSandboxSpec",
     "Result",
     "Run",
     "RunStatus",
@@ -62,6 +83,7 @@ __all__ = [
     "TrajectoryReward",
     "TrajectoryTurn",
     "Turn",
+    "ValidatorSpec",
     "ingest_runner_state",
     "load_claude_session",
     "load_claude_sessions",

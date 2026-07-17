@@ -5,6 +5,7 @@
 
 import pytest
 
+from archetype.app.artifact_service import ArtifactService
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
@@ -40,6 +41,7 @@ class TestServiceContainer:
         assert isinstance(container.command_service, CommandService)
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
+        assert isinstance(container.artifact_service, ArtifactService)
 
     @pytest.mark.asyncio
     async def test_containers_borrow_shared_storage_service(self):

@@ -115,6 +115,36 @@ method = "collect"
 reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed fact payload rows."
 
 [[entries]]
+path = "src/archetype/app/artifact_service.py"
+line = 675
+method = "to_pylist"
+reason = "Bundle planning boundary: materializes only one attempt's local URI, logical path, hash, byte count, and MIME metadata after Daft has excluded file bytes; deterministic artifact IDs, size-policy rejection, and stable object-folder retry lookups are imperative publication decisions that cannot remain in a lazy plan."
+
+[[entries]]
+path = "src/archetype/app/artifact_service.py"
+line = 727
+method = "to_pylist"
+reason = "Object-store write-receipt boundary: Daft performs the upload and excludes payload bytes, then the bounded per-attempt object URIs must enter Python so the UPLOADED control-catalog record can durably describe the exact objects before indexing."
+
+[[entries]]
+path = "src/archetype/app/artifact_service.py"
+line = 740
+method = "to_pylist"
+reason = "Single-row manifest write-receipt boundary: the generated bundle manifest is uploaded through Daft and its one returned object URI must be stored in the publication ledger and queryable index."
+
+[[entries]]
+path = "src/archetype/app/artifact_service.py"
+line = 755
+method = "to_pylist"
+reason = "Object-store retry-discovery boundary: materializes only object paths under one content-addressed artifact folder so a crash after upload but before ledger persistence resumes without writing a duplicate object; artifact payloads are never read."
+
+[[entries]]
+path = "src/archetype/app/artifact_service.py"
+line = 773
+method = "to_pylist"
+reason = "Bundle index idempotency boundary: rows are already filtered lazily to one deterministic bundle, then enter Python for exact immutable-record conflict validation and calculation of the missing subset before the Iceberg append."
+
+[[entries]]
 path = "src/archetype/app/world_service.py"
 line = 710
 method = "to_pylist"

@@ -80,6 +80,7 @@ nav:
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
+          - Artifact Finalization API: reference/python/artifacts.md
           - Service Integration: reference/python/services.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
@@ -98,6 +99,7 @@ nav:
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
       - Durable Facts: guide/durable-facts.md
+      - Artifact Finalization: guide/artifact-finalization.md
       - Audit Log: guide/audit-log.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md

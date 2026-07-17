@@ -211,6 +211,10 @@ jobs:
       - name: Run all numbered examples
         run: |
           for f in examples/[0-9][0-9]_*.py; do
+            if [ "$f" = "examples/11_coding_agent_mission.py" ]; then
+              echo "Skipping $f; its local backend requires Apple Container."
+              continue
+            fi
             echo "::group::$f"
             uv run python "$f"
             echo "::endgroup::"

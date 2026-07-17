@@ -20,6 +20,8 @@ Wires all services together. Single point of construction.
 
 from __future__ import annotations
 
+from archetype.app.artifact_service import ArtifactService
+from archetype.app.artifacts import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.audit_log import AuditLog
 from archetype.app.auth import reset_tick_counters
 from archetype.app.autoresearch_service import AutoResearchService
@@ -53,6 +55,8 @@ class ServiceContainer:
         self,
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
+        artifact_store_config: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -61,6 +65,8 @@ class ServiceContainer:
                     "injected Daft Session"
                 )
             storage_service.require_iceberg_identity(audit_storage_config)
+            if artifact_store_config is not None:
+                storage_service.require_iceberg_identity(artifact_store_config.index_storage)
 
         # Infrastructure
         self.broker = CommandBroker()
@@ -75,6 +81,12 @@ class ServiceContainer:
         self.query_service = QueryService(self.storage_service, self.audit_log)
         self.eval_service = EvalService(self.query_service)
         self.fact_service = FactService(self.storage_service, self.world_service)
+        self.artifact_service = ArtifactService(
+            self.storage_service,
+            self.world_service,
+            artifact_store_config,
+            artifact_source_resolver,
+        )
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -95,6 +107,7 @@ class ServiceContainer:
             broker=self.broker,
             audit=self.audit_log,
             facts=self.fact_service,
+            artifacts=self.artifact_service,
             ingestion=self.ingestion_service,
             evals=self.eval_service,
             autoresearch=self.autoresearch_service,

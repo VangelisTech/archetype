@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 
 from archetype.app._catalog import (
+    ArtifactPublicationConflictError,
+    ArtifactPublicationPendingError,
     CatalogConflictError,
     ClaimConflictError,
     ClaimPendingError,
@@ -282,6 +284,99 @@ async def test_claim_lifecycle_parity(tmp_path, worker_url):
         # Completed claims join the visible set at their tick.
         visible = await catalog.visible_tokens("w1", "r1", [0])
         assert claim.commit_token in visible.get(0, [])
+        await catalog.close()
+
+
+async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
+    request_json = '{"world_id":"w1","run_id":"r1"}'
+    retry_until_ms = int(time.time() * 1000) + 60_000
+    for catalog in await _both(tmp_path, worker_url):
+        outcome, publication = await catalog.acquire_artifact_publication(
+            world_id="w1",
+            run_id="r1",
+            attempt_id="a1",
+            idempotency_key="bundle-1",
+            request_digest="digest-1",
+            request_json=request_json,
+            claimant="owner-1",
+            retry_until_ms=retry_until_ms,
+            lease_seconds=30.0,
+        )
+        assert outcome == "acquired" and publication.status == "PENDING"
+
+        with pytest.raises(ArtifactPublicationPendingError):
+            await catalog.acquire_artifact_publication(
+                world_id="w1",
+                run_id="r1",
+                attempt_id="a1",
+                idempotency_key="bundle-1",
+                request_digest="digest-1",
+                request_json=request_json,
+                claimant="owner-2",
+                retry_until_ms=retry_until_ms,
+            )
+        with pytest.raises(ArtifactPublicationConflictError):
+            await catalog.acquire_artifact_publication(
+                world_id="w1",
+                run_id="r1",
+                attempt_id="a1",
+                idempotency_key="bundle-1",
+                request_digest="different",
+                request_json=request_json,
+                claimant="owner-2",
+                retry_until_ms=retry_until_ms,
+            )
+
+        await catalog.record_artifact_uploads(
+            "w1",
+            publication.publication_key,
+            "owner-1",
+            '[{"artifact_id":"x"}]',
+            "s3://bucket/manifest",
+        )
+        await catalog.fail_artifact_publication(
+            "w1",
+            publication.publication_key,
+            "owner-1",
+            "index unavailable",
+            retry_at=0.0,
+        )
+        due = await catalog.list_due_artifact_publications("w1", now=time.time(), limit=10)
+        assert len(due) == 1 and due[0].status == "UPLOADED"
+
+        outcome, recovered = await catalog.acquire_artifact_publication(
+            world_id="w1",
+            run_id="r1",
+            attempt_id="a1",
+            idempotency_key="bundle-1",
+            request_digest="digest-1",
+            request_json=request_json,
+            claimant="reconciler",
+            retry_until_ms=retry_until_ms,
+        )
+        assert outcome == "recovered" and recovered.attempt_count == 2
+        renewed = await catalog.renew_artifact_publication(
+            "w1",
+            recovered.publication_key,
+            "reconciler",
+            lease_seconds=60.0,
+        )
+        assert renewed.lease_expires_at > time.time()
+        await catalog.complete_artifact_publication(
+            "w1", recovered.publication_key, "reconciler", 99
+        )
+        outcome, duplicate = await catalog.acquire_artifact_publication(
+            world_id="w1",
+            run_id="r1",
+            attempt_id="a1",
+            idempotency_key="bundle-1",
+            request_digest="digest-1",
+            request_json=request_json,
+            claimant="later",
+            retry_until_ms=retry_until_ms,
+        )
+        assert outcome == "duplicate"
+        assert duplicate.index_snapshot_id == 99
         await catalog.close()
 
 

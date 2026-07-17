@@ -23,6 +23,7 @@ The current contract set is split across design docs and executable tests.
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Durable Facts](durable-facts.md) | External-fact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
+| [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable object bundles, idempotent indexing, reconciliation, lifecycle, and telemetry correlation. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
@@ -80,6 +81,7 @@ This specification covers:
 - top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
+- sandbox checkpoint, artifact publication, and reconciliation boundaries
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future
@@ -889,6 +891,7 @@ the constraints that any acceptable design must satisfy.
 | `ingest_fact()` replay | Identical external identity and payload converges on one visible fact; changed payload conflicts |
 | `ingest_fact()` crash recovery | Lease takeover completes an appended orphan without creating a second visible fact |
 | `evaluate()` replay | Same evaluation identity, subject, and contract returns one receipt without re-grading |
+| `ArtifactService.publish()` replay | Same checkpoint-qualified request returns the original receipt and one logical index row set; changed canonical request conflicts |
 | Hard process crash and cold resume | Unpublished physical rows do not advance a fresh process beyond the last visible tick |
 | Independent writer-process race | Exactly one fenced writer publishes the contested tick |
 | Independent process `ingest_fact()` replay | Concurrent processes converge on one visible external fact |
@@ -897,7 +900,8 @@ the constraints that any acceptable design must satisfy.
 The durable rows above summarize the normative amendments in
 [Durable Discovery](durable-discovery.md),
 [Atomic Visibility](atomic-visibility.md),
-[World Lifecycle](world-lifecycle.md), and [Durable Facts](durable-facts.md).
+[World Lifecycle](world-lifecycle.md), [Durable Facts](durable-facts.md), and
+[Artifact Finalization](artifact-finalization.md).
 The idempotency eval manifest must match this table exactly; `make
 idempotency-audit` is the fast static drift check, while `make eval-idem`
 executes the behavioral scenarios.

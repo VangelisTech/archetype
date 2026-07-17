@@ -23,6 +23,11 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
+from archetype.app.artifacts import (
+    ArtifactBundleRequest,
+    ArtifactPublishReceipt,
+    ArtifactReconcileResult,
+)
 from archetype.app.auth.models import ActorCtx
 from archetype.app.models import (
     EpisodeConfig,
@@ -285,6 +290,22 @@ class RuntimeWorld:
                 wid,
                 table_name,
                 facts,
+                storage_config=self._state.storage_config,
+            )
+
+    async def publish_artifacts(self, request: ArtifactBundleRequest) -> ArtifactPublishReceipt:
+        """Durably upload and index one checkpoint-qualified evidence bundle."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            info = await self._resolve_info(wid)
+            if request.world_id != str(wid):
+                raise ValueError("artifact request world_id does not match this handle")
+            if request.run_id != str(info.run_id or ""):
+                raise ValueError("artifact request run_id does not match this world")
+            return await self._gate.publish_artifacts(
+                self._ctx,
+                wid,
+                request,
                 storage_config=self._state.storage_config,
             )
 
@@ -616,6 +637,35 @@ class RuntimeWorld:
                 storage_config=self._state.storage_config,
             )
 
+    async def artifacts(
+        self,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame:
+        """Return queryable artifact rows for this world's current run."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            info = await self._resolve_info(wid)
+            return await self._gate.query_artifacts(
+                self._ctx,
+                wid,
+                str(info.run_id or ""),
+                attempt_id=attempt_id,
+                kinds=kinds,
+            )
+
+    async def reconcile_artifacts(self, *, limit: int = 100) -> ArtifactReconcileResult:
+        """Retry due artifact publications for this world."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._gate.reconcile_artifacts(
+                self._ctx,
+                wid,
+                storage_config=self._state.storage_config,
+                limit=limit,
+            )
+
     async def list_processors(self) -> list[ProcessorInfo]:
         """Return summaries of installed processors."""
         async with self._state.op_lock:
@@ -731,6 +781,9 @@ class SyncRuntimeWorld:
 
     def write_facts(self, table_name: str, facts: DataFrame) -> FactWriteReceipt:
         return self._run(lambda: self._world.write_facts(table_name, facts))
+
+    def publish_artifacts(self, request: ArtifactBundleRequest) -> ArtifactPublishReceipt:
+        return self._run(lambda: self._world.publish_artifacts(request))
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -853,6 +906,17 @@ class SyncRuntimeWorld:
 
     def facts(self, table_name: str) -> DataFrame:
         return self._run(lambda: self._world.facts(table_name))
+
+    def artifacts(
+        self,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame:
+        return self._run(lambda: self._world.artifacts(attempt_id=attempt_id, kinds=kinds))
+
+    def reconcile_artifacts(self, *, limit: int = 100) -> ArtifactReconcileResult:
+        return self._run(lambda: self._world.reconcile_artifacts(limit=limit))
 
     def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())

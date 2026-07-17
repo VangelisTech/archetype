@@ -26,6 +26,9 @@ _RUNTIME_ALLOWED_APP = frozenset(
         "archetype.app.command_service",
         "archetype.app.container",
         "archetype.app.models",
+        # Frozen artifact request/receipt models only. All operations still
+        # route through CommandService.
+        "archetype.app.artifacts",
         "archetype.app.auth.models",
         # Type-only signature references for world.autoresearch / world.grade;
         # the operations themselves route through the gate.

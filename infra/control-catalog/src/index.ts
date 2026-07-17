@@ -9,7 +9,7 @@
 //   signatures: the cross-world discovery queries per-world sharding cannot
 //   answer. Low write rate by construction (create/fork/first-append only).
 // - WorldCommitDO — one instance per world id. Writer fence, tick manifests,
-//   and fact claims: the per-tick hot path. A Durable Object executes
+//   fact claims, and artifact publication leases: the per-world hot path. A Durable Object executes
 //   requests serially, so the fence is structural — publish is a straight-
 //   line transaction with no CAS gymnastics.
 //
@@ -240,6 +240,19 @@ export class WorldCommitDO implements DurableObject {
         claimant TEXT NOT NULL, lease_expires_at REAL NOT NULL,
         fence_epoch INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS artifact_publications (
+        publication_key TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+        request_digest TEXT NOT NULL, status TEXT NOT NULL,
+        request_json TEXT NOT NULL, records_json TEXT NOT NULL DEFAULT '[]',
+        claimant TEXT NOT NULL, lease_expires_at REAL NOT NULL,
+        retry_until_ms INTEGER NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 1,
+        index_snapshot_id INTEGER NOT NULL DEFAULT 0,
+        manifest_uri TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS artifact_publications_due
+      ON artifact_publications (status, lease_expires_at);
     `);
   }
 
@@ -436,6 +449,226 @@ export class WorldCommitDO implements DurableObject {
     if (route[0] === "claims" && route.length === 2 && method === "GET") {
       const rows = this.sql.exec("SELECT * FROM claims WHERE scope_key = ?", route[1]).toArray();
       return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
+    }
+
+    if (route[0] === "artifact-publications" && route[1] === "acquire" && method === "POST") {
+      const p = (await request.json()) as Record<string, unknown>;
+      const nowSec = Date.now() / 1000;
+      const lease = Number(p.lease_seconds ?? 900);
+      const existing = this.sql
+        .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", p.publication_key)
+        .toArray();
+      if (existing.length > 0) {
+        const row = existing[0] as Record<string, unknown>;
+        if (row.request_digest !== p.request_digest) {
+          return conflict(
+            "artifact_publication_conflict",
+            `${p.idempotency_key} was reused with a different publication request`,
+          );
+        }
+        if (row.status === "INDEXED") {
+          return json({ outcome: "duplicate", publication: row });
+        }
+        if (row.status === "EXPIRED") {
+          return json({ outcome: "expired", publication: row });
+        }
+        if (Number(row.lease_expires_at) > nowSec) {
+          return json(
+            { error: "artifact_publication_pending", message: "a live publication lease exists" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET claimant = ?, lease_expires_at = ?, " +
+            "attempt_count = attempt_count + 1, updated_at = ? WHERE publication_key = ?",
+          p.claimant,
+          nowSec + lease,
+          now,
+          p.publication_key,
+        );
+        const updated = this.sql
+          .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", p.publication_key)
+          .toArray();
+        return json({ outcome: "recovered", publication: updated[0] });
+      }
+      this.sql.exec(
+        "INSERT INTO artifact_publications (publication_key, run_id, attempt_id, " +
+          "idempotency_key, request_digest, status, request_json, records_json, claimant, " +
+          "lease_expires_at, retry_until_ms, attempt_count, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, 'PENDING', ?, '[]', ?, ?, ?, 1, ?, ?)",
+        p.publication_key,
+        p.run_id,
+        p.attempt_id,
+        p.idempotency_key,
+        p.request_digest,
+        p.request_json,
+        p.claimant,
+        nowSec + lease,
+        p.retry_until_ms,
+        now,
+        now,
+      );
+      const created = this.sql
+        .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", p.publication_key)
+        .toArray();
+      return json({ outcome: "acquired", publication: created[0] });
+    }
+
+    if (route[0] === "artifact-publications" && route.length === 1 && method === "GET") {
+      const due = Number(url.searchParams.get("due") ?? Date.now() / 1000);
+      const limit = Math.max(0, Number(url.searchParams.get("limit") ?? 100));
+      return json(
+        this.sql
+          .exec(
+            "SELECT * FROM artifact_publications WHERE status IN ('PENDING', 'UPLOADED') " +
+              "AND lease_expires_at <= ? ORDER BY lease_expires_at, publication_key LIMIT ?",
+            due,
+            limit,
+          )
+          .toArray(),
+      );
+    }
+
+    if (route[0] === "artifact-publications" && route.length >= 2) {
+      const key = route[1];
+      const rows = this.sql
+        .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", key)
+        .toArray();
+      if (!rows.length) return json({ error: "not_found" }, 404);
+      const row = rows[0] as Record<string, unknown>;
+
+      if (route.length === 2 && method === "GET") return json(row);
+
+      if (route[2] === "renew" && method === "POST") {
+        const body = (await request.json()) as { claimant: string; lease_seconds: number };
+        if (row.status === "INDEXED" || row.status === "EXPIRED") return json(row);
+        if (row.claimant !== body.claimant) {
+          return json(
+            { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET lease_expires_at = ?, updated_at = ? " +
+            "WHERE publication_key = ?",
+          Date.now() / 1000 + Number(body.lease_seconds),
+          now,
+          key,
+        );
+        const updated = this.sql
+          .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", key)
+          .toArray();
+        return json(updated[0]);
+      }
+
+      if (route[2] === "uploads" && method === "POST") {
+        const body = (await request.json()) as {
+          claimant: string;
+          records_json: string;
+          manifest_uri: string;
+        };
+        if (row.status === "INDEXED") return json({ ok: true, idempotent: true });
+        if (row.status === "EXPIRED") {
+          return conflict("artifact_publication_expired", `publication ${key} expired`);
+        }
+        if (row.claimant !== body.claimant) {
+          return json(
+            { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        if (row.status === "UPLOADED") {
+          if (row.records_json === body.records_json && row.manifest_uri === body.manifest_uri) {
+            return json({ ok: true, idempotent: true });
+          }
+          return conflict("artifact_publication_conflict", "different uploads already recorded");
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET status = 'UPLOADED', records_json = ?, " +
+            "manifest_uri = ?, last_error = '', updated_at = ? WHERE publication_key = ?",
+          body.records_json,
+          body.manifest_uri,
+          now,
+          key,
+        );
+        return json({ ok: true });
+      }
+
+      if (route[2] === "complete" && method === "POST") {
+        const body = (await request.json()) as { claimant: string; index_snapshot_id: number };
+        if (row.status === "INDEXED") return json({ ok: true, idempotent: true });
+        if (row.status !== "UPLOADED") {
+          return conflict(
+            "artifact_publication_conflict",
+            `publication ${key} cannot move from ${row.status} to INDEXED`,
+          );
+        }
+        if (row.claimant !== body.claimant) {
+          return json(
+            { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET status = 'INDEXED', index_snapshot_id = ?, " +
+            "last_error = '', updated_at = ?, completed_at = ? WHERE publication_key = ?",
+          body.index_snapshot_id,
+          now,
+          now,
+          key,
+        );
+        return json({ ok: true });
+      }
+
+      if (route[2] === "fail" && method === "POST") {
+        const body = (await request.json()) as {
+          claimant: string;
+          error: string;
+          retry_at: number;
+        };
+        if (row.status === "INDEXED" || row.status === "EXPIRED") return json({ ok: true });
+        if (row.claimant !== body.claimant) {
+          return json(
+            { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET last_error = ?, lease_expires_at = ?, " +
+            "updated_at = ? WHERE publication_key = ?",
+          String(body.error).slice(0, 8000),
+          body.retry_at,
+          now,
+          key,
+        );
+        return json({ ok: true });
+      }
+
+      if (route[2] === "expire" && method === "POST") {
+        const body = (await request.json()) as { claimant: string; error: string };
+        if (row.status === "INDEXED" || row.status === "EXPIRED") return json({ ok: true });
+        if (row.status === "UPLOADED") {
+          return conflict(
+            "artifact_publication_conflict",
+            "uploaded publications must be indexed, not expired",
+          );
+        }
+        if (row.claimant !== body.claimant) {
+          return json(
+            { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE artifact_publications SET status = 'EXPIRED', last_error = ?, " +
+            "updated_at = ?, completed_at = ? WHERE publication_key = ?",
+          String(body.error).slice(0, 8000),
+          now,
+          now,
+          key,
+        );
+        return json({ ok: true });
+      }
     }
 
     return json({ error: "bad_route" }, 404);

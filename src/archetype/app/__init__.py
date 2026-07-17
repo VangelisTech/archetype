@@ -26,9 +26,21 @@ Services:
 - QueryService: Time-travel reads
 - EvalService: Query-backed evaluation over persisted components
 - FactService: Typed external facts in the world's Iceberg catalog
+- ArtifactService: Durable sandbox evidence publication + indexing
 - ServiceContainer: Wires everything together
 """
 
+from archetype.app.artifact_service import ArtifactService, CheckpointArtifactSourceResolver
+from archetype.app.artifacts import (
+    ArtifactBundleRequest,
+    ArtifactCandidate,
+    ArtifactIndexRecord,
+    ArtifactPublishReceipt,
+    ArtifactReconcileResult,
+    ArtifactSourceResolver,
+    ArtifactStoreConfig,
+    MaterializedArtifact,
+)
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
@@ -65,11 +77,13 @@ __all__ = [
     "QueryService",
     "EvalService",
     "FactService",
+    "ArtifactService",
     "StorageService",
     "ServiceContainer",
     # Infrastructure
     "AsyncLancedbStore",
     "CommandBroker",
+    "CheckpointArtifactSourceResolver",
     # Models
     "Command",
     "CommandType",
@@ -86,6 +100,14 @@ __all__ = [
     "ProcessorInfo",
     "HookInfo",
     "ResourceInfo",
+    "ArtifactCandidate",
+    "ArtifactBundleRequest",
+    "ArtifactIndexRecord",
+    "ArtifactPublishReceipt",
+    "ArtifactReconcileResult",
+    "ArtifactSourceResolver",
+    "ArtifactStoreConfig",
+    "MaterializedArtifact",
     # Config (re-exports)
     "CacheConfig",
     "RunConfig",

@@ -49,6 +49,12 @@ if TYPE_CHECKING:
 
     from daft import DataFrame
 
+    from archetype.app.artifact_service import ArtifactService
+    from archetype.app.artifacts import (
+        ArtifactBundleRequest,
+        ArtifactPublishReceipt,
+        ArtifactReconcileResult,
+    )
     from archetype.app.audit_log import AuditLog
     from archetype.app.auth.models import ActorCtx
     from archetype.app.autoresearch_service import (
@@ -103,6 +109,7 @@ class CommandService:
         facts: FactService | None = None,
         ingestion: IngestionService | None = None,
         evals: EvalService | None = None,
+        artifacts: ArtifactService | None = None,
     ) -> None:
         self._mutations = mutations
         self._worlds = worlds
@@ -114,6 +121,7 @@ class CommandService:
         self._facts = facts
         self._ingestion = ingestion
         self._evals = evals
+        self._artifacts = artifacts
 
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
@@ -474,6 +482,88 @@ class CommandService:
         )
         await self._emit(ctx, "query_facts", world_id)
         return facts
+
+    @instrument("gate.publish_artifacts")
+    async def publish_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        request: ArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt:
+        """Publish one checkpoint-qualified evidence bundle durably."""
+        if self._artifacts is None:
+            raise RuntimeError("artifact service is not wired")
+        if str(world_id) != request.world_id:
+            raise ValueError("artifact request world_id does not match command target")
+        self._gate(Command(type=CommandType.INGEST_FACT), ctx)
+        receipt = await self._artifacts.publish(request, storage_config=storage_config)
+        await self._emit(
+            ctx,
+            "publish_artifacts",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "bundle_id": receipt.bundle_id,
+                    "attempt_id": request.attempt_id,
+                    "duplicate": receipt.duplicate,
+                    "status": receipt.status,
+                }
+            ),
+        )
+        return receipt
+
+    @instrument("gate.query_artifacts")
+    async def query_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        run_id: str,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame:
+        """Read the portable artifact index through the viewer gate."""
+        if self._artifacts is None:
+            raise RuntimeError("artifact service is not wired")
+        self._gate(Command(type=CommandType.QUERY_WORLD), ctx)
+        frame = await self._artifacts.query(
+            str(world_id), str(run_id), attempt_id=attempt_id, kinds=kinds
+        )
+        await self._emit(ctx, "query_artifacts", world_id)
+        return frame
+
+    @instrument("gate.reconcile_artifacts")
+    async def reconcile_artifacts(
+        self,
+        ctx: ActorCtx,
+        world_id: str | UUID,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+    ) -> ArtifactReconcileResult:
+        """Retry interrupted bundle publications for one world."""
+        if self._artifacts is None:
+            raise RuntimeError("artifact service is not wired")
+        self._gate(Command(type=CommandType.INGEST_FACT), ctx)
+        result = await self._artifacts.reconcile(
+            str(world_id), storage_config=storage_config, limit=limit
+        )
+        await self._emit(
+            ctx,
+            "reconcile_artifacts",
+            world_id,
+            payload_json=json.dumps(
+                {
+                    "examined": result.examined,
+                    "indexed": result.indexed,
+                    "expired": result.expired,
+                    "failed": result.failed,
+                }
+            ),
+        )
+        return result
 
     @instrument("gate.evaluate")
     async def evaluate(

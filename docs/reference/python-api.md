@@ -13,6 +13,7 @@ Archetype has one compatibility surface with several levels of abstraction. Most
 | [Hooks and identity](python/hooks.md) | Bind an actor identity to a world handle and react to world lifecycle events. |
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
+| [Artifact finalization](python/artifacts.md) | Publish checkpoint-qualified sandbox evidence, query its durable index, and reconcile interrupted publications. |
 | [Service integration](python/services.md) | Use the service layer when a host needs explicit authorization, command routing, or custom process wiring. Most scripts should use the runtime instead. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |

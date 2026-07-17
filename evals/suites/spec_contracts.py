@@ -107,6 +107,9 @@ _RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
         "archetype.app.command_service",
         "archetype.app.container",
         "archetype.app.models",
+        # Frozen artifact request/receipt models only. All operations still
+        # route through CommandService.
+        "archetype.app.artifacts",
         "archetype.app.auth.models",
         # Type-only signature references; the operations themselves route
         # through the gate (CommandType.AUTORESEARCH, QUERY_WORLD).
@@ -198,6 +201,9 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "open_world_readonly": CommandType.GET_WORLD_INFO,
     "resume_world": CommandType.CREATE_WORLD,
     "ingest_fact": CommandType.INGEST_FACT,
+    "publish_artifacts": CommandType.INGEST_FACT,
+    "query_artifacts": CommandType.QUERY_WORLD,
+    "reconcile_artifacts": CommandType.INGEST_FACT,
     "evaluate": CommandType.EVALUATE,
     "step": CommandType.STEP,
     "run": CommandType.RUN,

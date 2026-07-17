@@ -17,8 +17,77 @@ uv run python examples/<filename>.py
 | 7 | [`07_hooks.py`](07_hooks.py) | Lifecycle hooks for audit logs, tick metrics, and temporary debug traces | None |
 | 8 | [`08_htn_resolution.py`](08_htn_resolution.py) | HTN plan resolution as a fan-out AND/OR forest | None |
 | 9 | [`09_cloud_storage.py`](09_cloud_storage.py) | Cloud storage configurations through `StorageConfig` and the runtime API | Optional cloud credentials |
+| 10 | [`10_autoresearch.py`](10_autoresearch.py) | AutoResearch loop: fork candidates, score episodes, advance BranchHead on a lab ledger | None |
+| 11 | [`11_coding_agent_mission.py`](11_coding_agent_mission.py) | Coding-agent mission: Apple Container locally or Modal remotely, one submission per tick, task advancement gated by validators + a restorable checkpoint | Apple Container or optional Modal credentials |
 
-### Supplementary
+The coding-agent example defaults to a real local Apple Container lightweight
+VM. It clones the repository inside the VM and does not mount the host
+workspace. For Codex, start Apple Container and complete a one-time ChatGPT
+device login. The resulting OAuth state lives in the named Apple Container
+volume `archetype-codex-auth`, not in the repository or a host bind mount.
+
+```bash
+container system start
+uv run python examples/11_coding_agent_mission.py --codex-login
+# Open the printed URL and enter the one-time code, then:
+uv run python examples/11_coding_agent_mission.py
+```
+
+The checked-in mission currently targets Archetype issue #342. The persisted
+login is staged only while Codex runs, removed before validators run, and never
+included in workspace snapshots. To use OpenAI Platform API billing instead,
+set `CODEX_API_KEY` and
+`CODING_AGENT_CODEX_AUTH_ENV=CODEX_API_KEY`. Claude Code uses
+`ANTHROPIC_API_KEY` and is selected with
+`CODING_AGENT_HARNESS=claude-code`.
+
+Set `CODING_AGENT_BACKEND=modal` for the remote backend. Its default Modal
+Secrets are `archetype-codex` containing `CODEX_API_KEY` and
+`archetype-claude-code` containing `ANTHROPIC_API_KEY`. Set
+`GITHUB_MODAL_SECRET` to a Modal Secret containing `GITHUB_TOKEN` together with
+`CODING_AGENT_PUSH=1` when verified commits should be pushed. Both backends
+inject agent credentials only into the agent process; validator commands do not
+receive them.
+
+Each tick records an accepted or rejected `Attempt` instead of retrying inside
+the sandbox client. Before the task can advance, the client captures a complete
+provider checkpoint: a Modal filesystem image or an Apple Container rootfs
+export that can be rehydrated into a new VM. The attempt manifest inside that
+checkpoint carries world/run/entity correlation, validator evidence, canonical
+CLI JSONL, Git status, a binary patch, a sanitized Git bundle, `.context` when
+present, and whole-filesystem start/end/diff manifests. This deliberately
+separates explicitly queryable artifacts from the complete recovery snapshot.
+If provider checkpointing fails, that error is persisted in the same tick and
+the task does not advance; it is not disguised as a validator rejection.
+
+Modal checkpoints default to a 30-day TTL. Local rootfs exports stay under
+`.context/apple-container-snapshots` until an operator removes them. The task
+transition remains gated at the `checkpointed` phase; after the episode, the
+driver sends every recoverable attempt's declared evidence through the additive
+`ArtifactService`, queries the dedicated Iceberg artifact index, and only then
+tears down the sandbox. Its default object/index store is local under
+`.context/coding-agent-artifacts`. Production deployments can point the same
+contract at R2 with Daft's S3-compatible `IOConfig`; the control catalog makes
+the `PENDING → UPLOADED → INDEXED` publication retryable and idempotent.
+
+```bash
+uv sync --extra coding-agent
+modal setup
+CODING_AGENT_BACKEND=modal uv run --extra coding-agent \
+  python examples/11_coding_agent_mission.py
+```
+
+`make test-modal-sandbox` runs the live, keyless Modal infrastructure proof for
+both CLIs. `make test-modal-agent` additionally performs a real API-backed edit,
+validation, commit, and snapshot for both harnesses and therefore requires both
+Modal Secrets. `make test-modal` runs both tiers. The live suite is excluded
+from normal `make test`, `make test-all`, and `make ci` runs; CI invokes it only
+when `examples/11_coding_agent_mission.py` changes.
+
+`make test-apple-container` runs the opt-in local infrastructure proof for both
+CLIs without invoking either model API. It is also excluded from normal tests.
+
+## Supplementary
 
 | Example | Description |
 |---------|-------------|
