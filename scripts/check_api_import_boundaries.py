@@ -26,6 +26,7 @@ gated handles, so every mutation carries command-audit provenance.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -133,7 +134,10 @@ def _import_violations(path: Path, allowed: set[str], forbidden: set[str], scope
     return violations
 
 
-def _is_public_api_decorated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _is_public_api_decorated(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> bool:
     for dec in node.decorator_list:
         target = dec.func if isinstance(dec, ast.Call) else dec
         name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
@@ -142,30 +146,56 @@ def _is_public_api_decorated(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bo
     return False
 
 
+def _service_param_violation(param: ast.arg) -> bool:
+    """Whole-token annotation match plus param-name match.
+
+    Tokenizing avoids substring hits (``SimulationServiceConfig`` is not
+    ``SimulationService``). Known limit, held by the param-NAME check as the
+    backstop: an import alias (``import CommandService as Gate``) hides the
+    type token — full resolution would need import walking.
+    """
+    annotation = ast.unparse(param.annotation) if param.annotation else ""
+    tokens = set(_IDENTIFIER.findall(annotation))
+    return bool(tokens & SERVICE_TYPE_NAMES) or param.arg in SERVICE_PARAM_NAMES
+
+
+def _signature_violations(
+    rel: str, qualname: str, fn: ast.FunctionDef | ast.AsyncFunctionDef
+) -> list[str]:
+    bridge = PUBLIC_API_BRIDGE_PARAMS.get(f"{rel}::{qualname}", set())
+    params = [*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs]
+    violations: list[str] = []
+    for param in params:
+        if param.arg in bridge or param.arg in ("self", "cls"):
+            continue
+        if _service_param_violation(param):
+            violations.append(
+                f"{rel}::{qualname} — @public_api callable accepts raw service "
+                f"parameter `{param.arg}`; public capability must be expressible "
+                f"through ArchetypeRuntime (gated, audited). Deprecated bridges "
+                f"belong in PUBLIC_API_BRIDGE_PARAMS with a removal deadline."
+            )
+    return violations
+
+
 def _public_api_violations(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
     rel = str(path.relative_to(ROOT))
     violations: list[str] = []
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if not _is_public_api_decorated(node):
-            continue
-        bridge = PUBLIC_API_BRIDGE_PARAMS.get(f"{rel}::{node.name}", set())
-        params = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-        for param in params:
-            if param.arg in bridge:
-                continue
-            annotation = ast.unparse(param.annotation) if param.annotation else ""
-            typed_as_service = any(name in annotation for name in SERVICE_TYPE_NAMES)
-            named_as_service = param.arg in SERVICE_PARAM_NAMES
-            if typed_as_service or named_as_service:
-                violations.append(
-                    f"{rel}::{node.name} — @public_api callable accepts raw service "
-                    f"parameter `{param.arg}`; public capability must be expressible "
-                    f"through ArchetypeRuntime (gated, audited). Deprecated bridges "
-                    f"belong in PUBLIC_API_BRIDGE_PARAMS with a removal deadline."
-                )
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if _is_public_api_decorated(node):
+                violations += _signature_violations(rel, node.name, node)
+        elif isinstance(node, ast.ClassDef) and _is_public_api_decorated(node):
+            # The marker's contract covers classes too: constructors are the
+            # signature surface, so a @public_api class taking a raw service
+            # in __init__/__new__ is the same bypass in a different costume.
+            for member in node.body:
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in (
+                    "__init__",
+                    "__new__",
+                ):
+                    violations += _signature_violations(rel, f"{node.name}.{member.name}", member)
     return violations
 
 

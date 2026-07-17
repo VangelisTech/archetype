@@ -104,3 +104,31 @@ def test_experiments_scope_scans_nested_subdirectories(tmp_path, monkeypatch):
         )
     ]
     assert len(violations) == 1
+
+
+def test_annotation_match_is_whole_token_not_substring(tmp_path, monkeypatch):
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    path = _write(
+        tmp_path,
+        "from archetype._api import public_api\n"
+        "@public_api\n"
+        "def fine(cfg: 'SimulationServiceConfig'): ...\n"
+        "@public_api\n"
+        "def bad(svc: 'SimulationService'): ...\n",
+    )
+    violations = checker._public_api_violations(path)
+    assert len(violations) == 1 and "bad" in violations[0]
+
+
+def test_public_api_class_constructor_is_checked(tmp_path, monkeypatch):
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    path = _write(
+        tmp_path,
+        "from archetype._api import public_api\n"
+        "@public_api\n"
+        "class Bad:\n"
+        "    def __init__(self, world_service): ...\n",
+    )
+    violations = checker._public_api_violations(path)
+    assert len(violations) == 1
+    assert "Bad.__init__" in violations[0]
