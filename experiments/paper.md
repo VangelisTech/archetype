@@ -66,6 +66,7 @@ lose a fixed metabolic cost ($-2.0$) each tick. Energy is floored at zero.
 ### 2.4 Tick Lifecycle
 
 Each tick proceeds in two phases:
+
 1. **Harvest** (priority 10): All agents simultaneously attempt to harvest their
    desired fraction. If total demand exceeds the available pool, allocations are
    scaled proportionally.
