@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Instruction-perturbation eval + self-improving optimizer (bench/libero).
+"""Instruction-perturbation eval + self-improving optimizer (archetype.experiments.instruction_sweep).
 
 SCOPE — this is a MECHANISM CHECK, not evidence for the scientific claim.
 ``InstructionConditionedReachPolicy`` defines its effective gain *as*

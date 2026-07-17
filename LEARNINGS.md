@@ -649,19 +649,45 @@ for entry in history:
 
 ---
 
-## Single Process, Single Event Loop (Apr 2026)
+## Process and Coordination Boundaries (Apr 2026, updated Jul 2026)
 
-Archetype runs as **one `archetype serve` process**. This is a hard architectural constraint — do not design for multi-process or multi-server deployments. Daft owns the cores — it manages thread pools, memory, and parallelism internally. `SimulationService.run_all` drives all worlds concurrently via `asyncio.gather` in a single event loop. `AsyncWorld.step` parallelizes across archetypes the same way.
+One `ArchetypeRuntime` or `archetype serve` process owns its live world objects,
+service container, and event loop. Daft owns data-plane parallelism inside that
+process: it manages worker pools and executes lazy processor plans across rows
+and archetypes. Two server processes do not share an in-memory world registry,
+so a request that needs a particular live world must reach the process hosting
+that world.
+
+That live-process boundary is not the durability boundary. Persisted worlds can
+be discovered and queried from a fresh process. Mutable cold resume reconstructs
+a world from visible rows and manifests, then acquires a writer fence. The local
+SQLite control catalog coordinates processes on one host; deployments that need
+cross-host fencing use the remote control catalog. One live writer per world is
+the invariant, not one process for the whole deployment. See
+`docs/guide/durable-discovery.md`, `docs/guide/atomic-visibility.md`, and
+`docs/guide/world-lifecycle.md` for the normative contracts.
 
 **Consequences:**
 
-- **The CLI is a thin HTTP client.** Every command (except `serve`) is an `httpx` call to the running server. The CLI never instantiates a `ServiceContainer` — that would create an isolated, ephemeral process that can't participate in the server's event loop or share world state.
-- **Never spin up a second server.** There is no multi-node or multi-process coordination layer. If you need more compute, scale the Daft cluster, not the server count.
-- **World lifecycle mutations route through the CommandBroker.** `CREATE_WORLD`, `DESTROY_WORLD`, `FORK_WORLD` go through `CommandService.submit()` → broker lock → `apply_world_lifecycle()`. This gives RBAC, audit history, and serialized writes for free. Use `tick=0` for immediate execution (not tick-scheduled).
+- **The CLI is a thin HTTP client.** Every command except `serve` is an HTTP
+  call to a running server. The CLI does not instantiate its own
+  `ServiceContainer`, because that would create an unrelated live-world scope.
+- **Scale simulation work through Daft.** Adding an API process does not split
+  one live world's in-memory execution. Multi-process discovery, cold reads,
+  and fenced resume are control-plane capabilities, not a replacement for
+  Daft's data-plane execution model.
+- **World lifecycle operations are direct gated calls.** `create_world`,
+  `fork_world`, and `destroy_world` flow through `iCommandService` for RBAC and
+  audit, then delegate to `iWorldService`. The `CommandBroker` queues
+  tick-deferred commands; it is not the lifecycle or authorization boundary.
 
 **State across restarts:**
 
-A `WorldRegistry` (JSON file at `./archetype_data/archetype_registry.json`) catalogs world metadata (id, name, storage URI, namespace, tick). The server calls `discover_worlds()` on startup to rehydrate. This is a **boot catalog**, not a coordination mechanism — single writer, no locking needed.
+The control catalog attached to a storage identity records durable world
+metadata, signatures, writer fences, and tick manifests. `discover_worlds()`
+reads that catalog without constructing live worlds; `resume_world()` rebuilds
+a mutable world and acquires its fence. There is no JSON boot registry in the
+current architecture.
 
 ---
 
@@ -683,12 +709,14 @@ df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
 
 ---
 
-## The Blessed LIBERO Run Recipe (Jun 2026)
+## The Blessed LIBERO Run Recipe (Jun 2026 — moved to robot-evals Jul 2026)
 
 LIBERO/VLA-JEPA are genuinely broken research code, but re-solving their
-packaging from scratch every deploy is failure-mode **D5**. The recipe is frozen
-once in **`docs/guide/libero-recipe.md`** — read it before touching anything in
-`bench/libero/` or arguing about torch pins / a Modal split. Highlights:
+packaging from scratch every deploy is failure-mode **D5**. The recipe — and
+the whole harness — now lives in **`everettVT/robot-evals`** (extracted
+2026-07-16 with history; consumes archetype from the package index). Read its
+recipe before touching torch pins or arguing about a Modal split. Highlights
+(still true, recorded here because the lessons are archetype-shaped):
 
 - **LIBERO and the VLA-JEPA policy run in-process**, one Python 3.12
   interpreter shared with Archetype. `bench/libero/image.py` builds both images
@@ -697,8 +725,8 @@ once in **`docs/guide/libero-recipe.md`** — read it before touching anything i
   `OffScreenRenderEnv` directly; `in_process_policy.py` runs the VLA in the
   same container. **No Modal interpreter split** —
   `modal_worker.py`/`vla_jepa_worker.py` were deleted 2026-07-15 (git history).
-- **Two commands:** `modal run bench/libero/image.py` (env-only smoke) and
-  `modal run bench/libero/image.py::colocated_eval_task` (policy-driven eval).
+- **Two commands** (in robot-evals): `modal run src/robot_evals/image.py`
+  (env-only smoke) and `...::colocated_eval_task` (policy-driven eval).
 - **One real constraint:** Linux + EGL offscreen rendering + GPU. The pins we
   removed were laziness, not law — `torch<2.6` (the one `torch.load`
   `weights_only` flip, patched in-process), Python 3.8–3.10 → 3.12. **Keep
