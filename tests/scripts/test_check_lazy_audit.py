@@ -189,6 +189,19 @@ def test_collect_is_never_sanctioned(tmp_path):
         assert not s.sanctioned, ".collect() must never be sanctioned"
 
 
+def test_non_call_text_is_ignored(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "non_calls.py",
+        """\
+        message = "documentation mentions frame.collect()"
+        value = 1  # no call here: frame.to_pylist()
+        """,
+    )
+
+    assert _scan_file(py, "non_calls.py") == []
+
+
 # ---------------------------------------------------------------------------
 # End-to-end: full scan + allowlist gating
 # ---------------------------------------------------------------------------
