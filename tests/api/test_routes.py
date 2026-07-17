@@ -460,6 +460,18 @@ class TestQueryRoutes:
                 {"types": "QueryRouteMetric104", "count": True, "show": 2},
                 "mutually exclusive",
             ),
+            (
+                {"count": True},
+                "require at least one component type",
+            ),
+            (
+                {"show": 2},
+                "require at least one component type",
+            ),
+            (
+                {"where": "entity_id > 0"},
+                "require at least one component type",
+            ),
         ),
     )
     def test_component_query_rejects_invalid_options(self, client, tmp_path, params, detail):

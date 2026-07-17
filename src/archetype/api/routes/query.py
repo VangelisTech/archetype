@@ -194,11 +194,18 @@ async def get_components(
     types: str = Query("", description="Comma-separated component type names"),
     tick: int | None = None,
     entity_ids: str | None = None,
-    show: int | None = Query(None, ge=1, description="Maximum matching rows to return"),
-    count: bool = Query(False, description="Return the matching row count instead of rows"),
+    show: int | None = Query(
+        None,
+        ge=1,
+        description="Maximum matching rows to return; requires types",
+    ),
+    count: bool = Query(
+        False,
+        description="Return the matching row count instead of rows; requires types",
+    ),
     where: str | None = Query(
         None,
-        description="One column comparison, for example score__value > 0.5",
+        description="One column comparison, for example score__value > 0.5; requires types",
     ),
     cs: CommandService = Depends(get_command_service),
     ctx: ActorCtx = Depends(get_actor_ctx),
@@ -209,6 +216,9 @@ async def get_components(
             raise ValueError("count and show are mutually exclusive terminal operations")
 
         component_names = _split_csv(types)
+        if not component_names and (show is not None or count or where):
+            raise ValueError("show, count, and where require at least one component type")
+
         frame = await _query_components_frame(
             cs,
             ctx,
@@ -218,9 +228,7 @@ async def get_components(
             entity_ids=_entity_ids(entity_ids),
         )
         if frame is None:
-            if where:
-                raise ValueError("where requires at least one component type")
-            return QueryCountResponse(count=0) if count else []
+            return []
 
         if where:
             parsed = parse_where(where)

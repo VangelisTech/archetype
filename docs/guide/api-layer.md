@@ -103,9 +103,10 @@ See [Execution Hierarchy](execution-hierarchy.md).
 Reads are authorized at `iCommandService`; `iQueryService` remains the internal read implementation.
 The component route accepts one inert comparison through `where`, then applies either the
 `show` row limit or the `count` terminal. Filtering happens before either terminal and before
-row serialization. `show` and `count` are mutually exclusive. The filter grammar is deliberately
-small: one component column, one of `>`, `>=`, `<`, `<=`, `==`, or `!=`, and one scalar value.
-Calls, attribute access, arithmetic, and Boolean composition are rejected rather than evaluated.
+row serialization. All three options require at least one component type; `show` and `count` are
+mutually exclusive. The filter grammar is deliberately small: one component column, one of `>`,
+`>=`, `<`, `<=`, `==`, or `!=`, and one scalar value. Calls, attribute access, arithmetic, and
+Boolean composition are rejected rather than evaluated.
 
 See the [REST API Reference](../reference/rest-api.md) for generated schemas.
 
