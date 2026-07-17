@@ -17,12 +17,9 @@ Usage:
 
 import asyncio
 
-from daft import DataFrame, col, lit
+from daft import DataFrame, col
 
-from archetype import ArchetypeRuntime
-from archetype.core.aio.async_processor import AsyncProcessor
-from archetype.core.component import Component
-from archetype.core.config import StorageConfig
+from archetype import ArchetypeRuntime, AsyncProcessor, Component, StorageConfig
 
 # ── Step 1: Define components ───────────────────────────────────────────────
 
@@ -67,11 +64,6 @@ class RatingProcessor(AsyncProcessor):
 # ── Step 3-5: Create world, spawn entities, run ────────────────────────────
 
 
-async def collect_agent_snapshot(world) -> DataFrame:
-    info = await world.info()
-    return (await world.query(Agent)).with_column("history_tick", lit(info.tick))
-
-
 async def main():
     storage = StorageConfig(uri="./archetype_data", namespace="simulation_script")
 
@@ -88,24 +80,36 @@ async def main():
         await world.spawn(Agent(name="Charlie", role="manager", skill=1.5))
         print("Spawned: Alice (skill=3.0), Bob (skill=2.0), Charlie (skill=1.5)\n")
 
-        history_frames: list[DataFrame] = []
-        for _ in range(10):
-            await world.step()
-            history_frames.append(await collect_agent_snapshot(world))
+        # The first tick persists the raw spawn values. Processors apply on
+        # subsequent ticks, so run ten processor transformations after that.
+        await world.step()
+        result = await world.run(steps=10)
+        history = await world.query(Agent)
+        current = history.where(col("tick") == result.final_tick - 1).sort("entity_id")
 
-        info = await world.info()
-        print(f"Ran {len(history_frames)} ticks (final tick={info.tick})\n")
+        print(f"Ran 10 processor ticks (world tick={result.final_tick})\n")
 
         print("Final state:")
-        (await world.query(Agent)).show()
+        rows = (
+            current.select(
+                "agent__name",
+                "agent__skill",
+                "agent__experience",
+                "agent__rating",
+            )
+            .collect()
+            .to_pylist()
+        )
+        for row in rows:
+            print(
+                f"{row['agent__name']}: skill={row['agent__skill']:.1f}, "
+                f"experience={row['agent__experience']:.0f}, "
+                f"rating={row['agent__rating']:.2f}"
+            )
 
-        history_df = history_frames[0]
-        for frame in history_frames[1:]:
-            history_df = history_df.concat(frame)
-
-        print("\nState history (DataFrame):")
-        history_df.select(
-            "history_tick",
+        print("\nState history sample (DataFrame):")
+        history.select(
+            "tick",
             "entity_id",
             "agent__name",
             "agent__skill",

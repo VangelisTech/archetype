@@ -3,6 +3,9 @@
 Use `ArchetypeRuntime` for a Python script. It creates the service container,
 then gives you a lazy handle for each world.
 
+For a copy-and-run version of this page, see
+[`examples/00_quickstart.py`](https://github.com/VangelisTech/archetype/blob/main/examples/00_quickstart.py).
+
 ## Install
 
 ```bash
@@ -49,6 +52,7 @@ async def main() -> None:
         world = runtime.world("demo", processors=[Move()])
 
         entity_id = await world.spawn(Position(), Velocity(dx=2))
+        await world.step()  # Persist the initial component values.
         await world.run(steps=3)
 
         history = await world.query(Position)
@@ -59,9 +63,10 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-`spawn()` reserves a real entity ID immediately. Mutations are materialized by
-the next tick. `query()` returns a lazy Daft DataFrame containing the full
-append-only history for the requested components.
+`spawn()` reserves a real entity ID immediately. The first `step()` persists
+the initial component values; processors apply on the three subsequent ticks.
+`query()` returns a lazy Daft DataFrame containing the full append-only history
+for the requested components.
 
 ## Read the current tick
 
@@ -95,6 +100,7 @@ The sync facade has the same operations without `await`:
 with ArchetypeRuntime.sync() as runtime:
     world = runtime.world("demo", processors=[Move()])
     world.spawn(Position(), Velocity(dx=2))
+    world.step()  # Persist the initial component values.
     world.run(steps=3)
 ```
 
