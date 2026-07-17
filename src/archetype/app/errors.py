@@ -32,6 +32,18 @@ class ConflictError(RuntimeError):
     public_detail = "Request conflicts with existing state"
 
 
+class AvailabilityError(RuntimeError):
+    """A service dependency is temporarily unable to accept work.
+
+    Concrete services subclass this public contract so transport adapters can
+    expose a retryable availability signal without importing implementation
+    modules. The internal exception message may contain diagnostic context;
+    adapters expose only ``public_detail``.
+    """
+
+    public_detail = "Service is temporarily unavailable"
+
+
 class WorldNotFoundError(LookupError):
     """Raised when a gated operation targets a ``world_id`` not in the registry.
 

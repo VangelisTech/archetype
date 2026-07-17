@@ -156,10 +156,6 @@ INTENTIONAL_UNMAPPED = {
     "archetype.app._catalog.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
     ),
-    "archetype.app.audit_log.AuditBackpressureError": (
-        "observable backpressure per the durability posture; 503-shaped, "
-        "public mapping tracked in #419"
-    ),
 }
 
 
