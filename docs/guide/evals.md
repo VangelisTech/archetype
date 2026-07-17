@@ -171,6 +171,7 @@ renaming a task requires updating this table in the same change.
 |---|---|---|
 | `capability` | `storage_roundtrip` | Mixed component fields survive persistence and retrieval |
 | `capability` | `simulation_correctness` | Multi-step processing preserves entities and updates expected fields |
+| `capability` | `fork_divergence` | Fork-of-fork lineage, first-step continuity, shared resources, and isolated mutations compose through the runtime |
 
 <!-- eval-task-manifest:end -->
 

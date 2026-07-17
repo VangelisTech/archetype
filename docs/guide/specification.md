@@ -998,7 +998,7 @@ all of the following:
 - stable processor ordering within an archetype
 - stable cross-archetype execution without world bookkeeping corruption
 - stable reserved-entity spawn semantics through the broker
-- explicit multi-world isolation and fork divergence
+- explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
 
