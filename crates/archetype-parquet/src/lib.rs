@@ -28,9 +28,13 @@ impl ParquetStore {
         self.root.join(&self.namespace).join(table_name)
     }
 
-    fn part_path(&self, table_name: &str) -> PathBuf {
-        self.table_dir(table_name)
-            .join(format!("part-{}.parquet", Uuid::now_v7()))
+    fn part_paths(&self, table_name: &str) -> (PathBuf, PathBuf) {
+        let id = Uuid::now_v7();
+        let table_dir = self.table_dir(table_name);
+        (
+            table_dir.join(format!("part-{id}.parquet")),
+            table_dir.join(format!("part-{id}.parquet.tmp")),
+        )
     }
 }
 
@@ -40,17 +44,13 @@ impl Store for ParquetStore {
         let table_dir = self.table_dir(table_name);
         fs::create_dir_all(&table_dir).map_err(|err| ArchetypeCoreError::Store(err.to_string()))?;
 
-        let path = self.part_path(table_name);
-        let file = File::create(path).map_err(|err| ArchetypeCoreError::Store(err.to_string()))?;
-        let mut writer = ArrowWriter::try_new(file, batch.schema(), None)
-            .map_err(|err| ArchetypeCoreError::Store(err.to_string()))?;
-        writer
-            .write(batch)
-            .map_err(|err| ArchetypeCoreError::Store(err.to_string()))?;
-        writer
-            .close()
-            .map_err(|err| ArchetypeCoreError::Store(err.to_string()))?;
-        Ok(())
+        let (path, staging_path) = self.part_paths(table_name);
+        let result = write_part(&staging_path, batch)
+            .and_then(|()| fs::rename(&staging_path, path).map_err(store_error));
+        if result.is_err() {
+            let _ = fs::remove_file(staging_path);
+        }
+        result
     }
 
     async fn read_table(&self, table_name: &str, filter: ReadFilter) -> Result<Vec<RecordBatch>> {
@@ -80,6 +80,18 @@ impl Store for ParquetStore {
         let merged = concat_batches(&schema, &batches).map_err(ArchetypeCoreError::from)?;
         Ok(vec![merged])
     }
+}
+
+fn write_part(path: &Path, batch: &RecordBatch) -> Result<()> {
+    let file = File::create(path).map_err(store_error)?;
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).map_err(store_error)?;
+    writer.write(batch).map_err(store_error)?;
+    writer.close().map_err(store_error)?;
+    Ok(())
+}
+
+fn store_error(error: impl std::fmt::Display) -> ArchetypeCoreError {
+    ArchetypeCoreError::Store(error.to_string())
 }
 
 fn read_part(path: &Path, filter: &ReadFilter) -> Result<Vec<RecordBatch>> {

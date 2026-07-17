@@ -27,6 +27,25 @@ pub enum ArchetypeCoreError {
     #[error("entity {0} is not registered in this world")]
     UnknownEntity(i32),
 
+    #[error(
+        "per-table step for {table_name} requires it to be the only active table; \
+         active tables: {active_tables:?}; use step or step_profiled for multi-table ticks"
+    )]
+    InvalidTableStep {
+        table_name: String,
+        active_tables: Vec<String>,
+    },
+
+    #[error(
+        "tick {tick} partially committed after {committed_tables} table(s): {cause}; \
+         this world is not safe to retry"
+    )]
+    PartialTick {
+        tick: i32,
+        committed_tables: usize,
+        cause: String,
+    },
+
     #[error("arrow error: {0}")]
     Arrow(#[from] ArrowError),
 
