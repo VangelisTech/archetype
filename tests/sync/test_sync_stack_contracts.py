@@ -554,6 +554,29 @@ def test_sync_world_add_components_before_first_step_uses_pending_spawn_row(tmp_
     assert rows[0]["position__x"] == 1
     assert rows[0]["velocity__vx"] == 5
 
+    # The consumed staged row must not also materialize under the old
+    # signature (issues #193/#367: double-materialize across archetypes).
+    old_sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    stray = _committed_rows(world, old_sig)
+    assert stray == [], (
+        f"entity {entity_id} materialized active under the pre-migration "
+        "signature; the staged spawn row must be consumed by the move"
+    )
+
+
+def test_sync_world_add_components_without_prior_row_is_noop(tmp_path):
+    """Issues #367: no staged row + no persisted row -> logged no-op."""
+    _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_noop_move")
+    old_sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    world.entity2sig[42] = old_sig
+
+    world.query_archetype = lambda *args, **kwargs: _df_from_rows(old_sig, [])
+    world.add_components(42, [Velocity(vx=1, vy=1)])
+
+    assert world.entity2sig[42] == old_sig, "no-op must not move the signature"
+    assert not world.spawn_cache, "no-op must not stage a spawn row"
+    assert not world.despawn_cache, "no-op must not stage a despawn"
+
 
 def test_sync_world_execute_passes_resources_and_kwargs(tmp_path):
     class ApplyBonus(SyncProcessor):

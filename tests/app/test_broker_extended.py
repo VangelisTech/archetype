@@ -7,6 +7,8 @@ Extended tests for CommandBroker
 Tests cover edge cases, ActorCtx RBAC, and additional functionality.
 """
 
+import asyncio
+
 import pytest
 from uuid_utils import uuid7
 
@@ -23,7 +25,7 @@ from archetype.app.models import Command, CommandType
 
 @pytest.fixture
 def _reset_quotas():
-    """Snapshot + restore guard counters so broker tests don't leak into auth tests."""
+    """Reset guard counters so broker tests don't leak into auth tests."""
     reset_tick_counters()
     reset_daily_tokens()
     yield
@@ -282,7 +284,6 @@ class TestEnqueueBulkQuotaAccounting:
         # All-or-nothing: no commands enqueued, so no quota debited.
         assert _tick_counters.get(actor_id, 0) == 0
         assert _daily_tokens.get(actor_id, 0) == 0
-        assert len(broker._queues.get("w1", [])) == 0
         assert await broker.get_pending_count("w1") == 0
 
     @pytest.mark.asyncio
@@ -301,7 +302,7 @@ class TestEnqueueBulkQuotaAccounting:
         # 3 spawn commands × 10 tokens each = 30 tokens.
         assert _tick_counters[actor_id] == 3
         assert _daily_tokens[actor_id] == 30
-        assert len(broker._queues["w1"]) == 3
+        assert await broker.get_pending_count("w1") == 3
 
     @pytest.mark.asyncio
     async def test_bulk_detects_projected_tick_quota_before_mutating(self, _reset_quotas):
@@ -323,7 +324,26 @@ class TestEnqueueBulkQuotaAccounting:
 
         assert _tick_counters.get(actor_id, 0) == 0
         assert _daily_tokens.get(actor_id, 0) == 0
-        assert len(broker._queues.get("w1", [])) == 0
+        assert await broker.get_pending_count("w1") == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_lock_wait_does_not_debit_bulk_quota(self, _reset_quotas):
+        broker = CommandBroker()
+        actor_id = uuid7()
+        ctx = ActorCtx(id=actor_id, roles={"player"})
+        commands = [Command(type=CommandType.SPAWN, payload={})]
+
+        await broker._lock.acquire()
+        task = asyncio.create_task(broker.enqueue_bulk("w1", commands, ctx))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        broker._lock.release()
+
+        assert _tick_counters.get(actor_id, 0) == 0
+        assert _daily_tokens.get(actor_id, 0) == 0
+        assert await broker.get_pending_count("w1") == 0
 
 
 class TestBrokerWithoutCtx:

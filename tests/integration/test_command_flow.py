@@ -19,7 +19,7 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
 
-class Marker(Component):
+class CommandFlowMarker(Component):
     tag: str = ""
 
 
@@ -42,7 +42,7 @@ async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
         )
         # Reserve an entity ID via submit_spawn
         reserved_id = await c.command_service.submit_spawn(
-            ctx, world.world_id, [Marker(tag="reserved")], tick=0
+            ctx, world.world_id, [CommandFlowMarker(tag="reserved")], tick=0
         )
         # Drain and apply
         applied = await c.command_service.drain_and_apply(world.world_id, 0)
@@ -68,11 +68,17 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
         (entity_id,) = world.reserve_entity_ids(1)
         first = Command(
             type=CommandType.SPAWN,
-            payload={"entity_id": entity_id, "components": [Marker(tag="first")]},
+            payload={
+                "entity_id": entity_id,
+                "components": [CommandFlowMarker(tag="first")],
+            },
         )
         replay = Command(
             type=CommandType.SPAWN,
-            payload={"entity_id": entity_id, "components": [Marker(tag="replay")]},
+            payload={
+                "entity_id": entity_id,
+                "components": [CommandFlowMarker(tag="replay")],
+            },
         )
         await c.command_service.submit_batch(ctx, world.world_id, [first, replay])
 
@@ -82,7 +88,38 @@ async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
         sig = world.entity2sig[entity_id]
         staged = [row for row in world.spawn_cache[sig] if row["entity_id"] == entity_id]
         assert len(staged) == 1
-        assert staged[0]["marker__tag"] == "first"
+        assert staged[0][f"{CommandFlowMarker.get_prefix()}tag"] == "first"
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queued_update_is_applied_during_drain(tmp_path):
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="updates")
+    try:
+        world = await c.world_service.create_world(WorldConfig(name="updates"), storage)
+        entity_id = await world.create_entity([CommandFlowMarker(tag="before")])
+        await c.simulation_service.step(world.world_id, RunConfig())
+
+        await c.command_service.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.UPDATE,
+                payload={
+                    "entity_id": entity_id,
+                    "components": [CommandFlowMarker(tag="after").to_payload()],
+                },
+            ),
+        )
+        applied = await c.command_service.drain_and_apply(world.world_id, world.tick)
+        assert [command.type for command in applied] == [CommandType.UPDATE]
+
+        await world.step(RunConfig())
+        rows = (await world.get_components([CommandFlowMarker])).to_pylist()
+        assert rows[0][f"{CommandFlowMarker.get_prefix()}tag"] == "after"
     finally:
         await c.shutdown()
 
@@ -119,7 +156,7 @@ async def test_submit_to_unknown_world_rejected():
         # Reserved-id path already validates via get_world; tighten to the
         # same error type for consistency.
         with pytest.raises(WorldNotFoundError):
-            await c.command_service.submit_spawn(ctx, phantom, [Marker(tag="x")])
+            await c.command_service.submit_spawn(ctx, phantom, [CommandFlowMarker(tag="x")])
 
         # Broker holds no orphan queue for the phantom world.
         assert await c.broker.get_pending_count(phantom) == 0
@@ -145,7 +182,7 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
     try:
         info = await c.command_service.create_world(ctx, WorldConfig(name="r"), storage)
-        await c.command_service.create_entity(ctx, info.world_id, [Marker(tag="x")])
+        await c.command_service.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
         rc = RunConfig(run_id=str(uuid7()), num_steps=1)
         result = await c.command_service.run(ctx, info.world_id, rc)
@@ -155,7 +192,7 @@ async def test_run_result_run_id_round_trips_to_query(tmp_path):
 
         df = await c.command_service.query_components(
             ctx,
-            [Marker],
+            [CommandFlowMarker],
             str(info.world_id),
             str(result.run_id),
             storage_config=storage,
@@ -206,7 +243,7 @@ async def test_consecutive_runs_share_world_run_id(tmp_path):
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
     try:
         info = await c.command_service.create_world(ctx, WorldConfig(name="r2"), storage)
-        await c.command_service.create_entity(ctx, info.world_id, [Marker(tag="x")])
+        await c.command_service.create_entity(ctx, info.world_id, [CommandFlowMarker(tag="x")])
 
         result_a = await c.command_service.run(
             ctx, info.world_id, RunConfig(run_id=str(uuid7()), num_steps=1)
@@ -223,7 +260,7 @@ async def test_consecutive_runs_share_world_run_id(tmp_path):
         world = c.world_service.get_world(UUID(str(info.world_id)))
         df = await c.command_service.query_components(
             ctx,
-            [Marker],
+            [CommandFlowMarker],
             str(info.world_id),
             str(world.run_id),
             storage_config=storage,

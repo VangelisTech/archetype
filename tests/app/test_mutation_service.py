@@ -3,6 +3,7 @@
 
 """Tests for MutationService — entity ID accuracy and mutation lifecycle."""
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -37,6 +38,13 @@ class Health(Component):
 )
 def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
     assert _parse_entity_id(value) == expected
+
+
+def test_update_has_one_authoritative_dispatch_arm():
+    """Each command type has one reachable implementation in the drain dispatcher."""
+    source = inspect.getsource(CommandService._apply)
+
+    assert source.count("case CommandType.UPDATE:") == 1
 
 
 @pytest.mark.parametrize("value", [True, 7.0, 7.9, "7.0", " 7", "7 ", "", None])
