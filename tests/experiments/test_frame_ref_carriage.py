@@ -237,3 +237,28 @@ async def test_done_rows_freeze_refs(tmp_path):
             )
     finally:
         await ws.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_despawned_framed_episode_never_steps_external_env(tmp_path):
+    client = ScriptedFramedReachEnv(targets={0: (1.0, 0.0, 0.5)}, tolerance=0.05)
+    action = [0.3, 0.0, 0.0] + [0.0] * (ACTION_DIM - 3)
+
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="framed_despawn")
+        system = AsyncSystem()
+        await system.add_processor(FramedEnvStepProcessor(client))
+        world = await ws.create_world(
+            WorldConfig(name="framed-despawn"), storage_config=storage, system=system
+        )
+        entity_id = await _spawn_framed_episode(world, client, env_key=0, seed=0, action=action)
+        await world.run(RunConfig(num_steps=1))
+        before = list(client._state[0])
+
+        await world.remove_entity(entity_id)
+        await world.run(RunConfig(num_steps=1))
+
+        assert client._state[0] == before
+    finally:
+        await ws.shutdown()
