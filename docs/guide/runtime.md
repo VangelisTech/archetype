@@ -60,13 +60,21 @@ async with ArchetypeRuntime() as runtime: ...
 
 `__aexit__` MUST:
 
-1. Shut down all live world handles (LIFO order).
-2. Call `container.shutdown()`.
-3. Be idempotent. Errors during shutdown are aggregated and re-raised after best-effort completion.
+1. Stop admitting new runtime and handle operations.
+2. Await the operation lock for every live shared world state. A lock-protected
+   call already in progress — including `run()`, `step()`, or `query()` —
+   finishes before that state and all of its aliases close.
+3. Call `container.shutdown()` only after admitted world work has drained.
+4. Be idempotent. Errors during shutdown are aggregated and re-raised after
+   best-effort completion.
 
 ### R6 — Sync parity is part of the contract
 
-`SyncArchetypeRuntime` exposes the same surface as the async runtime, implemented via `asyncio.Runner`. Every method on `RuntimeWorld` has a matching method on `SyncRuntimeWorld`.
+`SyncArchetypeRuntime` exposes the same world-operation surface as the async
+runtime, implemented via `asyncio.Runner`. Every public method on
+`RuntimeWorld` has a matching method on `SyncRuntimeWorld`. Runtime lifecycle
+syntax remains idiomatic to each mode: `async with` / `await shutdown()` for
+async, `with` for sync.
 
 The sync facade owns its own `asyncio.Runner` and does NOT share with any outer event loop.
 

@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
 from daft import DataFrame, col
 from uuid_utils import UUID, uuid7
 
 import archetype.app.auth.guard as guard
+from archetype import ArchetypeRuntime, RuntimeWorld, SyncRuntimeWorld
 from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import (
     estimate_token_cost,
@@ -72,6 +74,21 @@ class CountToGoal(AsyncProcessor):
         return df.with_column("countdown__step", nxt).with_column(
             "countdown__done", (nxt >= col("countdown__goal")) | col("countdown__done")
         )
+
+
+class BlockingHealthIncrement(AsyncProcessor):
+    """Hold one admitted step open so runtime shutdown ordering is observable."""
+
+    components = (Health,)
+
+    def __init__(self, entered: asyncio.Event, release: asyncio.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        self.entered.set()
+        await self.release.wait()
+        return df.with_column("health__hp", col("health__hp") + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +685,107 @@ async def _task_quota_boundaries() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: runtime activation, shutdown ordering, invalidation, and sync parity
+# ---------------------------------------------------------------------------
+
+
+def task_runtime_contracts() -> list[GraderResult]:
+    """Compose the public runtime's activation and lifecycle boundaries."""
+    reset_tick_counters()
+    reset_daily_tokens()
+    try:
+        activation, shutdown = asyncio.run(_task_runtime_contracts())
+        return [
+            state_check(activation, name="lazy_single_flight_activation"),
+            state_check(shutdown, name="wait_then_close_shutdown"),
+            exact_match(
+                _public_methods(SyncRuntimeWorld),
+                _public_methods(RuntimeWorld),
+                name="sync_async_world_surface",
+            ),
+        ]
+    finally:
+        reset_tick_counters()
+        reset_daily_tokens()
+
+
+def _public_methods(cls: type[object]) -> set[str]:
+    return {name for name in dir(cls) if not name.startswith("_") and callable(getattr(cls, name))}
+
+
+def _raises_runtime_error(operation: Callable[[], object]) -> bool:
+    try:
+        operation()
+    except RuntimeError:
+        return True
+    return False
+
+
+async def _raises_runtime_error_async(
+    operation: Callable[[], Awaitable[object]],
+) -> bool:
+    try:
+        await operation()
+    except RuntimeError:
+        return True
+    return False
+
+
+async def _task_runtime_contracts() -> tuple[dict[str, bool], dict[str, bool]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "runtime-contracts",
+            storage=StorageConfig(uri=f"{tmp}/store", namespace="eval_runtime_contracts"),
+        )
+
+        pre_activation_rejected = _raises_runtime_error(lambda: world.world_id)
+        entity_ids = await asyncio.gather(*(world.spawn(Health(hp=index)) for index in range(12)))
+        info = await world.info()
+        audit_rows = (await world.history(limit=100)).to_pylist()
+        create_events = [row for row in audit_rows if row["command_type"] == "create_world"]
+
+        await world.step()  # persist raw initial conditions
+        await world.add_processor(BlockingHealthIncrement(entered, release))
+        step_task = asyncio.create_task(world.step())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        shutdown_task = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)  # shutdown stops admission before waiting on op_lock
+        shutdown_started = _raises_runtime_error(lambda: runtime.world("too-late"))
+        shutdown_waited = not shutdown_task.done()
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(step_task, shutdown_task), timeout=10)
+        handle_invalidated = await _raises_runtime_error_async(world.info)
+        await runtime.shutdown()  # idempotent after the first completion
+
+        activation = {
+            "property_rejects_before_activation": pre_activation_rejected,
+            "one_create_event": len(create_events) == 1,
+            "all_spawns_returned": len(entity_ids) == 12,
+            "entity_ids_are_unique": len(set(entity_ids)) == 12,
+            "handle_and_info_share_world": str(world.world_id) == str(info.world_id),
+        }
+        shutdown = {
+            "new_handles_rejected_during_shutdown": shutdown_started,
+            "shutdown_waited_for_step": shutdown_waited,
+            "in_flight_step_completed": (
+                step_task.done() and not step_task.cancelled() and step_task.exception() is None
+            ),
+            "shutdown_completed": (
+                shutdown_task.done()
+                and not shutdown_task.cancelled()
+                and shutdown_task.exception() is None
+            ),
+            "existing_handle_invalidated": handle_invalidated,
+        }
+        return activation, shutdown
+
+
+# ---------------------------------------------------------------------------
 # Task: value-based "all done" episode termination (bug B2)
 # ---------------------------------------------------------------------------
 
@@ -768,6 +886,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_quota_boundaries,
         desc="Exact per-tick and daily quota edges, atomic bulk debit, and actor isolation",
+    )
+    harness.add(
+        "runtime_contracts",
+        suite=SUITE,
+        fn=task_runtime_contracts,
+        desc="Lazy activation, wait-then-close shutdown, handle invalidation, and sync parity",
     )
     harness.add(
         "episode_value_termination",
