@@ -201,25 +201,24 @@ class IngestionService:
 
         store = await self._storage_service.get_or_create_store(effective, None)
 
-        if outcome == "recovered" and claim.table_id:
-            # Crash recovery: the original claimant may have appended before
-            # dying. The claim's token finds the orphan ON the data plane —
-            # complete without re-appending (and without re-grading), never
-            # duplicate. table_id on the claim names where to look; absent
-            # table_id (or a recorded table that was never materialized)
-            # means the crash preceded any append.
-            if claim.table_id != table_id:
-                raise RuntimeError(
-                    f"claim {claim.scope_key} records table {claim.table_id}, but the "
-                    f"declared component shape resolves to {table_id}"
-                )
-            try:
-                existing = await store.get_existing_table_df(claim.table_id, wid, str(run_id))
-                orphaned = existing.where(existing["commit_token"] == claim.commit_token)
-                found = orphaned.count_rows() > 0
-            except KeyError:
-                found = False
+        if outcome == "recovered":
+            # First probe the expired writer's token. If its append is durable,
+            # publish that orphan without rebuilding or re-appending.
+            found = False
+            if claim.table_id:
+                if claim.table_id != table_id:
+                    raise RuntimeError(
+                        f"claim {claim.scope_key} records table {claim.table_id}, but the "
+                        f"declared component shape resolves to {table_id}"
+                    )
+                try:
+                    existing = await store.get_existing_table_df(claim.table_id, wid, str(run_id))
+                    orphaned = existing.where(existing["commit_token"] == claim.commit_token)
+                    found = orphaned.count_rows() > 0
+                except KeyError:
+                    pass
             if found:
+                assert claim.table_id is not None
                 await store.flush()
                 physical = await store.get_existing_table_schema(claim.table_id)
                 if not signature_record.matches(physical):
@@ -234,6 +233,16 @@ class IngestionService:
                 await catalog.complete_claim(wid, claim.scope_key, claimant, claim.table_id)
                 settled = await catalog.get_claim(wid, claim.scope_key)
                 return self._receipt(settled if settled is not None else claim, duplicate=False)
+
+            # No orphan exists yet. Rotate before rebuilding so an expired,
+            # slow writer that appends later can never share the published
+            # token with this recovery attempt.
+            claim = await catalog.rearm_claim(
+                wid,
+                claim.scope_key,
+                claimant,
+                f"fact-{claim.scope_key[:16]}-{uuid7().hex}",
+            )
 
         components = await build_components(claim)
         if not components:

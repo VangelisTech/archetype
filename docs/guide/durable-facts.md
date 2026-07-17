@@ -50,15 +50,19 @@ Claims live in the control catalog, keyed by a deterministic scope
    which publishes its commit token into the visible set. Readers change
    nothing: `visible_tokens` unions tick manifests with completed claims.
 
+For a never-fenced legacy run, the first claim activates token filtering but
+keeps the empty epoch-0 token visible. That hides a PENDING fact's non-empty
+token without making pre-coordination rows disappear.
+
 ## 4. Crash recovery
 
 Stranded PENDING claims are recovered by **lease takeover, never blind
 retry**:
 
 + Crash before the append: the taker-over finds no rows under the claim's
-  token and appends fresh — under the **original** token, so any late
-  writes by the presumed-dead claimant remain part of the same single
-  visible identity.
+  token, then atomically re-arms the claim with a **fresh** token before
+  rebuilding and appending. Any late write by the expired claimant keeps
+  the old token and therefore remains invisible.
 + Crash after the append, before completion: the taker-over finds the
   orphan rows by token on the data plane and completes the claim
   **without re-appending**. No duplicates, ever.
@@ -106,8 +110,9 @@ rules on top:
   **without re-grading**. The guarantee is exactly one **visible** durable
   receipt per `evaluation_id` — never exactly-once grader execution. A
   lease takeover whose orphan probe finds the appended rows completes
-  without re-running the grader; a takeover that finds none re-runs it at
-  most once.
+  without re-running the grader; a takeover that finds none re-arms the
+  claim before rebuilding. Grader executions may overlap across an expired
+  lease, but only the current claim token can ever publish a receipt.
 + **The subject is pinned, never hashed by content.** Subject identity =
   the immutable snapshot reference (manifest head tick + commit tokens)
   plus the canonical selector (components, ticks, entity ids).

@@ -204,6 +204,20 @@ async def test_visibility_three_state_parity(tmp_path, worker_url):
         await catalog.register_world(_world())
         # Never fenced: legacy, unfiltered.
         assert await catalog.visible_tokens("w1", "r1") is None
+        # Once a claim exists, its pending rows must not leak through the
+        # legacy-unfiltered state even before this world has a writer fence.
+        await catalog.acquire_claim(
+            world_id="w1",
+            run_id="r1",
+            producer="p",
+            external_id="pending",
+            payload_digest="pending-digest",
+            claimant="pending-writer",
+            tick=0,
+        )
+        assert await catalog.visible_tokens("w1", "r1") == {0: [""]}
+        assert await catalog.visible_tokens("w1", "r1", []) == {}
+        assert await catalog.visible_tokens("w1", "r1", [3]) == {3: [""]}
         # Fenced, nothing published: nothing visible.
         await catalog.acquire_fence("w1", "h1")
         assert await catalog.visible_tokens("w1", "r1") == {}
@@ -282,6 +296,35 @@ async def test_claim_lifecycle_parity(tmp_path, worker_url):
         # Completed claims join the visible set at their tick.
         visible = await catalog.visible_tokens("w1", "r1", [0])
         assert claim.commit_token in visible.get(0, [])
+
+        # An expired empty claim rotates away from the stale writer's token
+        # before a recovery may append.
+        _, empty = await catalog.acquire_claim(
+            world_id="w1",
+            run_id="r1",
+            producer="p",
+            external_id="empty",
+            payload_digest="d-empty",
+            claimant="expired",
+            tick=0,
+            lease_seconds=0.0,
+        )
+        await catalog.record_claim_table("w1", empty.scope_key, "stale-table")
+        outcome3, recovered = await catalog.acquire_claim(
+            world_id="w1",
+            run_id="r1",
+            producer="p",
+            external_id="empty",
+            payload_digest="d-empty",
+            claimant="recovery",
+            tick=0,
+        )
+        assert outcome3 == "recovered"
+        with pytest.raises(ClaimPendingError):
+            await catalog.rearm_claim("w1", empty.scope_key, "expired", "fresh-token")
+        rearmed = await catalog.rearm_claim("w1", recovered.scope_key, "recovery", "fresh-token")
+        assert rearmed.commit_token != empty.commit_token
+        assert rearmed.table_id is None
         await catalog.close()
 
 

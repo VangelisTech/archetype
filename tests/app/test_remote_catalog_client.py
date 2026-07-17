@@ -72,3 +72,34 @@ async def test_get_claim_retries_then_treats_not_found_as_terminal(monkeypatch):
         sleep.assert_awaited_once_with(0.5)
     finally:
         await catalog.close()
+
+
+async def test_rearm_claim_returns_the_rotated_remote_record():
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "scope_key": "scope",
+                    "run_id": "r1",
+                    "producer": "p",
+                    "external_id": "e1",
+                    "payload_digest": "digest",
+                    "status": "PENDING",
+                    "commit_token": "fresh-token",
+                    "tick": 0,
+                    "fact_entity_id": -100001,
+                    "table_id": None,
+                    "claimant": "recovery",
+                    "lease_expires_at": 10.0,
+                    "fence_epoch": 1,
+                },
+            )
+        ]
+    )
+    try:
+        claim = await catalog.rearm_claim("w1", "scope", "recovery", "fresh-token")
+        assert claim.commit_token == "fresh-token"
+        assert claim.table_id is None
+    finally:
+        await catalog.close()
