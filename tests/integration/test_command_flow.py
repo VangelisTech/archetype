@@ -159,6 +159,80 @@ async def test_submit_to_destroyed_world_rejected(tmp_path):
         await c.shutdown()
 
 
+class DrainExtra(Component):
+    note: str = ""
+
+
+@pytest.mark.asyncio
+async def test_drained_commands_coerce_string_entity_ids(tmp_path):
+    """Issue #178: DESPAWN/ADD_COMPONENT/REMOVE_COMPONENT must int-coerce entity_id.
+
+    Command payloads arrive as JSON over the API, so entity_id is a string.
+    SPAWN's reserved-id arm coerces int(); the other three arms passed the raw
+    payload value through, and a string id silently no-ops against the world's
+    int-keyed entity registry — the command is acked as applied while the
+    mutation never happens.
+    """
+    from archetype.app.models import Command, CommandType
+
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="coerce"), StorageConfig(uri=str(tmp_path / "store"))
+        )
+        wid = world.world_id
+        eid = await c.command_service.create_entity(ctx, wid, [Marker(tag="a")])
+        # Materialize the spawn so component migration has a prior row to read.
+        await c.simulation_service.step(wid, RunConfig())
+        base_sig = world.entity2sig[eid]
+
+        # ADD_COMPONENT with a JSON-shaped payload: string id, dict component.
+        await c.command_service.submit(
+            ctx,
+            wid,
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={
+                    "entity_id": str(eid),
+                    "components": [{"type": "DrainExtra", "note": "x"}],
+                },
+            ),
+        )
+        applied = await c.command_service.drain_and_apply(wid, world.tick)
+        assert len(applied) == 1
+        assert world.entity2sig[eid] != base_sig, (
+            "ADD_COMPONENT with a string entity_id no-opped; drain must coerce int()"
+        )
+
+        # REMOVE_COMPONENT names the type as a string, id as a string.
+        await c.command_service.submit(
+            ctx,
+            wid,
+            Command(
+                type=CommandType.REMOVE_COMPONENT,
+                payload={"entity_id": str(eid), "component_types": ["DrainExtra"]},
+            ),
+        )
+        await c.command_service.drain_and_apply(wid, world.tick)
+        assert world.entity2sig[eid] == base_sig, (
+            "REMOVE_COMPONENT with a string entity_id no-opped; drain must coerce int()"
+        )
+
+        # DESPAWN with a string id must actually remove the entity.
+        await c.command_service.submit(
+            ctx,
+            wid,
+            Command(type=CommandType.DESPAWN, payload={"entity_id": str(eid)}),
+        )
+        await c.command_service.drain_and_apply(wid, world.tick)
+        assert eid not in world.entity2sig, (
+            "DESPAWN with a string entity_id no-opped; drain must coerce int()"
+        )
+    finally:
+        await c.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_consecutive_runs_share_world_run_id(tmp_path):
     """spec: docs/guide/execution-hierarchy.md section 2 — vanilla pattern is

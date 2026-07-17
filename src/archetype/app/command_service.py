@@ -1127,16 +1127,18 @@ class CommandService:
                     await self._mutations.create_entity(world_id, components)
 
             case CommandType.DESPAWN:
-                await self._mutations.remove_entity(world_id, payload["entity_id"])
+                await self._mutations.remove_entity(world_id, int(payload["entity_id"]))
 
             case CommandType.ADD_COMPONENT:
                 components = self._hydrate_components(payload.get("components", []))
-                await self._mutations.add_components(world_id, payload["entity_id"], components)
+                await self._mutations.add_components(
+                    world_id, int(payload["entity_id"]), components
+                )
 
             case CommandType.REMOVE_COMPONENT:
                 component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await self._mutations.remove_components(
-                    world_id, payload["entity_id"], component_types
+                    world_id, int(payload["entity_id"]), component_types
                 )
 
             case CommandType.ADD_PROCESSOR:
