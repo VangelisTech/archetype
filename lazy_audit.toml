@@ -128,12 +128,12 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 228
+line = 413
 method = "collect"
 reason = "grading boundary: latest-tick row per entity from the already-filtered episode query becomes the scalar TaskEvalReport — the analysis edge where eval graders also collect; nothing downstream re-enters the DAG"
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 228
+line = 413
 method = "to_pylist"
 reason = "same grading-boundary site as the collect above: per-entity terminal rows to Python for success/length aggregation into the report"

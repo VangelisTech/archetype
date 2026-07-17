@@ -154,6 +154,29 @@ path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
 the handle's current world and run; fork handles do not inherit ancestor fact
 rows.
 
+### R19 — Public API is gate-addressable, and the machine checks
+
+`@public_api` (top-level export) marks archetype's supported callable surface
+and carries an enforced contract: **a public callable may not accept raw
+services**. Public capability must be expressible through `ArchetypeRuntime`
+and its gated handles, so every mutation carries command-audit provenance —
+a function taking `world_service=`/`simulation_service=` forces callers to
+hand-roll a `ServiceContainer` and bypass the gate (observed twice before
+this rule existed). `scripts/check_api_import_boundaries.py` enforces the
+signature rule and the import scopes (`experiments` may import app *models*
+only; the runtime is the sole public consumer of app). Deprecated
+service-shaped bridge parameters live in the checker's allowlist with a
+removal deadline.
+
+`@archetype.entrypoint()` is the script boundary as a decorator — an
+evolution of the runtime, not a surface beside it: it constructs the runtime
+(env-driven configuration per R16/R17), bridges sync/async, injects the
+runtime as the first argument, and guarantees teardown. Eval helpers
+(`archetype.experiments.eval_rollouts.run_task_eval`,
+`archetype.experiments.instruction_sweep.run_instruction_sweep`) are
+runtime-first: pass `runtime=`; their raw-service keyword forms are
+deprecated bridges removed in v0.6.
+
 ## 3. Ergonomic surface
 
 The full canonical surface, async and sync:
