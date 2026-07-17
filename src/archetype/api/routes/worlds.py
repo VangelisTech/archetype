@@ -74,7 +74,7 @@ async def destroy_world(
     """Drop the in-memory world instance. Persisted storage and audit rows are retained.
 
     Requires operator or admin. Destroying an unknown world is a no-op; an
-    unparseable world id is rejected as a client error.
+    unparsable world id is rejected as a client error.
     """
     try:
         UUID(world_id)  # the no-op contract covers missing worlds, not bad ids

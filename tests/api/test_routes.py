@@ -126,7 +126,7 @@ class TestWorldRouteErrors:
         assert "dup_name" in resp.json()["detail"]
 
     def test_delete_world_invalid_uuid(self, client):
-        """Issue #180: an unparseable id is a client error, not a silent no-op.
+        """Issue #180: an unparsable id is a client error, not a silent no-op.
 
         The safe-no-op destroy contract covers *missing* worlds; an id that can
         never name a world must be rejected like the sibling GET route does.
