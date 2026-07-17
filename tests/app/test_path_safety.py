@@ -16,7 +16,7 @@ from archetype.app._catalog import catalog_path_for
 from archetype.app.storage_service import _resolve_uri, create_async_store
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.core.paths import require_safe_namespace, resolve_local_root
-from archetype.runtime.session import _resolve_storage_uri, configure_session
+from archetype.runtime.session import configure_session
 
 BAD_NAMESPACES = ["../up", "a/b", "a\\b", ".hidden", "..", "", "/abs", "a b", "a\x00b"]
 GOOD_NAMESPACES = ["ecs", "ns_1", "a.b", "A-2", "audit"]
@@ -102,19 +102,23 @@ class TestStoreConstructionGuards:
         with pytest.raises(ValueError, match="escapes ARCHETYPE_DATA_ROOT"):
             _resolve_uri(str(tmp_path.parent / "escape"))
 
-    def test_session_resolve_respects_data_root(self, tmp_path, monkeypatch):
+    def test_configure_session_respects_data_root(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ARCHETYPE_DATA_ROOT", str(tmp_path))
-        resolved, is_remote = _resolve_storage_uri(str(tmp_path / "store"))
-        assert not is_remote
-        assert Path(resolved).is_relative_to(tmp_path.resolve())
-
+        config = StorageConfig(
+            uri=str(tmp_path.parent / "escape"),
+            namespace="ns",
+            backend=StorageBackend.ICEBERG,
+        )
         with pytest.raises(ValueError, match="escapes ARCHETYPE_DATA_ROOT"):
-            _resolve_storage_uri(str(tmp_path.parent / "escape"))
+            configure_session(config)
+
+        inside = StorageConfig(
+            uri=str(tmp_path / "store"), namespace="ns", backend=StorageBackend.ICEBERG
+        )
+        assert configure_session(inside) is not None
 
     def test_remote_uris_pass_through_untouched(self):
         assert _resolve_uri("s3://bucket/prefix") == "s3://bucket/prefix"
-        resolved, is_remote = _resolve_storage_uri("s3://bucket/prefix")
-        assert is_remote and resolved == "s3://bucket/prefix"
 
     def test_injected_session_branch_rejects_traversal_namespace(self, tmp_path):
         """Footgun-review finding: the injected-session Iceberg branch skipped
