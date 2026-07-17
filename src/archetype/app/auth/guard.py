@@ -97,13 +97,14 @@ def guardrail_check(
     ctx: ActorCtx,
     projected_count: int = 0,
     projected_tokens: int = 0,
+    now: datetime | None = None,
 ) -> int:
     """Pure RBAC + quota check.
 
     Returns the token cost of ``cmd`` if allowed; raises ``GuardrailError``
     otherwise. Does NOT mutate counters.
     """
-    maybe_reset_daily_tokens()
+    maybe_reset_daily_tokens(now)
 
     # 1. Permission check via the four-role matrix
     allowed = any(cmd.type in COMMANDS_BY_ROLE.get(r, frozenset()) for r in ctx.roles)
@@ -139,9 +140,9 @@ def guardrail_commit(ctx: ActorCtx, count: int, tokens: int) -> None:
         _daily_tokens[ctx.id] = _daily_tokens.get(ctx.id, 0) + tokens
 
 
-def guardrail_allow(cmd: Command, ctx: ActorCtx) -> None:
+def guardrail_allow(cmd: Command, ctx: ActorCtx, now: datetime | None = None) -> None:
     """Check RBAC + quotas and debit counters. Raises GuardrailError if denied."""
-    cost = guardrail_check(cmd, ctx)
+    cost = guardrail_check(cmd, ctx, now=now)
     guardrail_commit(ctx, count=1, tokens=cost)
 
 
@@ -160,7 +161,10 @@ def reset_daily_tokens() -> None:
 def maybe_reset_daily_tokens(now: datetime | None = None) -> bool:
     """Clear daily token budgets iff the UTC date has advanced."""
     global _last_reset_date
-    current_date = (now or datetime.now(UTC)).date()
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current_date = current.astimezone(UTC).date()
     if current_date != _last_reset_date:
         _daily_tokens.clear()
         _last_reset_date = current_date

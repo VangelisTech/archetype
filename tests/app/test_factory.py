@@ -5,7 +5,7 @@
 
 import pytest
 
-from archetype.app.storage_service import StorageService
+from archetype.app.storage_service import StorageService, _resolve_uri
 from archetype.app.world_service import WorldService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
@@ -15,6 +15,22 @@ def _make_orchestrator(tmp_path):
     ss = StorageService()
     orch = WorldService(ss)
     return orch, ss
+
+
+def test_resolve_file_uri_uses_filesystem_path(tmp_path):
+    target = tmp_path / "file store"
+    assert _resolve_uri(target.as_uri()) == str(target)
+    assert target.is_dir()
+
+
+def test_resolve_localhost_file_uri_ignores_netloc(tmp_path):
+    target = tmp_path / "localhost-store"
+    assert _resolve_uri(f"file://localhost{target}") == str(target)
+    assert target.is_dir()
+
+
+def test_resolve_remote_uri_passes_through():
+    assert _resolve_uri("s3://bucket/prefix") == "s3://bucket/prefix"
 
 
 class TestWorldFactory:

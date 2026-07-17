@@ -338,6 +338,9 @@ class WorldService:
         system: iAsyncSystem | None = None,
     ) -> AsyncWorld:
         """Resolve storage, then delegate world creation to the orchestrator."""
+        if config.world_id is not None and self._orchestrator.has_world(config.world_id):
+            return self._orchestrator.get_world(config.world_id)
+
         if storage_config is None:
             storage_config = StorageConfig()
 

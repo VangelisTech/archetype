@@ -25,7 +25,8 @@ import asyncio
 import logging
 import os
 import pathlib
-from urllib.parse import urlparse
+import re
+from urllib.parse import unquote, urlparse
 
 from daft.session import Session
 
@@ -52,11 +53,22 @@ def _validate_session_namespace(session: Session, config: StorageConfig) -> None
 
 def _resolve_uri(uri: str) -> str:
     """Resolve local storage paths to absolute. Remote URIs pass through."""
-    scheme = urlparse(uri).scheme.lower()
-    if scheme not in ("", "file"):
+    parsed = urlparse(uri)
+    scheme = parsed.scheme.lower()
+    windows_drive = bool(re.match(r"^[A-Za-z]:[\\/]", uri))
+    if scheme not in ("", "file") and not windows_drive:
         return uri
 
-    base_path = pathlib.Path(uri)
+    if scheme == "file":
+        path = unquote(parsed.path)
+        if parsed.netloc and parsed.netloc != "localhost":
+            path = f"//{parsed.netloc}{path}"
+        if os.name == "nt" and re.match(r"^/[A-Za-z]:[\\/]", path):
+            path = path[1:]
+    else:
+        path = uri
+
+    base_path = pathlib.Path(path)
     if not base_path.is_absolute():
         base_path = pathlib.Path.cwd() / base_path
     base_path.mkdir(parents=True, exist_ok=True)
@@ -297,28 +309,35 @@ class StorageService:
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
         errors: list[Exception] = []
-        for store in self._instances.values():
-            try:
-                if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
-                    await store.shutdown()
-                elif hasattr(store, "shutdown"):
-                    # Runtime-sync shutdown on a duck-typed store; the
-                    # iscoroutinefunction branch above handles async stores.
-                    store.shutdown()  # ty: ignore[unused-awaitable]
-            except Exception as e:
-                logger.exception("Failed to shut down store %r", store)
-                errors.append(e)
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            for store in self._instances.values():
+                try:
+                    if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
+                        await store.shutdown()
+                    elif hasattr(store, "shutdown"):
+                        store.shutdown()  # ty: ignore[unused-awaitable]
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+                except Exception as exc:
+                    logger.exception("Failed to shut down store %r", store)
+                    errors.append(exc)
 
-        for key, catalog in self._catalogs.items():
-            try:
-                await catalog.close()
-            except Exception as e:
-                logger.exception("Failed to close control catalog %r", key)
-                errors.append(e)
+            for key, catalog in self._catalogs.items():
+                try:
+                    await catalog.close()
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+                except Exception as exc:
+                    logger.exception("Failed to close control catalog %r", key)
+                    errors.append(exc)
+        finally:
+            self._instances.clear()
+            self._locks.clear()
+            self._catalogs.clear()
 
-        self._instances.clear()
-        self._locks.clear()
-        self._catalogs.clear()
+        if cancelled is not None:
+            raise cancelled
 
         if errors:
             raise RuntimeError(

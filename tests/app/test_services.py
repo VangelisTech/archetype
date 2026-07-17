@@ -125,6 +125,28 @@ class TestWorldService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_idempotent_create_preserves_original_storage(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            from uuid_utils import uuid7
+
+            world_id = uuid7()
+            original = StorageConfig(uri=str(tmp_path / "original"), namespace="first")
+            replacement = StorageConfig(uri=str(tmp_path / "replacement"), namespace="second")
+
+            first = await container.world_service.create_world(
+                WorldConfig(world_id=world_id, name="original"), original
+            )
+            repeated = await container.world_service.create_world(
+                WorldConfig(world_id=world_id, name="replacement"), replacement
+            )
+
+            assert repeated is first
+            assert container.world_service.storage_record(world_id) == (original, None)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_get_world_by_name(self, tmp_path):
         container = ServiceContainer()
         try:

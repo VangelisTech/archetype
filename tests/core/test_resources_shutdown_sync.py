@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from archetype.core.config import StorageConfig
@@ -49,6 +51,11 @@ class _CountingAsyncStore:
 
     async def shutdown(self):
         self.shutdown_called = True
+
+
+class _CancellingAsyncStore:
+    async def shutdown(self):
+        raise asyncio.CancelledError
 
 
 @pytest.mark.asyncio
@@ -104,3 +111,19 @@ async def test_storage_service_shutdown_failing_in_middle_drains_all():
     finally:
         svc._instances.clear()
         svc._locks.clear()
+
+
+@pytest.mark.asyncio
+async def test_storage_service_shutdown_cancellation_still_drains_and_clears():
+    svc = make_storage_service()
+    later = _CountingAsyncStore()
+    svc._instances["cancel::ns"] = _CancellingAsyncStore()
+    svc._instances["later::ns"] = later
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.shutdown()
+
+    assert later.shutdown_called
+    assert svc._instances == {}
+    assert svc._locks == {}
+    assert svc._catalogs == {}

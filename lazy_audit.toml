@@ -116,7 +116,7 @@ reason = "Processor candidate boundary: materializes the distinct, existing-key-
 
 [[entries]]
 path = "src/archetype/app/world_service.py"
-line = 710
+line = 713
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
