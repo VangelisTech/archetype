@@ -42,23 +42,29 @@ Output:
    player: ADD_PROCESSOR denied (correct)
 ```
 
-**Command types** (15 total, including `run_rollout` and `run_episode` for MCTS):
+**Gated operations in this example (curated, not exhaustive):**
 
-| Command | Payload | Who Can Run It |
-|---------|---------|----------------|
-| `spawn` | `{"components": [...]}` | player, operator, admin |
-| `despawn` | `{"entity_id": int}` | player, operator, admin |
-| `update` | `{"entity_id": int, "components": [...]}` | player, operator, admin |
-| `add_component` | `{"entity_id": int, "components": [...]}` | operator, admin |
-| `remove_component` | `{"entity_id": int, "component_types": [...]}` | operator, admin |
-| `add_processor` | `{"processor": ...}` | operator, admin |
-| `remove_processor` | `{"processor_type": str}` | operator, admin |
-| `create_world` | `{"config": {"name": str}}` | admin |
-| `destroy_world` | `{"world_id": str}` | operator, admin |
-| `fork_world` | `{"source_world_id": str, "name": str}` | operator, admin |
-| `message` | `{"sender_id", "receiver_id", "content"}` | player, operator, admin |
-| `custom` | `{...}` | player, operator, admin |
-| `query_world` | `{}` | viewer, player, operator, admin |
+| Runtime call | Gate command | Allowed roles |
+|---|---|---|
+| `world.step()` | `step` | operator, admin |
+| `world.spawn()` | `spawn` | player, operator, admin |
+| `world.despawn()` | `despawn` | player, operator, admin |
+| `world.update()` | `update` | player, operator, admin |
+| `world.add_components()` | `add_component` | operator, admin |
+| `world.remove_components()` | `remove_component` | operator, admin |
+| `world.add_processor()` | `add_processor` | operator, admin |
+| `world.remove_processor()` | `remove_processor` | operator, admin |
+| `world.fork()` | `fork_world` | operator, admin |
+| `world.info()` | `get_world_info` | viewer, player, operator, admin |
+| `world.query()` | `query_world` | viewer, player, operator, admin |
+| `world.history()` | `get_audit_history` | viewer, player, operator, admin |
+
+The runtime constructs the command payloads for these methods; this is not a
+raw broker-payload schema. The complete command inventory lives in
+`archetype.app.models.CommandType`. See the normative
+[Command Gate](command-gate.md#3-the-permissions-matrix) for the current
+permission matrix, including `run_episode`, `run_rollout`, fact operations,
+hooks, resources, and introspection.
 
 ---
 

@@ -24,6 +24,13 @@ The runtime module imports from `archetype.app` ONLY:
 - `archetype.app.container`
 - `archetype.app.models`
 - `archetype.app.auth.models`
+- `archetype.app.autoresearch_service` inside `TYPE_CHECKING` only
+- `archetype.app.eval_service` inside `TYPE_CHECKING` only
+
+The two type-only modules supply public callback and result annotations for
+`world.autoresearch()` and `world.grade()`. They do not provide an operational
+path around the gate; both operations still route through the authorized
+runtime surface.
 
 Imports from `archetype.app.{mutation_service, simulation_service, query_service, world_service, broker}` are forbidden. Any such import is a spec violation; the gate is leaking.
 

@@ -4,7 +4,7 @@ import logging
 
 import pytest
 import pytest_asyncio
-from daft import col, lit
+from daft import col, from_pylist, lit
 
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -24,6 +24,26 @@ from archetype.runtime.session import configure_session
 class Position(Component):
     x: int
     y: int
+
+
+class ResourceProbeMarker(Component):
+    value: int
+
+
+class SharedCounter:
+    def __init__(self) -> None:
+        self.value = 0
+
+
+class ObserveSharedCounter(AsyncProcessor):
+    components = ()
+    priority = 1
+
+    async def process(self, df, resources: Resources):
+        counter = resources.require(SharedCounter)
+        prior = counter.value
+        counter.value += 1
+        return df.with_column("observed_prior", lit(prior))
 
 
 class P1ScaleX(AsyncProcessor):
@@ -180,6 +200,30 @@ async def test_archetypes_process_in_parallel(world, store_backend):
     await step_task
     # With two archetypes, processors should overlap at least once
     assert shared["peak"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_archetype_executions_share_resources():
+    """Per-archetype DataFrames are separate; world resources are not."""
+    system = AsyncSystem()
+    await system.add_processor(ObserveSharedCounter())
+    resources = Resources()
+    counter = SharedCounter()
+    resources.insert(counter)
+
+    position_df = from_pylist([{"position__x": 0, "position__y": 0}])
+    marker_df = from_pylist([{"resourceprobemarker__value": 0}])
+    position_out, marker_out = await asyncio.gather(
+        system.execute(position_df, (Position,), resources=resources),
+        system.execute(marker_df, (ResourceProbeMarker,), resources=resources),
+    )
+
+    observed = [
+        position_out.collect().to_pylist()[0]["observed_prior"],
+        marker_out.collect().to_pylist()[0]["observed_prior"],
+    ]
+    assert sorted(observed) == [0, 1]
+    assert counter.value == 2
 
 
 # ---------------------------------------------------------------------------
