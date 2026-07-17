@@ -335,6 +335,39 @@ def test_oversized_evidence_without_named_validated_artifact_fails_closed():
         render_evidence(normalized, digest, run_url="https://example.test/runs/7")
 
 
+def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
+    result = _result()
+    result["summary"] = "s" * 40000
+    result["review_context"][0]["assessment"] = "c" * 40000
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    output_path = tmp_path / "validated" / "normalized.json"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "normalize",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * 40000
+    assert list(output_path.parent.iterdir()) == [output_path]
+
+
 def test_review_payload_batches_each_finding_as_an_inline_thread():
     normalized = validate_result(_result(findings=[_finding()]), _scope(), DIFF)
     digest = artifact_digest(normalized)

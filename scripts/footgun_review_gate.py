@@ -719,11 +719,21 @@ def _github_scope_command(args: argparse.Namespace) -> None:
     _write_json(args.scope, scope)
 
 
-def _prepare_command(args: argparse.Namespace) -> None:
+def _validated_result(args: argparse.Namespace) -> dict[str, Any]:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     raw_result = _expect_mapping(_load_json(args.result), "result")
     diff = args.diff.read_text(encoding="utf-8")
-    result = validate_result(raw_result, scope, diff)
+    return validate_result(raw_result, scope, diff)
+
+
+def _normalize_command(args: argparse.Namespace) -> None:
+    result = _validated_result(args)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, result)
+
+
+def _prepare_command(args: argparse.Namespace) -> None:
+    result = _validated_result(args)
     digest = artifact_digest(result)
     finding_count = len(result["findings"])
 
@@ -791,6 +801,15 @@ def _parser() -> argparse.ArgumentParser:
     github_scope.add_argument("--diff", type=Path, required=True)
     github_scope.add_argument("--scope", type=Path, required=True)
     github_scope.set_defaults(handler=_github_scope_command)
+
+    normalize = subparsers.add_parser(
+        "normalize", help="validate structured output without rendering unpublished evidence"
+    )
+    normalize.add_argument("--scope", type=Path, required=True)
+    normalize.add_argument("--diff", type=Path, required=True)
+    normalize.add_argument("--result", type=Path, required=True)
+    normalize.add_argument("--output", type=Path, required=True)
+    normalize.set_defaults(handler=_normalize_command)
 
     prepare = subparsers.add_parser("prepare", help="validate and render structured output")
     prepare.add_argument("--scope", type=Path, required=True)

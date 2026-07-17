@@ -121,18 +121,17 @@ jobs:
           echo "The detector did not return schema-valid structured output."
           exit 1
 
-      - name: Validate exact review evidence
+      - name: Validate and normalize detector result
         env:
           STRUCTURED_OUTPUT: ${{ steps.detector.outputs.structured_output }}
         run: |
           mkdir -p "${REVIEW_DIR}"
           printf '%s' "${STRUCTURED_OUTPUT}" > "${REVIEW_DIR}/structured-output.json"
-          python3 scripts/footgun_review_gate.py prepare \
+          python3 scripts/footgun_review_gate.py normalize \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
             --result "${REVIEW_DIR}/structured-output.json" \
-            --output-dir "${REVIEW_DIR}/validated" \
-            --github-output "${RUNNER_TEMP}/gate-outputs"
+            --output "${REVIEW_DIR}/validated/normalized.json"
 
       - name: Upload validated detector result
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
