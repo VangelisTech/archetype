@@ -29,6 +29,41 @@ Rows include `world_id`, `run_id`, `entity_id`, `tick`, and `is_active`, plus
 the prefixed fields for every requested component. A component named
 `Position` with field `x` becomes `position__x`.
 
+## Read after restart
+
+A fresh runtime can attach a non-owning, read-only handle to the same durable
+world. Pass the storage identity used by the writer:
+
+```python
+from archetype import ArchetypeRuntime, StorageConfig
+
+storage = StorageConfig(uri="./data", namespace="experiment")
+
+async with ArchetypeRuntime() as runtime:
+    cold = runtime.attach(world_id, storage=storage)
+    cold_history = await cold.query(Position)
+```
+
+`RuntimeWorld.query()` always uses the durable query path, whether the world is
+live in the current process or only recorded in storage. It resolves the
+world's recorded active `run_id`; there is no live-versus-durable preference
+flag on this API.
+
+A cold `info().tick` is the catalog's last published tick head, not a mutable
+next-step cursor. To continue writing, resume explicitly; the runtime rebuilds
+the next tick from committed history. Processors, resources, and hooks are
+code, not durable state, so reinstall them before stepping:
+
+```python
+async with ArchetypeRuntime() as runtime:
+    resumed = await runtime.resume(world_id, storage=storage)
+    await resumed.add_processor(MoveProcessor())
+    await resumed.run(steps=10)
+```
+
+Resume preserves the world's active `run_id`, so earlier rows, new rows, and
+`RunResult.run_id` address one continuous timeline.
+
 ## Branch a run
 
 `fork()` creates another world from the source's current state. The branch

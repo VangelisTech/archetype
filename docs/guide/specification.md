@@ -312,9 +312,14 @@ One tick MUST follow this order:
 
 ### Run contract
 
-- A `RunConfig` describes a sequence of steps that share one `run_id`.
-- `world.run(run_config)` MUST preserve that same `run_id` across every tick in
-  the run.
+- A world owns one active `run_id`. A new world mints it at construction,
+  mutable resume restores it, and a fork mints a fresh identity for its new
+  lineage.
+- `RunConfig.run_id` is a call-level candidate retained for lower-level
+  compatibility. Execution MUST NOT replace an active world's `run_id` with
+  it.
+- `world.run(run_config)` MUST stamp the world's active `run_id` across every
+  tick in the call and across repeated calls on that world.
 - Query defaults that rely on the current run SHOULD use the world's active
   `run_id`.
 
@@ -494,10 +499,10 @@ CURRENT GAPS:
 - `step()` is the authoritative world execution boundary.
 - `step()` MUST apply due commands before world execution.
 - `step()` MUST receive an explicit `RunConfig` from the caller; the service
-  MUST NOT mint a fresh `RunConfig` per call. Callers drive a multi-tick run
-  by reusing the same `RunConfig` across every step so the `run_id` is stable.
-- `run()` MUST preserve one logical `run_id` across all steps in the run by
-  threading the caller's `RunConfig` into every `step()` call.
+  MUST NOT mint a fresh `RunConfig` per call. The world's active `run_id`, not
+  reuse of a particular config object, provides continuity across calls.
+- `run()` MUST thread the caller's `RunConfig` into every `step()` call while
+  preserving and reporting the world's active `run_id`.
 - Episodes and rollouts follow [Execution Hierarchy](execution-hierarchy.md).
 
 ### QueryService
@@ -1000,6 +1005,8 @@ all of the following:
 - stable reserved-entity spawn semantics through the broker
 - explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
 - exact actor-local quota boundaries and UTC rollover (`quota_boundaries` regression eval)
+- live/cold historical-read parity and resumed run continuity
+  (`time_travel_and_run_id` capability eval)
 - explicit runtime-vs-world lifetime boundaries
 - clear distinction between idempotent and non-idempotent operations
 
