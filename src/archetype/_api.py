@@ -36,7 +36,9 @@ def public_api[F](obj: F) -> F:
     module = getattr(obj, "__module__", "?")
     PUBLIC_API_REGISTRY.append(f"{module}.{qualname}")
     try:
-        obj.__archetype_public_api__ = True  # type: ignore[attr-defined]
+        # setattr keeps the marker invisible to static generics (ty flags a
+        # direct attribute write on the TypeVar-bound object).
+        setattr(obj, "__archetype_public_api__", True)  # noqa: B010
     except (AttributeError, TypeError):  # pragma: no cover - exotic callables
         pass
     return obj
