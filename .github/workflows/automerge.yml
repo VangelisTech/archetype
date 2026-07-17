@@ -11,11 +11,15 @@
 # push, arm on review success. A PR whose review never completes, or whose
 # findings are unfixed, simply never enters the queue.
 #
-# Token note: if AUTOMERGE_PAT (a fine-grained PAT with contents:write +
-# pull-requests:write) is present, it is preferred. With the default
-# GITHUB_TOKEN the merge is attributed to github-actions, and pushes made
-# by GITHUB_TOKEN do not trigger `on: push` workflows — the docs deploy to
-# Cloudflare Pages on main would be skipped for auto-merged PRs.
+# Token note: the arm job prefers AUTOMERGE_PAT (a fine-grained PAT with
+# contents:write + pull-requests:write) because the eventual merge commit
+# must trigger `on: push` workflows — pushes made by the default
+# GITHUB_TOKEN do not, so the docs deploy to Cloudflare Pages on main
+# would be skipped for auto-merged PRs. The disarm job deliberately uses
+# only github.token: disarming needs no downstream triggers, and a job
+# whose YAML executes from the PR ref (plain `pull_request`) should not
+# reference secrets it doesn't need — least privilege, even though GitHub
+# already withholds repo secrets from fork-triggered pull_request runs.
 
 name: Auto-merge
 
@@ -40,7 +44,7 @@ jobs:
     steps:
       - name: Disable auto-merge pending review
         env:
-          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --disable-auto "$PR_URL" || true
 
