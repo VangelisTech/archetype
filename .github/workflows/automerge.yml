@@ -36,6 +36,7 @@ on:
     types: [completed]
 
 permissions:
+  checks: read # Guard queries review-complete check runs on the armed head.
   contents: write
   pull-requests: write
 
@@ -86,13 +87,18 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          ok=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=review-complete&per_page=20" \
-            --jq '[.check_runs[] | select(.conclusion == "success")] | length')
-          if [ "${ok:-0}" -gt 0 ]; then
-            echo "review-complete already succeeded on ${HEAD_SHA}; arming is legitimate."
+          # LATEST run only: a head's review can be re-triggered without a
+          # new commit (reopen, manual re-run), and a stale success must not
+          # outvote a newer failure. `|| latest=""` keeps an API failure
+          # from tripping -e before the revert loop — failure to positively
+          # confirm the verdict falls through to the revert (fail closed).
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=review-complete&per_page=100" \
+            --jq '[.check_runs[]] | sort_by(.started_at) | last | .conclusion // empty') || latest=""
+          if [ "$latest" = "success" ]; then
+            echo "latest review-complete on ${HEAD_SHA} succeeded; arming is legitimate."
             exit 0
           fi
-          echo "No passing review-complete on ${HEAD_SHA}; reverting premature arming."
+          echo "No authoritative passing review-complete on ${HEAD_SHA} (latest: ${latest:-none}); reverting premature arming."
           for attempt in 1 2 3; do
             gh pr merge --disable-auto "$PR_URL" || true
             armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest // empty')
