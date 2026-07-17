@@ -182,8 +182,9 @@ packaged experiment services:
   top, and `src/robot_evals/in_process_policy.py` colocates a VLA policy with
   the env.
 
-`docs/guide/libero-recipe.md` is the full recipe. The large benchmark sweeps are
-**user-triggered actions** (GPU cost); never run them in CI.
+`docs/guide/libero-recipe.md` records the extraction boundary and retained
+Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
+(GPU cost); never run them in CI.
 
 ## References
 
