@@ -24,16 +24,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import pathlib
-from urllib.parse import urlparse
+from pathlib import Path
 
 from daft.session import Session
 
+from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.app._catalog import ControlCatalog, SqliteControlCatalog, catalog_path_for
 from archetype.app.iceberg import IcebergCatalogContext
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +52,14 @@ def _validate_session_namespace(session: Session, config: StorageConfig) -> None
 
 
 def _resolve_uri(uri: str) -> str:
-    """Resolve local storage paths to absolute. Remote URIs pass through."""
-    scheme = urlparse(uri).scheme.lower()
-    if scheme not in ("", "file"):
-        return uri
+    """Resolve local storage paths to absolute. Remote URIs pass through.
 
-    base_path = pathlib.Path(uri)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
+    Local paths route through ``resolve_local_root`` (issue #327): NUL bytes
+    are rejected and, when ``ARCHETYPE_DATA_ROOT`` is set, escapes fail closed.
+    """
+    if local_storage_path(uri) is None:
+        return uri
+    base_path = resolve_local_root(uri)
     base_path.mkdir(parents=True, exist_ok=True)
     return str(base_path)
 
@@ -76,9 +77,18 @@ def create_async_store(
     catalog, namespace, and credentials and passes through unchanged.
     """
     store: iAsyncStore
+    # Unconditional: the injected-session Iceberg branch must reject an unsafe
+    # namespace here too, before any world can bind to the store — the catalog
+    # path derived from the same config validates it either way (issue #327).
+    namespace = require_safe_namespace(config.namespace)
     if config.backend == StorageBackend.LANCEDB:
         uri = _resolve_uri(str(config.uri))
-        store = AsyncLancedbStore(uri, config.namespace)
+        if local_storage_path(str(config.uri)) is not None:
+            # A pre-planted symlink at <uri>/<namespace> could redirect writes
+            # outside ARCHETYPE_DATA_ROOT even with a safe segment name;
+            # resolve the namespace directory under the same containment rule.
+            resolve_local_root(str(Path(uri) / namespace))
+        store = AsyncLancedbStore(uri, namespace)
     else:
         from archetype.runtime.session import configure_session
 
@@ -131,7 +141,10 @@ class StorageService:
         if storage_config.backend != StorageBackend.ICEBERG:
             raise ValueError("an injected Daft Session requires backend=iceberg")
         _validate_session_namespace(self._session, storage_config)
-        requested = (str(storage_config.uri), storage_config.namespace)
+        requested = (
+            normalized_storage_uri(str(storage_config.uri)),
+            storage_config.namespace,
+        )
         bound = self._session_identity
         required = self._required_session_identity
         if bound is not None and requested != bound:
@@ -215,7 +228,7 @@ class StorageService:
         )
 
         return (
-            f"{storage_config.uri}"
+            f"{normalized_storage_uri(str(storage_config.uri))}"
             f"::{storage_config.namespace}"
             f"::backend={storage_config.backend.value}"
             f"::io_config({io_config_part})"
@@ -259,7 +272,10 @@ class StorageService:
         """Create successfully before committing an injected session binding."""
         assert self._session is not None
         _validate_session_namespace(self._session, storage_config)
-        requested = (str(storage_config.uri), storage_config.namespace)
+        requested = (
+            normalized_storage_uri(str(storage_config.uri)),
+            storage_config.namespace,
+        )
         if (
             self._required_session_identity is not None
             and requested != self._required_session_identity
@@ -297,31 +313,44 @@ class StorageService:
     async def shutdown(self):
         """Gracefully shuts down all managed storage backends."""
         errors: list[Exception] = []
-        for store in self._instances.values():
-            try:
-                if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
-                    await store.shutdown()
-                elif hasattr(store, "shutdown"):
-                    # Runtime-sync shutdown on a duck-typed store; the
-                    # iscoroutinefunction branch above handles async stores.
-                    store.shutdown()  # ty: ignore[unused-awaitable]
-            except Exception as e:
-                logger.exception("Failed to shut down store %r", store)
-                errors.append(e)
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            for store in self._instances.values():
+                try:
+                    if asyncio.iscoroutinefunction(getattr(store, "shutdown", None)):
+                        await store.shutdown()
+                    elif hasattr(store, "shutdown"):
+                        store.shutdown()  # ty: ignore[unused-awaitable]
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+                except Exception as exc:
+                    logger.exception("Failed to shut down store %r", store)
+                    errors.append(exc)
 
-        for key, catalog in self._catalogs.items():
-            try:
-                await catalog.close()
-            except Exception as e:
-                logger.exception("Failed to close control catalog %r", key)
-                errors.append(e)
+            for key, catalog in self._catalogs.items():
+                try:
+                    await catalog.close()
+                except asyncio.CancelledError as exc:
+                    cancelled = cancelled or exc
+                except Exception as exc:
+                    logger.exception("Failed to close control catalog %r", key)
+                    errors.append(exc)
+        finally:
+            self._instances.clear()
+            self._locks.clear()
+            self._catalogs.clear()
 
-        self._instances.clear()
-        self._locks.clear()
-        self._catalogs.clear()
-
-        if errors:
-            raise RuntimeError(
+        shutdown_error = (
+            RuntimeError(
                 f"StorageService.shutdown failed for {len(errors)} store(s); "
                 f"first error: {errors[0]!r}"
-            ) from errors[0]
+            )
+            if errors
+            else None
+        )
+        if cancelled is not None:
+            if shutdown_error is not None:
+                raise cancelled from shutdown_error
+            raise cancelled
+        if shutdown_error is not None:
+            raise shutdown_error from errors[0]

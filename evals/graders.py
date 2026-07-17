@@ -31,11 +31,13 @@ def exact_match(actual: Any, expected: Any, *, name: str = "exact_match") -> Gra
 def state_check(checks: dict[str, bool], *, name: str = "state_check") -> GraderResult:
     """Outcome verification: passes if ALL state checks are True.
 
-    Supports partial credit (score = fraction of checks passing).
+    Rejects an empty check set. Otherwise, supports partial credit
+    (score = fraction of checks passing).
     """
+    if not checks:
+        raise ValueError("state_check requires at least one check")
+
     total = len(checks)
-    if total == 0:
-        return GraderResult(grader_name=name, passed=True, score=1.0)
     passed_count = sum(1 for v in checks.values() if v)
     score = passed_count / total
     failed = {k for k, v in checks.items() if not v}

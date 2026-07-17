@@ -6,6 +6,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Merge queue: required contexts must report on the queue's merge groups.
+  merge_group:
 
 permissions:
   contents: read
