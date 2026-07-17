@@ -127,3 +127,19 @@ async def test_storage_service_shutdown_cancellation_still_drains_and_clears():
     assert svc._instances == {}
     assert svc._locks == {}
     assert svc._catalogs == {}
+
+
+@pytest.mark.asyncio
+async def test_storage_service_shutdown_cancellation_preserves_other_failure():
+    svc = make_storage_service()
+    svc._instances["cancel::ns"] = _CancellingAsyncStore()
+    svc._instances["fail::ns"] = _FailingAsyncStore("failure after cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await svc.shutdown()
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "failure after cancellation" in str(caught.value.__cause__)
+    assert svc._instances == {}
+    assert svc._locks == {}
+    assert svc._catalogs == {}

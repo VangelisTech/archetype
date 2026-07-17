@@ -325,11 +325,17 @@ class StorageService:
             self._locks.clear()
             self._catalogs.clear()
 
-        if cancelled is not None:
-            raise cancelled
-
-        if errors:
-            raise RuntimeError(
+        shutdown_error = (
+            RuntimeError(
                 f"StorageService.shutdown failed for {len(errors)} store(s); "
                 f"first error: {errors[0]!r}"
-            ) from errors[0]
+            )
+            if errors
+            else None
+        )
+        if cancelled is not None:
+            if shutdown_error is not None:
+                raise cancelled from shutdown_error
+            raise cancelled
+        if shutdown_error is not None:
+            raise shutdown_error from errors[0]

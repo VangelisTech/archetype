@@ -1150,10 +1150,6 @@ class CommandService:
                     world_id, _parse_entity_id(payload["entity_id"])
                 )
 
-            case CommandType.UPDATE:
-                components = self._hydrate_components(payload.get("components", []))
-                await self._mutations.update_entity(world_id, payload["entity_id"], components)
-
             case CommandType.ADD_COMPONENT:
                 components = self._hydrate_components(payload.get("components", []))
                 await self._mutations.add_components(
