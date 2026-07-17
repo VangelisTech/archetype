@@ -81,7 +81,7 @@ class CommandType(StrEnum):
     ADD_HOOK = "add_hook"
     REMOVE_HOOK = "remove_hook"
 
-    # Agent-to-agent messaging (realized at tick boundary)
+    # Application-defined message envelope (the broker supplies queueing only)
     MESSAGE = "message"
 
     # Extensible

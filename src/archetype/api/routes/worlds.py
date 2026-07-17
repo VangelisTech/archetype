@@ -15,6 +15,7 @@
 """World lifecycle routes."""
 
 from fastapi import APIRouter, Depends, Response, status
+from uuid_utils import UUID
 
 from archetype.api.deps import get_actor_ctx, get_command_service
 from archetype.api.errors import raise_api_error
@@ -72,9 +73,11 @@ async def destroy_world(
 ):
     """Drop the in-memory world instance. Persisted storage and audit rows are retained.
 
-    Requires operator or admin. Destroying an unknown world is a no-op.
+    Requires operator or admin. Destroying an unknown world is a no-op; an
+    unparsable world id is rejected as a client error.
     """
     try:
+        UUID(world_id)  # the no-op contract covers missing worlds, not bad ids
         await cs.destroy_world(ctx, world_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except Exception as exc:
