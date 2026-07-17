@@ -98,6 +98,27 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
         task_id="spec.append_only_protocols",
     ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.1",
+        source="dataset-eval-ontology.md",
+        anchors=("Dataset coordinates are natural keys", "Runtime coordinates are provenance"),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.2",
+        source="dataset-eval-ontology.md",
+        anchors=(
+            "A trial produces exactly one dataset episode",
+            "A runtime episode MAY batch many trials",
+        ),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.3",
+        source="dataset-eval-ontology.md",
+        anchors=("FactService envelope is storage ownership", "does not replace dataset"),
+        task_id="spec.dataset_eval_ontology",
+    ),
 )
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
@@ -621,6 +642,61 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
     return [state_check(checks, name="receipt_authority_firewall")]
 
 
+def task_dataset_eval_ontology() -> list[GraderResult]:
+    """Typed vocabulary preserves dataset identity and runtime provenance."""
+    from dataclasses import fields, is_dataclass
+    from typing import get_type_hints
+
+    from archetype.datasets import definitions as defs
+
+    task = defs.TaskRef(benchmark="libero", suite="libero_spatial", task_key="3")
+    episode = defs.EpisodeRef(benchmark="libero", episode_id=17)
+    runtime = defs.RuntimeSlice(
+        world_id="world-7",
+        run_id="run-9",
+        entity_id=12,
+        start_tick=0,
+        final_tick=41,
+    )
+    trial = defs.Trial(task=task, seed=5, episode=episode, runtime=runtime)
+    rubric = defs.Rubric(graders=(defs.Grader(name="success", kind=defs.GraderKind.CHECK),))
+    evaluation = defs.Eval(task=task, rubric=rubric)
+    vocabulary = (
+        defs.TaskRef,
+        defs.EpisodeRef,
+        defs.RuntimeSlice,
+        defs.Grader,
+        defs.Rubric,
+        defs.Eval,
+        defs.Trial,
+    )
+    episode_hints = get_type_hints(defs.EpisodeRef)
+
+    checks = {
+        "task_natural_key_fields": [field.name for field in fields(defs.TaskRef)]
+        == ["benchmark", "suite", "task_key"],
+        "episode_natural_key_fields": [field.name for field in fields(defs.EpisodeRef)]
+        == ["benchmark", "episode_id"],
+        "episode_id_is_integer": episode_hints["episode_id"] is int,
+        "runtime_slice_fields": [field.name for field in fields(defs.RuntimeSlice)]
+        == ["world_id", "run_id", "entity_id", "start_tick", "final_tick"],
+        "dataset_coordinates_are_independent": trial.dataset_coordinates
+        == ("libero", "libero_spatial", "3", 17),
+        "runtime_provenance_is_preserved": trial.runtime == runtime,
+        "trial_produces_one_episode": trial.episode is episode,
+        "reader_runtime_is_optional": defs.Trial(task=task, seed=5, episode=episode).runtime
+        is None,
+        "eval_binds_one_task": evaluation.task is task,
+        "rubric_is_non_empty": evaluation.rubric.graders == rubric.graders,
+        "grader_kinds_are_exact": {kind.value for kind in defs.GraderKind}
+        == {"check", "test", "judge"},
+        "vocabulary_is_frozen": all(
+            is_dataclass(item) and item.__dataclass_params__.frozen for item in vocabulary
+        ),
+    }
+    return [state_check(checks, name="dataset_eval_ontology")]
+
+
 def register(harness: EvalHarness) -> None:
     harness.add(
         "spec.manifest_traceability",
@@ -657,6 +733,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_receipt_authority_firewall,
         desc="Receipt/fact components carry no authority fields (evidence only).",
+    )
+    harness.add(
+        "spec.dataset_eval_ontology",
+        suite=SUITE,
+        fn=task_dataset_eval_ontology,
+        desc="Dataset identity remains separate from optional runtime provenance.",
     )
     harness.add(
         "spec.info_class_downgrades",
