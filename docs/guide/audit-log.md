@@ -73,6 +73,13 @@ Multi-step gate methods still emit exactly one audit row:
 
 The row payload captures sub-operation outcomes when one gated method performs multiple internal actions.
 
+Spawn metadata is structured rather than encoded in the command name:
+
+- `create_entities` records one `spawn_batch` row with
+  `payload_json = {"count": N}`, not one row per entity.
+- `spawn_with_reserved_id` records one `spawn_reserved` row with
+  `payload_json = {"entity_id": N}`.
+
 ## 5. Row Schema
 
 `AuditRow` is defined in `app/models.py`.
