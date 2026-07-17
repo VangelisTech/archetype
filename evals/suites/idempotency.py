@@ -138,8 +138,13 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.same_tick_duplicate_mutations",
     ),
     IdempotencyCase(
-        operation="Duplicate spawn for same entity in one tick",
-        expected_contract="Deterministic last-write-wins",
+        operation="Duplicate staged spawn rows for the same entity in one tick",
+        expected_contract="Deterministic last-write-wins at materialization",
+        task_id="idempotency.same_tick_duplicate_mutations",
+    ),
+    IdempotencyCase(
+        operation="Replay of an already-registered reserved spawn through `CommandService`",
+        expected_contract="First spawn applies; replay is rejected",
         task_id="idempotency.same_tick_duplicate_mutations",
     ),
     IdempotencyCase(
@@ -703,7 +708,7 @@ async def _task_runtime_aliases_and_history() -> list[GraderResult]:
 
 
 def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
-    """Same-entity duplicate spawn/despawn commands collapse at materialization."""
+    """Reserved-spawn replays reject; duplicate despawns collapse."""
     return asyncio.run(_task_duplicate_same_tick_mutations_collapse())
 
 
@@ -770,9 +775,9 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             return [
                 state_check(
                     {
-                        "both_duplicate_spawns_applied": spawn_applied == 2,
-                        "duplicate_spawn_materialized_once": len(spawn_rows) == 1,
-                        "duplicate_spawn_last_write_wins": spawn_value == 9,
+                        "replayed_reserved_spawn_rejected": spawn_applied == 1,
+                        "reserved_spawn_materialized_once": len(spawn_rows) == 1,
+                        "first_reserved_spawn_preserved": spawn_value == 1,
                         "spawn_row_starts_active": spawn_active is True,
                         "both_duplicate_despawns_applied": despawn_applied == 2,
                         "duplicate_despawn_materialized_once": len(despawn_rows) == 1,

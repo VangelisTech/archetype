@@ -346,8 +346,11 @@ One tick MUST follow this order:
 - Duplicate despawns for the same entity in one tick MUST collapse.
 - Duplicate spawns for the same entity in one tick MUST resolve
   deterministically.
-- The current deterministic contract is last-write-wins by entity ID within the
-  tick.
+- Spawn rows legitimately staged under the same signature resolve
+  last-write-wins by entity ID within the tick.
+- A tick-deferred spawn carrying an explicit reserved entity ID MUST use the
+  guarded `spawn_with_reserved_id` mutation path. Once that ID is registered,
+  a replay is rejected and cannot replace the first staged spawn.
 - Despawn-only signatures MUST still be processed during the next tick, even if
   no active entities remain in that archetype after bookkeeping updates.
 
@@ -867,7 +870,8 @@ the constraints that any acceptable design must satisfy.
 | `AsyncWorld.remove_entity(missing)` | Safe no-op with observability |
 | `RuntimeWorld.as_actor(ctx)` | Idempotent as handle binding only; creates another alias, not another world |
 | Duplicate despawn in one tick | Idempotent collapse by entity ID |
-| Duplicate spawn for same entity in one tick | Deterministic last-write-wins |
+| Duplicate staged spawn rows for the same entity in one tick | Deterministic last-write-wins at materialization |
+| Replay of an already-registered reserved spawn through `CommandService` | First spawn applies; replay is rejected |
 | `RuntimeWorld.history()` | Idempotent for fixed audit history |
 | `add_components()` with no signature change | Idempotent no-op |
 | `remove_components()` with no signature change | Idempotent no-op |
