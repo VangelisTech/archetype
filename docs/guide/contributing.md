@@ -1,19 +1,54 @@
 # Contributing
 
-Most changes to this repo are written as issues first and implemented in a branch with a PR. The intent is to keep work explicit, reviewable, and grounded in the contracts the repo is trying to preserve. Direct commits are fine for typo fixes and small docs edits.
+Archetype changes are contract work. A good contribution states the behavior it
+is preserving or changing, lands in the layer that owns that behavior, and
+leaves behind an executable reason to believe the result.
 
-## Recommended Workflow
+Most changes begin as issues and are implemented in a dedicated branch or
+workspace. The issue is a compact decision surface, not paperwork: it records
+the problem, the relevant contract, the likely owner, and what will count as
+done. Direct commits remain appropriate for typo fixes and small documentation
+edits whose behavior is not in question.
 
-If you want to contribute, the recommended path is:
+## Source of Truth
 
-1. Open an issue that describes the work as a prompt.
-2. Include scope, acceptance criteria, and any contract constraints.
-3. Have an agent work the issue in a dedicated workspace or branch.
-4. Review the resulting PR as you would review any other engineering change.
+When repository sources disagree, use this order:
 
-For simple typo fixes or small docs changes, you can still contribute directly.
-For runtime, service-layer, or engine behavior changes, issue-first is the
-recommended default.
+1. The focused normative specification for the affected behavior.
+2. Executable contract tests and evals.
+3. The umbrella [Specification](specification.md).
+4. Teaching material: guides, README, examples, and `LEARNINGS.md`.
+
+This order is a way to locate authority, not permission to ignore a conflict.
+If a focused specification and its executable oracle disagree, stop and surface
+that mismatch explicitly. Decide which contract is intended before changing
+behavior. A stale teaching example should become its own documentation fix
+rather than quietly steering an unrelated implementation.
+
+## Contract-First Issue Loop
+
+Use this loop for bugs, features, refactors, and contract clarifications:
+
+1. **Orient.** Read the focused specification, the nearest executable contract,
+   and the implementation seam that owns the behavior.
+2. **State the contract.** Describe what callers should observe, including the
+   behavior that must remain unchanged.
+3. **Reconcile the evidence.** Compare specification, tests, implementation,
+   and teaching docs. Record contradictions instead of resolving them silently.
+4. **Split the work.** Open separate issues for drift that is real but not
+   required by the current change. Keep one patch responsible for one decision.
+5. **Choose the oracle.** Identify the boundary test that will prove the change.
+   Add one when the contract has no executable witness.
+6. **Implement narrowly.** Change the lowest safe layer that owns the behavior.
+   Prefer app or runtime composition when a core change is unnecessary.
+7. **Validate proportionally.** Start with the closest test, then run the static
+   audits and broader suites appropriate to the risk.
+8. **Close the loop.** Report the resulting behavior and exact validation. Close
+   the issue only when the published change is merged, not merely when a local
+   patch exists.
+
+The loop should make small changes faster by removing ambiguity. It should not
+turn a typo into an architecture exercise.
 
 ## Read These First
 
@@ -32,7 +67,10 @@ These documents are the current orientation pack for contributors:
 | [Architecture](architecture.md) | High-level ECS and service-layer design |
 | [Quickstart](quickstart.md) | Fastest way to get oriented with the current API surface |
 
-If you skip one document, do not skip `LEARNINGS.md`.
+For a behavior change, do not skip the focused specification that owns it.
+Before writing processors or Daft UDFs, `LEARNINGS.md` is also mandatory; it
+records execution-model footguns that are too implementation-specific for the
+normative contracts.
 
 ## Contribution Policy
 
@@ -96,23 +134,33 @@ behavior is intentional.
 
 ## Issue Template Guidance
 
-The best issues are written as implementation prompts.
+The best issues are usable implementation prompts. For non-trivial work, add a
+contract card:
 
-A good issue should include:
+```text
+Behavior:
+Owning layer:
+Normative source:
+Existing executable oracle:
+Invariants at risk:
+Required validation:
+Documentation affected:
+```
 
-- the user-facing or system-facing problem
-- the affected layer
-  for example `core`, `app`, `api`, `cli`, `docs`, or `examples`
-- whether this is a bug fix, contract clarification, feature, or refactor
-- acceptance criteria
-- any relevant specification or requirements references
-- test expectations
+Keep each field concrete. "Owning layer: app/CommandService" is useful;
+"backend" is not. "Invariants at risk: failed commands must not debit quota or
+enter the broker" gives a reviewer something to verify. Empty fields are useful
+signals too: if no executable oracle exists, the issue has identified a test
+that needs to be written.
 
 Good examples:
 
 - "Make `SimulationService.run()` preserve one logical `run_id` across the full run and add regression coverage."
 - "Document the world-local shutdown contract for the sugar runtime and add smoke tests."
 - "Fix `QueryService` so it either implements real reads or is clearly documented as provisional."
+
+Do not force a contract card onto a spelling fix. Use it when implementation
+choices, public behavior, or architectural ownership could reasonably diverge.
 
 ## Development Workflow
 
@@ -136,13 +184,19 @@ uv run mkdocs build
 
 ### Before you open a PR
 
-At minimum:
+Validation follows risk rather than patch size alone:
 
-- run `make test`
-- run `make check` or the relevant lint/format commands
-- run `uv run mkdocs build` if you touched docs
+| Change | Expected validation |
+|---|---|
+| Typo or prose-only documentation | `git diff --check`; build the affected docs when navigation, links, or rendering may change |
+| Executable example or public snippet | Run the example or snippet path, then build the docs |
+| API, CLI, runtime, or app behavior | Closest contract/regression tests, then `make check`; use `make ci` when behavior crosses service or lifecycle boundaries |
+| Core, storage, concurrency, or durability | Prior contract discussion, focused failure/race coverage, `make ci`, and the relevant eval or infrastructure gate |
+| Dependency or release metadata | Lock check plus the workflow-specific build or release validation |
 
-For broad changes, prefer `make ci`.
+Report the commands that actually ran and their outcomes. Do not write "tests
+pass" when only one test ran; that one test may be exactly the right evidence,
+but name it. Warnings should be identified as new, pre-existing, or unrelated.
 
 ## How to Structure Changes
 
@@ -158,14 +212,36 @@ Keep the work narrow and contract-driven.
 - If a proposed ergonomic change weakens a contract, document the tradeoff and
   get agreement before implementing it.
 
+## Documentation Register
+
+Write documentation in the same register the architecture expects from code:
+
+- Lead with the observable behavior or decision.
+- Name ownership and lifecycle boundaries directly.
+- Explain why an invariant exists when that reason changes how someone should
+  extend the system.
+- Distinguish normative requirements, current gaps, compatibility behavior,
+  and historical lessons. Do not present an obsolete implementation as a hard
+  architectural law.
+- Prefer the recommended runtime surface in beginner material. Use service and
+  core APIs only when the document is explicitly teaching those lower layers.
+- Keep examples executable in spirit and syntax. If a snippet is intentionally
+  abbreviated, say what was omitted.
+- Link to the focused specification instead of reproducing a second, subtly
+  different contract.
+
+The goal is calm precision: enough context to make the right change, without
+turning implementation history into ceremony.
+
 ## Pull Requests
 
 PRs should explain:
 
-- what changed
-- why the change is needed
-- what contract it preserves, introduces, or modifies
-- how it was validated
+- the behavior that changed
+- the owning layer and why it is the right seam
+- the contract preserved, introduced, or modified
+- the executable oracle and exact validation results
+- any adjacent drift deliberately left to a separate issue
 
 If behavior changed, include the test that proves it.
 

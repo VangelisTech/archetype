@@ -143,7 +143,7 @@ async with ArchetypeRuntime() as runtime:
             label = Label(technique=technique, description=description)
             await world.spawn(trajectory, label)
 
-    await world.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
+    await world.step(config=RunConfig(num_steps=1))
 
     df = await world.query(Trajectory, Label)
     rows = df.collect().to_pylist()
@@ -158,7 +158,7 @@ fork = await world.fork(
     "strict-eval",
     storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
 )
-await fork.step(config=RunConfig(num_steps=1, prefer_live_reads=True))
+await fork.step(config=RunConfig(num_steps=1))
 ```
 
 Forks share resource instances by default. For a strict-vs-lenient comparison, stage distinct resources on separate worlds or attach replacement resources through the gated resource-management path before running the fork.

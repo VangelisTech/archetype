@@ -7,12 +7,18 @@ An archetype is the fundamental grouping mechanism in the ECS.
 
 ```python
 class Archetype:
-    BASE_SCHEMA = pa.schema([
+    LEGACY_BASE_SCHEMA = pa.schema([
         pa.field("world_id", pa.string(), nullable=False),
         pa.field("run_id", pa.string(), nullable=False),
         pa.field("entity_id", pa.int32(), nullable=False),
         pa.field("tick", pa.int32(), nullable=False),
         pa.field("is_active", pa.bool_(), nullable=False),
+    ])
+
+    BASE_SCHEMA = pa.schema([
+        *LEGACY_BASE_SCHEMA,
+        pa.field("commit_token", pa.string(), nullable=False),
+        pa.field("writer_epoch", pa.int64(), nullable=False),
     ])
     PARTITION_KEYS = ["world_id", "run_id", "tick"]
 
@@ -48,6 +54,7 @@ class Archetype:
         row_dict = {
             "world_id": str(world_id), "run_id": str(run_id),
             "entity_id": entity_id, "tick": tick, "is_active": True,
+            "commit_token": "", "writer_epoch": 0,
         }
         for c in components:
             row_dict.update({c.get_prefix() + k: v for k, v in c.model_dump().items()})
@@ -82,7 +89,20 @@ a_2c_s9f3a1b2c4d5e6f7
 +--------- "a" prefix (archetype)
 ```
 
-Names are stable -- the same set of component types always produces the same name, regardless of component order. This allows multiple simulations and runs to share the same catalog.
+Names are stable within a schema generation -- the same set of component types
+and storage metadata produces the same name, regardless of component order.
+Because the schema hash includes the base columns, adding commit identity in
+v0.3 produced new table ids instead of mutating v0.2 tables in place. Stores
+may read a legacy table through its old schema-derived name, but new writes use
+the current name.
+
+The name identifies a physical table, not a unique Python signature. Distinct
+signatures with the same component count and identical storage schemas map to
+the same name. Empty tag components contribute no fields, so two one-tag
+signatures are the common edge case. `AsyncWorld` interns one canonical
+signature per table name to prevent processing that shared table twice. See
+[System Execution](system-execution.md#step-3-archetype-naming) for the
+executable example and processor-matching consequences.
 
 ```python
 name = Archetype.get_name(sig)  # "a_2c_s9f3a1b2c4d5e6f7"
@@ -105,14 +125,22 @@ schema = Archetype.get_archetype_schema(sig)
 | `entity_id` | `int32` | Unique entity identifier |
 | `tick` | `int32` | Simulation tick when this row was written |
 | `is_active` | `bool` | Whether the entity is alive |
+| `commit_token` | `string` | Identity of the tick-commit attempt that wrote the row |
+| `writer_epoch` | `int64` | Fenced writer epoch for that attempt |
 
 **Component columns** are prefixed with the lowercase class name. A `Position(x=5, y=10)` component adds columns `position__x` and `position__y`.
 
 The full schema for an archetype with `(Health, Position)` would be:
 
 ```text
-world_id    | run_id | entity_id | tick | is_active | health__current | health__max_hp | position__x | position__y
+world_id | run_id | entity_id | tick | is_active | commit_token | writer_epoch | health__current | health__max_hp | position__x | position__y
 ```
+
+The commit columns are raw ledger metadata. Raw archetype reads expose them so
+visibility can be inspected; component projections omit them and return the
+five legacy housekeeping columns plus the requested component fields. A tick
+is visible only when its commit token appears in a published manifest. See
+[Atomic Tick Visibility](atomic-visibility.md).
 
 ## Partition Keys
 
@@ -152,12 +180,18 @@ row = Archetype.to_row_dict(
 #     "entity_id": 1,
 #     "tick": 0,
 #     "is_active": True,
+#     "commit_token": "",
+#     "writer_epoch": 0,
 #     "position__x": 5.0,
 #     "position__y": 10.0,
 #     "velocity__vx": 1.0,
 #     "velocity__vy": 0.0,
 # }
 ```
+
+`to_row_dict()` uses the uncoordinated epoch-0 placeholders shown above. During
+a coordinated tick, the updater replaces them with the tick's real commit
+token and writer epoch before append.
 
 ## Entities
 
@@ -171,6 +205,7 @@ When you add or remove components from an entity, it migrates to a different arc
 - [System Execution](system-execution.md) -- how signatures drive the subset rule for processor matching
 - [Worlds](worlds.md) -- tick lifecycle, spawn/despawn caches, entity migration
 - [Stores](stores.md) -- how archetype tables are persisted
+- [Atomic Tick Visibility](atomic-visibility.md) -- commit identity, manifests, and fencing
 
 ## Source Reference
 
