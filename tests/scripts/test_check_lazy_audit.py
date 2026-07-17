@@ -20,6 +20,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 # Make scripts/ importable without installing it as a package.
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -200,6 +202,30 @@ def test_non_call_text_is_ignored(tmp_path):
     )
 
     assert _scan_file(py, "non_calls.py") == []
+
+
+def test_multiline_call_reports_the_method_line(tmp_path):
+    py = _write_py(
+        tmp_path,
+        "multiline.py",
+        """\
+        result = (
+            frame
+            .collect()
+        )
+        """,
+    )
+
+    sites = _scan_file(py, "multiline.py")
+
+    assert [(site.line, site.snippet) for site in sites] == [(3, ".collect()")]
+
+
+def test_syntax_error_fails_the_scan(tmp_path):
+    py = _write_py(tmp_path, "broken.py", "result = (frame.collect()")
+
+    with pytest.raises(SyntaxError):
+        _scan_file(py, "broken.py")
 
 
 # ---------------------------------------------------------------------------

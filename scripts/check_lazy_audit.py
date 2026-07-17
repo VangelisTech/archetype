@@ -137,10 +137,7 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     body up to and including the last line, so callers can do a simple
     ``line in line_to_params`` check.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return {}
+    tree = ast.parse(source)
 
     line_to_params: dict[int, frozenset[str]] = {}
 
@@ -177,10 +174,7 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
     except (OSError, UnicodeDecodeError):
         return []
 
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return []
+    tree = ast.parse(text)
 
     batch_line_params = _collect_batch_udf_param_lines(text)
     lines = text.splitlines()
@@ -192,23 +186,24 @@ def _scan_file(path: Path, rel: str) -> list[Site]:
         method = node.func.attr
         if method not in _MATERIALIZATION_METHODS:
             continue
-        key = (node.lineno, method)
+        method_line = node.func.end_lineno or node.lineno
+        key = (method_line, method)
         if key in seen:
             continue
         seen.add(key)
         receiver = node.func.value
         sanctioned = (
             method == "to_pylist"
-            and node.lineno in batch_line_params
+            and method_line in batch_line_params
             and isinstance(receiver, ast.Name)
-            and receiver.id in batch_line_params[node.lineno]
+            and receiver.id in batch_line_params[method_line]
         )
         sites.append(
             Site(
                 path=rel,
-                line=node.lineno,
+                line=method_line,
                 method=method,
-                snippet=lines[node.lineno - 1].lstrip(),
+                snippet=lines[method_line - 1].lstrip(),
                 sanctioned=sanctioned,
             )
         )
