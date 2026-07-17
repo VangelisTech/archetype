@@ -128,6 +128,40 @@ def _finding(**overrides) -> dict:
     return finding
 
 
+def _run_attempt(tmp_path: Path, result: dict | None) -> tuple[Path, Path, Path]:
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    output_path = tmp_path / "validated" / "normalized.json"
+    feedback_path = tmp_path / "validation-feedback.txt"
+    github_output = tmp_path / "github-output.txt"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text("" if result is None else json.dumps(result), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+    return output_path, feedback_path, github_output
+
+
 def _bot_item(**values) -> dict:
     return {"user": {"login": BOT_LOGIN}, **values}
 
@@ -230,6 +264,39 @@ def test_file_spanning_multiple_context_areas_is_accepted():
     normalized = validate_result(result, _scope(), DIFF)
 
     assert normalized["review_context"][2]["files"] == ["old.py"]
+
+
+def test_context_evidence_path_is_rejected_with_actionable_retry_feedback():
+    result = _result()
+    result["review_context"][0]["files"].append("src/archetype/core/aio/async_system.py")
+
+    with pytest.raises(GateError, match="outside the diff") as caught:
+        validate_result(result, _scope(), DIFF)
+
+    feedback = gate.retry_feedback(caught.value)
+    assert "src/archetype/core/aio/async_system.py" in feedback
+    assert "changed paths only" in feedback
+    assert "assessment prose" in feedback
+
+
+def test_schema_placeholder_result_is_rejected_with_actionable_retry_feedback():
+    placeholder = _result()
+    placeholder["reviewed_files"] = ["a.md"]
+    placeholder["reviewed_categories"] = ["row-dropping"]
+    placeholder["review_context"] = [
+        {
+            "area": "test area name",
+            "files": ["a.md"],
+            "assessment": "test assessment text that is at least thirty characters long.",
+        }
+    ]
+
+    with pytest.raises(GateError, match="reviewed_files") as caught:
+        validate_result(placeholder, _scope(), DIFF)
+
+    feedback = gate.retry_feedback(caught.value)
+    assert "a.md" in feedback
+    assert "schema examples or placeholder values" in feedback
 
 
 @pytest.mark.parametrize(
@@ -366,6 +433,45 @@ def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
 
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * 40000
     assert list(output_path.parent.iterdir()) == [output_path]
+
+
+def test_attempt_command_requests_one_retry_with_exact_validator_feedback(tmp_path):
+    result = _result()
+    result["reviewed_files"] = ["a.md"]
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, result)
+
+    assert not output_path.exists()
+    assert "reviewed_files does not match scope" in feedback_path.read_text(encoding="utf-8")
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+
+
+def test_attempt_command_requests_retry_when_detector_returns_no_output(tmp_path):
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, None)
+
+    assert not output_path.exists()
+    assert "could not read valid JSON" in feedback_path.read_text(encoding="utf-8")
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+
+
+def test_attempt_command_writes_validated_result_without_requesting_retry(tmp_path):
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, _result())
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["head_sha"] == HEAD_SHA
+    assert not feedback_path.exists()
+    assert github_output.read_text(encoding="utf-8") == "valid=true\n"
+
+
+def test_workflow_has_one_bounded_validator_feedback_retry():
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deterministic-review.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow.count("uses: anthropics/claude-code-action@") == 2
+    assert "id: first_validation" in workflow
+    assert "id: detector_retry" in workflow
+    assert "steps.first_validation.outputs.valid != 'true'" in workflow
+    assert ".footgun-review-validation.txt" in workflow
+    assert "Require detector completion" not in workflow
 
 
 def test_review_payload_batches_each_finding_as_an_inline_thread():

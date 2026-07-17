@@ -355,6 +355,26 @@ class AsyncWorld(iAsyncWorld):
         self.despawn_cache.pop(sig, None)
         return df.concat(spawns_df) if spawns_df is not None else df
 
+    def _pop_staged_spawn(self, sig: ArchetypeSignature, entity_id: int) -> dict[str, Any] | None:
+        """Remove and return the entity's staged spawn row under ``sig``.
+
+        Multiple staged rows for one entity collapse last-write-wins,
+        matching ``_spawn_frame``'s dedupe rule. Returns ``None`` when
+        nothing is staged.
+        """
+        pending = self.spawn_cache.get(sig)
+        if not pending:
+            return None
+        remaining = [row for row in pending if row["entity_id"] != entity_id]
+        if len(remaining) == len(pending):
+            return None
+        staged = next(row for row in reversed(pending) if row["entity_id"] == entity_id)
+        if remaining:
+            self.spawn_cache[sig] = remaining
+        else:
+            del self.spawn_cache[sig]
+        return staged
+
     async def _move_entity(
         self,
         entity_id: int,
@@ -363,34 +383,42 @@ class AsyncWorld(iAsyncWorld):
         mutated_components: list[Component],
     ) -> dict[str, Any]:
         """
-        Returns a row dict that is valid for the NEW archetype.
-        Any field that is NOT in `mutated_components` is read from the
-        previous most-recent row in the OLD archetype.
+        Returns a row dict that is valid for the NEW archetype, or an empty
+        dict when the entity has no visible state to move (callers treat
+        that as a logged no-op).
+
+        The base row is the entity's latest visible state: a same-tick
+        staged spawn row when one exists (spec C7 — later commands observe
+        earlier staged mutations), otherwise the previous most-recent row in
+        the OLD archetype. A staged row is consumed here so it cannot also
+        materialize under the old signature after the move.
         """
-
-        # 1) fetch *only* the single entity from old archetype's previous tick
-        df = await self.query_archetype(
-            sig=old_sig,
-            run_id=self.run_id,
-            ticks=[self.tick - 1],
-            entity_ids=[entity_id],
-            components=None,
-        )
-
-        row_list = df.to_pylist()
-        if len(row_list) == 0:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}"
+        staged = self._pop_staged_spawn(old_sig, entity_id)
+        if staged is not None:
+            row_dict = dict(staged)
+        else:
+            # Fetch *only* the single entity from the old archetype's previous tick
+            df = await self.query_archetype(
+                sig=old_sig,
+                run_id=self.run_id,
+                ticks=[self.tick - 1],
+                entity_ids=[entity_id],
+                components=None,
             )
-            return {}
-        if len(row_list) > 1:
-            logger.warning(
-                f"World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}"
-            )
-            return {}
 
-        # We should never have multiple entities with the same entity_id in the same tick.
-        row_dict = row_list[0]
+            row_list = df.to_pylist()
+            if len(row_list) == 0:
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}"
+                )
+                return {}
+            if len(row_list) > 1:
+                # We should never have multiple entities with the same entity_id in the same tick.
+                logger.warning(
+                    f"World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}"
+                )
+                return {}
+            row_dict = row_list[0]
 
         # 3) overlay components that change with the new ones (skips for remove component with 0 member list)
         for c in mutated_components:
@@ -600,6 +628,9 @@ class AsyncWorld(iAsyncWorld):
             return
 
         row = await self._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning("add_components: entity %s has no prior row; no-op", entity_id)
+            return
 
         # 1) mark *old row* inactive
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
@@ -635,6 +666,9 @@ class AsyncWorld(iAsyncWorld):
         row = await self._move_entity(
             entity_id, old_sig, new_sig, []
         )  # remove ≡ keep remaining columns
+        if not row:
+            logger.warning("remove_components: entity %s has no prior row; no-op", entity_id)
+            return
 
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
         new_sig = self._intern_sig(new_sig)

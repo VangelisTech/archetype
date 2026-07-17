@@ -312,3 +312,40 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
         assert _SpyPolicy.resets == 2, "each sweep must reset the policy's per-env state"
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sweep_runtime_path_is_gated_and_matches_service_bridge(tmp_path):
+    """The gated runtime path produces the same per-variant grades as the
+    deprecated service bridge, and leaves run_episode command-audit rows."""
+    from archetype import ArchetypeRuntime
+
+    targets = _targets()
+    variants = ["", "reach red block"]
+
+    async with ArchetypeRuntime() as runtime:
+        env = ScriptedReachEnv(targets=targets, tolerance=TOL)
+        policy = InstructionConditionedReachPolicy(
+            targets=targets, required_keywords=REQUIRED, gain=GAIN, max_step=MAX_STEP
+        )
+        report = await run_instruction_sweep(
+            runtime,
+            env_client=env,
+            policy_client=policy,
+            suite="scripted",
+            task_id=TASK_ID,
+            variants=variants,
+            seeds_per_variant=SEEDS,
+            max_steps=MAX_STEPS,
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt"),
+        )
+        for vidx, variant in enumerate(variants):
+            expected = _expected_success_rate(variant, vidx * 3, targets)
+            assert report.variants[vidx].success_rate == expected
+
+        audit = runtime.attach(
+            report.world_id,
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt"),
+        )
+        rows = (await audit.history(limit=200)).collect().to_pylist()
+        assert any("run_episode" in str(r) for r in rows)

@@ -235,6 +235,26 @@ class SyncWorld(iWorld):
         spawns_df = self._spawn_frame(df, sig)
         return df.concat(spawns_df) if spawns_df is not None else df
 
+    def _pop_staged_spawn(self, sig: ArchetypeSignature, entity_id: int) -> dict[str, Any] | None:
+        """Remove and return the entity's staged spawn row under ``sig``.
+
+        Multiple staged rows for one entity collapse last-write-wins,
+        matching ``_spawn_frame``'s dedupe rule. Returns ``None`` when
+        nothing is staged.
+        """
+        pending = self.spawn_cache.get(sig)
+        if not pending:
+            return None
+        remaining = [row for row in pending if row["entity_id"] != entity_id]
+        if len(remaining) == len(pending):
+            return None
+        staged = next(row for row in reversed(pending) if row["entity_id"] == entity_id)
+        if remaining:
+            self.spawn_cache[sig] = remaining
+        else:
+            del self.spawn_cache[sig]
+        return staged
+
     def _move_entity(
         self,
         entity_id: int,
@@ -243,22 +263,21 @@ class SyncWorld(iWorld):
         mutated_components: list[Component],
     ) -> dict[str, Any]:
         """
-        Returns a row dict that is valid for the NEW archetype.
-        Any field that is NOT in `mutated_components` is read from the
-        previous most-recent row in the OLD archetype.
-        """
+        Returns a row dict that is valid for the NEW archetype, or an empty
+        dict when the entity has no visible state to move (callers treat
+        that as a logged no-op).
 
-        # 1) find the most recent row for the entity. Pending spawn rows take
-        # priority because they represent same-tick mutations that haven't yet
-        # been committed to the store; otherwise read the previous-tick row
-        # from durable storage.
+        The base row is the entity's latest visible state: a same-tick
+        staged spawn row when one exists (spec C7 — later commands observe
+        earlier staged mutations), otherwise the previous most-recent row in
+        the OLD archetype. A staged row is consumed here so it cannot also
+        materialize under the old signature after the move.
+        """
         row_dict: dict[str, Any] | None = None
 
-        pending_rows = [
-            row for row in self.spawn_cache.get(old_sig, []) if row.get("entity_id") == entity_id
-        ]
-        if pending_rows:
-            row_dict = dict(pending_rows[-1])
+        staged = self._pop_staged_spawn(old_sig, entity_id)
+        if staged is not None:
+            row_dict = dict(staged)
         else:
             df = self.query_archetype(
                 sig=old_sig,
@@ -425,6 +444,9 @@ class SyncWorld(iWorld):
             return
 
         row = self._move_entity(entity_id, old_sig, new_sig, components)
+        if not row:
+            logger.warning("add_components: entity %s has no prior row; no-op", entity_id)
+            return
 
         # 1) mark *old row* inactive
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
@@ -455,6 +477,9 @@ class SyncWorld(iWorld):
             return
 
         row = self._move_entity(entity_id, old_sig, new_sig, [])  # remove ≡ keep remaining columns
+        if not row:
+            logger.warning("remove_components: entity %s has no prior row; no-op", entity_id)
+            return
 
         self.despawn_cache.setdefault(old_sig, []).append(entity_id)
         self.spawn_cache.setdefault(new_sig, []).append(row)
