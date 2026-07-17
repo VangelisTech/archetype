@@ -3,7 +3,7 @@
 
 """Tests for auth: quotas, token budgets, daily reset."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -87,16 +87,25 @@ class TestDailyTokenReset:
         assert _guard._daily_tokens == {}
         assert _guard._last_reset_date == next_day.date()
 
+    def test_maybe_reset_uses_utc_date_for_offset_datetime(self):
+        ctx_id = uuid7()
+        _guard._daily_tokens[ctx_id] = 123
+        _guard._last_reset_date = datetime(2026, 1, 1, tzinfo=UTC).date()
+
+        utc_next_day = datetime(2026, 1, 1, 20, tzinfo=timezone(timedelta(hours=-5)))
+        assert maybe_reset_daily_tokens(now=utc_next_day) is True
+        assert _guard._last_reset_date == datetime(2026, 1, 2, tzinfo=UTC).date()
+
     def test_over_budget_actor_recovers_after_day_rollover(self):
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
         _guard._daily_tokens[ctx.id] = MAX_TOKENS_PER_DAY + 1
+        today = datetime.combine(_guard._last_reset_date, datetime.min.time(), tzinfo=UTC)
 
         cmd = Command(type=CommandType.SPAWN, payload={})
         with pytest.raises(GuardrailError, match="daily token budget"):
-            guardrail_allow(cmd, ctx)
+            guardrail_allow(cmd, ctx, now=today)
 
-        _guard._last_reset_date = _guard._last_reset_date - timedelta(days=1)
-        guardrail_allow(cmd, ctx)
+        guardrail_allow(cmd, ctx, now=today + timedelta(days=1))
         assert _guard._daily_tokens[ctx.id] == _guard.estimate_token_cost(cmd)
 
 

@@ -20,6 +20,13 @@ The container is a `dict[type, object]` -- each resource is keyed by its concret
 
 Every `AsyncWorld` owns a `.resources` instance. During tick execution, `AsyncSystem.execute()` passes it into each processor's `process()` method as a keyword argument.
 
+Every per-table compute task in that world receives the same container and the
+same stored objects. A resource mutation can therefore be visible to another
+archetype during the same tick. Per-table DataFrames are separate; resources
+are not isolated. Stateful resources must expose concurrency-safe operations
+or protect compound mutations with synchronization such as an `asyncio.Lock`.
+Do not rely on task scheduling to order cross-archetype resource access.
+
 Runtime users usually stage resources when creating a handle:
 
 ```python

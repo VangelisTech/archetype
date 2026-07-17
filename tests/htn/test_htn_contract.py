@@ -18,6 +18,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # The runtime auto-configures Logfire; keep it offline and non-interactive in tests.
 os.environ.setdefault("LOGFIRE_SEND_TO_LOGFIRE", "false")
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
@@ -25,6 +27,8 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 from archetype import ArchetypeRuntime  # noqa: E402
 from archetype.core.config import StorageConfig  # noqa: E402
 from archetype.htn import (  # noqa: E402
+    Branch,
+    EffectProcessor,
     HtnDomain,
     MethodSpec,
     OperatorSpec,
@@ -147,6 +151,35 @@ class TestUDFs:
             .to_pydict()["sig"]
         )
         assert sigs[0] != sigs[1]
+
+
+class TestProcessors:
+    @pytest.mark.asyncio
+    async def test_effect_processor_checks_depth_before_applying_primitive(self):
+        """Inv HTN-V2.11: a branch over the cap cannot mutate state first."""
+        import daft
+
+        branch = Branch(
+            atoms_json=json.dumps(["before"]),
+            network_json=json.dumps([{"node_id": 7, "name": "mutate", "status": "open"}]),
+            depth=1,
+            max_depth=0,
+            ready_node_id=7,
+            ready_kind="primitive",
+            ready_op_name="mutate",
+            ready_args_json="[]",
+            pre_pos_json=json.dumps(["before"]),
+            add_json=json.dumps(["after"]),
+            del_json=json.dumps(["before"]),
+        )
+
+        out = await EffectProcessor().process(daft.from_pylist([branch.to_row_dict()]))
+        row = out.collect().to_pylist()[0]
+
+        assert row["branch__status"] == "failed"
+        assert row["branch__fail_reason"] == "depth_exceeded"
+        assert json.loads(row["branch__atoms_json"]) == ["before"]
+        assert json.loads(row["branch__plan_json"]) == []
 
 
 # ── domain build / decomposition ─────────────────────────────────────────────
