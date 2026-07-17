@@ -182,6 +182,13 @@ class TestCommandRoutes:
         assert resp.status_code == 200
         assert resp.json()["type"] == "spawn"
 
+    def test_submit_unknown_world_is_not_found(self, client):
+        resp = client.post(
+            "/worlds/00000000-0000-0000-0000-000000000000/commands",
+            json={"type": "spawn", "payload": {"components": []}},
+        )
+        assert resp.status_code == 404
+
     def test_submit_invalid_command_type(self, client, tmp_path):
         create_resp = client.post(
             "/worlds",
@@ -377,6 +384,38 @@ class TestQueryRoutes:
         resp = client.get(f"/signatures?storage_uri={tmp_path / 'store'}&namespace=ns")
         assert resp.status_code == 200
         assert resp.json() == []
+
+    @pytest.mark.parametrize(
+        ("query", "expected_uri", "expected_namespace"),
+        (
+            ("storage_uri=&namespace=custom", None, "custom"),
+            ("storage_uri=/tmp/custom&namespace=", "/tmp/custom", None),
+        ),
+    )
+    def test_signatures_treats_empty_storage_fields_as_missing(
+        self,
+        client,
+        monkeypatch,
+        query,
+        expected_uri,
+        expected_namespace,
+    ):
+        from archetype.app.command_service import CommandService
+        from archetype.core.config import StorageConfig
+
+        captured = {}
+
+        async def list_signatures(_self, _ctx, storage_config):
+            captured["config"] = storage_config
+            return []
+
+        monkeypatch.setattr(CommandService, "list_signatures", list_signatures)
+        assert client.get(f"/signatures?{query}").status_code == 200
+
+        defaults = StorageConfig()
+        config = captured["config"]
+        assert config.uri == (expected_uri or defaults.uri)
+        assert config.namespace == (expected_namespace or defaults.namespace)
 
     def test_create_world_request_defaults_match_storage_config(self):
         """The API's `CreateWorldRequest` shorthand defaults must match

@@ -51,10 +51,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
 
 import pyarrow as pa
 
+from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 
@@ -142,7 +142,7 @@ def storage_fingerprint(config: StorageConfig) -> str:
         {
             "domain": _DIGEST_DOMAIN,
             "kind": "storage",
-            "uri": _normalized_uri(config),
+            "uri": normalized_storage_uri(str(config.uri)),
             "namespace": config.namespace,
             "backend": config.backend.value,
         },
@@ -150,15 +150,6 @@ def storage_fingerprint(config: StorageConfig) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _normalized_uri(config: StorageConfig) -> str:
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        path = parsed.path if parsed.scheme == "file" else uri
-        return str(Path(path).expanduser().resolve())
-    return uri.rstrip("/")
 
 
 def catalog_path_for(config: StorageConfig) -> Path:
@@ -171,11 +162,9 @@ def catalog_path_for(config: StorageConfig) -> Path:
     (single-host authority is the documented v0.3 limit). The backend is
     part of the identity in both forms, mirroring storage_fingerprint.
     """
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        base = Path(parsed.path if parsed.scheme == "file" else uri).expanduser()
-        return base / config.namespace / f".archetype-catalog-{config.backend.value}.db"
+    local_path = local_storage_path(str(config.uri))
+    if local_path is not None:
+        return local_path / config.namespace / f".archetype-catalog-{config.backend.value}.db"
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
     return root / f"{storage_fingerprint(config)[:24]}.db"
 

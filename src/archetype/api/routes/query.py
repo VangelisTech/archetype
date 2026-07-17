@@ -264,13 +264,13 @@ async def list_signatures(
     """List persisted archetype signatures. Requires viewer, player, operator, or admin."""
     try:
         storage_config: StorageConfig | None = None
-        if storage_uri is not None or namespace is not None:
+        if storage_uri or namespace:
             # Fill the unspecified field from StorageConfig so a single-arg
             # call still resolves to the same store the rest of the API uses.
             defaults = StorageConfig()
             storage_config = StorageConfig(
-                uri=storage_uri if storage_uri is not None else defaults.uri,
-                namespace=namespace if namespace is not None else defaults.namespace,
+                uri=storage_uri or defaults.uri,
+                namespace=namespace or defaults.namespace,
             )
         return [str(sig) for sig in await cs.list_signatures(ctx, storage_config)]
     except Exception as exc:

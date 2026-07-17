@@ -23,6 +23,7 @@ WorldService  — facade (bridges StorageService into the orchestrator)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -225,7 +226,7 @@ class WorldOrchestrator:
         self._registry.insert(world)
         return world
 
-    def get_world(self, world_id: UUID) -> AsyncWorld:
+    def get_world(self, world_id: str | UUID) -> AsyncWorld:
         return self._registry.get(world_id)
 
     def get_world_by_name(self, name: str) -> AsyncWorld:
@@ -329,6 +330,7 @@ class WorldService:
         # Records the storage/cache config that backs each world so fork_world
         # can default to "same store as source" per world-lifecycle.md § 4.5.
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
+        self._create_locks: dict[str, asyncio.Lock] = {}
 
     async def create_world(
         self,
@@ -338,36 +340,45 @@ class WorldService:
         system: iAsyncSystem | None = None,
     ) -> AsyncWorld:
         """Resolve storage, then delegate world creation to the orchestrator."""
-        if storage_config is None:
-            storage_config = StorageConfig()
+        if config.world_id is None:
+            config = config.model_copy(update={"world_id": uuid7()})
+        world_id = str(config.world_id)
+        lock = self._create_locks.setdefault(world_id, asyncio.Lock())
 
-        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
-        world = self._orchestrator.create_world(store, config, system=system)
-        # Durable identity is authoritative (issue #272): registration failure
-        # fails the create, loudly — a world the catalog cannot describe would
-        # be undiscoverable after this process exits. Unwind the registry so
-        # the failed create leaves no live, mutable world behind.
-        catalog = self._storage_service.get_control_catalog(storage_config)
-        try:
-            await catalog.register_world(
-                WorldRecord(
-                    world_id=str(world.world_id),
-                    name=world.name,
-                    run_id=str(world.run_id) if world.run_id else None,
-                    parent_world_id=None,
-                    status="active",
-                    tick_head=world.tick,
+        async with lock:
+            if self._orchestrator.has_world(world_id):
+                return self._orchestrator.get_world(world_id)
+
+            if storage_config is None:
+                storage_config = StorageConfig()
+
+            store = await self._storage_service.get_or_create_store(storage_config, cache_config)
+            world = self._orchestrator.create_world(store, config, system=system)
+            # Durable identity is authoritative (issue #272): registration failure
+            # fails the create, loudly — a world the catalog cannot describe would
+            # be undiscoverable after this process exits. Unwind the registry so
+            # the failed create leaves no live, mutable world behind.
+            catalog = self._storage_service.get_control_catalog(storage_config)
+            try:
+                await catalog.register_world(
+                    WorldRecord(
+                        world_id=str(world.world_id),
+                        name=world.name,
+                        run_id=str(world.run_id) if world.run_id else None,
+                        parent_world_id=None,
+                        status="active",
+                        tick_head=world.tick,
+                    )
                 )
-            )
-            # Fenced writer (issue #273): this process is the world's one live
-            # writer; every tick it commits publishes under this epoch.
-            epoch = await catalog.acquire_fence(str(world.world_id), _writer_holder())
-        except Exception:
-            self._registry.remove(world.world_id)
-            raise
-        world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
-        self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
-        return world
+                # Fenced writer (issue #273): this process is the world's one live
+                # writer; every tick it commits publishes under this epoch.
+                epoch = await catalog.acquire_fence(str(world.world_id), _writer_holder())
+            except Exception:
+                self._registry.remove(world.world_id)
+                raise
+            world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+            self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
+            return world
 
     def get_world(self, world_id: UUID) -> AsyncWorld:
         return self._orchestrator.get_world(world_id)
