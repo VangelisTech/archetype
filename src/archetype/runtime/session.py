@@ -16,31 +16,12 @@
 
 from __future__ import annotations
 
-import pathlib
-from urllib.parse import urlparse
-
 from daft.catalog import Catalog
 from daft.session import Session
 
+from archetype._storage_uri import local_storage_path
 from archetype.core.config import StorageConfig
 from archetype.core.paths import require_safe_namespace, resolve_local_root
-
-
-def _resolve_storage_uri(uri: str) -> tuple[str, bool]:
-    """Resolve local storage paths while preserving remote object-store URIs.
-
-    Returns (resolved_uri, is_remote). Local paths route through
-    ``resolve_local_root`` (issue #327): NUL bytes are rejected and, when
-    ``ARCHETYPE_DATA_ROOT`` is set, escapes fail closed.
-    """
-    parsed = urlparse(uri)
-    scheme = parsed.scheme.lower()
-    if scheme not in ("", "file"):
-        return uri, True
-
-    base_path = resolve_local_root(parsed.path if scheme == "file" else uri)
-    base_path.mkdir(parents=True, exist_ok=True)
-    return str(base_path), False
 
 
 def configure_session(
@@ -64,25 +45,25 @@ def configure_session(
     """
     from pyiceberg.catalog.sql import SqlCatalog
 
-    resolved_uri, is_remote = _resolve_storage_uri(str(config.uri))
-    if is_remote:
+    base_path = local_storage_path(str(config.uri))
+    if base_path is None:
         raise ValueError(
             "Archetype's built-in Iceberg factory supports local paths only; "
             "inject a preconfigured Daft Session through StorageService for "
             "remote or managed catalogs"
         )
-    # The namespace becomes a warehouse directory under base_path
-    # (pyiceberg Hive convention: <warehouse>/<namespace>.db/<table>).
+    # Containment (issue #327): the base path honors ARCHETYPE_DATA_ROOT, the
+    # namespace becomes a warehouse directory under it (pyiceberg Hive
+    # convention: <warehouse>/<namespace>.db/<table>), and a pre-planted
+    # symlink at that directory must not redirect writes outside the root.
+    base_path = resolve_local_root(str(config.uri))
     require_safe_namespace(config.namespace)
-    # Same symlink-escape probe as the LanceDB branch: a pre-planted symlink
-    # at the namespace directory must not redirect writes outside
-    # ARCHETYPE_DATA_ROOT.
-    resolve_local_root(str(pathlib.Path(resolved_uri) / f"{config.namespace}.db"))
+    resolve_local_root(str(base_path / f"{config.namespace}.db"))
 
+    base_path.mkdir(parents=True, exist_ok=True)
     session = session if session is not None else Session()
-    base_path = pathlib.Path(resolved_uri)
     sqlite_db_path = base_path / "catalog.db"
-    warehouse_uri = f"file://{base_path}"
+    warehouse_uri = base_path.as_uri()
 
     catalog = Catalog.from_iceberg(
         SqlCatalog(

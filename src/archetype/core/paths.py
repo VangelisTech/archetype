@@ -53,18 +53,23 @@ def require_safe_namespace(namespace: str) -> str:
 
 
 def resolve_local_root(path_like: str) -> Path:
-    """Resolve a local storage path to an absolute, symlink-free path.
+    """Resolve a local storage path with fail-closed deployment containment.
+
+    Canonicalization delegates to ``archetype._storage_uri.local_storage_path``
+    (the shared URI normalizer); this function layers the security checks on
+    top for filesystem sinks.
 
     Raises:
-        ValueError: On an embedded NUL byte, or when ``ARCHETYPE_DATA_ROOT``
-            is set and the resolved path escapes it (fail closed).
+        ValueError: On an embedded NUL byte, a non-local URI, or — when
+            ``ARCHETYPE_DATA_ROOT`` is set — a resolved path escaping it.
     """
+    from archetype._storage_uri import local_storage_path
+
     if "\x00" in path_like:
         raise ValueError("storage path contains a NUL byte")
-    base = Path(path_like).expanduser()
-    if not base.is_absolute():
-        base = Path.cwd() / base
-    base = base.resolve()
+    base = local_storage_path(path_like)
+    if base is None:
+        raise ValueError(f"{path_like!r} is not a local storage path")
     root = os.environ.get("ARCHETYPE_DATA_ROOT", "").strip()
     if root:
         root_path = Path(root).expanduser().resolve()
