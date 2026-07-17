@@ -341,7 +341,10 @@ CURRENT GAP:
 - Component addition and removal are archetype moves.
 - The old signature receives a despawn marker.
 - The new signature receives a spawned row built from the latest visible entity
-  state plus the requested mutation.
+  state plus the requested mutation. Latest visible state is the entity's
+  same-tick staged spawn row when one exists, otherwise its last persisted
+  row; a consumed staged row MUST NOT also materialize under the old
+  signature.
 - When migration materializes into an existing DataFrame, staged spawn rows MUST
   be cast or otherwise normalized to the target schema before concat.
 - Adding already-present components or removing already-absent components SHOULD
@@ -357,11 +360,11 @@ CURRENT GAP:
 - Despawn-only signatures MUST still be processed during the next tick, even if
   no active entities remain in that archetype after bookkeeping updates.
 
-CURRENT GAP:
-
-- `AsyncWorld._move_entity()` can currently return an empty row when the old
-  entity is not found in `_live`, and callers do not validate this before
-  staging a spawn. That boundary needs an explicit error or no-op contract.
+- `AsyncWorld._move_entity()` returns an empty row only when the entity has
+  neither a staged row nor a persisted row; `update_entity`,
+  `add_components`, and `remove_components` treat that as a logged no-op and
+  stage nothing. Contract tests:
+  `tests/core/test_same_tick_mutation_composition.py`.
 
 ## Lifecycle Hook Contracts
 
@@ -646,12 +649,10 @@ Required behavior:
   weaker behavior MUST be documented explicitly in user-facing runtime docs and
   examples
 
-CURRENT GAP:
-
-- `UPDATE` followed by `ADD_COMPONENT` for the same entity in one drain cycle
-  does not currently compose intuitively. The second command reads from `_live`
-  rather than from the staged update row, so command order and final
-  materialized state can diverge.
+Resolved: same-tick mutations compose. A later mutation for the same entity
+bases its row on the earlier staged spawn row (consuming it) rather than the
+last persisted tick, so command order and final materialized state agree.
+Contract tests: `tests/core/test_same_tick_mutation_composition.py`.
 
 ### Multi-World Lifetime Contract
 
