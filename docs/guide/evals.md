@@ -175,6 +175,7 @@ renaming a task requires updating this table in the same change.
 | `capability` | `simulation_correctness` | Multi-step processing preserves entities and updates expected fields |
 | `capability` | `fork_divergence` | Fork-of-fork lineage, first-step continuity, shared resources, and isolated mutations compose through the runtime |
 | `capability` | `time_travel_and_run_id` | Live and cold historical reads preserve one run identity across durable resume |
+| `capability` | `processor_adversarial` | Hook failures stay advisory, processor failure is whole-tick atomic, and matching follows explicit component migrations |
 
 <!-- eval-task-manifest:end -->
 

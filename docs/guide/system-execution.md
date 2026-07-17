@@ -299,6 +299,13 @@ but resources, processor instances, and external side effects are shared.
 Synchronize mutable shared objects and do not depend on cross-archetype task
 order.
 
+**Trying to migrate an entity from `process()`.** A processor's component
+declaration only decides which existing signatures it matches. Use
+`world.add_components()` or `world.remove_components()` between steps to move
+the entity. The carried row materializes under its target signature on the
+migration step; processors newly matched by that signature act on it on the
+following step.
+
 ## Key Source Files
 
 | File | What to Look For |
