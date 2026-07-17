@@ -1,4 +1,4 @@
-"""Regression tests for bench/core/ecs/run.py dataset isolation (issue #146)."""
+"""Regression tests for bench/core/ecs/run.py dataset isolation (issue #338)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ def test_storage_for_bench_suffixes_default_storage(tmp_path, monkeypatch):
 def test_storage_for_bench_appends_bench_suffix_to_namespace():
     storage = StorageConfig(uri="/tmp/x", namespace="benchmarks")
     out = _storage_for_bench(storage, "packed_iteration")
-    assert out is not None
     assert out.uri == "/tmp/x"
     assert out.namespace == "benchmarks__packed_iteration"
 
