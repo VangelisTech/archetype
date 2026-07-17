@@ -6,6 +6,11 @@ processor's declared components are a subset of that archetype's signature.
 The subset check eliminates per-entity component lookups and guarantees that
 the declared component columns exist in the DataFrame.
 
+> The messaging names used below are application-defined examples. Archetype
+> does not export `Inbox`, `Outbox`, `DeliveryReceipt`, or
+> `MessageDeliveryProcessor`; applications may implement that processor-driven
+> mailbox design on top of the execution model described here.
+
 `AsyncWorld.step()` supplies the per-archetype concurrency: it schedules one
 compute task for each active physical table, then commits the successful
 results as a separate phase. `AsyncSystem` itself processes the one DataFrame
@@ -181,7 +186,9 @@ Typical priority ranges:
 | 50 to 99 | Output, side effects |
 | 100+ | Cleanup, metrics, bookkeeping |
 
-Example: `MessageDeliveryProcessor` at priority -100 populates inboxes before agent processors at priority 10+ read them. This ensures messages sent in tick N are available in tick N+1.
+Application-level example: a `MessageDeliveryProcessor` at priority -100 can
+populate inboxes before agent processors at priority 10+ read them. In that
+design, messages sent in tick N become available in tick N+1.
 
 ## SyncSystem vs AsyncSystem
 
@@ -275,7 +282,9 @@ sharing boundary created by world forks.
 
 **Unnecessary defensive checks.** If your processor runs, the columns exist. Don't add `if "col" in df.columns` guards — they're dead code by construction.
 
-**Not understanding tick boundaries.** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. Spawned entities appear next tick. These are features, not bugs — they ensure causal ordering.
+**Not understanding tick boundaries.** In the illustrative mailbox design,
+messages written to Outbox at tick N are delivered to Inbox at tick N+1.
+Spawned entities appear next tick. Both patterns preserve causal ordering.
 
 **Forgetting that `components=()` matches everything.** An observer processor with an empty components tuple will run on every archetype table. This is useful for metrics but can be surprising if unintentional.
 

@@ -456,11 +456,17 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 
 ---
 
-## Agent Communication: Messaging Pipeline (Mar 2026)
+## Agent Communication: Processor-Driven Messaging Sketch (Mar 2026)
 
-Agent-to-agent messaging is processor-driven, not broker-driven.
+This is an application-level design sketch, not implemented framework
+infrastructure. Archetype exposes brokered `MESSAGE` commands, but it does not
+export `Outbox`, `Inbox`, `DeliveryReceipt`, `MessageDeliveryProcessor`, or
+`ChatGraphRegistry`. Applications can define those types when they want
+mailboxes and conversation graphs represented in ECS state.
 
-**The broker is governance only** — RBAC, quotas, command queuing. It does NOT own message delivery or conversation structure.
+In this sketch, **the broker is governance only** — RBAC, quotas, and command
+queuing. The application-level processor owns message delivery and
+conversation structure.
 
 **Components:**
 
@@ -643,7 +649,8 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
+10. **Messaging design sketch** — applications may define Outbox/Inbox
+    components and a delivery processor
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 
