@@ -40,8 +40,12 @@ _RUNTIME_ALLOWED_APP = _RUNTIME_TYPE_ONLY_APP | frozenset(
 )
 
 # Modules inside archetype.app that api/ may import from.
-_API_ALLOWED_APP = _RUNTIME_ALLOWED_APP | frozenset(
+_API_ALLOWED_APP = frozenset(
     {
+        "archetype.app.command_service",
+        "archetype.app.container",
+        "archetype.app.models",
+        "archetype.app.auth.models",
         "archetype.app.auth.errors",
         # The gate's typed error contract; mapping it to HTTP status codes
         # is the adapter's job (issue #180: WorldNotFoundError -> 404).
@@ -93,6 +97,10 @@ def _runtime_app_import_is_allowed(module: str, in_type_checking: bool) -> bool:
     return module in _RUNTIME_ALLOWED_APP and (
         module not in _RUNTIME_TYPE_ONLY_APP or in_type_checking
     )
+
+
+def _api_app_import_is_allowed(module: str) -> bool:
+    return module in _API_ALLOWED_APP
 
 
 def _extract_app_imports(filepath: Path) -> list[tuple[str, int, bool]]:
@@ -207,11 +215,24 @@ class TestApiAppBoundary:
         violations: list[str] = []
         for py in _python_files(_API_DIR):
             for module, lineno, _in_tc in _extract_app_imports(py):
-                if module not in _API_ALLOWED_APP:
+                if not _api_app_import_is_allowed(module):
                     rel = py.relative_to(_ROOT)
                     violations.append(f"{rel}:{lineno}  imports {module}")
 
         assert not violations, "api/ imports disallowed app modules:\n  " + "\n  ".join(violations)
+
+
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        ("archetype.app.command_service", True),
+        ("archetype.app.errors", True),
+        ("archetype.app.eval_service", False),
+        ("archetype.app.autoresearch_service", False),
+    ],
+)
+def test_api_app_import_oracle_contract(module: str, expected: bool) -> None:
+    assert _api_app_import_is_allowed(module) is expected
 
 
 class TestNoWorldLeakInRuntime:
