@@ -26,15 +26,9 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Names of callables that declared themselves public, for docs/audit tooling.
-PUBLIC_API_REGISTRY: list[str] = []
-
 
 def public_api[F](obj: F) -> F:
     """Mark a callable or class as archetype public API (see module docstring)."""
-    qualname = getattr(obj, "__qualname__", getattr(obj, "__name__", repr(obj)))
-    module = getattr(obj, "__module__", "?")
-    PUBLIC_API_REGISTRY.append(f"{module}.{qualname}")
     try:
         # setattr keeps the marker invisible to static generics (ty flags a
         # direct attribute write on the TypeVar-bound object).

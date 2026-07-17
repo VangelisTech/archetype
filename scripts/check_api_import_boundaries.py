@@ -34,7 +34,7 @@ API_TARGETS = [
     ROOT / "src/archetype/api/deps.py",
     *sorted((ROOT / "src/archetype/api/routes").glob("*.py")),
 ]
-EXPERIMENTS_TARGETS = sorted((ROOT / "src/archetype/experiments").glob("*.py"))
+EXPERIMENTS_TARGETS = sorted((ROOT / "src/archetype/experiments").rglob("*.py"))
 PUBLIC_API_SCAN_TARGETS = sorted((ROOT / "src/archetype").rglob("*.py"))
 
 ALLOWED_APP_IMPORTS_API = {
@@ -112,9 +112,7 @@ def _imported_modules(node: ast.AST) -> list[str]:
     return []
 
 
-def _import_violations(
-    path: Path, allowed: set[str], forbidden: set[str], scope: str
-) -> list[str]:
+def _import_violations(path: Path, allowed: set[str], forbidden: set[str], scope: str) -> list[str]:
     tree = ast.parse(path.read_text(), filename=str(path))
     violations: list[str] = []
     for node in ast.walk(tree):

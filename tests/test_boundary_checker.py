@@ -85,3 +85,22 @@ def test_experiments_scope_allows_models(tmp_path, monkeypatch):
         )
         == []
     )
+
+
+def test_experiments_scope_scans_nested_subdirectories(tmp_path, monkeypatch):
+    """Nested experiment modules must not escape the import scan (the reviewer
+    caught the original non-recursive glob)."""
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    nested = tmp_path / "src" / "archetype" / "experiments" / "vla" / "bridge.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("from archetype.app.world_service import WorldService\n")
+    targets = sorted((tmp_path / "src/archetype/experiments").rglob("*.py"))
+    assert nested in targets
+    violations = [
+        v
+        for path in targets
+        for v in checker._import_violations(
+            path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
+        )
+    ]
+    assert len(violations) == 1
