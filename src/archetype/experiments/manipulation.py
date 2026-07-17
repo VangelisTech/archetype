@@ -46,7 +46,11 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
-from archetype.experiments.boundary import series_to_rows, unpack_struct
+from archetype.experiments.boundary import (
+    external_call_indices,
+    series_to_rows,
+    unpack_struct,
+)
 
 ACTION_DIM = 7  # 6-DoF delta pose + gripper, the LIBERO/OSC convention
 
@@ -182,11 +186,6 @@ _FRAMED_STEP_STRUCT = DataType.struct(
 )
 
 
-def _steppable_indices(rows: list[dict[str, Any]]) -> list[int]:
-    """Select rows whose live external episode may advance."""
-    return [i for i, row in enumerate(rows) if row["is_active"] and not row["done"]]
-
-
 @daft.cls()
 class _EnvStepper:
     """The env RPC boundary as a batch UDF: one client call per batch.
@@ -240,7 +239,7 @@ class _EnvStepper:
             is_active,
         )
 
-        live = _steppable_indices(rows)
+        live = external_call_indices(rows)
         stepped: dict[int, dict[str, Any]] = {}
         if live:
             results = self._client.step(
@@ -421,7 +420,7 @@ class _FramedEnvStepper:
             is_active,
         )
 
-        live = _steppable_indices(rows)
+        live = external_call_indices(rows)
         stepped: dict[int, dict[str, Any]] = {}
         if live:
             results = self._client.step(
