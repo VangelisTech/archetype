@@ -28,6 +28,7 @@ from typing import Any
 
 import daft
 from daft import DataFrame, col
+from daft.functions import dense_rank
 
 from archetype import ArchetypeRuntime
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -240,18 +241,19 @@ class SamplingProcessor(AsyncProcessor):
                     col("sessiontrajectory__tags_json"), daft.lit(tag)
                 )
 
-        df = df.with_columns({"label__sampled": sampled})
+        if config.max_trajectories <= 0:
+            return df.with_column("label__sampled", sampled)
 
-        if config.max_trajectories > 0:
-            df = df._add_monotonically_increasing_id("_sample_idx")
-            df = df.with_columns(
-                {
-                    "label__sampled": col("label__sampled")
-                    & (col("_sample_idx") < config.max_trajectories),
-                }
-            ).exclude("_sample_idx")
-
-        return df
+        df = df.with_column("_sampling_eligible", sampled)
+        trajectory_rank = dense_rank().over(
+            daft.Window()
+            .partition_by("_sampling_eligible")
+            .order_by("sessiontrajectory__trajectory_id")
+        )
+        return df.with_column(
+            "label__sampled",
+            col("_sampling_eligible") & (trajectory_rank <= config.max_trajectories),
+        ).exclude("_sampling_eligible")
 
 
 class LabelingProcessor(AsyncProcessor):
