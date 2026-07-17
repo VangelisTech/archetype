@@ -40,3 +40,19 @@ def test_spec_contract_cli_suite_is_runnable() -> None:
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "[SPEC]" in proc.stdout
+
+
+def test_runtime_gate_rejects_disallowed_plain_import(tmp_path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "src" / "archetype" / "runtime"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "bad.py").write_text("import archetype.app.world_service\n", encoding="utf-8")
+    monkeypatch.setattr(spec_contracts, "ROOT", tmp_path)
+    monkeypatch.setattr(spec_contracts, "SRC", tmp_path / "src" / "archetype")
+
+    results = spec_contracts.task_runtime_gate_only_boundary()
+
+    runtime_imports = next(
+        result for result in results if result.grader_name == "runtime_app_imports"
+    )
+    assert runtime_imports.passed is False
+    assert "archetype.app.world_service" in runtime_imports.details

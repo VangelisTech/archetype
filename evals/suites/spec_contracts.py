@@ -368,6 +368,9 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
 
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    if alias.name.startswith("archetype.app"):
+                        key = f"{rel}:{node.lineno}:allowed_app_import:{alias.name}"
+                        import_checks[key] = alias.name in _RUNTIME_ALLOWED_APP_IMPORTS
                     if alias.name in {"iWorld", "AsyncWorld"}:
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
                         world_ref_checks[key] = _in_ranges(node.lineno, tc_ranges)
