@@ -18,11 +18,13 @@ who did what to whom on every tick.
 import pytest
 
 from archetype.core.aio import AsyncSystem
+from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.experiments.manipulation import (
     ACTION_DIM,
     EnvStepProcessor,
     ManipAction,
+    ManipFrameRef,
     ManipProprio,
     ManipStatus,
     ManipTask,
@@ -36,6 +38,15 @@ SIG = (ManipAction, ManipProprio, ManipStatus, ManipTask)
 TARGETS = {0: (0.15, 0.0, 0.5), 1: (-0.1, 0.05, 0.5)}
 TICKS = 8
 SPAWN_ACTION = [0.0] * ACTION_DIM
+
+
+class RecordingPolicy:
+    def __init__(self) -> None:
+        self.act_calls = 0
+
+    def act(self, env_keys, instructions, observations):
+        self.act_calls += len(env_keys)
+        return [[0.0] * ACTION_DIM for _ in env_keys]
 
 
 @pytest.mark.asyncio
@@ -125,5 +136,45 @@ async def test_ledger_rows_satisfy_action_provenance(tmp_path):
         assert all(final[eid]["manipstatus__success"] for eid in eids.values()), (
             f"both envs should succeed within {TICKS} ticks"
         )
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.parametrize("with_refs", [False, True], ids=["unframed", "framed"])
+@pytest.mark.asyncio
+async def test_despawned_episode_never_calls_external_policy(tmp_path, with_refs):
+    policy = RecordingPolicy()
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(
+            uri=str(tmp_path / "store"), namespace=f"policy_despawn_{with_refs}"
+        )
+        system = AsyncSystem()
+        await system.add_processor(PolicyActionProcessor(policy))
+        world = await ws.create_world(
+            WorldConfig(name=f"policy-despawn-{with_refs}"),
+            storage_config=storage,
+            system=system,
+        )
+        components: list[Component] = [
+            ManipProprio(
+                eef_pos=[0.0, 0.0, 0.5],
+                eef_quat=[0.0, 0.0, 0.0, 1.0],
+                gripper=0.0,
+            ),
+            ManipAction(values=list(SPAWN_ACTION)),
+            ManipStatus(),
+            ManipTask(env_key=7, instruction="reach"),
+        ]
+        if with_refs:
+            components.append(ManipFrameRef(agentview_ref="agent.png", wrist_ref="wrist.png"))
+        entity_id = await world.create_entity(components)
+        await world.run(RunConfig(num_steps=1))
+        calls_before_despawn = policy.act_calls
+
+        await world.remove_entity(entity_id)
+        await world.run(RunConfig(num_steps=1))
+
+        assert policy.act_calls == calls_before_despawn
     finally:
         await ws.shutdown()

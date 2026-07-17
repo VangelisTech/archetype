@@ -387,7 +387,8 @@ One tick MUST follow this order:
   remain transport-agnostic and do not depend on HTTP.
 - Errors without a public client-recovery contract fail closed as HTTP 500.
   `CatalogSchemaMismatchError` is an integrity failure in this category; its
-  internal detail MUST NOT be exposed to the client.
+  internal detail MUST NOT be exposed to the client. This includes a durable
+  control catalog whose schema version is newer than the running build.
 
 ### StorageService
 

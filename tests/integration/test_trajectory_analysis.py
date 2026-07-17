@@ -10,6 +10,7 @@ import json
 import sys
 from pathlib import Path
 
+import daft
 import pytest
 from uuid_utils import uuid7
 
@@ -96,6 +97,48 @@ class TestTrajectoryComponent:
 
 
 # ── SamplingProcessor ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_sampling_processor_caps_distinct_trajectories():
+    """Every label row for a selected trajectory remains sampled."""
+    resources = Resources()
+    resources.insert(SamplingConfig(max_trajectories=1))
+    df = daft.from_pydict(
+        {
+            "sessiontrajectory__trajectory_id": ["trajectory-a", "trajectory-a", "trajectory-b"],
+            "sessiontrajectory__total_turns": [2, 2, 2],
+            "sessiontrajectory__outcome": ["ok", "ok", "ok"],
+            "sessiontrajectory__tags_json": ["[]", "[]", "[]"],
+            "label__technique": ["correctness", "style", "correctness"],
+            "label__sampled": [True, True, True],
+        }
+    )
+
+    rows = (await SamplingProcessor().process(df, resources=resources)).collect().to_pylist()
+
+    assert [row["label__sampled"] for row in rows] == [True, True, False]
+
+
+@pytest.mark.asyncio
+async def test_sampling_cap_counts_only_filter_eligible_trajectories():
+    resources = Resources()
+    resources.insert(SamplingConfig(min_turns=3, max_trajectories=1))
+    df = daft.from_pydict(
+        {
+            "sessiontrajectory__trajectory_id": ["trajectory-a", "trajectory-b"],
+            "sessiontrajectory__total_turns": [1, 5],
+            "sessiontrajectory__outcome": ["ok", "ok"],
+            "sessiontrajectory__tags_json": ["[]", "[]"],
+            "label__technique": ["correctness", "correctness"],
+            "label__sampled": [True, True],
+        }
+    )
+
+    rows = (await SamplingProcessor().process(df, resources=resources)).collect().to_pylist()
+    sampled_by_id = {row["sessiontrajectory__trajectory_id"]: row["label__sampled"] for row in rows}
+
+    assert sampled_by_id == {"trajectory-a": False, "trajectory-b": True}
 
 
 @pytest.mark.asyncio
