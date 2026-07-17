@@ -150,6 +150,24 @@ class TestStoreConstructionGuards:
         (store_dir / "ns").unlink()
         assert create_async_store(config) is not None
 
+    def test_iceberg_namespace_symlink_escape_rejected(self, tmp_path, monkeypatch):
+        """The Iceberg warehouse namespace dir (<base>/<ns>.db) gets the same
+        symlink-escape probe as LanceDB (footgun-review on PR #379)."""
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        store_dir = root / "store"
+        store_dir.mkdir(parents=True)
+        outside.mkdir()
+        (store_dir / "ns.db").symlink_to(outside)
+        monkeypatch.setenv("ARCHETYPE_DATA_ROOT", str(root))
+
+        config = StorageConfig(uri=str(store_dir), namespace="ns", backend=StorageBackend.ICEBERG)
+        with pytest.raises(ValueError, match="escapes ARCHETYPE_DATA_ROOT"):
+            configure_session(config)
+
+        (store_dir / "ns.db").unlink()
+        assert configure_session(config) is not None
+
 
 class TestCreateWorldUnwind:
     @pytest.mark.asyncio

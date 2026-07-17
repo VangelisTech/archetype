@@ -71,8 +71,13 @@ def configure_session(
             "inject a preconfigured Daft Session through StorageService for "
             "remote or managed catalogs"
         )
-    # The namespace becomes warehouse directory names under base_path.
+    # The namespace becomes a warehouse directory under base_path
+    # (pyiceberg Hive convention: <warehouse>/<namespace>.db/<table>).
     require_safe_namespace(config.namespace)
+    # Same symlink-escape probe as the LanceDB branch: a pre-planted symlink
+    # at the namespace directory must not redirect writes outside
+    # ARCHETYPE_DATA_ROOT.
+    resolve_local_root(str(pathlib.Path(resolved_uri) / f"{config.namespace}.db"))
 
     session = session if session is not None else Session()
     base_path = pathlib.Path(resolved_uri)
