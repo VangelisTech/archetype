@@ -38,6 +38,8 @@ help:
 	@echo "  make bench          Run and archive ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run and archive ECS microbenchmarks (3 steps)"
 	@echo "  make bench-compare  Compare the latest run with compatible history"
+	@echo "  make bench-query    Run and archive QueryService latency benchmarks"
+	@echo "  make bench-query-compare  Compare the latest query run with its history"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
 	@echo "  make eval-idem      Run idempotency suite only"
@@ -202,6 +204,7 @@ mutmut-clean:
 # ------------------------------------------------------------------------------
 
 BENCH_HISTORY ?= .bench_out/history
+BENCH_QUERY_HISTORY ?= .bench_out/query-history
 
 .PHONY: bench
 bench:
@@ -216,6 +219,15 @@ bench-full:
 .PHONY: bench-compare
 bench-compare:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.compare --current bench-results.json --history-dir "$(BENCH_HISTORY)"
+
+.PHONY: bench-query
+bench-query:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json --history-dir "$(BENCH_QUERY_HISTORY)"
+	@echo "Query benchmark results written to query-bench-results.json"
+
+.PHONY: bench-query-compare
+bench-query-compare:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.compare --current query-bench-results.json --history-dir "$(BENCH_QUERY_HISTORY)"
 
 .PHONY: eval
 eval:
