@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -27,6 +28,15 @@ _EVAL_MANIFEST = re.compile(
     re.DOTALL,
 )
 _EVAL_TASK_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|", re.MULTILINE)
+_BEGINNER_GUIDES = (
+    _GUIDE_ROOT / "quickstart.md",
+    _GUIDE_ROOT / "building-simulations.md",
+    _GUIDE_ROOT / "processors.md",
+)
+_BEGINNER_EXAMPLES = (
+    Path("examples/00_quickstart.py"),
+    Path("examples/simulation_script.py"),
+)
 
 
 def test_numeric_command_type_claims_match_the_enum() -> None:
@@ -105,3 +115,47 @@ def test_eval_guide_manifest_matches_registered_tasks() -> None:
         f"eval guide manifest drifted; missing={registered - documented}, "
         f"stale={documented - registered}"
     )
+
+
+def test_beginner_surfaces_do_not_route_through_engine_internals() -> None:
+    """Beginner paths compose the public runtime instead of wiring core objects."""
+    forbidden_guide_terms = ("archetype.core", "AsyncWorld", "AsyncSystem", "world.system")
+    stale = [
+        f"{path}: contains {term}"
+        for path in _BEGINNER_GUIDES
+        for term in forbidden_guide_terms
+        if term in path.read_text()
+    ]
+
+    for path in _BEGINNER_EXAMPLES:
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                "archetype.core"
+            ):
+                stale.append(f"{path}:{node.lineno} imports {node.module}")
+
+    assert not stale, "beginner surfaces expose engine internals:\n" + "\n".join(stale)
+
+
+def test_quickstart_example_stays_under_thirty_source_lines() -> None:
+    """The copy-and-run path remains small enough to understand in one screen."""
+    source_lines = [
+        line
+        for line in _BEGINNER_EXAMPLES[0].read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert len(source_lines) < 30, f"quickstart grew to {len(source_lines)} source lines"
+
+
+def test_quickstart_variants_stage_initial_state_before_running() -> None:
+    """Async and sync snippets must spend the same number of processor ticks."""
+    guide = (_GUIDE_ROOT / "quickstart.md").read_text()
+    async_section, sync_section = guide.split("## Synchronous scripts", maxsplit=1)
+
+    for name, section in (("async", async_section), ("sync", sync_section)):
+        spawn = section.rfind("world.spawn(")
+        step = section.find("world.step()", spawn)
+        run = section.find("world.run(steps=3)", spawn)
+        assert -1 not in (spawn, step, run), f"{name} quickstart lifecycle is incomplete"
+        assert spawn < step < run, f"{name} quickstart must persist spawns before its run"
