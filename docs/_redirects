@@ -1,0 +1,11 @@
+# Published shortcut URLs. MkDocs copies this file under site/docs; the
+# assembly step promotes it to the Cloudflare Pages artifact root.
+/api              /docs/reference/rest-api/       301
+/cli              /docs/reference/cli/            301
+/python           /docs/reference/python-api/     301
+/quickstart       /docs/guide/quickstart/          301
+/start            /docs/guide/quickstart/          301
+/architecture     /docs/guide/architecture/        301
+/examples         /docs/guide/examples/            301
+/contributing     /docs/guide/contributing/        301
+/docs             /docs/                           301

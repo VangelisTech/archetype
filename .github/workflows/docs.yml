@@ -89,7 +89,7 @@ jobs:
 
       - name: Verify Cloudflare Pages files
         run: |
-          for f in _headers index.html 404.html docs/index.html; do
+          for f in _headers _redirects index.html 404.html docs/index.html; do
             if [ ! -f "site/$f" ]; then
               echo "::error::site/$f missing from the production artifact"
               exit 1
