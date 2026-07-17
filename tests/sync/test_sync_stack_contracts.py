@@ -564,6 +564,24 @@ def test_sync_world_add_components_before_first_step_uses_pending_spawn_row(tmp_
     )
 
 
+def test_sync_empty_spawn_then_add_component_before_first_step(tmp_path):
+    _store, _querier, _updater, _system, world = _make_sync_stack(
+        tmp_path, "world_pre_step_empty_move"
+    )
+    entity_id = world.create_entity([])
+
+    world.add_components(entity_id, [Position(x=7, y=0)])
+
+    assert () not in world.spawn_cache
+    world.step(RunConfig(num_steps=1))
+
+    sig = Archetype.sig_from_components([Position()])
+    rows = _committed_rows(world, sig)
+    assert len(rows) == 1
+    assert rows[0]["entity_id"] == entity_id
+    assert rows[0]["position__x"] == 7
+
+
 def test_sync_world_add_components_without_prior_row_is_noop(tmp_path):
     """Issues #367: no staged row + no persisted row -> logged no-op."""
     _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_noop_move")
