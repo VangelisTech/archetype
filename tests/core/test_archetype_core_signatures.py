@@ -20,6 +20,14 @@ class prefixcollisiona(Component):  # noqa: N801 — intentional name collision
     value: int = 0
 
 
+class FirstTag(Component):
+    pass
+
+
+class SecondTag(Component):
+    pass
+
+
 def test_sig_from_components_is_sorted_by_type_name():
     """Signature creation should be order-invariant and sorted by component type names."""
     sig1 = Archetype.sig_from_components([B(y=1), A(x=1)])
@@ -82,6 +90,21 @@ def test_get_name_is_order_invariant_and_hash_suffixed():
     n2 = Archetype.get_name(sig2)
     assert n1 == n2
     assert n1.startswith("a_2c_s")
+
+
+def test_schema_identical_tag_signatures_share_a_table_name():
+    """Physical table identity is schema-and-arity based, not class based.
+
+    Empty tag components contribute no fields. Two one-component signatures
+    made from different empty tags are therefore distinct logical signatures
+    with the same storage schema and physical table name.
+    """
+    first = Archetype.sig_from_components([FirstTag()])
+    second = Archetype.sig_from_components([SecondTag()])
+
+    assert first != second
+    assert Archetype.get_archetype_schema(first) == Archetype.get_archetype_schema(second)
+    assert Archetype.get_name(first) == Archetype.get_name(second)
 
 
 def test_get_archetype_schema_raises_on_prefix_collision():
