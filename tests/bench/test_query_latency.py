@@ -20,7 +20,6 @@ from bench.core.query_latency import (
     build_query_report,
     run_query_benchmarks,
 )
-from bench.core.report import validate_report
 
 
 def test_query_cases_cover_each_issue_141_read_shape() -> None:
@@ -28,7 +27,6 @@ def test_query_cases_cover_each_issue_141_read_shape() -> None:
         world_id="world",
         run_id="run",
         latest_tick=4,
-        total_entities=30,
         entities_per_archetype=10,
         filtered_entity_id=11,
     )
@@ -41,9 +39,8 @@ def test_query_cases_cover_each_issue_141_read_shape() -> None:
         "component_union_across_signatures",
         "entity_filtered_component_union",
     }
-    assert cases["current_state_exact_signature"].ticks == (4,)
-    assert cases["historical_tick_exact_signature"].ticks == (0,)
-    assert cases["component_union_across_signatures"].matching_signatures == 3
+    assert cases["current_state_exact_signature"].tick == 4
+    assert cases["historical_tick_exact_signature"].tick == 0
     assert cases["component_union_across_signatures"].expected_rows == 30
     assert cases["entity_filtered_component_union"].entity_ids == (11,)
     assert cases["entity_filtered_component_union"].expected_rows == 1
@@ -115,10 +112,9 @@ async def test_query_benchmark_materializes_all_four_shapes(tmp_path: Path, capl
         "entity_filtered_component_union",
     ]
     assert all(result["elapsed_s"] > 0 for result in results)
-    assert [result["entities"] for result in results] == [2, 2, 6, 1]
-    assert {result["steps"] for result in results} == {1}
-    assert [result["extras"]["expected_rows"] for result in results] == [2, 2, 6, 1]
-    assert all(result["extras"]["materialization"] == "collect-count-rows" for result in results)
+    assert [result["rows_per_query"] for result in results] == [2, 2, 6, 1]
+    assert {result["repetitions"] for result in results} == {1}
+    assert {result["query_path"] for result in results} == {"archetype", "components"}
 
     report = build_query_report(
         results,
@@ -126,8 +122,7 @@ async def test_query_benchmark_materializes_all_four_shapes(tmp_path: Path, capl
         storage=storage,
         runner_id="contract-runner",
     )
-    assert validate_report(report) is report
     assert report["suite"] == "query_latency"
     assert report["config"]["workload"] == "query-latency-v1"
-    assert len(report["benchmarks"]) == 4
+    assert report["results"] == results
     assert "audit emission failed" not in caplog.text

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from collections.abc import Sequence
 from dataclasses import asdict
 
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
@@ -42,7 +41,7 @@ async def run_all(
     cache: CacheConfig | None = None,
 ) -> list[dict]:
     results = []
-    benches: Sequence[tuple[str, callable]] = [
+    benches = [
         ("packed_iteration", packed_iteration.run),
         ("simple_iteration", simple_iteration.run),
         ("fragmented_iteration", fragmented_iteration.run),
@@ -57,8 +56,10 @@ async def run_all(
             storage=_storage_for_bench(storage, name),
             cache_config=cache,
         )
+        if res.name != name:
+            raise RuntimeError(f"benchmark {name!r} returned result {res.name!r}")
         rec = asdict(res)
-        rec.update({"world_id": str(ids[0]), "run_id": str(ids[1]), "bench_name": name})
+        rec.update({"world_id": str(ids[0]), "run_id": str(ids[1])})
         results.append(rec)
 
     return results
@@ -76,12 +77,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--uri", default=None, help="Override storage uri (absolute path recommended)")
     p.add_argument("--namespace", default=None, help="Override ARCHETYPE_BENCH_NS")
-    p.add_argument("--out", default=None, help="Write the current schema-v1 report here")
-    p.add_argument(
-        "--history-dir",
-        default=None,
-        help="Also archive the report in this history directory",
-    )
+    p.add_argument("--out", default=None, help="Write a JSON snapshot here")
     p.add_argument(
         "--runner-id",
         default=None,
@@ -105,8 +101,8 @@ def main():
         },
         environment=capture_environment(runner_id=args.runner_id),
     )
-    if args.out is not None or args.history_dir is not None:
-        write_report(report, current_path=args.out, history_dir=args.history_dir)
+    if args.out is not None:
+        write_report(report, args.out)
     if args.out is None:
         print(json.dumps(report, allow_nan=False, indent=2, sort_keys=True))
 

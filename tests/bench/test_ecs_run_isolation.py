@@ -85,7 +85,7 @@ async def test_run_all_isolates_each_bench_into_its_own_namespace(tmp_path):
     results = await run_all(steps=1, storage=storage)
 
     assert len(results) == 5
-    assert [r["bench_name"] for r in results] == [
+    assert [r["name"] for r in results] == [
         "packed_iteration",
         "simple_iteration",
         "fragmented_iteration",
@@ -93,7 +93,7 @@ async def test_run_all_isolates_each_bench_into_its_own_namespace(tmp_path):
         "add_remove",
     ]
 
-    expected_namespaces = {f"isolation__{r['bench_name']}" for r in results}
+    expected_namespaces = {f"isolation__{r['name']}" for r in results}
     on_disk = {p.name for p in tmp_path.iterdir() if p.is_dir()}
     # Every bench namespace must exist on disk, and the shared "isolation"
     # namespace must NOT — that would mean tables were written without the
