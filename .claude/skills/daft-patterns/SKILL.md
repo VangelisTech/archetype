@@ -1,6 +1,7 @@
 ---
 name: daft-patterns
 description: Enforces correct Daft DataFrame patterns. Use when writing or editing Python that touches Daft, DataFrames, UDFs, or column expressions — anywhere under src/, tests/, or examples/.
+paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
 user_invocable: true
 ---
 
