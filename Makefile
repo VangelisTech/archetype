@@ -35,11 +35,9 @@ help:
 	@echo "  make mutmut-clean   Remove mutmut cache and generated mutants"
 	@echo ""
 	@echo "Benchmarks & Evals:"
-	@echo "  make bench          Run and archive ECS microbenchmarks (1 step)"
-	@echo "  make bench-full     Run and archive ECS microbenchmarks (3 steps)"
-	@echo "  make bench-compare  Compare the latest run with compatible history"
-	@echo "  make bench-query    Run and archive QueryService latency benchmarks"
-	@echo "  make bench-query-compare  Compare the latest query run with its history"
+	@echo "  make bench          Run ECS microbenchmarks (1 step)"
+	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
+	@echo "  make bench-query    Run QueryService latency benchmarks"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
 	@echo "  make eval-idem      Run idempotency suite only"
@@ -203,31 +201,20 @@ mutmut-clean:
 # Benchmarks & Evals
 # ------------------------------------------------------------------------------
 
-BENCH_HISTORY ?= .bench_out/history
-BENCH_QUERY_HISTORY ?= .bench_out/query-history
-
 .PHONY: bench
 bench:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 1 --out bench-results.json --history-dir "$(BENCH_HISTORY)"
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 1 --out bench-results.json
 	@echo "Benchmark results written to bench-results.json"
 
 .PHONY: bench-full
 bench-full:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 3 --out bench-results.json --history-dir "$(BENCH_HISTORY)"
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 3 --out bench-results.json
 	@echo "Benchmark results written to bench-results.json"
-
-.PHONY: bench-compare
-bench-compare:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.compare --current bench-results.json --history-dir "$(BENCH_HISTORY)"
 
 .PHONY: bench-query
 bench-query:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json --history-dir "$(BENCH_QUERY_HISTORY)"
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json
 	@echo "Query benchmark results written to query-bench-results.json"
-
-.PHONY: bench-query-compare
-bench-query-compare:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.compare --current query-bench-results.json --history-dir "$(BENCH_QUERY_HISTORY)"
 
 .PHONY: eval
 eval:

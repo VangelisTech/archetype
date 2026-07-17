@@ -16,7 +16,8 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +25,6 @@ from archetype.app.container import ServiceContainer
 from archetype.app.query_service import QueryService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.core.interfaces import ArchetypeSignature
 from bench.core.report import build_report, capture_environment, write_report
 
 _ARCHETYPE_COUNT = 3
@@ -75,7 +75,6 @@ class QueryFixture:
     world_id: str
     run_id: str
     latest_tick: int
-    total_entities: int
     entities_per_archetype: int
     filtered_entity_id: int
 
@@ -86,50 +85,28 @@ class QueryCase:
 
     name: str
     path: Literal["archetype", "components"]
-    signature: ArchetypeSignature | None
-    components: tuple[type[Component], ...]
-    ticks: tuple[int, ...]
+    tick: int
+    expected_rows: int
     entity_ids: tuple[int, ...] = ()
-    matching_signatures: int = 1
-    expected_rows: int = 0
 
 
 def _query_cases(fixture: QueryFixture) -> tuple[QueryCase, ...]:
+    count = fixture.entities_per_archetype
     return (
+        QueryCase("current_state_exact_signature", "archetype", fixture.latest_tick, count),
+        QueryCase("historical_tick_exact_signature", "archetype", 0, count),
         QueryCase(
-            name="current_state_exact_signature",
-            path="archetype",
-            signature=(QueryPosition,),
-            components=(QueryPosition,),
-            ticks=(fixture.latest_tick,),
-            expected_rows=fixture.entities_per_archetype,
+            "component_union_across_signatures",
+            "components",
+            fixture.latest_tick,
+            count * _ARCHETYPE_COUNT,
         ),
         QueryCase(
-            name="historical_tick_exact_signature",
-            path="archetype",
-            signature=(QueryPosition,),
-            components=(QueryPosition,),
-            ticks=(0,),
-            expected_rows=fixture.entities_per_archetype,
-        ),
-        QueryCase(
-            name="component_union_across_signatures",
-            path="components",
-            signature=None,
-            components=(QueryPosition,),
-            ticks=(fixture.latest_tick,),
-            matching_signatures=_ARCHETYPE_COUNT,
-            expected_rows=fixture.total_entities,
-        ),
-        QueryCase(
-            name="entity_filtered_component_union",
-            path="components",
-            signature=None,
-            components=(QueryPosition,),
-            ticks=(fixture.latest_tick,),
-            entity_ids=(fixture.filtered_entity_id,),
-            matching_signatures=_ARCHETYPE_COUNT,
-            expected_rows=1,
+            "entity_filtered_component_union",
+            "components",
+            fixture.latest_tick,
+            1,
+            (fixture.filtered_entity_id,),
         ),
     )
 
@@ -144,39 +121,35 @@ async def _setup_fixture(
         storage,
     )
     count = config.entities_per_archetype
-    position_ids = await container.mutation_service.create_entities(
-        info.world_id,
+    groups: list[list[list[Component]]] = [
         [[QueryPosition(x=float(index))] for index in range(count)],
-    )
-    velocity_ids = await container.mutation_service.create_entities(
-        info.world_id,
         [
             [QueryPosition(x=float(index)), QueryVelocity(dx=float(index + 1))]
             for index in range(count)
         ],
-    )
-    await container.mutation_service.create_entities(
-        info.world_id,
         [
             [QueryPosition(x=float(index)), QueryHealth(hp=float(100 - index))]
             for index in range(count)
         ],
-    )
+    ]
+    entity_ids = [
+        await container.mutation_service.create_entities(info.world_id, group) for group in groups
+    ]
+    if any(len(ids) != count for ids in entity_ids):
+        raise RuntimeError("query benchmark setup did not create its fixtures")
+
     run = await container.simulation_service.run(
         info.world_id,
         RunConfig.benchmark(steps=config.history_ticks),
     )
     if run.final_tick < 1:
         raise RuntimeError("query benchmark setup did not persist a tick")
-    if not position_ids or not velocity_ids:
-        raise RuntimeError("query benchmark setup did not create its fixtures")
     return QueryFixture(
         world_id=str(info.world_id),
         run_id=str(run.run_id),
         latest_tick=run.final_tick - 1,
-        total_entities=count * _ARCHETYPE_COUNT,
         entities_per_archetype=count,
-        filtered_entity_id=velocity_ids[0],
+        filtered_entity_id=entity_ids[1][0],
     )
 
 
@@ -186,26 +159,25 @@ async def _execute_case(
     fixture: QueryFixture,
     case: QueryCase,
 ) -> int:
-    query_kwargs = {
-        "storage_config": storage,
-        "ticks": list(case.ticks),
-        "entity_ids": list(case.entity_ids) or None,
-    }
+    ticks = [case.tick]
+    entity_ids = list(case.entity_ids) or None
     if case.path == "archetype":
-        if case.signature is None:
-            raise ValueError(f"{case.name}: archetype query requires a signature")
         frame = await queries.query_archetype(
-            case.signature,
+            (QueryPosition,),
             fixture.world_id,
             fixture.run_id,
-            **query_kwargs,
+            storage,
+            ticks=ticks,
+            entity_ids=entity_ids,
         )
     else:
         frame = await queries.query_components(
-            list(case.components),
+            [QueryPosition],
             fixture.world_id,
             fixture.run_id,
-            **query_kwargs,
+            storage,
+            ticks=ticks,
+            entity_ids=entity_ids,
         )
     return frame.collect().count_rows()
 
@@ -231,19 +203,12 @@ async def _measure_case(
         _assert_row_count(case, observed)
     return {
         "name": case.name,
-        "bench_name": case.name,
-        "entities": case.expected_rows,
-        "steps": config.repetitions,
         "elapsed_s": elapsed,
-        "extras": {
-            "query_path": case.path,
-            "components": [component.__name__ for component in case.components],
-            "ticks": list(case.ticks),
-            "entity_filter_count": len(case.entity_ids),
-            "matching_signatures": case.matching_signatures,
-            "expected_rows": case.expected_rows,
-            "materialization": "collect-count-rows",
-        },
+        "repetitions": config.repetitions,
+        "rows_per_query": case.expected_rows,
+        "query_path": case.path,
+        "tick": case.tick,
+        "entity_filter_count": len(case.entity_ids),
         "world_id": fixture.world_id,
         "run_id": fixture.run_id,
     }
@@ -291,17 +256,14 @@ def build_query_report(
     storage: StorageConfig,
     runner_id: str | None = None,
 ) -> dict[str, Any]:
-    """Wrap query measurements in the shared comparable report contract."""
+    """Attach the query workload context to one local snapshot."""
     return build_report(
         results,
         suite="query_latency",
         config={
+            **asdict(config),
             "workload": "query-latency-v1",
-            "entities_per_archetype": config.entities_per_archetype,
             "archetype_count": _ARCHETYPE_COUNT,
-            "history_ticks": config.history_ticks,
-            "repetitions": config.repetitions,
-            "warmups": config.warmups,
             "storage_backend": storage.backend.value,
             "query_path": "QueryService",
             "materialization": "collect-count-rows",
@@ -310,33 +272,22 @@ def build_query_report(
     )
 
 
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("value must be positive")
-    return parsed
+def _int_at_least(minimum: int) -> Callable[[str], int]:
+    def parse(value: str) -> int:
+        parsed = int(value)
+        if parsed < minimum:
+            raise argparse.ArgumentTypeError(f"value must be at least {minimum}")
+        return parsed
 
-
-def _history_ticks(value: str) -> int:
-    parsed = int(value)
-    if parsed < 2:
-        raise argparse.ArgumentTypeError("history ticks must be at least 2")
-    return parsed
-
-
-def _non_negative_int(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("value must be non-negative")
-    return parsed
+    return parse
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run materialized QueryService benchmarks")
-    parser.add_argument("--entities-per-archetype", type=_positive_int, default=100)
-    parser.add_argument("--history-ticks", type=_history_ticks, default=3)
-    parser.add_argument("--repetitions", type=_positive_int, default=5)
-    parser.add_argument("--warmups", type=_non_negative_int, default=1)
+    parser.add_argument("--entities-per-archetype", type=_int_at_least(1), default=100)
+    parser.add_argument("--history-ticks", type=_int_at_least(2), default=3)
+    parser.add_argument("--repetitions", type=_int_at_least(1), default=5)
+    parser.add_argument("--warmups", type=_int_at_least(0), default=1)
     parser.add_argument(
         "--backend",
         choices=[backend.value for backend in StorageBackend],
@@ -344,8 +295,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--uri", default=None, help="Override ARCHETYPE_DATA_URI")
     parser.add_argument("--namespace", default=None, help="Override ARCHETYPE_QUERY_BENCH_NS")
-    parser.add_argument("--out", default=None, help="Write the current schema-v1 report here")
-    parser.add_argument("--history-dir", default=None, help="Archive the content-addressed report")
+    parser.add_argument("--out", default=None, help="Write a JSON snapshot here")
     parser.add_argument(
         "--runner-id",
         default=None,
@@ -382,10 +332,10 @@ def main(argv: list[str] | None = None) -> int:
         storage=storage,
         runner_id=args.runner_id,
     )
-    if args.out is not None or args.history_dir is not None:
-        write_report(report, current_path=args.out, history_dir=args.history_dir)
     if args.out is None:
         print(json.dumps(report, allow_nan=False, indent=2, sort_keys=True))
+    else:
+        write_report(report, args.out)
     return 0
 
 
