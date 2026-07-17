@@ -3,10 +3,14 @@
 
 """Tests for MutationService — entity ID accuracy and mutation lifecycle."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from uuid_utils import uuid7
 
 from archetype.app.auth.models import ActorCtx
+from archetype.app.broker import CommandBroker
+from archetype.app.command_service import CommandService, _parse_entity_id
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
@@ -25,6 +29,20 @@ class Velocity(Component):
 
 class Health(Component):
     hp: int = 100
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(7, 7), ("7", 7), ("+7", 7), ("-7", -7), ("007", 7)],
+)
+def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
+    assert _parse_entity_id(value) == expected
+
+
+@pytest.mark.parametrize("value", [True, 7.0, 7.9, "7.0", " 7", "7 ", "", None])
+def test_parse_entity_id_rejects_lossy_or_ambiguous_values(value):
+    with pytest.raises(TypeError, match="entity_id must be an integer"):
+        _parse_entity_id(value)
 
 
 @pytest.mark.asyncio
@@ -225,6 +243,44 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
         assert eid not in world.entity2sig
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_type", "payload", "mutation_method"),
+    [
+        (CommandType.UPDATE, {"components": [Position(x=2.0)]}, "update_entity"),
+        (CommandType.DESPAWN, {}, "remove_entity"),
+        (CommandType.ADD_COMPONENT, {"components": [Velocity()]}, "add_components"),
+        (
+            CommandType.REMOVE_COMPONENT,
+            {"component_types": [Velocity]},
+            "remove_components",
+        ),
+    ],
+)
+async def test_entity_commands_reject_fractional_ids(command_type, payload, mutation_method):
+    mutations = MagicMock()
+    mutation = AsyncMock()
+    setattr(mutations, mutation_method, mutation)
+    broker = CommandBroker()
+    service = CommandService(
+        mutations,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        broker,
+    )
+    command = Command(
+        type=command_type,
+        payload={"entity_id": 1.9, **payload},
+    )
+    await broker.enqueue("world", command)
+
+    applied = await service.drain_and_apply("world", tick=0)
+
+    assert applied == []
+    mutation.assert_not_awaited()
 
 
 @pytest.mark.asyncio

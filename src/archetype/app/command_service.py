@@ -84,6 +84,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_entity_id(value: object) -> int:
+    """Decode an entity ID without lossy numeric coercion."""
+    if type(value) is int:
+        return value
+
+    if isinstance(value, str):
+        digits = value[1:] if value[:1] in {"+", "-"} else value
+        if digits and digits.isascii() and digits.isdecimal():
+            return int(value)
+
+    raise TypeError("entity_id must be an integer or decimal-integer string")
+
+
 class CommandService:
     """Policy enforcement point.
 
@@ -1122,27 +1135,31 @@ class CommandService:
 
                     world = self._worlds.get_world(UUID(str(world_id)))
                     if isinstance(world, AsyncWorld):
-                        await world._register_entity(int(entity_id), components)
+                        await world._register_entity(_parse_entity_id(entity_id), components)
                 else:
                     await self._mutations.create_entity(world_id, components)
 
             case CommandType.UPDATE:
                 components = self._hydrate_components(payload.get("components", []))
-                await self._mutations.update_entity(world_id, int(payload["entity_id"]), components)
+                await self._mutations.update_entity(
+                    world_id, _parse_entity_id(payload["entity_id"]), components
+                )
 
             case CommandType.DESPAWN:
-                await self._mutations.remove_entity(world_id, int(payload["entity_id"]))
+                await self._mutations.remove_entity(
+                    world_id, _parse_entity_id(payload["entity_id"])
+                )
 
             case CommandType.ADD_COMPONENT:
                 components = self._hydrate_components(payload.get("components", []))
                 await self._mutations.add_components(
-                    world_id, int(payload["entity_id"]), components
+                    world_id, _parse_entity_id(payload["entity_id"]), components
                 )
 
             case CommandType.REMOVE_COMPONENT:
                 component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await self._mutations.remove_components(
-                    world_id, int(payload["entity_id"]), component_types
+                    world_id, _parse_entity_id(payload["entity_id"]), component_types
                 )
 
             case CommandType.ADD_PROCESSOR:
