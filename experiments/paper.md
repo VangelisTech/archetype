@@ -256,4 +256,4 @@ uv run python experiments/tragedy_of_the_commons.py
 uv run python experiments/generate_figures.py
 ```
 
-Requires: Python 3.11+, Archetype, matplotlib.
+Requires: Python 3.12+, Archetype, matplotlib.
