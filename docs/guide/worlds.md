@@ -75,7 +75,7 @@ world = AsyncWorld(
 | `name` | `str` | Human-readable name |
 | `tick` | `int` | Current simulation tick (starts at 0) |
 | `resources` | `Resources` | Type-safe dependency injection container |
-| `run_id` | `str` | Current run identifier (set by `run()`) |
+| `run_id` | `str` | Active durable timeline identifier, retained across repeated runs |
 
 ## Entity Management
 
@@ -139,7 +139,10 @@ from archetype.core.config import RunConfig
 await world.run(RunConfig(num_steps=10))
 ```
 
-This calls `step()` in a loop. Each run gets a unique `run_id` for storage isolation.
+This calls `step()` in a loop. The world keeps one active `run_id` across
+repeated steps and `run()` calls so every row belongs to one continuous
+timeline. A fork, by contrast, mints its own `run_id` and carries explicit
+lineage back to its source.
 
 ## The _live Cache
 
@@ -147,9 +150,13 @@ This calls `step()` in a loop. Each run gets a unique `run_id` for storage isola
 
 ### Why It Exists
 
-The store is the durability layer, but reading from it between consecutive ticks is fragile. Each `SimulationService.step()` emits a fresh `run_id`, so store reads filtered by the current `run_id` miss rows written by earlier ticks. World forks exhibit the same issue: the cloned snapshot is persisted under a placeholder run_id and the next step queries under a different one.
+The store is an append-only historical ledger, while the next engine tick
+needs exactly the latest active frame. Reconstructing that frame from durable
+history on every step would add query work to the hot execution path.
 
-`_live` fixes this (archetype#72). After all archetypes finish processing, `step()` updates `_live` with the output DataFrames filtered to active rows:
+`_live` retains the already-computed frame. After all archetypes finish
+processing, `step()` updates it with the output DataFrames filtered to active
+rows:
 
 ```python
 self._live = {
@@ -166,7 +173,10 @@ else:
     df = await self.query_archetype(sig, ...)
 ```
 
-The store read is only used for tick 0 (when there is no prior output) or for archetypes not yet in `_live`.
+The store read is only used for tick 0 (when there is no prior output) or for
+archetypes not yet in `_live`. This cache is an engine implementation detail,
+not a user-facing read preference: `RuntimeWorld.query()` goes through the
+durable query path for both live and cold worlds.
 
 ## Mutation Internals
 

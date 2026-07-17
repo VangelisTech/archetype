@@ -65,6 +65,10 @@ class ForkValue(Component):
     amount: int = 0
 
 
+class TimelineValue(Component):
+    amount: int = 0
+
+
 @dataclass
 class ForkStepSize:
     delta: int = 1
@@ -92,6 +96,16 @@ class AdvanceForkValue(AsyncProcessor):
         step_size = resources.get(ForkStepSize) if resources else None
         delta = step_size.delta if step_size else 0
         return df.with_column("forkvalue__amount", col("forkvalue__amount") + delta)
+
+
+class AdvanceTimelineValue(AsyncProcessor):
+    """Advance a durable value once per tick after its initial condition."""
+
+    components = (TimelineValue,)
+    priority = 1
+
+    async def process(self, df, **kwargs):
+        return df.with_column("timelinevalue__amount", col("timelinevalue__amount") + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +416,107 @@ async def _task_fork_divergence() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: Time-travel reads and run identity across fresh runtimes
+# ---------------------------------------------------------------------------
+
+
+def task_time_travel_and_run_id() -> list[GraderResult]:
+    """Read one durable timeline live, cold, and after mutable resume."""
+    return asyncio.run(_task_time_travel_and_run_id())
+
+
+def _timeline_history(rows: list[dict]) -> list[tuple[str, str, int, int, int]]:
+    """Normalize durable rows into an order-independent contract surface."""
+    return sorted(
+        (
+            str(row["world_id"]),
+            str(row["run_id"]),
+            int(row["entity_id"]),
+            int(row["tick"]),
+            int(row["timelinevalue__amount"]),
+        )
+        for row in rows
+    )
+
+
+async def _task_time_travel_and_run_id() -> list[GraderResult]:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_time_travel")
+
+        async with ArchetypeRuntime() as writer:
+            world = writer.world(
+                "timeline",
+                storage=storage_cfg,
+                processors=[AdvanceTimelineValue()],
+            )
+            entity_id = await world.spawn(TimelineValue(amount=0))
+            first_result = await world.run(steps=4)
+            live_info = await world.info()
+            live_rows = (await world.query(TimelineValue, entity_ids=[entity_id])).to_pylist()
+
+        world_id = str(live_info.world_id)
+        run_id = str(live_info.run_id)
+        expected_initial = [
+            (world_id, run_id, entity_id, tick, amount) for tick, amount in enumerate(range(4))
+        ]
+
+        async with ArchetypeRuntime() as reader:
+            cold = reader.attach(world_id, storage=storage_cfg)
+            cold_info = await cold.info()
+            cold_rows = (await cold.query(TimelineValue, entity_ids=[entity_id])).to_pylist()
+
+        async with ArchetypeRuntime() as resumer:
+            resumed = await resumer.resume(world_id, storage=storage_cfg)
+            resumed_before = await resumed.info()
+            await resumed.add_processor(AdvanceTimelineValue())
+            second_result = await resumed.run(steps=2)
+            resumed_after = await resumed.info()
+            resumed_rows = (await resumed.query(TimelineValue, entity_ids=[entity_id])).to_pylist()
+
+        live_history = _timeline_history(live_rows)
+        cold_history = _timeline_history(cold_rows)
+        resumed_history = _timeline_history(resumed_rows)
+        expected_resumed = [
+            (world_id, run_id, entity_id, tick, amount) for tick, amount in enumerate(range(6))
+        ]
+
+        return [
+            exact_match(live_history, expected_initial, name="live_historical_read"),
+            exact_match(cold_history, live_history, name="cold_read_parity"),
+            exact_match(resumed_history, expected_resumed, name="resumed_history_continuity"),
+            state_check(
+                {
+                    "first_result_world": str(first_result.world_id) == world_id,
+                    "first_result_run": str(first_result.run_id) == run_id,
+                    "first_result_ticks": first_result.ticks_completed == 4,
+                    "first_result_final_tick": first_result.final_tick == 4,
+                    "run_id_is_present": live_info.run_id is not None
+                    and run_id not in {"", "None"},
+                    "live_info_run": str(live_info.run_id) == run_id,
+                    "live_info_next_tick": live_info.tick == 4,
+                    "cold_info_world": str(cold_info.world_id) == world_id,
+                    "cold_info_run": str(cold_info.run_id) == run_id,
+                },
+                name="durable_read_identity",
+            ),
+            state_check(
+                {
+                    "resume_restores_next_tick": resumed_before.tick == 4,
+                    "resume_preserves_run": str(resumed_before.run_id) == run_id,
+                    "second_result_world": str(second_result.world_id) == world_id,
+                    "second_result_run": str(second_result.run_id) == run_id,
+                    "second_result_ticks": second_result.ticks_completed == 2,
+                    "second_result_final_tick": second_result.final_tick == 6,
+                    "resumed_info_next_tick": resumed_after.tick == 6,
+                    "resumed_info_run": str(resumed_after.run_id) == run_id,
+                    "one_row_per_tick": len(resumed_rows) == 6,
+                },
+                name="resume_run_continuity",
+            ),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Register all capability tasks
 # ---------------------------------------------------------------------------
 
@@ -425,4 +540,10 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_fork_divergence,
         desc="Fork-of-fork lineage continuity, shared resources, and isolated branch mutations",
+    )
+    harness.add(
+        "time_travel_and_run_id",
+        suite=SUITE,
+        fn=task_time_travel_and_run_id,
+        desc="Live and cold historical reads preserve run identity across durable resume",
     )

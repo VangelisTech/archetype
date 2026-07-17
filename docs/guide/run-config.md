@@ -4,10 +4,11 @@ Archetype uses Pydantic models for all configuration. There are four config type
 
 ## RunConfig
 
-`RunConfig` describes one bounded sequence of ticks. Its generated `run_id`
-seeds a world's active run identity on first execution; after that identity is
-pinned, later steps and runs keep the world's existing `run_id` so state stays
-continuous.
+`RunConfig` describes one bounded sequence of ticks. A normal world already
+owns an active `run_id` when it is constructed; execution keeps that identity
+across ticks and repeated calls so its append-only history stays continuous.
+The config's generated `run_id` is a call-level candidate retained for
+lower-level compatibility, not a request to rename an active world.
 
 ```python
 from archetype.core.config import RunConfig
@@ -18,13 +19,14 @@ await world.run(config=config)
 
 ### Contract
 
-- A `RunConfig` carries one candidate `run_id` shared by every tick in that
-  bounded call. It initializes a new world's active run identity but does not
-  replace an identity already pinned to that world.
+- A new world mints its active `run_id`; mutable resume restores it, and a fork
+  mints a fresh identity for its new lineage.
+- A `RunConfig` carries one candidate `run_id`, but execution does not replace
+  an active world's identity with it. `RunResult.run_id` reports the identity
+  actually stamped on durable rows.
 - `SimulationService.step()` and the lower-level `AsyncWorld.step()` require an
-  explicit `RunConfig`; callers driving multiple individual steps reuse one
-  config. `RuntimeWorld.step()` creates the ordinary one-step config when the
-  public caller omits it.
+  explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary one-step
+  config when the public caller omits it.
 - `SimulationService.run()` and the world implementations thread the caller's
   `RunConfig` into every internal `step()` call.
 - `EpisodeConfig` wraps `RunConfig` with termination semantics.
@@ -34,7 +36,7 @@ await world.run(config=config)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `run_id` | `str \| UUID` | auto (uuid7) | Candidate identifier used when the world has no active run |
+| `run_id` | `str \| UUID` | auto (uuid7) | Call-level candidate; the world's active identity remains authoritative |
 | `num_steps` | `int` | `1` | Number of ticks to execute |
 | `debug` | `bool` | `False` | Emit per-tick diagnostic panels |
 | `show_rows` | `int` | `8` | Maximum rows in each debug snapshot; `0` disables snapshots |
