@@ -20,6 +20,24 @@ from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
+_DEFERRED_COMMAND_TYPES = frozenset(
+    {
+        CommandType.SPAWN,
+        CommandType.UPDATE,
+        CommandType.DESPAWN,
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+        CommandType.QUERY_WORLD,
+    }
+)
+_DIRECT_COMMAND_TYPES = tuple(
+    sorted(set(CommandType) - _DEFERRED_COMMAND_TYPES, key=lambda command_type: command_type.value)
+)
+
 
 class CommandFlowMarker(Component):
     tag: str = ""
@@ -169,13 +187,7 @@ async def test_submit_to_unknown_world_rejected():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "command_type",
-    [
-        CommandType.INGEST_FACT,
-        CommandType.EVALUATE,
-        CommandType.CREATE_WORLD,
-        CommandType.FORK_WORLD,
-        CommandType.DESTROY_WORLD,
-    ],
+    _DIRECT_COMMAND_TYPES,
 )
 async def test_direct_only_commands_cannot_enter_tick_deferred_broker(tmp_path, command_type):
     """Direct operations cannot be acknowledged as tick-deferred queue work."""
@@ -187,7 +199,7 @@ async def test_direct_only_commands_cannot_enter_tick_deferred_broker(tmp_path, 
             StorageConfig(uri=str(tmp_path / "store")),
         )
 
-        with pytest.raises(ValueError, match="direct gated operation"):
+        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
             await c.command_service.submit(ctx, world.world_id, Command(type=command_type))
 
         assert await c.broker.get_pending_count(world.world_id) == 0
@@ -211,7 +223,7 @@ async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
             Command(type=CommandType.FORK_WORLD),
         ]
 
-        with pytest.raises(ValueError, match="direct gated operation"):
+        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
             await c.command_service.submit_batch(ctx, world.world_id, commands)
 
         assert await c.broker.get_pending_count(world.world_id) == 0

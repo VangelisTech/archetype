@@ -83,13 +83,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DIRECT_ONLY_COMMANDS = frozenset(
+_DEFERRED_COMMAND_TYPES = frozenset(
     {
-        CommandType.INGEST_FACT,
-        CommandType.EVALUATE,
-        CommandType.CREATE_WORLD,
-        CommandType.FORK_WORLD,
-        CommandType.DESTROY_WORLD,
+        CommandType.SPAWN,
+        CommandType.UPDATE,
+        CommandType.DESPAWN,
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+        CommandType.QUERY_WORLD,
     }
 )
 
@@ -157,10 +162,10 @@ class CommandService:
 
     @staticmethod
     def _validate_deferred_command(cmd: Command) -> None:
-        if cmd.type in _DIRECT_ONLY_COMMANDS:
+        if cmd.type not in _DEFERRED_COMMAND_TYPES:
             raise ValueError(
-                f"{cmd.type.value} is a direct gated operation; "
-                "it cannot be submitted through the tick-deferred broker"
+                f"{cmd.type.value} is a direct gated operation with no tick-deferred dispatcher; "
+                "it cannot enter the tick-deferred broker"
             )
 
     def _require_world(self, world_id: str | UUID) -> None:
