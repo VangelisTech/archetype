@@ -52,17 +52,21 @@ jobs:
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
+      # Look the PR up by listing open PRs and filtering on headRefOid
+      # client-side — NOT via `--search "sha:..."`. SHA search rides the
+      # search index through an undocumented qualifier: it can lag a fresh
+      # push or stop matching entirely, and either way this job would take
+      # the empty-result exit and silently never arm anything again.
       - name: Arm the reviewed head
         env:
           GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          pr=$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
-            --search "sha:${HEAD_SHA}" \
+          pr=$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --limit 100 \
             --json number,author,isDraft,headRefOid \
             --jq ".[] | select(.headRefOid == \"${HEAD_SHA}\" and .author.login == \"everettVT\" and (.isDraft | not)) | .number" | head -1)
           if [ -z "$pr" ]; then
-            echo "No armable open PR at reviewed head ${HEAD_SHA}; nothing to do."
+            echo "No open non-draft everettVT PR currently at ${HEAD_SHA} (superseded, closed, or draft); nothing to arm."
             exit 0
           fi
           echo "Review gate succeeded on ${HEAD_SHA}; arming #${pr}."
