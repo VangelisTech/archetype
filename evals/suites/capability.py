@@ -936,15 +936,15 @@ async def _task_llm_facing() -> list[GraderResult]:
             {
                 "healthy_call_succeeded": healthy.error_type is None,
                 "timeout_error_surfaced": (
-                    timeout.error_type is not None and "timed out" in timeout_detail
+                    timeout.error_type == "RuntimeError" and "timed out" in timeout_detail
                 ),
                 "quota_error_surfaced": (
-                    quota.error_type is not None
+                    quota.error_type == "RuntimeError"
                     and "429" in quota_detail
                     and "quota exhausted" in quota_detail
                 ),
             },
-            name="provider_outcomes_surface",
+            name="provider_outcomes_surface_through_step",
         ),
         state_check(
             {

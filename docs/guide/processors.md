@@ -173,7 +173,6 @@ retry the unchanged tick explicitly:
 
 ```python
 from daft import lit
-from openai import APITimeoutError, RateLimitError
 
 
 class FallbackThought(AsyncProcessor):
@@ -183,13 +182,27 @@ class FallbackThought(AsyncProcessor):
         return df.with_column("agent__last_thought", lit("provider_unavailable"))
 
 
+def is_recoverable_provider_failure(error: RuntimeError) -> bool:
+    detail = str(error).lower()
+    return "timed out" in detail or "error code: 429" in detail
+
+
 try:
     await world.step()
-except (APITimeoutError, RateLimitError):
+except RuntimeError as error:
+    # The public step boundary aggregates per-table compute failures.
+    # Re-raise processor bugs instead of silently converting them to fallback.
+    if not is_recoverable_provider_failure(error):
+        raise
     await world.remove_processor(Think)
     await world.add_processor(FallbackThought())
     await world.step()  # retries the same tick without another model request
 ```
+
+The public step boundary currently aggregates table failures into a
+`RuntimeError` whose detail includes the provider error; provider exception
+classes do not reach this caller directly. Classify only the failures your
+application has chosen to recover from and re-raise everything else.
 
 Persist a source/status field when downstream logic must distinguish model
 output from fallback state. Keep the fallback deterministic: do not introduce

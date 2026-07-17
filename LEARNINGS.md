@@ -559,7 +559,10 @@ result = df.collect()  # Single materialization
 `prompt()` builds a lazy expression. Provider calls happen when the world
 materializes the processor plan, after `process()` has returned. A terminal
 timeout or rate-limit error therefore follows the ordinary processor failure
-contract: the whole tick fails and no world rows append.
+contract: the whole tick fails and no world rows append. `AsyncWorld.step()`
+aggregates per-table compute failures into a `RuntimeError`; the provider's
+exception type does not cross that public boundary, although its detail is
+included in the aggregate message.
 
 The provider side is not rolled back. Some row calls may already have
 completed or incurred cost before another row fails, and retrying the tick may
