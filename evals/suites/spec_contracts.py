@@ -217,7 +217,10 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "submit_spawn": CommandType.SPAWN,
 }
 
-_DYNAMIC_GATE_METHODS = frozenset({"submit", "submit_batch"})
+_DYNAMIC_GATE_METHODS = {
+    "submit": "_gate",
+    "submit_batch": "_gate_batch",
+}
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -417,14 +420,14 @@ def task_command_service_gate_map() -> list[GraderResult]:
                 c.lineno for c in emit_calls
             )
 
-    for method in _DYNAMIC_GATE_METHODS:
+    for method, gate_method in _DYNAMIC_GATE_METHODS.items():
         node = functions.get(method)
         checks[f"{method}:exists"] = node is not None
         if node is None:
             continue
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
         checks[f"{method}:has_dynamic_gate"] = any(
-            _called_attr_name(call) == "_gate" for call in calls
+            _called_attr_name(call) == gate_method for call in calls
         )
         checks[f"{method}:emits_audit"] = any(_called_attr_name(call) == "_emit" for call in calls)
 

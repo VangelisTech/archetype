@@ -99,6 +99,7 @@ nav:
       - Atomic Visibility: guide/atomic-visibility.md
       - Durable Facts: guide/durable-facts.md
       - Audit Log: guide/audit-log.md
+      - Evaluation Harness: guide/evals.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md

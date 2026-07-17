@@ -41,6 +41,12 @@ unavailable, the incoming row is rejected with `AuditBackpressureError`, the
 full batch remains intact, and `rejected_rows` increments. The log never grows
 an unbounded process-memory queue to conceal a storage outage.
 
+`AuditBackpressureError` implements the public `AvailabilityError` contract so
+a host that directly exposes audit operations can classify it without importing
+the concrete audit module. The built-in `CommandService` does not propagate
+audit backpressure to REST callers: the gated operation has already applied by
+the time audit emission runs, so returning 503 would invite an unsafe retry.
+
 Concurrent processes append to the same table using Iceberg's optimistic
 commit protocol. A conflicting append refreshes table metadata and retries
 with bounded backoff; it does not create a process-local audit fork.

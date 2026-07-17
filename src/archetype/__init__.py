@@ -83,6 +83,9 @@ __all__ = [
     "SyncRuntimeWorld",
     "run_sync",
     "configure_session",
+    "entrypoint",
+    # Public-API marker (machine-enforced: no raw-service params)
+    "public_api",
     # Runtime configuration and result types
     "WorldInfo",
     "RunResult",
@@ -154,6 +157,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "WorldConfig": ("archetype.core", "WorldConfig"),
     # Runtime
     "ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime"),
+    "entrypoint": ("archetype.runtime.entrypoint", "entrypoint"),
+    "public_api": ("archetype._api", "public_api"),
     "RuntimeWorld": ("archetype.runtime", "RuntimeWorld"),
     "SyncArchetypeRuntime": ("archetype.runtime", "SyncArchetypeRuntime"),
     "SyncRuntimeWorld": ("archetype.runtime", "SyncRuntimeWorld"),

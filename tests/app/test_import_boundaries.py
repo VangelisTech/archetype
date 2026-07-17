@@ -38,6 +38,9 @@ _RUNTIME_ALLOWED_APP = frozenset(
 _API_ALLOWED_APP = _RUNTIME_ALLOWED_APP | frozenset(
     {
         "archetype.app.auth.errors",
+        # The gate's typed error contract; mapping it to HTTP status codes
+        # is the adapter's job (issue #180: WorldNotFoundError -> 404).
+        "archetype.app.errors",
     }
 )
 
