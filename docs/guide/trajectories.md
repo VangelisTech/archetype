@@ -124,14 +124,18 @@ Clamps `label__score` to [0, 1].
 Recommended runtime setup:
 
 ```python
+from daft.ai.openai.provider import OpenAIProvider
+
 from archetype import ArchetypeRuntime
 from archetype.core.config import RunConfig, StorageConfig
+
+provider = OpenAIProvider(timeout=30.0, max_retries=2)
 
 async with ArchetypeRuntime() as runtime:
     world = runtime.world(
         "trajectory-eval",
         storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
-        processors=[SamplingProcessor(), LabelingProcessor(), ScoringProcessor()],
+        processors=[SamplingProcessor(), LabelingProcessor(provider), ScoringProcessor()],
         resources=[
             SamplingConfig(min_turns=3),
             LabelingConfig(model="gpt-5-mini"),

@@ -41,6 +41,16 @@ _LLM_EXAMPLES = (
     Path("examples/05_llm_agents.py"),
     Path("examples/06_trajectory_analysis.py"),
 )
+_LLM_REFERENCE_SURFACES = (
+    Path("AGENTS.md"),
+    _GUIDE_ROOT / "trajectories.md",
+    Path("examples/05_llm_agents.py"),
+)
+_STALE_LLM_POLICY = (
+    "LabelingProcessor()",
+    "or configure any provider via daft.set_provider()",
+)
+_REQUIRED_LLM_POLICY = ("OpenAIProvider(", "timeout=", "max_retries=")
 
 
 def _direct_call_name(node: ast.Call) -> str | None:
@@ -207,3 +217,22 @@ def test_llm_examples_use_explicit_bounded_providers() -> None:
     violations = [violation for path in _LLM_EXAMPLES for violation in _llm_policy_violations(path)]
 
     assert not violations, "unbounded LLM examples:\n" + "\n".join(violations)
+
+
+def test_llm_reference_surfaces_reject_stale_provider_policy() -> None:
+    """Copyable guidance follows required explicit-provider constructors."""
+    text_by_path = {path: path.read_text() for path in _LLM_REFERENCE_SURFACES}
+    violations = [
+        f"{path}: contains {snippet}"
+        for path, text in text_by_path.items()
+        for snippet in _STALE_LLM_POLICY
+        if snippet in text
+    ]
+    violations.extend(
+        f"{path}: omits {snippet}"
+        for path, text in text_by_path.items()
+        for snippet in _REQUIRED_LLM_POLICY
+        if snippet not in text
+    )
+
+    assert not violations, "stale LLM provider guidance:\n" + "\n".join(violations)

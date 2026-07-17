@@ -15,7 +15,7 @@ of their thoughts over time.
 
 Requirements:
     export OPENAI_API_KEY=sk-...
-    # or configure any provider via daft.set_provider()
+    # Provider timeout/retry policy is constructed explicitly in main().
 
 Usage:
     uv run python examples/05_llm_agents.py

@@ -91,10 +91,13 @@ asyncio.run(main())
 
 ## LLM-powered processors
 
-`daft.functions.prompt` inside `AsyncProcessor.process()` gives every entity an LLM call per tick, executed in parallel by Daft.
+`daft.functions.prompt` inside `AsyncProcessor.process()` gives every entity an
+LLM call per tick, executed in parallel by Daft. Inject a provider with explicit
+timeout and retry bounds; do not inherit ambient transport defaults.
 
 ```python
 from daft import DataFrame, col
+from daft.ai.openai.provider import OpenAIProvider
 from daft.functions import prompt
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
@@ -108,6 +111,9 @@ class ThinkProcessor(AsyncProcessor):
     components = (Agent,)
     priority = 10
 
+    def __init__(self, provider: OpenAIProvider) -> None:
+        self.provider = provider
+
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
         return df.with_column(
             "agent__last_thought",
@@ -115,9 +121,13 @@ class ThinkProcessor(AsyncProcessor):
                 "You are " + col("agent__name")
                 + ". Tick: " + str(tick)
                 + ". What is your next action? Be brief.",
+                provider=self.provider,
                 model="gpt-5-mini",
             ),
         )
+
+provider = OpenAIProvider(timeout=30.0, max_retries=2)
+think = ThinkProcessor(provider)
 ```
 
 See `LEARNINGS.md` for the data-centric principle and the UDF decision tree. Both are mandatory reading before writing a processor.
