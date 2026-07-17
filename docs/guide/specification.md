@@ -263,6 +263,11 @@ Failure policy:
   follows the processor failure contract above. Continuing with fallback state
   requires an explicit deterministic processor or world operation and a retry
   of the unchanged tick.
+- A caller MUST NOT authorize LLM fallback by substring-matching the aggregate
+  public `RuntimeError`: one tick may contain a provider failure and unrelated
+  processor failures. Until public failures preserve structured members, an
+  automated fallback requires an independent boundary that establishes the
+  provider was the only failure.
 - Command-gate token costs are admission estimates and MUST NOT be represented
   as measured LLM token usage or provider spend.
 - Contract tests: `tests/core/test_async_world_error_propagation.py`

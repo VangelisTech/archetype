@@ -227,7 +227,8 @@ Source: [`examples/05_llm_agents.py`](https://github.com/VangelisTech/archetype/
 - **Provider policy**: the injected OpenAI provider has explicit timeout and retry bounds
 - **Pattern**: `ArchetypeRuntime` keeps the script surface to `world.spawn(...)`, `world.run(...)`, and `world.query(...)`
 
-Requires an OpenAI API key (or any provider via `daft.set_provider()`).
+Requires an OpenAI API key. Provider settings are injected into
+`ThinkProcessor` explicitly instead of being read from ambient configuration.
 
 ---
 
@@ -246,6 +247,7 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 - **Components**: `Trajectory` (JSON-encoded turns), `Label` (evaluation result)
 - **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
 - **Resources**: `SamplingConfig`, `LabelingConfig` staged on `runtime.world(..., resources=[...])`
+- **Provider policy**: LLM labeling injects an OpenAI provider with explicit timeout and retry bounds; without credentials, that processor is omitted
 - **Fork-based comparison**: Clone a world with `world.fork(...)` and run an independent branch
 
 ---

@@ -28,6 +28,7 @@ from typing import Any
 
 import daft
 from daft import DataFrame, col
+from daft.ai.openai.provider import OpenAIProvider
 from daft.functions import dense_rank
 
 from archetype import ArchetypeRuntime
@@ -262,6 +263,9 @@ class LabelingProcessor(AsyncProcessor):
     components = (SessionTrajectory, Label)
     priority = 20
 
+    def __init__(self, provider: OpenAIProvider) -> None:
+        self._provider = provider
+
     async def process(
         self, df: DataFrame, resources: Resources | None = None, **kwargs: Any
     ) -> DataFrame:
@@ -300,6 +304,7 @@ class LabelingProcessor(AsyncProcessor):
 
         llm_col = prompt(
             eval_prompt,
+            provider=self._provider,
             model=config.model,
             max_output_tokens=config.max_output_tokens,
         )
@@ -531,6 +536,9 @@ def make_trajectories() -> list[SessionTrajectory]:
 
 async def main():
     has_openai_key = bool(os.getenv("OPENAI_API_KEY"))
+    labeling_processor = (
+        LabelingProcessor(OpenAIProvider(timeout=30.0, max_retries=2)) if has_openai_key else None
+    )
 
     trajectories = make_trajectories()
     print(f"Created {len(trajectories)} synthetic trajectories\n")
@@ -543,7 +551,7 @@ async def main():
             storage=storage,
             processors=[
                 SamplingProcessor(),
-                *([LabelingProcessor()] if has_openai_key else []),
+                *([labeling_processor] if labeling_processor is not None else []),
                 ScoringProcessor(),
             ],
             resources=[SamplingConfig(min_turns=3), LabelingConfig(model="gpt-5-mini")],

@@ -311,6 +311,11 @@ commits no world rows, but a provider may already have served or billed some
 requests. Bound retries and make repeated calls safe; use an explicit
 deterministic fallback when the simulation must continue without the provider.
 
+**Parsing the aggregate step error to trigger fallback.** One public
+`RuntimeError` can join a provider timeout with an unrelated processor bug.
+Substring matching that message can hide the bug. Preserve the failure unless
+an independent boundary establishes that the provider was the only cause.
+
 **Trying to migrate an entity from `process()`.** A processor's component
 declaration only decides which existing signatures it matches. Use
 `world.add_components()` or `world.remove_components()` between steps to move

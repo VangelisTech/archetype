@@ -562,7 +562,13 @@ timeout or rate-limit error therefore follows the ordinary processor failure
 contract: the whole tick fails and no world rows append. `AsyncWorld.step()`
 aggregates per-table compute failures into a `RuntimeError`; the provider's
 exception type does not cross that public boundary, although its detail is
-included in the aggregate message.
+included in the aggregate message. That message may also contain unrelated
+processor failures, so it is evidence for diagnosis, not a safe fallback
+classifier. Never authorize fallback by substring-matching it. Until the
+structured public failure contract tracked in
+[Archetype #444](https://github.com/VangelisTech/archetype/issues/444) lands,
+fallback requires an independent boundary that establishes the provider was
+the only failure.
 
 The provider side is not rolled back. Some row calls may already have
 completed or incurred cost before another row fails, and retrying the tick may

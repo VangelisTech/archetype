@@ -37,6 +37,33 @@ _BEGINNER_EXAMPLES = (
     Path("examples/00_quickstart.py"),
     Path("examples/simulation_script.py"),
 )
+_LLM_EXAMPLES = (
+    Path("examples/05_llm_agents.py"),
+    Path("examples/06_trajectory_analysis.py"),
+)
+
+
+def _direct_call_name(node: ast.Call) -> str | None:
+    return node.func.id if isinstance(node.func, ast.Name) else None
+
+
+def _llm_policy_violations(path: Path) -> list[str]:
+    violations: list[str] = []
+    tree = ast.parse(path.read_text(), filename=str(path))
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _direct_call_name(node)
+        keywords = {keyword.arg for keyword in node.keywords}
+        if call_name == "prompt" and "provider" not in keywords:
+            violations.append(f"{path}:{node.lineno} prompt() has no explicit provider")
+        elif call_name == "OpenAIProvider" and not {"timeout", "max_retries"} <= keywords:
+            violations.append(
+                f"{path}:{node.lineno} OpenAIProvider() has no bounded attempt policy"
+            )
+
+    return violations
 
 
 def test_numeric_command_type_claims_match_the_enum() -> None:
@@ -173,3 +200,10 @@ def test_quickstart_variants_stage_initial_state_before_running() -> None:
         run = section.find("world.run(steps=3)", spawn)
         assert -1 not in (spawn, step, run), f"{name} quickstart lifecycle is incomplete"
         assert spawn < step < run, f"{name} quickstart must persist spawns before its run"
+
+
+def test_llm_examples_use_explicit_bounded_providers() -> None:
+    """Reference prompts never inherit a provider's ambient retry policy."""
+    violations = [violation for path in _LLM_EXAMPLES for violation in _llm_policy_violations(path)]
+
+    assert not violations, "unbounded LLM examples:\n" + "\n".join(violations)

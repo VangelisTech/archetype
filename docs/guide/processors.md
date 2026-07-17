@@ -169,7 +169,8 @@ the simulation's perspective, use provider idempotency controls when available,
 and never treat a tick retry as exactly-once delivery to an external service.
 
 For a deterministic whole-tick fallback, replace the failing processor and
-retry the unchanged tick explicitly:
+retry the unchanged tick explicitly. Keep that policy separate from error
+classification:
 
 ```python
 from daft import lit
@@ -182,18 +183,9 @@ class FallbackThought(AsyncProcessor):
         return df.with_column("agent__last_thought", lit("provider_unavailable"))
 
 
-def is_recoverable_provider_failure(error: RuntimeError) -> bool:
-    detail = str(error).lower()
-    return "timed out" in detail or "error code: 429" in detail
-
-
-try:
-    await world.step()
-except RuntimeError as error:
-    # The public step boundary aggregates per-table compute failures.
-    # Re-raise processor bugs instead of silently converting them to fallback.
-    if not is_recoverable_provider_failure(error):
-        raise
+async def retry_with_confirmed_fallback() -> None:
+    # Invoke only after an independent decision establishes that the failed
+    # tick contained no failure other than the provider outage.
     await world.remove_processor(Think)
     await world.add_processor(FallbackThought())
     await world.step()  # retries the same tick without another model request
@@ -201,8 +193,15 @@ except RuntimeError as error:
 
 The public step boundary currently aggregates table failures into a
 `RuntimeError` whose detail includes the provider error; provider exception
-classes do not reach this caller directly. Classify only the failures your
-application has chosen to recover from and re-raise everything else.
+classes do not reach this caller directly. One aggregate can contain both a
+provider timeout and an unrelated processor bug. Do not parse or substring
+match `str(error)` to authorize fallback: doing so can hide the other failure.
+Let the step error propagate unless an independent boundary can establish that
+the provider was the only failure—for example, an isolated provider-only
+operation reviewed by an operator or guarded by application-specific evidence.
+Structured public processor failures are tracked in
+[Archetype #444](https://github.com/VangelisTech/archetype/issues/444); once
+they exist, callers can classify every member without relying on message text.
 
 Persist a source/status field when downstream logic must distinguish model
 output from fallback state. Keep the fallback deterministic: do not introduce
