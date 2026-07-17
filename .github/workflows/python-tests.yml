@@ -45,14 +45,23 @@ jobs:
       - name: Run CI gate (lint + lock-check + tests with coverage)
         run: make ci
 
+      # fail_ci_if_error must stay true: with it false, this step spent its
+      # whole life green while uploading nothing (no CODECOV_TOKEN secret
+      # existed). Skips: merge groups (synthetic commits carry no coverage
+      # signal, and a Codecov hiccup must not block the queue) and fork PRs
+      # (GitHub withholds secrets there, so the upload can only fail).
       - name: Upload coverage to Codecov
-        if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v4
+        if: >-
+          matrix.python-version == '3.12' &&
+          github.event_name != 'merge_group' &&
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
           flags: unittests
           name: archetype-coverage
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
   evals:
