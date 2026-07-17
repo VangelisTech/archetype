@@ -22,7 +22,7 @@ from typing import NoReturn
 from fastapi import HTTPException
 
 from archetype.app.auth.errors import GuardrailError
-from archetype.app.errors import ConflictError, WorldNotFoundError
+from archetype.app.errors import AvailabilityError, ConflictError, WorldNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,8 @@ def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     if isinstance(exc, ConflictError):
         raise HTTPException(status_code=409, detail=exc.public_detail) from None
+    if isinstance(exc, AvailabilityError):
+        raise HTTPException(status_code=503, detail=exc.public_detail) from None
     if isinstance(exc, ValueError):
         status_code = 409 if conflict else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from None

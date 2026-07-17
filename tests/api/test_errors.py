@@ -19,7 +19,8 @@ from archetype.app._catalog import (
     ClaimPendingError,
     SqliteControlCatalog,
 )
-from archetype.app.errors import ConflictError
+from archetype.app.audit_log import AuditBackpressureError
+from archetype.app.errors import AvailabilityError, ConflictError
 
 
 @pytest.mark.parametrize(
@@ -53,6 +54,29 @@ def test_conflict_contract_defaults_to_a_safe_public_detail() -> None:
 
     assert raised.value.status_code == 409
     assert raised.value.detail == "Request conflicts with existing state"
+
+
+def test_audit_backpressure_maps_through_public_availability_contract() -> None:
+    private_detail = "audit flush failed for /srv/private/audit"
+    error = AuditBackpressureError(private_detail)
+
+    assert isinstance(error, AvailabilityError)
+    assert isinstance(error, RuntimeError)
+    assert str(error) == private_detail
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "Audit log is temporarily unavailable"
+    assert "/srv/private" not in raised.value.detail
+
+
+def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(AvailabilityError("private dependency failure"))
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "Service is temporarily unavailable"
 
 
 def test_catalog_schema_mismatch_remains_an_internal_error() -> None:
