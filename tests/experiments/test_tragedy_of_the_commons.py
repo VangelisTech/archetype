@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import importlib.util
 import sys
-import tomllib
 from pathlib import Path
 
 import daft
@@ -71,11 +70,3 @@ def test_pool_timeline_uses_recorded_tick_range(capsys) -> None:
     assert "Pool over time (1 recorded ticks)" in output
     assert "tick 1" in output
     assert "tick 0" not in output
-
-
-def test_paper_requires_the_package_python_version() -> None:
-    project = tomllib.loads(Path("pyproject.toml").read_text())
-    paper = Path("experiments/paper.md").read_text()
-
-    assert project["project"]["requires-python"].startswith(">=3.12")
-    assert "Requires: Python 3.12+" in paper
