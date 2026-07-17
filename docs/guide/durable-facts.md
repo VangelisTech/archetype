@@ -134,8 +134,9 @@ finite score — and empty outcome sets fail closed.
 
 **Receipts are evidence, never authority.** A receipt carries no authority
 fields — no accepted, no promote, no approved, no allowed_next_action —
-enforced by the spec-contract eval suite. A PASS means one grader passed
-under one pinned contract; the layer above owns what that means.
+enforced by the `spec.receipt_authority_firewall` repository check. A PASS
+means one grader passed under one pinned contract; the layer above owns what
+that means.
 
 ## 8. Typed Iceberg fact tables
 
