@@ -1148,13 +1148,11 @@ class CommandService:
                 components = self._hydrate_components(payload.get("components", []))
                 entity_id = payload.get("entity_id")
                 if entity_id is not None:
-                    # Deferred spawn with reserved id — register directly
-                    # on the world so the pre-reserved ID is honored.
-                    from archetype.core.aio import AsyncWorld
-
-                    world = self._worlds.get_world(UUID(str(world_id)))
-                    if isinstance(world, AsyncWorld):
-                        await world._register_entity(_parse_entity_id(entity_id), components)
+                    await self._mutations.spawn_with_reserved_id(
+                        world_id,
+                        _parse_entity_id(entity_id),
+                        components,
+                    )
                 else:
                     await self._mutations.create_entity(world_id, components)
 

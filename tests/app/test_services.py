@@ -3,7 +3,10 @@
 
 """Tests for service container, command service, simulation service, world service."""
 
+import asyncio
+
 import pytest
+from uuid_utils import uuid7
 
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.broker import CommandBroker
@@ -122,6 +125,62 @@ class TestWorldService:
             assert len(worlds) == 1
             assert worlds[0].world_id == world.world_id
         finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_create_preserves_original_storage(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            world_id = uuid7()
+            original = StorageConfig(uri=str(tmp_path / "original"), namespace="first")
+            replacement = StorageConfig(uri=str(tmp_path / "replacement"), namespace="second")
+
+            first = await container.world_service.create_world(
+                WorldConfig(world_id=world_id, name="original"), original
+            )
+            repeated = await container.world_service.create_world(
+                WorldConfig(world_id=world_id, name="replacement"), replacement
+            )
+
+            assert repeated is first
+            assert container.world_service.storage_record(world_id) == (original, None)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_idempotent_create_waits_for_registration_and_fencing(
+        self, tmp_path, monkeypatch
+    ):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="create_race")
+        catalog = container.storage_service.get_control_catalog(storage)
+        register_started = asyncio.Event()
+        allow_registration = asyncio.Event()
+        real_register = catalog.register_world
+
+        async def blocked_register(record):
+            register_started.set()
+            await allow_registration.wait()
+            await real_register(record)
+
+        monkeypatch.setattr(catalog, "register_world", blocked_register)
+        config = WorldConfig(world_id=uuid7(), name="single-flight-create")
+        try:
+            first = asyncio.create_task(container.world_service.create_world(config, storage))
+            await asyncio.wait_for(register_started.wait(), timeout=2)
+
+            retry = asyncio.create_task(container.world_service.create_world(config, storage))
+            await asyncio.sleep(0)
+            returned_before_registration = retry.done()
+
+            allow_registration.set()
+            first_world, retry_world = await asyncio.gather(first, retry)
+
+            assert not returned_before_registration
+            assert retry_world is first_world
+            assert retry_world.commit_coordinator is not None
+        finally:
+            allow_registration.set()
             await container.shutdown()
 
     @pytest.mark.asyncio
