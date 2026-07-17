@@ -166,6 +166,13 @@ view and may ingest the same source under its new identity. Inheriting ancestor
 facts without a fact-time boundary would incorrectly expose facts added to the
 ancestor after the fork.
 
+For dataset tables, this envelope describes storage ownership and write
+identity; it is not dataset episode identity or original execution provenance.
+Dataset payloads retain their natural keys and optional source-runtime slice as
+defined by the [Dataset and Evaluation Ontology](dataset-eval-ontology.md).
+An ingestion world's `world_id` / `run_id` MUST NOT be presented as the runtime
+that originally produced an imported episode.
+
 Each logical name maps to `facts__<table_name>` in the same catalog and
 namespace as the world. The remaining columns are the domain schema. Schema
 drift fails before append; fact tables do not silently widen or coerce.

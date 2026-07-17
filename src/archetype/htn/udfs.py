@@ -216,6 +216,8 @@ def apply_effect(
     status: str,
     fail_reason: str,
     pre_state_sig: str,
+    depth: int,
+    max_depth: int,
     ready_kind: str,
     ready_node_id: int,
     ready_op_name: str,
@@ -227,7 +229,8 @@ def apply_effect(
 ) -> dict:
     """Guarded, self-recording STRIPS application for the ready node (Inv HTN-V2.3/2.4).
 
-    Acts ONLY when the branch is live and its ready node is a PRIMITIVE. Re-checks
+    Enforces the mandatory depth cap before any mutation, then acts ONLY when
+    the branch is live and its ready node is a PRIMITIVE. Re-checks
     applicability against the CURRENT (pre-mutation) atoms in-row — never trusting a
     possibly-stale ``applicable`` column. On success: records the witness ``pre_state_sig``
     from the pre-mutation atoms, appends the plan step (``seq = len(plan)`` — derived, so it
@@ -245,6 +248,8 @@ def apply_effect(
         "fail_reason": fail_reason,
         "applicable": False,
     }
+    if status == "live" and depth > max_depth:
+        return {**unchanged, "status": "failed", "fail_reason": "depth_exceeded"}
     if ready_kind != "primitive" or status != "live":
         return unchanged
 

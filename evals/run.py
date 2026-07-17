@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 
 from evals.harness import EvalHarness
 from evals.suites import capability, idempotency, poison_command, regression, spec_contracts
@@ -24,6 +25,70 @@ from evals.types import TaskResult
 
 REQUIRED_SUITES = frozenset({"regression", "spec", "idempotency"})
 KNOWN_SUITES = ("regression", "spec", "idempotency", "capability")
+
+
+class _ExpectedEvalNoiseFilter:
+    """Drop only records produced by intentional adversarial eval inputs."""
+
+    _NOOP_COMMAND_TYPES = frozenset({"message", "query_world", "custom"})
+    _RESERVED_SPAWN_PREFIX = "Entity "
+    _RESERVED_SPAWN_SUFFIX = (
+        " is already registered. Use update_entity to change component values on a live entity."
+    )
+
+    @classmethod
+    def _is_expected_apply_failure(cls, record: logging.LogRecord) -> bool:
+        if not record.exc_info:
+            return False
+        error = record.exc_info[1]
+        if isinstance(error, KeyError):
+            return error.args == ("entity_id",)
+        if not isinstance(error, ValueError):
+            return False
+        detail = str(error)
+        if (
+            "requires a 'type' key" in detail
+            or detail == "Component type 'TotallyFakeComponent' not found."
+        ):
+            return True
+        if not (
+            detail.startswith(cls._RESERVED_SPAWN_PREFIX)
+            and detail.endswith(cls._RESERVED_SPAWN_SUFFIX)
+        ):
+            return False
+        entity_id = detail[len(cls._RESERVED_SPAWN_PREFIX) : -len(cls._RESERVED_SPAWN_SUFFIX)]
+        return entity_id.isdigit()
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        if record.name == "archetype.app.command_service":
+            if message.startswith("Failed to apply command "):
+                return not self._is_expected_apply_failure(record)
+            prefix = "Unhandled command type in drain: "
+            if message.startswith(prefix):
+                return message.removeprefix(prefix) not in self._NOOP_COMMAND_TYPES
+        if record.name == "archetype.core.aio.async_world":
+            return "Entity Removal Failed: No entity:" not in message
+        return True
+
+
+def _configure_eval_logging() -> None:
+    """Filter expected adversarial noise unless a host configured logging.
+
+    Poison-command tasks deliberately exercise failures that the command
+    drain converts into graded outcomes.  Without an application-owned
+    handler, Python's ``lastResort`` handler prints those expected records as
+    tracebacks.  The eval CLI is the application boundary, so it owns a
+    filtered package sink while leaving handlers configured on the package or
+    an ancestor alone. Unexpected records still reach the host's sink.
+    """
+    package_logger = logging.getLogger("archetype")
+    if package_logger.hasHandlers():
+        return
+    handler = logging.StreamHandler()
+    handler.addFilter(_ExpectedEvalNoiseFilter())
+    package_logger.addHandler(handler)
+    package_logger.propagate = False
 
 
 def _positive_int(value: str) -> int:
@@ -95,6 +160,7 @@ def print_report(results: list[TaskResult]) -> None:
 
 
 def main() -> int:
+    _configure_eval_logging()
     parser = argparse.ArgumentParser(description="Run archetype evals")
     parser.add_argument("--out", default=None, help="Write JSON results to file")
     parser.add_argument("--suite", choices=KNOWN_SUITES, default=None)

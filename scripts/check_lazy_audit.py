@@ -59,7 +59,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -69,13 +68,7 @@ ROOTS: tuple[str, ...] = ("src",)
 ALLOWLIST_FILENAME = "lazy_audit.toml"
 SELF_RELATIVE = "scripts/check_lazy_audit.py"
 
-# Match attribute-style calls only. Whitespace before the dot avoids hits on
-# e.g. ``module.collect(`` where ``collect`` is a free function in another
-# package — the audit is about chained DataFrame methods, not arbitrary names.
-PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("collect", re.compile(r"\.collect\s*\(")),
-    ("to_pylist", re.compile(r"\.to_pylist\s*\(")),
-)
+_MATERIALIZATION_METHODS = frozenset({"collect", "to_pylist"})
 
 
 @dataclass(frozen=True)
@@ -144,10 +137,7 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     body up to and including the last line, so callers can do a simple
     ``line in line_to_params`` check.
     """
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return {}
+    tree = ast.parse(source)
 
     line_to_params: dict[int, frozenset[str]] = {}
 
@@ -158,9 +148,7 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
             continue
 
         # Collect parameter names (skip 'self' — it is not a Series param).
-        params: frozenset[str] = frozenset(
-            a.arg for a in node.args.args if a.arg != "self"
-        )
+        params: frozenset[str] = frozenset(a.arg for a in node.args.args if a.arg != "self")
         if not params:
             continue
 
@@ -180,54 +168,46 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     return line_to_params
 
 
-def _call_receiver_name(source_line: str) -> str | None:
-    """Heuristically extract the receiver name from a line like ``foo.to_pylist()``.
-
-    Returns the bare name before the last ``.method(`` or None if ambiguous.
-    This is good enough for the common ``param.to_pylist()`` pattern.
-    """
-    # Strip leading whitespace and find last occurrence of ``<name>.to_pylist``
-    # or ``<name>.collect``.
-    m = re.search(r"\b(\w+)\.(to_pylist|collect)\s*\(", source_line)
-    if m:
-        return m.group(1)
-    return None
-
-
 def _scan_file(path: Path, rel: str) -> list[Site]:
-    sites: list[Site] = []
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return sites
+        return []
 
-    # Build batch-UDF param map once per file (AST parse).
+    tree = ast.parse(text)
+
     batch_line_params = _collect_batch_udf_param_lines(text)
-
     lines = text.splitlines()
-    for n, raw in enumerate(lines, start=1):
-        stripped = raw.lstrip()
-        if stripped.startswith("#"):
+    sites: list[Site] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        for method, pat in PATTERNS:
-            if not pat.search(raw):
-                continue
-            # Determine if this is a sanctioned UDF-boundary access.
-            sanctioned = False
-            if method == "to_pylist" and n in batch_line_params:
-                receiver = _call_receiver_name(raw)
-                if receiver and receiver in batch_line_params[n]:
-                    sanctioned = True
-            sites.append(
-                Site(
-                    path=rel,
-                    line=n,
-                    method=method,
-                    snippet=stripped,
-                    sanctioned=sanctioned,
-                )
+        method = node.func.attr
+        if method not in _MATERIALIZATION_METHODS:
+            continue
+        method_line = node.func.end_lineno or node.lineno
+        key = (method_line, method)
+        if key in seen:
+            continue
+        seen.add(key)
+        receiver = node.func.value
+        sanctioned = (
+            method == "to_pylist"
+            and method_line in batch_line_params
+            and isinstance(receiver, ast.Name)
+            and receiver.id in batch_line_params[method_line]
+        )
+        sites.append(
+            Site(
+                path=rel,
+                line=method_line,
+                method=method,
+                snippet=lines[method_line - 1].lstrip(),
+                sanctioned=sanctioned,
             )
-    return sites
+        )
+    return sorted(sites, key=lambda site: (site.line, site.method))
 
 
 def scan(root: Path) -> list[Site]:
@@ -393,9 +373,7 @@ def main() -> int:
         )
 
     if not (new_sites or stale_entries or weak_reasons):
-        print(
-            f"lazy audit: {len(audited_sites)} audited site(s), all accounted for."
-        )
+        print(f"lazy audit: {len(audited_sites)} audited site(s), all accounted for.")
         return 0
 
     print(STERN_HEADER, file=sys.stderr)

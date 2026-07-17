@@ -51,12 +51,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
 
 import pyarrow as pa
 
+from archetype._storage_uri import local_storage_path, normalized_storage_uri
+from archetype.app.errors import ConflictError
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,14 @@ _SCHEMA_VERSION = 3
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
-class CatalogConflictError(RuntimeError):
+class CatalogConflictError(ConflictError):
     """Same identity registered with different content — never silently resolved."""
+
+    public_detail = "Catalog entry conflicts with existing state"
 
 
 class CatalogSchemaMismatchError(RuntimeError):
-    """A stored signature descriptor disagrees with the physical table schema."""
+    """Durable catalog schema is incompatible with this build or physical data."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ def storage_fingerprint(config: StorageConfig) -> str:
         {
             "domain": _DIGEST_DOMAIN,
             "kind": "storage",
-            "uri": _normalized_uri(config),
+            "uri": normalized_storage_uri(str(config.uri)),
             "namespace": config.namespace,
             "backend": config.backend.value,
         },
@@ -150,15 +154,6 @@ def storage_fingerprint(config: StorageConfig) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _normalized_uri(config: StorageConfig) -> str:
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        path = parsed.path if parsed.scheme == "file" else uri
-        return str(Path(path).expanduser().resolve())
-    return uri.rstrip("/")
 
 
 def catalog_path_for(config: StorageConfig) -> Path:
@@ -171,12 +166,15 @@ def catalog_path_for(config: StorageConfig) -> Path:
     (single-host authority is the documented v0.3 limit). The backend is
     part of the identity in both forms, mirroring storage_fingerprint.
     """
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        base = Path(parsed.path if parsed.scheme == "file" else uri).expanduser()
-        return base / config.namespace / f".archetype-catalog-{config.backend.value}.db"
+    namespace = require_safe_namespace(config.namespace)
+    if local_storage_path(str(config.uri)) is not None:
+        base = resolve_local_root(str(config.uri))
+        candidate = base / namespace / f".archetype-catalog-{config.backend.value}.db"
+        if not candidate.resolve().is_relative_to(base):
+            raise ValueError(f"catalog path {candidate} escapes storage root {base} (fail closed)")
+        return candidate
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
+    # The remote-form filename is fingerprint-derived hex, never request data.
     return root / f"{storage_fingerprint(config)[:24]}.db"
 
 
@@ -216,12 +214,16 @@ class ManifestRecord:
     created_at: str
 
 
-class ClaimConflictError(RuntimeError):
+class ClaimConflictError(ConflictError):
     """Same external id claimed/completed with a different payload digest."""
 
+    public_detail = "Claim conflicts with existing state"
 
-class ClaimPendingError(RuntimeError):
+
+class ClaimPendingError(ConflictError):
     """A live lease holds this claim; back off — never blind-retry."""
+
+    public_detail = "Claim is currently pending"
 
 
 @dataclass(frozen=True)
@@ -366,7 +368,8 @@ class SqliteControlCatalog:
             conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[0]
         )
         if version > _SCHEMA_VERSION:
-            raise CatalogConflictError(
+            conn.close()
+            raise CatalogSchemaMismatchError(
                 f"catalog {self.path} has schema_version={version}, "
                 f"this build expects {_SCHEMA_VERSION}"
             )
