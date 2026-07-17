@@ -299,7 +299,7 @@ docs-serve: docs
 docs-lint:
 	@echo "=== Spelling (typos) ==="
 	@if command -v typos >/dev/null 2>&1; then \
-		typos "docs/**/*.md" "docs/**/*.mdx" "*.md" "*.mdx"; \
+		typos --config ./_typos.toml .; \
 	else \
 		echo "typos not installed — install via: cargo install typos-cli"; \
 		echo "  or: brew install typos-cli"; \
@@ -308,9 +308,9 @@ docs-lint:
 	@echo ""
 	@echo "=== Markdown lint ==="
 	@if command -v markdownlint-cli2 >/dev/null 2>&1; then \
-		markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
-	elif npx --yes markdownlint-cli2 --help >/dev/null 2>&1; then \
-		npx --yes markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+		markdownlint-cli2 --config .markdownlint.yaml "docs/**/*.md" "*.md"; \
+	elif command -v npx >/dev/null 2>&1; then \
+		npx --yes markdownlint-cli2 --config .markdownlint.yaml "docs/**/*.md" "*.md"; \
 	else \
 		echo "markdownlint-cli2 not available"; \
 		exit 1; \
@@ -318,7 +318,7 @@ docs-lint:
 	@echo ""
 	@echo "=== Link check (lychee) ==="
 	@if command -v lychee >/dev/null 2>&1; then \
-		lychee --config lychee.toml "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+		lychee --config lychee.toml "docs/" "README.md" "CONTRIBUTING.md" "AGENTS.md"; \
 	else \
 		echo "lychee not installed — install via: cargo install lychee"; \
 		echo "  or: brew install lychee"; \
