@@ -11,12 +11,32 @@ Flow: submit_spawn -> broker queue -> drain_and_apply -> entity materialized wit
 import pytest
 from uuid_utils import uuid7
 
+from archetype.app.auth import guard as guard_state
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+
+_DEFERRED_COMMAND_TYPES = frozenset(
+    {
+        CommandType.SPAWN,
+        CommandType.UPDATE,
+        CommandType.DESPAWN,
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+        CommandType.QUERY_WORLD,
+    }
+)
+_DIRECT_COMMAND_TYPES = tuple(
+    sorted(set(CommandType) - _DEFERRED_COMMAND_TYPES, key=lambda command_type: command_type.value)
+)
 
 
 class CommandFlowMarker(Component):
@@ -160,6 +180,80 @@ async def test_submit_to_unknown_world_rejected():
 
         # Broker holds no orphan queue for the phantom world.
         assert await c.broker.get_pending_count(phantom) == 0
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command_type",
+    _DIRECT_COMMAND_TYPES,
+)
+async def test_direct_only_commands_cannot_enter_tick_deferred_broker(tmp_path, command_type):
+    """Direct operations cannot be acknowledged as tick-deferred queue work."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="lifecycle-submit"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+
+        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
+            await c.command_service.submit(ctx, world.world_id, Command(type=command_type))
+
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
+    """Batch validation happens before any command is gated, audited, or enqueued."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="lifecycle-batch"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        commands = [
+            Command(type=CommandType.CUSTOM),
+            Command(type=CommandType.FORK_WORLD),
+        ]
+
+        with pytest.raises(ValueError, match="no tick-deferred dispatcher"):
+            await c.command_service.submit_batch(ctx, world.world_id, commands)
+
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
+    """All batch members pass authorization before any quota is committed."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"player"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="batch-quota"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        commands = [
+            Command(type=CommandType.CUSTOM),
+            Command(type=CommandType.ADD_PROCESSOR),
+        ]
+
+        with pytest.raises(GuardrailError):
+            await c.command_service.submit_batch(ctx, world.world_id, commands)
+
+        assert guard_state._tick_counters.get(ctx.id, 0) == 0
+        assert guard_state._daily_tokens.get(ctx.id, 0) == 0
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
     finally:
         await c.shutdown()
 

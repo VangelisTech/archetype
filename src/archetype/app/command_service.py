@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype._obs import instrument
-from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.models import (
     Command,
     CommandType,
@@ -83,6 +83,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DEFERRED_COMMAND_TYPES = frozenset(
+    {
+        CommandType.SPAWN,
+        CommandType.UPDATE,
+        CommandType.DESPAWN,
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+        CommandType.QUERY_WORLD,
+    }
+)
+
 
 def _parse_entity_id(value: object) -> int:
     """Decode an entity ID without lossy numeric coercion."""
@@ -131,6 +146,27 @@ class CommandService:
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
+
+    @staticmethod
+    def _gate_batch(cmds: list[Command], ctx: ActorCtx) -> None:
+        """Validate a batch completely, then debit its quota once."""
+        projected_tokens = 0
+        for index, cmd in enumerate(cmds):
+            projected_tokens += guardrail_check(
+                cmd,
+                ctx,
+                projected_count=index,
+                projected_tokens=projected_tokens,
+            )
+        guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
+
+    @staticmethod
+    def _validate_deferred_command(cmd: Command) -> None:
+        if cmd.type not in _DEFERRED_COMMAND_TYPES:
+            raise ValueError(
+                f"{cmd.type.value} is a direct gated operation with no tick-deferred dispatcher; "
+                "it cannot enter the tick-deferred broker"
+            )
 
     def _require_world(self, world_id: str | UUID) -> None:
         """Reject submissions to worlds not in the registry.
@@ -1014,6 +1050,7 @@ class CommandService:
         """Gate, then enqueue for application at cmd.tick."""
         ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
         self._require_world(world_id)
+        self._validate_deferred_command(cmd)
         self._gate(cmd, ctx)
         await self._broker.enqueue(world_id, cmd)
         await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
@@ -1029,7 +1066,8 @@ class CommandService:
         ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
         self._require_world(world_id)
         for cmd in cmds:
-            self._gate(cmd, ctx)
+            self._validate_deferred_command(cmd)
+        self._gate_batch(cmds, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)
         for cmd in cmds:
             await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
