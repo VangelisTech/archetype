@@ -31,6 +31,15 @@ class Component(LanceModel):
     """
 
     @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        if "type" in cls.model_fields:
+            raise TypeError(
+                f"{cls.__name__} declares the reserved Component field 'type'; "
+                "use a domain-specific name such as 'kind' instead"
+            )
+
+    @classmethod
     def get_type_by_name(cls, name: str) -> type["Component"]:
         """Find a Component subclass (at any depth) by its class name.
 
@@ -94,7 +103,7 @@ class Component(LanceModel):
         Unlike `model_dump()`, the result includes the concrete component
         type so `Component.from_dict()` can reconstruct it.
         """
-        return {"type": type(self).__name__, **self.model_dump()}
+        return {**self.model_dump(), "type": type(self).__name__}
 
     @classmethod
     def get_prefix(cls) -> str:

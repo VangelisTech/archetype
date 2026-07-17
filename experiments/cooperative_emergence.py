@@ -30,7 +30,7 @@ from archetype.core.hooks import PostTick
 
 
 class Strategy(Component):
-    type: str = "cooperative"  # cooperative | greedy | conditional
+    kind: str = "cooperative"  # cooperative | greedy | conditional
     energy: float = 100.0
     lifetime_harvest: float = 0.0
 
@@ -68,11 +68,11 @@ class HarvestProcessor(AsyncProcessor):
         return df.with_columns(
             {
                 "strategy__energy": when(
-                    col("strategy__type") == "greedy",
+                    col("strategy__kind") == "greedy",
                     col("strategy__energy") + 15.0,
                 )
                 .when(
-                    col("strategy__type") == "cooperative",
+                    col("strategy__kind") == "cooperative",
                     col("strategy__energy") - 2.0,
                 )
                 .otherwise(
@@ -80,7 +80,7 @@ class HarvestProcessor(AsyncProcessor):
                     col("strategy__energy") - 2.0,
                 ),
                 "strategy__lifetime_harvest": when(
-                    col("strategy__type") == "greedy",
+                    col("strategy__kind") == "greedy",
                     col("strategy__lifetime_harvest") + 20.0,
                 ).otherwise(
                     col("strategy__lifetime_harvest") + 5.0,
@@ -209,9 +209,9 @@ async def main():
 
         # Seed: 4 cooperative + 3 greedy agents + 1 pool
         for _ in range(4):
-            await world.spawn(Strategy(type="cooperative", energy=100.0))
+            await world.spawn(Strategy(kind="cooperative", energy=100.0))
         for _ in range(3):
-            await world.spawn(Strategy(type="greedy", energy=100.0))
+            await world.spawn(Strategy(kind="greedy", energy=100.0))
         pool_id = await world.spawn(Pool(current=1000.0, capacity=1000.0, regen_rate=0.05))
         # Hooks registered before forking are deep-copied onto every fork,
         # including the per-episode forks created by run_rollout.
