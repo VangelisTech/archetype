@@ -23,6 +23,34 @@ directory is durable storage.
 Use `make bench-full` for the three-step profile. A different step count is a
 different benchmark configuration and is not mixed into the same comparison.
 
+### Query latency
+
+`make bench-query` records four materialized `QueryService` read shapes:
+
+- latest-tick state for one exact archetype signature;
+- an early historical tick for that signature;
+- a component-subset union across three matching signatures;
+- the same component union restricted to one entity.
+
+Setup is outside the timed region. Each measurement includes lazy query-plan
+construction and the terminal `collect().count_rows()` materialization, and it
+fails before reporting if the materialized row count differs from the workload
+oracle. The default workload uses 100 entities per signature, three history
+ticks, one warmup, and five measured repetitions.
+
+Query reports use `query-bench-results.json` and
+`.bench_out/query-history/`, separate from the ECS microbenchmark history:
+
+```bash
+make bench-query
+make bench-query-compare
+```
+
+For this suite, `steps_per_sec` means materialized queries per second and
+`entities_per_sec` means materialized entity rows per second. Configuration
+changes such as entity count, history depth, repetitions, warmups, or backend
+produce a different compatibility identity.
+
 ## Compare compatible history
 
 After at least three earlier runs on the same machine and configuration:
@@ -87,6 +115,6 @@ benchmark's identity. `revision` records the measured commit and whether tracked
 files were dirty. This keeps execution receipts useful without treating a new
 world UUID as a new benchmark.
 
-The current ECS suite is still a microbenchmark. End-to-end step scaling, query,
-fork, contention, memory, recovery, and backend-parity coverage remain tracked
-in [issue #141](https://github.com/VangelisTech/archetype/issues/141).
+The current ECS and query suites remain focused benchmarks. End-to-end step
+scaling, fork, contention, memory, recovery, and backend-parity coverage remain
+tracked in [issue #141](https://github.com/VangelisTech/archetype/issues/141).
