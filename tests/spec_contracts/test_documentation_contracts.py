@@ -69,13 +69,18 @@ def test_curated_example_command_roles_follow_permissions() -> None:
         )
 
 
-def test_current_robotics_guides_do_not_reference_extracted_libero_paths() -> None:
+def test_current_robotics_guides_point_to_extracted_libero_harness() -> None:
     """Current guidance must point into robot-evals, not the removed bench tree."""
     guides = (Path("LEARNINGS.md"), _GUIDE_ROOT / "autoresearch.md")
 
-    stale = [str(path) for path in guides if "bench/libero/" in path.read_text()]
+    text_by_path = {path: path.read_text() for path in guides}
+    stale = [str(path) for path, text in text_by_path.items() if "bench/libero/" in text]
+    missing_successor = [
+        str(path) for path, text in text_by_path.items() if "robot-evals" not in text
+    ]
 
     assert not stale, f"current guides reference the extracted bench/libero tree: {stale}"
+    assert not missing_successor, f"current guides omit robot-evals: {missing_successor}"
 
 
 def test_docs_do_not_claim_design_only_messaging_types() -> None:
