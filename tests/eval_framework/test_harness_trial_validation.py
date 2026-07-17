@@ -14,7 +14,7 @@ import pytest
 
 from evals.graders import state_check
 from evals.harness import EvalHarness
-from evals.run import _configure_eval_logging, _ExpectedEvalNoiseFilter
+from evals.run import _configure_eval_logging, _ExpectedEvalNoiseFilter, build_harness
 from evals.run import main as run_main
 from evals.types import GraderResult, TaskResult, TrialResult
 
@@ -38,41 +38,36 @@ def test_harness_init_accepts_one_trial() -> None:
     assert harness.trials == 1
 
 
-def test_pass_at_k_reports_fraction_for_mixed_trials() -> None:
+def test_pass_rate_reports_fraction_for_mixed_trials() -> None:
     result = TaskResult(task_id="mixed", suite="regression")
     result.trials = [_trial(True, 0), _trial(False, 1), _trial(False, 2)]
-    assert result.pass_at_k == pytest.approx(1 / 3)
-    assert result.pass_pow_k == 0.0
+    assert result.pass_rate == pytest.approx(1 / 3)
     assert result.all_passed is False
 
 
-def test_pass_at_k_is_one_when_every_trial_passes() -> None:
+def test_pass_rate_is_one_when_every_trial_passes() -> None:
     result = TaskResult(task_id="all_pass", suite="regression")
     result.trials = [_trial(True, 0), _trial(True, 1)]
-    assert result.pass_at_k == 1.0
-    assert result.pass_pow_k == 1.0
+    assert result.pass_rate == 1.0
+    assert result.all_passed is True
 
 
-def test_pass_at_k_is_zero_when_no_trials_pass() -> None:
+def test_pass_rate_is_zero_when_no_trials_pass() -> None:
     result = TaskResult(task_id="all_fail", suite="regression")
     result.trials = [_trial(False, 0), _trial(False, 1)]
-    assert result.pass_at_k == 0.0
-    assert result.pass_pow_k == 0.0
+    assert result.pass_rate == 0.0
 
 
-def test_pass_pow_k_is_zero_when_any_trial_fails() -> None:
-    result = TaskResult(task_id="flaky", suite="regression")
-    result.trials = [_trial(True, 0), _trial(True, 1), _trial(False, 2)]
-    assert result.pass_pow_k == 0.0
-
-
-def test_to_dict_round_trips_pass_rate_for_mixed_trials() -> None:
+def test_to_dict_uses_literal_trial_metric_names() -> None:
     result = TaskResult(task_id="mixed_dict", suite="regression")
     result.trials = [_trial(True, 0), _trial(False, 1), _trial(False, 2), _trial(True, 3)]
     payload = result.to_dict()
-    assert payload["pass_at_k"] == pytest.approx(0.5)
-    assert payload["pass_pow_k"] == 0.0
+    assert payload["trial_count"] == 4
+    assert payload["pass_rate"] == pytest.approx(0.5)
     assert payload["all_passed"] is False
+    assert "k" not in payload
+    assert "pass_at_k" not in payload
+    assert "pass_pow_k" not in payload
 
 
 def test_harness_run_records_grader_outcomes_across_trials() -> None:
@@ -86,9 +81,9 @@ def test_harness_run_records_grader_outcomes_across_trials() -> None:
 
     harness.add("flaky_task", suite="regression", fn=task)
     [result] = harness.run()
-    assert result.k == 2
-    assert result.pass_at_k == pytest.approx(0.5)
-    assert result.pass_pow_k == 0.0
+    assert result.trial_count == 2
+    assert result.pass_rate == pytest.approx(0.5)
+    assert result.all_passed is False
 
 
 def test_harness_run_fails_trial_without_grader_evidence() -> None:
@@ -102,8 +97,19 @@ def test_harness_run_fails_trial_without_grader_evidence() -> None:
     assert trial.score == 0.0
     assert trial.grader_results == []
     assert trial.error == "task 'empty_task' produced no grader evidence"
-    assert result.pass_at_k == 0.0
+    assert result.pass_rate == 0.0
     assert result.all_passed is False
+
+
+def test_registered_tasks_expose_an_immutable_inventory() -> None:
+    harness = EvalHarness()
+
+    def task() -> list[GraderResult]:
+        return []
+
+    harness.add("visible", suite="regression", fn=task, desc="listed task")
+
+    assert harness.registered_tasks == (("visible", "regression", task, "listed task"),)
 
 
 def test_harness_run_preserves_multi_grader_aggregation() -> None:
@@ -160,6 +166,21 @@ def test_run_cli_rejects_negative_trials() -> None:
 def test_run_cli_rejects_non_integer_trials() -> None:
     proc = _run_cli("--trials", "abc")
     assert proc.returncode != 0
+
+
+def test_run_cli_lists_the_live_registry_without_executing_tasks() -> None:
+    proc = _run_cli("--list", "--suite", "capability")
+
+    expected = [
+        task_id
+        for task_id, suite, _fn, _desc in build_harness().registered_tasks
+        if suite == "capability"
+    ]
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.startswith("suite\ttask\tdescription\n")
+    assert "EVAL RESULTS" not in proc.stdout
+    assert expected
+    assert all(f"capability\t{task_id}\t" in proc.stdout for task_id in expected)
 
 
 def test_run_cli_fails_required_task_without_grader_evidence(

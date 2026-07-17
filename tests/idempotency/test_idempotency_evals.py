@@ -18,7 +18,9 @@ from evals.suites.idempotency_process import _wait_for_markers
 
 def test_idempotency_eval_suite_is_registered_and_traceable() -> None:
     harness = build_harness(trials=1)
-    registered = {task_id for task_id, suite, _, _ in harness._tasks if suite == idempotency.SUITE}
+    registered = {
+        task_id for task_id, suite, _, _ in harness.registered_tasks if suite == idempotency.SUITE
+    }
     mapped = {case.task_id for case in idempotency.IDEMPOTENCY_CASES}
 
     assert registered == mapped | {"idempotency.manifest_traceability"}

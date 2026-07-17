@@ -1,16 +1,15 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run all evals and report results.
+"""Run repository verification scenarios and report their outcomes.
 
 Usage:
-    python -m evals.run [--out results.json] [--suite regression|spec|idempotency|capability]
-        [--trials 3]
+    python -m evals.run [--out results.json] [--suite SUITE] [--trials 3]
+    python -m evals.run --list [--suite SUITE]
 
-Reports pass@k (fraction of k trials that passed) and pass^k (1.0 only
-when every one of the k trials passed, 0.0 otherwise) per task, grouped
-by suite.  Exit code 0 only when at least one task ran, all regression
-tasks pass, and no capability tasks error out.
+Reports the trial count, pass rate, average grader score, and whether every
+trial passed. Required groups fail on a missed grader; the advisory capability
+group fails only when a scenario crashes.
 """
 
 from __future__ import annotations
@@ -136,8 +135,11 @@ def print_report(results: list[TaskResult]) -> None:
         for t in tasks:
             icon = "PASS" if t.all_passed else "FAIL"
             line = f"    [{icon}] {t.task_id}"
-            if t.k > 1:
-                line += f"  (pass@{t.k}={t.pass_at_k:.0%}, pass^{t.k}={t.pass_pow_k:.0%})"
+            if t.trial_count > 1:
+                line += (
+                    f"  (trials={t.trial_count}, pass_rate={t.pass_rate:.0%}, "
+                    f"all_passed={str(t.all_passed).lower()})"
+                )
             line += f"  score={t.avg_score:.2f}"
 
             # Show failed graders
@@ -159,20 +161,46 @@ def print_report(results: list[TaskResult]) -> None:
     print("=" * 72)
 
 
+def print_task_list(harness: EvalHarness, *, suite_filter: str | None = None) -> int:
+    """Print the live task registry without executing it."""
+    tasks = [
+        registration
+        for registration in harness.registered_tasks
+        if suite_filter is None or registration[1] == suite_filter
+    ]
+    if not tasks:
+        print("No registered tasks match the requested suite.")
+        return 1
+
+    print("suite\ttask\tdescription")
+    for task_id, suite, _fn, desc in tasks:
+        print(f"{suite}\t{task_id}\t{desc}")
+    return 0
+
+
 def main() -> int:
-    _configure_eval_logging()
-    parser = argparse.ArgumentParser(description="Run archetype evals")
+    parser = argparse.ArgumentParser(description="Run Archetype repository checks")
     parser.add_argument("--out", default=None, help="Write JSON results to file")
     parser.add_argument("--suite", choices=KNOWN_SUITES, default=None)
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        dest="list_tasks",
+        help="List registered tasks without executing them",
+    )
     parser.add_argument(
         "--trials",
         type=_positive_int,
         default=1,
-        help="Trials per task (for pass@k); must be >= 1",
+        help="Repeated executions per task; must be >= 1",
     )
     args = parser.parse_args()
 
     harness = build_harness(trials=args.trials)
+    if args.list_tasks:
+        return print_task_list(harness, suite_filter=args.suite)
+
+    _configure_eval_logging()
     results = harness.run(suite_filter=args.suite)
 
     print_report(results)

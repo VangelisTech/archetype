@@ -304,7 +304,7 @@ def contract_map() -> list[dict[str, str]]:
 def _registered_tasks() -> list[tuple[str, str, object, str]]:
     harness = EvalHarness()
     register(harness)
-    return list(harness._tasks)
+    return list(harness.registered_tasks)
 
 
 def _registered_task_ids() -> set[str]:

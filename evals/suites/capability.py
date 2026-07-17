@@ -1,14 +1,10 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Capability eval suite: tasks that define a hill to climb.
+"""Broader end-to-end repository scenarios with advisory grader outcomes.
 
-These measure what the system can do well and where it struggles.
-Pass rates may start low.  As they improve, tasks can graduate to
-the regression suite.
-
-Graders use outcome verification and partial credit (state_check)
-to capture nuance in multi-component tasks.
+The CLI reports failed checks in this group but reserves a nonzero exit for
+scenario crashes. This is an execution policy, not a product capability model.
 """
 
 from __future__ import annotations

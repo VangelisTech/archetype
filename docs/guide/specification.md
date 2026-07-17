@@ -1015,15 +1015,15 @@ all of the following:
 - stable cross-archetype execution without world bookkeeping corruption
 - advisory hook isolation, whole-tick processor failure atomicity, and
   signature-aware matching across explicit component migrations
-  (`processor_adversarial` capability eval)
+  (`processor_adversarial` repository check)
 - stable reserved-entity spawn semantics through the broker
-- explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
-- exact actor-local quota boundaries and UTC rollover (`quota_boundaries` regression eval)
+- explicit multi-world isolation and fork divergence (`fork_divergence` repository check)
+- exact actor-local quota boundaries and UTC rollover (`quota_boundaries` repository check)
 - live/cold historical-read parity and resumed run continuity
-  (`time_travel_and_run_id` capability eval)
+  (`time_travel_and_run_id` repository check)
 - explicit runtime-vs-world lifetime boundaries
 - lazy single-flight activation, wait-then-close runtime shutdown, handle
-  invalidation, and sync/async handle parity (`runtime_contracts` regression eval)
+  invalidation, and sync/async handle parity (`runtime_contracts` repository check)
 - clear distinction between idempotent and non-idempotent operations
 
 ## Runtime Boundary
