@@ -25,6 +25,9 @@ For RBAC, roles, and audit emission, see [Command Gate](command-gate.md) and [Au
 ## Priority Queue
 
 The broker maintains one priority queue per world, keyed by `str(world_id)`.
+Diagnostic history is also partitioned per world and retained in a bounded
+ring buffer. `max_history` configures the number of recent commands retained
+for each world; it defaults to 50,000.
 
 Commands are ordered by `(tick, priority, seq)`:
 
