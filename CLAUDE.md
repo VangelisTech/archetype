@@ -6,15 +6,22 @@ Read these before doing anything:
 - `LEARNINGS.md` — Daft 0.7.x patterns, UDF rules, serialization. **Mandatory before writing a processor.**
 - `AGENTS.md` — Architecture, service layer, RBAC, conventions, dev workflow.
 
-Skills in `.claude/skills/` are the framework rulebooks. Nothing fires on file paths alone: a skill loads when you invoke it by name or when the agent matches its description to the task at hand. Before editing Python under `src/`, `tests/`, or `examples/`, load the relevant skill — the deterministic footgun gate in CI reviews every PR against the same rules, so skipping them locally just moves the failure to review.
+Skills in `.claude/skills/` are the framework rulebooks. A skill loads when
+you invoke it by name or when the model matches its description to the task.
+For the three Python rulebooks, `paths` frontmatter additionally limits that
+model invocation to Python under `src/`, `tests/`, or `examples/`; it is an
+eligibility fence, not a path-only trigger or a guarantee of invocation.
+Before editing those files, load the relevant skill — the deterministic
+footgun gate in CI reviews every PR against the same rules, so skipping them
+locally just moves the failure to review.
 
 ## Skills index
 
 | Skill | How it loads | What it enforces |
 |-------|--------------|------------------|
-| `daft-patterns` | `/daft-patterns`, or model-invoked for Daft/DataFrame/UDF code | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
-| `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code | Component definitions, Arrow serialization, field conventions |
-| `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code | AsyncProcessor patterns, priority ordering, resource access |
+| `daft-patterns` | `/daft-patterns`, or model-invoked for Daft/DataFrame/UDF code within its configured paths | Daft built-in functions to reach for first, UDF decision tree, lazy DAG rules |
+| `archetype-components` | `/archetype-components`, or model-invoked for Component/schema code within its configured paths | Component definitions, Arrow serialization, field conventions |
+| `archetype-processors` | `/archetype-processors`, or model-invoked for processor/pipeline code within its configured paths | AsyncProcessor patterns, priority ordering, resource access |
 | `footgun-detector` | `/footgun-detector` | Scans the current diff for archetype-specific runtime bugs across three perspectives: actor (code), observed (data), observer (review) |
 
 ## Agents
