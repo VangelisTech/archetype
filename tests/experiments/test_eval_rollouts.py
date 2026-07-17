@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batched control-plane eval contract (bench/libero/eval_run.py).
+"""Batched control-plane eval contract (archetype.experiments.eval_rollouts).
 
 Proves the redesign that replaces the old per-trial-world driver, using the
 in-process scripted env+policy (no Modal, no LIBERO) — the exact same
