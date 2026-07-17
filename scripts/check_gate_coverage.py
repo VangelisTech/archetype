@@ -145,8 +145,25 @@ def check_command_dispositions() -> list[str]:
 
 
 # ── Check 2: error taxonomy ──────────────────────────────────────────────────
+# The whole archetype.app package is walked for Exception subclasses — a
+# hardcoded module list would fail open the moment errors are defined
+# elsewhere (footgun review on PR #407: app/_catalog.py's four exceptions).
 
-APP_ERROR_MODULES = ("archetype.app.errors", "archetype.app.auth.errors")
+# Exceptions that deliberately surface as HTTP 500 for now. Every entry needs
+# a rationale and an issue; a stale entry (class gone or now mapped) fails
+# the audit so the manifest cannot rot.
+INTENTIONAL_UNMAPPED = {
+    "archetype.app._catalog.CatalogConflictError": "conflict mapping tracked in #413",
+    "archetype.app._catalog.CatalogSchemaMismatchError": (
+        "integrity violation; 500 may be correct — decision tracked in #413"
+    ),
+    "archetype.app._catalog.ClaimConflictError": "conflict mapping tracked in #413",
+    "archetype.app._catalog.ClaimPendingError": "conflict/pending mapping tracked in #413",
+    "archetype.app.audit_log.AuditBackpressureError": (
+        "observable backpressure per the durability posture; 503-shaped, "
+        "mapping decision tracked in #413"
+    ),
+}
 
 
 def _mapped_exception_bases() -> tuple[type[BaseException], ...]:
@@ -174,26 +191,51 @@ def _mapped_exception_bases() -> tuple[type[BaseException], ...]:
     return tuple(bases)
 
 
+def _app_exception_classes() -> dict[str, type[Exception]]:
+    """Every Exception subclass defined anywhere in the archetype.app package."""
+    import pkgutil
+
+    import archetype.app as app_pkg
+
+    classes: dict[str, type[Exception]] = {}
+    for module_info in pkgutil.walk_packages(app_pkg.__path__, "archetype.app."):
+        module = importlib.import_module(module_info.name)
+        for obj in vars(module).values():
+            if (
+                isinstance(obj, type)
+                and issubclass(obj, Exception)
+                and obj.__module__ == module_info.name
+            ):
+                classes[f"{obj.__module__}.{obj.__name__}"] = obj
+    return classes
+
+
 def check_error_taxonomy() -> list[str]:
     problems: list[str] = []
     bases = _mapped_exception_bases()
     if not bases:
         return ["could not derive any mapped exception bases from raise_api_error"]
 
-    for module_name in APP_ERROR_MODULES:
-        module = importlib.import_module(module_name)
-        for obj in vars(module).values():
-            if (
-                isinstance(obj, type)
-                and issubclass(obj, Exception)
-                and obj.__module__ == module_name
-                and not issubclass(obj, tuple(bases))
-            ):
-                problems.append(
-                    f"{module_name}.{obj.__name__} is not a subclass of any base "
-                    "raise_api_error maps — it will surface as HTTP 500. Map it "
-                    "in src/archetype/api/errors.py or subclass a mapped base."
-                )
+    app_exceptions = _app_exception_classes()
+    for qualname, cls in sorted(app_exceptions.items()):
+        mapped = issubclass(cls, bases)
+        declared = qualname in INTENTIONAL_UNMAPPED
+        if not mapped and not declared:
+            problems.append(
+                f"{qualname} is not a subclass of any base raise_api_error maps — "
+                "it will surface as HTTP 500. Map it in src/archetype/api/errors.py, "
+                "subclass a mapped base, or declare it in INTENTIONAL_UNMAPPED "
+                "with a rationale and issue."
+            )
+        elif mapped and declared:
+            problems.append(
+                f"{qualname} is declared INTENTIONAL_UNMAPPED but is now mapped — "
+                "remove the stale manifest entry."
+            )
+
+    for qualname in INTENTIONAL_UNMAPPED:
+        if qualname not in app_exceptions:
+            problems.append(f"INTENTIONAL_UNMAPPED names a class that no longer exists: {qualname}")
     return problems
 
 
