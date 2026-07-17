@@ -251,6 +251,20 @@ class RemoteControlCatalog:
     async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
         await self._call("POST", f"/w/{world_id}/claims/{scope_key}/table", {"table_id": table_id})
 
+    async def rearm_claim(
+        self,
+        world_id: str,
+        scope_key: str,
+        claimant: str,
+        commit_token: str,
+    ) -> ClaimRecord:
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/claims/{scope_key}/rearm",
+            {"claimant": claimant, "commit_token": commit_token},
+        )
+        return _claim_from_json(world_id, response.json())
+
     async def complete_claim(
         self, world_id: str, scope_key: str, claimant: str, table_id: str
     ) -> None:

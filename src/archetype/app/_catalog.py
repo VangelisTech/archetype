@@ -485,8 +485,9 @@ class SqliteControlCatalog:
         Returns (outcome, record) where outcome is one of:
         - "acquired": this claimant owns a fresh PENDING claim (new token).
         - "recovered": this claimant took over an expired PENDING claim —
-          the ORIGINAL token is kept so recovery can find an already-
-          appended orphan and complete without re-appending.
+          the original token is kept only long enough to probe for an
+          already-appended orphan. A recovery with no orphan must re-arm
+          the claim with a fresh token before appending.
         - "duplicate": an identical fact is already COMPLETE — the original
           record is the receipt; nothing to do.
         Raises ClaimConflictError on same id + different digest, and
@@ -572,6 +573,57 @@ class SqliteControlCatalog:
                 )
 
         return await self._run(_acquire)
+
+    async def rearm_claim(
+        self,
+        world_id: str,
+        scope_key: str,
+        claimant: str,
+        commit_token: str,
+    ) -> ClaimRecord:
+        """Rotate a recovered, empty claim to a fresh commit identity.
+
+        This is a claimant-checked CAS. Rows appended late by the expired
+        owner retain the old token and can therefore never become visible
+        when the recovered claim completes.
+        """
+
+        def _rearm() -> ClaimRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
+                ).fetchone()
+                if row is None:
+                    raise ClaimConflictError(f"no claim recorded for scope {scope_key}")
+                existing = _claim_from_row(row)
+                if existing.world_id != world_id:
+                    raise ClaimConflictError(
+                        f"claim {scope_key} belongs to world {existing.world_id}, not {world_id}"
+                    )
+                if existing.status != "PENDING":
+                    raise ClaimConflictError(
+                        f"claim {scope_key} is already {existing.status}; refusing to re-arm"
+                    )
+                if existing.claimant != claimant:
+                    raise ClaimPendingError(
+                        f"claim {scope_key} is held by {existing.claimant}; "
+                        "this claimant cannot re-arm it"
+                    )
+                if existing.commit_token == commit_token:
+                    raise ClaimConflictError(
+                        f"claim {scope_key} re-arm must use a fresh commit token"
+                    )
+                conn.execute(
+                    "UPDATE claims SET commit_token=?, table_id=NULL WHERE scope_key=?",
+                    (commit_token, scope_key),
+                )
+                return _claim_from_row(
+                    conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()
+                )
+
+        return await self._run(_rearm)
 
     async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
         """Record where a claim's rows will land, BEFORE the append.
@@ -805,9 +857,10 @@ class SqliteControlCatalog:
 
         Unions tick manifests with COMPLETE fact claims (issue #274): a tick
         may carry one manifest token plus any number of fact tokens. None
-        when the pair has neither manifests nor completed claims AND no
-        fence — an uncoordinated or pre-#273 world whose rows are implicitly
-        visible. A fenced world with nothing published filters everything.
+        only when the pair has neither manifests nor claims AND no fence —
+        an uncoordinated or pre-#273 world whose rows are implicitly visible.
+        A fence or any claim activates filtering; only published manifests
+        and COMPLETE claim tokens are then visible.
         """
 
         def _tokens() -> dict[int, list[str]] | None:
@@ -817,7 +870,7 @@ class SqliteControlCatalog:
                 (world_id, run_id),
             ).fetchone()
             any_claim = conn.execute(
-                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? AND status='COMPLETE' LIMIT 1",
+                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? LIMIT 1",
                 (world_id, run_id),
             ).fetchone()
             if any_manifest is None and any_claim is None:

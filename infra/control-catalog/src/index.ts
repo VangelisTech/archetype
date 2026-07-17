@@ -324,7 +324,7 @@ export class WorldCommitDO implements DurableObject {
         .exec("SELECT 1 FROM manifests WHERE run_id = ? LIMIT 1", run)
         .toArray();
       const anyClaim = this.sql
-        .exec("SELECT 1 FROM claims WHERE run_id = ? AND status = 'COMPLETE' LIMIT 1", run)
+        .exec("SELECT 1 FROM claims WHERE run_id = ? LIMIT 1", run)
         .toArray();
       if (!anyManifest.length && !anyClaim.length) {
         const fence = this.sql.exec("SELECT 1 FROM fence WHERE singleton = 1").toArray();
@@ -411,6 +411,31 @@ export class WorldCommitDO implements DurableObject {
         route[1],
       );
       return json({ ok: true });
+    }
+
+    if (route[0] === "claims" && route.length === 3 && route[2] === "rearm" && method === "POST") {
+      const body = (await request.json()) as { claimant: string; commit_token: string };
+      const rows = this.sql
+        .exec("SELECT * FROM claims WHERE scope_key = ?", route[1])
+        .toArray();
+      if (!rows.length) return conflict("claim_conflict", `no claim for scope ${route[1]}`);
+      const row = rows[0] as Record<string, unknown>;
+      if (row.status !== "PENDING") {
+        return conflict("claim_conflict", `claim ${route[1]} is already ${row.status}`);
+      }
+      if (row.claimant !== body.claimant) {
+        return json({ error: "claim_pending", message: "claim is held by another claimant" }, 423);
+      }
+      if (row.commit_token === body.commit_token) {
+        return conflict("claim_conflict", "re-arm requires a fresh commit token");
+      }
+      this.sql.exec(
+        "UPDATE claims SET commit_token = ?, table_id = NULL WHERE scope_key = ?",
+        body.commit_token,
+        route[1],
+      );
+      const updated = this.sql.exec("SELECT * FROM claims WHERE scope_key = ?", route[1]).toArray();
+      return json(updated[0]);
     }
 
     if (route[0] === "claims" && route.length === 3 && route[2] === "complete" && method === "POST") {
