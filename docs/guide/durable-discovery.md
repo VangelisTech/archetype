@@ -82,7 +82,7 @@ async def open_world_readonly(
 Both operations respect the info-class downgrade: callers get `WorldInfo`,
 never a world handle.
 
-## 4. Cold subset queries
+## 4. Cold queries and signature discovery
 
 `query_components` unions two sources:
 
@@ -107,6 +107,13 @@ df = await container.command_service.query_components(
     storage_config=storage_config,
 )
 ```
+
+`list_signatures` uses the same authority split: it unions the store's
+process-local cache with every durable catalog record. Listing a complete
+Python signature requires the corresponding component classes to be imported;
+records are matched to those classes by full schema fingerprint, never by name
+alone. A missing or drifted definition fails loudly instead of silently
+omitting the persisted archetype.
 
 ## 5. Fail-closed schema check
 

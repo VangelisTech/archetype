@@ -26,6 +26,7 @@ import logging
 from daft import DataFrame, col, lit
 from uuid_utils import UUID
 
+from archetype.app._signature_resolution import resolve_signature_records
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import AsyncQueryManager
@@ -318,9 +319,22 @@ class QueryService:
         self,
         storage_config: StorageConfig | None = None,
     ) -> list[ArchetypeSignature]:
-        """List all archetype signatures in a store."""
-        _config, _store, querier = await self._querier_for(storage_config)
-        return await querier.list_signatures()
+        """List process-local and durably cataloged archetype signatures.
+
+        A store's Python signature registry is only a cache.  A fresh process
+        therefore resolves the control catalog's schema-identified records
+        against imported Component classes, then unions any compatible local
+        entries (including legacy/read-created signatures).
+        """
+        effective_config, _store, querier = await self._querier_for(storage_config)
+        signatures = {
+            Archetype.get_name(signature): signature
+            for signature in await querier.list_signatures()
+        }
+        catalog = self._storage_service.get_control_catalog(effective_config)
+        records = await catalog.list_signatures()
+        signatures.update(resolve_signature_records(records, operation="list signatures"))
+        return [signature for _table_id, signature in sorted(signatures.items())]
 
     async def get_command_history(
         self,

@@ -320,6 +320,15 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
         assert [str(i.world_id) for i in infos] == [world_id]
         info = await c.world_service.open_world_readonly(storage, world_id)
 
+        signatures = await c.query_service.list_signatures(storage)
+        signature_names = {
+            tuple(component.__name__ for component in signature) for signature in signatures
+        }
+        assert {("Score",), ("Flag", "Score")} <= signature_names, (
+            "cold signature discovery must use the durable catalog, not the "
+            "fresh store's empty process-local registry"
+        )
+
         df = await c.query_service.query_components([Score], world_id, str(info.run_id), storage)
         points = sorted(row["score__points"] for row in df.to_pylist())
         assert points == [2.5, 7.5], "subset query must union both archetypes, cold"

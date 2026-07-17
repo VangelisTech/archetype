@@ -321,6 +321,151 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: cold service-layer query correctness
+# ---------------------------------------------------------------------------
+
+
+def task_query_correctness() -> list[GraderResult]:
+    """Gated durable reads remain correct without a live AsyncWorld."""
+    return asyncio.run(_task_query_correctness())
+
+
+async def _task_query_correctness() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_query")
+        admin = ActorCtx(id=uuid7(), roles={"admin"})
+        writer = ServiceContainer()
+        try:
+            info = await writer.command_service.create_world(
+                admin,
+                WorldConfig(name="query-correctness"),
+                storage,
+            )
+            health_only = await writer.command_service.create_entity(
+                admin,
+                info.world_id,
+                [Health(hp=10)],
+            )
+            tagged = await writer.command_service.create_entity(
+                admin,
+                info.world_id,
+                [Health(hp=20), Tag(label="target")],
+            )
+            first_run = await writer.command_service.run(
+                admin,
+                info.world_id,
+                RunConfig(num_steps=1),
+            )
+            await writer.command_service.update_entity(
+                admin,
+                info.world_id,
+                health_only,
+                [Health(hp=11)],
+            )
+            await writer.command_service.run(
+                admin,
+                info.world_id,
+                RunConfig(num_steps=1),
+            )
+            world_id = str(info.world_id)
+            run_id = str(first_run.run_id)
+        finally:
+            try:
+                await writer.shutdown()
+            finally:
+                reset_tick_counters()
+                reset_daily_tokens()
+
+        # A new composition root has no live world object. Reads must cross
+        # the public gate and resolve the durable QueryService path instead.
+        reader = ServiceContainer()
+        viewer = ActorCtx(id=uuid7(), roles={"viewer"})
+        try:
+            cold_reader = not reader.world_service.has_world(world_id)
+            signatures = await reader.command_service.list_signatures(viewer, storage)
+            tick_zero = (
+                await reader.command_service.query_components(
+                    viewer,
+                    [Health],
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[0],
+                )
+            ).to_pylist()
+            selected = (
+                await reader.command_service.query_components(
+                    viewer,
+                    [Health],
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[1],
+                    entity_ids=[health_only],
+                )
+            ).to_pylist()
+            projected = (
+                await reader.command_service.query_archetype(
+                    viewer,
+                    (Health, Tag),
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[0],
+                    components=[Health],
+                )
+            ).to_pylist()
+
+            signature_names = {
+                tuple(component.__name__ for component in signature) for signature in signatures
+            }
+            tick_zero_values = sorted((row["entity_id"], row["health__hp"]) for row in tick_zero)
+            selected_values = [
+                (row["entity_id"], row["tick"], row["health__hp"]) for row in selected
+            ]
+            projection = projected[0] if len(projected) == 1 else {}
+
+            return [
+                exact_match(cold_reader, True, name="no_live_world_shortcut"),
+                exact_match(
+                    tick_zero_values,
+                    [(health_only, 10), (tagged, 20)],
+                    name="subset_union_across_signatures",
+                ),
+                exact_match(
+                    selected_values,
+                    [(health_only, 1, 11)],
+                    name="tick_and_entity_filters",
+                ),
+                state_check(
+                    {
+                        "one_exact_row": len(projected) == 1,
+                        "exact_entity": projection.get("entity_id") == tagged,
+                        "health_projected": projection.get("health__hp") == 20,
+                        "tag_not_projected": "tag__label" not in projection,
+                    },
+                    name="exact_signature_projection",
+                ),
+                state_check(
+                    {
+                        "health_signature": ("Health",) in signature_names,
+                        "health_tag_signature": ("Health", "Tag") in signature_names,
+                    },
+                    name="cold_signature_discovery",
+                ),
+            ]
+        finally:
+            try:
+                await reader.shutdown()
+            finally:
+                reset_tick_counters()
+                reset_daily_tokens()
+
+
+# ---------------------------------------------------------------------------
 # Task: per-tick RBAC quota resets across ticks (bug B1)
 # ---------------------------------------------------------------------------
 
@@ -447,6 +592,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_command_pipeline,
         desc="Submit → broker → step → history + RBAC at service boundary",
+    )
+    harness.add(
+        "query_correctness",
+        suite=SUITE,
+        fn=task_query_correctness,
+        desc="Cold gated component/archetype reads, filters, projection, and discovery",
     )
     harness.add(
         "tick_quota_resets",
