@@ -9,6 +9,12 @@ on:
   # count as satisfied, which would fail open.)
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  # Merge queue: the required review contexts must exist on merge groups.
+  # Both jobs SKIP on merge_group (skipped required checks count as
+  # satisfied) — deliberately fail-open here and only here: the substantive
+  # review binds to the PR head and is enforced before queue entry; the
+  # queue's merge groups revalidate build/test, not review.
+  merge_group:
 
 permissions: {}
 
@@ -19,6 +25,7 @@ concurrency:
 jobs:
   footgun-review:
     name: footgun-review
+    if: github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -221,7 +228,9 @@ jobs:
   review-complete:
     name: review-complete
     needs: footgun-review
-    if: always()
+    # always() so a footgun crash cannot skip-satisfy the gate on PRs;
+    # merge groups skip both jobs (see the trigger comment).
+    if: always() && github.event_name != 'merge_group'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
