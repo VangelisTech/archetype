@@ -337,7 +337,10 @@ One tick MUST follow this order:
 - Component addition and removal are archetype moves.
 - The old signature receives a despawn marker.
 - The new signature receives a spawned row built from the latest visible entity
-  state plus the requested mutation.
+  state plus the requested mutation. Latest visible state is the entity's
+  same-tick staged spawn row when one exists, otherwise its last persisted
+  row; a consumed staged row MUST NOT also materialize under the old
+  signature.
 - When migration materializes into an existing DataFrame, staged spawn rows MUST
   be cast or otherwise normalized to the target schema before concat.
 - Adding already-present components or removing already-absent components SHOULD
@@ -348,17 +351,19 @@ One tick MUST follow this order:
 - Duplicate despawns for the same entity in one tick MUST collapse.
 - Duplicate spawns for the same entity in one tick MUST resolve
   deterministically.
-- The current deterministic contract is last-write-wins by entity ID within the
-  tick.
+- Spawn rows legitimately staged under the same signature resolve
+  last-write-wins by entity ID within the tick.
+- A tick-deferred spawn carrying an explicit reserved entity ID MUST use the
+  guarded `spawn_with_reserved_id` mutation path. Once that ID is registered,
+  a replay is rejected and cannot replace the first staged spawn.
 - Despawn-only signatures MUST still be processed during the next tick, even if
   no active entities remain in that archetype after bookkeeping updates.
 
-CURRENT GAP:
-
-- `AsyncWorld._move_entity()` can currently return an empty row when the old
-  entity is not found. `update_entity()` guards that return, but
-  `add_components()` and `remove_components()` still stage it. Those two paths
-  need an explicit error or no-op contract.
+- `AsyncWorld._move_entity()` returns an empty row only when the entity has
+  neither a staged row nor a persisted row; `update_entity`,
+  `add_components`, and `remove_components` treat that as a logged no-op and
+  stage nothing. Contract tests:
+  `tests/core/test_same_tick_mutation_composition.py`.
 
 ## Lifecycle Hook Contracts
 
@@ -372,6 +377,20 @@ CURRENT GAP:
   mutation path that queues the corresponding mutation.
 
 ## Application Layer Contracts
+
+### Service error taxonomy
+
+- Public cross-service error contracts MUST live in `archetype.app.errors`.
+  Private service implementations subclass those contracts; transport adapters
+  MUST NOT import private implementation modules to classify failures.
+- The REST adapter maps `WorldNotFoundError` to HTTP 404 and `ConflictError` to
+  HTTP 409. Conflict responses expose only the contract's client-safe
+  `public_detail`; internal exception text remains server-side. App services
+  remain transport-agnostic and do not depend on HTTP.
+- Errors without a public client-recovery contract fail closed as HTTP 500.
+  `CatalogSchemaMismatchError` is an integrity failure in this category; its
+  internal detail MUST NOT be exposed to the client. This includes a durable
+  control catalog whose schema version is newer than the running build.
 
 ### StorageService
 
@@ -448,6 +467,10 @@ Idempotency:
 - Direct methods authorize, delegate, audit, and return a result immediately.
 - `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
   and enqueue work for later application.
+- Generic deferred submission MUST accept only commands with a tick-boundary
+  dispatcher, plus the intentional `MESSAGE`, `CUSTOM`, and `QUERY_WORLD`
+  application envelopes. All other command types MUST be rejected before quota
+  debit, audit emission, or broker enqueue.
 - `submit_spawn()` is the special case that reserves a world-local entity ID
   before enqueue so `spawn()` can honestly return `entity_id`.
 - Reservation MUST be serialized per world.
@@ -644,12 +667,10 @@ Required behavior:
   weaker behavior MUST be documented explicitly in user-facing runtime docs and
   examples
 
-CURRENT GAP:
-
-- `UPDATE` followed by `ADD_COMPONENT` for the same entity in one drain cycle
-  does not currently compose intuitively. The second command reads from `_live`
-  rather than from the staged update row, so command order and final
-  materialized state can diverge.
+Resolved: same-tick mutations compose. A later mutation for the same entity
+bases its row on the earlier staged spawn row (consuming it) rather than the
+last persisted tick, so command order and final materialized state agree.
+Contract tests: `tests/core/test_same_tick_mutation_composition.py`.
 
 ### Multi-World Lifetime Contract
 
@@ -869,7 +890,8 @@ the constraints that any acceptable design must satisfy.
 | `AsyncWorld.remove_entity(missing)` | Safe no-op with observability |
 | `RuntimeWorld.as_actor(ctx)` | Idempotent as handle binding only; creates another alias, not another world |
 | Duplicate despawn in one tick | Idempotent collapse by entity ID |
-| Duplicate spawn for same entity in one tick | Deterministic last-write-wins |
+| Duplicate staged spawn rows for the same entity in one tick | Deterministic last-write-wins at materialization |
+| Replay of an already-registered reserved spawn through `CommandService` | First spawn applies; replay is rejected |
 | `RuntimeWorld.history()` | Idempotent for fixed audit history |
 | `add_components()` with no signature change | Idempotent no-op |
 | `remove_components()` with no signature change | Idempotent no-op |
@@ -931,7 +953,7 @@ behavior and an executable oracle.
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
-| 2 | Open | Define truthful ack semantics for world-lifecycle command types submitted through the tick-deferred broker. | Issue #368 |
+| 2 | Resolved | Tick-deferred submission is allowlisted to dispatched commands and intentional application envelopes; all direct operations fail before quota, audit, or enqueue. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_broker`; Issues #368, #415, #418 |
 | 3 | Resolved | `CommandService.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |

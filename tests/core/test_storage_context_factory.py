@@ -28,6 +28,15 @@ def test_configure_session_builds_local_and_creates_dirs(tmp_path):
     assert cfg.io_config is None
 
 
+def test_configure_session_normalizes_file_uri(tmp_path):
+    root = tmp_path / "file store"
+
+    session = configure_session(StorageConfig(uri=root.as_uri(), namespace="ns"))
+
+    assert isinstance(session, Session)
+    assert (root / "catalog.db").is_file()
+
+
 def test_configure_session_preserves_public_local_session_argument(tmp_path):
     """The exported helper still configures and returns a supplied local session."""
     supplied = Session()

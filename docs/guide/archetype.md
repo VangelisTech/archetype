@@ -96,6 +96,14 @@ v0.3 produced new table ids instead of mutating v0.2 tables in place. Stores
 may read a legacy table through its old schema-derived name, but new writes use
 the current name.
 
+The name identifies a physical table, not a unique Python signature. Distinct
+signatures with the same component count and identical storage schemas map to
+the same name. Empty tag components contribute no fields, so two one-tag
+signatures are the common edge case. `AsyncWorld` interns one canonical
+signature per table name to prevent processing that shared table twice. See
+[System Execution](system-execution.md#step-3-archetype-naming) for the
+executable example and processor-matching consequences.
+
 ```python
 name = Archetype.get_name(sig)  # "a_2c_s9f3a1b2c4d5e6f7"
 ```
