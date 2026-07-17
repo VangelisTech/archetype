@@ -554,6 +554,34 @@ result = df.collect()  # Single materialization
 
 ---
 
+## LLM Failures: State Atomicity Is Not External Exactly-Once (Jul 2026)
+
+`prompt()` builds a lazy expression. Provider calls happen when the world
+materializes the processor plan, after `process()` has returned. A terminal
+timeout or rate-limit error therefore follows the ordinary processor failure
+contract: the whole tick fails and no world rows append.
+
+The provider side is not rolled back. Some row calls may already have
+completed or incurred cost before another row fails, and retrying the tick may
+repeat them. Configure bounded provider timeouts/retries, keep calls safe to
+repeat, and make continuation policy explicit. A deterministic whole-tick
+fallback removes the failing processor, installs a pure fallback processor,
+and retries the unchanged tick.
+
+Archetype's command-gate token costs are command admission estimates. They do
+not observe prompt tokens, provider quotas, or spend.
+
+The admitted Daft 0.7.19 OpenAI adapter also has an option-routing footgun:
+passing prompt UDF `on_error` forwards it to the OpenAI request. Upstream
+[Daft #7277](https://github.com/Eventual-Inc/Daft/pull/7277) fixes the
+separation, but it landed after the admitted release. Until a containing
+release clears the dependency gate, keep built-in OpenAI prompts fail-closed
+and use explicit whole-tick fallback rather than a local monkeypatch.
+[Archetype #442](https://github.com/VangelisTech/archetype/issues/442) owns the
+coordinated dependency, oracle, and documentation update.
+
+---
+
 ## Row-wise `@daft.func` vs `@daft.func.batch` (Jan 2026)
 
 For simple row transforms, prefer `@daft.func` over `@daft.func.batch`:

@@ -27,6 +27,7 @@ import os
 import sys
 
 from daft import DataFrame, col
+from daft.ai.openai.provider import OpenAIProvider
 from daft.functions import prompt
 
 from archetype import ArchetypeRuntime
@@ -57,6 +58,9 @@ class ThinkProcessor(AsyncProcessor):
     components = (Agent,)
     priority = 10
 
+    def __init__(self, provider: OpenAIProvider) -> None:
+        self._provider = provider
+
     async def process(self, df: DataFrame, tick: int = 0, **kwargs) -> DataFrame:
         # Build a prompt from each agent's name, role, and journal
         input_col = (
@@ -78,6 +82,7 @@ class ThinkProcessor(AsyncProcessor):
                 "Respond with a single short thought or action. "
                 "Be creative and stay in character."
             ),
+            provider=self._provider,
             model="gpt-5-mini",
             max_output_tokens=60,
         )
@@ -110,9 +115,14 @@ async def main():
         ("Iris", "You are a thoughtful philosopher who questions everything."),
     ]
     storage = StorageConfig(uri="./archetype_data", namespace="llm_agents")
+    provider = OpenAIProvider(timeout=30.0, max_retries=2)
 
     async with ArchetypeRuntime() as runtime:
-        world = runtime.world("llm-agents", storage=storage, processors=[ThinkProcessor()])
+        world = runtime.world(
+            "llm-agents",
+            storage=storage,
+            processors=[ThinkProcessor(provider)],
+        )
 
         for name, role in agents:
             await world.spawn(Agent(name=name, role=role))

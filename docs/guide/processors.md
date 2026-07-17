@@ -122,27 +122,94 @@ See [Resources](resources.md) for lifecycle and fork behavior.
 
 Use Daft's `prompt()` function when a processor needs an LLM call. Daft runs
 the row work in parallel and returns a column you can persist like any other
-state.
+state. Set transport bounds explicitly rather than inheriting a provider's
+long defaults.
 
 ```python
+from daft.ai.openai.provider import OpenAIProvider
 from daft.functions import prompt
 
 
 class Think(AsyncProcessor):
     components = (Agent,)
 
+    def __init__(self, provider: OpenAIProvider) -> None:
+        self.provider = provider
+
     async def process(self, df: DataFrame, **_) -> DataFrame:
         return df.with_column(
             "agent__last_thought",
             prompt(
                 "You are " + col("agent__name") + ". What should you do next?",
+                provider=self.provider,
                 model="gpt-5-mini",
             ),
         )
+
+
+provider = OpenAIProvider(timeout=15.0, max_retries=2)
+world = runtime.world("demo", processors=[Think(provider)])
 ```
 
 The component field is part of your history, so keep prompts and outputs small
 enough for the storage and cost profile you want.
+
+### Choose the failure policy
+
+`prompt()` is lazy. A processor builds the expression, but the provider call
+happens later when Archetype materializes the tick. The default policy is
+fail-closed: once the provider's bounded retries are exhausted, a timeout,
+HTTP 429, or other terminal error fails the whole tick. No archetype appends
+and the tick remains available for retry.
+
+That atomicity covers Archetype state, not the provider. Requests already sent,
+tokens already billed, and any other external effects cannot be rolled back.
+Retrying a failed tick can repeat them. Keep model calls side-effect-free from
+the simulation's perspective, use provider idempotency controls when available,
+and never treat a tick retry as exactly-once delivery to an external service.
+
+For a deterministic whole-tick fallback, replace the failing processor and
+retry the unchanged tick explicitly:
+
+```python
+from daft import lit
+from openai import APITimeoutError, RateLimitError
+
+
+class FallbackThought(AsyncProcessor):
+    components = (Agent,)
+
+    async def process(self, df: DataFrame, **_) -> DataFrame:
+        return df.with_column("agent__last_thought", lit("provider_unavailable"))
+
+
+try:
+    await world.step()
+except (APITimeoutError, RateLimitError):
+    await world.remove_processor(Think)
+    await world.add_processor(FallbackThought())
+    await world.step()  # retries the same tick without another model request
+```
+
+Persist a source/status field when downstream logic must distinguish model
+output from fallback state. Keep the fallback deterministic: do not introduce
+a second unbounded network path while handling the first one.
+
+The repository currently admits Daft 0.7.19. With that version, keep the
+built-in OpenAI `prompt()` path fail-closed and do not pass its UDF
+`on_error` option: the adapter incorrectly forwards that option to the OpenAI
+request. The upstream separation fix landed in
+[Daft #7277](https://github.com/Eventual-Inc/Daft/pull/7277) after the admitted
+release. Per-row null/fallback policy should be adopted only after a release
+containing that fix passes this repository's dependency gate; the coordinated
+upgrade is tracked in [Archetype #442](https://github.com/VangelisTech/archetype/issues/442).
+
+Finally, Archetype's command-gate "token" budget is an admission estimate for
+commands such as `step` and `run`; it does not meter prompt tokens or provider
+spend. Enforce real model budgets at the provider or deployment boundary. The
+credential-free `llm_facing` capability eval exercises success, transport
+timeout, HTTP 429, atomic failure, and explicit fallback against a loopback
+OpenAI-compatible fixture.
 
 ## Test a processor
 

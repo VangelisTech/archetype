@@ -17,7 +17,9 @@ import asyncio
 import tempfile
 from dataclasses import dataclass
 
-from daft import col
+from daft import col, lit
+from daft.ai.openai.provider import OpenAIProvider
+from daft.functions import prompt
 
 from archetype import ArchetypeRuntime
 from archetype.app.storage_service import StorageService
@@ -28,6 +30,7 @@ from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import PostTick, PreTick
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
+from evals.infra.llm_fixture import LocalOpenAIServer
 from evals.types import GraderResult
 
 SUITE = "capability"
@@ -76,6 +79,12 @@ class AdversarialValue(Component):
 
 class AdversarialMarker(Component):
     label: str = "marked"
+
+
+class LLMExchange(Component):
+    request: str
+    response: str = ""
+    source: str = "pending"
 
 
 @dataclass
@@ -151,6 +160,54 @@ class FailMarkedArchetype(AsyncProcessor):
 
     async def process(self, df, **kwargs):
         raise RuntimeError("intentional marked-archetype failure")
+
+
+class FixturePromptProcessor(AsyncProcessor):
+    """Run the real Daft prompt expression against a local OpenAI transport."""
+
+    components = (LLMExchange,)
+    priority = 10
+
+    def __init__(self, base_url: str, *, timeout_seconds: float = 0.05) -> None:
+        self._provider = OpenAIProvider(
+            name="archetype-eval",
+            api_key="credential-free-fixture",
+            base_url=base_url,
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+
+    async def process(self, df, **kwargs):
+        return df.with_columns(
+            {
+                "llmexchange__response": prompt(
+                    col("llmexchange__request"),
+                    provider=self._provider,
+                    model="fixture-model",
+                    use_chat_completions=True,
+                    temperature=0,
+                ),
+                "llmexchange__source": lit("provider"),
+            }
+        )
+
+
+class DeterministicLLMFallback(AsyncProcessor):
+    """Replace an exhausted provider attempt with explicit deterministic state."""
+
+    components = (LLMExchange,)
+    priority = 10
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    async def process(self, df, **kwargs):
+        return df.with_columns(
+            {
+                "llmexchange__response": lit(f"fallback:{self._reason}"),
+                "llmexchange__source": lit("fallback"),
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -760,6 +817,162 @@ async def _task_processor_adversarial() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: LLM transport failures and deterministic whole-tick fallback
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LLMCaseObservation:
+    case: str
+    error_type: str | None
+    error_message: str
+    tick_before_attempt: int
+    tick_after_attempt: int
+    final_tick: int
+    history_before_attempt: list[tuple[int, str, str]]
+    history_after_attempt: list[tuple[int, str, str]]
+    final_history: list[tuple[int, str, str]]
+
+
+def task_llm_facing() -> list[GraderResult]:
+    """Grade prompt success, timeout/429 atomicity, and explicit fallback."""
+    return asyncio.run(_task_llm_facing())
+
+
+def _llm_history(rows: list[dict], entity_id: int) -> list[tuple[int, str, str]]:
+    return sorted(
+        (
+            int(row["tick"]),
+            str(row["llmexchange__response"]),
+            str(row["llmexchange__source"]),
+        )
+        for row in rows
+        if int(row["entity_id"]) == entity_id and bool(row["is_active"])
+    )
+
+
+async def _exercise_llm_case(
+    runtime: ArchetypeRuntime,
+    storage_cfg: StorageConfig,
+    fixture: LocalOpenAIServer,
+    case: str,
+) -> _LLMCaseObservation:
+    world = runtime.world(f"llm-{case}", storage=storage_cfg)
+    entity_id = await world.spawn(LLMExchange(request=case))
+    await world.step()  # persist the raw request before the prompt processor sees it
+
+    before_info = await world.info()
+    before_history = _llm_history((await world.query(LLMExchange)).to_pylist(), entity_id)
+    timeout_seconds = 0.05 if case == "timeout" else 2.0
+    await world.add_processor(
+        FixturePromptProcessor(fixture.base_url, timeout_seconds=timeout_seconds)
+    )
+
+    attempt_error: Exception | None = None
+    try:
+        await world.step()
+    except Exception as exc:
+        # Daft deliberately surfaces provider-specific terminal exceptions.
+        # The eval observes their public effect rather than depending on one
+        # provider exception class as the repository-level contract.
+        attempt_error = exc
+
+    after_info = await world.info()
+    after_history = _llm_history((await world.query(LLMExchange)).to_pylist(), entity_id)
+
+    if attempt_error is not None:
+        await world.remove_processor(FixturePromptProcessor)
+        await world.add_processor(DeterministicLLMFallback(case))
+        await world.step()  # retry the unchanged tick without another provider call
+
+    final_info = await world.info()
+    final_history = _llm_history((await world.query(LLMExchange)).to_pylist(), entity_id)
+    return _LLMCaseObservation(
+        case=case,
+        error_type=type(attempt_error).__name__ if attempt_error is not None else None,
+        error_message=str(attempt_error) if attempt_error is not None else "",
+        tick_before_attempt=before_info.tick,
+        tick_after_attempt=after_info.tick,
+        final_tick=final_info.tick,
+        history_before_attempt=before_history,
+        history_after_attempt=after_history,
+        final_history=final_history,
+    )
+
+
+async def _task_llm_facing() -> list[GraderResult]:
+    with tempfile.TemporaryDirectory() as tmp, LocalOpenAIServer() as fixture:
+        storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_llm_facing")
+        async with ArchetypeRuntime() as runtime:
+            observations = {
+                case: await _exercise_llm_case(runtime, storage_cfg, fixture, case)
+                for case in ("healthy", "timeout", "quota")
+            }
+        request_counts = fixture.request_counts
+
+    healthy = observations["healthy"]
+    timeout = observations["timeout"]
+    quota = observations["quota"]
+    timeout_detail = f"{timeout.error_type} {timeout.error_message}".lower()
+    quota_detail = f"{quota.error_type} {quota.error_message}".lower()
+
+    return [
+        exact_match(
+            healthy.final_history,
+            [(0, "", "pending"), (1, "provider:healthy", "provider")],
+            name="healthy_prompt_persists",
+        ),
+        exact_match(
+            timeout.final_history,
+            [(0, "", "pending"), (1, "fallback:timeout", "fallback")],
+            name="timeout_fallback_is_deterministic",
+        ),
+        exact_match(
+            quota.final_history,
+            [(0, "", "pending"), (1, "fallback:quota", "fallback")],
+            name="quota_fallback_is_deterministic",
+        ),
+        state_check(
+            {
+                "healthy_call_succeeded": healthy.error_type is None,
+                "timeout_error_surfaced": (
+                    timeout.error_type is not None and "timed out" in timeout_detail
+                ),
+                "quota_error_surfaced": (
+                    quota.error_type is not None
+                    and "429" in quota_detail
+                    and "quota exhausted" in quota_detail
+                ),
+            },
+            name="provider_outcomes_surface",
+        ),
+        state_check(
+            {
+                "timeout_tick_did_not_advance": (
+                    timeout.tick_before_attempt == timeout.tick_after_attempt == 1
+                ),
+                "timeout_committed_nothing": (
+                    timeout.history_after_attempt == timeout.history_before_attempt
+                ),
+                "quota_tick_did_not_advance": (
+                    quota.tick_before_attempt == quota.tick_after_attempt == 1
+                ),
+                "quota_committed_nothing": (
+                    quota.history_after_attempt == quota.history_before_attempt
+                ),
+                "fallback_retried_the_same_tick": (timeout.final_tick == quota.final_tick == 2),
+            },
+            name="llm_failure_is_whole_tick_atomic",
+        ),
+        exact_match(
+            request_counts,
+            {"healthy": 1, "timeout": 1, "quota": 1},
+            name="provider_attempts_are_bounded",
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Register all capability tasks
 # ---------------------------------------------------------------------------
 
@@ -795,4 +1008,10 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_processor_adversarial,
         desc="Hook isolation, atomic processor failure, retry, and migration-aware matching",
+    )
+    harness.add(
+        "llm_facing",
+        suite=SUITE,
+        fn=task_llm_facing,
+        desc="Prompt success, bounded timeout/429 failure, atomicity, and deterministic fallback",
     )

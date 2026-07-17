@@ -254,6 +254,17 @@ Failure policy:
 - A store failure during the commit phase preserves the failed archetype's
   staged mutations; archetypes whose appends committed consume their caches
   with the append.
+- Tick atomicity governs Archetype state only. Processor calls to LLMs or other
+  external services MAY have completed, incurred cost, or produced side
+  effects before a compute failure. The engine cannot roll those effects back,
+  and retrying the tick MAY repeat them.
+- LLM transport retries MUST be bounded by the provider/client policy. After
+  exhaustion, the built-in prompt path is fail-closed: the terminal error
+  follows the processor failure contract above. Continuing with fallback state
+  requires an explicit deterministic processor or world operation and a retry
+  of the unchanged tick.
+- Command-gate token costs are admission estimates and MUST NOT be represented
+  as measured LLM token usage or provider spend.
 - Contract tests: `tests/core/test_async_world_error_propagation.py`
   (`test_async_world_processor_error_fails_the_step`,
   `test_failed_tick_commits_nothing_and_is_retryable`,
@@ -261,6 +272,10 @@ Failure policy:
 - Composed public-boundary evidence: the `processor_adversarial` capability
   eval combines advisory hook failures, one-table processor failure, atomic
   retry, and signature-aware matching across component migrations.
+- LLM-boundary evidence: the credential-free `llm_facing` capability eval runs
+  the real Daft prompt/OpenAI transport against a loopback fixture and grades
+  success, timeout, HTTP 429, no state commit, bounded attempts, and explicit
+  deterministic fallback on the same tick.
 
 Idempotency:
 
@@ -1000,6 +1015,7 @@ undocumented gap.
 | Mutation idempotency | **Simulation mutations stay non-idempotent by design** — `create_entity` twice is two entities, because spawns are simulation events, not external ones. Typed fact writes deduplicate logical keys within their serialized writer; legacy `ingest_fact` supplies claim-backed cross-process deduplication. Deterministic replays use reserved entity ids. |
 | API auth | **Development-grade by contract**: the default admin `ActorCtx` is for the reference deployment. A production front must inject authenticated `ActorCtx` (roles resolved by the deployment's identity layer) and never expose the default. |
 | RBAC quota state | **Process-local and advisory** in v0.3 (daily token budgets reset on restart). Durable quota accounting is a control-catalog follow-up; deployments needing hard budgets enforce them at the identity layer above. |
+| Processor LLM calls | **External and provider-owned**: tick publication is atomic, but requests and spend are not rolled back. Command token estimates do not meter model usage. Deployments own provider budgets and idempotency; bounded terminal failures either fail the tick or enter an explicit deterministic fallback path. |
 
 Receipts and facts carry no authority (enforced by `spec.receipt_authority_firewall`); the audit log records who asked, the ledger records what happened, and every durable guarantee in this table traces to the visibility contract in [Atomic Visibility](atomic-visibility.md).
 
@@ -1016,6 +1032,9 @@ all of the following:
 - advisory hook isolation, whole-tick processor failure atomicity, and
   signature-aware matching across explicit component migrations
   (`processor_adversarial` capability eval)
+- bounded LLM transport failure, no failed-tick state publication, and explicit
+  deterministic fallback without another provider attempt (`llm_facing`
+  capability eval)
 - stable reserved-entity spawn semantics through the broker
 - explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
 - exact actor-local quota boundaries and UTC rollover (`quota_boundaries` regression eval)

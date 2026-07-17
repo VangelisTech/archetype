@@ -272,6 +272,13 @@ synchronization (for example, an `asyncio.Lock`) or expose concurrency-safe
 operations. Keep deterministic entity state in DataFrame columns and use an
 explicit deferred mechanism when communication belongs at a tick boundary.
 
+The same boundary applies to LLMs and other external calls. The two-phase tick
+prevents a failed processor from appending partial world state, but it cannot
+undo requests, spend, or side effects that happened while computing a frame.
+A retry may repeat those calls. Transport retries must be bounded, and a
+fallback that changes simulation state must be an explicit processor or world
+operation rather than an assumption that external work is transactional.
+
 See [Resources](resources.md) for the resource lifecycle and the additional
 sharing boundary created by world forks.
 
@@ -298,6 +305,11 @@ field when the distinction must be represented in storage.
 but resources, processor instances, and external side effects are shared.
 Synchronize mutable shared objects and do not depend on cross-archetype task
 order.
+
+**Treating tick atomicity as external exactly-once.** A failed LLM-backed tick
+commits no world rows, but a provider may already have served or billed some
+requests. Bound retries and make repeated calls safe; use an explicit
+deterministic fallback when the simulation must continue without the provider.
 
 **Trying to migrate an entity from `process()`.** A processor's component
 declaration only decides which existing signatures it matches. Use

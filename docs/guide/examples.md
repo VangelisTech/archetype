@@ -224,6 +224,7 @@ Source: [`examples/05_llm_agents.py`](https://github.com/VangelisTech/archetype/
 
 - **Component**: `Agent` with name, role, and a JSON journal of thoughts
 - **Processor**: `ThinkProcessor` uses `daft.functions.prompt` to call an LLM for every agent entity in a single DataFrame operation
+- **Provider policy**: the injected OpenAI provider has explicit timeout and retry bounds
 - **Pattern**: `ArchetypeRuntime` keeps the script surface to `world.spawn(...)`, `world.run(...)`, and `world.query(...)`
 
 Requires an OpenAI API key (or any provider via `daft.set_provider()`).

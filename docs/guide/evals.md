@@ -176,6 +176,7 @@ renaming a task requires updating this table in the same change.
 | `capability` | `fork_divergence` | Fork-of-fork lineage, first-step continuity, shared resources, and isolated mutations compose through the runtime |
 | `capability` | `time_travel_and_run_id` | Live and cold historical reads preserve one run identity across durable resume |
 | `capability` | `processor_adversarial` | Hook failures stay advisory, processor failure is whole-tick atomic, and matching follows explicit component migrations |
+| `capability` | `llm_facing` | Real prompt execution handles bounded timeout and quota failures with atomic ticks and explicit deterministic fallback |
 
 <!-- eval-task-manifest:end -->
 

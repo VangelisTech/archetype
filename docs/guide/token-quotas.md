@@ -7,6 +7,11 @@ Every gated command has a token-cost estimate. `guardrail_allow()` enforces role
 permissions, per-tick command limits, and daily token budgets before the
 operation is accepted.
 
+"Token" here is a control-plane cost unit, not observed model usage. A `step`
+costs 10 whether it runs no processor or thousands of LLM prompts. Provider
+rate limits, billed tokens, and spend ceilings are separate data-plane concerns
+and must be enforced by the provider client or the deployment around it.
+
 The command gate is `iCommandService`; the broker is only used for tick-deferred queueing.
 
 ## Token Costs
@@ -105,6 +110,10 @@ See [Command Gate](command-gate.md) for the authoritative matrix.
 | Heavy day: 1000 spawns, 5000 messages, 10 forks | 6,010 commands | 26,000 |
 
 At these rates, the daily budget supports substantial workloads. The per-tick limit is the more common burst constraint.
+
+These examples budget command admission only. Do not use them to estimate or
+cap LLM cost inside processors; see the failure and provider boundary in
+[Processors](processors.md#choose-the-failure-policy).
 
 ## Source Reference
 
