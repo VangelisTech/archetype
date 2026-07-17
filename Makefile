@@ -82,7 +82,7 @@ format:
 		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
 
 .PHONY: lint
-lint: lazy-audit api-boundary-audit idempotency-audit
+lint: lazy-audit api-boundary-audit idempotency-audit gate-coverage-audit
 	@uv run ruff check src tests evals/suites/idempotency.py \
 		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
 		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
@@ -116,6 +116,12 @@ api-boundary-audit:
 .PHONY: idempotency-audit
 idempotency-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_idempotency_contracts.py
+
+# Command-disposition manifest + API error taxonomy. Static guard for the
+# accepted-then-dropped class (#178/#368) and unmapped-500 class (#180).
+.PHONY: gate-coverage-audit
+gate-coverage-audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/check_gate_coverage.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
