@@ -87,6 +87,17 @@ def test_experiments_scope_allows_models(tmp_path, monkeypatch):
     )
 
 
+def test_import_scope_ignores_dotted_sibling_packages(tmp_path, monkeypatch):
+    monkeypatch.setattr(checker, "ROOT", tmp_path)
+    path = _write(tmp_path, "import archetype.application\n")
+    assert (
+        checker._import_violations(
+            path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
+        )
+        == []
+    )
+
+
 def test_experiments_scope_scans_nested_subdirectories(tmp_path, monkeypatch):
     """Nested experiment modules must not escape the import scan (the reviewer
     caught the original non-recursive glob)."""
