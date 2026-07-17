@@ -23,6 +23,7 @@ The current contract set is split across design docs and executable tests.
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Durable Facts](durable-facts.md) | External-fact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
+| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-fact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
@@ -80,6 +81,7 @@ This specification covers:
 - top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
+- typed external facts and dataset/evaluation identity
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future

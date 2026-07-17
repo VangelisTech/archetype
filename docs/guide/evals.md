@@ -9,6 +9,12 @@ The harness lives under `evals/` and uses a **task → trial → grader** model.
 It does not ask whether the implementation followed one preferred code path;
 it asks whether the resulting behavior satisfies the contract.
 
+These are meta-evaluation terms internal to the repository harness.
+`evals.types.TrialResult` is not the physical-AI trial that produces one
+dataset episode in the
+[Dataset and Evaluation Ontology](dataset-eval-ontology.md), and harness task
+ids are not dataset task natural keys.
+
 ## Running the suites
 
 ```bash
@@ -127,6 +133,7 @@ renaming a task requires updating this table in the same change.
 | `spec` | `spec.command_service_gate_map` | Public command methods retain gate and audit coverage |
 | `spec` | `spec.append_only_protocols` | Storage and audit protocols expose no destructive methods |
 | `spec` | `spec.receipt_authority_firewall` | Receipts and facts remain evidence rather than authority |
+| `spec` | `spec.dataset_eval_ontology` | Dataset natural keys remain separate from optional runtime provenance |
 | `spec` | `spec.info_class_downgrades` | Lifecycle and introspection return frozen information snapshots |
 
 ### Idempotency
