@@ -590,7 +590,7 @@ class AsyncWorld(iAsyncWorld):
         """Attach additional components to an existing entity. Fires
         ``OnComponentAdded`` iff the signature actually changes."""
         old_sig = self.entity2sig.get(entity_id)
-        if not old_sig:
+        if old_sig is None:
             logger.warning("add_components: entity %s not found", entity_id)
             return
 

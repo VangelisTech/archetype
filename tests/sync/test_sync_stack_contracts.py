@@ -555,6 +555,20 @@ def test_sync_world_add_components_before_first_step_uses_pending_spawn_row(tmp_
     assert rows[0]["velocity__vx"] == 5
 
 
+def test_sync_empty_signature_entity_can_receive_first_component(tmp_path):
+    _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_empty_signature")
+    entity_id = world.create_entity([])
+    world.step(RunConfig(num_steps=1))
+
+    world.add_components(entity_id, [Position(x=2, y=3)])
+    world.step(RunConfig(num_steps=1))
+
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    rows = _committed_rows(world, sig)
+    assert rows[0]["entity_id"] == entity_id
+    assert rows[0]["position__x"] == 2
+
+
 def test_sync_world_execute_passes_resources_and_kwargs(tmp_path):
     class ApplyBonus(SyncProcessor):
         components = (Position,)
