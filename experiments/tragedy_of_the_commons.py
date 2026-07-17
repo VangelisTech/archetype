@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 import daft
 import pyarrow as pa
 from daft import DataFrame, col
+from daft.functions import when
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
@@ -168,8 +169,11 @@ class HarvestProcessor(AsyncProcessor):
 
         if not rows or pool.amount <= 0.01:
             # Pool is effectively empty — agents get nothing, lose energy
-            df = df.with_column("gatherer__energy", col("gatherer__energy") - 2.0)
-            return df
+            energy = col("gatherer__energy") - 2.0
+            return df.with_column(
+                "gatherer__energy",
+                when(energy > 0.0, energy).otherwise(0.0),
+            )
 
         # Calculate desired harvests
         desired = []
@@ -351,6 +355,10 @@ def print_results(results: list[dict]):
         history = res["pool_history"]
         final = res["final_pool"]
         agents = res["agents"]
+        recorded_ticks = len(history)
+        first_tick = 1 if recorded_ticks else 0
+        first_label = f"tick {first_tick}"
+        last_label = f"tick {recorded_ticks}"
 
         print(f"\n{'─' * 72}")
         print(f"  Scenario: {scenario}")
@@ -358,10 +366,10 @@ def print_results(results: list[dict]):
         print(f"{'─' * 72}")
 
         # Pool depletion curve
-        print(f"\n  Pool over time (50 ticks):")
+        print(f"\n  Pool over time ({recorded_ticks} recorded ticks):")
         print(f"  1000 |{spark_line(history, max_pool, 50)}|")
         print(f"     0 |{'_' * 50}|")
-        print(f"        {'tick 0':<25}{'tick 50':>25}")
+        print(f"        {first_label:<25}{last_label:>25}")
 
         # Per-agent summary
         print(f"\n  {'Agent':<14} {'Strategy':<13} {'Harvested':>10} {'Energy':>8}  Bar")

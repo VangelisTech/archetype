@@ -88,6 +88,15 @@ def test_to_payload_round_trips_through_from_dict():
     assert restored.a == 7
 
 
+def test_component_type_field_is_reserved():
+    import pytest
+
+    with pytest.raises(TypeError, match="reserved Component field 'type'"):
+
+        class PayloadDiscriminatorProbe(Component):
+            type: str = "user-value"
+
+
 def test_from_dict_does_not_mutate_input():
     """from_dict does not mutate the caller's dict.
 

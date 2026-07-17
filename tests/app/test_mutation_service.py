@@ -3,9 +3,17 @@
 
 """Tests for MutationService — entity ID accuracy and mutation lifecycle."""
 
-import pytest
+import inspect
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from uuid_utils import uuid7
+
+from archetype.app.auth.models import ActorCtx
+from archetype.app.broker import CommandBroker
+from archetype.app.command_service import CommandService, _parse_entity_id
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -22,6 +30,27 @@ class Velocity(Component):
 
 class Health(Component):
     hp: int = 100
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(7, 7), ("7", 7), ("+7", 7), ("-7", -7), ("007", 7)],
+)
+def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
+    assert _parse_entity_id(value) == expected
+
+
+def test_update_has_one_authoritative_dispatch_arm():
+    """Each command type has one reachable implementation in the drain dispatcher."""
+    source = inspect.getsource(CommandService._apply)
+
+    assert source.count("case CommandType.UPDATE:") == 1
+
+
+@pytest.mark.parametrize("value", [True, 7.0, 7.9, "7.0", " 7", "7 ", "", None])
+def test_parse_entity_id_rejects_lossy_or_ambiguous_values(value):
+    with pytest.raises(TypeError, match="entity_id must be an integer"):
+        _parse_entity_id(value)
 
 
 @pytest.mark.asyncio
@@ -167,5 +196,171 @@ async def test_add_and_remove_processor(tmp_path):
 
         await ms.remove_processor(world.world_id, NoopProcessor)
         assert proc not in world.system.processors
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_entity_commands_coerce_string_entity_ids(tmp_path):
+    """DESPAWN/ADD_COMPONENT/REMOVE_COMPONENT accept JSON-string entity ids (#178).
+
+    REST payloads arrive with entity_id as a string; SPAWN and UPDATE already
+    coerced with int() while these three passed the raw value through to the
+    int-keyed world, silently missing the entity.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cs = container.command_service
+
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={"entity_id": str(eid), "components": [Velocity(vx=3.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        rows = (await world.get_components([Velocity])).collect().to_pylist()
+        assert eid in [r["entity_id"] for r in rows]
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.REMOVE_COMPONENT,
+                payload={"entity_id": str(eid), "component_types": [Velocity]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        rows = (await world.get_components([Velocity])).collect().to_pylist()
+        assert eid not in [r["entity_id"] for r in rows]
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(type=CommandType.DESPAWN, payload={"entity_id": str(eid)}),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        assert eid not in world.entity2sig
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_type", "payload", "mutation_method"),
+    [
+        (CommandType.UPDATE, {"components": [Position(x=2.0)]}, "update_entity"),
+        (CommandType.DESPAWN, {}, "remove_entity"),
+        (CommandType.ADD_COMPONENT, {"components": [Velocity()]}, "add_components"),
+        (
+            CommandType.REMOVE_COMPONENT,
+            {"component_types": [Velocity]},
+            "remove_components",
+        ),
+    ],
+)
+async def test_entity_commands_reject_fractional_ids(command_type, payload, mutation_method):
+    mutations = MagicMock()
+    mutation = AsyncMock()
+    setattr(mutations, mutation_method, mutation)
+    broker = CommandBroker()
+    service = CommandService(
+        mutations,
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        broker,
+    )
+    command = Command(
+        type=command_type,
+        payload={"entity_id": 1.9, **payload},
+    )
+    await broker.enqueue("world", command)
+
+    applied = await service.drain_and_apply("world", tick=0)
+
+    assert applied == []
+    mutation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_brokered_update_is_applied(tmp_path):
+    """A submitted UPDATE command changes component state after step (#193).
+
+    UPDATE had no case in the drain dispatcher: submit() gated it, queued it,
+    emitted "queued" — and _apply dropped it at a warn-level log.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await container.command_service.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.UPDATE,
+                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        rows = (await world.get_components([Position])).collect().to_pylist()
+        row = next(r for r in rows if r["entity_id"] == eid)
+        assert row["position__x"] == 99.0
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path):
+    """#193: UPDATE then ADD_COMPONENT in one drain — the widened row composes.
+
+    _move_entity read the entity's row from tick-1 in the store, ignoring the
+    freshest same-drain row parked in spawn_cache, so the migration forked
+    from stale pre-update state.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cs = container.command_service
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.UPDATE,
+                payload={"entity_id": str(eid), "components": [Position(x=99.0)]},
+            ),
+        )
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={"entity_id": str(eid), "components": [Velocity(vx=5.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        rows = (await world.get_components([Position, Velocity])).collect().to_pylist()
+        row = next(r for r in rows if r["entity_id"] == eid)
+        assert row["velocity__vx"] == 5.0
+        assert row["position__x"] == 99.0, "widened row was built from stale pre-update state"
     finally:
         await container.shutdown()
