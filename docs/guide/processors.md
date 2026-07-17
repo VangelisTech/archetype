@@ -46,6 +46,33 @@ class ResolveCollisions(AsyncProcessor):
 Keep one processor responsible for one transformation. It makes order and
 tests straightforward.
 
+## Failure and archetype boundaries
+
+A processor error fails the whole world tick, not only the table whose
+processor raised. Archetype computes every table before it appends any of
+them. On failure, `step()` raises, the tick does not advance, no table appends,
+and staged mutations remain available for retry.
+
+A processor's `components` tuple is a matching predicate, not a request to
+change an entity's component set. Return a DataFrame compatible with the
+current archetype. Widen or narrow an entity explicitly between steps:
+
+```python
+await world.add_components(entity_id, Targetable())
+await world.step()  # carries the row into the wider signature
+await world.step()  # processors newly matched by Targetable now transform it
+
+await world.remove_components(entity_id, Targetable)
+```
+
+The migration step persists the carried row under its target signature after
+that tick's processor pass. Processors newly matched by the target signature
+first see the row on the following step.
+
+Hooks have a deliberately different failure policy. They are advisory
+callbacks: exceptions are logged and suppressed so later hooks and the tick
+can continue. See [Lifecycle Hooks](hooks.md).
+
 ## Add processors to a world
 
 Pass processors when you create the handle for the usual script path:

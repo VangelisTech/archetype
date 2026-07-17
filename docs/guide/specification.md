@@ -229,6 +229,11 @@ Failure observability:
 - A processor MUST declare the component set it depends on.
 - A processor matches a signature when its required component set is a subset
   of the archetype signature.
+- A processor's component declaration is a match predicate, not a component
+  mutation. Widening and narrowing flow through the world mutation API. The
+  carried row materializes under its target signature on the migration tick;
+  processors newly matched by that signature first transform it on the next
+  tick.
 - Within one archetype, processors MUST execute in ascending `priority`.
 - Across different archetypes, execution MAY proceed concurrently.
 - Processor registration is instance-based; removal is type-based.
@@ -253,6 +258,9 @@ Failure policy:
   (`test_async_world_processor_error_fails_the_step`,
   `test_failed_tick_commits_nothing_and_is_retryable`,
   `test_one_failing_archetype_blocks_all_appends`).
+- Composed public-boundary evidence: the `processor_adversarial` capability
+  eval combines advisory hook failures, one-table processor failure, atomic
+  retry, and signature-aware matching across component migrations.
 
 Idempotency:
 
@@ -1005,6 +1013,9 @@ all of the following:
 - append-only persistence scoped by world and run
 - stable processor ordering within an archetype
 - stable cross-archetype execution without world bookkeeping corruption
+- advisory hook isolation, whole-tick processor failure atomicity, and
+  signature-aware matching across explicit component migrations
+  (`processor_adversarial` capability eval)
 - stable reserved-entity spawn semantics through the broker
 - explicit multi-world isolation and fork divergence (`fork_divergence` capability eval)
 - exact actor-local quota boundaries and UTC rollover (`quota_boundaries` regression eval)

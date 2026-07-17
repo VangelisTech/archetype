@@ -115,6 +115,10 @@ await world.remove_components(entity_id, [Health])
 
 Component mutations trigger **archetype migration**: the entity's row is marked inactive in the old archetype table and a new row (with carried-over field values) is spawned in the target archetype table.
 
+The target row is a carried initial condition. It materializes on the next
+successful step after that step's processor pass; processors newly matched by
+the target signature first transform it on the following step.
+
 ## Tick Lifecycle
 
 Each call to `step()` executes one simulation tick:
@@ -123,13 +127,17 @@ Each call to `step()` executes one simulation tick:
 1. `PreTick` hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (from _live cache or store)
-   b. Materialize deferred mutations (spawns/despawns)
-   c. Execute matching processors in priority order
-   d. Persist updated DataFrame to store
-3. Update _live snapshots
-4. Increment tick counter
-5. `PostTick` hooks fire
+   b. Apply pending despawns and prepare raw spawn/migration rows
+   c. Execute matching processors over the existing population in priority order
+   d. Append the raw spawn/migration rows to the computed frame
+3. If every archetype computed successfully, persist all frames
+4. Update _live snapshots
+5. Increment tick counter
+6. `PostTick` hooks fire
 ```
+
+The compute barrier in step 3 is the failure boundary: one processor failure
+prevents every archetype from appending and leaves the tick retryable.
 
 ### Running Multiple Ticks
 
