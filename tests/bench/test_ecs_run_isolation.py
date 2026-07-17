@@ -8,8 +8,16 @@ from archetype.core.config import StorageBackend, StorageConfig
 from bench.core.ecs.run import _storage_for_bench, run_all
 
 
-def test_storage_for_bench_returns_none_when_storage_is_none():
-    assert _storage_for_bench(None, "packed_iteration") is None
+def test_storage_for_bench_suffixes_default_storage(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARCHETYPE_DATA_URI", str(tmp_path))
+    monkeypatch.setenv("ARCHETYPE_BENCH_NS", "default")
+
+    packed = _storage_for_bench(None, "packed_iteration")
+    simple = _storage_for_bench(None, "simple_iteration")
+
+    assert packed.uri == str(tmp_path)
+    assert packed.namespace == "default__packed_iteration"
+    assert simple.namespace == "default__simple_iteration"
 
 
 def test_storage_for_bench_appends_bench_suffix_to_namespace():
