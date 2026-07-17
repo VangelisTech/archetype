@@ -23,22 +23,22 @@ from daft.catalog import Catalog
 from daft.session import Session
 
 from archetype.core.config import StorageConfig
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 
 def _resolve_storage_uri(uri: str) -> tuple[str, bool]:
     """Resolve local storage paths while preserving remote object-store URIs.
 
-    Returns (resolved_uri, is_remote).
+    Returns (resolved_uri, is_remote). Local paths route through
+    ``resolve_local_root`` (issue #327): NUL bytes are rejected and, when
+    ``ARCHETYPE_DATA_ROOT`` is set, escapes fail closed.
     """
-    scheme = urlparse(uri).scheme.lower()
-    is_remote = scheme not in ("", "file")
-
-    if is_remote:
+    parsed = urlparse(uri)
+    scheme = parsed.scheme.lower()
+    if scheme not in ("", "file"):
         return uri, True
 
-    base_path = pathlib.Path(uri)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
+    base_path = resolve_local_root(parsed.path if scheme == "file" else uri)
     base_path.mkdir(parents=True, exist_ok=True)
     return str(base_path), False
 
@@ -71,6 +71,8 @@ def configure_session(
             "inject a preconfigured Daft Session through StorageService for "
             "remote or managed catalogs"
         )
+    # The namespace becomes warehouse directory names under base_path.
+    require_safe_namespace(config.namespace)
 
     session = session if session is not None else Session()
     base_path = pathlib.Path(resolved_uri)

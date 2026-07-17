@@ -57,6 +57,7 @@ import pyarrow as pa
 
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ def _normalized_uri(config: StorageConfig) -> str:
     parsed = urlparse(uri)
     if parsed.scheme in ("", "file"):
         path = parsed.path if parsed.scheme == "file" else uri
-        return str(Path(path).expanduser().resolve())
+        return str(resolve_local_root(path))
     return uri.rstrip("/")
 
 
@@ -173,10 +174,15 @@ def catalog_path_for(config: StorageConfig) -> Path:
     """
     uri = str(config.uri)
     parsed = urlparse(uri)
+    namespace = require_safe_namespace(config.namespace)
     if parsed.scheme in ("", "file"):
-        base = Path(parsed.path if parsed.scheme == "file" else uri).expanduser()
-        return base / config.namespace / f".archetype-catalog-{config.backend.value}.db"
+        base = resolve_local_root(parsed.path if parsed.scheme == "file" else uri)
+        candidate = base / namespace / f".archetype-catalog-{config.backend.value}.db"
+        if not candidate.resolve().is_relative_to(base):
+            raise ValueError(f"catalog path {candidate} escapes storage root {base} (fail closed)")
+        return candidate
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
+    # The remote-form filename is fingerprint-derived hex, never request data.
     return root / f"{storage_fingerprint(config)[:24]}.db"
 
 

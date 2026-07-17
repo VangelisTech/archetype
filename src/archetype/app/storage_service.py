@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import pathlib
 from urllib.parse import urlparse
 
 from daft.session import Session
@@ -34,6 +33,7 @@ from archetype.app.iceberg import IcebergCatalogContext
 from archetype.core.aio import AsyncCachedStore, AsyncLancedbStore, AsyncStore
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 from archetype.core.interfaces import iAsyncStore
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -51,14 +51,17 @@ def _validate_session_namespace(session: Session, config: StorageConfig) -> None
 
 
 def _resolve_uri(uri: str) -> str:
-    """Resolve local storage paths to absolute. Remote URIs pass through."""
-    scheme = urlparse(uri).scheme.lower()
+    """Resolve local storage paths to absolute. Remote URIs pass through.
+
+    Local paths route through ``resolve_local_root`` (issue #327): NUL bytes
+    are rejected and, when ``ARCHETYPE_DATA_ROOT`` is set, escapes fail closed.
+    """
+    parsed = urlparse(uri)
+    scheme = parsed.scheme.lower()
     if scheme not in ("", "file"):
         return uri
 
-    base_path = pathlib.Path(uri)
-    if not base_path.is_absolute():
-        base_path = pathlib.Path.cwd() / base_path
+    base_path = resolve_local_root(parsed.path if scheme == "file" else uri)
     base_path.mkdir(parents=True, exist_ok=True)
     return str(base_path)
 
@@ -78,7 +81,7 @@ def create_async_store(
     store: iAsyncStore
     if config.backend == StorageBackend.LANCEDB:
         uri = _resolve_uri(str(config.uri))
-        store = AsyncLancedbStore(uri, config.namespace)
+        store = AsyncLancedbStore(uri, require_safe_namespace(config.namespace))
     else:
         from archetype.runtime.session import configure_session
 
