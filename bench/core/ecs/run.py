@@ -9,13 +9,13 @@ from dataclasses import asdict
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
 
 from . import add_remove, entity_cycle, fragmented_iteration, packed_iteration, simple_iteration
+from .common import _default_storage
 
 
-def _storage_for_bench(storage: StorageConfig | None, bench_name: str) -> StorageConfig | None:
+def _storage_for_bench(storage: StorageConfig | None, bench_name: str) -> StorageConfig:
     """Give each bench its own namespace so sibling benches cannot see one
     another's tables when they happen to share component class names."""
-    if storage is None:
-        return None
+    storage = storage or _default_storage()
     suffix = bench_name.replace("-", "_")
     namespace = f"{storage.namespace}__{suffix}" if storage.namespace else suffix
     return storage.model_copy(update={"namespace": namespace})

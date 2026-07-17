@@ -25,13 +25,17 @@ step, policy inference) shares a structural pattern:
    expressions, unpacks the struct into individual columns, and excludes the
    scratch column.
 
-This module provides two utilities:
+This module provides three utilities:
 
 ``series_to_rows(col_names, *series_args) -> list[dict]``
     Convert ordered Series arguments to a list of row dicts.  Reduces the
     per-column Series-to-list boilerplate in every UDF body.
     For use inside ``@daft.method.batch`` bodies only (per-batch boundary;
     not a DataFrame collect).
+
+``external_call_indices(rows) -> list[int]``
+    Select rows whose external episode may advance. Inactive and completed
+    rows remain pass-through state and never trigger an RPC or inference call.
 
 ``unpack_struct(df, scratch, output_map) -> DataFrame``
     Unpack a struct column produced by a boundary UDF back into individual
@@ -60,12 +64,11 @@ Once-per-worker init invariants:
   Daft worker.  Expensive state (MuJoCo model, Modal stub, network socket)
   is created there, after any unpickling of config scalars.
 
-Done-row freeze and pass-through:
-- Each UDF's batch body receives the previous ``done`` (or equivalent) column
-  as an input Series and is responsible for freezing done rows by copying the
-  previous values into the output dict.  ``series_to_rows`` includes all
-  declared input columns (including done) in each row dict; the UDF's inner
-  loop performs the pass-through check.
+Inactive/done-row freeze and pass-through:
+- Each stateful UDF receives ``is_active`` and ``done`` (or an equivalent
+  terminal column) and freezes rows that fail either lifecycle predicate.
+  ``series_to_rows`` includes the declared inputs in each row dict;
+  ``external_call_indices`` centralizes which rows may cross the boundary.
 """
 
 from __future__ import annotations
@@ -119,6 +122,11 @@ def series_to_rows(col_names: list[str], *series_args: Series) -> list[dict[str,
     lists = [s.to_pylist() for s in series_args]
     n = len(lists[0]) if lists else 0
     return [{col_names[j]: lists[j][i] for j in range(len(col_names))} for i in range(n)]
+
+
+def external_call_indices(rows: list[dict[str, Any]]) -> list[int]:
+    """Return rows whose active, unfinished external episode may advance."""
+    return [i for i, row in enumerate(rows) if row["is_active"] and not row["done"]]
 
 
 def unpack_struct(

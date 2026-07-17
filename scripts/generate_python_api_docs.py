@@ -35,7 +35,7 @@ PAGES: tuple[ReferencePage, ...] = (
         "Recommended API",
         "Start here for scripts, notebooks, and applications. A runtime owns process-level "
         "services and creates world handles.",
-        ("ArchetypeRuntime", "configure_session"),
+        ("ArchetypeRuntime", "configure_session", "entrypoint", "public_api"),
     ),
     ReferencePage(
         "world-handle",

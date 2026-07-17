@@ -26,6 +26,7 @@ from daft import Expression, Schema
 from daft.catalog import Table
 from uuid_utils import UUID
 
+from archetype.app.errors import AvailabilityError
 from archetype.app.iceberg import IcebergCatalogContext
 from archetype.app.models import AuditRow
 from archetype.app.storage_service import StorageService
@@ -35,8 +36,10 @@ _AUDIT_TABLE = "audit_rows"
 DEFAULT_AUDIT_FLUSH_ROWS = 128
 
 
-class AuditBackpressureError(RuntimeError):
+class AuditBackpressureError(AvailabilityError):
     """The bounded audit buffer rejected a row while storage was unavailable."""
+
+    public_detail = "Audit log is temporarily unavailable"
 
 
 def default_audit_storage() -> StorageConfig:

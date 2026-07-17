@@ -376,6 +376,20 @@ def validate_result(
     }
 
 
+def retry_feedback(error: GateError) -> str:
+    """Turn one validation failure into bounded correction guidance."""
+    return (
+        "The first detector response did not pass Archetype's exact-scope validator:\n\n"
+        f"{error}\n\n"
+        "Return one corrected, complete structured result for the same exact head. "
+        "`reviewed_files` and every `review_context.files` array contain changed paths only. "
+        "Mention protected-base implementation or evidence paths in assessment prose, not in "
+        "those arrays. Use the authoritative scope values; do not return schema examples or "
+        "placeholder values. Preserve substantive analysis from the first response when it is "
+        "still valid.\n"
+    )
+
+
 def artifact_digest(result: Mapping[str, Any]) -> str:
     canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -732,6 +746,23 @@ def _normalize_command(args: argparse.Namespace) -> None:
     _write_json(args.output, result)
 
 
+def _attempt_command(args: argparse.Namespace) -> None:
+    """Validate one detector response and emit whether one retry is required."""
+    try:
+        result = _validated_result(args)
+    except GateError as error:
+        args.output.unlink(missing_ok=True)
+        args.feedback.parent.mkdir(parents=True, exist_ok=True)
+        args.feedback.write_text(retry_feedback(error), encoding="utf-8")
+        _append_github_outputs(args.github_output, {"valid": "false"})
+        return
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, result)
+    args.feedback.unlink(missing_ok=True)
+    _append_github_outputs(args.github_output, {"valid": "true"})
+
+
 def _prepare_command(args: argparse.Namespace) -> None:
     result = _validated_result(args)
     digest = artifact_digest(result)
@@ -810,6 +841,18 @@ def _parser() -> argparse.ArgumentParser:
     normalize.add_argument("--result", type=Path, required=True)
     normalize.add_argument("--output", type=Path, required=True)
     normalize.set_defaults(handler=_normalize_command)
+
+    attempt = subparsers.add_parser(
+        "attempt",
+        help="validate one detector response and emit bounded-retry metadata",
+    )
+    attempt.add_argument("--scope", type=Path, required=True)
+    attempt.add_argument("--diff", type=Path, required=True)
+    attempt.add_argument("--result", type=Path, required=True)
+    attempt.add_argument("--output", type=Path, required=True)
+    attempt.add_argument("--feedback", type=Path, required=True)
+    attempt.add_argument("--github-output", type=Path, required=True)
+    attempt.set_defaults(handler=_attempt_command)
 
     prepare = subparsers.add_parser("prepare", help="validate and render structured output")
     prepare.add_argument("--scope", type=Path, required=True)
