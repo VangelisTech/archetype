@@ -83,8 +83,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DIRECT_LIFECYCLE_COMMANDS = frozenset(
+_DIRECT_ONLY_COMMANDS = frozenset(
     {
+        CommandType.INGEST_FACT,
+        CommandType.EVALUATE,
         CommandType.CREATE_WORLD,
         CommandType.FORK_WORLD,
         CommandType.DESTROY_WORLD,
@@ -142,9 +144,9 @@ class CommandService:
 
     @staticmethod
     def _validate_deferred_command(cmd: Command) -> None:
-        if cmd.type in _DIRECT_LIFECYCLE_COMMANDS:
+        if cmd.type in _DIRECT_ONLY_COMMANDS:
             raise ValueError(
-                f"{cmd.type.value} is a direct gated lifecycle operation; "
+                f"{cmd.type.value} is a direct gated operation; "
                 "it cannot be submitted through the tick-deferred broker"
             )
 

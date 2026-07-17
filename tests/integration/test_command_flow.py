@@ -167,10 +167,16 @@ async def test_submit_to_unknown_world_rejected():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "command_type",
-    [CommandType.CREATE_WORLD, CommandType.FORK_WORLD, CommandType.DESTROY_WORLD],
+    [
+        CommandType.INGEST_FACT,
+        CommandType.EVALUATE,
+        CommandType.CREATE_WORLD,
+        CommandType.FORK_WORLD,
+        CommandType.DESTROY_WORLD,
+    ],
 )
-async def test_lifecycle_commands_cannot_enter_tick_deferred_broker(tmp_path, command_type):
-    """Lifecycle operations use their direct gated methods and cannot be acked as queue work."""
+async def test_direct_only_commands_cannot_enter_tick_deferred_broker(tmp_path, command_type):
+    """Direct operations cannot be acknowledged as tick-deferred queue work."""
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
@@ -179,7 +185,7 @@ async def test_lifecycle_commands_cannot_enter_tick_deferred_broker(tmp_path, co
             StorageConfig(uri=str(tmp_path / "store")),
         )
 
-        with pytest.raises(ValueError, match="direct gated lifecycle operation"):
+        with pytest.raises(ValueError, match="direct gated operation"):
             await c.command_service.submit(ctx, world.world_id, Command(type=command_type))
 
         assert await c.broker.get_pending_count(world.world_id) == 0
@@ -203,7 +209,7 @@ async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
             Command(type=CommandType.FORK_WORLD),
         ]
 
-        with pytest.raises(ValueError, match="direct gated lifecycle operation"):
+        with pytest.raises(ValueError, match="direct gated operation"):
             await c.command_service.submit_batch(ctx, world.world_id, commands)
 
         assert await c.broker.get_pending_count(world.world_id) == 0
