@@ -216,6 +216,7 @@ async def test_visibility_three_state_parity(tmp_path, worker_url):
             tick=0,
         )
         assert await catalog.visible_tokens("w1", "r1") == {0: [""]}
+        assert await catalog.visible_tokens("w1", "r1", []) == {}
         assert await catalog.visible_tokens("w1", "r1", [3]) == {3: [""]}
         # Fenced, nothing published: nothing visible.
         await catalog.acquire_fence("w1", "h1")

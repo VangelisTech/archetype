@@ -330,7 +330,12 @@ export class WorldCommitDO implements DurableObject {
       if (!anyManifest.length && !anyClaim.length) {
         return json({ visible: fence.length ? {} : null });
       }
-      const ticks = ticksParam ? ticksParam.split(",").map((t) => parseInt(t, 10)) : null;
+      const ticks =
+        ticksParam === null
+          ? null
+          : ticksParam === ""
+            ? []
+            : ticksParam.split(",").map((t) => parseInt(t, 10));
       const visible: Record<string, string[]> = {};
       const add = (tick: number, token: string) => {
         if (ticks && !ticks.includes(tick)) return;
