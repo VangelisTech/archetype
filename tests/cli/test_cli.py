@@ -94,6 +94,79 @@ class TestCLI:
         result = runner.invoke(app, ["world", "create", "--help"])
         assert result.exit_code == 0
 
+    def test_query_help_exposes_lazy_terminals(self):
+        result = runner.invoke(app, ["query", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "COMPONENT_TYPES" in result.output
+        assert "--show" in result.output
+        assert "--count" in result.output
+        assert "--where" in result.output
+
+    def test_query_forwards_positional_components_and_options(self, monkeypatch):
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, kwargs=kwargs)
+            return [{"score__value": 0.75}]
+
+        monkeypatch.setattr(cli_mod, "_request", fake_request)
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "world-1",
+                "Agent,Score",
+                "--tick",
+                "3",
+                "--entity-ids",
+                "7,8",
+                "--where",
+                "score__value > 0.5",
+                "--show",
+                "5",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["method"] == "get"
+        assert captured["path"] == "/worlds/world-1/components"
+        assert captured["kwargs"]["params"] == {
+            "entity_ids": "7,8",
+            "tick": 3,
+            "types": "Agent,Score",
+            "show": 5,
+            "where": "score__value > 0.5",
+        }
+
+    def test_query_count_uses_object_terminal(self, monkeypatch):
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, kwargs=kwargs)
+            return {"count": 3}
+
+        monkeypatch.setattr(cli_mod, "_request", fake_request)
+        result = runner.invoke(app, ["query", "world-1", "Score", "--count"])
+
+        assert result.exit_code == 0, result.output
+        assert "Count: 3" in result.output
+        assert captured["path"] == "/worlds/world-1/components"
+        assert captured["kwargs"]["params"] == {"types": "Score", "count": True}
+
+    @pytest.mark.parametrize(
+        "arguments",
+        (
+            ["world-1", "Score", "--types", "Score"],
+            ["world-1", "Score", "--count", "--show", "2"],
+            ["world-1", "--where", "score__value > 0.5"],
+        ),
+    )
+    def test_query_rejects_ambiguous_option_combinations(self, arguments):
+        result = runner.invoke(app, ["query", *arguments])
+        assert result.exit_code == 1
+        assert "validation error" in result.output
+
     def test_base_url_uses_env_and_strips_trailing_slash(self, monkeypatch):
         monkeypatch.setenv(ENV_BASE_URL, "http://example.com/api/")
         assert _base_url() == "http://example.com/api"

@@ -282,6 +282,9 @@ Read entities containing component types. Requires viewer, player, operator, or 
 | `types` | string | `""` | Comma-separated component type names |
 | `tick` | integer \| null | — |  |
 | `entity_ids` | string \| null | — |  |
+| `show` | integer \| null | — | Maximum matching rows to return |
+| `count` | boolean | `false` | Return the matching row count instead of rows |
+| `where` | string \| null | — | One column comparison, for example score__value > 0.5 |
 
 **Error codes:** `422`
 
