@@ -4,8 +4,11 @@
 """Tests for MutationService — entity ID accuracy and mutation lifecycle."""
 
 import pytest
+from uuid_utils import uuid7
 
+from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -167,5 +170,58 @@ async def test_add_and_remove_processor(tmp_path):
 
         await ms.remove_processor(world.world_id, NoopProcessor)
         assert proc not in world.system.processors
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_entity_commands_coerce_string_entity_ids(tmp_path):
+    """DESPAWN/ADD_COMPONENT/REMOVE_COMPONENT accept JSON-string entity ids (#178).
+
+    REST payloads arrive with entity_id as a string; SPAWN and UPDATE already
+    coerced with int() while these three passed the raw value through to the
+    int-keyed world, silently missing the entity.
+    """
+    container = ServiceContainer()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        cs = container.command_service
+
+        eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.ADD_COMPONENT,
+                payload={"entity_id": str(eid), "components": [Velocity(vx=3.0)]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        rows = (await world.get_components([Velocity])).collect().to_pylist()
+        assert eid in [r["entity_id"] for r in rows]
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(
+                type=CommandType.REMOVE_COMPONENT,
+                payload={"entity_id": str(eid), "component_types": ["Velocity"]},
+            ),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        rows = (await world.get_components([Velocity])).collect().to_pylist()
+        assert eid not in [r["entity_id"] for r in rows]
+
+        await cs.submit(
+            ctx,
+            world.world_id,
+            Command(type=CommandType.DESPAWN, payload={"entity_id": str(eid)}),
+        )
+        await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
+        assert eid not in world.entity2sig
     finally:
         await container.shutdown()
