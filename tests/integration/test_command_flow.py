@@ -11,6 +11,8 @@ Flow: submit_spawn -> broker queue -> drain_and_apply -> entity materialized wit
 import pytest
 from uuid_utils import uuid7
 
+from archetype.app.auth import guard as guard_state
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
@@ -212,6 +214,32 @@ async def test_lifecycle_command_rejects_entire_submit_batch(tmp_path):
         with pytest.raises(ValueError, match="direct gated operation"):
             await c.command_service.submit_batch(ctx, world.world_id, commands)
 
+        assert await c.broker.get_pending_count(world.world_id) == 0
+        assert await c.broker.get_history(world.world_id) == []
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
+    """All batch members pass authorization before any quota is committed."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"player"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="batch-quota"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        commands = [
+            Command(type=CommandType.CUSTOM),
+            Command(type=CommandType.ADD_PROCESSOR),
+        ]
+
+        with pytest.raises(GuardrailError):
+            await c.command_service.submit_batch(ctx, world.world_id, commands)
+
+        assert guard_state._tick_counters.get(ctx.id, 0) == 0
+        assert guard_state._daily_tokens.get(ctx.id, 0) == 0
         assert await c.broker.get_pending_count(world.world_id) == 0
         assert await c.broker.get_history(world.world_id) == []
     finally:

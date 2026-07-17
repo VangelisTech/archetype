@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype._obs import instrument
-from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.models import (
     Command,
     CommandType,
@@ -141,6 +141,19 @@ class CommandService:
     def _gate(self, cmd: Command, ctx: ActorCtx) -> None:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
+
+    @staticmethod
+    def _gate_batch(cmds: list[Command], ctx: ActorCtx) -> None:
+        """Validate a batch completely, then debit its quota once."""
+        projected_tokens = 0
+        for index, cmd in enumerate(cmds):
+            projected_tokens += guardrail_check(
+                cmd,
+                ctx,
+                projected_count=index,
+                projected_tokens=projected_tokens,
+            )
+        guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
 
     @staticmethod
     def _validate_deferred_command(cmd: Command) -> None:
@@ -1049,8 +1062,7 @@ class CommandService:
         self._require_world(world_id)
         for cmd in cmds:
             self._validate_deferred_command(cmd)
-        for cmd in cmds:
-            self._gate(cmd, ctx)
+        self._gate_batch(cmds, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)
         for cmd in cmds:
             await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
