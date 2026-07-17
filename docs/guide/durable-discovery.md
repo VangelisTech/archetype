@@ -117,7 +117,9 @@ Missing, drifted, or identity-mismatched historical records are skipped with a
 warning so one unrelated old world cannot block storage-wide discovery. Mutable
 world resume remains strict because it resolves only the target world's live
 entity signatures. When both sources know a table, the exact process-local
-class identity takes precedence over an ambiguous catalog reconstruction.
+class identity takes precedence over an ambiguous catalog reconstruction. If
+the catalog itself is unavailable, discovery returns the process-local subset
+and logs the degradation; commit-visibility checks remain fail-closed.
 
 ## 5. Fail-closed schema check
 

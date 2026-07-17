@@ -419,6 +419,29 @@ async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeypatch, caplog):
+    """Best-effort discovery retains the complete pre-catalog local answer."""
+    storage = _storage(tmp_path)
+    container = ServiceContainer()
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
+        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        def _unavailable(_storage_config):
+            raise RuntimeError("injected catalog outage")
+
+        monkeypatch.setattr(container.storage_service, "get_control_catalog", _unavailable)
+        with caplog.at_level(logging.ERROR, logger="archetype.app.query_service"):
+            signatures = await container.query_service.list_signatures(storage)
+
+        assert (Score,) in signatures
+        assert "control catalog unavailable for durable signature discovery" in caplog.text
+    finally:
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_p0_stale_descriptor_fails_closed(tmp_path):
     """A catalog descriptor whose fingerprint disagrees with the physical
     table must refuse to read — never an empty frame, never a created table."""

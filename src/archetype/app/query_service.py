@@ -26,6 +26,7 @@ import logging
 from daft import DataFrame, col, lit
 from uuid_utils import UUID
 
+from archetype.app._catalog import SignatureRecord
 from archetype.app._signature_resolution import match_signature_records
 from archetype.app.models import Command, CommandType
 from archetype.app.storage_service import StorageService
@@ -153,6 +154,15 @@ class QueryService:
         result = await _read(world_id, run_id, ticks)
         return await self._union_lineage(result, lineage, ticks, _read)
 
+    async def _signature_records(self, storage_config: StorageConfig) -> list[SignatureRecord]:
+        """Return durable discovery records, degrading safely when unavailable."""
+        try:
+            catalog = self._storage_service.get_control_catalog(storage_config)
+            return await catalog.list_signatures()
+        except Exception:
+            logger.exception("control catalog unavailable for durable signature discovery")
+            return []
+
     async def _catalog_candidates(
         self, storage_config: StorageConfig, components: list[type[Component]]
     ):
@@ -163,12 +173,7 @@ class QueryService:
         every table ever committed against this storage identity.
         """
         requested = {c.__name__ for c in components}
-        try:
-            catalog = self._storage_service.get_control_catalog(storage_config)
-            records = await catalog.list_signatures()
-        except Exception:
-            logger.exception("control catalog unavailable for %s", storage_config.uri)
-            return []
+        records = await self._signature_records(storage_config)
         return [r for r in records if requested.issubset(set(r.component_names))]
 
     async def _visible_tokens(
@@ -333,8 +338,7 @@ class QueryService:
             Archetype.get_name(signature): signature
             for signature in await querier.list_signatures()
         }
-        catalog = self._storage_service.get_control_catalog(effective_config)
-        records = await catalog.list_signatures()
+        records = await self._signature_records(effective_config)
         discovered, problems = match_signature_records(records)
         if problems:
             detail = "; ".join(
