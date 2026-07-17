@@ -233,6 +233,58 @@ async fn append_failure_preserves_spawn_and_despawn_for_retry() {
 }
 
 #[tokio::test]
+async fn per_table_step_rejects_multi_table_ticks_before_any_append() {
+    let position = position_table();
+    let position_velocity = position_velocity_table();
+    let store = ControlledStore::default();
+    let appends = store.appends.clone();
+    let mut world = AsyncWorld::from_ids("world-a", "run-a", store, AsyncSystem::new());
+    world
+        .queue_spawn_batch(&position, position_batch(1.5))
+        .unwrap();
+    world
+        .queue_spawn_batch(&position_velocity, position_velocity_batch(2.5, 3.5))
+        .unwrap();
+
+    let error = world.step_table(position.table_name()).await.unwrap_err();
+    assert!(matches!(
+        error,
+        ArchetypeCoreError::InvalidTableStep {
+            table_name,
+            active_tables,
+        } if table_name == position.table_name() && active_tables.len() == 2
+    ));
+    assert_eq!(world.state().tick(), 0);
+    assert!(appends.lock().unwrap().is_empty());
+
+    world.step().await.unwrap();
+    assert_eq!(world.state().tick(), 1);
+    assert_eq!(appends.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn per_table_step_is_a_complete_retryable_single_table_tick() {
+    let table = position_table();
+    let store = ControlledStore::default();
+    let appends = store.appends.clone();
+    let fail_next = store.fail_next.clone();
+    let mut world = AsyncWorld::from_ids("world-a", "run-a", store, AsyncSystem::new());
+    world
+        .queue_spawn_batch(&table, position_batch(1.5))
+        .unwrap();
+
+    fail_next.store(true, Ordering::SeqCst);
+    assert!(world.step_table(table.table_name()).await.is_err());
+    assert_eq!(world.state().tick(), 0);
+    assert!(appends.lock().unwrap().is_empty());
+
+    let batch = world.step_table(table.table_name()).await.unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(world.state().tick(), 1);
+    assert_eq!(appends.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn rejected_migration_leaves_pending_source_entity_unchanged() {
     let old_table = position_table();
     let new_table = position_velocity_table();

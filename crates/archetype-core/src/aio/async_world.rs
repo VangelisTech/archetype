@@ -1,4 +1,4 @@
-//! Tick lifecycle (per table, per `step_table_profiled` call):
+//! Tick lifecycle (per table within one `step_profiled` call):
 //!
 //! ```text
 //! Tick N:
@@ -21,6 +21,9 @@
 //! A world prepares every active table before the first append. Store appends
 //! are atomic per table, not across tables; failure after an earlier table was
 //! published poisons the world so tick N cannot be retried and duplicated.
+//! `step_table` and `step_table_profiled` are complete-tick conveniences for
+//! single-table worlds only: they reject multi-table use before any append and
+//! advance the shared tick after a successful append.
 //!
 //! Same-tick spawn-cancel (despawn while spawn is still pending) removes the
 //! spawn row entirely without writing a tombstone — the entity is never observed.
@@ -399,7 +402,7 @@ impl WorldState {
     /// Convenience wrapper used by unit tests and migration helpers: applies
     /// despawns then drains spawns into a single concatenated batch.
     ///
-    /// In the full tick path (`step_table_profiled`) these two phases are
+    /// In the full tick path (`prepare_table_profiled`) these two phases are
     /// called separately so that processors run only on prior rows and spawns
     /// land raw after processor output.
     pub fn materialize_table(
@@ -596,9 +599,20 @@ where
         table_name: &str,
     ) -> Result<(RecordBatch, TableStepProfile)> {
         self.ensure_healthy()?;
+        let mut active_tables = self.state.active_tables().into_iter().collect::<Vec<_>>();
+        active_tables.sort();
+        if active_tables.len() != 1 || active_tables[0] != table_name {
+            return Err(ArchetypeCoreError::InvalidTableStep {
+                table_name: table_name.to_string(),
+                active_tables,
+            });
+        }
+
         let mut prepared = self.prepare_table_profiled(table_name).await?;
         self.append_prepared_table(&mut prepared).await?;
-        Ok(self.finalize_prepared_table(prepared))
+        let completed = self.finalize_prepared_table(prepared);
+        self.state.advance_tick();
+        Ok(completed)
     }
 
     async fn prepare_table_profiled(&self, table_name: &str) -> Result<PreparedTableStep> {
