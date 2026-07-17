@@ -57,6 +57,7 @@ import pyarrow as pa
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -162,10 +163,15 @@ def catalog_path_for(config: StorageConfig) -> Path:
     (single-host authority is the documented v0.3 limit). The backend is
     part of the identity in both forms, mirroring storage_fingerprint.
     """
-    local_path = local_storage_path(str(config.uri))
-    if local_path is not None:
-        return local_path / config.namespace / f".archetype-catalog-{config.backend.value}.db"
+    namespace = require_safe_namespace(config.namespace)
+    if local_storage_path(str(config.uri)) is not None:
+        base = resolve_local_root(str(config.uri))
+        candidate = base / namespace / f".archetype-catalog-{config.backend.value}.db"
+        if not candidate.resolve().is_relative_to(base):
+            raise ValueError(f"catalog path {candidate} escapes storage root {base} (fail closed)")
+        return candidate
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
+    # The remote-form filename is fingerprint-derived hex, never request data.
     return root / f"{storage_fingerprint(config)[:24]}.db"
 
 

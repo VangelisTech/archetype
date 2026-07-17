@@ -21,6 +21,7 @@ from daft.session import Session
 
 from archetype._storage_uri import local_storage_path
 from archetype.core.config import StorageConfig
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 
 def configure_session(
@@ -51,6 +52,13 @@ def configure_session(
             "inject a preconfigured Daft Session through StorageService for "
             "remote or managed catalogs"
         )
+    # Containment (issue #327): the base path honors ARCHETYPE_DATA_ROOT, the
+    # namespace becomes a warehouse directory under it (pyiceberg Hive
+    # convention: <warehouse>/<namespace>.db/<table>), and a pre-planted
+    # symlink at that directory must not redirect writes outside the root.
+    base_path = resolve_local_root(str(config.uri))
+    require_safe_namespace(config.namespace)
+    resolve_local_root(str(base_path / f"{config.namespace}.db"))
 
     base_path.mkdir(parents=True, exist_ok=True)
     session = session if session is not None else Session()

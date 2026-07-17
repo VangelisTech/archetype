@@ -14,6 +14,7 @@ from uuid_utils import uuid7
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -55,9 +56,45 @@ async def test_submit_spawn_reserved_id_survives_drain(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_queued_update_is_applied_during_drain(tmp_path):
-    from archetype.app.models import Command, CommandType
+async def test_replayed_reserved_spawn_is_not_applied_twice(tmp_path):
+    """The drain path enforces the same double-spawn guard as direct mutation calls."""
+    c = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    try:
+        world = await c.world_service.create_world(
+            WorldConfig(name="spawn-replay"),
+            StorageConfig(uri=str(tmp_path / "store")),
+        )
+        (entity_id,) = world.reserve_entity_ids(1)
+        first = Command(
+            type=CommandType.SPAWN,
+            payload={
+                "entity_id": entity_id,
+                "components": [CommandFlowMarker(tag="first")],
+            },
+        )
+        replay = Command(
+            type=CommandType.SPAWN,
+            payload={
+                "entity_id": entity_id,
+                "components": [CommandFlowMarker(tag="replay")],
+            },
+        )
+        await c.command_service.submit_batch(ctx, world.world_id, [first, replay])
 
+        applied = await c.command_service.drain_and_apply(world.world_id, tick=0)
+
+        assert [command.id for command in applied] == [first.id]
+        sig = world.entity2sig[entity_id]
+        staged = [row for row in world.spawn_cache[sig] if row["entity_id"] == entity_id]
+        assert len(staged) == 1
+        assert staged[0][f"{CommandFlowMarker.get_prefix()}tag"] == "first"
+    finally:
+        await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queued_update_is_applied_during_drain(tmp_path):
     c = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="updates")
