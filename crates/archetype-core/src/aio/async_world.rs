@@ -105,6 +105,7 @@ pub struct WorldState {
     next_entity_id: EntityId,
     entity2table: HashMap<EntityId, String>,
     mutations: MutationBuffer,
+    partial_failure: Option<PartialTickFailure>,
 }
 
 impl WorldState {
@@ -116,6 +117,7 @@ impl WorldState {
             next_entity_id: 1,
             entity2table: HashMap::new(),
             mutations: MutationBuffer::default(),
+            partial_failure: None,
         }
     }
 
@@ -150,6 +152,7 @@ impl WorldState {
         table_schema: SchemaRef,
         component_batch: RecordBatch,
     ) -> Result<Vec<EntityId>> {
+        self.ensure_healthy()?;
         let table_name = table_name.into();
         let rows = component_batch.num_rows();
         let entity_ids = (0..rows)
@@ -172,6 +175,7 @@ impl WorldState {
         component_batch: RecordBatch,
         entity_ids: &[EntityId],
     ) -> Result<()> {
+        self.ensure_healthy()?;
         let table_name = table_name.into();
         let spawn = stamp_spawn_batch(
             table_schema,
@@ -209,6 +213,7 @@ impl WorldState {
         component_batch: RecordBatch,
         entity_ids: &[EntityId],
     ) -> Result<()> {
+        self.ensure_healthy()?;
         let table_name = table_name.into();
         let spawn = stamp_spawn_batch(
             table_schema,
@@ -268,6 +273,7 @@ impl WorldState {
     }
 
     pub fn queue_despawn(&mut self, entity_id: EntityId) -> Result<()> {
+        self.ensure_healthy()?;
         let table_name = self
             .entity2table
             .get(&entity_id)
@@ -315,6 +321,7 @@ impl WorldState {
         table_schema: SchemaRef,
         prior: RecordBatch,
     ) -> Result<RecordBatch> {
+        self.ensure_healthy()?;
         let materialized = self.staged_despawns_to_prior(table_name, table_schema, prior)?;
         self.mutations.despawns.remove(table_name);
         Ok(materialized)
@@ -349,6 +356,7 @@ impl WorldState {
     /// first-seen insertion order — matching the Python dict-based spawn
     /// dedupe.  Returns an empty `Vec` if nothing was queued.
     pub fn drain_spawn_frames(&mut self, table_name: &str) -> Result<Vec<RecordBatch>> {
+        self.ensure_healthy()?;
         let frames = self.staged_spawn_frames(table_name)?;
         self.mutations.spawns.remove(table_name);
         Ok(frames)
@@ -411,6 +419,7 @@ impl WorldState {
         table_schema: SchemaRef,
         prior: RecordBatch,
     ) -> Result<RecordBatch> {
+        self.ensure_healthy()?;
         let processor_input =
             self.staged_despawns_to_prior(table_name, table_schema.clone(), prior)?;
         let spawn_frames = self.staged_spawn_frames(table_name)?;
@@ -421,8 +430,21 @@ impl WorldState {
         Ok(materialized)
     }
 
-    pub fn advance_tick(&mut self) {
+    pub fn advance_tick(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         self.tick += 1;
+        Ok(())
+    }
+
+    fn poison(&mut self, failure: PartialTickFailure) {
+        self.partial_failure = Some(failure);
+    }
+
+    fn ensure_healthy(&self) -> Result<()> {
+        match &self.partial_failure {
+            Some(failure) => Err(failure.as_error()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -435,7 +457,6 @@ where
     system: AsyncSystem,
     tables: HashMap<String, SchemaRef>,
     live_tables: HashMap<String, RecordBatch>,
-    partial_failure: Option<PartialTickFailure>,
 }
 
 impl<S> AsyncWorld<S>
@@ -449,7 +470,6 @@ where
             system,
             tables: HashMap::new(),
             live_tables: HashMap::new(),
-            partial_failure: None,
         }
     }
 
@@ -563,7 +583,7 @@ where
                         cause: error.to_string(),
                     };
                     let error = failure.as_error();
-                    self.partial_failure = Some(failure);
+                    self.state.poison(failure);
                     return Err(error);
                 }
             }
@@ -573,7 +593,7 @@ where
             .into_iter()
             .map(|table| self.finalize_prepared_table(table).1)
             .collect();
-        self.state.advance_tick();
+        self.state.advance_tick()?;
         Ok(StepProfile {
             tick,
             tables,
@@ -611,7 +631,7 @@ where
         let mut prepared = self.prepare_table_profiled(table_name).await?;
         self.append_prepared_table(&mut prepared).await?;
         let completed = self.finalize_prepared_table(prepared);
-        self.state.advance_tick();
+        self.state.advance_tick()?;
         Ok(completed)
     }
 
@@ -701,10 +721,7 @@ where
     }
 
     fn ensure_healthy(&self) -> Result<()> {
-        match &self.partial_failure {
-            Some(failure) => Err(failure.as_error()),
-            None => Ok(()),
-        }
+        self.state.ensure_healthy()
     }
 
     pub async fn query_table(

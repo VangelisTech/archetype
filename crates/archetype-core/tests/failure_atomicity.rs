@@ -135,6 +135,18 @@ async fn later_append_failure_poisons_partial_tick_against_retry() {
         world.queue_despawn(position_ids[0]).unwrap_err(),
         ArchetypeCoreError::PartialTick { tick: 0, .. }
     ));
+    assert!(matches!(
+        world
+            .state_mut()
+            .queue_despawn(position_ids[0])
+            .unwrap_err(),
+        ArchetypeCoreError::PartialTick { tick: 0, .. }
+    ));
+    assert!(matches!(
+        world.state_mut().advance_tick().unwrap_err(),
+        ArchetypeCoreError::PartialTick { tick: 0, .. }
+    ));
+    assert_eq!(world.state().tick(), 0);
 }
 
 struct FailVelocity {
