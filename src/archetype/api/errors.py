@@ -31,6 +31,8 @@ def raise_api_error(exc: Exception, *, conflict: bool = False) -> NoReturn:
     """Map service-layer exceptions to stable REST errors."""
     if isinstance(exc, GuardrailError | PermissionError):
         raise HTTPException(status_code=403, detail=str(exc)) from None
+    # WorldNotFoundError extends LookupError, not KeyError; without the
+    # explicit branch it fell through to the 500 fallback (issue #180).
     if isinstance(exc, WorldNotFoundError | KeyError):
         raise HTTPException(status_code=404, detail=str(exc)) from None
     if isinstance(exc, ValueError):
