@@ -7,3 +7,7 @@
 ::: archetype.runtime.ArchetypeRuntime
 
 ::: archetype.runtime.configure_session
+
+::: archetype.runtime.entrypoint.entrypoint
+
+::: archetype._api.public_api
