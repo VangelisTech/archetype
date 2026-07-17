@@ -43,6 +43,12 @@ In deterministic CI, the working tree is the protected base. Use it for
 surrounding context and `.footgun-review.diff` for the exact candidate changes;
 a newly added file is represented in full by its diff.
 
+When deterministic CI requests structured output, `reviewed_files` and every
+`review_context.files` array are changed-file coverage fields: they may contain
+only paths from `.footgun-review-scope.json`. Name any protected-base files used
+as implementation evidence in the assessment prose instead. Never substitute
+schema examples or placeholder paths/categories for the authoritative scope.
+
 ### Footgun categories
 
 #### Row dropping
