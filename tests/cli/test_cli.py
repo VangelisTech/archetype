@@ -355,6 +355,15 @@ class TestCLIIntegration:
             assert empty in result.output
 
 
+def _is_app_module(module: str) -> bool:
+    return module == "archetype.app" or module.startswith("archetype.app.")
+
+
+def test_cli_app_import_boundary_uses_dotted_segments():
+    assert _is_app_module("archetype.app.models")
+    assert not _is_app_module("archetype.application")
+
+
 def test_cli_does_not_import_forbidden_app_modules():
     source = cli_mod.__file__
     tree = ast.parse(open(source).read())
@@ -366,9 +375,9 @@ def test_cli_does_not_import_forbidden_app_modules():
             module = node.module
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("archetype.app") and alias.name not in allowed:
+                if _is_app_module(alias.name) and alias.name not in allowed:
                     forbidden.append(alias.name)
-        if module and module.startswith("archetype.app") and module not in allowed:
+        if module and _is_app_module(module) and module not in allowed:
             forbidden.append(module)
     assert forbidden == []
 

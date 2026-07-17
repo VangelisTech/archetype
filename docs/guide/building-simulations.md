@@ -76,16 +76,38 @@ async def main():
         await world.spawn(Agent(name="Bob", role="designer", skill=2.0))
         await world.spawn(Agent(name="Charlie", role="manager", skill=1.5))
 
-        await world.run(steps=10)
+        # Persist the initial values, then apply processors ten times.
+        await world.step()
+        result = await world.run(steps=10)
+
+        history = await world.query(Agent)
+        current = history.where(col("tick") == result.final_tick - 1).sort("entity_id")
+        rows = current.select(
+            "agent__name",
+            "agent__skill",
+            "agent__experience",
+            "agent__rating",
+        ).collect().to_pylist()
+        for row in rows:
+            print(
+                f"{row['agent__name']}: skill={row['agent__skill']:.1f}, "
+                f"experience={row['agent__experience']:.0f}, "
+                f"rating={row['agent__rating']:.2f}"
+            )
 ```
 
 Output:
 
 ```text
-Alice:   skill=3.0, experience=60, rating=18.0
-Bob:     skill=2.0, experience=40, rating=8.0
-Charlie: skill=1.5, experience=30, rating=4.5
+Alice:   skill=3.0, experience=60, rating=18.00
+Bob:     skill=2.0, experience=40, rating=8.00
+Charlie: skill=1.5, experience=30, rating=4.50
 ```
+
+The initial `step()` records the spawned values as tick 0. Processors first
+apply on tick 1, so the ten-step run produces ticks 1 through 10. `query()`
+returns the append-only history; filter to `result.final_tick - 1` when you
+want the current persisted state.
 
 ## Key Concepts
 

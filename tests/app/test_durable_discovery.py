@@ -27,6 +27,7 @@ from archetype.app._catalog import (
     WorldRecord,
     catalog_path_for,
     schema_fingerprint,
+    storage_fingerprint,
 )
 from archetype.app.container import ServiceContainer
 from archetype.core.component import Component
@@ -75,6 +76,15 @@ def test_catalog_path_is_a_pure_function_of_storage_identity(tmp_path):
             for backend in (StorageBackend.LANCEDB, StorageBackend.ICEBERG)
         }
         assert len(pairs) == 2, "backends must never share a catalog"
+
+
+def test_catalog_identity_normalizes_equivalent_file_uri(tmp_path):
+    target = tmp_path / "file store"
+    path_config = StorageConfig(uri=str(target), namespace="ns")
+    uri_config = StorageConfig(uri=target.as_uri(), namespace="ns")
+
+    assert catalog_path_for(uri_config) == catalog_path_for(path_config)
+    assert storage_fingerprint(uri_config) == storage_fingerprint(path_config)
 
 
 @pytest.mark.asyncio
