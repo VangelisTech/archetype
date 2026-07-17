@@ -101,6 +101,7 @@ nav:
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Evaluation Harness: guide/evals.md
+      - Performance Benchmarking: guide/benchmarking.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md

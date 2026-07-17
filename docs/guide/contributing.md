@@ -179,6 +179,8 @@ make test        # fast test suite
 make test-cov    # test suite with coverage report
 make check       # format + lint
 make ci          # main gate: lint + lock-check + tests with coverage
+make bench       # record one local ECS microbenchmark report
+make bench-compare  # compare it with compatible local history
 uv run mkdocs build
 ```
 
