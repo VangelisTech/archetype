@@ -1,15 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression eval suite: tasks that must always pass (~100%).
-
-These protect against backsliding.  A decline in score signals something
-is broken.  Tasks here were once capability evals that graduated to
-regression status after reaching consistent pass rates.
-
-Graders are deterministic (code-based) since these test well-understood,
-stable behavior.
-"""
+"""Required repository checks for established behavior."""
 
 from __future__ import annotations
 

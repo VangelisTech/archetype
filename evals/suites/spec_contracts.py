@@ -631,7 +631,7 @@ class _UnusedService:
 def _registered_task_ids() -> list[str]:
     harness = EvalHarness()
     register(harness)
-    return [task_id for task_id, _, _, _ in harness._tasks]
+    return [task_id for task_id, _, _, _ in harness.registered_tasks]
 
 
 def task_receipt_authority_firewall() -> list[GraderResult]:

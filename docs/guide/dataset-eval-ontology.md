@@ -6,9 +6,10 @@
 fact tables, and every public surface that names benchmarks, suites, tasks,
 trials, or dataset episodes.
 
-This page defines vocabulary and identity. It does not define the trial
+This page defines public vocabulary and identity. It does not define the trial
 execution state machine tracked by issue #322, a particular reader schema, or
-the repository's internal eval harness.
+the `evals/` repository-check runner. That runner reuses ordinary words such as
+task and trial as local implementation labels; it does not extend this model.
 
 ## 1. The contract in one view
 
@@ -203,9 +204,9 @@ The durable evaluation-receipt contract is adjacent but distinct:
   the same dataset episode;
 - receipts carry conclusions and evidence, never promotion authority.
 
-The repository eval harness has its own internal `TrialResult`. That is a
-meta-evaluation attempt used to test Archetype itself; it is not the physical-
-AI dataset `Trial` defined here.
+The repository-check runner's internal `TrialResult` records one repeated
+execution of a framework check. It is not the physical-AI dataset `Trial`
+defined here.
 
 ## 7. Native vocabulary mapping
 
