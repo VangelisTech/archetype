@@ -77,13 +77,11 @@ async def run(
     orchestrator: WorldService | None = None,
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
-    instrumented: bool | None = None,
 ) -> tuple[BenchResult, tuple]:
     world, orch = await make_world(
         "simple-iteration",
         storage=storage,
         cache_config=cache_config,
-        instrumented=instrumented,
         orchestrator=orchestrator,
     )
     try:

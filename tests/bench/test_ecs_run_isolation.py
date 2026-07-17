@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
+
 import pytest
 
 from archetype.core.config import StorageBackend, StorageConfig
-from bench.core.ecs.run import _storage_for_bench, run_all
+from bench.core.ecs.run import _storage_for_bench, _storage_from_args, run_all
 
 
 def test_storage_for_bench_suffixes_default_storage(tmp_path, monkeypatch):
@@ -55,6 +57,18 @@ def test_storage_for_bench_gives_each_bench_a_unique_namespace():
     ]
     namespaces = {_storage_for_bench(storage, n).namespace for n in names}
     assert len(namespaces) == len(names)
+
+
+def test_storage_cli_backend_override_does_not_require_a_uri(tmp_path, monkeypatch):
+    """The old CLI advertised --backend but ignored it unless --uri was also set."""
+    monkeypatch.setenv("ARCHETYPE_DATA_URI", str(tmp_path))
+    monkeypatch.setenv("ARCHETYPE_BENCH_NS", "environment-default")
+
+    storage = _storage_from_args(Namespace(uri=None, namespace="explicit", backend="iceberg"))
+
+    assert storage.uri == str(tmp_path)
+    assert storage.namespace == "explicit"
+    assert storage.backend is StorageBackend.ICEBERG
 
 
 @pytest.mark.asyncio

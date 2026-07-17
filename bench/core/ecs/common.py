@@ -52,7 +52,6 @@ async def make_world(
     system: AsyncSystem | None = None,
     storage: StorageConfig | None = None,
     cache_config: CacheConfig | None = None,
-    instrumented: bool | None = None,
     orchestrator: WorldService | None = None,
 ) -> tuple[object, WorldService]:
     """
