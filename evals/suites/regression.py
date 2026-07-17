@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from datetime import UTC, datetime
 
 from daft import DataFrame, col
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 import archetype.app.auth.guard as guard
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import (
     estimate_token_cost,
     guardrail_allow,
@@ -27,6 +29,7 @@ from archetype.app.auth.guard import (
     reset_tick_counters,
 )
 from archetype.app.auth.models import ActorCtx
+from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType, EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -510,6 +513,161 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: exact quota boundaries, atomic bulk accounting, and UTC rollover
+# ---------------------------------------------------------------------------
+
+
+def task_quota_boundaries() -> list[GraderResult]:
+    """Quota accounting is exact, actor-local, atomic, and UTC-day scoped."""
+    return asyncio.run(_task_quota_boundaries())
+
+
+def _custom_commands(count: int) -> list[Command]:
+    return [Command(type=CommandType.CUSTOM) for _ in range(count)]
+
+
+async def _submit_allowed(
+    service: CommandService,
+    world_id: str | UUID,
+    ctx: ActorCtx,
+    count: int,
+) -> bool:
+    try:
+        if count == 1:
+            await service.submit(ctx, world_id, _custom_commands(1)[0])
+        else:
+            await service.submit_batch(ctx, world_id, _custom_commands(count))
+    except GuardrailError:
+        return False
+    return True
+
+
+def _guard_allowed(ctx: ActorCtx, now: datetime) -> bool:
+    try:
+        guardrail_allow(Command(type=CommandType.CUSTOM), ctx, now=now)
+    except GuardrailError:
+        return False
+    return True
+
+
+async def _task_quota_boundaries() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+    saved_daily_limit = guard.MAX_TOKENS_PER_DAY
+
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota_boundaries")
+            world = await container.world_service.create_world(
+                WorldConfig(name="quota-boundaries"),
+                storage,
+            )
+            actors = (
+                ActorCtx(id=uuid7(), roles={"admin"}),
+                ActorCtx(id=uuid7(), roles={"admin"}),
+            )
+
+            accepted_at_499 = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 499)
+                    for actor in actors
+                )
+            )
+            pending_at_499 = await container.broker.get_pending_count(world.world_id)
+
+            bulk_overflow_allowed = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 2)
+                    for actor in actors
+                )
+            )
+            pending_after_bulk_rejection = await container.broker.get_pending_count(world.world_id)
+
+            accepted_at_500 = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    for actor in actors
+                )
+            )
+            pending_at_500 = await container.broker.get_pending_count(world.world_id)
+
+            command_501_allowed = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    for actor in actors
+                )
+            )
+            pending_after_501 = await container.broker.get_pending_count(world.world_id)
+
+            reset_tick_counters()
+            reset_daily_tokens()
+            guard.MAX_TOKENS_PER_DAY = 20
+            before_midnight = datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC)
+            at_midnight = datetime(2030, 1, 2, tzinfo=UTC)
+            guard._last_reset_date = before_midnight.date()
+            daily_actor = ActorCtx(id=uuid7(), roles={"admin"})
+            daily_peer = ActorCtx(id=uuid7(), roles={"admin"})
+
+            daily_exact_limit = all(_guard_allowed(daily_actor, before_midnight) for _ in range(2))
+            daily_over_limit_allowed = _guard_allowed(daily_actor, before_midnight)
+            peer_allowed_same_day = _guard_allowed(daily_peer, before_midnight)
+
+            actor_allowed_at_midnight = _guard_allowed(daily_actor, at_midnight)
+            peer_exact_limit_after_rollover = all(
+                _guard_allowed(daily_peer, at_midnight) for _ in range(2)
+            )
+            peer_over_limit_after_rollover = _guard_allowed(daily_peer, at_midnight)
+
+            return [
+                state_check(
+                    {
+                        "both_actors_accepted": all(accepted_at_499),
+                        "499_each_queued": pending_at_499 == 998,
+                    },
+                    name="concurrent_actor_499_boundary",
+                ),
+                state_check(
+                    {
+                        "both_bulk_overflows_rejected": not any(bulk_overflow_allowed),
+                        "queue_unchanged": pending_after_bulk_rejection == pending_at_499,
+                        "quota_unchanged": all(accepted_at_500),
+                    },
+                    name="bulk_overflow_atomic",
+                ),
+                state_check(
+                    {
+                        "500_each_queued": pending_at_500 == 1000,
+                        "both_501_commands_rejected": not any(command_501_allowed),
+                        "rejection_did_not_enqueue": pending_after_501 == pending_at_500,
+                    },
+                    name="exact_500_501_boundary",
+                ),
+                state_check(
+                    {
+                        "exact_daily_budget_allowed": daily_exact_limit,
+                        "next_token_cost_rejected": not daily_over_limit_allowed,
+                        "peer_budget_is_independent": peer_allowed_same_day,
+                    },
+                    name="daily_budget_actor_isolation",
+                ),
+                state_check(
+                    {
+                        "blocked_actor_recovers_at_midnight": actor_allowed_at_midnight,
+                        "peer_receives_full_new_budget": peer_exact_limit_after_rollover,
+                        "new_day_budget_still_enforced": not peer_over_limit_after_rollover,
+                    },
+                    name="utc_midnight_rollover",
+                ),
+            ]
+        finally:
+            guard.MAX_TOKENS_PER_DAY = saved_daily_limit
+            await container.shutdown()
+            reset_tick_counters()
+            reset_daily_tokens()
+
+
+# ---------------------------------------------------------------------------
 # Task: value-based "all done" episode termination (bug B2)
 # ---------------------------------------------------------------------------
 
@@ -604,6 +762,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_tick_quota_resets,
         desc="Per-tick RBAC command quota resets each tick, not process-wide (B1)",
+    )
+    harness.add(
+        "quota_boundaries",
+        suite=SUITE,
+        fn=task_quota_boundaries,
+        desc="Exact per-tick and daily quota edges, atomic bulk debit, and actor isolation",
     )
     harness.add(
         "episode_value_termination",
