@@ -326,8 +326,8 @@ export class WorldCommitDO implements DurableObject {
       const anyClaim = this.sql
         .exec("SELECT 1 FROM claims WHERE run_id = ? LIMIT 1", run)
         .toArray();
+      const fence = this.sql.exec("SELECT 1 FROM fence WHERE singleton = 1").toArray();
       if (!anyManifest.length && !anyClaim.length) {
-        const fence = this.sql.exec("SELECT 1 FROM fence WHERE singleton = 1").toArray();
         return json({ visible: fence.length ? {} : null });
       }
       const ticks = ticksParam ? ticksParam.split(",").map((t) => parseInt(t, 10)) : null;
@@ -336,6 +336,9 @@ export class WorldCommitDO implements DurableObject {
         if (ticks && !ticks.includes(tick)) return;
         (visible[String(tick)] ??= []).push(token);
       };
+      if (!anyManifest.length && !fence.length) {
+        for (const tick of ticks ?? [0]) add(tick, "");
+      }
       for (const row of this.sql
         .exec("SELECT tick, commit_token FROM manifests WHERE run_id = ?", run)
         .toArray() as Array<Record<string, unknown>>) {

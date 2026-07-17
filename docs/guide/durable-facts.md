@@ -50,6 +50,10 @@ Claims live in the control catalog, keyed by a deterministic scope
    which publishes its commit token into the visible set. Readers change
    nothing: `visible_tokens` unions tick manifests with completed claims.
 
+For a never-fenced legacy run, the first claim activates token filtering but
+keeps the empty epoch-0 token visible. That hides a PENDING fact's non-empty
+token without making pre-coordination rows disappear.
+
 ## 4. Crash recovery
 
 Stranded PENDING claims are recovered by **lease takeover, never blind

@@ -860,7 +860,9 @@ class SqliteControlCatalog:
         only when the pair has neither manifests nor claims AND no fence —
         an uncoordinated or pre-#273 world whose rows are implicitly visible.
         A fence or any claim activates filtering; only published manifests
-        and COMPLETE claim tokens are then visible.
+        and COMPLETE claim tokens are then visible. When the first claim is
+        added to a never-fenced legacy run, its empty epoch-0 token remains
+        allowed so coordination does not hide pre-existing rows.
         """
 
         def _tokens() -> dict[int, list[str]] | None:
@@ -873,13 +875,13 @@ class SqliteControlCatalog:
                 "SELECT 1 FROM claims WHERE world_id=? AND run_id=? LIMIT 1",
                 (world_id, run_id),
             ).fetchone()
+            fence = conn.execute(
+                "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
+            ).fetchone()
             if any_manifest is None and any_claim is None:
                 # Distinguish true pre-#273 history (never fenced — implicitly
                 # visible) from a coordinated world whose first commit hasn't
                 # published (fence exists — nothing is visible yet).
-                fence = conn.execute(
-                    "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
-                ).fetchone()
                 return None if fence is None else {}
             if ticks is None:
                 tick_clause, args = "", []
@@ -888,6 +890,10 @@ class SqliteControlCatalog:
                 tick_clause = f" AND tick IN ({placeholders})"
                 args = [int(t) for t in ticks]
             visible: dict[int, list[str]] = {}
+            if any_manifest is None and fence is None:
+                legacy_ticks = [0] if ticks is None else [int(tick) for tick in ticks]
+                for tick in legacy_ticks:
+                    visible.setdefault(tick, []).append("")
             for row in conn.execute(
                 "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?"
                 + tick_clause,
