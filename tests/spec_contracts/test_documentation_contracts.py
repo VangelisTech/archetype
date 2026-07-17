@@ -16,6 +16,11 @@ _COMMAND_TOTAL_PATTERNS = (
     re.compile(r"\b(\d+)\s+command\s+types?\b", re.IGNORECASE),
     re.compile(r"\bcommand\s+types?\*{0,2}\s*\((\d+)\s+total\b", re.IGNORECASE),
 )
+_DESIGN_ONLY_MESSAGING_TYPES = (
+    "MessageDeliveryProcessor",
+    "DeliveryReceipt",
+    "ChatGraphRegistry",
+)
 
 
 def test_numeric_command_type_claims_match_the_enum() -> None:
@@ -62,3 +67,17 @@ def test_curated_example_command_roles_follow_permissions() -> None:
         assert documented == expected, (
             f"{command.value}: documented {documented}, expected {expected}"
         )
+
+
+def test_docs_do_not_claim_design_only_messaging_types() -> None:
+    """Unimplemented design sketches must not read as framework contracts."""
+    paths = [Path("LEARNINGS.md"), *sorted(_GUIDE_ROOT.glob("*.md"))]
+    stale: list[str] = []
+
+    for path in paths:
+        text = path.read_text()
+        for type_name in _DESIGN_ONLY_MESSAGING_TYPES:
+            if type_name in text:
+                stale.append(f"{path}: presents design-only {type_name}")
+
+    assert not stale, "stale messaging infrastructure claims:\n" + "\n".join(stale)
