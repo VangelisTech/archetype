@@ -10,6 +10,7 @@ from pathlib import Path
 
 from archetype.app.auth.permissions import ROLES_BY_COMMAND
 from archetype.app.models import CommandType
+from evals.run import build_harness
 
 _GUIDE_ROOT = Path("docs/guide")
 _COMMAND_TOTAL_PATTERNS = (
@@ -21,6 +22,11 @@ _DESIGN_ONLY_MESSAGING_TYPES = (
     "DeliveryReceipt",
     "ChatGraphRegistry",
 )
+_EVAL_MANIFEST = re.compile(
+    r"<!-- eval-task-manifest:start -->(.*?)<!-- eval-task-manifest:end -->",
+    re.DOTALL,
+)
+_EVAL_TASK_ROW = re.compile(r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|", re.MULTILINE)
 
 
 def test_numeric_command_type_claims_match_the_enum() -> None:
@@ -81,3 +87,21 @@ def test_docs_do_not_claim_design_only_messaging_types() -> None:
                 stale.append(f"{path}: presents design-only {type_name}")
 
     assert not stale, "stale messaging infrastructure claims:\n" + "\n".join(stale)
+
+
+def test_eval_guide_manifest_matches_registered_tasks() -> None:
+    """The guide's task inventory is exact, not a hand-maintained sample."""
+    guide = (_GUIDE_ROOT / "evals.md").read_text()
+    manifest = _EVAL_MANIFEST.search(guide)
+    assert manifest is not None, "eval task manifest markers are missing"
+
+    rows = _EVAL_TASK_ROW.findall(manifest.group(1))
+    documented = {(suite, task_id) for suite, task_id in rows}
+    assert len(rows) == len(documented), "eval task manifest contains duplicate rows"
+
+    harness = build_harness(trials=1)
+    registered = {(suite, task_id) for task_id, suite, _, _ in harness._tasks}
+    assert documented == registered, (
+        f"eval guide manifest drifted; missing={registered - documented}, "
+        f"stale={documented - registered}"
+    )
