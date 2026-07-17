@@ -163,6 +163,36 @@ Roles (flat, not hierarchical):
 | `operator` | schema, processors, hooks, resources, simulation, fork, destroy |
 | `admin` | All commands |
 
+## Change-safety quick reference
+
+- Keep dependencies pointing downward: runtime/API/CLI → app → core. Runtime
+  and API calls go through `CommandService`; do not leak `AsyncWorld` or
+  lower-level services past that gate.
+- Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
+  extension when it can meet the requirement; discuss any core behavior change
+  before implementing it.
+- Preserve the lazy Daft DAG. Prefer expressions and DataFrame transforms;
+  `.collect()` or `.to_pylist()` in `src/` needs a documented
+  `lazy_audit.toml` exception at a real execution boundary.
+- A tick is a commit boundary: compute all archetypes before persistence, and
+  do not consume staged mutations or advance the tick until durable visibility
+  is published. Failed ticks must remain retryable.
+- Keep runtime and world lifetimes distinct. Handles are lazy and actor-bound;
+  world shutdown is local, while runtime teardown owns shared services.
+- When changing behavior, update the focused contract test (and the
+  specification if the contract itself changes), not only a happy-path test.
+
+### Contract-first issue loop
+
+For non-trivial work, capture the behavior, owning layer, normative source,
+executable oracle, invariants at risk, validation, and affected docs in the
+issue. Use focused normative specs first, then executable contracts, then the
+umbrella specification, with guides and examples as teaching material. If
+those sources disagree, surface the mismatch instead of choosing silently.
+Split adjacent drift into separate issues, implement the smallest layer-correct
+change, and report the exact validation that ran. See
+`docs/guide/contributing.md` for the full workflow and documentation register.
+
 ## Conventions
 
 ### Components
