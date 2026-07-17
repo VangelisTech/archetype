@@ -121,25 +121,24 @@ jobs:
           echo "The detector did not return schema-valid structured output."
           exit 1
 
-      - name: Validate exact review evidence
+      - name: Validate and normalize detector result
         env:
           STRUCTURED_OUTPUT: ${{ steps.detector.outputs.structured_output }}
         run: |
           mkdir -p "${REVIEW_DIR}"
           printf '%s' "${STRUCTURED_OUTPUT}" > "${REVIEW_DIR}/structured-output.json"
-          python3 scripts/footgun_review_gate.py prepare \
+          python3 scripts/footgun_review_gate.py normalize \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
             --result "${REVIEW_DIR}/structured-output.json" \
-            --output-dir "${REVIEW_DIR}/validated" \
-            --github-output "${RUNNER_TEMP}/gate-outputs"
+            --output "${REVIEW_DIR}/validated/normalized.json"
 
       - name: Upload validated detector result
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           if-no-files-found: error
-          name: footgun-review-${{ github.run_id }}
-          path: ${{ github.workspace }}/.footgun-review-output/structured-output.json
+          name: footgun-review-validated-${{ github.run_id }}
+          path: ${{ github.workspace }}/.footgun-review-output/validated/normalized.json
           retention-days: 1
 
   review-complete:
@@ -204,19 +203,24 @@ jobs:
       - name: Download detector result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: footgun-review-${{ github.run_id }}
+          name: footgun-review-validated-${{ github.run_id }}
           path: ${{ runner.temp }}/detector-result
 
       - name: Validate and render publishable evidence
         id: prepare
+        env:
+          ARTIFACT_NAME: footgun-review-validated-${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p "${REVIEW_DIR}"
           python3 scripts/footgun_review_gate.py prepare \
             --scope "${SCOPE_FILE}" \
             --diff "${DIFF_FILE}" \
-            --result "${RUNNER_TEMP}/detector-result/structured-output.json" \
+            --result "${RUNNER_TEMP}/detector-result/normalized.json" \
             --output-dir "${REVIEW_DIR}" \
-            --github-output "${GITHUB_OUTPUT}"
+            --github-output "${GITHUB_OUTPUT}" \
+            --artifact-name "${ARTIFACT_NAME}" \
+            --run-url "${RUN_URL}"
 
       - name: Publish contextual no-findings evidence
         if: steps.prepare.outputs.finding_count == '0'

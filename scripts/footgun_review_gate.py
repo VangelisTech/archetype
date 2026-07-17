@@ -456,7 +456,58 @@ def _markdown_code(value: str) -> str:
     return value.replace("`", "\\`")
 
 
-def render_evidence(result: Mapping[str, Any], digest: str) -> str:
+_PUBLISHED_BODY_LIMIT = 60000
+
+
+def _artifact_section(
+    result: Mapping[str, Any],
+    run_url: str | None,
+    artifact_name: str | None,
+    *,
+    inline: bool,
+) -> list[str]:
+    lines = [
+        "<details>",
+        "<summary>Validated review artifact</summary>",
+        "",
+    ]
+    if inline:
+        payload = json.dumps(result, indent=2, ensure_ascii=False)
+        # Findings may quote code fences; the outer fence must be longer than
+        # any backtick run inside the payload.
+        longest_run = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
+        fence = "`" * max(3, longest_run + 1)
+        lines.extend([f"{fence}json", payload, fence, ""])
+    else:
+        if not run_url or not artifact_name:
+            raise GateError(
+                "oversized review evidence requires a named validated artifact"
+            )
+        lines.extend(
+            [
+                "The validated structured output exceeds the inline comment budget; "
+                "download the named validated artifact instead.",
+                "",
+            ]
+        )
+    if run_url and artifact_name:
+        lines.extend(
+            [
+                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) "
+                "(1-day retention).",
+                "",
+            ]
+        )
+    lines.append("</details>")
+    return lines
+
+
+def render_evidence(
+    result: Mapping[str, Any],
+    digest: str,
+    run_url: str | None = None,
+    artifact_name: str | None = None,
+) -> str:
     findings = _expect_list(result.get("findings"), "findings")
     files = _expect_list(result.get("reviewed_files"), "reviewed_files")
     categories = _expect_list(result.get("reviewed_categories"), "reviewed_categories")
@@ -498,10 +549,28 @@ def render_evidence(result: Mapping[str, Any], digest: str) -> str:
             "",
             "</details>",
             "",
-            evidence_marker(head_sha, finding_count, digest),
         ]
     )
-    return "\n".join(lines)
+    marker = evidence_marker(head_sha, finding_count, digest)
+
+    def body_with_artifact(*, inline: bool) -> str:
+        return "\n".join(
+            [
+                *lines,
+                *_artifact_section(result, run_url, artifact_name, inline=inline),
+                "",
+                marker,
+            ]
+        )
+
+    rendered = body_with_artifact(inline=True)
+    if len(rendered.encode("utf-8")) <= _PUBLISHED_BODY_LIMIT:
+        return rendered
+
+    rendered = body_with_artifact(inline=False)
+    if len(rendered.encode("utf-8")) > _PUBLISHED_BODY_LIMIT:
+        raise GateError("rendered review evidence exceeds the published body limit")
+    return rendered
 
 
 def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
@@ -521,7 +590,12 @@ def render_finding(finding: Mapping[str, Any], head_sha: str) -> str:
     )
 
 
-def review_payload(result: Mapping[str, Any], digest: str) -> dict[str, Any]:
+def review_payload(
+    result: Mapping[str, Any],
+    digest: str,
+    run_url: str | None = None,
+    artifact_name: str | None = None,
+) -> dict[str, Any]:
     head_sha = str(result["head_sha"])
     findings = _expect_list(result.get("findings"), "findings")
     if not findings:
@@ -529,7 +603,7 @@ def review_payload(result: Mapping[str, Any], digest: str) -> dict[str, Any]:
     return {
         "commit_id": head_sha,
         "event": "COMMENT",
-        "body": render_evidence(result, digest),
+        "body": render_evidence(result, digest, run_url, artifact_name),
         "comments": [
             {
                 "path": finding["path"],
@@ -645,21 +719,35 @@ def _github_scope_command(args: argparse.Namespace) -> None:
     _write_json(args.scope, scope)
 
 
-def _prepare_command(args: argparse.Namespace) -> None:
+def _validated_result(args: argparse.Namespace) -> dict[str, Any]:
     scope = _expect_mapping(_load_json(args.scope), "scope")
     raw_result = _expect_mapping(_load_json(args.result), "result")
     diff = args.diff.read_text(encoding="utf-8")
-    result = validate_result(raw_result, scope, diff)
+    return validate_result(raw_result, scope, diff)
+
+
+def _normalize_command(args: argparse.Namespace) -> None:
+    result = _validated_result(args)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, result)
+
+
+def _prepare_command(args: argparse.Namespace) -> None:
+    result = _validated_result(args)
     digest = artifact_digest(result)
     finding_count = len(result["findings"])
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     _write_json(args.output_dir / "normalized.json", result)
     (args.output_dir / "evidence.md").write_text(
-        render_evidence(result, digest) + "\n", encoding="utf-8"
+        render_evidence(result, digest, args.run_url, args.artifact_name) + "\n",
+        encoding="utf-8",
     )
     if finding_count:
-        _write_json(args.output_dir / "review.json", review_payload(result, digest))
+        _write_json(
+            args.output_dir / "review.json",
+            review_payload(result, digest, args.run_url, args.artifact_name),
+        )
 
     _append_github_outputs(
         args.github_output,
@@ -714,12 +802,23 @@ def _parser() -> argparse.ArgumentParser:
     github_scope.add_argument("--scope", type=Path, required=True)
     github_scope.set_defaults(handler=_github_scope_command)
 
+    normalize = subparsers.add_parser(
+        "normalize", help="validate structured output without rendering unpublished evidence"
+    )
+    normalize.add_argument("--scope", type=Path, required=True)
+    normalize.add_argument("--diff", type=Path, required=True)
+    normalize.add_argument("--result", type=Path, required=True)
+    normalize.add_argument("--output", type=Path, required=True)
+    normalize.set_defaults(handler=_normalize_command)
+
     prepare = subparsers.add_parser("prepare", help="validate and render structured output")
     prepare.add_argument("--scope", type=Path, required=True)
     prepare.add_argument("--diff", type=Path, required=True)
     prepare.add_argument("--result", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--github-output", type=Path, required=True)
+    prepare.add_argument("--artifact-name", default=None)
+    prepare.add_argument("--run-url", default=None)
     prepare.set_defaults(handler=_prepare_command)
 
     verify = subparsers.add_parser("verify", help="verify exact GitHub evidence")
