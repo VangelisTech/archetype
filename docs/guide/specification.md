@@ -121,6 +121,8 @@ Each layer may depend downward. No lower layer may depend upward.
   `<component_name_lower>__<field_name>`.
 - `Component.to_payload()` MUST include a `"type"` discriminator so the app
   layer can reconstruct the original concrete component type.
+- `"type"` is reserved payload metadata; component subclasses MUST NOT
+  declare it as a model field.
 - Untyped payload dicts MUST fail loudly rather than silently degrading to the
   base `Component`.
 
