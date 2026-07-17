@@ -204,8 +204,14 @@ def _filter_component_rows(
 ) -> DataFrame:
     prefix = component.get_prefix()
     model_fields = getattr(component, "model_fields", {})
-    for field_name, values in filters.items():
-        if values is None or field_name not in model_fields:
-            continue
+    requested = {field_name: values for field_name, values in filters.items() if values is not None}
+    unsupported = sorted(set(requested) - set(model_fields))
+    if unsupported:
+        names = ", ".join(unsupported)
+        raise ValueError(
+            f"{component.__name__} does not store requested trajectory filter field(s): "
+            f"{names}; filter the Trajectory header or use fields stored on this component"
+        )
+    for field_name, values in requested.items():
         df = df.where(col(f"{prefix}{field_name}").is_in(list(values)))
     return df
