@@ -1,7 +1,15 @@
-# Arm auto-merge (squash) on maintainer PRs the moment they open or leave
-# draft. The merge itself still waits on every required check and on
-# review-conversation resolution — this only removes the manual
-# `gh pr merge --auto --squash` step.
+# Arm auto-merge (squash) on maintainer PRs ONLY after the deterministic
+# review gate succeeds on the current head — and disarm on every new push
+# until it succeeds again.
+#
+# Why arming is the review gate now: with the merge queue, required review
+# checks deliberately SKIP on merge groups (the substantive review binds to
+# the PR head). That removed the old accidental back-pressure where a
+# failing/incomplete `review-complete` on the head blocked the merge — PRs
+# #446/#448/#449 merged carrying "Footgun review — incomplete" comments.
+# Queue entry must therefore imply a completed, clean review: disarm on
+# push, arm on review success. A PR whose review never completes, or whose
+# findings are unfixed, simply never enters the queue.
 #
 # Token note: if AUTOMERGE_PAT (a fine-grained PAT with contents:write +
 # pull-requests:write) is present, it is preferred. With the default
@@ -12,24 +20,50 @@
 name: Auto-merge
 
 on:
+  # Every new head invalidates the previous head's review verdict.
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # The review gate's completion is the arming signal.
+  workflow_run:
+    workflows: ["Deterministic Review Gate"]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  arm:
-    name: Arm auto-merge for maintainer PRs
-    if: >-
-      github.event.pull_request.user.login == 'everettVT' &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+  disarm:
+    name: Disarm until the head's review completes
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Enable auto-merge (squash)
+      - name: Disable auto-merge pending review
         env:
           GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: gh pr merge --disable-auto "$PR_URL" || true
+
+  arm:
+    name: Arm auto-merge for maintainer PRs
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Arm the reviewed head
+        env:
+          GH_TOKEN: ${{ secrets.AUTOMERGE_PAT || github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          pr=$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+            --search "sha:${HEAD_SHA}" \
+            --json number,author,isDraft,headRefOid \
+            --jq ".[] | select(.headRefOid == \"${HEAD_SHA}\" and .author.login == \"everettVT\" and (.isDraft | not)) | .number" | head -1)
+          if [ -z "$pr" ]; then
+            echo "No armable open PR at reviewed head ${HEAD_SHA}; nothing to do."
+            exit 0
+          fi
+          echo "Review gate succeeded on ${HEAD_SHA}; arming #${pr}."
+          gh pr merge --auto --squash --repo "${GITHUB_REPOSITORY}" "$pr"
