@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+from dataclasses import dataclass
 
 from daft import col
 
+from archetype import ArchetypeRuntime
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -59,6 +61,15 @@ class Flags(Component):
     level: int
 
 
+class ForkValue(Component):
+    amount: int = 0
+
+
+@dataclass
+class ForkStepSize:
+    delta: int = 1
+
+
 class ApplyVelocity(AsyncProcessor):
     """Move entities: position += velocity each step."""
 
@@ -69,6 +80,18 @@ class ApplyVelocity(AsyncProcessor):
         return df.with_column("position__x", col("position__x") + col("velocity__dx")).with_column(
             "position__y", col("position__y") + col("velocity__dy")
         )
+
+
+class AdvanceForkValue(AsyncProcessor):
+    """Advance fork state using a mutable resource shared across branches."""
+
+    components = (ForkValue,)
+    priority = 1
+
+    async def process(self, df, resources=None, **kwargs):
+        step_size = resources.get(ForkStepSize) if resources else None
+        delta = step_size.delta if step_size else 0
+        return df.with_column("forkvalue__amount", col("forkvalue__amount") + delta)
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +263,145 @@ async def _task_simulation_correctness() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: Fork-of-fork continuity and divergence
+# ---------------------------------------------------------------------------
+
+
+def task_fork_divergence() -> list[GraderResult]:
+    """Compose fork lineage, resource sharing, and branch isolation."""
+    return asyncio.run(_task_fork_divergence())
+
+
+async def _task_fork_divergence() -> list[GraderResult]:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage_cfg = StorageConfig(uri=f"{tmp}/store", namespace="eval_fork")
+        step_size = ForkStepSize()
+
+        async with ArchetypeRuntime() as runtime:
+            base = runtime.world(
+                "fork-base",
+                storage=storage_cfg,
+                processors=[AdvanceForkValue()],
+                resources=[step_size],
+            )
+            entity_id = await base.spawn(ForkValue(amount=0))
+            await base.step()  # raw initial condition at tick 0
+            await base.step()  # 1 at tick 1
+            base_at_fork = await base.info()
+
+            mid = await base.fork("fork-mid")
+            mid_at_fork = await mid.info()
+            await mid.step()  # continue parent state: 2 at tick 2
+            mid_after_first_step = await mid.info()
+
+            leaf = await mid.fork("fork-leaf")
+            leaf_at_fork = await leaf.info()
+            await leaf.step()  # continue mid state: 3 at tick 3
+
+            resource_name = f"{ForkStepSize.__module__}.{ForkStepSize.__qualname__}"
+            resource_sets = [
+                {resource.qualname for resource in await world.list_resources()}
+                for world in (base, mid, leaf)
+            ]
+
+            # Forks intentionally share resource instances. Mutating the
+            # original object must affect the next independent step in every
+            # branch without changing their lineage cutoffs.
+            step_size.delta = 5
+            await base.step()  # 1 + 5 = 6 at tick 2
+            await mid.step()  # 2 + 5 = 7 at tick 3
+            await leaf.step()  # 3 + 5 = 8 at tick 4
+
+            await base.update(entity_id, ForkValue(amount=100))
+            await mid.update(entity_id, ForkValue(amount=200))
+            await leaf.update(entity_id, ForkValue(amount=300))
+            await base.step()
+            await mid.step()
+            await leaf.step()
+
+            histories = [
+                (await world.query(ForkValue, entity_ids=[entity_id])).to_pylist()
+                for world in (base, mid, leaf)
+            ]
+
+        value_maps = [
+            {int(row["tick"]): int(row["forkvalue__amount"]) for row in rows} for rows in histories
+        ]
+        owner_maps = [
+            {int(row["tick"]): str(row["world_id"]) for row in rows} for rows in histories
+        ]
+        base_id, mid_id, leaf_id = (
+            str(base_at_fork.world_id),
+            str(mid_at_fork.world_id),
+            str(leaf_at_fork.world_id),
+        )
+
+        expected_values = [
+            {0: 0, 1: 1, 2: 6, 3: 100},
+            {0: 0, 1: 1, 2: 2, 3: 7, 4: 200},
+            {0: 0, 1: 1, 2: 2, 3: 3, 4: 8, 5: 300},
+        ]
+        expected_owners = [
+            {0: base_id, 1: base_id, 2: base_id, 3: base_id},
+            {0: base_id, 1: base_id, 2: mid_id, 3: mid_id, 4: mid_id},
+            {
+                0: base_id,
+                1: base_id,
+                2: mid_id,
+                3: leaf_id,
+                4: leaf_id,
+                5: leaf_id,
+            },
+        ]
+
+        return [
+            state_check(
+                {
+                    "fresh_world_ids": len({base_id, mid_id, leaf_id}) == 3,
+                    "fresh_run_ids": len(
+                        {
+                            str(base_at_fork.run_id),
+                            str(mid_at_fork.run_id),
+                            str(leaf_at_fork.run_id),
+                        }
+                    )
+                    == 3,
+                    "mid_starts_at_base_tick": mid_at_fork.tick == base_at_fork.tick == 2,
+                    "leaf_starts_at_mid_tick": (
+                        leaf_at_fork.tick == mid_after_first_step.tick == 3
+                    ),
+                },
+                name="fork_identity",
+            ),
+            state_check(
+                {
+                    "resource_in_base": resource_name in resource_sets[0],
+                    "resource_in_mid": resource_name in resource_sets[1],
+                    "resource_in_leaf": resource_name in resource_sets[2],
+                    "shared_change_reaches_base": value_maps[0].get(2) == 6,
+                    "shared_change_reaches_mid": value_maps[1].get(3) == 7,
+                    "shared_change_reaches_leaf": value_maps[2].get(4) == 8,
+                },
+                name="fork_resource_sharing",
+            ),
+            state_check(
+                {
+                    "one_row_per_base_tick": len(histories[0]) == len(value_maps[0]),
+                    "one_row_per_mid_tick": len(histories[1]) == len(value_maps[1]),
+                    "one_row_per_leaf_tick": len(histories[2]) == len(value_maps[2]),
+                    "base_lineage_ownership": owner_maps[0] == expected_owners[0],
+                    "mid_lineage_ownership": owner_maps[1] == expected_owners[1],
+                    "leaf_lineage_ownership": owner_maps[2] == expected_owners[2],
+                },
+                name="fork_lineage_cutoffs",
+            ),
+            exact_match(value_maps[0], expected_values[0], name="base_branch_history"),
+            exact_match(value_maps[1], expected_values[1], name="mid_branch_history"),
+            exact_match(value_maps[2], expected_values[2], name="leaf_branch_history"),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Register all capability tasks
 # ---------------------------------------------------------------------------
 
@@ -257,4 +419,10 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_simulation_correctness,
         desc="Multi-step simulation: entity preservation, processor correctness, data integrity",
+    )
+    harness.add(
+        "fork_divergence",
+        suite=SUITE,
+        fn=task_fork_divergence,
+        desc="Fork-of-fork lineage continuity, shared resources, and isolated branch mutations",
     )
