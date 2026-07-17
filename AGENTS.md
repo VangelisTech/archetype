@@ -143,6 +143,12 @@ make check       # format + lint
 make test-cov    # coverage report
 ```
 
+PR flow: open the PR and stop — never run `gh pr merge --auto`. The
+automerge workflow arms after the review gate passes your current head
+(premature arms are auto-reverted; arming early only skips the review, it
+never merges sooner). Reply to footgun review threads with what you
+changed before resolving them.
+
 ## Command flow
 
 ```text

@@ -54,3 +54,12 @@ make ci                         # Gate: lint + lock-check + tests with coverage
 make test                       # Fast tests, no coverage
 make check                      # Auto-format + lint
 ```
+
+## PR flow
+
+Open the PR and stop — never run `gh pr merge --auto`. The automerge
+workflow arms auto-merge only after the deterministic review gate passes
+your current head; arming earlier does not merge sooner, it only lets the
+PR enter the merge queue before its review verdict (premature arms are
+auto-reverted). Reply to footgun review threads with what you changed
+before resolving them.
