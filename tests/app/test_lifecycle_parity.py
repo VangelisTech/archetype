@@ -3,8 +3,8 @@
 
 """Lifecycle parity tests.
 
-Covers shutdown error aggregation, op_lock serialization, multi-runtime
-isolation, sync/async surface parity, and viewer guardrails.
+Covers shutdown draining and error aggregation, op_lock serialization,
+multi-runtime isolation, sync/async surface parity, and viewer guardrails.
 """
 
 from __future__ import annotations
@@ -12,9 +12,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from daft import DataFrame, col
 from uuid_utils import uuid7
 
-from archetype import ArchetypeRuntime, Component
+from archetype import ArchetypeRuntime, AsyncProcessor, Component
 from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
@@ -26,6 +27,21 @@ from archetype.runtime.world import RuntimeWorld
 class Pos(Component):
     x: float = 0.0
     y: float = 0.0
+
+
+class BlockingIncrement(AsyncProcessor):
+    """Hold one step open so shutdown ordering is observable."""
+
+    components = (Pos,)
+
+    def __init__(self, entered: asyncio.Event, release: asyncio.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        self.entered.set()
+        await self.release.wait()
+        return df.with_column("pos__x", col("pos__x") + 1)
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +86,35 @@ class TestShutdownErrorAggregation:
 
         # world_b should still have been shut down despite world_a's failure
         assert world_b._state.closed
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_in_flight_step(self, tmp_path):
+        """Runtime services stay open until an admitted world operation exits."""
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "shutdown-race",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+
+        await world.spawn(Pos())
+        await world.step()  # persist the raw initial condition
+        await world.add_processor(BlockingIncrement(entered, release))
+
+        step_task = asyncio.create_task(world.step())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        shutdown_task = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)  # let shutdown stop admission and reach op_lock
+
+        assert not shutdown_task.done(), "shutdown overtook the in-flight step"
+
+        release.set()
+        await asyncio.wait_for(step_task, timeout=5)
+        await asyncio.wait_for(shutdown_task, timeout=5)
+
+        with pytest.raises(RuntimeError, match="closed"):
+            await world.info()
 
 
 # ── 2. op_lock serialization ──────────────────────────────────────────

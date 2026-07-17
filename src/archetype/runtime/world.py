@@ -172,20 +172,26 @@ class _RuntimeWorldState:
         return self.world_id
 
     async def shutdown(self, *, from_runtime: bool) -> None:
-        """Shut down this world state. Idempotent."""
-        if self.closed:
-            return
-        self.closed = True
+        """Wait for admitted work, then shut down this world state once."""
+        async with self.op_lock:
+            if self.closed:
+                return
+            self.closed = True
 
-        if not from_runtime and self.owns_world and self.initialized and self.world_id is not None:
-            gate = self.runtime._container.command_service
-            # Use a default admin ctx for shutdown
-            from archetype.runtime._actor import default_actor_ctx
+            if (
+                not from_runtime
+                and self.owns_world
+                and self.initialized
+                and self.world_id is not None
+            ):
+                gate = self.runtime._container.command_service
+                # Use a default admin ctx for shutdown
+                from archetype.runtime._actor import default_actor_ctx
 
-            await gate.destroy_world(default_actor_ctx(), self.world_id)
+                await gate.destroy_world(default_actor_ctx(), self.world_id)
 
-        for alias in list(self.aliases):
-            self.runtime._unregister_handle(alias)
+            for alias in list(self.aliases):
+                self.runtime._unregister_handle(alias)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

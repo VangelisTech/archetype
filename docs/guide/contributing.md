@@ -156,7 +156,7 @@ that needs to be written.
 Good examples:
 
 - "Make `SimulationService.run()` preserve one logical `run_id` across the full run and add regression coverage."
-- "Document the world-local shutdown contract for the sugar runtime and add smoke tests."
+- "Document `RuntimeWorld`'s world-local shutdown contract and add smoke tests."
 - "Fix `QueryService` so it either implements real reads or is clearly documented as provisional."
 
 Do not force a contract card onto a spelling fix. Use it when implementation

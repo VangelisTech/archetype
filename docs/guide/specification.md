@@ -636,8 +636,11 @@ Required behavior:
 
 - `fork()` may not race with first activation
 - `shutdown()` may not race with first activation
-- `shutdown()` may not invalidate in-flight `run()`, `step()`, or `query()`
-  calls without a defined error contract
+- Runtime shutdown MUST stop admitting new calls, wait for any call already
+  holding a world's operation lock, and close shared services only after that
+  admitted work completes.
+- Calls queued behind an in-flight operation MAY fail with the runtime's closed
+  error once shutdown has started; they have not yet been admitted.
 
 #### C5. Honest command return values
 
@@ -1008,6 +1011,8 @@ all of the following:
 - live/cold historical-read parity and resumed run continuity
   (`time_travel_and_run_id` capability eval)
 - explicit runtime-vs-world lifetime boundaries
+- lazy single-flight activation, wait-then-close runtime shutdown, handle
+  invalidation, and sync/async handle parity (`runtime_contracts` regression eval)
 - clear distinction between idempotent and non-idempotent operations
 
 ## Runtime Boundary
@@ -1049,7 +1054,7 @@ These contracts should not live only in docs. They need executable tests.
 High-value contract tests include:
 
 - concurrent first-use activation
-- shutdown vs init and fork vs init races
+- shutdown vs admitted work, shutdown vs init, and fork vs init races
 - multi-world lifetime isolation
 - spawn materialization timing
 - async/sync smoke paths
