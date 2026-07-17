@@ -38,6 +38,7 @@ _RUNTIME_ALLOWED_APP = frozenset(
 _API_ALLOWED_APP = _RUNTIME_ALLOWED_APP | frozenset(
     {
         "archetype.app.auth.errors",
+        "archetype.app.errors",
     }
 )
 

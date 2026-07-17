@@ -20,7 +20,7 @@ gated surface) raise as part of their public contract.
 """
 
 
-class WorldNotFoundError(KeyError):
+class WorldNotFoundError(LookupError):
     """Raised when a gated operation targets a ``world_id`` not in the registry.
 
     Per ``docs/guide/specification.md`` "Required Hardening Work" item 3,
