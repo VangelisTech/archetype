@@ -587,6 +587,47 @@ async def test_modal_start_isolates_broker_and_cleans_it_on_mission_failure(
 
 
 @pytest.mark.asyncio
+async def test_modal_sandbox_creation_sets_resource_and_identity_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_calls: list[dict[str, Any]] = []
+
+    async def create(**kwargs: Any) -> str:
+        create_calls.append(kwargs)
+        return "sandbox"
+
+    sandbox_api = type("Sandbox", (), {"create": _AsyncMethod(create)})()
+    monkeypatch.setitem(sys.modules, "modal", type("Modal", (), {"Sandbox": sandbox_api})())
+    spec = _spec()
+
+    result = await ModalSandboxClient._create_modal_sandbox(
+        spec,
+        image="image",
+        app="app",
+        volumes={"/auth": "volume"},
+        workdir="/auth",
+        kind="credential-broker",
+    )
+
+    assert result == "sandbox"
+    assert create_calls == [
+        {
+            "app": "app",
+            "image": "image",
+            "timeout": spec.timeout_seconds,
+            "idle_timeout": spec.idle_timeout_seconds,
+            "workdir": "/auth",
+            "volumes": {"/auth": "volume"},
+            "tags": {
+                "kind": "credential-broker",
+                "branch": spec.branch,
+                "harness": spec.harness,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_modal_create_reports_monitor_command_and_closes_on_preparation_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -858,6 +899,27 @@ async def test_provider_neutral_helpers_cover_repository_push_and_receipts(
 
 
 @pytest.mark.asyncio
+async def test_filesystem_capture_and_receipts_survive_a_new_client() -> None:
+    sandbox = _FakeSandbox()
+    client = ModalSandboxClient(_spec(capture_filesystem_manifests=True), sandbox, object())
+
+    await client._capture_filesystem_manifest("/tmp/filesystem.jsonl")
+    capture = next(
+        call
+        for call in sandbox.calls
+        if call["args"][:2] == ("python3", "-c") and call["args"][-2] == "/tmp/filesystem.jsonl"
+    )
+    assert capture["args"][-3] == "/"
+
+    outcome = {"status": "accepted", "accepted": True}
+    await client._store_completed("durable", outcome)
+    resumed = ModalSandboxClient(client.spec, sandbox, object())
+    assert await resumed._load_completed("durable") == outcome
+    assert resumed._git_auth_args() == ()
+    assert resumed._git_secrets() == []
+
+
+@pytest.mark.asyncio
 async def test_provider_neutral_close_and_live_hooks_are_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1116,16 +1178,66 @@ async def test_monitor_surfaces_direct_read_errors_and_bounded_disconnect(
 
 
 @pytest.mark.asyncio
+async def test_monitor_follows_nonterminal_status_to_clean_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _FakeSandbox()
+    status_path, events_path = ModalSandboxClient.live_artifact_paths("/workspace/repo")
+    sandbox.filesystem.files[events_path] = ""
+    reads = 0
+    original_read = sandbox.filesystem.read_text.aio
+
+    async def changing_status(path: str) -> str:
+        nonlocal reads
+        if path == status_path:
+            reads += 1
+            phase = "heartbeat" if reads == 1 else "sandbox_closing"
+            return json.dumps({"type": phase, "sandbox_id": "sb-test"})
+        return await original_read(path)
+
+    sandbox.filesystem.read_text = _AsyncMethod(changing_status)
+
+    async def from_id(_sandbox_id: str) -> _FakeSandbox:
+        return sandbox
+
+    sandbox_api = type("Sandbox", (), {"from_id": _AsyncMethod(from_id)})()
+    monkeypatch.setitem(sys.modules, "modal", type("Modal", (), {"Sandbox": sandbox_api})())
+
+    status = await ModalSandboxClient.monitor("sb-test", poll_seconds=0.001)
+    assert status["type"] == "sandbox_closing"
+    assert reads >= 2
+
+
+@pytest.mark.asyncio
 async def test_report_live_event_rejects_reserved_or_empty_types() -> None:
     client = ModalSandboxClient(_spec(), _FakeSandbox(), object())
     for event_type in ("", "heartbeat"):
         with pytest.raises(ValueError, match="non-heartbeat"):
             await client.report_live_event(event_type)
 
+    await client.report_live_event("artifact_publication_started")
+    status_path, _events_path = client._live_artifact_paths()
+    status = json.loads(client._sandbox.filesystem.files[status_path])
+    assert status["phase"] == "publishing_artifacts"
+
     assert (
         ModalSandboxClient._phase_for_event("artifact_publication_started", {})
         == "publishing_artifacts"
     )
+
+
+@pytest.mark.asyncio
+async def test_live_event_propagates_unexpected_filesystem_errors() -> None:
+    sandbox = _FakeSandbox()
+
+    async def unavailable(_path: str) -> str:
+        raise RuntimeError("filesystem transport failed")
+
+    sandbox.filesystem.read_text = _AsyncMethod(unavailable)
+    client = ModalSandboxClient(_spec(stream_agent_output=False), sandbox, object())
+
+    with pytest.raises(RuntimeError, match="filesystem transport failed"):
+        await client._emit_live_event("sandbox_ready")
 
 
 @pytest.mark.asyncio

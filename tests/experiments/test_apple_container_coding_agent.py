@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -38,9 +39,20 @@ def test_spec_validates_identity_and_has_content_addressed_image() -> None:
     assert codex.agent_secret_env == ""
     assert codex.codex_auth_volume == "archetype-codex-auth"
     assert claude.agent_secret_env == "ANTHROPIC_API_KEY"
+    assert _spec(image_name="custom:latest").resolved_image_name == "custom:latest"
 
     with pytest.raises(ValueError, match="non-root absolute"):
         _spec(workspace="/")
+    with pytest.raises(ValueError, match="repo_url"):
+        _spec(repo_url="")
+    with pytest.raises(ValueError, match="branch"):
+        _spec(branch="--invalid")
+    with pytest.raises(ValueError, match="base_ref"):
+        _spec(base_ref="--invalid")
+    with pytest.raises(ValueError, match="unsupported"):
+        _spec(harness="opencode")
+    with pytest.raises(ValueError, match="positive resources"):
+        _spec(cpus=0)
     with pytest.raises(ValueError, match="environment variable"):
         _spec(codex_auth_env="not-valid")
     with pytest.raises(ValueError, match="volume name"):
@@ -357,3 +369,32 @@ async def test_restore_rejects_missing_or_artifact_fragment_refs(tmp_path: Path)
         await AppleContainerSandboxClient.restore(
             _spec(), f"apple-container-rootfs://{tmp_path / 'rootfs.tar'}#/workspace/file"
         )
+
+
+@pytest.mark.asyncio
+async def test_host_process_capture_timeout_and_passthrough_contracts() -> None:
+    captured = await AppleContainerSandboxClient._run_host(
+        sys.executable,
+        "-c",
+        "import sys; print('out'); print('err', file=sys.stderr)",
+        timeout=10,
+    )
+    assert captured.returncode == 0
+    assert captured.stdout == "out\n"
+    assert captured.stderr == "err\n"
+
+    timed_out = await AppleContainerSandboxClient._run_host(
+        sys.executable,
+        "-c",
+        "import time; time.sleep(10)",
+        timeout=0.01,
+    )
+    assert timed_out.returncode == 124
+    assert "timed out after 0.01s" in timed_out.stderr
+
+    assert (
+        await AppleContainerSandboxClient._run_host_passthrough(
+            sys.executable, "-c", "raise SystemExit(3)"
+        )
+        == 3
+    )
