@@ -447,6 +447,38 @@ def test_encrypted_zip_metadata_fails_before_member_open(tmp_path: Path) -> None
         )
 
 
+@pytest.mark.parametrize(
+    "metadata_field",
+    ["archive_comment", "member_comment", "member_extra"],
+)
+def test_zip_metadata_is_scanned_before_archive_approval(
+    tmp_path: Path,
+    metadata_field: str,
+) -> None:
+    path = tmp_path / f"secret-{metadata_field}.zip"
+    secret = ("ghp_" + "M" * 36).encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        member = zipfile.ZipInfo("result.txt")
+        if metadata_field == "archive_comment":
+            archive.comment = secret
+        elif metadata_field == "member_comment":
+            member.comment = secret
+        else:
+            member.extra = b"\xfe\xca" + len(secret).to_bytes(2, "little") + secret
+        archive.writestr(member, b"safe")
+
+    destination = tmp_path / "approved"
+    with pytest.raises(SecretQuarantineError) as error:
+        RedactionService().sanitize_file(
+            path,
+            destination,
+            logical_path=path.name,
+        )
+    assert error.value.rule_ids == ("github-token",)
+    assert secret.decode() not in str(error.value)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize("archive_kind", ["tar", "zip"])
 def test_archive_stream_size_must_match_member_metadata(
     tmp_path: Path,

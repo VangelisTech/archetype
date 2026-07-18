@@ -262,7 +262,7 @@ class RedactionService:
         self._config = config or RedactionPolicyConfig()
         policy_material = {
             "schema_version": 1,
-            "implementation_revision": 1,
+            "implementation_revision": 2,
             "config": self._config.model_dump(mode="json"),
             "rules": [(rule.rule_id, rule.pattern.pattern, rule.pattern.flags) for rule in _RULES],
             "private_key_rules": (
@@ -280,6 +280,7 @@ class RedactionService:
             "placeholder_prefixes": _PLACEHOLDER_PREFIXES,
             "nested_archive_behavior": "quarantine",
             "archive_link_behavior": "quarantine",
+            "zip_envelope_behavior": "scan-raw-envelope-and-members",
             "source_snapshot_behavior": "regular-file-no-follow",
         }
         digest = hashlib.sha256(
@@ -584,6 +585,12 @@ class RedactionService:
     def _scan_zip(self, path: Path, *, scope: str) -> None:
         members = expanded = 0
         try:
+            # ZIP metadata is retained byte-for-byte in the approved snapshot.
+            # Scan the raw envelope as well as decoded member payloads so archive
+            # comments and local/central-directory comments or extra fields
+            # cannot carry an uninspected credential across the durable boundary.
+            with path.open("rb") as stream:
+                self._scan_binary_stream(stream, scope=scope)
             with zipfile.ZipFile(path) as archive:
                 for member in archive.infolist():
                     members += 1
