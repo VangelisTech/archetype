@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -333,6 +333,23 @@ async def test_transport_failure_stops_before_authoritative_side_effects() -> No
     assert client.events[-1][0] == "agent_transport_failed"
 
 
+@pytest.mark.asyncio
+async def test_closed_sandbox_and_missing_context_fail_closed_or_declare_no_ref() -> None:
+    closed = _FakeClient(_Spec())
+    await closed.close()
+    with pytest.raises(RuntimeError, match="already closed"):
+        await closed.run_attempt(**_attempt_kwargs())
+
+    no_context = _FakeClient(
+        replace(_Spec(), snapshot_after_attempt=False),
+        context_exists=False,
+    )
+    outcome = await no_context.run_attempt(**_attempt_kwargs())
+    assert outcome["checkpoint_status"] == "disabled"
+    assert outcome["context_ref"] == ""
+    assert outcome["finalization_phase"] == "captured"
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -368,6 +385,128 @@ def test_validator_spec_validates_its_boundary() -> None:
         ValidatorSpec("tests", ())
     with pytest.raises(ValueError, match="timeout"):
         ValidatorSpec("tests", ("pytest",), timeout_seconds=0)
+
+
+@pytest.mark.asyncio
+async def test_common_repository_setup_and_agent_command_shapes() -> None:
+    codex = _FakeClient(
+        replace(_Spec(), model="gpt-test"),
+        _agent_secret=object(),
+        _github_secret=object(),
+    )
+    await CodingAgentSandboxClient._prepare_repository(codex)
+    resumed = await CodingAgentSandboxClient._run_agent(codex, "repair", session_id="thread-1")
+    fresh = await CodingAgentSandboxClient._run_agent(codex, "fix", session_id="")
+    assert resumed.returncode == fresh.returncode == 0
+
+    clone = next(call for call in codex.commands if call[0][:2] == ("git", "-c"))
+    assert "clone" in clone[0]
+    assert clone[1]["secrets"] == (codex._github_secret,)
+    codex_calls = [call for call in codex.commands if call[0][:2] == ("codex", "exec")]
+    assert "resume" in codex_calls[0][0]
+    assert "--model" in codex_calls[0][0]
+    assert "resume" not in codex_calls[1][0]
+    assert codex_calls[0][1]["secrets"] == (codex._agent_secret,)
+
+    claude = _FakeClient(
+        replace(_Spec(), harness="claude-code", model="claude-test"),
+        _agent_secret=object(),
+    )
+    await CodingAgentSandboxClient._run_agent(claude, "repair", session_id="session-1")
+    claude_call = next(call for call in claude.commands if call[0][0] == "claude")
+    assert claude_call[0][-3:] == ("--resume", "session-1", "repair")
+    assert "--model" in claude_call[0]
+    assert claude_call[1]["env"]["DISABLE_AUTOUPDATER"] == "1"
+
+    unsupported = _FakeClient(replace(_Spec(), harness="opencode"))
+    with pytest.raises(ValueError, match="unsupported coding-agent harness"):
+        await CodingAgentSandboxClient._run_agent(unsupported, "fix", session_id="")
+
+
+@pytest.mark.asyncio
+async def test_common_recovery_capture_push_and_receipt_edges(monkeypatch) -> None:
+    client = _FakeClient(
+        replace(_Spec(), push=True),
+        _github_secret=object(),
+    )
+    assert await CodingAgentSandboxClient._push_if_configured(client)
+    recovery = await CodingAgentSandboxClient._capture_git_recovery(client, "attempt-1", "baseline")
+    assert recovery == {
+        "status": "/workspace/repo/.archetype-agent/recovery/attempt-1-status.txt",
+        "patch": "/workspace/repo/.archetype-agent/recovery/attempt-1.patch",
+        "bundle": "/workspace/repo/.archetype-agent/recovery/attempt-1.bundle",
+    }
+    assert recovery["status"] in client.files
+    assert recovery["patch"] in client.files
+
+    start = await CodingAgentSandboxClient._ensure_start_manifest(client)
+    end, diff = await CodingAgentSandboxClient._capture_attempt_filesystem(client, "fix it", 2)
+    assert start.endswith("/start.jsonl")
+    assert end.endswith("/fix-it-2-end.jsonl")
+    assert diff.endswith("/fix-it-2-diff.jsonl")
+    assert any(call[0][:2] == ("python3", "-c") for call in client.commands)
+
+    disabled = _FakeClient(replace(_Spec(), capture_filesystem_manifests=False))
+    assert await CodingAgentSandboxClient._ensure_start_manifest(disabled) == ""
+    assert await CodingAgentSandboxClient._capture_attempt_filesystem(disabled, "fix", 1) == (
+        "",
+        "",
+    )
+
+    corrupt_key = "corrupt-receipt"
+    corrupt_path = client._receipt_path(corrupt_key)
+    client.files[corrupt_path] = "{not-json"
+    assert await CodingAgentSandboxClient._load_completed(client, corrupt_key) is None
+    client.files[corrupt_path] = '{"accepted":true}'
+    assert await CodingAgentSandboxClient._load_completed(client, corrupt_key) == {"accepted": True}
+
+    assert client._artifact_ref("checkpoint", "") == ""
+    assert client._git_auth_args()
+    assert client._git_secrets() == [client._github_secret]
+    client._github_secret = None
+    assert client._git_auth_args() == ()
+    assert client._git_secrets() == []
+
+    async def fail_event(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("telemetry unavailable")
+
+    monkeypatch.setattr(client, "_emit_live_event", fail_event)
+    await client._emit_live_event_safely("ignored")
+    await CodingAgentSandboxClient._emit_live_event(client, "default-noop")
+    assert CodingAgentSandboxClient._live_artifact_paths(client) == ("", "")
+
+
+def test_common_identity_prompt_and_failure_helpers() -> None:
+    codex = _FakeClient(_Spec())
+    assert (
+        codex._session_id('not-json\n{"type":"thread.started","thread_id":"thread-2"}')
+        == "thread-2"
+    )
+    claude = _FakeClient(replace(_Spec(), harness="claude-code"))
+    assert claude._session_id('{"session_id":"claude-1"}') == "claude-1"
+    opencode = _FakeClient(replace(_Spec(), harness="opencode"))
+    assert opencode._session_id('{"sessionID":"open-1"}') == "open-1"
+    assert opencode._session_id('{"type":"message"}') == ""
+
+    with pytest.raises(RuntimeError, match="probe failed with exit code 2"):
+        codex._raise_for_result(CommandResult(("probe",), 2, "", "bad"), "probe")
+    with pytest.raises(ValueError, match="attempt request values must be JSON serializable"):
+        codex._request_fingerprint(
+            prompt="fix",
+            validators=(ValidatorSpec("tests", ("verify",)),),
+            step_name="fix",
+            attempt_index=1,
+            previous_session_id="",
+            previous_validator_details=({"bad": object()},),
+            correlation={},
+        )
+
+    assert "Validator evidence" in codex._repair_prompt(
+        "fix", ({"name": "tests", "passed": False},)
+    )
+    assert codex._safe_step(" !!! ") == "step"
+    assert codex._subject("   ") == "complete task gate"
+    assert codex._failure_summary(({"name": "tests", "passed": True},)) == "unknown failure"
 
 
 @dataclass
@@ -453,6 +592,17 @@ async def test_sandbox_service_rejects_unknown_duplicate_and_reports_shutdown_fa
     with pytest.raises(RuntimeError, match="failed to close 1") as captured:
         await service.shutdown()
     assert any("close failed" in note for note in captured.value.__notes__)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_service_closes_session_that_loses_shutdown_race() -> None:
+    service = SandboxService()
+    service._accepting = False
+    session = _Session("late")
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await service._retain(session)
+    assert session.close_calls == 1
+    await service.close("missing")
 
 
 def test_common_kernel_has_no_provider_sdk_or_adapter_imports() -> None:
