@@ -16,16 +16,26 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from archetype.app.application.service import RuntimeApplication
+from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
+from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.artifacts.table_service import ArtifactTableService
 from archetype.app.audit.service import AuditLog
+from archetype.app.coding_agents.service import CodingAgentService
 from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.missions.service import MissionService
 from archetype.app.query.service import QueryService
 from archetype.app.research.service import AutoResearchService
+from archetype.app.sandboxes.apple_container import AppleContainerSandboxBackend
+from archetype.app.sandboxes.interfaces import iSandboxBackend
+from archetype.app.sandboxes.modal import ModalSandboxBackend
+from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
@@ -46,6 +56,9 @@ class ServiceContainer:
         self,
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
+        artifact_store_config: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+        sandbox_backends: Iterable[iSandboxBackend] | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -65,7 +78,23 @@ class ServiceContainer:
         self.query_service = QueryService(self.storage_service, self.audit_log)
         self.artifact_table_service = ArtifactTableService(self.storage_service, self.world_service)
         self.artifact_service = ArtifactService(self.storage_service, self.world_service)
+        self.artifact_bundle_service = ArtifactBundleService(
+            self.storage_service,
+            self.world_service,
+            artifact_store_config,
+            artifact_source_resolver,
+        )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
+
+        # Mission capabilities. Provider modules lazy-load their SDK/CLI only
+        # when a sandbox is actually requested.
+        self.sandbox_service = SandboxService(
+            sandbox_backends
+            if sandbox_backends is not None
+            else (ModalSandboxBackend(), AppleContainerSandboxBackend())
+        )
+        self.mission_service = MissionService()
+        self.coding_agent_service = CodingAgentService(self.mission_service, self.sandbox_service)
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -88,6 +117,7 @@ class ServiceContainer:
             audit=self.audit_log,
             artifact_tables=self.artifact_table_service,
             artifacts=self.artifact_service,
+            artifact_bundles=self.artifact_bundle_service,
             evaluations=self.evaluation_service,
             research=self.autoresearch_service,
         )
@@ -99,6 +129,7 @@ class ServiceContainer:
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
         await self.application.stop_admission()
+        await self.sandbox_service.shutdown()
         await self.audit_log.shutdown()
         if self._owns_storage_service:
             await self.world_service.shutdown()

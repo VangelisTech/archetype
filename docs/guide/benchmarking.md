@@ -35,6 +35,17 @@ dirty state, machine and dependency context, and the workload's raw results.
 The envelope is intentionally small. Individual suites own the meaning of
 their result fields instead of forcing every workload into one metric model.
 
+Paid agent and inference benchmarks are separate explicit targets:
+
+```bash
+make bench-opencode-endpoint CONFIRM_PAID_BENCH=1
+make bench-opencode-agents CONFIRM_PAID_BENCH=1
+```
+
+They are never part of normal CI. They require a protected Modal endpoint,
+named endpoint credentials, and an operator declaration of the deployed GPU,
+maximum containers, and target concurrency.
+
 ## Current workloads
 
 The commands above define the supported Python benchmark inventory. A
@@ -68,6 +79,25 @@ Setup is outside the timed region. Lazy plan construction and terminal
 measured query must return the expected row count before the snapshot is
 written. The default workload uses 100 entities per signature, three history
 ticks, one warmup, and five measured repetitions.
+
+### Modal OpenCode capacity
+
+The endpoint workload sends streaming OpenAI Chat Completions requests at an
+increasing concurrency curve and reports success rate, tokens per second, and
+time to first token. A warmup probe is outside the measured boundary.
+
+The agent workload starts one independent Modal Sandbox and OpenCode session
+per unit of concurrency. Before fanout it proves that a new sandbox can resume
+the same OpenCode session from a provider checkpoint. During the measured
+sweep, snapshots and full-filesystem manifests are disabled so checkpoint I/O
+does not contaminate inference timing. An independent exact-file validator,
+not CLI exit status, determines acceptance.
+
+Both workloads require `--confirm-paid-run` (the Make targets supply it after
+`CONFIRM_PAID_BENCH=1`), capture a secret-free reproduction envelope, and use
+advisory comparison policy because Modal placement and the client runner are
+not stable. The retained single-H200 calibration is documented in
+[Modal OpenCode single-H200 calibration](benchmark-runs/modal-opencode-single-h200-2026-07-18.md).
 
 ## Trend tracking is an operational decision
 

@@ -36,7 +36,7 @@ ArchetypeRuntime -> iRuntimeApplication <- iCommandGateway <- FastAPI
 iRuntimeApplication
   -> iWorldService + iMutationService + iSimulationService
   -> iQueryService
-  -> iArtifactService + iArtifactTableService
+  -> iArtifactService + iArtifactTableService + iArtifactBundleService
   -> iEvaluationService
   -> iCommandScheduler
   -> iAuditLog
@@ -52,6 +52,9 @@ iSimulationService -> iWorldService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
+iArtifactBundleService -> iStorageService + iWorldService
+iCodingAgentService -> iMissionService + iSandboxService
+iSandboxService     -> registered iSandboxBackend providers
 ```
 
 `ServiceContainer` alone selects concrete implementations.
@@ -69,10 +72,15 @@ iAuditLog          -> iStorageService
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
+| `iArtifactBundleService` | `ArtifactBundleService` | application | Checkpoint-qualified portable evidence publication, indexing, and reconciliation |
 | `iEvaluationService` | `EvaluationService` | application | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
+| `iMissionService` | `MissionService` | coding agents | Deterministic attempt identity, retry/exhaustion, evidence gates, and terminal state |
+| `iSandboxService` | `SandboxService` | coding agents | Provider selection and process-local create/restore/resume/close lifetime |
+| `iSandboxBackend` | Modal and Apple Container adapters | sandbox service | Provider-specific isolated execution and recovery |
+| `iCodingAgentService` | `CodingAgentService` | coding-agent processor | Repository mission/session composition over mission and sandbox ports |
 
 ## 4. Boundary rules
 
@@ -102,8 +110,18 @@ its drain and quota-reset callables.
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
 `iArtifactService` and `iEvaluationService` expose separate claim-backed
-workflows. `iAuditLog` is a projection/read port, not the authority for command
-outcome.
+workflows. `iArtifactBundleService` owns full attempt-bundle publication and
+reconciliation while provider checkpoints remain sandbox recovery objects.
+`iAuditLog` is a projection/read port, not the authority for command outcome.
+
+### Mission and sandbox ports
+
+`iMissionService` alone interprets validator, commit, checkpoint, and
+finalization evidence to advance a task. `iSandboxService` owns external
+resource lifetime and never decides acceptance. `iCodingAgentService` composes
+the two and treats live handles as a cache; persisted components and provider
+checkpoints remain the recovery authority. See
+[Agent missions and sandbox execution](agent-missions.md).
 
 ## 5. Models crossing families
 
@@ -113,6 +131,9 @@ runtime/application result records. Family-specific models remain with their
 owners:
 
 - artifact descriptors and receipts: `app/artifacts/models.py`;
+- artifact bundle requests and publication receipts: `app/artifacts/bundle_models.py`;
+- mission facts and attempt requests: `app/missions/models.py`;
+- coding-agent session identity: `app/coding_agents/models.py`;
 - evaluation contracts, outcomes, and receipts: `app/evaluation/models.py`;
 - research contracts and ledger components: `app/research/`;
 - audit access events: `app/audit/models.py`;
@@ -134,8 +155,9 @@ Runtime consumes `application`; API dependency injection consumes
 `command_gateway`. Focused implementation tests may inspect internal members
 without creating compatibility.
 
-Shutdown stops new application admission, flushes the audit projection, then
-closes container-owned world/storage resources.
+Shutdown stops new application admission, closes all retained sandboxes,
+flushes the audit projection, then closes container-owned world/storage
+resources.
 
 ## 7. Executable enforcement
 
@@ -153,3 +175,5 @@ closes container-owned world/storage resources.
 - [Durable Commands](durable-commands.md)
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
+- [Agent Missions and Sandbox Execution](agent-missions.md)
+- [Artifact Finalization](artifact-finalization.md)

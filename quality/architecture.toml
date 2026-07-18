@@ -4,15 +4,19 @@ source_root = "src"
 [concrete_services]
 types = [
   "ArtifactService",
+  "ArtifactBundleService",
   "ArtifactTableService",
   "AuditLog",
   "AutoResearchService",
   "CommandGateway",
   "CommandScheduler",
+  "CodingAgentService",
   "EvaluationService",
   "MutationService",
+  "MissionService",
   "QueryService",
   "RuntimeApplication",
+  "SandboxService",
   "ServiceContainer",
   "SimulationService",
   "StorageService",
@@ -92,6 +96,31 @@ allowed_app = [
   "archetype.app.artifacts",
   "archetype.app.storage",
   "archetype.app.world.interfaces",
+]
+
+[[family_rule]]
+name = "sandbox-family"
+consumer = "archetype.app.sandboxes"
+allowed_app = [
+  "archetype.app.sandboxes",
+  "archetype.app.artifacts.bundle_models",
+]
+
+[[family_rule]]
+name = "mission-family"
+consumer = "archetype.app.missions"
+allowed_app = [
+  "archetype.app.missions",
+]
+
+[[family_rule]]
+name = "coding-agent-family"
+consumer = "archetype.app.coding_agents"
+allowed_app = [
+  "archetype.app.coding_agents",
+  "archetype.app.missions.interfaces",
+  "archetype.app.missions.models",
+  "archetype.app.sandboxes.interfaces",
 ]
 
 [[family_rule]]
@@ -221,6 +250,39 @@ allowed_app = [
 ]
 
 [[module_rule]]
+module = "archetype.app.artifacts.bundle_service"
+allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.artifacts.bundle_models",
+  "archetype.app.storage.catalog",
+]
+
+[[module_rule]]
+module = "archetype.app.sandboxes.service"
+allowed_interfaces = [
+  "archetype.app.sandboxes.interfaces.iSandboxBackend",
+  "archetype.app.sandboxes.interfaces.iSandboxSession",
+]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.app.missions.service"
+allowed_interfaces = []
+allowed_app = ["archetype.app.missions.models"]
+
+[[module_rule]]
+module = "archetype.app.coding_agents.service"
+allowed_interfaces = [
+  "archetype.app.missions.interfaces.iMissionService",
+  "archetype.app.sandboxes.interfaces.iSandboxService",
+  "archetype.app.sandboxes.interfaces.iSandboxSession",
+]
+allowed_app = []
+
+[[module_rule]]
 module = "archetype.app.evaluation.service"
 allowed_interfaces = [
   "archetype.app.artifacts.interfaces.iArtifactService",
@@ -270,6 +332,7 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.application.service"
 allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactBundleService",
   "archetype.app.artifacts.interfaces.iArtifactService",
   "archetype.app.artifacts.interfaces.iArtifactTableService",
   "archetype.app.audit.interfaces.iAuditLog",

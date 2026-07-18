@@ -312,3 +312,47 @@ static = ["scripts/validate_r2_substrate.py"]
 evals = []
 benchmarks = []
 profiles = ["main", "release"]
+
+[[contract]]
+id = "missions.transition.evidence_gated"
+source = "docs/guide/agent-missions.md"
+section = "2. Attempt and task-transition contract"
+owner = "missions"
+risk = "high"
+pytest = ["tests/app/test_coding_agent_mission.py"]
+static = ["scripts/check_architecture.py"]
+evals = ["agent_mission_transition_authority"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "sandboxes.lifecycle.resumable"
+source = "docs/guide/agent-missions.md"
+section = "3. Sandbox lifecycle and resumability"
+owner = "sandboxes"
+risk = "high"
+pytest = [
+  "tests/app/test_coding_agent_mission.py",
+  "tests/app/test_modal_sandbox.py",
+  "tests/app/test_apple_container_sandbox.py",
+]
+static = ["scripts/check_architecture.py"]
+evals = []
+benchmarks = ["agents.modal_opencode.fanout"]
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "artifacts.bundle.publication_replay"
+source = "docs/guide/agent-missions.md"
+section = "4. Evidence, finalization, and teardown"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_artifact_publication_catalog.py",
+  "tests/app/test_remote_catalog_parity.py::test_artifact_publication_lifecycle_parity",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]

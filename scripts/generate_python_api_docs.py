@@ -64,6 +64,23 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "artifact-bundles",
+        "Durable artifact bundles",
+        "Recommended API",
+        "Configure durable sandbox-checkpoint evidence, publish portable artifacts, "
+        "and query or reconcile their content-addressed index.",
+        (
+            "ArtifactBundleRequest",
+            "ArtifactCandidate",
+            "ArtifactIndexRecord",
+            "ArtifactPublishReceipt",
+            "ArtifactReconcileResult",
+            "ArtifactSourceResolver",
+            "ArtifactStoreConfig",
+            "MaterializedArtifact",
+        ),
+    ),
+    ReferencePage(
         "building-blocks",
         "Building blocks",
         "Extension API",
@@ -210,6 +227,13 @@ RECORDS = frozenset(
         "RolloutResult",
         "ArtifactReceipt",
         "ArtifactWriteReceipt",
+        "ArtifactBundleRequest",
+        "ArtifactCandidate",
+        "ArtifactIndexRecord",
+        "ArtifactPublishReceipt",
+        "ArtifactReconcileResult",
+        "ArtifactStoreConfig",
+        "MaterializedArtifact",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -237,6 +261,8 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
     "ArtifactWriteReceipt": ("duplicate",),
+    "ArtifactBundleRequest": ("canonical_json", "digest"),
+    "ArtifactStoreConfig": ("local", "retention_seconds"),
     "GraderContract": ("digest",),
 }
 

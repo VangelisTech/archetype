@@ -24,6 +24,10 @@ import logging
 import httpx
 
 from archetype.app.storage.catalog import (
+    ArtifactPublicationConflictError,
+    ArtifactPublicationExpiredError,
+    ArtifactPublicationPendingError,
+    ArtifactPublicationRecord,
     CatalogConflictError,
     ClaimConflictError,
     ClaimPendingError,
@@ -35,6 +39,7 @@ from archetype.app.storage.catalog import (
     OutboxRecord,
     SignatureRecord,
     WorldRecord,
+    artifact_publication_key,
     claim_scope_key,
 )
 from archetype.core.interfaces import StaleWriterError
@@ -42,6 +47,9 @@ from archetype.core.interfaces import StaleWriterError
 logger = logging.getLogger(__name__)
 
 _ERROR_MAP: dict[str, type[Exception]] = {
+    "artifact_publication_conflict": ArtifactPublicationConflictError,
+    "artifact_publication_expired": ArtifactPublicationExpiredError,
+    "artifact_publication_pending": ArtifactPublicationPendingError,
     "catalog_conflict": CatalogConflictError,
     "claim_conflict": ClaimConflictError,
     "claim_pending": ClaimPendingError,
@@ -392,6 +400,135 @@ class RemoteControlCatalog:
             return None
         return _claim_from_json(world_id, response.json())
 
+    # ── artifact publications ────────────────────────────────────────────────
+
+    async def acquire_artifact_publication(
+        self,
+        *,
+        world_id: str,
+        run_id: str,
+        attempt_id: str,
+        idempotency_key: str,
+        request_digest: str,
+        request_json: str,
+        claimant: str,
+        retry_until_ms: int,
+        lease_seconds: float = 900.0,
+    ) -> tuple[str, ArtifactPublicationRecord]:
+        publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/acquire",
+            {
+                "publication_key": publication_key,
+                "run_id": run_id,
+                "attempt_id": attempt_id,
+                "idempotency_key": idempotency_key,
+                "request_digest": request_digest,
+                "request_json": request_json,
+                "claimant": claimant,
+                "retry_until_ms": retry_until_ms,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        body = response.json()
+        return body["outcome"], _artifact_publication_from_json(world_id, body["publication"])
+
+    async def renew_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        *,
+        lease_seconds: float,
+    ) -> ArtifactPublicationRecord:
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/renew",
+            {"claimant": claimant, "lease_seconds": lease_seconds},
+        )
+        return _artifact_publication_from_json(world_id, response.json())
+
+    async def record_artifact_uploads(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        records_json: str,
+        manifest_uri: str,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/uploads",
+            {
+                "claimant": claimant,
+                "records_json": records_json,
+                "manifest_uri": manifest_uri,
+            },
+        )
+
+    async def complete_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        index_snapshot_id: int,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/complete",
+            {"claimant": claimant, "index_snapshot_id": index_snapshot_id},
+        )
+
+    async def fail_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        error: str,
+        *,
+        retry_at: float,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/fail",
+            {"claimant": claimant, "error": error, "retry_at": retry_at},
+        )
+
+    async def expire_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        error: str,
+    ) -> None:
+        await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/expire",
+            {"claimant": claimant, "error": error},
+        )
+
+    async def get_artifact_publication(
+        self, world_id: str, publication_key: str
+    ) -> ArtifactPublicationRecord | None:
+        response = await self._call(
+            "GET",
+            f"/w/{world_id}/artifact-publications/{publication_key}",
+            ignore_status=(404,),
+        )
+        if response.status_code == 404:
+            return None
+        return _artifact_publication_from_json(world_id, response.json())
+
+    async def list_due_artifact_publications(
+        self, world_id: str, *, now: float, limit: int = 100
+    ) -> list[ArtifactPublicationRecord]:
+        response = await self._call(
+            "GET",
+            f"/w/{world_id}/artifact-publications?due={now}&limit={limit}",
+        )
+        return [_artifact_publication_from_json(world_id, row) for row in response.json()]
+
 
 def _world_from_json(row: dict) -> WorldRecord:
     return WorldRecord(
@@ -420,6 +557,30 @@ def _claim_from_json(world_id: str, row: dict) -> ClaimRecord:
         claimant=row["claimant"],
         lease_expires_at=float(row["lease_expires_at"]),
         fence_epoch=int(row["fence_epoch"]),
+    )
+
+
+def _artifact_publication_from_json(world_id: str, row: dict) -> ArtifactPublicationRecord:
+    return ArtifactPublicationRecord(
+        publication_key=row["publication_key"],
+        world_id=world_id,
+        run_id=row["run_id"],
+        attempt_id=row["attempt_id"],
+        idempotency_key=row["idempotency_key"],
+        request_digest=row["request_digest"],
+        status=row["status"],
+        request_json=row["request_json"],
+        records_json=row.get("records_json", "[]"),
+        claimant=row["claimant"],
+        lease_expires_at=float(row["lease_expires_at"]),
+        retry_until_ms=int(row["retry_until_ms"]),
+        attempt_count=int(row.get("attempt_count", 1)),
+        index_snapshot_id=int(row.get("index_snapshot_id", 0)),
+        manifest_uri=row.get("manifest_uri", ""),
+        last_error=row.get("last_error", ""),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        completed_at=row.get("completed_at"),
     )
 
 

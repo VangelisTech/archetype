@@ -43,6 +43,7 @@ benchmark  = ["esper>=2.45"]
 sim        = ["mujoco>=3.2"]
 otlp       = ["opentelemetry-exporter-otlp-proto-http>=1.20"]
 logfire    = ["logfire[fastapi]>=4.32.0"]
+coding-agent = ["modal>=1.5,<2"]
 dev        = [
     "pytest>=8.3", "pytest-asyncio>=0.26", "pytest-cov>=5.0",
     "ruff>=0.15,<0.16",  # pinned: 0.15 introduced I001/B007 rule changes; keep local == CI
@@ -88,6 +89,8 @@ markers = [
     "smoke: shallow public-path or built-artifact evidence",
     "external: credentials or external infrastructure required",
     "slow: unsuitable for the quick local profile",
+    "apple_container: user-triggered tests against local Apple Container VMs",
+    "modal: paid, user-triggered tests against live Modal infrastructure",
 ]
 
 [tool.coverage.run]

@@ -1,1 +1,1 @@
-"""Durable artifact ingestion and retrieval family."""
+"""Artifact publication, typed tables, and portable evidence bundles."""

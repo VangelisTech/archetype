@@ -5,7 +5,13 @@
 
 from __future__ import annotations
 
-from archetype import ArchetypeRuntime, SyncArchetypeRuntime, entrypoint, public_api
+from archetype import (
+    ArchetypeRuntime,
+    ArtifactStoreConfig,
+    SyncArchetypeRuntime,
+    entrypoint,
+    public_api,
+)
 from archetype._api import is_public_api
 
 
@@ -49,6 +55,13 @@ def test_entrypoint_injects_async_runtime():
 
     assert amain(41) == 42
     assert seen == {"runtime_type": "ArchetypeRuntime", "open": True}
+
+
+def test_sync_runtime_forwards_artifact_bundle_configuration(tmp_path):
+    config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+
+    with ArchetypeRuntime.sync(artifact_store=config) as runtime:
+        assert runtime._runtime._container.artifact_bundle_service.enabled
 
 
 def test_public_api_marker_registers():

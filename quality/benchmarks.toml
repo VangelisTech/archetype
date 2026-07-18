@@ -17,6 +17,38 @@ metrics = [
 ]
 
 [[benchmark]]
+id = "inference.modal_endpoint.throughput"
+suite = "modal_openai_compatible_endpoint"
+owner = "sandboxes"
+entrypoint = "bench/agents/modal_opencode.py"
+correctness_oracles = ["tests/bench/test_modal_opencode.py"]
+report_schema = "bench.core.report/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "success_rate", direction = "higher" },
+  { name = "total_tokens_per_s", direction = "higher" },
+  { name = "ttft_p95_s", direction = "lower" },
+]
+
+[[benchmark]]
+id = "agents.modal_opencode.fanout"
+suite = "modal_opencode_agent_fanout"
+owner = "coding_agents"
+entrypoint = "bench/agents/modal_opencode.py"
+correctness_oracles = ["tests/bench/test_modal_opencode.py"]
+report_schema = "bench.core.report/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "accepted_rate", direction = "higher" },
+  { name = "agents_per_s", direction = "higher" },
+  { name = "latency_p95_s", direction = "lower" },
+]
+
+[[benchmark]]
 id = "app.query.latency"
 suite = "query_latency"
 owner = "query"

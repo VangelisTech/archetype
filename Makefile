@@ -37,6 +37,11 @@ help:
 	@echo "  make test-contract  Approved normative contract evidence"
 	@echo "  make test-integration  Multi-layer repository evidence"
 	@echo "  make test-process   Subprocess/crash evidence"
+	@echo "  make test-apple-container Run the live local Apple Container proof"
+	@echo "  make test-modal     Run all live Modal coding-agent proofs"
+	@echo "  make test-modal-sandbox Run Modal CLI/filesystem/snapshot proof"
+	@echo "  make test-modal-agent Run paid Codex, Claude Code, and OpenCode proof"
+	@echo "  make test-modal-resume Run paid cross-sandbox continuation proof"
 	@echo "  make ci             Compatibility alias for the PR verification profile"
 	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
 	@echo "  make mutmut-results Show mutmut survivors from the last run"
@@ -47,6 +52,8 @@ help:
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make bench-query    Run QueryService latency benchmarks"
+	@echo "  make bench-opencode-endpoint Run paid Modal endpoint saturation sweep"
+	@echo "  make bench-opencode-agents Run paid one-sandbox-per-agent sweep"
 	@echo "  make eval           Run all repository-check groups"
 	@echo "  make eval-reg       Run regression checks only"
 	@echo "  make eval-idem      Run idempotency checks only"
@@ -222,6 +229,39 @@ test-integration:
 test-process:
 	@PYTHONPATH=$(PYTHONPATH):. uv run pytest -q -m process
 
+.PHONY: test-apple-container
+test-apple-container:
+	@ARCHETYPE_RUN_APPLE_CONTAINER_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run pytest -q -m apple_container \
+		tests/integration/test_apple_container_coding_agent_live.py
+
+.PHONY: test-modal
+test-modal:
+	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 \
+		ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION=1 \
+		ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION=1 \
+		PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-agent
+test-modal-agent:
+	@ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-sandbox
+test-modal-sandbox:
+	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-resume
+test-modal-resume:
+	@ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
 .PHONY: ci
 ci: verify-pr
 
@@ -264,6 +304,23 @@ bench-full:
 bench-query:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json
 	@echo "Query benchmark results written to query-bench-results.json"
+
+.PHONY: bench-opencode-endpoint
+bench-opencode-endpoint:
+	@test "$(CONFIRM_PAID_BENCH)" = "1" || \
+		(echo "Set CONFIRM_PAID_BENCH=1 to run the paid endpoint sweep" && exit 1)
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.agents.modal_opencode endpoint \
+		--confirm-paid-run --out opencode-endpoint-bench-results.json $(BENCH_ARGS)
+	@echo "Endpoint benchmark results written to opencode-endpoint-bench-results.json"
+
+.PHONY: bench-opencode-agents
+bench-opencode-agents:
+	@test "$(CONFIRM_PAID_BENCH)" = "1" || \
+		(echo "Set CONFIRM_PAID_BENCH=1 to run the paid agent sweep" && exit 1)
+	@PYTHONPATH=$(PYTHONPATH) uv run --extra coding-agent \
+		python -m bench.agents.modal_opencode agents \
+		--confirm-paid-run --out opencode-agent-bench-results.json $(BENCH_ARGS)
+	@echo "Agent benchmark results written to opencode-agent-bench-results.json"
 
 .PHONY: eval
 eval:
@@ -335,6 +392,10 @@ package-smoke: build
 .PHONY: examples-smoke
 examples-smoke:
 	@set -e; for f in examples/[0-9][0-9]_*.py; do \
+		if [ "$$f" = "examples/11_coding_agent_mission.py" ]; then \
+			echo "Skipping external $$f (covered by its path-gated workflow)"; \
+			continue; \
+		fi; \
 		echo "Running $$f"; \
 		PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
 	done
