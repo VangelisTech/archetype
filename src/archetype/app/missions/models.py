@@ -200,6 +200,7 @@ class MissionAttemptRequest:
     step_name: str
     step_index: int
     attempt_index: int
+    plan_digest: str
     idempotency_key: str
     previous_session_id: str
     previous_validator_details: tuple[dict[str, Any], ...]

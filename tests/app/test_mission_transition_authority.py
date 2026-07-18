@@ -294,6 +294,18 @@ def test_apply_attempt_rejects_stale_identity_and_vacuous_evidence() -> None:
     with pytest.raises(ValueError, match="state changed"):
         service.apply_attempt(stale, request, _outcome(request, accepted=False))
 
+    changed_plan = json.loads(row["mission__plan_json"])
+    changed_plan.append(
+        {
+            "name": "review",
+            "prompt": "Review the fix",
+            "validators": [{"name": "lint", "command": ["ruff"]}],
+        }
+    )
+    stale = dict(row, mission__plan_json=json.dumps(changed_plan))
+    with pytest.raises(ValueError, match="plan changed"):
+        service.apply_attempt(stale, request, _outcome(request, accepted=True))
+
     mismatch = _outcome(request, accepted=False)
     mismatch["attempt_index"] = 99
     with pytest.raises(ValueError, match="attempt_index"):
@@ -334,5 +346,36 @@ def test_attempt_identity_binds_typed_source_state() -> None:
     second = service.prepare_attempt(running, tick=0)
     assert second is not None
     assert first.idempotency_key != second.idempotency_key
+    assert first.plan_digest == second.plan_digest
     assert first.source.mission is MissionStatus.READY
     assert second.source.mission is MissionStatus.RUNNING
+
+
+def test_attempt_identity_binds_the_canonical_full_plan() -> None:
+    service = MissionService()
+    initial = _row()
+    first = service.prepare_attempt(initial, tick=0)
+    assert first is not None
+
+    equivalent = dict(
+        initial, mission__plan_json=json.dumps(json.loads(initial["mission__plan_json"]), indent=2)
+    )
+    same = service.prepare_attempt(equivalent, tick=0)
+    assert same is not None
+    assert same.plan_digest == first.plan_digest
+    assert same.idempotency_key == first.idempotency_key
+
+    extended_plan = json.loads(initial["mission__plan_json"])
+    extended_plan.append(
+        {
+            "name": "review",
+            "prompt": "Review the fix",
+            "validators": [{"name": "lint", "command": ["ruff"]}],
+        }
+    )
+    extended = service.prepare_attempt(
+        dict(initial, mission__plan_json=json.dumps(extended_plan)), tick=0
+    )
+    assert extended is not None
+    assert extended.plan_digest != first.plan_digest
+    assert extended.idempotency_key != first.idempotency_key

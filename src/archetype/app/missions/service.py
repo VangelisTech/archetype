@@ -68,6 +68,7 @@ class MissionService:
         if attempts < 0 or max_attempts < 1 or attempts >= max_attempts:
             raise ValueError("active task attempt counters are inconsistent")
         attempt_index = attempts + 1
+        plan_digest = self._plan_digest(plan)
         gate_material = json.dumps(
             {
                 "world_id": str(row["world_id"]),
@@ -77,6 +78,7 @@ class MissionService:
                 "task_status": source.task.value,
                 "step_index": step_index,
                 "attempt_index": attempt_index,
+                "plan_digest": plan_digest,
                 "step": step,
             },
             sort_keys=True,
@@ -95,6 +97,7 @@ class MissionService:
             step_name=name,
             step_index=step_index,
             attempt_index=attempt_index,
+            plan_digest=plan_digest,
             idempotency_key=hashlib.sha256(gate_material.encode()).hexdigest(),
             previous_session_id=str(row.get("attempt__agent_session_id") or ""),
             previous_validator_details=tuple(prior),
@@ -124,12 +127,14 @@ class MissionService:
             raise ValueError("mission step changed after this attempt was prepared")
         if int(row["taskgate__attempts"]) + 1 != request.attempt_index:
             raise ValueError("mission attempt counter changed after this attempt was prepared")
+        plan = self._plan(row)
+        if self._plan_digest(plan) != request.plan_digest:
+            raise ValueError("mission plan changed after this attempt was prepared")
         if int(outcome["attempt_index"]) != request.attempt_index:
             raise ValueError("sandbox outcome attempt_index does not match the request")
         if str(outcome["idempotency_key"]) != request.idempotency_key:
             raise ValueError("sandbox outcome idempotency_key does not match the request")
 
-        plan = self._plan(row)
         details = list(outcome["validator_details"])
         if not details or any(not isinstance(value, dict) for value in details):
             raise ValueError("sandbox outcomes require non-empty validator details")
@@ -313,6 +318,10 @@ class MissionService:
             ensure_ascii=True,
             allow_nan=False,
         )
+
+    @classmethod
+    def _plan_digest(cls, plan: list[dict[str, Any]]) -> str:
+        return hashlib.sha256(cls._json(plan).encode()).hexdigest()
 
     @staticmethod
     def _plan(row: Mapping[str, Any]) -> list[dict[str, Any]]:

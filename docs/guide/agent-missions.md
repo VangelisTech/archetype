@@ -82,11 +82,15 @@ multi-task attempt selects the next task in the same committed row.
 3. validates non-empty prompt and validator objects;
 4. requires coherent attempt counters below `max_attempts`;
 5. derives the next positive attempt index; and
-6. hashes world, run, entity, source state, task, and attempt identity into one
-   deterministic idempotency key.
+6. hashes the canonical full plan into a stable plan identity; and
+7. hashes world, run, entity, source state, plan, task, and attempt identity
+   into one deterministic idempotency key.
 
-The request carries its source state and step index. `apply_attempt` rejects a
-stale request if either changed before settlement.
+The request carries its source state, step index, and full-plan identity.
+`apply_attempt` rejects a stale request if any of them changed before
+settlement. This prevents an in-flight result from becoming final or advancing
+against a plan that was edited after execution began, even when its current
+step text stayed unchanged.
 
 An attempt advances only when all of the following hold:
 
