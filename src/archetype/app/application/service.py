@@ -28,7 +28,11 @@ from archetype.app.models import (
 )
 
 if TYPE_CHECKING:
-    from archetype.app.artifacts.interfaces import iArtifactService, iArtifactTableService
+    from archetype.app.artifacts.interfaces import (
+        iArtifactBundleService,
+        iArtifactService,
+        iArtifactTableService,
+    )
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
@@ -74,6 +78,7 @@ class RuntimeApplication:
         research: iResearchService | None = None,
         artifact_tables: iArtifactTableService | None = None,
         artifacts: iArtifactService | None = None,
+        artifact_bundles: iArtifactBundleService | None = None,
         evaluations: iEvaluationService | None = None,
     ) -> None:
         self._mutations = mutations
@@ -85,6 +90,7 @@ class RuntimeApplication:
         self._research = research
         self._artifact_tables = artifact_tables
         self._artifacts = artifacts
+        self._artifact_bundles = artifact_bundles
         self._evaluations = evaluations
 
         self._state_lock = asyncio.Lock()
@@ -439,6 +445,28 @@ class RuntimeApplication:
         async with self._admit():
             return await self._artifact_tables.read_artifacts(
                 str(world_id), table_name, storage_config=storage_config
+            )
+
+    async def publish_artifact_bundle(self, request, *, storage_config=None):
+        if self._artifact_bundles is None:
+            raise RuntimeError("artifact bundle service is not wired")
+        async with self._admit(), self._world_operation(request.world_id):
+            return await self._artifact_bundles.publish(request, storage_config=storage_config)
+
+    async def query_artifact_bundles(self, world_id, run_id, *, attempt_id=None, kinds=None):
+        if self._artifact_bundles is None:
+            raise RuntimeError("artifact bundle service is not wired")
+        async with self._admit():
+            return await self._artifact_bundles.query(
+                str(world_id), str(run_id), attempt_id=attempt_id, kinds=kinds
+            )
+
+    async def reconcile_artifact_bundles(self, world_id, *, storage_config=None, limit=100):
+        if self._artifact_bundles is None:
+            raise RuntimeError("artifact bundle service is not wired")
+        async with self._admit(), self._world_operation(world_id):
+            return await self._artifact_bundles.reconcile(
+                str(world_id), storage_config=storage_config, limit=limit
             )
 
     async def run_graders(self, df, graders):

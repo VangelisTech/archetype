@@ -96,6 +96,14 @@ __all__ = [
     "ArtifactReceipt",
     "ArtifactWriteReceipt",
     "ArtifactProcessor",
+    "ArtifactBundleRequest",
+    "ArtifactCandidate",
+    "ArtifactIndexRecord",
+    "ArtifactPublishReceipt",
+    "ArtifactReconcileResult",
+    "ArtifactSourceResolver",
+    "ArtifactStoreConfig",
+    "MaterializedArtifact",
     # Models
     "Command",
     "CommandType",
@@ -165,6 +173,29 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArtifactReceipt": ("archetype.app.artifacts.models", "ArtifactReceipt"),
     "ArtifactWriteReceipt": ("archetype.app.artifacts.models", "ArtifactWriteReceipt"),
     "ArtifactProcessor": ("archetype.app.artifacts.models", "ArtifactProcessor"),
+    "ArtifactBundleRequest": (
+        "archetype.app.artifacts.bundle_models",
+        "ArtifactBundleRequest",
+    ),
+    "ArtifactCandidate": ("archetype.app.artifacts.bundle_models", "ArtifactCandidate"),
+    "ArtifactIndexRecord": ("archetype.app.artifacts.bundle_models", "ArtifactIndexRecord"),
+    "ArtifactPublishReceipt": (
+        "archetype.app.artifacts.bundle_models",
+        "ArtifactPublishReceipt",
+    ),
+    "ArtifactReconcileResult": (
+        "archetype.app.artifacts.bundle_models",
+        "ArtifactReconcileResult",
+    ),
+    "ArtifactSourceResolver": (
+        "archetype.app.artifacts.bundle_models",
+        "ArtifactSourceResolver",
+    ),
+    "ArtifactStoreConfig": ("archetype.app.artifacts.bundle_models", "ArtifactStoreConfig"),
+    "MaterializedArtifact": (
+        "archetype.app.artifacts.bundle_models",
+        "MaterializedArtifact",
+    ),
     # Command models used by supported host adapters
     "Command": ("archetype.app.models", "Command"),
     "CommandType": ("archetype.app.models", "CommandType"),

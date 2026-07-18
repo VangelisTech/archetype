@@ -29,6 +29,7 @@ machine authority; this page is its review surface.
 | `core.ecs.data_model` | `core` | high | [docs/guide/specification.md](../guide/specification.md) — Data Model Contracts | pytest: 2; eval: 2; benchmark: 1 | `pr`, `main`, `release` |
 | `release.package.installable` | `release` | high | [docs/guide/api-stability.md](../guide/api-stability.md) — What counts as public | pytest: 2; static: 1 | `release` |
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
+| `artifacts.bundle.publication_replay` | `artifacts` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Publication state machine | pytest: 3 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
 blocking/advisory policy is defined separately in `quality/eval_profiles.toml`;

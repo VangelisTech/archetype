@@ -412,7 +412,7 @@ async def test_v4_catalog_renames_fact_claim_identity_without_data_loss(tmp_path
     ]
     conn.close()
     assert "artifact_entity_id" in columns and "fact_entity_id" not in columns
-    assert version == "5"
+    assert version == "6"
 
 
 async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch):

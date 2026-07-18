@@ -75,6 +75,7 @@ nav:
           - Runtime: reference/python/runtime.md
           - World Handle: reference/python/world-handle.md
           - Runtime Models: reference/python/runtime-models.md
+          - Durable Artifact Bundles: reference/python/artifact-bundles.md
           - Building Blocks: reference/python/building-blocks.md
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
@@ -99,6 +100,7 @@ nav:
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
       - Artifacts: guide/artifacts.md
+      - Artifact Finalization: guide/artifact-finalization.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Repository Harness: guide/repository-harness.md

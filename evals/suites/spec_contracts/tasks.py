@@ -134,6 +134,7 @@ _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
 _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     {
         "archetype.app.application.interfaces",
+        "archetype.app.artifacts.bundle_models",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.storage.session",
