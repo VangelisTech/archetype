@@ -3,7 +3,9 @@
 
 """Control-plane contracts for resumable artifact publication."""
 
+import asyncio
 import json
+import threading
 import time
 
 import pytest
@@ -103,6 +105,77 @@ async def test_failed_phase_is_due_and_recovered_without_losing_upload_metadata(
         assert recovered.attempt_count == 2
     finally:
         await catalog.close()
+
+
+async def test_fail_holds_write_lock_until_claimant_check_and_update_finish(tmp_path):
+    """A stale failure reporter cannot corrupt a replacement claimant's lease."""
+
+    class PauseAfterClaimantRead:
+        def __init__(self, conn, selected: threading.Event, release: threading.Event):
+            self._conn = conn
+            self._selected = selected
+            self._release = release
+
+        def __enter__(self):
+            self._conn.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            cursor = self._conn.execute(sql, parameters)
+            if "SELECT status, claimant FROM artifact_publications" in sql:
+                self._selected.set()
+                if not self._release.wait(timeout=2.0):
+                    raise AssertionError("timed out waiting to release failure transaction")
+            return cursor
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    path = tmp_path / "catalog.db"
+    failing_catalog = SqliteControlCatalog(path)
+    replacement_catalog = SqliteControlCatalog(path)
+    release = threading.Event()
+    selected = threading.Event()
+    try:
+        _, publication = await _acquire(failing_catalog, lease=0.0)
+        failing_catalog._conn = PauseAfterClaimantRead(  # type: ignore[assignment]
+            failing_catalog._connect_sync(), selected, release
+        )
+
+        fail_task = asyncio.create_task(
+            failing_catalog.fail_artifact_publication(
+                "world-1",
+                publication.publication_key,
+                "owner-1",
+                "upload failed",
+                retry_at=0.0,
+            )
+        )
+        assert await asyncio.to_thread(selected.wait, 1.0)
+
+        takeover_task = asyncio.create_task(_acquire(replacement_catalog, claimant="owner-2"))
+        try:
+            await asyncio.wait_for(asyncio.shield(takeover_task), timeout=0.2)
+        except TimeoutError:
+            takeover_was_blocked = True
+        else:
+            takeover_was_blocked = False
+        finally:
+            release.set()
+
+        await fail_task
+        outcome, replacement = await takeover_task
+        assert takeover_was_blocked
+        assert outcome == "recovered"
+        assert replacement.claimant == "owner-2"
+        assert replacement.lease_expires_at > time.time()
+    finally:
+        release.set()
+        await failing_catalog.close()
+        await replacement_catalog.close()
 
 
 async def test_pending_publication_can_expire_but_uploaded_publication_cannot(tmp_path):

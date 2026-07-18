@@ -1071,6 +1071,7 @@ class SqliteControlCatalog:
         def _fail() -> None:
             conn = self._connect_sync()
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     "SELECT status, claimant FROM artifact_publications "
                     "WHERE publication_key=? AND world_id=?",
