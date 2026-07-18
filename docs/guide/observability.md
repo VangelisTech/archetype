@@ -172,7 +172,7 @@ methods commonly build lazy expressions whose work runs at a later terminal
 boundary. Telemetry must not add `.collect()`, `.to_pylist()`, or any other
 materialization to manufacture a duration.
 
-#518 must characterize Daft execution attribution and worker context with the
+Issue #518 must characterize Daft execution attribution and worker context with the
 locked version and supported runner. #519 then replaces or redefines these
 world phases from that evidence. Until then, no processor planning duration may
 be described as processor execution duration.
