@@ -25,7 +25,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 AgentHarness = Literal["codex", "claude-code"]
@@ -1900,6 +1900,16 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
         return client
 
 
+@dataclass(frozen=True)
+class _MaterializedModalArtifact:
+    """Structural resolver result without importing the app-layer contract."""
+
+    path: Path
+    source_ref: str
+    logical_path: str
+    kind: str
+
+
 @dataclass
 class ModalArtifactSourceResolver:
     """Materialize refs from a live or restorable Modal Sandbox.
@@ -1912,25 +1922,22 @@ class ModalArtifactSourceResolver:
     spec: ModalSandboxSpec
     sandbox: ModalSandboxClient | None = None
 
-    async def materialize(self, candidates, destination):
-        from archetype.app.artifact_service import CheckpointArtifactSourceResolver
-        from archetype.app.artifacts import MaterializedArtifact
-
+    async def materialize(
+        self,
+        candidates: Sequence[Any],
+        destination: Path,
+    ) -> list[_MaterializedModalArtifact]:
         modal_candidates = []
-        fallback = []
         for candidate in candidates:
             if candidate.source_ref.startswith(("modal-image://", "modal-sandbox://")):
                 modal_candidates.append(candidate)
             else:
-                fallback.append(candidate)
-
-        resolved = []
-        if fallback:
-            resolved.extend(
-                await CheckpointArtifactSourceResolver().materialize(
-                    tuple(fallback), destination / "fallback"
+                raise ValueError(
+                    "ModalArtifactSourceResolver accepts only modal-image:// or "
+                    "modal-sandbox:// references"
                 )
-            )
+
+        resolved: list[_MaterializedModalArtifact] = []
 
         grouped: dict[str, list] = {}
         for candidate in modal_candidates:
@@ -1976,7 +1983,7 @@ class ModalArtifactSourceResolver:
                                     file_path, output
                                 )
                                 resolved.append(
-                                    MaterializedArtifact(
+                                    _MaterializedModalArtifact(
                                         path=output,
                                         source_ref=f"{checkpoint}#{file_path}",
                                         logical_path=(
@@ -1991,7 +1998,7 @@ class ModalArtifactSourceResolver:
                             )
                             await client._sandbox.filesystem.copy_to_local.aio(remote_path, output)
                             resolved.append(
-                                MaterializedArtifact(
+                                _MaterializedModalArtifact(
                                     path=output,
                                     source_ref=f"{checkpoint}#{remote_path}",
                                     logical_path=candidate.logical_path,

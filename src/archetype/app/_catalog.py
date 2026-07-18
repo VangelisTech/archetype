@@ -55,7 +55,7 @@ from typing import Protocol
 import pyarrow as pa
 
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
-from archetype.app.errors import ConflictError
+from archetype.app.errors import AvailabilityError, ConflictError
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import require_safe_namespace, resolve_local_root
@@ -250,16 +250,22 @@ class ClaimRecord:
     fence_epoch: int
 
 
-class ArtifactPublicationConflictError(RuntimeError):
+class ArtifactPublicationConflictError(ConflictError):
     """An artifact publication identity was reused for different content."""
 
+    public_detail = "Artifact publication conflicts with existing state"
 
-class ArtifactPublicationPendingError(RuntimeError):
+
+class ArtifactPublicationPendingError(AvailabilityError):
     """Another reconciler holds the live lease for this publication."""
 
+    public_detail = "Artifact publication is currently being reconciled"
 
-class ArtifactPublicationExpiredError(RuntimeError):
+
+class ArtifactPublicationExpiredError(ConflictError):
     """A publication exhausted its durable retry window before upload."""
+
+    public_detail = "Artifact publication retry window expired"
 
 
 @dataclass(frozen=True)

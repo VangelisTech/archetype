@@ -13,6 +13,9 @@ from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
 from archetype.app._catalog import (
+    ArtifactPublicationConflictError,
+    ArtifactPublicationExpiredError,
+    ArtifactPublicationPendingError,
     CatalogConflictError,
     CatalogSchemaMismatchError,
     ClaimConflictError,
@@ -29,6 +32,11 @@ from archetype.app.errors import AvailabilityError, ConflictError
         (CatalogConflictError, "Catalog entry conflicts with existing state"),
         (ClaimConflictError, "Claim conflicts with existing state"),
         (ClaimPendingError, "Claim is currently pending"),
+        (
+            ArtifactPublicationConflictError,
+            "Artifact publication conflicts with existing state",
+        ),
+        (ArtifactPublicationExpiredError, "Artifact publication retry window expired"),
     ],
 )
 def test_catalog_conflicts_map_through_public_contract(
@@ -69,6 +77,17 @@ def test_audit_backpressure_maps_through_public_availability_contract() -> None:
     assert raised.value.status_code == 503
     assert raised.value.detail == "Audit log is temporarily unavailable"
     assert "/srv/private" not in raised.value.detail
+
+
+def test_pending_artifact_publication_maps_to_retryable_availability() -> None:
+    error = ArtifactPublicationPendingError("lease held by private claimant")
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "Artifact publication is currently being reconciled"
+    assert "private claimant" not in raised.value.detail
 
 
 def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
