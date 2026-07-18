@@ -155,6 +155,31 @@ def _outbox_row():
     }
 
 
+def _artifact_publication_row(**overrides):
+    row = {
+        "publication_key": "publication-1",
+        "run_id": "run-1",
+        "attempt_id": "attempt-1",
+        "idempotency_key": "bundle-1",
+        "request_digest": "digest-1",
+        "status": "PENDING",
+        "request_json": "{}",
+        "records_json": "[]",
+        "claimant": "owner-1",
+        "lease_expires_at": 30.0,
+        "retry_until_ms": 60_000,
+        "attempt_count": 1,
+        "index_snapshot_id": 0,
+        "manifest_uri": "",
+        "last_error": "",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "completed_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
 async def test_command_ledger_transport_round_trip_is_typed_and_scoped():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
@@ -260,5 +285,79 @@ async def test_outbox_transport_preserves_order_and_projection_progress():
         assert dict(requests[0].url.params) == {"limit": "8"}
         assert requests[1].method == "POST"
         assert requests[1].content == b'{"event_ids":["event-1"]}'
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_publication_transport_is_typed_and_scoped():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "outcome": "acquired",
+                    "publication": _artifact_publication_row(),
+                },
+            ),
+            httpx.Response(200, json=_artifact_publication_row(lease_expires_at=90.0)),
+            httpx.Response(204),
+            httpx.Response(204),
+            httpx.Response(204),
+            httpx.Response(204),
+            httpx.Response(404),
+            httpx.Response(200, json=_artifact_publication_row(status="INDEXED")),
+            httpx.Response(200, json=[_artifact_publication_row(status="UPLOADED")]),
+        ],
+        requests,
+    )
+    try:
+        outcome, publication = await catalog.acquire_artifact_publication(
+            world_id="world-1",
+            run_id="run-1",
+            attempt_id="attempt-1",
+            idempotency_key="bundle-1",
+            request_digest="digest-1",
+            request_json="{}",
+            claimant="owner-1",
+            retry_until_ms=60_000,
+            lease_seconds=15.0,
+        )
+        renewed = await catalog.renew_artifact_publication(
+            "world-1", publication.publication_key, "owner-1", lease_seconds=60.0
+        )
+        await catalog.record_artifact_uploads(
+            "world-1", publication.publication_key, "owner-1", "[]", "s3://manifest"
+        )
+        await catalog.complete_artifact_publication(
+            "world-1", publication.publication_key, "owner-1", 42
+        )
+        await catalog.fail_artifact_publication(
+            "world-1", publication.publication_key, "owner-1", "retry", retry_at=3.0
+        )
+        await catalog.expire_artifact_publication(
+            "world-1", publication.publication_key, "owner-1", "expired"
+        )
+        missing = await catalog.get_artifact_publication("world-1", "missing")
+        indexed = await catalog.get_artifact_publication("world-1", publication.publication_key)
+        due = await catalog.list_due_artifact_publications("world-1", now=5.0, limit=7)
+
+        assert outcome == "acquired" and publication.world_id == "world-1"
+        assert renewed.lease_expires_at == 90.0
+        assert missing is None
+        assert indexed is not None and indexed.status == "INDEXED"
+        assert [record.status for record in due] == ["UPLOADED"]
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/artifact-publications/acquire",
+            "/ns/test/w/world-1/artifact-publications/publication-1/renew",
+            "/ns/test/w/world-1/artifact-publications/publication-1/uploads",
+            "/ns/test/w/world-1/artifact-publications/publication-1/complete",
+            "/ns/test/w/world-1/artifact-publications/publication-1/fail",
+            "/ns/test/w/world-1/artifact-publications/publication-1/expire",
+            "/ns/test/w/world-1/artifact-publications/missing",
+            "/ns/test/w/world-1/artifact-publications/publication-1",
+            "/ns/test/w/world-1/artifact-publications",
+        ]
+        assert dict(requests[-1].url.params) == {"due": "5.0", "limit": "7"}
     finally:
         await catalog.close()

@@ -5,6 +5,7 @@
 
 import hashlib
 import tarfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -85,6 +86,8 @@ async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):
             WorldConfig(name="artifact-world"), world_storage
         )
         request = _request(world, source)
+        empty = await container.artifact_bundle_service.query(request.world_id, request.run_id)
+        assert empty.collect().to_pylist() == []
         first = await container.application.publish_artifact_bundle(
             request, storage_config=world_storage
         )
@@ -119,6 +122,10 @@ async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):
         assert {row["artifact_id"] for row in queried_rows} == {
             record.artifact_id for record in first.records
         }
+        results_only = await container.application.query_artifact_bundles(
+            world.world_id, str(world.run_id), kinds=["result"]
+        )
+        assert [row["kind"] for row in results_only.collect().to_pylist()] == ["result"]
 
         # A lost lease can replay an already-committed Iceberg append. The
         # physical rows are at-least-once, while the service's lazy read path
@@ -168,7 +175,7 @@ async def test_same_idempotency_key_with_different_request_conflicts(tmp_path):
 
 async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monkeypatch):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
-        update={"retry_delay_seconds": 0.0}
+        update={"retry_delay_seconds": 30.0}
     )
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
     source = tmp_path / "result.txt"
@@ -194,34 +201,44 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
         publication = await catalog.get_artifact_publication(request.world_id, key)
         assert publication is not None and publication.status == "UPLOADED"
         assert publication.records_json != "[]"
+        await catalog.fail_artifact_publication(
+            request.world_id,
+            publication.publication_key,
+            publication.claimant,
+            "make uploaded row immediately due",
+            retry_at=0.0,
+        )
 
-        # One corrupt durable request must be reported without preventing the
-        # next due publication from recovering in the same bounded pass.
-        real_list_due = catalog.list_due_artifact_publications
-
-        async def list_with_corrupt_request(*args, **kwargs):
-            rows = await real_list_due(*args, **kwargs)
-            assert rows
-            corrupt = replace(
-                rows[0],
-                publication_key="corrupt-publication",
-                request_json="{not-json",
-            )
-            return [corrupt, *rows]
-
-        monkeypatch.setattr(
-            catalog,
-            "list_due_artifact_publications",
-            list_with_corrupt_request,
+        # This is a real durable corrupt row, not a list_due test double. The
+        # reconciler must first acquire it, then persist a diagnostic/backoff
+        # without preventing the valid publication from recovering.
+        _, corrupt = await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id="corrupt-attempt",
+            idempotency_key="corrupt-publication",
+            request_digest="corrupt-request-digest",
+            request_json="{not-json",
+            claimant="corrupt-seed",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=0.0,
         )
 
         monkeypatch.setattr(container.artifact_bundle_service, "_index_records", real_index)
+        reconcile_started = time.time()
         result = await container.artifact_bundle_service.reconcile(
             request.world_id, storage_config=storage
         )
         assert result.examined == 2
         assert result.indexed == 1
         assert result.failed == 1
+        corrupt_after = await catalog.get_artifact_publication(
+            request.world_id, corrupt.publication_key
+        )
+        assert corrupt_after is not None
+        assert corrupt_after.claimant.startswith("artifact-reconciler-")
+        assert "ValidationError" in corrupt_after.last_error
+        assert corrupt_after.lease_expires_at >= reconcile_started + 29.0
         files_after = sorted(
             path for path in Path(artifact_config.object_uri).rglob("*") if path.is_file()
         )
@@ -390,3 +407,255 @@ async def test_runtime_world_exposes_publish_query_and_reconcile(tmp_path):
         assert len(rows) == 3
         reconciled = await world.reconcile_artifact_bundles()
         assert reconciled.examined == 0
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            await world.reconcile_artifact_bundles(limit=0)
+
+
+async def test_resolver_rejects_unsupported_and_unsafe_sources(tmp_path):
+    resolver = CheckpointArtifactSourceResolver()
+    unsupported = ArtifactCandidate(
+        source_ref="s3://bucket/result.json", logical_path="result.json"
+    )
+    with pytest.raises(ValueError, match="no artifact source resolver"):
+        await resolver.materialize((unsupported,), tmp_path / "unsupported")
+
+    with pytest.raises(ValueError, match="Apple Container artifact refs require"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref="apple-container-rootfs://missing-fragment",
+                    logical_path="result.json",
+                ),
+            ),
+            tmp_path / "malformed",
+        )
+
+    missing_archive = tmp_path / "missing.tar"
+    with pytest.raises(FileNotFoundError, match="checkpoint does not exist"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref=f"apple-container-rootfs://{missing_archive}#/result.json",
+                    logical_path="result.json",
+                ),
+            ),
+            tmp_path / "missing",
+        )
+
+    archive = tmp_path / "rootfs.tar"
+    with tarfile.open(archive, "w"):
+        pass
+    with pytest.raises(ValueError, match="unsafe checkpoint member path"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref=f"apple-container-rootfs://{archive}#/../secret",
+                    logical_path="secret",
+                ),
+            ),
+            tmp_path / "unsafe",
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "recursive", "required", "message"),
+    [
+        ("missing", False, True, "required artifact source does not exist"),
+        ("directory", False, True, "directory but recursive=False"),
+        ("empty_directory", True, True, "required artifact directory is empty"),
+        ("file", True, True, "file but recursive=True"),
+    ],
+)
+async def test_resolver_enforces_direct_source_shape(
+    tmp_path, source_kind, recursive, required, message
+):
+    source = tmp_path / source_kind
+    if source_kind in {"directory", "empty_directory"}:
+        source.mkdir()
+    elif source_kind == "file":
+        source.write_text("value")
+    candidate = ArtifactCandidate(
+        source_ref=str(source),
+        logical_path="artifact",
+        recursive=recursive,
+        required=required,
+    )
+    with pytest.raises((FileNotFoundError, IsADirectoryError, NotADirectoryError), match=message):
+        await CheckpointArtifactSourceResolver().materialize((candidate,), tmp_path / "output")
+
+
+async def test_resolver_skips_optional_sources_and_rejects_collisions(tmp_path):
+    resolver = CheckpointArtifactSourceResolver()
+    optional = ArtifactCandidate(
+        source_ref=str(tmp_path / "absent"),
+        logical_path="optional",
+        required=False,
+    )
+    assert await resolver.materialize((optional,), tmp_path / "optional-output") == []
+
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("first")
+    second.write_text("second")
+    with pytest.raises(ValueError, match="multiple artifact sources resolve"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(source_ref=str(first), logical_path="same.txt"),
+                ArtifactCandidate(source_ref=str(second), logical_path="same.txt"),
+            ),
+            tmp_path / "collision-output",
+        )
+
+
+async def test_resolver_reports_required_member_missing_from_checkpoint(tmp_path):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "present.txt").write_text("present")
+    archive = tmp_path / "rootfs.tar"
+    with tarfile.open(archive, "w") as output:
+        output.add(tree, arcname="workspace")
+
+    with pytest.raises(FileNotFoundError, match="absent.txt.*is absent from checkpoint"):
+        await CheckpointArtifactSourceResolver().materialize(
+            (
+                ArtifactCandidate(
+                    source_ref=(f"apple-container-rootfs://{archive}#/workspace/absent.txt"),
+                    logical_path="absent.txt",
+                ),
+            ),
+            tmp_path / "extracted",
+        )
+
+
+async def test_reconcile_distinguishes_unowned_and_failure_recording_errors(
+    tmp_path, monkeypatch, caplog
+):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        catalog = container.storage_service.get_control_catalog(storage)
+        valid = _request(world, source, idempotency_key="acquire-fails")
+        _, valid_row = await catalog.acquire_artifact_publication(
+            world_id=valid.world_id,
+            run_id=valid.run_id,
+            attempt_id=valid.attempt_id,
+            idempotency_key=valid.idempotency_key,
+            request_digest=valid.digest(),
+            request_json=valid.canonical_json(),
+            claimant="seed-valid",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=0.0,
+        )
+        _, corrupt_row = await catalog.acquire_artifact_publication(
+            world_id=valid.world_id,
+            run_id=valid.run_id,
+            attempt_id="corrupt-attempt",
+            idempotency_key="failure-recording-fails",
+            request_digest="corrupt",
+            request_json="{not-json",
+            claimant="seed-corrupt",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=0.0,
+        )
+        real_acquire = catalog.acquire_artifact_publication
+
+        async def selective_acquire(**kwargs):
+            if kwargs["idempotency_key"] == valid.idempotency_key:
+                raise RuntimeError("acquire transport unavailable")
+            return await real_acquire(**kwargs)
+
+        async def fail_recording(*args, **kwargs):
+            raise RuntimeError("failure catalog unavailable")
+
+        monkeypatch.setattr(catalog, "acquire_artifact_publication", selective_acquire)
+        monkeypatch.setattr(catalog, "fail_artifact_publication", fail_recording)
+        caplog.set_level("ERROR", logger="archetype.app.artifacts.bundle_service")
+
+        result = await container.artifact_bundle_service.reconcile(
+            valid.world_id, storage_config=storage
+        )
+        assert result.examined == 2 and result.failed == 2
+        assert "failed before lease acquisition" in caplog.text
+        assert "failed to record retry state" in caplog.text
+
+        valid_after = await catalog.get_artifact_publication(
+            valid.world_id, valid_row.publication_key
+        )
+        corrupt_after = await catalog.get_artifact_publication(
+            valid.world_id, corrupt_row.publication_key
+        )
+        assert valid_after is not None and valid_after.claimant == "seed-valid"
+        assert corrupt_after is not None
+        assert corrupt_after.claimant.startswith("artifact-reconciler-")
+        assert corrupt_after.last_error == ""
+    finally:
+        await container.shutdown()
+
+
+async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="expired-pending")
+        catalog = container.storage_service.get_control_catalog(storage)
+        _, publication = await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=request.digest(),
+            request_json=request.canonical_json(),
+            claimant="seed",
+            retry_until_ms=1,
+            lease_seconds=0.0,
+        )
+        result = await container.artifact_bundle_service.reconcile(
+            request.world_id, storage_config=storage
+        )
+        assert result.expired == 1 and result.failed == 0
+        expired = await catalog.get_artifact_publication(
+            request.world_id, publication.publication_key
+        )
+        assert expired is not None and expired.status == "EXPIRED"
+    finally:
+        await container.shutdown()
+
+
+async def test_durable_request_identity_and_digest_are_authenticated(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        catalog = container.storage_service.get_control_catalog(storage)
+        _, publication = await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=request.digest(),
+            request_json=request.canonical_json(),
+            claimant="seed",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+        )
+        with pytest.raises(ValueError, match="identity does not match"):
+            container.artifact_bundle_service._request_from_publication(
+                replace(publication, attempt_id="tampered")
+            )
+        with pytest.raises(ValueError, match="digest does not match"):
+            container.artifact_bundle_service._request_from_publication(
+                replace(publication, request_digest="tampered")
+            )
+    finally:
+        await container.shutdown()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import mimetypes
 import shutil
 import tarfile
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
 
 _ARTIFACT_INDEX_TABLE = "artifact_index_v1"
 _ROOTFS_SCHEME = "apple-container-rootfs://"
+logger = logging.getLogger(__name__)
 
 
 class _FileMetadata(TypedDict):
@@ -384,15 +386,15 @@ class ArtifactBundleService:
         for stale in due:
             bundle_ids.append(stale.publication_key)
             claimant = f"artifact-reconciler-{uuid7()}"
+            owned = False
             try:
-                request = ArtifactBundleRequest.model_validate_json(stale.request_json)
                 outcome, publication = await catalog.acquire_artifact_publication(
-                    world_id=request.world_id,
-                    run_id=request.run_id,
-                    attempt_id=request.attempt_id,
-                    idempotency_key=request.idempotency_key,
-                    request_digest=request.digest(),
-                    request_json=request.canonical_json(),
+                    world_id=stale.world_id,
+                    run_id=stale.run_id,
+                    attempt_id=stale.attempt_id,
+                    idempotency_key=stale.idempotency_key,
+                    request_digest=stale.request_digest,
+                    request_json=stale.request_json,
                     claimant=claimant,
                     retry_until_ms=stale.retry_until_ms,
                     lease_seconds=config.lease_seconds,
@@ -403,6 +405,8 @@ class ArtifactBundleService:
                 if outcome == "expired":
                     expired += 1
                     continue
+                owned = True
+                request = self._request_from_publication(publication)
                 if publication.status == "PENDING" and (
                     int(time.time() * 1000) > publication.retry_until_ms
                 ):
@@ -418,16 +422,31 @@ class ArtifactBundleService:
                 indexed += 1
             except Exception as exc:
                 failed += 1
+                if not owned:
+                    logger.exception(
+                        "artifact reconciliation failed before lease acquisition for %s",
+                        stale.publication_key,
+                    )
+                    continue
                 try:
                     await catalog.fail_artifact_publication(
-                        stale.world_id,
-                        stale.publication_key,
+                        publication.world_id,
+                        publication.publication_key,
                         claimant,
                         f"{type(exc).__name__}: {exc}",
                         retry_at=time.time() + config.retry_delay_seconds,
                     )
-                except Exception:
-                    pass
+                except Exception as record_error:
+                    exc.add_note(
+                        "failed to record artifact reconciliation retry state: "
+                        f"{type(record_error).__name__}: {record_error}"
+                    )
+                    logger.exception(
+                        "artifact reconciler failed to record retry state for %s after %s: %s",
+                        publication.publication_key,
+                        type(exc).__name__,
+                        exc,
+                    )
         return ArtifactReconcileResult(
             examined=len(due),
             indexed=indexed,
@@ -435,6 +454,30 @@ class ArtifactBundleService:
             failed=failed,
             bundle_ids=tuple(bundle_ids),
         )
+
+    @staticmethod
+    def _request_from_publication(
+        publication: ArtifactPublicationRecord,
+    ) -> ArtifactBundleRequest:
+        """Decode and authenticate a durable request after owning its lease."""
+        request = ArtifactBundleRequest.model_validate_json(publication.request_json)
+        persisted_identity = (
+            publication.world_id,
+            publication.run_id,
+            publication.attempt_id,
+            publication.idempotency_key,
+        )
+        request_identity = (
+            request.world_id,
+            request.run_id,
+            request.attempt_id,
+            request.idempotency_key,
+        )
+        if request_identity != persisted_identity:
+            raise ValueError("durable artifact request identity does not match its publication row")
+        if request.digest() != publication.request_digest:
+            raise ValueError("durable artifact request digest does not match its publication row")
+        return request
 
     async def _resume(
         self,
