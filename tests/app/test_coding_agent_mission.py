@@ -227,6 +227,118 @@ def test_mission_rejects_mismatched_or_vacuous_evidence() -> None:
         service.apply_attempt(row, request, outcome)
 
 
+def test_mission_prepare_attempt_fails_closed_on_invalid_persisted_state() -> None:
+    service = MissionService()
+
+    terminal = _mission_row()
+    terminal["mission__finished"] = True
+    assert service.prepare_attempt(terminal, tick=0) is None
+
+    complete = _mission_row()
+    complete["taskgate__step_index"] = 1
+    assert service.prepare_attempt(complete, tick=0) is None
+
+    invalid_plan = _mission_row()
+    invalid_plan["mission__plan_json"] = "{}"
+    with pytest.raises(ValueError, match="mission plan"):
+        service.prepare_attempt(invalid_plan, tick=0)
+
+    negative_step = _mission_row()
+    negative_step["taskgate__step_index"] = -1
+    with pytest.raises(ValueError, match="step_index"):
+        service.prepare_attempt(negative_step, tick=0)
+
+    empty_task = _mission_row()
+    empty_task["mission__plan_json"] = json.dumps(
+        [{"name": "", "prompt": "", "validators": [{"name": "tests"}]}]
+    )
+    with pytest.raises(ValueError, match="name and prompt"):
+        service.prepare_attempt(empty_task, tick=0)
+
+    no_validators = _mission_row()
+    no_validators["mission__plan_json"] = json.dumps(
+        [{"name": "fix", "prompt": "Fix", "validators": []}]
+    )
+    with pytest.raises(ValueError, match="at least one validator"):
+        service.prepare_attempt(no_validators, tick=0)
+
+    invalid_validator = _mission_row()
+    invalid_validator["mission__plan_json"] = json.dumps(
+        [{"name": "fix", "prompt": "Fix", "validators": ["pytest"]}]
+    )
+    with pytest.raises(TypeError, match="JSON objects"):
+        service.prepare_attempt(invalid_validator, tick=0)
+
+    invalid_attempt = _mission_row()
+    invalid_attempt["taskgate__attempts"] = -2
+    with pytest.raises(ValueError, match="attempt index"):
+        service.prepare_attempt(invalid_attempt, tick=0)
+
+    invalid_prior = _mission_row()
+    invalid_prior["taskgate__attempts"] = 1
+    invalid_prior["attempt__validator_details_json"] = "{}"
+    with pytest.raises(ValueError, match="persisted validator details"):
+        service.prepare_attempt(invalid_prior, tick=0)
+
+
+def test_mission_apply_attempt_fails_closed_and_advances_multistep_plan() -> None:
+    service = MissionService()
+    row = _mission_row()
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+
+    terminal = dict(row, mission__finished=True)
+    terminal_outcome = _outcome(accepted=True)
+    terminal_outcome.update(
+        attempt_index=request.attempt_index,
+        idempotency_key=request.idempotency_key,
+    )
+    with pytest.raises(ValueError, match="terminal mission"):
+        service.apply_attempt(terminal, request, terminal_outcome)
+
+    wrong_attempt = dict(terminal_outcome, attempt_index=2)
+    with pytest.raises(ValueError, match="attempt_index"):
+        service.apply_attempt(row, request, wrong_attempt)
+
+    unknown_required = dict(row, taskgate__required_finalization_phase="unknown")
+    with pytest.raises(ValueError, match="required finalization"):
+        service.apply_attempt(unknown_required, request, terminal_outcome)
+
+    unknown_actual = dict(terminal_outcome, finalization_phase="unknown")
+    with pytest.raises(ValueError, match="outcome finalization"):
+        service.apply_attempt(row, request, unknown_actual)
+
+    no_commit = dict(terminal_outcome, sha="")
+    with pytest.raises(ValueError, match="commit SHA"):
+        service.apply_attempt(row, request, no_commit)
+
+    multistep = _mission_row()
+    multistep["mission__plan_json"] = json.dumps(
+        [
+            {
+                "name": "fix",
+                "prompt": "Fix the bug",
+                "validators": [{"name": "tests", "command": ["pytest"]}],
+            },
+            {
+                "name": "review",
+                "prompt": "Review the fix",
+                "validators": [{"name": "lint", "command": ["ruff"]}],
+            },
+        ]
+    )
+    first = service.prepare_attempt(multistep, tick=0)
+    assert first is not None
+    accepted = _outcome(accepted=True)
+    accepted.update(attempt_index=first.attempt_index, idempotency_key=first.idempotency_key)
+    advanced = service.apply_attempt(multistep, first, accepted)
+    assert advanced["taskgate__step_index"] == 1
+    assert advanced["taskgate__step_name"] == "review"
+    assert advanced["taskgate__status"] == "ready"
+    assert advanced["taskgate__attempts"] == 0
+    assert advanced["mission__finished"] is False
+
+
 @pytest.mark.asyncio
 async def test_sandbox_service_owns_lifetime_and_resume_modes() -> None:
     created = _Session("sb-created")
@@ -253,6 +365,47 @@ async def test_sandbox_service_owns_lifetime_and_resume_modes() -> None:
     ]
     with pytest.raises(RuntimeError, match="shutting down"):
         await service.create("test", object())
+
+
+@pytest.mark.asyncio
+async def test_sandbox_service_rejects_invalid_registration_and_duplicate_sessions() -> None:
+    blank = _Backend([])
+    blank.name = " "
+    with pytest.raises(ValueError, match="name must not be empty"):
+        SandboxService([blank])
+
+    with pytest.raises(ValueError, match="already registered"):
+        SandboxService([_Backend([]), _Backend([])])
+
+    first = _Session("sb-duplicate")
+    duplicate = _Session("sb-duplicate")
+    service = SandboxService([_Backend([first, duplicate])])
+    assert await service.create("test", object()) is first
+    assert service.session("sb-duplicate") is first
+    with pytest.raises(RuntimeError, match="duplicate live sandbox id"):
+        await service.create("test", object())
+    assert duplicate.closed == 1
+    await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_shutdown_reports_every_close_failure() -> None:
+    class FailingSession(_Session):
+        async def close(self) -> None:
+            self.closed += 1
+            raise RuntimeError(f"failed {self.sandbox_id}")
+
+    left = FailingSession("sb-left")
+    right = FailingSession("sb-right")
+    service = SandboxService([_Backend([left, right])])
+    await service.create("test", object())
+    await service.create("test", object())
+
+    with pytest.raises(RuntimeError, match="failed to close 2 sandbox session") as exc_info:
+        await service.shutdown()
+
+    assert left.closed == right.closed == 1
+    assert len(exc_info.value.__notes__) == 2
 
 
 @pytest.mark.asyncio
@@ -304,6 +457,76 @@ async def test_coding_agent_service_and_processor_run_exactly_one_attempt_per_ti
 
     await service.close_episode(mission_id)
     assert session.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_service_validates_episode_identity_and_recovery_modes() -> None:
+    invalid = _Session("sb-invalid")
+    service = CodingAgentService(MissionService(), SandboxService([_Backend([invalid])]))
+    with pytest.raises(ValueError, match="mission_id"):
+        await service.start_episode(" ", "test", object())
+    assert invalid.closed == 1
+
+    first = _Session("sb-first")
+    duplicate = _Session("sb-duplicate")
+    restored = _Session("sb-restored")
+    resumed = _Session("sb-resumed")
+    backend = _Backend([first, duplicate, restored, resumed])
+    sandboxes = SandboxService([backend])
+    service = CodingAgentService(MissionService(), sandboxes)
+    await service.start_episode("mission", "test", object())
+    with pytest.raises(ValueError, match="already active"):
+        await service.start_episode("mission", "test", object())
+    assert duplicate.closed == 1
+
+    with pytest.raises(ValueError, match="checkpoint_ref"):
+        await service.restore_episode("missing", "test", object(), "")
+    with pytest.raises(KeyError, match="no live sandbox"):
+        await service.run_tick("missing", _mission_row(), tick=0)
+
+    await service.restore_episode("restored", "test", object(), "checkpoint-a")
+    await service.restore_episode("resumed", "test", object(), "checkpoint-b", resume_agent=True)
+    assert backend.calls == [
+        ("create", ""),
+        ("create", ""),
+        ("restore", "checkpoint-a"),
+        ("resume", "checkpoint-b"),
+    ]
+
+    terminal = _mission_row()
+    terminal["mission__finished"] = True
+    assert await service.run_tick("mission", terminal, tick=1) == terminal
+    assert first.calls == []
+
+    await service.close_episode("mission")
+    await service.close_episode("restored")
+    await service.close_episode("resumed")
+    await service.close_episode("missing")
+    await sandboxes.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_coding_agent_processor_validates_resources_and_derives_mission_id() -> None:
+    frame = daft.from_pylist([_mission_row()])
+    processor = CodingAgentProcessor()
+    with pytest.raises(KeyError, match="world resources"):
+        await processor.process(frame, None, tick=0)
+    with pytest.raises(KeyError, match="CodingAgentService"):
+        await processor.process(frame, Resources(), tick=0)
+
+    session = _Session("sb-derived", [_outcome(accepted=True)])
+    sandboxes = SandboxService([_Backend([session])])
+    service = CodingAgentService(MissionService(), sandboxes)
+    derived_id = "world-test:entity-test:mission"
+    await service.start_episode(derived_id, "test", object())
+    resources = Resources()
+    resources.insert(service)
+    row = _mission_row()
+    row["codingagentepisode__mission_id"] = ""
+    result = await processor.process(daft.from_pylist([row]), resources, tick=0)
+    assert result.to_pylist()[0]["mission__succeeded"] is True
+    await service.close_episode(derived_id)
+    await sandboxes.shutdown()
 
 
 @pytest.mark.asyncio
