@@ -7,12 +7,12 @@ repo_name: VangelisTech/archetype
 docs_dir: docs
 site_dir: site/docs
 
-# Design notes, planning records, and historical reports are retained in the
-# published source tree but are not part of the reader-facing documentation.
+# Design notes and planning records are retained in the published source tree
+# but are not part of the reader-facing documentation. Selected historical
+# reports are explicitly classified under the History section below.
 not_in_nav: |
   design/**
   planning/**
-  reports/**
 
 theme:
   name: material
@@ -107,6 +107,8 @@ nav:
       - Repository Harness: guide/repository-harness.md
       - Repository Checks: guide/evals.md
       - Performance Benchmarking: guide/benchmarking.md
+      - Benchmark Runs:
+          - Modal OpenCode Single-H200 (2026-07-18): guide/benchmark-runs/modal-opencode-single-h200-2026-07-18.md
       - Mutation Testing: guide/mutation-testing.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md
@@ -117,6 +119,17 @@ nav:
           - Data Flow: guide/data-flow.md
           - Durable Commands: guide/durable-commands.md
           - Services: guide/services.md
+  - HISTORY:
+      - About Historical Records: history/index.md
+      - AGENT DEBRIEFS:
+          - Coding-Agent Missions (2026-07-18): history/agent-debriefs/2026-07-18-coding-agent-missions.md
+      - READINESS INVENTORIES:
+          - Coding-Agent Mission Readiness (2026-07-18): history/readiness/2026-07-18-coding-agent-missions.md
+      - ARCHITECTURE REPORTS:
+          - Security Program Review (2026-03-28): reports/2026-03-28-security-program-review.md
+          - Service-Layer Redesign (2026-04-25): reports/2026-04-25-service-layer-redesign.md
+          - Robot Evals Extraction (2026-07-16): reports/2026-07-16-robot-evals-extraction.md
+          - Contract-Centered Quality System (2026-07-17): reports/2026-07-17-contract-centered-quality-system.md
 
 markdown_extensions:
   - admonition
