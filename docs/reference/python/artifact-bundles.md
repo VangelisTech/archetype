@@ -2,7 +2,7 @@
 
 # Durable artifact bundles
 
-**Recommended API.** Configure durable sandbox-checkpoint evidence, publish portable artifacts, and query or reconcile their content-addressed index.
+**Recommended API.** These top-level `archetype` exports are supported runtime contracts. Use them to configure durable sandbox-checkpoint evidence, publish portable artifacts, and query or reconcile their content-addressed index; the rendered implementation-module paths are internal.
 
 ::: archetype.app.artifacts.bundle_models.ArtifactBundleRequest
     options:

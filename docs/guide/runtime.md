@@ -139,6 +139,16 @@ methods may ingest files, structured rows, or content and return typed artifact
 receipts. The runtime does not inspect storage catalogs, implement content
 identity, complete publication claims, or expose generic domain "artifacts."
 
+The artifact-bundle DTOs exported from the top-level `archetype` package are
+supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
+`ArtifactIndexRecord`, `ArtifactPublishReceipt`, `ArtifactReconcileResult`,
+`ArtifactSourceResolver`, `ArtifactStoreConfig`, and `MaterializedArtifact`.
+Their physical `app.artifacts.bundle_models` module is internal; application
+code imports the top-level names. The runtime's narrow import allowance for
+that module exists only to type its actor-free application-port methods and
+constructor configuration. It does not grant access to the concrete artifact
+service.
+
 Legacy `ingest`, `write_artifacts`, `artifacts`, and `ArtifactReceipt` names are migration
 surfaces to remove after the artifact-family cutover.
 

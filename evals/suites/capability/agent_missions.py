@@ -1,7 +1,14 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Graded, credential-free mission-transition capability checks."""
+"""Graded, credential-free mission-transition capability checks.
+
+This suite proves in-memory transition authority: validator rejection and an
+incomplete checkpoint do not advance the task, while complete evidence does.
+It does not claim durable execution ownership, crash recovery, resumption, or
+exactly-once model submission; those belong in the idempotency suite once a
+durable pre-execution claim exists.
+"""
 
 from __future__ import annotations
 

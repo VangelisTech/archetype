@@ -9,7 +9,7 @@ Archetype's Python reference inventories and classifies the supported top-level 
 | [Runtime](python/runtime.md) | Start here for scripts, notebooks, and applications. A runtime owns process-level services and creates world handles. |
 | [World handle](python/world-handle.md) | Create entities, run simulations, query history, and manage one world. |
 | [Runtime models](python/runtime-models.md) | Configuration, result, receipt, and introspection records returned by world operations. |
-| [Durable artifact bundles](python/artifact-bundles.md) | Configure durable sandbox-checkpoint evidence, publish portable artifacts, and query or reconcile their content-addressed index. |
+| [Durable artifact bundles](python/artifact-bundles.md) | These top-level `archetype` exports are supported runtime contracts. Use them to configure durable sandbox-checkpoint evidence, publish portable artifacts, and query or reconcile their content-addressed index; the rendered implementation-module paths are internal. |
 | [Building blocks](python/building-blocks.md) | Use these types to define component data, processors, and processor resources. |
 | [Hooks and ingress identity](python/hooks.md) | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |

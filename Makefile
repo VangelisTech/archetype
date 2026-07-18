@@ -393,7 +393,8 @@ package-smoke: build
 examples-smoke:
 	@set -e; for f in examples/[0-9][0-9]_*.py; do \
 		if [ "$$f" = "examples/11_coding_agent_mission.py" ]; then \
-			echo "Skipping external $$f (covered by its path-gated workflow)"; \
+			echo "Running $$f --dry-run (credential-free construction)"; \
+			PYTHONPATH=$(PYTHONPATH) uv run python "$$f" --dry-run; \
 			continue; \
 		fi; \
 		echo "Running $$f"; \

@@ -17,6 +17,7 @@ from archetype.app.coding_agents import (
     CodingAgentProcessor,
     CodingAgentService,
 )
+from archetype.app.container import ServiceContainer
 from archetype.app.missions import (
     Attempt,
     Checkpoint,
@@ -252,6 +253,23 @@ async def test_sandbox_service_owns_lifetime_and_resume_modes() -> None:
     ]
     with pytest.raises(RuntimeError, match="shutting down"):
         await service.create("test", object())
+
+
+@pytest.mark.asyncio
+async def test_container_registers_only_host_selected_sandbox_backends() -> None:
+    session = _Session("sb-configured")
+    backend = _Backend([session])
+    container = ServiceContainer(sandbox_backends=[backend])
+
+    try:
+        created = await container.sandbox_service.create("test", object())
+        assert created is session
+        with pytest.raises(ValueError, match="unknown sandbox provider"):
+            await container.sandbox_service.create("modal", object())
+    finally:
+        await container.shutdown()
+
+    assert session.closed == 1
 
 
 @pytest.mark.asyncio

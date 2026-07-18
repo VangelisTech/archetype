@@ -19,6 +19,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2] / "src" / "archetype"
 _RUNTIME_DIR = _ROOT / "runtime"
 _API_DIR = _ROOT / "api"
+_CONTAINER = _ROOT / "app" / "container.py"
 
 # ─── Allowed app imports ─────────────────────────────────────────────────────
 
@@ -171,6 +172,13 @@ class TestRuntimeAppBoundary:
         assert not violations, "runtime/ imports disallowed app modules:\n  " + "\n  ".join(
             violations
         )
+
+
+def test_base_container_does_not_select_concrete_sandbox_providers() -> None:
+    """Provider choice belongs to trusted host configuration, not the base graph."""
+    imports = {module for module, _, _ in _extract_app_imports(_CONTAINER)}
+    assert "archetype.app.sandboxes.modal" not in imports
+    assert "archetype.app.sandboxes.apple_container" not in imports
 
 
 @pytest.mark.parametrize(

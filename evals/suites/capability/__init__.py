@@ -14,4 +14,5 @@ def register(harness: EvalHarness) -> None:
     tasks.register(harness)
     agent_missions.register(harness)
 
+
 __all__ = ["agent_missions", "register", "tasks"]

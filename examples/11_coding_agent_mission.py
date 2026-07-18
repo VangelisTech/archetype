@@ -85,9 +85,11 @@ the full checkpoint remains a distinct recovery object. Publication uses a
 durable ``pending -> uploaded -> indexed`` reconciliation record.
 
 The paid Modal integrations are credential-gated and live in their own
-path-triggered workflow. They do not run in normal CI. The resume profile proves
-Codex, Claude Code, and OpenCode can continue from a checkpoint. Capacity tests
-are likewise manual:
+path-triggered workflow. They do not run in normal CI. A credential-free
+``--dry-run`` validates configuration and provider selection in the normal
+example smoke suite without creating a sandbox. The resume profile proves Codex,
+Claude Code, and OpenCode can continue from a checkpoint. Capacity tests are
+likewise manual:
 
     make test-modal-resume
     make bench-opencode-endpoint CONFIRM_PAID_BENCH=1
@@ -349,6 +351,11 @@ async def main() -> None:
     parser = argparse.ArgumentParser(description="Run an Archetype coding-agent mission")
     parser.add_argument("--codex-login", action="store_true")
     parser.add_argument("--modal-login", action="store_true")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate mission/provider configuration without creating a sandbox",
+    )
     parser.add_argument("--monitor-sandbox", metavar="SB_ID")
     parser.add_argument("--monitor-disconnect-grace-seconds", type=float, default=180.0)
     args = parser.parse_args()
@@ -417,7 +424,25 @@ async def main() -> None:
 
     plan = _mission_plan(issue_url)
     provider, provider_spec = _provider_spec(spec)
-    sandboxes = SandboxService([AppleContainerSandboxBackend(), ModalSandboxBackend()])
+    if args.dry_run:
+        print(
+            json.dumps(
+                {
+                    "backend": spec.backend,
+                    "branch": spec.branch,
+                    "harness": spec.harness,
+                    "issue_url": issue_url,
+                    "plan_steps": len(plan),
+                    "provider": provider,
+                    "provider_spec": type(provider_spec).__name__,
+                    "validators": len(plan[0]["validators"]),
+                },
+                sort_keys=True,
+            )
+        )
+        return
+    backend = ModalSandboxBackend() if provider == "modal" else AppleContainerSandboxBackend()
+    sandboxes = SandboxService([backend])
     coding_agents = CodingAgentService(MissionService(), sandboxes)
     mission_id = f"archetype-issue-{issue_slug}"
     sandbox_id = await coding_agents.start_episode(mission_id, provider, provider_spec)

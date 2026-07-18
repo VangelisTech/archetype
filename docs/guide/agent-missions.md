@@ -150,12 +150,14 @@ The harness deliberately separates correctness from cost and capacity:
 | unit/contract tests | provider conformance, transition gates, shutdown races, catalog replay | yes |
 | deterministic eval | graded end-to-end mission transition capability | yes |
 | Apple Container integration | real local isolation and restore/resume | no; explicit local target |
-| Modal integration | live Codex, Claude Code, OpenCode, monitoring, and resume | no; credential-gated and example-path-triggered |
+| Modal integration | live Codex, Claude Code, OpenCode, monitoring, and resume | no; credential-gated and mission-path-triggered |
 | paid benchmark | endpoint throughput and one-sandbox-per-agent fanout | no; explicit paid confirmation |
 
 External tests must skip cleanly when their credentials or local provider are
-absent. The Modal workflow is triggered only when the executable example is
-changed. Benchmark reports bind results to workload configuration, Git and
+absent. Normal CI runs example 11's credential-free `--dry-run` construction
+path. The paid Modal workflow is separate and triggers when the executable
+example, mission/sandbox/coding-agent families, live tests, or benchmark harness
+change. Benchmark reports bind results to workload configuration, Git and
 runner context, and correctness evidence; timing is advisory because the
 runner is not stable.
 

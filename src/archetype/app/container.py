@@ -32,9 +32,7 @@ from archetype.app.gateway.service import CommandGateway
 from archetype.app.missions.service import MissionService
 from archetype.app.query.service import QueryService
 from archetype.app.research.service import AutoResearchService
-from archetype.app.sandboxes.apple_container import AppleContainerSandboxBackend
 from archetype.app.sandboxes.interfaces import iSandboxBackend
-from archetype.app.sandboxes.modal import ModalSandboxBackend
 from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
@@ -86,13 +84,11 @@ class ServiceContainer:
         )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
 
-        # Mission capabilities. Provider modules lazy-load their SDK/CLI only
-        # when a sandbox is actually requested.
-        self.sandbox_service = SandboxService(
-            sandbox_backends
-            if sandbox_backends is not None
-            else (ModalSandboxBackend(), AppleContainerSandboxBackend())
-        )
+        # Mission capabilities. The base graph is provider-neutral: a trusted
+        # host registers only the adapters selected by its configuration.
+        # This keeps optional provider dependencies and policy out of the
+        # canonical composition root.
+        self.sandbox_service = SandboxService(sandbox_backends or ())
         self.mission_service = MissionService()
         self.coding_agent_service = CodingAgentService(self.mission_service, self.sandbox_service)
 

@@ -123,6 +123,12 @@ the two and treats live handles as a cache; persisted components and provider
 checkpoints remain the recovery authority. See
 [Agent missions and sandbox execution](agent-missions.md).
 
+The base `ServiceContainer` constructs an empty provider registry. A trusted
+host passes only its selected `iSandboxBackend` adapters through container
+configuration; the base graph never eagerly imports or chooses Modal and Apple
+Container. Optional dependency installation and provider policy therefore
+remain host concerns.
+
 ## 5. Models crossing families
 
 Cross-family models are immutable or frozen where identity matters. The root

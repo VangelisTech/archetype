@@ -4,7 +4,23 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - ".github/workflows/modal-coding-agent.yml"
+      - "Makefile"
+      - "bench/agents/**"
       - "examples/11_coding_agent_mission.py"
+      - "pyproject.toml"
+      - "src/archetype/app/artifacts/**"
+      - "src/archetype/app/coding_agents/**"
+      - "src/archetype/app/missions/**"
+      - "src/archetype/app/sandboxes/**"
+      - "src/archetype/runtime/**"
+      - "tests/app/test_apple_container_sandbox.py"
+      - "tests/app/test_coding_agent_mission.py"
+      - "tests/app/test_modal_sandbox.py"
+      - "tests/bench/test_modal_opencode.py"
+      - "tests/integration/test_apple_container_coding_agent_live.py"
+      - "tests/integration/test_modal_coding_agent_live.py"
+      - "uv.lock"
 
 permissions:
   contents: read

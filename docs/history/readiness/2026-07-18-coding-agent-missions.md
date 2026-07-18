@@ -22,6 +22,15 @@ can be explained.
   [#475](https://github.com/VangelisTech/archetype/pull/475).
 - The coding-agent vertical slice was rebased onto that merged tree and the new
   main verification profile passed.
+- The catalog-driven eval harness from
+  [#484](https://github.com/VangelisTech/archetype/pull/484) was retained
+  wholesale. `agent_mission_transition_authority` is registered as the sixth
+  blocking capability task without changing its contract-referenced ID or the
+  profile registry.
+- The base `ServiceContainer` is provider-neutral and accepts explicitly
+  registered sandbox backends. Normal example smoke uses example 11's
+  credential-free `--dry-run`; the paid workflow watches all mission/provider
+  implementation and live-harness paths rather than only the example file.
 - The prior prototype remains preserved in
   [#474](https://github.com/VangelisTech/archetype/pull/474); draft PR #487 is
   its architectural successor.
@@ -32,12 +41,15 @@ can be explained.
 
 ## Remaining work, in priority order
 
-1. **Make the landing reviewable without losing the vertical proof.** Decide
-   whether #487 remains one capability PR or is mechanically split into
-   sandbox/auth transport, mission/artifact durability, and harness/benchmark
-   slices. Do not merge both #474 and #487, and do not separate code from the
+1. **Make the landing reviewable without losing the vertical proof.** Split
+   #487 in dependency order: (a) artifact publication substrate, (b) mission
+   transition authority, (c) provider-neutral sandbox kernel, (d) coding-agent
+   orchestration plus fake backend, (e) Modal and Apple provider adapters, and
+   (f) live evidence plus benchmarking. Modal and Apple may be separate adapter
+   PRs. Do not merge both #474 and #487, and do not separate code from the
    contract tests that prove it. **Done when:** each review unit has a coherent
-   authority boundary and the full stacked tree still passes the same gate.
+   authority boundary, each child branch is based on its actual dependency,
+   and the full stacked tree still passes the same gate.
 
 2. **Extract provider-neutral execution primitives.** Move the shared harness,
    validator, commit, evidence, checkpoint, and process records out of the
@@ -142,11 +154,16 @@ can be explained.
     on:** item 8; complements but does not replace items 10–15.
 
 18. **Integrate Pydantic Evals and span evaluators.** Map typed mission cases
-    to Archetype's dataset/evaluation ontology, grade outcome/process/efficiency,
-    and project experiments to Logfire without creating a second transition
-    authority. **Tracking:**
-    [#489](https://github.com/VangelisTech/archetype/issues/489). **Depends
-    on:** item 14 for stable process assertions.
+   to Archetype's dataset/evaluation ontology, grade outcome/process/efficiency,
+   and project experiments to Logfire without creating a second transition
+   authority. **Tracking:**
+   [#489](https://github.com/VangelisTech/archetype/issues/489). **Depends
+   on:** item 14 for stable process assertions. The current capability task is
+   intentionally narrower: it proves in-memory rejection, incomplete checkpoint
+   gating, and eventual advance only. Once item 5 exists, add
+   `evals/suites/idempotency/missions.py` tasks for claim replay, crash after
+   execution before settlement, duplicate tick delivery, settlement replay,
+   and restart/checkpoint reattachment.
 
 19. **Run and retain the paid Claude Code edit/resume proof.** Use subscription
     authentication, make a material repository edit, checkpoint, restore in a
