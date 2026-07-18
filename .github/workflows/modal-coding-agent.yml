@@ -15,13 +15,17 @@ concurrency:
 
 jobs:
   live-modal:
-    name: Claude Code + Codex on Modal
+    name: Codex + Claude Code + OpenCode on Modal
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 75
     env:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL: ${{ vars.ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL }}
+      ARCHETYPE_OPENCODE_INTEGRATION_MODEL: ${{ vars.ARCHETYPE_OPENCODE_INTEGRATION_MODEL }}
+      ARCHETYPE_OPENCODE_MODAL_SECRET: ${{ vars.ARCHETYPE_OPENCODE_MODAL_SECRET }}
+      ARCHETYPE_OPENCODE_WIRE_API: ${{ vars.ARCHETYPE_OPENCODE_WIRE_API }}
 
     steps:
       - name: Detect Modal credentials

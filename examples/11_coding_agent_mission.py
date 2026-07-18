@@ -17,7 +17,9 @@ Maps the software-factory mental model onto Archetype's ECS primitives:
 
 Default backend is a real Apple Container lightweight VM with no host workspace
 mount. Set ``CODING_AGENT_BACKEND=modal`` for remote execution. Both backends
-support ``CODING_AGENT_HARNESS=codex`` or ``claude-code``.
+support ``CODING_AGENT_HARNESS=codex`` or ``claude-code``. The Modal backend
+also supports ``opencode`` against an operator-supplied OpenAI-compatible
+endpoint.
 
 First-time local Codex setup uses your ChatGPT OAuth entitlement, not an OpenAI
 Platform API key. Start Apple Container and complete Codex's device-code flow:
@@ -37,6 +39,20 @@ passed to validator processes. To use a Platform API key instead, set
 
 Claude Code currently uses ``ANTHROPIC_API_KEY``. Set
 ``CODING_AGENT_HARNESS=claude-code`` to select it.
+
+OpenCode can drive a protected Modal inference endpoint without an OpenAI or
+Anthropic key. Create a dedicated Modal Secret containing only
+``MODAL_ENDPOINT_TOKEN_ID`` and ``MODAL_ENDPOINT_TOKEN_SECRET``, then select the
+endpoint's API root and exact model ID:
+
+    CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=opencode \
+      CODING_AGENT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+      CODING_AGENT_OPENCODE_BASE_URL=https://REPLACE-ME/v1 \
+      uv run --extra coding-agent python examples/11_coding_agent_mission.py
+
+The default Secret name is ``archetype-modal-endpoint``. OpenCode's generated
+config contains environment placeholders, not token values; the Secret is
+injected only into the OpenCode process and is absent from validators.
 
 For Modal, either use the API-key Secrets documented below or persist a
 subscription login in a dedicated Modal Volume. Codex uses device code auth;
@@ -129,6 +145,7 @@ from archetype.experiments import (
     ModalArtifactSourceResolver,
     ModalSandboxClient,
     ModalSandboxSpec,
+    OpenCodeWireAPI,
     ValidatorSpec,
 )
 
@@ -349,8 +366,12 @@ PLAN: list[dict[str, Any]] = [
                     "-c",
                     (
                         "import subprocess; "
-                        "changed=set(subprocess.check_output("
+                        "tracked=set(subprocess.check_output("
                         "['git','diff','--name-only','HEAD'], text=True).splitlines()); "
+                        "untracked=set(subprocess.check_output("
+                        "['git','ls-files','--others','--exclude-standard'], "
+                        "text=True).splitlines()); "
+                        "changed=tracked | untracked; "
                         "implementation={p for p in changed if p.startswith('src/archetype/app/')}; "
                         "tests={p for p in changed if p.startswith('tests/')}; "
                         "core={p for p in changed if p.startswith('src/archetype/core/')}; "
@@ -494,6 +515,10 @@ class SandboxSpec:
     branch: str = "agent/issue-457-same-world-serialization"
     codex_secret_name: str = "archetype-codex"
     claude_secret_name: str = "archetype-claude-code"
+    opencode_secret_name: str = "archetype-modal-endpoint"
+    opencode_base_url: str = ""
+    opencode_provider_id: str = "archetype-modal"
+    opencode_wire_api: str = "chat-completions"
     modal_auth_mode: str = "api-key"
     modal_codex_auth_volume: str = "archetype-codex-auth"
     modal_claude_auth_volume: str = "archetype-claude-code-auth"
@@ -563,6 +588,10 @@ def _modal_spec(spec: SandboxSpec) -> ModalSandboxSpec:
         workspace=spec.workspace,
         codex_secret_name=spec.codex_secret_name,
         claude_secret_name=spec.claude_secret_name,
+        opencode_secret_name=spec.opencode_secret_name,
+        opencode_base_url=spec.opencode_base_url,
+        opencode_provider_id=spec.opencode_provider_id,
+        opencode_wire_api=cast(OpenCodeWireAPI, spec.opencode_wire_api),
         auth_mode=cast(AgentAuthMode, spec.modal_auth_mode),
         codex_auth_volume_name=spec.modal_codex_auth_volume,
         claude_auth_volume_name=spec.modal_claude_auth_volume,
@@ -908,6 +937,12 @@ async def main() -> None:
         branch=os.environ.get("CODING_AGENT_BRANCH", "agent/issue-457-same-world-serialization"),
         codex_secret_name=os.environ.get("CODEX_MODAL_SECRET", "archetype-codex"),
         claude_secret_name=os.environ.get("CLAUDE_MODAL_SECRET", "archetype-claude-code"),
+        opencode_secret_name=os.environ.get(
+            "CODING_AGENT_OPENCODE_SECRET", "archetype-modal-endpoint"
+        ),
+        opencode_base_url=os.environ.get("CODING_AGENT_OPENCODE_BASE_URL", ""),
+        opencode_provider_id=os.environ.get("CODING_AGENT_OPENCODE_PROVIDER_ID", "archetype-modal"),
+        opencode_wire_api=os.environ.get("CODING_AGENT_OPENCODE_WIRE_API", "chat-completions"),
         modal_auth_mode=os.environ.get("CODING_AGENT_MODAL_AUTH_MODE", "api-key"),
         modal_codex_auth_volume=os.environ.get("CODEX_MODAL_AUTH_VOLUME", "archetype-codex-auth"),
         modal_claude_auth_volume=os.environ.get(
@@ -943,6 +978,8 @@ async def main() -> None:
     if args.modal_login:
         if spec.backend != "modal":
             parser.error("--modal-login requires CODING_AGENT_BACKEND=modal")
+        if spec.harness == "opencode":
+            parser.error("--modal-login is only available for Codex and Claude Code")
         if spec.modal_auth_mode != "oauth":
             parser.error("--modal-login requires CODING_AGENT_MODAL_AUTH_MODE=oauth")
         await ModalSandboxClient.login_oauth(_modal_spec(spec))

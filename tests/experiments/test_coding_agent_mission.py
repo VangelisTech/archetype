@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,39 @@ def test_checked_in_live_mission_keeps_prompt_naive_and_gate_authoritative() -> 
     assert step["validators"][0]["command"][-1] == mission_example._ISSUE_457_CONCURRENCY_CONTRACT
     assert step["validators"][2]["command"][-2:] == ["tests/app", "tests/api"]
     assert step["validators"][-1]["command"] == ["make", "test"]
+
+
+def test_material_diff_validator_counts_untracked_regression_tests(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True
+    )
+    implementation = tmp_path / "src/archetype/app/service.py"
+    implementation.parent.mkdir(parents=True)
+    implementation.write_text("before = True\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "baseline"], cwd=tmp_path, check=True)
+
+    implementation.write_text("after = True\n")
+    regression = tmp_path / "tests/test_regression.py"
+    regression.parent.mkdir()
+    regression.write_text("def test_regression():\n    assert True\n")
+
+    validator = next(
+        value
+        for value in mission_example.PLAN[0]["validators"]
+        if value["name"] == "material_app_diff"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", validator["command"][-1]],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

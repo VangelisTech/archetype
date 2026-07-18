@@ -50,6 +50,7 @@ from archetype.experiments.modal_coding_agent import (
     ModalArtifactSourceResolver,
     ModalSandboxClient,
     ModalSandboxSpec,
+    OpenCodeWireAPI,
     ValidatorSpec,
 )
 from archetype.experiments.trajectories import (
@@ -75,6 +76,7 @@ __all__ = [
     "ModalArtifactSourceResolver",
     "ModalSandboxClient",
     "ModalSandboxSpec",
+    "OpenCodeWireAPI",
     "Result",
     "Run",
     "RunStatus",

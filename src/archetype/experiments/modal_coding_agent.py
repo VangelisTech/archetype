@@ -27,15 +27,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
-AgentHarness = Literal["codex", "claude-code"]
+AgentHarness = Literal["codex", "claude-code", "opencode"]
 AgentAuthMode = Literal["api-key", "oauth"]
+OpenCodeWireAPI = Literal["chat-completions", "responses"]
 
 _OAUTH_MOUNT = "/auth"
 _CODEX_AUTH_VOLUME_PATH = f"{_OAUTH_MOUNT}/auth.json"
 _CODEX_MISSION_AUTH_PATH = "/root/.codex/auth.json"
 _CLAUDE_AUTH_VOLUME_PATH = f"{_OAUTH_MOUNT}/.credentials.json"
 _CLAUDE_MISSION_AUTH_PATH = "/root/.claude/.credentials.json"
+_OPENCODE_CONFIG_PATH = "/root/.config/archetype/opencode.json"
 
 _AGENT_STREAM_SCRIPT = r"""
 set -o pipefail
@@ -181,9 +184,10 @@ def _default_agent_image(modal: Any, harness: AgentHarness) -> Any:
             "curl -fsSL https://chatgpt.com/codex/install.sh "
             "| env CODEX_NON_INTERACTIVE=1 CODEX_INSTALL_DIR=/usr/local/bin sh"
         )
-    return image.apt_install("nodejs", "npm").run_commands(
-        "npm install --global @anthropic-ai/claude-code"
-    )
+    image = image.apt_install("nodejs", "npm")
+    if harness == "claude-code":
+        return image.run_commands("npm install --global @anthropic-ai/claude-code")
+    return image.run_commands("npm install --global opencode-ai@1.18.3")
 
 
 @dataclass(frozen=True)
@@ -215,9 +219,11 @@ class ModalSandboxSpec:
     """Picklable configuration for one sandbox-backed coding mission.
 
     API-key mode injects the selected harness Secret only into the agent
-    process. OAuth mode mounts a named Volume only into a separate broker
-    Sandbox, stages the credential file for the CLI process, persists refreshes
-    atomically, and removes the staged file before validators and snapshots.
+    process. For OpenCode, that Secret contains the Modal endpoint token and a
+    generated config stores only environment placeholders. OAuth mode mounts a
+    named Volume only into a separate broker Sandbox, stages the credential
+    file for the CLI process, persists refreshes atomically, and removes the
+    staged file before validators and snapshots.
     Codex's shell environment policy also excludes key/secret/token variables
     from model-generated commands. Use trusted repository content: an agent
     process can still inspect its own process and filesystem while authenticated.
@@ -236,10 +242,14 @@ class ModalSandboxSpec:
     auth_mode: AgentAuthMode = "api-key"
     codex_secret_name: str = "archetype-codex"
     claude_secret_name: str = "archetype-claude-code"
+    opencode_secret_name: str = "archetype-modal-endpoint"
     codex_auth_volume_name: str = "archetype-codex-auth"
     claude_auth_volume_name: str = "archetype-claude-code-auth"
     github_secret_name: str = ""
     model: str = ""
+    opencode_base_url: str = ""
+    opencode_provider_id: str = "archetype-modal"
+    opencode_wire_api: OpenCodeWireAPI = "chat-completions"
     workspace: str = "/workspace/repo"
     timeout_seconds: int = 4 * 60 * 60
     idle_timeout_seconds: int = 20 * 60
@@ -266,10 +276,32 @@ class ModalSandboxSpec:
             raise ValueError("base_ref must be a non-empty git ref")
         if self.push and not self.github_secret_name:
             raise ValueError("push=True requires github_secret_name")
-        if self.harness not in {"codex", "claude-code"}:
+        if self.harness not in {"codex", "claude-code", "opencode"}:
             raise ValueError(f"unsupported coding-agent harness: {self.harness!r}")
         if self.auth_mode not in {"api-key", "oauth"}:
             raise ValueError(f"unsupported coding-agent auth mode: {self.auth_mode!r}")
+        if self.harness == "opencode":
+            if self.auth_mode != "api-key":
+                raise ValueError("OpenCode endpoint auth requires auth_mode='api-key'")
+            if not self.model:
+                raise ValueError("OpenCode requires an explicit model")
+            endpoint = urlsplit(self.opencode_base_url)
+            if (
+                endpoint.scheme not in {"http", "https"}
+                or not endpoint.netloc
+                or endpoint.username is not None
+                or endpoint.password is not None
+                or endpoint.query
+                or endpoint.fragment
+            ):
+                raise ValueError(
+                    "opencode_base_url must be an http(s) URL without credentials, query, or "
+                    "fragment"
+                )
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.opencode_provider_id):
+                raise ValueError(f"invalid OpenCode provider id: {self.opencode_provider_id!r}")
+            if self.opencode_wire_api not in {"chat-completions", "responses"}:
+                raise ValueError(f"unsupported OpenCode wire API: {self.opencode_wire_api!r}")
         if self.heartbeat_seconds < 1:
             raise ValueError("heartbeat_seconds must be at least 1")
         for volume_name in (self.codex_auth_volume_name, self.claude_auth_volume_name):
@@ -282,19 +314,25 @@ class ModalSandboxSpec:
 
         if self.harness == "codex":
             return self.codex_auth_volume_name
-        return self.claude_auth_volume_name
+        if self.harness == "claude-code":
+            return self.claude_auth_volume_name
+        raise ValueError("OpenCode endpoint auth does not use an OAuth volume")
 
     @property
     def auth_volume_path(self) -> str:
         if self.harness == "codex":
             return _CODEX_AUTH_VOLUME_PATH
-        return _CLAUDE_AUTH_VOLUME_PATH
+        if self.harness == "claude-code":
+            return _CLAUDE_AUTH_VOLUME_PATH
+        raise ValueError("OpenCode endpoint auth does not use an OAuth credential path")
 
     @property
     def mission_auth_path(self) -> str:
         if self.harness == "codex":
             return _CODEX_MISSION_AUTH_PATH
-        return _CLAUDE_MISSION_AUTH_PATH
+        if self.harness == "claude-code":
+            return _CLAUDE_MISSION_AUTH_PATH
+        raise ValueError("OpenCode endpoint auth does not stage an OAuth credential")
 
 
 class CodingAgentSandboxSpec(Protocol):
@@ -363,10 +401,11 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
     ) -> dict[str, Any]:
         """Run exactly one agent submission, validate it, and checkpoint its state.
 
-        The agent is not trusted to declare success.  Validator commands run in
-        separate processes without the agent secret. Acceptance is data returned
-        to the caller; a rejected attempt is not an exception and remains
-        resumable through its checkpoint.
+        The agent is not trusted to declare success or failure. Validator
+        commands run in separate processes without the agent secret, even when
+        the agent CLI exits nonzero after producing a valid worktree. Acceptance
+        is data returned to the caller; a rejected attempt is not an exception
+        and remains resumable through its checkpoint.
         """
 
         if self._closed:
@@ -444,18 +483,13 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             await self._write_text(f"{trace_path}.stderr", agent.stderr)
 
         session_id = self._session_id(agent.stdout) or previous_session_id
-        if agent.returncode != 0:
-            details = [
-                {
-                    "name": "agent_exec",
-                    "passed": False,
-                    "returncode": agent.returncode,
-                    "stdout": self._tail(agent.stdout),
-                    "stderr": self._tail(agent.stderr),
-                }
-            ]
-        else:
-            details = await self._run_validators(normalized)
+        agent_execution = {
+            "returncode": agent.returncode,
+            "completed": agent.returncode == 0,
+            "stdout_tail": self._tail(agent.stdout) if agent.returncode else "",
+            "stderr_tail": self._tail(agent.stderr) if agent.returncode else "",
+        }
+        details = await self._run_validators(normalized)
 
         accepted = all(detail["passed"] for detail in details)
         sha = ""
@@ -482,6 +516,18 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
 
         failed = [detail for detail in details if not detail["passed"]]
         friction = []
+        if agent.returncode != 0:
+            friction.append(
+                {
+                    "step": step_name,
+                    "attempt": attempt_index,
+                    "finding": (
+                        f"{self.spec.harness} exited with code {agent.returncode}; "
+                        "authoritative validators still ran"
+                    ),
+                    "learning": self._tail(agent.stderr or agent.stdout, 1200),
+                }
+            )
         if failed:
             friction.append(
                 {
@@ -515,6 +561,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             "sandbox_id": self.sandbox_id,
             "harness": self.spec.harness,
             "agent_session_id": session_id,
+            "agent_execution": agent_execution,
             "baseline_sha": baseline,
             "commit_sha": sha,
             "pushed": pushed,
@@ -613,8 +660,11 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             "sandbox_id": self.sandbox_id,
             "harness": self.spec.harness,
             "agent_session_id": session_id,
+            "agent_returncode": agent.returncode,
+            "agent_completed": agent.returncode == 0,
             "codex_thread_id": session_id if self.spec.harness == "codex" else "",
             "claude_session_id": session_id if self.spec.harness == "claude-code" else "",
+            "opencode_session_id": session_id if self.spec.harness == "opencode" else "",
             "friction": friction,
             "pr_url": "",
         }
@@ -671,7 +721,9 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
     async def _run_agent(self, prompt: str, *, session_id: str) -> CommandResult:
         if self.spec.harness == "codex":
             return await self._run_codex(prompt, session_id=session_id)
-        return await self._run_claude(prompt, session_id=session_id)
+        if self.spec.harness == "claude-code":
+            return await self._run_claude(prompt, session_id=session_id)
+        raise ValueError(f"unsupported coding-agent harness: {self.spec.harness!r}")
 
     async def _run_codex(self, prompt: str, *, session_id: str) -> CommandResult:
         common = [
@@ -985,6 +1037,10 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
                 return str(event.get("thread_id") or "")
             if self.spec.harness == "claude-code" and event.get("session_id"):
                 return str(event["session_id"])
+            if self.spec.harness == "opencode":
+                session_id = event.get("sessionID") or event.get("session_id")
+                if session_id:
+                    return str(session_id)
         return ""
 
     @staticmethod
@@ -1435,9 +1491,17 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             agent_secret = modal.Secret.from_name(
                 spec.codex_secret_name, required_keys=["CODEX_API_KEY"]
             )
-        else:
+        elif spec.harness == "claude-code":
             agent_secret = modal.Secret.from_name(
                 spec.claude_secret_name, required_keys=["ANTHROPIC_API_KEY"]
+            )
+        else:
+            agent_secret = modal.Secret.from_name(
+                spec.opencode_secret_name,
+                required_keys=[
+                    "MODAL_ENDPOINT_TOKEN_ID",
+                    "MODAL_ENDPOINT_TOKEN_SECRET",
+                ],
             )
         github_secret = None
         if spec.github_secret_name:
@@ -1563,6 +1627,8 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
 
         if spec.auth_mode != "oauth":
             raise ValueError("Modal subscription login requires auth_mode='oauth'")
+        if spec.harness == "opencode":
+            raise ValueError("OpenCode endpoint auth does not support subscription login")
         modal, app = await cls._modal_base(spec)
         volume = modal.Volume.from_name(
             spec.auth_volume_name,
@@ -1731,6 +1797,67 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             return await super()._run_codex(prompt, session_id=session_id)
         finally:
             await self._persist_and_remove_oauth()
+
+    async def _run_agent(self, prompt: str, *, session_id: str) -> CommandResult:
+        if self.spec.harness == "opencode":
+            return await self._run_opencode(prompt, session_id=session_id)
+        return await super()._run_agent(prompt, session_id=session_id)
+
+    async def _run_opencode(self, prompt: str, *, session_id: str) -> CommandResult:
+        provider_package = (
+            "@ai-sdk/openai-compatible"
+            if self.spec.opencode_wire_api == "chat-completions"
+            else "@ai-sdk/openai"
+        )
+        model_ref = f"{self.spec.opencode_provider_id}/{self.spec.model}"
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "model": model_ref,
+            "share": "disabled",
+            "permission": "allow",
+            "provider": {
+                self.spec.opencode_provider_id: {
+                    "name": "Archetype Modal endpoint",
+                    "npm": provider_package,
+                    "options": {
+                        "baseURL": self.spec.opencode_base_url,
+                        "headers": {
+                            "Modal-Key": "{env:MODAL_ENDPOINT_TOKEN_ID}",
+                            "Modal-Secret": "{env:MODAL_ENDPOINT_TOKEN_SECRET}",
+                        },
+                    },
+                    "models": {self.spec.model: {"name": self.spec.model}},
+                }
+            },
+        }
+        await self._checked("mkdir", "-p", str(PurePosixPath(_OPENCODE_CONFIG_PATH).parent))
+        await self._write_text(_OPENCODE_CONFIG_PATH, json.dumps(config, sort_keys=True))
+
+        argv = [
+            "opencode",
+            "run",
+            "--pure",
+            "--format",
+            "json",
+            "--model",
+            model_ref,
+            "--auto",
+        ]
+        if session_id:
+            argv.extend(["--session", session_id])
+        argv.append(prompt)
+        return await self._exec_agent(
+            *argv,
+            workdir=self.spec.workspace,
+            timeout=self.spec.agent_timeout_seconds,
+            secrets=[self._agent_secret] if self._agent_secret is not None else (),
+            env={
+                "NO_COLOR": "1",
+                "OPENCODE_CONFIG": _OPENCODE_CONFIG_PATH,
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            },
+        )
 
     async def _run_claude(self, prompt: str, *, session_id: str) -> CommandResult:
         if self.spec.auth_mode == "api-key":
@@ -2048,5 +2175,6 @@ __all__ = [
     "ModalArtifactSourceResolver",
     "ModalSandboxClient",
     "ModalSandboxSpec",
+    "OpenCodeWireAPI",
     "ValidatorSpec",
 ]

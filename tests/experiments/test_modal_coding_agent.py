@@ -215,6 +215,17 @@ class _FakeSandbox:
                 process = _Process(stdout=stream)
                 self.agent_processes.append(process)
                 return process
+            if args[:2] == ("opencode", "run"):
+                stream = (
+                    '{"type":"step_start","sessionID":"opencode-123"}\n'
+                    '{"type":"text","sessionID":"opencode-123","part":{"text":"done"}}\n'
+                )
+                if trace_path:
+                    self.filesystem.files[trace_path] = stream
+                    self.filesystem.files[stderr_path] = ""
+                process = _Process(stdout=stream)
+                self.agent_processes.append(process)
+                return process
             if args[0] == "verify":
                 code = self.validator_codes.pop(0)
                 return _Process(code, stdout="ok" if code == 0 else "failed")
@@ -250,6 +261,9 @@ def _spec(**overrides: Any) -> ModalSandboxSpec:
         "capture_filesystem_manifests": False,
     }
     values.update(overrides)
+    if values.get("harness") == "opencode":
+        values.setdefault("model", "Qwen/Qwen3.6-35B-A3B-FP8")
+        values.setdefault("opencode_base_url", "https://endpoint.example.test/v1")
     return ModalSandboxSpec(**values)
 
 
@@ -265,7 +279,22 @@ def test_spec_rejects_unsafe_or_incomplete_identity() -> None:
     with pytest.raises(ValueError, match="github_secret_name"):
         _spec(push=True)
     with pytest.raises(ValueError, match="unsupported"):
-        _spec(harness="opencode")
+        _spec(harness="hermes")
+    assert _spec(harness="opencode").harness == "opencode"
+    with pytest.raises(ValueError, match="explicit model"):
+        _spec(harness="opencode", model="")
+    with pytest.raises(ValueError, match="opencode_base_url"):
+        _spec(harness="opencode", opencode_base_url="not-a-url")
+    with pytest.raises(ValueError, match="without credentials"):
+        _spec(harness="opencode", opencode_base_url="https://token@example.test/v1")
+    with pytest.raises(ValueError, match="query"):
+        _spec(harness="opencode", opencode_base_url="https://example.test/v1?token=secret")
+    with pytest.raises(ValueError, match="provider id"):
+        _spec(harness="opencode", opencode_provider_id="--invalid")
+    with pytest.raises(ValueError, match="wire API"):
+        _spec(harness="opencode", opencode_wire_api="messages")
+    with pytest.raises(ValueError, match="endpoint auth"):
+        _spec(harness="opencode", auth_mode="oauth")
     with pytest.raises(ValueError, match="auth mode"):
         _spec(auth_mode="password")
     with pytest.raises(ValueError, match="volume name"):
@@ -274,7 +303,7 @@ def test_spec_rejects_unsafe_or_incomplete_identity() -> None:
         _spec(heartbeat_seconds=0)
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "opencode"])
 def test_default_image_installs_the_selected_harness(harness: str) -> None:
     class _ImageBuilder:
         def __init__(self) -> None:
@@ -300,8 +329,10 @@ def test_default_image_installs_the_selected_harness(harness: str) -> None:
     assert "uv/install.sh" in flattened
     if harness == "codex":
         assert "codex/install.sh" in flattened
-    else:
+    elif harness == "claude-code":
         assert "@anthropic-ai/claude-code" in flattened
+    else:
+        assert "opencode-ai@1.18.3" in flattened
 
 
 @pytest.mark.parametrize(
@@ -516,6 +547,7 @@ async def test_modal_base_and_dependency_resolution_cover_auth_modes(
     )
     codex = await ModalSandboxClient._modal_dependencies(_spec(harness="codex"))
     claude = await ModalSandboxClient._modal_dependencies(_spec(harness="claude-code"))
+    opencode = await ModalSandboxClient._modal_dependencies(_spec(harness="opencode"))
 
     assert oauth[2] is None
     assert oauth[3] == ("github", {"required_keys": ["GITHUB_TOKEN"]})
@@ -525,8 +557,17 @@ async def test_modal_base_and_dependency_resolution_cover_auth_modes(
         "archetype-claude-code",
         {"required_keys": ["ANTHROPIC_API_KEY"]},
     )
+    assert opencode[2] == (
+        "archetype-modal-endpoint",
+        {
+            "required_keys": [
+                "MODAL_ENDPOINT_TOKEN_ID",
+                "MODAL_ENDPOINT_TOKEN_SECRET",
+            ]
+        },
+    )
     assert volume_calls[0]["version"] == 2
-    assert len(secret_calls) == 3
+    assert len(secret_calls) == 4
 
     broken_reference = _VolumeReference(error=RuntimeError("volume missing"))
     monkeypatch.setattr(
@@ -698,7 +739,11 @@ async def test_modal_create_reports_monitor_command_and_closes_on_preparation_fa
 
 @pytest.mark.parametrize(
     ("harness", "executable", "session_id"),
-    [("codex", "codex", "thread-123"), ("claude-code", "claude", "claude-123")],
+    [
+        ("codex", "codex", "thread-123"),
+        ("claude-code", "claude", "claude-123"),
+        ("opencode", "opencode", "opencode-123"),
+    ],
 )
 @pytest.mark.asyncio
 async def test_each_attempt_is_returned_and_retry_policy_stays_outside_transport(
@@ -752,10 +797,15 @@ async def test_each_attempt_is_returned_and_retry_policy_stays_outside_transport
             in agent_calls[0]["args"]
         )
         assert "resume" in agent_calls[1]["args"]
-    else:
+    elif harness == "claude-code":
         assert "--dangerously-skip-permissions" in agent_calls[0]["args"]
-
         assert "--resume" in agent_calls[1]["args"]
+    else:
+        assert agent_calls[0]["args"][:2] == ("opencode", "run")
+        assert "--pure" in agent_calls[0]["args"]
+        assert "--format" in agent_calls[0]["args"]
+        assert "--auto" in agent_calls[0]["args"]
+        assert "--session" in agent_calls[1]["args"]
     assert session_id in agent_calls[1]["args"]
 
     validator_calls = [call for call in sandbox.calls if call["args"] == ("verify",)]
@@ -784,7 +834,7 @@ async def test_each_attempt_is_returned_and_retry_policy_stays_outside_transport
 
 
 @pytest.mark.asyncio
-async def test_attempt_records_agent_and_git_gate_failures(
+async def test_nonzero_agent_exit_still_runs_validators_and_records_git_gate_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sandbox = _FakeSandbox()
@@ -803,10 +853,34 @@ async def test_attempt_records_agent_and_git_gate_failures(
         idempotency_key="agent-failure",
     )
 
-    assert failed["accepted"] is False
-    assert failed["validator_details"][0]["name"] == "agent_exec"
-    assert "transport stderr" in failed["validator_details"][0]["stderr"]
+    assert failed["accepted"] is True
+    assert failed["agent_returncode"] == 7
+    assert failed["agent_completed"] is False
+    assert failed["results"] == {"tests": True}
+    assert failed["validator_details"][0]["name"] == "tests"
+    assert any(
+        "authoritative validators still ran" in item["finding"] for item in failed["friction"]
+    )
+    assert "transport stderr" in failed["friction"][0]["learning"]
     assert any(path.endswith(".stderr") for path in sandbox.filesystem.files)
+
+    rejected_sandbox = _FakeSandbox(validator_codes=[1])
+    rejected_client = ModalSandboxClient(
+        _spec(stream_agent_output=False), rejected_sandbox, object()
+    )
+    monkeypatch.setattr(rejected_client, "_run_agent", failed_agent)
+    rejected = await rejected_client.run_attempt(
+        prompt="Fix it",
+        validators=[ValidatorSpec("tests", ("verify",))],
+        step_name="agent-and-validator-failure",
+        attempt_index=1,
+        idempotency_key="agent-and-validator-failure",
+    )
+
+    assert rejected["accepted"] is False
+    assert rejected["agent_returncode"] == 7
+    assert rejected["results"] == {"tests": False}
+    assert len(rejected["friction"]) == 2
 
     no_change_sandbox = _FakeSandbox()
     no_change_sandbox._dirty = False
@@ -869,6 +943,17 @@ async def test_provider_neutral_helpers_cover_repository_push_and_receipts(
         _spec(harness="claude-code", model="claude-model"), sandbox, object()
     )
     await claude._run_claude("claude prompt", session_id="")
+    opencode_secret = object()
+    opencode = ModalSandboxClient(
+        _spec(
+            harness="opencode",
+            model="Qwen/Qwen3.6-35B-A3B-FP8",
+            opencode_base_url="https://modal.example.test/v1",
+        ),
+        sandbox,
+        opencode_secret,
+    )
+    await opencode._run_opencode("opencode prompt", session_id="")
     assert await client._push_if_configured() is True
     assert client._git_auth_args()
     assert client._git_secrets() == [client._github_secret]
@@ -877,6 +962,22 @@ async def test_provider_neutral_helpers_cover_repository_push_and_receipts(
     assert spec.repo_url in clone["args"]
     assert any("explicit-model" in call["args"] for call in sandbox.calls)
     assert any("claude-model" in call["args"] for call in sandbox.calls)
+    opencode_call = next(call for call in sandbox.calls if call["args"][:2] == ("opencode", "run"))
+    assert "archetype-modal/Qwen/Qwen3.6-35B-A3B-FP8" in opencode_call["args"]
+    assert opencode_call["kwargs"]["secrets"] == [opencode_secret]
+    assert opencode_call["kwargs"]["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    config_path = next(path for path in sandbox.filesystem.files if path.endswith("opencode.json"))
+    opencode_config = json.loads(sandbox.filesystem.files[config_path])
+    provider = opencode_config["provider"]["archetype-modal"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"] == {
+        "baseURL": "https://modal.example.test/v1",
+        "headers": {
+            "Modal-Key": "{env:MODAL_ENDPOINT_TOKEN_ID}",
+            "Modal-Secret": "{env:MODAL_ENDPOINT_TOKEN_SECRET}",
+        },
+    }
+    assert "MODAL_ENDPOINT_TOKEN_SECRET" in sandbox.filesystem.files[config_path]
     assert any(call["args"][0] == "git" and "push" in call["args"] for call in sandbox.calls)
 
     captured: list[str] = []
@@ -896,6 +997,22 @@ async def test_provider_neutral_helpers_cover_repository_push_and_receipts(
     assert await client._load_completed("broken") is None
     assert client._session_id("not json\n{}\n") == ""
     assert client._failure_summary([]) == "unknown failure"
+
+
+@pytest.mark.asyncio
+async def test_opencode_can_select_the_openai_responses_wire_protocol() -> None:
+    sandbox = _FakeSandbox()
+    client = ModalSandboxClient(
+        _spec(harness="opencode", opencode_wire_api="responses"),
+        sandbox,
+        object(),
+    )
+
+    await client._run_opencode("use responses", session_id="")
+
+    config_path = next(path for path in sandbox.filesystem.files if path.endswith("opencode.json"))
+    config = json.loads(sandbox.filesystem.files[config_path])
+    assert config["provider"]["archetype-modal"]["npm"] == "@ai-sdk/openai"
 
 
 @pytest.mark.asyncio
@@ -982,6 +1099,7 @@ def test_result_errors_and_stream_delta_are_explicit() -> None:
     [
         ("codex", "codex", '"thread_id":"thread-123"'),
         ("claude-code", "claude", '"session_id":"claude-123"'),
+        ("opencode", "opencode", '"sessionID":"opencode-123"'),
     ],
 )
 @pytest.mark.asyncio
@@ -1690,10 +1808,14 @@ async def test_restore_closes_new_sandbox_when_repository_is_invalid(
 def test_session_parser_ignores_non_json_progress() -> None:
     codex = ModalSandboxClient(_spec(harness="codex"), _FakeSandbox(), object())
     claude = ModalSandboxClient(_spec(harness="claude-code"), _FakeSandbox(), object())
+    opencode = ModalSandboxClient(_spec(harness="opencode"), _FakeSandbox(), object())
     assert (
         codex._session_id('progress\n{"type":"thread.started","thread_id":"019abc"}\n') == "019abc"
     )
     assert claude._session_id('{"type":"system","session_id":"claude-abc"}\n') == "claude-abc"
+    assert (
+        opencode._session_id('{"type":"step_start","sessionID":"opencode-abc"}\n') == "opencode-abc"
+    )
 
 
 def test_filesystem_diff_includes_ignored_and_non_git_files(tmp_path: Path) -> None:

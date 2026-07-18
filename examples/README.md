@@ -44,11 +44,39 @@ set `CODEX_API_KEY` and
 
 Set `CODING_AGENT_BACKEND=modal` for the remote backend. Its default Modal
 Secrets are `archetype-codex` containing `CODEX_API_KEY` and
-`archetype-claude-code` containing `ANTHROPIC_API_KEY`. Set
+`archetype-claude-code` containing `ANTHROPIC_API_KEY`. OpenCode uses
+`archetype-modal-endpoint`, containing only `MODAL_ENDPOINT_TOKEN_ID` and
+`MODAL_ENDPOINT_TOKEN_SECRET`. Set
 `GITHUB_MODAL_SECRET` to a Modal Secret containing `GITHUB_TOKEN` together with
 `CODING_AGENT_PUSH=1` when verified commits should be pushed. Both backends
 inject agent credentials only into the agent process; validator commands do not
 receive them.
+
+OpenCode is Modal-only in this example and targets an operator-supplied
+OpenAI-compatible endpoint. Put the two endpoint credentials in a dedicated,
+gitignored dotenv file (do not reuse a dotenv file containing unrelated
+secrets), create the named Secret, and provide the deployed API root:
+
+```bash
+mkdir -p .context
+# Create .context/modal-endpoint.env with only:
+# MODAL_ENDPOINT_TOKEN_ID=...
+# MODAL_ENDPOINT_TOKEN_SECRET=...
+modal secret create --from-dotenv .context/modal-endpoint.env \
+  archetype-modal-endpoint
+
+CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=opencode \
+  CODING_AGENT_MODEL=Qwen/Qwen3.6-35B-A3B-FP8 \
+  CODING_AGENT_OPENCODE_BASE_URL=https://REPLACE-ME/v1 \
+  uv run --extra coding-agent python examples/11_coding_agent_mission.py
+```
+
+The default wire protocol is `/v1/chat/completions`; set
+`CODING_AGENT_OPENCODE_WIRE_API=responses` for a `/v1/responses` endpoint. The
+generated OpenCode config stores environment placeholders rather than token
+values, disables repository-level OpenCode config, and is safe to include in a
+full sandbox snapshot. The named Secret is attached only to the OpenCode
+process; validators receive no endpoint credentials.
 
 Modal can instead use the Codex or Claude subscription attached to an OAuth
 login. Bootstrap each harness once; Codex prints a device code, while Claude
@@ -73,7 +101,7 @@ validator, filesystem manifest, or provider snapshot runs. Run the mission with
 the same environment and omit `--modal-login`.
 
 The Modal driver prints its `sb-...` ID as soon as the mission sandbox exists,
-streams Codex or Claude Code JSONL in the launching terminal, and emits phase
+streams Codex, Claude Code, or OpenCode JSONL in the launching terminal, and emits phase
 events plus a heartbeat every 15 seconds. A second terminal can attach directly
 to the running sandbox without a model credential:
 
@@ -121,10 +149,13 @@ CODING_AGENT_BACKEND=modal uv run --extra coding-agent \
 ```
 
 `make test-modal-sandbox` runs the live, keyless Modal infrastructure proof for
-both CLIs. `make test-modal-agent` additionally performs a real agent edit,
-validation, commit, and snapshot for both harnesses and therefore requires both
-Modal Secrets by default. Set `ARCHETYPE_MODAL_AGENT_AUTH_MODE=oauth` to use the
-initialized subscription Volumes instead. `make test-modal` runs both tiers.
+all three CLIs. `make test-modal-agent` additionally performs a real agent edit,
+validation, commit, and snapshot for Codex and Claude Code. It also covers
+OpenCode when `ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL` is set (with optional
+`ARCHETYPE_OPENCODE_INTEGRATION_MODEL`, `ARCHETYPE_OPENCODE_MODAL_SECRET`, and
+`ARCHETYPE_OPENCODE_WIRE_API` overrides). Set
+`ARCHETYPE_MODAL_AGENT_AUTH_MODE=oauth` to use initialized Codex/Claude
+subscription Volumes instead. `make test-modal` runs both tiers.
 The live suite is excluded
 from normal `make test`, `make test-all`, and `make ci` runs; CI invokes it only
 when `examples/11_coding_agent_mission.py` changes.

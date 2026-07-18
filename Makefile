@@ -31,7 +31,7 @@ help:
 	@echo "  make test-apple-container Run live local Apple Container integration"
 	@echo "  make test-modal     Run all live Modal coding-agent integrations"
 	@echo "  make test-modal-sandbox Run live Modal CLI/filesystem/snapshot integration"
-	@echo "  make test-modal-agent Run paid API-backed Claude Code + Codex integration"
+	@echo "  make test-modal-agent Run paid Codex + Claude Code + optional OpenCode integration"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
 	@echo "  make mutmut-results Show mutmut survivors from the last run"

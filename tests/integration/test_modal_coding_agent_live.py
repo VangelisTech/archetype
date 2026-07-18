@@ -16,9 +16,11 @@ Run the paid, API-backed agent edit proof with::
 
     make test-modal-agent
 
-The default Modal Secret names are ``archetype-codex`` (``CODEX_API_KEY``) and
-``archetype-claude-code`` (``ANTHROPIC_API_KEY``). Override the names with
-``ARCHETYPE_CODEX_MODAL_SECRET`` and ``ARCHETYPE_CLAUDE_MODAL_SECRET``.
+The default Modal Secret names are ``archetype-codex`` (``CODEX_API_KEY``),
+``archetype-claude-code`` (``ANTHROPIC_API_KEY``), and
+``archetype-modal-endpoint`` (``MODAL_ENDPOINT_TOKEN_ID`` plus
+``MODAL_ENDPOINT_TOKEN_SECRET``). Override the names with the harness-specific
+``ARCHETYPE_*_MODAL_SECRET`` variable.
 Set ``ARCHETYPE_MODAL_AGENT_AUTH_MODE=oauth`` after bootstrapping the named
 subscription Volumes through example 11's ``--modal-login`` command.
 """
@@ -38,6 +40,7 @@ from archetype.experiments.modal_coding_agent import (
     AgentHarness,
     ModalSandboxClient,
     ModalSandboxSpec,
+    OpenCodeWireAPI,
     ValidatorSpec,
     _default_agent_image,
 )
@@ -49,7 +52,7 @@ pytestmark = pytest.mark.modal
     os.environ.get("ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION") != "1",
     reason="set ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 to spend Modal compute credits",
 )
-@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "opencode"])
 @pytest.mark.asyncio
 async def test_live_modal_sandbox_exec_filesystem_snapshot_and_cli(
     harness: AgentHarness,
@@ -64,7 +67,7 @@ async def test_live_modal_sandbox_exec_filesystem_snapshot_and_cli(
         tags={"kind": "archetype-integration", "harness": harness},
     )
     try:
-        executable = "codex" if harness == "codex" else "claude"
+        executable = {"codex": "codex", "claude-code": "claude", "opencode": "opencode"}[harness]
         process = await sandbox.exec.aio(executable, "--version", timeout=30)
         stdout, stderr, returncode = await asyncio.gather(
             process.stdout.read.aio(),
@@ -72,9 +75,16 @@ async def test_live_modal_sandbox_exec_filesystem_snapshot_and_cli(
             process.wait.aio(),
         )
         assert returncode == 0, stderr
-        assert executable in stdout.lower() or "claude code" in stdout.lower()
+        if harness == "opencode":
+            assert stdout.strip() == "1.18.3"
+        else:
+            assert executable in stdout.lower() or "claude code" in stdout.lower()
 
-        help_argv = ("codex", "exec", "--help") if harness == "codex" else ("claude", "--help")
+        help_argv = {
+            "codex": ("codex", "exec", "--help"),
+            "claude-code": ("claude", "--help"),
+            "opencode": ("opencode", "run", "--help"),
+        }[harness]
         help_process = await sandbox.exec.aio(*help_argv, timeout=30)
         help_stdout, help_stderr, help_returncode = await asyncio.gather(
             help_process.stdout.read.aio(),
@@ -82,12 +92,14 @@ async def test_live_modal_sandbox_exec_filesystem_snapshot_and_cli(
             help_process.wait.aio(),
         )
         assert help_returncode == 0, help_stderr
-        required_flags = (
-            ("--json", "--dangerously-bypass-approvals-and-sandbox")
-            if harness == "codex"
-            else ("--output-format", "--dangerously-skip-permissions", "--resume")
-        )
-        assert all(flag in help_stdout for flag in required_flags)
+        required_flags = {
+            "codex": ("--json", "--dangerously-bypass-approvals-and-sandbox"),
+            "claude-code": ("--output-format", "--dangerously-skip-permissions", "--resume"),
+            "opencode": ("--pure", "--format", "--model", "--session", "--auto"),
+        }[harness]
+        help_output = help_stdout + help_stderr
+        missing_flags = [flag for flag in required_flags if flag not in help_output]
+        assert not missing_flags, f"missing {missing_flags} from help output:\n{help_output}"
 
         path = f"/tmp/archetype-smoke/{harness}.txt"
         await sandbox.filesystem.write_text.aio(f"{harness}\n", path)
@@ -148,7 +160,7 @@ async def test_live_modal_sandbox_exec_filesystem_snapshot_and_cli(
         await sandbox.detach.aio()
 
 
-@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "opencode"])
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION") != "1",
@@ -159,15 +171,28 @@ async def test_live_modal_agent_edits_validates_commits_and_snapshots(
 ) -> None:
     token = uuid4().hex
     expected = f"{harness} completed Modal integration {token}\n"
-    secret_name = (
-        os.environ.get("ARCHETYPE_CODEX_MODAL_SECRET", "archetype-codex")
-        if harness == "codex"
-        else os.environ.get("ARCHETYPE_CLAUDE_MODAL_SECRET", "archetype-claude-code")
+    secret_name = {
+        "codex": os.environ.get("ARCHETYPE_CODEX_MODAL_SECRET", "archetype-codex"),
+        "claude-code": os.environ.get("ARCHETYPE_CLAUDE_MODAL_SECRET", "archetype-claude-code"),
+        "opencode": os.environ.get("ARCHETYPE_OPENCODE_MODAL_SECRET", "archetype-modal-endpoint")
+        or "archetype-modal-endpoint",
+    }[harness]
+    model_env = {
+        "codex": "ARCHETYPE_CODEX_INTEGRATION_MODEL",
+        "claude-code": "ARCHETYPE_CLAUDE_INTEGRATION_MODEL",
+        "opencode": "ARCHETYPE_OPENCODE_INTEGRATION_MODEL",
+    }[harness]
+    auth_mode = (
+        "api-key"
+        if harness == "opencode"
+        else os.environ.get("ARCHETYPE_MODAL_AGENT_AUTH_MODE", "api-key")
     )
-    model_env = "ARCHETYPE_CODEX_INTEGRATION_MODEL"
-    if harness == "claude-code":
-        model_env = "ARCHETYPE_CLAUDE_INTEGRATION_MODEL"
-    auth_mode = os.environ.get("ARCHETYPE_MODAL_AGENT_AUTH_MODE", "api-key")
+    opencode_base_url = os.environ.get("ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL", "")
+    if harness == "opencode" and not opencode_base_url:
+        pytest.skip("set ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL for the paid OpenCode proof")
+    model = os.environ.get(model_env, "") or (
+        "Qwen/Qwen3.6-35B-A3B-FP8" if harness == "opencode" else ""
+    )
 
     spec = ModalSandboxSpec(
         repo_url="https://github.com/octocat/Hello-World.git",
@@ -175,9 +200,15 @@ async def test_live_modal_agent_edits_validates_commits_and_snapshots(
         branch=f"agent/modal-{harness}-{token[:12]}",
         harness=harness,
         auth_mode=cast(AgentAuthMode, auth_mode),
-        model=os.environ.get(model_env, ""),
+        model=model,
         codex_secret_name=(secret_name if harness == "codex" else "archetype-codex"),
         claude_secret_name=(secret_name if harness == "claude-code" else "archetype-claude-code"),
+        opencode_secret_name=(secret_name if harness == "opencode" else "archetype-modal-endpoint"),
+        opencode_base_url=opencode_base_url,
+        opencode_wire_api=cast(
+            OpenCodeWireAPI,
+            os.environ.get("ARCHETYPE_OPENCODE_WIRE_API", "") or "chat-completions",
+        ),
         codex_auth_volume_name=os.environ.get(
             "ARCHETYPE_CODEX_MODAL_AUTH_VOLUME", "archetype-codex-auth"
         ),
