@@ -316,7 +316,7 @@ def _authorization(
         execution_nonce="execution-nonce-1",
         claimant="worker-1",
         fence_epoch=1,
-        lease_expires_at=time.time() + 60 if lease_expires_at is None else lease_expires_at,
+        lease_expires_at=time.time() + 3600 if lease_expires_at is None else lease_expires_at,
         provider_session_id=provider_session_id,
         provider_idempotency_key=provider_idempotency_key,
     )
