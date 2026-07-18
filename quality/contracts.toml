@@ -367,6 +367,25 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.attempt.claim_fenced"
+source = "docs/guide/agent-missions.md"
+section = "5. Durable pre-execution claim and recovery"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/app/test_mission_attempt_claims.py",
+  "tests/app/test_sandbox_kernel.py",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_claim_lifecycle_parity",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_claim_same_target_race_parity",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_execution_grant_single_consume_parity",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_expired_lease_rejects_every_mutation_parity",
+]
+static = ["scripts/check_architecture.py"]
+evals = ["mission_attempt_claim_recovery"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifact-finalization.md"
 section = "4. Pre-durability secret redaction"
@@ -375,6 +394,15 @@ risk = "high"
 pytest = [
   "tests/app/test_redaction_service.py",
   "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_mission_attempt_claims.py::test_secret_bearing_request_is_quarantined_before_claim_commit",
+  "tests/app/test_mission_attempt_claims.py::test_secret_bearing_provider_capability_is_quarantined_before_claim_commit",
+  "tests/app/test_mission_attempt_claims.py::test_secret_bearing_provider_identity_is_quarantined_before_ack_commit",
+  "tests/app/test_mission_attempt_claims.py::test_outcome_and_error_are_redacted_before_projection_and_settlement",
+  "tests/app/test_mission_attempt_claims.py::test_secret_bearing_semantic_ref_is_quarantined_without_settlement",
+  "tests/app/test_mission_attempt_claims.py::test_policy_drift_fails_closed_for_live_claim_but_terminal_replay_is_readable",
+  "tests/app/test_remote_catalog_client.py::test_attempt_claim_redaction_receipts_reject_blank_transport_input",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_claim_lifecycle_parity",
+  "tests/app/test_atomic_visibility.py::test_v6_catalog_adds_attempt_claims_with_redaction_evidence",
   "tests/scripts/test_check_pre_durability_redaction.py",
 ]
 static = [

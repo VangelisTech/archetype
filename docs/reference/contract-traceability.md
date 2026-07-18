@@ -33,7 +33,8 @@ machine authority; this page is its review surface.
 | `storage.remote.control_parity` | `storage` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 10. Supported durability profile | pytest: 2; static: 1 | `main`, `release` |
 | `artifacts.bundle.publication_replay` | `artifacts` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 5. Publication state machine | pytest: 4 | `pr`, `main`, `release` |
 | `missions.transition.evidence_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Typed mission/task/attempt transition graph | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
-| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Pre-durability secret redaction | pytest: 3; static: 2; eval: 1 | `pr`, `main`, `release` |
+| `missions.attempt.claim_fenced` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Durable pre-execution claim and recovery | pytest: 6; static: 1; eval: 1 | `pr`, `main`, `release` |
+| `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Pre-durability secret redaction | pytest: 12; static: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite
 blocking/advisory policy is defined separately in `quality/eval_profiles.toml`;

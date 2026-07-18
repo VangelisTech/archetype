@@ -10,10 +10,15 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from archetype.app.missions.models import MissionAttemptRequest
+from archetype.app.missions.models import (
+    MissionAttemptRequest,
+    mission_attempt_request_fingerprint,
+    normalize_attempt_validators,
+)
+from archetype.app.missions.outcomes import (
+    assess_attempt_outcome,
+)
 from archetype.app.missions.transitions import (
-    AttemptStatus,
-    CheckpointStatus,
     FinalizationPhase,
     MissionStatus,
     MissionTaskState,
@@ -36,6 +41,10 @@ class MissionService:
         self._graph = graph or MissionTransitionGraph()
 
     def prepare_attempt(self, row: Mapping[str, Any], *, tick: int) -> MissionAttemptRequest | None:
+        # A world tick observes an attempt; it is not part of provider-submission
+        # identity. Keeping it out of the durable request lets recovery converge
+        # on the same claim when the unchanged task is revisited on a later tick.
+        _ = tick
         source = self._state(row)
         finished = bool(row.get("mission__finished"))
         terminal = source.mission in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}
@@ -55,29 +64,34 @@ class MissionService:
         step = plan[step_index]
         name = str(step.get("name", "")).strip()
         prompt = str(step.get("prompt", "")).strip()
-        validators = tuple(step.get("validators") or ())
+        validators = normalize_attempt_validators(tuple(step.get("validators") or ()))
         if not name or not prompt:
             raise ValueError("mission tasks require non-empty name and prompt")
-        if not validators:
-            raise ValueError(f"mission task {name!r} requires at least one validator")
-        if any(not isinstance(value, dict) for value in validators):
-            raise TypeError("mission validators must be JSON objects")
 
         attempts = int(row["taskgate__attempts"])
         max_attempts = int(row["taskgate__max_attempts"])
         if attempts < 0 or max_attempts < 1 or attempts >= max_attempts:
             raise ValueError("active task attempt counters are inconsistent")
         attempt_index = attempts + 1
+        try:
+            required_phase = FinalizationPhase(str(row["taskgate__required_finalization_phase"]))
+        except ValueError as exc:
+            raise ValueError("unknown required finalization phase") from exc
         plan_digest = self._plan_digest(plan)
+        world_id = str(row["world_id"])
+        run_id = str(row["run_id"])
+        entity_id = str(row["entity_id"])
         gate_material = json.dumps(
             {
-                "world_id": str(row["world_id"]),
-                "run_id": str(row["run_id"]),
-                "entity_id": str(row["entity_id"]),
+                "world_id": world_id,
+                "run_id": run_id,
+                "entity_id": entity_id,
                 "mission_status": source.mission.value,
                 "task_status": source.task.value,
                 "step_index": step_index,
                 "attempt_index": attempt_index,
+                "max_attempts": max_attempts,
+                "required_finalization_phase": required_phase.value,
                 "plan_digest": plan_digest,
                 "step": step,
             },
@@ -91,6 +105,30 @@ class MissionService:
         )
         if not isinstance(prior, list) or any(not isinstance(value, dict) for value in prior):
             raise ValueError("persisted validator details must be a JSON list of objects")
+        idempotency_key = hashlib.sha256(gate_material.encode()).hexdigest()
+        mission_id = f"{world_id}:{run_id}:{entity_id}"
+        task_id = hashlib.sha256(f"{plan_digest}:{step_index}:{name}".encode()).hexdigest()
+        attempt_id = hashlib.sha256(idempotency_key.encode()).hexdigest()
+        correlation = {
+            "world_id": world_id,
+            "run_id": run_id,
+            "entity_id": entity_id,
+            "step_index": step_index,
+        }
+        request_fingerprint = mission_attempt_request_fingerprint(
+            idempotency_key=idempotency_key,
+            prompt=prompt,
+            validators=validators,
+            step_name=name,
+            step_index=step_index,
+            attempt_index=attempt_index,
+            plan_digest=plan_digest,
+            max_attempts=max_attempts,
+            required_finalization_phase=required_phase,
+            previous_session_id=str(row.get("attempt__agent_session_id") or ""),
+            previous_validator_details=tuple(prior),
+            correlation=correlation,
+        )
         return MissionAttemptRequest(
             prompt=prompt,
             validators=validators,
@@ -98,16 +136,16 @@ class MissionService:
             step_index=step_index,
             attempt_index=attempt_index,
             plan_digest=plan_digest,
-            idempotency_key=hashlib.sha256(gate_material.encode()).hexdigest(),
+            max_attempts=max_attempts,
+            required_finalization_phase=required_phase,
+            idempotency_key=idempotency_key,
+            mission_id=mission_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            request_fingerprint=request_fingerprint,
             previous_session_id=str(row.get("attempt__agent_session_id") or ""),
             previous_validator_details=tuple(prior),
-            correlation={
-                "world_id": str(row["world_id"]),
-                "run_id": str(row["run_id"]),
-                "entity_id": str(row["entity_id"]),
-                "tick": tick,
-                "step_index": step_index,
-            },
+            correlation=correlation,
             source=source,
         )
 
@@ -130,10 +168,16 @@ class MissionService:
         plan = self._plan(row)
         if self._plan_digest(plan) != request.plan_digest:
             raise ValueError("mission plan changed after this attempt was prepared")
-        if int(outcome["attempt_index"]) != request.attempt_index:
-            raise ValueError("sandbox outcome attempt_index does not match the request")
-        if str(outcome["idempotency_key"]) != request.idempotency_key:
-            raise ValueError("sandbox outcome idempotency_key does not match the request")
+        if int(row["taskgate__max_attempts"]) != request.max_attempts:
+            raise ValueError("mission max_attempts changed after this attempt was prepared")
+        try:
+            required_phase = FinalizationPhase(str(row["taskgate__required_finalization_phase"]))
+        except ValueError as exc:
+            raise ValueError("unknown required finalization phase") from exc
+        if required_phase is not request.required_finalization_phase:
+            raise ValueError("mission finalization gate changed after this attempt was prepared")
+
+        assessment = assess_attempt_outcome(request, outcome)
 
         details = list(outcome["validator_details"])
         if not details or any(not isinstance(value, dict) for value in details):
@@ -148,18 +192,13 @@ class MissionService:
             raise ValueError("persisted friction log must be a JSON list of objects")
         prior_friction.extend(friction)
 
-        provider_status = self._provider_status(outcome)
-        checkpoint_status = self._checkpoint_status(outcome)
-        checkpoint_expires_at_ms = self._checkpoint_expiry(outcome)
-        required_phase = self._phase(row["taskgate__required_finalization_phase"], "required")
-        actual_phase = self._phase(outcome["finalization_phase"], "outcome")
-        gate_passed = (
-            bool(outcome["accepted"])
-            and bool(outcome["checkpoint_restorable"])
-            and actual_phase.rank >= required_phase.rank
-        )
-        attempt_status = self._attempt_status(provider_status, gate_passed=gate_passed)
-        exhausted = request.attempt_index >= int(row["taskgate__max_attempts"])
+        provider_status = assessment.provider_status
+        checkpoint_status = assessment.checkpoint_status
+        checkpoint_expires_at_ms = assessment.checkpoint_expires_at_ms
+        actual_phase = assessment.finalization_phase
+        gate_passed = assessment.gate_passed
+        attempt_status = assessment.attempt_status
+        exhausted = request.attempt_index >= request.max_attempts
 
         if gate_passed:
             event = (
@@ -265,67 +304,6 @@ class MissionService:
 
     def _state(self, row: Mapping[str, Any]) -> MissionTaskState:
         return self._graph.state(row.get("mission__status"), row.get("taskgate__status"))
-
-    @staticmethod
-    def _provider_status(outcome: Mapping[str, Any]) -> AttemptStatus:
-        try:
-            status = AttemptStatus(str(outcome["status"]))
-        except ValueError as exc:
-            raise ValueError(f"unknown sandbox outcome status: {outcome['status']!r}") from exc
-        accepted = bool(outcome["accepted"])
-        if accepted and status is not AttemptStatus.ACCEPTED:
-            raise ValueError("accepted sandbox outcome must have accepted status")
-        if not accepted and status not in {AttemptStatus.REJECTED, AttemptStatus.FAILED}:
-            raise ValueError("unaccepted sandbox outcome must be rejected or failed")
-        return status
-
-    @staticmethod
-    def _checkpoint_status(outcome: Mapping[str, Any]) -> CheckpointStatus:
-        raw_status = str(outcome["checkpoint_status"])
-        # Sandbox capture state is transport vocabulary. Mission state records
-        # the authoritative durable meaning without importing another family.
-        mission_status = "created" if raw_status == "ready" else raw_status
-        try:
-            status = CheckpointStatus(mission_status)
-        except ValueError as exc:
-            raise ValueError(
-                f"unknown checkpoint status: {outcome['checkpoint_status']!r}"
-            ) from exc
-        restorable = bool(outcome["checkpoint_restorable"])
-        state_ref = str(outcome["sandbox_state_ref"])
-        if restorable and (status is not CheckpointStatus.CREATED or not state_ref):
-            raise ValueError("restorable checkpoint requires created status and state reference")
-        if not restorable and status is CheckpointStatus.CREATED:
-            raise ValueError("created checkpoint must be restorable")
-        if status is CheckpointStatus.DISABLED and state_ref:
-            raise ValueError("disabled checkpoint cannot have a state reference")
-        return status
-
-    @staticmethod
-    def _checkpoint_expiry(outcome: Mapping[str, Any]) -> int | None:
-        created_at_ms = int(outcome["checkpoint_created_at_ms"])
-        value = outcome["checkpoint_expires_at_ms"]
-        if value is None or value == 0:
-            return None
-        expires_at_ms = int(value)
-        if expires_at_ms <= created_at_ms:
-            raise ValueError("checkpoint expiration must be after creation")
-        return expires_at_ms
-
-    @staticmethod
-    def _attempt_status(provider: AttemptStatus, *, gate_passed: bool) -> AttemptStatus:
-        if gate_passed:
-            return AttemptStatus.ACCEPTED
-        if provider is AttemptStatus.ACCEPTED:
-            return AttemptStatus.INCOMPLETE
-        return provider
-
-    @staticmethod
-    def _phase(value: object, label: str) -> FinalizationPhase:
-        try:
-            return FinalizationPhase(str(value))
-        except ValueError as exc:
-            raise ValueError(f"unknown {label} finalization phase: {value!r}") from exc
 
     @staticmethod
     def _json(value: Any) -> str:

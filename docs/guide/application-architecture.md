@@ -94,7 +94,7 @@ src/archetype/app/
   gateway/           authorization policy boundary
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
-  missions/          typed mission/task/attempt transition authority
+  missions/          transitions, redaction-gated attempt claims, fenced orchestration
   sandboxes/         provider-neutral isolated execution and live-handle lifetime
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
@@ -163,8 +163,8 @@ gateway, runtime, API, or CLI boundary.
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
-| Missions | Deterministic attempt identity, typed task transitions, retry/exhaustion and evidence gates | None |
-| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | No other app family; provider adapters point inward |
+| Missions | Validator normalization, redaction-gated policy-bound attempt identity, typed task transitions, provider-submission claims, single-use provider-call grants, runner-lifetime lease supervision, fencing, structural attempt orchestration, retry/exhaustion and evidence gates | Redaction port, storage control catalog, injected structural sandbox runner |
+| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | Mission-owned immutable execution authorization, admission callback, and recovery action; provider adapters point inward |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -207,6 +207,7 @@ Durability is family-specific rather than one service-level flag:
 | Deferred command admission | Command ledger | `PENDING` record, order, payload version and principal/origin are durable |
 | Tick | Store plus commit coordinator | All tick rows are durable and the visibility manifest is published |
 | Deferred command outcome | Commit coordinator plus command ledger | Terminal applied outcomes settle atomically with the manifest that makes them visible |
+| Mission provider submission | Mission attempt claim plus redaction and control authorities | Canonical request/provider metadata are quarantined before claim creation; the immutable policy ID, normalized request, runner metadata, and typed scan receipts are durable under a continuously renewed live fence; sanitized outcome/error plus receipts precede projection and terminal CAS |
 | Artifact ingestion | Artifact workflow plus publication claim | Content/rows are durable and their contextual index is published |
 | Evaluation | Evaluation workflow | Subject and grader contract are pinned and the typed receipt is published |
 | Audit | Transactional outbox plus projection | Authoritative event is durable; analytical Iceberg projection may lag |
@@ -251,6 +252,19 @@ container.command_gateway -> CommandGateway
 
 Runtime and API lifespan code may construct or receive the internal container,
 but ordinary runtime and route modules consume only their approved port.
+
+`app/missions/execution_service.py` is a family-internal orchestrator, not a
+composition root. It receives `iMissionService` and
+`iMissionAttemptClaimService` and accepts the mission-owned structural sandbox
+runner from its caller. It may not import a sandbox implementation, storage
+catalog, or another application family. The container remains the sole concrete
+cross-family composition root.
+
+`MissionAttemptClaimService` is a reviewed missions-to-redaction dependency and
+has no optional scanner path. Any composition site constructing it must inject
+`iRedactionService` together with the control catalog. Mission orchestration
+consumes the claim port; it does not fork redaction policy or scan with a
+sandbox-specific filter.
 
 Concrete services compose collaborators and never inherit another concrete
 service. Intentional inheritance is limited to components, processors,
@@ -308,8 +322,38 @@ services and the container are not top-level exports.
 migration exceptions. `scripts/check_architecture.py` enforces package
 direction, protocol imports, concrete construction, and concrete inheritance.
 
-The mission family is pure transition authority over persisted row values. It
-does not own provider clients or write around the world tick commit boundary.
+`MissionService` remains pure transition authority over persisted row values.
+The same family now owns `MissionAttemptClaimService`, a control-catalog-backed
+pre-execution authority. It durably fences external provider submission and
+stores replayable terminal outcomes, but owns no provider client and cannot
+advance a task outside the world tick commit boundary. Its required redaction
+port quarantines canonical request/provider/acknowledgement and semantic outcome
+identity before each durable edge, binds the policy ID into immutable claim
+identity, and stores typed phase receipts. Narrative outcome/error values are
+redacted before projection or terminal CAS; the original finding receipt is
+preserved. Non-terminal policy drift fails closed, while settled sanitized
+replay remains readable. Arm mints one execution nonce for the fence; catalog
+consumption is atomic, single-use, live-lease checked, and required before
+provider preparation. Acknowledgement requires a consumed grant.
+`MissionAttemptExecutionService` is the family-local structural path joining
+claim acquisition/arm, grant consumption, provider acknowledgement, row
+application, settlement, and terminal replay. `MissionService` normalizes
+validators before claim acquisition and persists the retry budget and
+finalization threshold in request identity. The execution service derives
+provider metadata from the selected runner rather than accepting an unrelated
+caller value. It supervises the entire runner lifetime with a lease heartbeat,
+cancels and awaits its local child tasks on failure or caller cancellation, and
+renews once after completion before applying or settling an outcome. Remote
+provider cancellation is adapter-specific; unresolved work remains
+`possibly_submitted` for reconciliation. Provider-accepted results require
+consumed-grant evidence; checkpoint provider and agent session evidence must
+match the claim. It applies every complete outcome
+through `MissionService` before settlement and applies stored terminal outcomes
+through the same semantics on replay. Provider capability metadata never
+authorizes execution; uncertain and acknowledged claims reconcile. The sandbox
+family consumes only the mission-owned immutable execution authorization,
+callbacks, and recovery action; it does not import the claim service or storage
+catalog.
 
 Two deliberately retained implementation seams are documented rather than
 hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and

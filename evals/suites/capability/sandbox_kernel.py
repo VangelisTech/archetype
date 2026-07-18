@@ -6,10 +6,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from archetype.app.missions import (
+    AttemptRecoveryAction,
+    FencedExecutionAuthorization,
+    attempt_invocation_fingerprint,
+)
 from archetype.app.sandboxes import (
     AgentHarness,
     CodingAgentSandboxClient,
@@ -133,13 +140,59 @@ def task_sandbox_kernel_phase_contract() -> list[GraderResult]:
 
 async def _task_sandbox_kernel_phase_contract() -> list[GraderResult]:
     client = _KernelClient(_Spec())
+    idempotency_key = "eval-attempt"
+    correlation = {
+        "world_id": "eval-world",
+        "run_id": "eval-run",
+        "entity_id": "7",
+        "step_index": 0,
+    }
+    validators = [ValidatorSpec("tests", ("verify",))]
+
+    async def acknowledge_provider(
+        provider_session_id: str,
+        provider_request_id: str,
+    ) -> None:
+        del provider_session_id, provider_request_id
+
+    async def authorize_execution(
+        authorization: FencedExecutionAuthorization,
+    ) -> None:
+        del authorization
+
     request = {
         "prompt": "Repair the bug",
-        "validators": [ValidatorSpec("tests", ("verify",))],
+        "validators": validators,
         "step_name": "fix",
         "attempt_index": 1,
-        "idempotency_key": "eval-attempt",
-        "correlation": {"world_id": "eval-world", "run_id": "eval-run"},
+        "idempotency_key": idempotency_key,
+        "authorization": FencedExecutionAuthorization(
+            action=AttemptRecoveryAction.EXECUTE,
+            claim_key="eval-claim",
+            world_id="eval-world",
+            run_id="eval-run",
+            mission_id="eval-world:eval-run:7",
+            task_id="eval-task",
+            attempt_id=hashlib.sha256(idempotency_key.encode()).hexdigest(),
+            idempotency_key=idempotency_key,
+            request_fingerprint="eval-request-fingerprint",
+            sandbox_request_fingerprint=attempt_invocation_fingerprint(
+                prompt="Repair the bug",
+                validators=tuple(validator.to_dict() for validator in validators),
+                step_name="fix",
+                attempt_index=1,
+                previous_session_id="",
+                previous_validator_details=(),
+                correlation=correlation,
+            ),
+            execution_nonce="eval-execution-nonce",
+            claimant="eval-worker",
+            fence_epoch=1,
+            lease_expires_at=time.time() + 60,
+        ),
+        "authorize_execution": authorize_execution,
+        "acknowledge_provider": acknowledge_provider,
+        "correlation": correlation,
     }
     first = await client.run_attempt(**request)
     second = await client.run_attempt(**request)

@@ -16,11 +16,17 @@ import json
 import re
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+from archetype.app.missions.models import (
+    FencedExecutionAuthorization,
+    ProviderExecutionCapabilities,
+    attempt_invocation_fingerprint,
+)
+from archetype.app.missions.transitions import AttemptRecoveryAction
 from archetype.app.sandboxes.models import (
     GIT_TREE_CHANGE_GATE_NAME,
     AgentExecution,
@@ -161,9 +167,10 @@ with open(output, "w", encoding="utf-8") as file:
 class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
     """Provider-neutral attempt, validation, evidence, and checkpoint protocol.
 
-    The sandbox-local receipt suppresses duplicate work while one checkpoint is
-    available. It is deliberately not a durable pre-execution claim and makes
-    no exactly-once submission promise.
+    Every invocation consumes a durable, fenced mission authorization. The
+    sandbox-local receipt complements that authority by suppressing duplicate
+    finalization work while one checkpoint is available. Neither layer claims
+    exactly-once provider submission across an unacknowledged transport crash.
     """
 
     spec: SandboxSpecT
@@ -182,6 +189,47 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
     def sandbox_id(self) -> str:
         """Return the provider-owned live sandbox identity."""
 
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities:
+        """Bind durable claim evidence to this adapter and execution specification."""
+
+        spec = {
+            "repo_url": self.spec.repo_url,
+            "branch": self.spec.branch,
+            "base_ref": self.spec.base_ref,
+            "harness": self.spec.harness,
+            "model": self.spec.model,
+            "opencode_base_url": self.spec.opencode_base_url,
+            "opencode_provider_id": self.spec.opencode_provider_id,
+            "opencode_wire_api": self.spec.opencode_wire_api,
+            "opencode_header_env": dict(self.spec.opencode_header_env),
+            "workspace": self.spec.workspace,
+            "agent_timeout_seconds": self.spec.agent_timeout_seconds,
+            "snapshot_timeout_seconds": self.spec.snapshot_timeout_seconds,
+            "snapshot_ttl_seconds": self.spec.snapshot_ttl_seconds,
+            "snapshot_after_attempt": self.spec.snapshot_after_attempt,
+            "capture_filesystem_manifests": self.spec.capture_filesystem_manifests,
+            "push": self.spec.push,
+            "git_author_name": self.spec.git_author_name,
+            "git_author_email": self.spec.git_author_email,
+        }
+        payload = json.dumps(
+            {
+                "domain": "archetype.sandbox-provider-request.v1",
+                "provider": self._checkpoint_provider(),
+                "adapter": f"{type(self).__module__}.{type(self).__qualname__}",
+                "spec": spec,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        return ProviderExecutionCapabilities(
+            provider=self._checkpoint_provider(),
+            request_fingerprint=hashlib.sha256(payload.encode()).hexdigest(),
+        )
+
     async def run_attempt(
         self,
         *,
@@ -190,6 +238,9 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         step_name: str,
         attempt_index: int,
         idempotency_key: str,
+        authorization: FencedExecutionAuthorization,
+        authorize_execution: Callable[[FencedExecutionAuthorization], Awaitable[None]],
+        acknowledge_provider: Callable[[str, str], Awaitable[None]],
         previous_session_id: str = "",
         previous_validator_details: Sequence[dict[str, Any]] = (),
         correlation: Mapping[str, Any] | None = None,
@@ -206,7 +257,6 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             raise ValueError("prompt must not be empty")
         if not step_name.strip():
             raise ValueError("step_name must not be empty")
-
         correlation_data = dict(correlation or {})
         try:
             json.dumps(correlation_data, sort_keys=True)
@@ -231,6 +281,12 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             previous_validator_details=previous_validator_details,
             correlation=correlation_data,
         )
+        self._validate_authorization(
+            authorization,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            correlation=correlation_data,
+        )
 
         cached = await self._load_completed(idempotency_key)
         if cached is not None:
@@ -241,6 +297,23 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         recovered = await self._load_repository_receipt(idempotency_key)
         if recovered is not None and recovered.request_fingerprint != request_fingerprint:
             raise ValueError("idempotency_key was reused with a different attempt request")
+        executable_actions = {AttemptRecoveryAction.EXECUTE}
+        if recovered is None and authorization.action not in executable_actions:
+            raise RuntimeError(
+                f"attempt claim action {authorization.action.value!r} forbids model execution"
+            )
+        if recovered is None:
+            await self._emit_live_event("execution_grant_consumption_started")
+            try:
+                await authorize_execution(authorization)
+            except BaseException as exc:
+                await self._emit_live_event_safely(
+                    "execution_grant_consumption_failed",
+                    error_type=type(exc).__name__,
+                    error=self._tail(str(exc), 1000),
+                )
+                raise
+            await self._emit_live_event("execution_grant_consumed")
 
         prepared = await self._prepare_attempt(
             prompt=prompt,
@@ -253,6 +326,20 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             recovered=recovered,
         )
         execution = await self._execution_phase(prepared, previous_session_id, recovered)
+        await self._emit_live_event("provider_acknowledgement_started")
+        try:
+            await acknowledge_provider(execution.session_id, "")
+        except BaseException as exc:
+            await self._emit_live_event_safely(
+                "provider_acknowledgement_failed",
+                error_type=type(exc).__name__,
+                error=self._tail(str(exc), 1000),
+            )
+            raise
+        await self._emit_live_event(
+            "provider_acknowledgement_finished",
+            provider_session_id=execution.session_id,
+        )
         validation = await self._validation_phase(normalized, recovered)
         repository = await self._repository_finalization_phase(
             prepared, execution, validation, recovered
@@ -274,6 +361,52 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             commit_sha=outcome["sha"],
         )
         return outcome
+
+    def _validate_authorization(
+        self,
+        authorization: FencedExecutionAuthorization,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+        correlation: Mapping[str, Any],
+    ) -> None:
+        expected_attempt_id = hashlib.sha256(idempotency_key.encode()).hexdigest()
+        if authorization.idempotency_key != idempotency_key:
+            raise ValueError("execution authorization does not match the idempotency key")
+        if authorization.attempt_id != expected_attempt_id:
+            raise ValueError("execution authorization does not match the attempt identity")
+        if authorization.fence_epoch < 1 or not authorization.claimant.strip():
+            raise ValueError("execution authorization requires a positive owned fence")
+        if not authorization.claim_key or not authorization.request_fingerprint:
+            raise ValueError("execution authorization requires claim and request identity")
+        if authorization.sandbox_request_fingerprint != request_fingerprint:
+            raise ValueError("sandbox invocation does not match its durable attempt claim")
+        if str(correlation.get("world_id", "")) != authorization.world_id:
+            raise ValueError("sandbox correlation world_id does not match its attempt claim")
+        if str(correlation.get("run_id", "")) != authorization.run_id:
+            raise ValueError("sandbox correlation run_id does not match its attempt claim")
+        entity_id = str(correlation.get("entity_id", "")).strip()
+        if not entity_id or authorization.mission_id != (
+            f"{authorization.world_id}:{authorization.run_id}:{entity_id}"
+        ):
+            raise ValueError("sandbox correlation does not match its mission identity")
+        if "step_index" not in correlation:
+            raise ValueError("sandbox correlation requires the claimed task step_index")
+        if authorization.lease_expires_at <= time.time():
+            raise RuntimeError("execution authorization lease expired before sandbox mutation")
+        if (
+            authorization.action is AttemptRecoveryAction.EXECUTE
+            and not authorization.execution_nonce
+        ):
+            raise ValueError("execute authorization requires a single-use execution nonce")
+        if authorization.action in {
+            AttemptRecoveryAction.REPLAY_IDEMPOTENT,
+            AttemptRecoveryAction.RESUME_SESSION,
+        }:
+            raise RuntimeError(
+                f"attempt recovery action {authorization.action.value!r} has no "
+                "implemented provider transport"
+            )
 
     async def _prepare_attempt(
         self,
@@ -1193,20 +1326,18 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         previous_validator_details: Sequence[dict[str, Any]],
         correlation: Mapping[str, Any],
     ) -> str:
-        payload = {
-            "prompt": prompt,
-            "validators": [validator.to_dict() for validator in validators],
-            "step_name": step_name,
-            "attempt_index": attempt_index,
-            "previous_session_id": previous_session_id,
-            "previous_validator_details": list(previous_validator_details),
-            "correlation": dict(correlation),
-        }
         try:
-            encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+            return attempt_invocation_fingerprint(
+                prompt=prompt,
+                validators=tuple(validator.to_dict() for validator in validators),
+                step_name=step_name,
+                attempt_index=attempt_index,
+                previous_session_id=previous_session_id,
+                previous_validator_details=tuple(previous_validator_details),
+                correlation=dict(correlation),
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError("attempt request values must be JSON serializable") from exc
-        return hashlib.sha256(encoded.encode()).hexdigest()
 
     async def _git(self, *args: str) -> CommandResult:
         result = await self._exec("git", *args, workdir=self.spec.workspace)

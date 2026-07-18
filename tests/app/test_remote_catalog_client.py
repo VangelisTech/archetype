@@ -9,7 +9,11 @@ import httpx
 import pytest
 
 from archetype.app.storage import remote_catalog as _remote_catalog
-from archetype.app.storage.catalog import CommandAdmission
+from archetype.app.storage.catalog import (
+    AttemptClaimConflictError,
+    AttemptClaimStaleError,
+    CommandAdmission,
+)
 from archetype.app.storage.remote_catalog import RemoteControlCatalog
 from archetype.app.storage.service import StorageService
 from archetype.core.config import StorageConfig
@@ -178,6 +182,293 @@ def _artifact_publication_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def _attempt_claim_row(**overrides):
+    row = {
+        "claim_key": "claim-1",
+        "run_id": "run-1",
+        "mission_id": "mission-1",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "idempotency_key": "idempotency-1",
+        "request_fingerprint": "request-fingerprint-1",
+        "request_json": "{}",
+        "redaction_policy_id": "redaction-v1",
+        "redaction_evidence_json": '{"phase":"acquired"}',
+        "status": "claimed",
+        "provider": "modal",
+        "provider_request_fingerprint": "provider-fingerprint-1",
+        "supports_idempotent_replay": 0,
+        "supports_session_resume": 1,
+        "provider_idempotency_key": "",
+        "claimant": "worker-1",
+        "lease_expires_at": 30.0,
+        "fence_epoch": 1,
+        "execution_nonce": "",
+        "execution_consumed_at": None,
+        "provider_session_id": "",
+        "provider_request_id": "",
+        "settlement_status": "",
+        "outcome_digest": "",
+        "outcome_json": "",
+        "last_error": "",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "possibly_submitted_at": None,
+        "acknowledged_at": None,
+        "settled_at": None,
+    }
+    row.update(overrides)
+    return row
+
+
+async def test_attempt_claim_transport_is_typed_and_scoped():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={"outcome": "acquired", "claim": _attempt_claim_row()},
+            ),
+            httpx.Response(
+                200,
+                json=_attempt_claim_row(
+                    status="possibly_submitted",
+                    execution_nonce="execution-1",
+                    redaction_evidence_json='{"phase":"armed"}',
+                    possibly_submitted_at="2026-01-01T00:00:01+00:00",
+                ),
+            ),
+            httpx.Response(
+                200,
+                json=_attempt_claim_row(
+                    status="possibly_submitted",
+                    execution_nonce="execution-1",
+                    execution_consumed_at="2026-01-01T00:00:02+00:00",
+                ),
+            ),
+            httpx.Response(200, json=_attempt_claim_row(lease_expires_at=90.0)),
+            httpx.Response(200, json=_attempt_claim_row(status="provider_acknowledged")),
+            httpx.Response(200, json=[_attempt_claim_row(status="possibly_submitted")]),
+            httpx.Response(404),
+        ],
+        requests,
+    )
+    try:
+        outcome, claim = await catalog.acquire_attempt_claim(
+            claim_key="claim-1",
+            world_id="world-1",
+            run_id="run-1",
+            mission_id="mission-1",
+            task_id="task-1",
+            attempt_id="attempt-1",
+            idempotency_key="idempotency-1",
+            request_fingerprint="request-fingerprint-1",
+            request_json="{}",
+            redaction_policy_id="redaction-v1",
+            redaction_evidence_json='{"phase":"acquired"}',
+            provider="modal",
+            provider_request_fingerprint="provider-fingerprint-1",
+            supports_idempotent_replay=False,
+            supports_session_resume=True,
+            provider_idempotency_key="",
+            claimant="worker-1",
+            lease_seconds=15.0,
+        )
+        uncertain = await catalog.transition_attempt_claim(
+            "world-1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="execution-1",
+            redaction_evidence_json='{"phase":"armed"}',
+        )
+        consumed = await catalog.consume_attempt_execution(
+            "world-1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            "execution-1",
+        )
+        renewed = await catalog.renew_attempt_claim(
+            "world-1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            lease_seconds=60.0,
+        )
+        fetched = await catalog.get_attempt_claim("world-1", claim.claim_key)
+        due = await catalog.list_due_attempt_claims("world-1", now=5.0, limit=7)
+        missing = await catalog.get_attempt_claim("world-1", "missing")
+
+        assert outcome == "acquired" and claim.world_id == "world-1"
+        assert claim.redaction_policy_id == "redaction-v1"
+        assert claim.redaction_evidence_json == '{"phase":"acquired"}'
+        assert uncertain.execution_nonce == "execution-1"
+        assert uncertain.redaction_evidence_json == '{"phase":"armed"}'
+        assert consumed.execution_consumed_at == "2026-01-01T00:00:02+00:00"
+        assert renewed.lease_expires_at == 90.0
+        assert fetched is not None and fetched.status == "provider_acknowledged"
+        assert [record.status for record in due] == ["possibly_submitted"]
+        assert missing is None
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/attempt-claims/acquire",
+            "/ns/test/w/world-1/attempt-claims/claim-1/transition",
+            "/ns/test/w/world-1/attempt-claims/claim-1/consume",
+            "/ns/test/w/world-1/attempt-claims/claim-1/renew",
+            "/ns/test/w/world-1/attempt-claims/claim-1",
+            "/ns/test/w/world-1/attempt-claims",
+            "/ns/test/w/world-1/attempt-claims/missing",
+        ]
+        assert dict(requests[-2].url.params) == {"due": "5.0", "limit": "7"}
+        assert b'"execution_nonce":"execution-1"' in requests[1].content
+        assert b'"redaction_policy_id":"redaction-v1"' in requests[0].content
+        assert b'"redaction_evidence_json":"{\\"phase\\":\\"acquired\\"}"' in requests[0].content
+        assert b'"redaction_evidence_json":"{\\"phase\\":\\"armed\\"}"' in requests[1].content
+        assert b'"execution_nonce":"execution-1"' in requests[2].content
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_redaction_receipts_reject_blank_transport_input():
+    catalog = await _catalog_with([])
+
+    async def acquire(policy_id: str, evidence_json: str):
+        return await catalog.acquire_attempt_claim(
+            claim_key="claim-1",
+            world_id="world-1",
+            run_id="run-1",
+            mission_id="mission-1",
+            task_id="task-1",
+            attempt_id="attempt-1",
+            idempotency_key="idempotency-1",
+            request_fingerprint="request-fingerprint-1",
+            request_json="{}",
+            redaction_policy_id=policy_id,
+            redaction_evidence_json=evidence_json,
+            provider="modal",
+            provider_request_fingerprint="provider-fingerprint-1",
+            supports_idempotent_replay=False,
+            supports_session_resume=True,
+            provider_idempotency_key="",
+            claimant="worker-1",
+        )
+
+    try:
+        with pytest.raises(ValueError, match="redaction_policy_id"):
+            await acquire("  ", '{"phase":"acquired"}')
+        with pytest.raises(ValueError, match="redaction_evidence_json"):
+            await acquire("redaction-v1", "  ")
+        with pytest.raises(ValueError, match="redaction evidence update"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="possibly_submitted",
+                target_status="provider_acknowledged",
+                redaction_evidence_json="  ",
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_transition_conflict_is_typed():
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                409,
+                json={
+                    "error": "attempt_claim_conflict",
+                    "message": "attempt claim claim-1 is possibly_submitted, expected claimed",
+                },
+            )
+        ]
+    )
+    try:
+        with pytest.raises(AttemptClaimConflictError, match="expected claimed"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="execution-conflict",
+                last_error="conflicting evidence",
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_execution_consume_stale_is_typed():
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                412,
+                json={
+                    "error": "attempt_claim_stale",
+                    "message": "attempt execution grant claim-1 is already consumed",
+                },
+            )
+        ]
+    )
+    try:
+        with pytest.raises(AttemptClaimStaleError, match="already consumed"):
+            await catalog.consume_attempt_execution(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                "execution-1",
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_expired_attempt_renew_and_transition_are_typed_as_stale():
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                412,
+                json={
+                    "error": "attempt_claim_stale",
+                    "message": "attempt claim lease expired before renewal",
+                },
+            ),
+            httpx.Response(
+                412,
+                json={
+                    "error": "attempt_claim_stale",
+                    "message": "attempt claim lease expired before transition",
+                },
+            ),
+        ]
+    )
+    try:
+        with pytest.raises(AttemptClaimStaleError, match="before renewal"):
+            await catalog.renew_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                lease_seconds=30,
+            )
+        with pytest.raises(AttemptClaimStaleError, match="before transition"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="possibly_submitted",
+                target_status="provider_acknowledged",
+                provider_request_id="request-1",
+            )
+    finally:
+        await catalog.close()
 
 
 async def test_command_ledger_transport_round_trip_is_typed_and_scoped():

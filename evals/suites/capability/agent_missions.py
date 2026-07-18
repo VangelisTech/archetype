@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from archetype.app.missions import MissionService
+from archetype.app.missions import MissionService, attempt_invocation_fingerprint
 from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult
@@ -62,14 +62,33 @@ def _outcome(
 ) -> dict[str, Any]:
     status = "accepted" if accepted else "rejected"
     return {
-        "attempt_id": f"attempt-{request.attempt_index}",
+        "attempt_id": request.attempt_id,
         "attempt_index": request.attempt_index,
         "idempotency_key": request.idempotency_key,
+        "request_fingerprint": attempt_invocation_fingerprint(
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        ),
         "status": status,
         "accepted": accepted,
         "harness": "fake",
         "agent_session_id": "session-eval",
-        "validator_details": [{"name": "regression", "passed": accepted}],
+        "validator_details": [
+            {
+                "name": "regression",
+                "command": ["pytest"],
+                "expected_returncode": 0,
+                "returncode": 0 if accepted else 1,
+                "passed": accepted,
+                "stdout": "",
+                "stderr": "",
+            }
+        ],
         "checkpoint_provider": "fake",
         "checkpoint_status": "created" if checkpoint_restorable else "failed",
         "checkpoint_restorable": checkpoint_restorable,

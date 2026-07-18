@@ -5,12 +5,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import field_validator, model_validator
 
 from archetype.app.missions.transitions import (
+    AttemptClaimAcquireOutcome,
+    AttemptClaimStatus,
+    AttemptRecoveryAction,
     AttemptStatus,
     CheckpointStatus,
     FinalizationPhase,
@@ -201,11 +207,269 @@ class MissionAttemptRequest:
     step_index: int
     attempt_index: int
     plan_digest: str
+    max_attempts: int
+    required_finalization_phase: FinalizationPhase
     idempotency_key: str
+    mission_id: str
+    task_id: str
+    attempt_id: str
+    request_fingerprint: str
     previous_session_id: str
     previous_validator_details: tuple[dict[str, Any], ...]
     correlation: dict[str, Any]
     source: MissionTaskState
+
+
+def normalize_attempt_validators(
+    validators: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Validate and canonicalize every validator field consumed by a sandbox."""
+
+    normalized: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for value in validators:
+        if not isinstance(value, Mapping):
+            raise TypeError("mission validators must be JSON objects")
+        name = str(value.get("name", "")).strip()
+        if not name or name in names:
+            raise ValueError("mission validators require unique non-empty names")
+        if name == "git_tree_change":
+            raise ValueError("mission validator name 'git_tree_change' is reserved")
+        raw_command = value.get("command")
+        if (
+            not isinstance(raw_command, (list, tuple))
+            or not raw_command
+            or any(not isinstance(part, str) for part in raw_command)
+        ):
+            raise ValueError(f"mission validator {name!r} requires a non-empty string command")
+        try:
+            expected_returncode = int(value.get("expected_returncode", 0))
+            timeout_seconds = int(value.get("timeout_seconds", 900))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"mission validator {name!r} has invalid numeric fields") from exc
+        if timeout_seconds < 1:
+            raise ValueError(f"mission validator {name!r} timeout_seconds must be at least 1")
+        normalized.append(
+            {
+                "name": name,
+                "command": list(raw_command),
+                "expected_returncode": expected_returncode,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        names.add(name)
+    if not normalized:
+        raise ValueError("mission tasks require at least one validator")
+    return tuple(normalized)
+
+
+def mission_attempt_request_fingerprint(
+    *,
+    idempotency_key: str,
+    prompt: str,
+    validators: tuple[dict[str, Any], ...],
+    step_name: str,
+    step_index: int,
+    attempt_index: int,
+    plan_digest: str,
+    max_attempts: int,
+    required_finalization_phase: FinalizationPhase,
+    previous_session_id: str,
+    previous_validator_details: tuple[dict[str, Any], ...],
+    correlation: dict[str, Any],
+) -> str:
+    """Digest the provider-neutral invocation fields owned by a mission claim."""
+
+    payload = {
+        "domain": "archetype.mission-attempt-request.v1",
+        "idempotency_key": idempotency_key,
+        "prompt": prompt,
+        "validators": validators,
+        "step_name": step_name,
+        "step_index": step_index,
+        "attempt_index": attempt_index,
+        "plan_digest": plan_digest,
+        "max_attempts": max_attempts,
+        "required_finalization_phase": required_finalization_phase.value,
+        "previous_session_id": previous_session_id,
+        "previous_validator_details": previous_validator_details,
+        "correlation": correlation,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def attempt_invocation_fingerprint(
+    *,
+    prompt: str,
+    validators: tuple[dict[str, Any], ...],
+    step_name: str,
+    attempt_index: int,
+    previous_session_id: str,
+    previous_validator_details: tuple[dict[str, Any], ...],
+    correlation: dict[str, Any],
+) -> str:
+    """Digest the exact normalized invocation consumed by the sandbox kernel."""
+
+    normalized_validators = normalize_attempt_validators(validators)
+    payload = {
+        "prompt": prompt,
+        "validators": normalized_validators,
+        "step_name": step_name,
+        "attempt_index": attempt_index,
+        "previous_session_id": previous_session_id,
+        "previous_validator_details": list(previous_validator_details),
+        "correlation": correlation,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ProviderExecutionCapabilities:
+    """Provider guarantees that may permit recovery-time execution."""
+
+    provider: str
+    request_fingerprint: str
+    supports_idempotent_replay: bool = False
+    supports_session_resume: bool = False
+    provider_idempotency_key: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.provider.strip():
+            raise ValueError("provider must not be empty")
+        if not self.request_fingerprint.strip():
+            raise ValueError("provider request_fingerprint must not be empty")
+        if self.supports_idempotent_replay != bool(self.provider_idempotency_key):
+            raise ValueError(
+                "idempotent replay capability requires exactly one provider idempotency key"
+            )
+
+
+@dataclass(frozen=True)
+class AttemptClaim:
+    """Typed mission projection of one durable catalog claim."""
+
+    claim_key: str
+    world_id: str
+    run_id: str
+    mission_id: str
+    task_id: str
+    attempt_id: str
+    idempotency_key: str
+    request_fingerprint: str
+    request_json: str
+    redaction_policy_id: str
+    redaction_evidence_json: str
+    status: AttemptClaimStatus
+    provider: str
+    provider_request_fingerprint: str
+    supports_idempotent_replay: bool
+    supports_session_resume: bool
+    provider_idempotency_key: str
+    claimant: str
+    lease_expires_at: float
+    fence_epoch: int
+    execution_nonce: str
+    execution_consumed_at: str | None
+    provider_session_id: str
+    provider_request_id: str
+    settlement_status: str
+    outcome_digest: str
+    outcome_json: str
+    last_error: str
+    created_at: str
+    updated_at: str
+    possibly_submitted_at: str | None
+    acknowledged_at: str | None
+    settled_at: str | None
+
+
+@dataclass(frozen=True)
+class AttemptClaimAcquisition:
+    """Lease-acquisition outcome plus the typed claim projection."""
+
+    outcome: AttemptClaimAcquireOutcome
+    claim: AttemptClaim
+
+
+@dataclass(frozen=True)
+class FencedExecutionAuthorization:
+    """Claim-bound authorization consumed by the sandbox kernel."""
+
+    action: AttemptRecoveryAction
+    claim_key: str
+    world_id: str
+    run_id: str
+    mission_id: str
+    task_id: str
+    attempt_id: str
+    idempotency_key: str
+    request_fingerprint: str
+    sandbox_request_fingerprint: str
+    execution_nonce: str
+    claimant: str
+    fence_epoch: int
+    lease_expires_at: float
+    provider_session_id: str = ""
+    provider_idempotency_key: str = ""
+
+
+@dataclass(frozen=True)
+class AttemptRecoveryDecision:
+    """Recovery action and the exact fence authorizing that decision."""
+
+    action: AttemptRecoveryAction
+    claim: AttemptClaim
+    authorization: FencedExecutionAuthorization
+
+
+class FencedAttemptRunner(Protocol):
+    """Structural sandbox port consumed by mission attempt orchestration."""
+
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities: ...
+
+    async def run_attempt(
+        self,
+        *,
+        prompt: str,
+        validators: Sequence[dict[str, Any]],
+        step_name: str,
+        attempt_index: int,
+        idempotency_key: str,
+        authorization: FencedExecutionAuthorization,
+        authorize_execution: Callable[[FencedExecutionAuthorization], Awaitable[None]],
+        acknowledge_provider: Callable[[str, str], Awaitable[None]],
+        previous_session_id: str = "",
+        previous_validator_details: Sequence[dict[str, Any]] = (),
+        correlation: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+
+
+@dataclass(frozen=True)
+class MissionAttemptExecution:
+    """One replayable orchestration result and its terminal claim."""
+
+    request: MissionAttemptRequest
+    acquisition: AttemptClaimAcquisition
+    decision: AttemptRecoveryDecision
+    claim: AttemptClaim
+    outcome: dict[str, Any]
+    updated_row: dict[str, Any]
+    replayed: bool
 
 
 MISSION_COMPONENTS = (
