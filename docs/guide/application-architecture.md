@@ -126,6 +126,22 @@ Forbidden reverse edges include:
 - experiments importing the container or concrete app services; and
 - CLI command implementations bypassing HTTP.
 
+### Observability dependency boundary
+
+Core and application families may emit only through the private,
+vendor-neutral `archetype._obs` API and stdlib logging. They may not import an
+OTel SDK, exporter, collector, or vendor package. Runtime and server process
+hosts own provider/exporter and handler configuration. Because core imports
+`_obs`, the signal boundary cannot import the application redaction family; it
+uses the closed schema defined by the normative
+[Observability contract](observability.md). Content-bearing outer adapters
+still consume the redaction port before their own durable or external write.
+
+Telemetry is never an authority edge. It cannot authorize a command, prove a
+commit, settle a durable outcome, or choose a retry. The owning family's typed
+result and durable record remain authoritative when telemetry is disabled,
+dropped, or failing.
+
 ## 5. Core world and application-family ownership
 
 `StorageService` resolves and pools an `iAsyncStore`. `WorldService` owns the

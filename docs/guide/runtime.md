@@ -161,7 +161,11 @@ boundary. Core and app layers emit records but configure no handlers.
 
 Tracing uses the OpenTelemetry API. A host-registered provider is respected;
 optional Logfire or OTLP backends are selected only at the host/runtime
-boundary. With no configured backend the API remains a no-op.
+boundary. With no configured backend the API remains a no-op and does not
+prevent a later host from registering one. Signal names, safe attributes,
+failure handling, and metric cardinality follow the normative
+[Observability contract](observability.md); telemetry never changes a runtime
+result or exception.
 
 ### R14 — Public callables do not accept raw services
 

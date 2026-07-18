@@ -7,6 +7,7 @@ machine authority; this page is its review surface.
 
 | Contract | Owner | Risk | Normative source | Executable evidence | Profiles |
 | --- | --- | --- | --- | --- | --- |
+| `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
 | `sandboxes.attempt.phase_order` | `sandboxes` | high | [docs/guide/sandbox-execution.md](../guide/sandbox-execution.md) — 3. Six-phase attempt protocol | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `architecture.dependencies.enforced` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 11. Static enforcement | pytest: 1; static: 1; eval: 2 | `pr`, `main`, `release` |
 | `architecture.protocols.complete` | `app` | high | [docs/guide/application-architecture.md](../guide/application-architecture.md) — 8. Protocol policy and wiring | pytest: 1; static: 1; eval: 1 | `pr`, `main`, `release` |
