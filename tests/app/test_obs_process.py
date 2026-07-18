@@ -68,6 +68,116 @@ def test_host_provider_is_respected() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
+    result = _run(
+        """
+        import os
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+        from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+        class CapturingExporter(SpanExporter):
+            instances = []
+
+            def __init__(self):
+                self.spans = []
+                self.shutdown_calls = 0
+                self.instances.append(self)
+
+            def export(self, spans):
+                self.spans.extend(spans)
+                return SpanExportResult.SUCCESS
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+
+        trace_exporter.OTLPSpanExporter = CapturingExporter
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid/v1/traces"
+
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        provider = trace.get_tracer_provider()
+        assert _obs._configured is True
+        assert _obs._owned_tracer_provider is provider
+
+        with provider.get_tracer("archetype").start_as_current_span(
+            "artifact.publish",
+            attributes={
+                "archetype.operation": "artifact.publish",
+                "authorization": "Bearer should-not-be-exported",
+            },
+        ):
+            pass
+
+        assert provider.force_flush()
+        (exporter,) = CapturingExporter.instances
+        (finished,) = exporter.spans
+        assert finished.name == "artifact.publish"
+        assert dict(finished.attributes) == {
+            "archetype.operation": "artifact.publish",
+        }
+        assert dict(finished.resource.attributes) == {
+            "service.name": "archetype-test",
+        }
+        provider.shutdown()
+        assert exporter.shutdown_calls == 1
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Bearer should-not-be-exported" not in result.stderr
+
+
+def test_otlp_initialization_failure_is_safe_shutdown_and_retryable() -> None:
+    result = _run(
+        """
+        import os
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+        import opentelemetry.sdk.trace as sdk_trace
+
+        real_provider = sdk_trace.TracerProvider
+
+        class TrackingProvider(real_provider):
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.shutdown_calls = 0
+                self.instances.append(self)
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+                return super().shutdown()
+
+        class FailingExporter:
+            def __init__(self):
+                raise RuntimeError("Bearer should-not-be-exported")
+
+        sdk_trace.TracerProvider = TrackingProvider
+        trace_exporter.OTLPSpanExporter = FailingExporter
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid/v1/traces"
+
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert _obs._configured is False
+        assert isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+        (failed_candidate,) = TrackingProvider.instances
+        assert failed_candidate.shutdown_calls == 1
+
+        sdk_trace.TracerProvider = real_provider
+        del os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+        _obs.configure_tracing(service_name="archetype-test", debug_console=True)
+        assert _obs._configured is True
+        assert not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+        trace.get_tracer_provider().shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Bearer should-not-be-exported" not in result.stderr
+
+
 def test_host_adapter_failure_is_safe_and_does_not_latch() -> None:
     result = _run(
         """
