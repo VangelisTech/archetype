@@ -637,8 +637,6 @@ class RedactionService:
             self.assert_safe_metadata(normalized, field="archive.member_name")
         except SecretQuarantineError as exc:
             raise SecretQuarantineError(scope, exc.rule_ids) from None
-        if self._is_credential_path(normalized):
-            raise SecretQuarantineError(scope, ("credential-file-path",))
         if normalized.lower().endswith(_CONTAINER_SUFFIXES):
             raise SecretQuarantineError(scope, ("nested-archive-unsupported",))
         return f"{scope}:archive-member"

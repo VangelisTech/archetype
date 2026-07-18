@@ -5,18 +5,22 @@
 
 from __future__ import annotations
 
+import errno
 import gzip
 import io
 import stat
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
+import archetype.app.redaction.service as redaction_module
 from archetype.app.redaction import (
     RedactionPolicyConfig,
+    RedactionReceipt,
     RedactionService,
     SecretQuarantineError,
 )
@@ -112,6 +116,75 @@ def test_policy_identity_is_stable_and_binds_scan_limits() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"policy_id": "", "scope": "scope", "status": "clean", "scanned_bytes": 0},
+        {"policy_id": "policy", "scope": " ", "status": "clean", "scanned_bytes": 0},
+        {
+            "policy_id": "policy",
+            "scope": "scope",
+            "status": "redacted",
+            "scanned_bytes": 0,
+            "redaction_count": 1,
+            "rule_ids": ("",),
+        },
+        {
+            "policy_id": "policy",
+            "scope": "scope",
+            "status": "clean",
+            "scanned_bytes": 0,
+            "redaction_count": 1,
+            "rule_ids": ("rule",),
+        },
+        {
+            "policy_id": "policy",
+            "scope": "scope",
+            "status": "redacted",
+            "scanned_bytes": 0,
+            "redaction_count": 1,
+            "rule_ids": (),
+        },
+    ],
+)
+def test_redaction_receipts_reject_inconsistent_or_unsafe_evidence(payload) -> None:
+    with pytest.raises(ValidationError):
+        RedactionReceipt.model_validate(payload)
+
+
+def test_redaction_receipt_rules_and_empty_quarantine_are_canonical() -> None:
+    receipt = RedactionReceipt(
+        policy_id=" policy ",
+        scope=" scope ",
+        status="redacted",
+        scanned_bytes=1,
+        redaction_count=2,
+        rule_ids=("z-rule", "a-rule", "z-rule"),
+    )
+    assert receipt.policy_id == "policy"
+    assert receipt.scope == "scope"
+    assert receipt.rule_ids == ("a-rule", "z-rule")
+    assert "unspecified-secret-rule" in str(SecretQuarantineError("scope", ()))
+
+
+def test_structured_key_collisions_are_preserved_without_leaking_keys() -> None:
+    first = "ghp_" + "A" * 36
+    second = "ghp_" + "B" * 36
+    result = RedactionService().redact_record(
+        {first: 1, second: False, "optional": None},
+        scope="sandbox.live_event",
+    )
+
+    assert first not in str(result.value)
+    assert second not in str(result.value)
+    assert set(result.value) == {
+        "<redacted:github-token>",
+        "<redacted:github-token>#2",
+        "optional",
+    }
+    assert "structured-key-collision" in result.receipt.rule_ids
+
+
 def test_text_file_is_snapshotted_and_redacted_without_mutating_source(tmp_path: Path) -> None:
     service = RedactionService()
     secret = "sk-proj-" + "Q" * 32
@@ -170,6 +243,74 @@ def test_source_symlink_is_never_followed_into_a_safe_logical_path(tmp_path: Pat
             logical_path="result.txt",
         )
     assert not destination.exists()
+
+
+def test_missing_source_preserves_retryable_file_not_found(tmp_path: Path) -> None:
+    destination = tmp_path / "approved"
+    with pytest.raises(FileNotFoundError):
+        RedactionService().sanitize_file(
+            tmp_path / "missing.txt",
+            destination,
+            logical_path="result.txt",
+        )
+    assert not destination.exists()
+
+
+def test_snapshot_open_rejects_a_symlink_race(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "result.txt"
+    source.write_text("safe")
+
+    def raced_open(*_args, **_kwargs):
+        raise OSError(errno.ELOOP, "synthetic no-follow rejection")
+
+    monkeypatch.setattr(redaction_module.os, "open", raced_open)
+    with pytest.raises(SecretQuarantineError, match="unsupported-source-file"):
+        RedactionService().sanitize_file(
+            source,
+            tmp_path / "approved",
+            logical_path="result.txt",
+        )
+
+
+def test_snapshot_open_preserves_non_symlink_io_errors(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "result.txt"
+    source.write_text("safe")
+
+    def denied_open(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, "synthetic permission denial")
+
+    monkeypatch.setattr(redaction_module.os, "open", denied_open)
+    with pytest.raises(PermissionError, match="synthetic permission denial"):
+        RedactionService().sanitize_file(
+            source,
+            tmp_path / "approved",
+            logical_path="result.txt",
+        )
+
+
+def test_snapshot_rejects_inode_replacement_between_inspection_and_open(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "result.txt"
+    source.write_text("safe")
+    real_fstat = redaction_module.os.fstat
+
+    def changed_inode(descriptor):
+        opened = real_fstat(descriptor)
+        return SimpleNamespace(
+            st_mode=opened.st_mode,
+            st_dev=opened.st_dev,
+            st_ino=opened.st_ino + 1,
+        )
+
+    monkeypatch.setattr(redaction_module.os, "fstat", changed_inode)
+    with pytest.raises(SecretQuarantineError, match="source-file-race"):
+        RedactionService().sanitize_file(
+            source,
+            tmp_path / "approved",
+            logical_path="result.txt",
+        )
 
 
 @pytest.mark.parametrize(
@@ -263,6 +404,102 @@ def test_archive_scan_limits_and_nested_archives_fail_closed(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("archive_kind", ["tar", "zip"])
+def test_unsafe_or_secret_archive_member_names_are_quarantined(
+    tmp_path: Path,
+    archive_kind: str,
+) -> None:
+    path = tmp_path / f"unsafe.{archive_kind}"
+    secret = "ghp_" + "C" * 36
+    names = ("../escape.txt", f"repo/{secret}.txt")
+    for index, name in enumerate(names):
+        candidate = path.with_name(f"{path.stem}-{index}.{archive_kind}")
+        if archive_kind == "tar":
+            with tarfile.open(candidate, "w") as archive:
+                info = tarfile.TarInfo(name)
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"x"))
+        else:
+            with zipfile.ZipFile(candidate, "w") as archive:
+                archive.writestr(name, b"x")
+        with pytest.raises(SecretQuarantineError):
+            RedactionService().sanitize_file(
+                candidate,
+                tmp_path / f"approved-{archive_kind}-{index}",
+                logical_path=candidate.name,
+            )
+
+
+def test_encrypted_zip_metadata_fails_before_member_open(tmp_path: Path) -> None:
+    path = tmp_path / "encrypted.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("result.txt", b"safe")
+    payload = bytearray(path.read_bytes())
+    payload[6] |= 0x01
+    central = payload.index(b"PK\x01\x02")
+    payload[central + 8] |= 0x01
+    path.write_bytes(payload)
+
+    with pytest.raises(SecretQuarantineError, match="encrypted-archive"):
+        RedactionService().sanitize_file(
+            path,
+            tmp_path / "approved",
+            logical_path="encrypted.zip",
+        )
+
+
+@pytest.mark.parametrize("archive_kind", ["tar", "zip"])
+def test_archive_stream_size_must_match_member_metadata(
+    tmp_path: Path,
+    monkeypatch,
+    archive_kind: str,
+) -> None:
+    path = tmp_path / f"mismatch.{archive_kind}"
+    if archive_kind == "tar":
+        with tarfile.open(path, "w") as archive:
+            info = tarfile.TarInfo("result.txt")
+            info.size = 4
+            archive.addfile(info, io.BytesIO(b"safe"))
+    else:
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("result.txt", b"safe")
+    service = RedactionService()
+    monkeypatch.setattr(service, "_scan_binary_stream", lambda *_args, **_kwargs: 0)
+
+    with pytest.raises(SecretQuarantineError, match="archive-size-mismatch"):
+        if archive_kind == "tar":
+            service._scan_tar(path, scope="archive")
+        else:
+            service._scan_zip(path, scope="archive")
+
+
+def test_unreadable_tar_member_returns_safe_quarantine(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "unreadable.tar"
+    with tarfile.open(path, "w") as archive:
+        info = tarfile.TarInfo("result.txt")
+        info.size = 4
+        archive.addfile(info, io.BytesIO(b"safe"))
+    monkeypatch.setattr(tarfile.TarFile, "extractfile", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(SecretQuarantineError, match="archive-member-unreadable"):
+        RedactionService()._scan_tar(path, scope="archive")
+
+
+@pytest.mark.parametrize("archive_kind", ["tar", "zip"])
+def test_corrupt_archive_readers_return_safe_quarantine(
+    tmp_path: Path,
+    archive_kind: str,
+) -> None:
+    path = tmp_path / f"corrupt.{archive_kind}"
+    path.write_bytes(b"not an archive")
+    service = RedactionService()
+    with pytest.raises(SecretQuarantineError, match="archive-unreadable"):
+        if archive_kind == "tar":
+            service._scan_tar(path, scope="archive")
+        else:
+            service._scan_zip(path, scope="archive")
+
+
+@pytest.mark.parametrize("archive_kind", ["tar", "zip"])
 def test_archive_links_are_not_treated_as_scanned_regular_files(
     tmp_path: Path,
     archive_kind: str,
@@ -327,6 +564,9 @@ def test_streamed_archive_limit_uses_observed_bytes_not_only_headers() -> None:
 def test_safe_archive_and_private_key_text_have_explicit_dispositions(tmp_path: Path) -> None:
     safe = tmp_path / "safe.tar"
     with tarfile.open(safe, "w") as archive:
+        directory = tarfile.TarInfo("repo")
+        directory.type = tarfile.DIRTYPE
+        archive.addfile(directory)
         payload = b"validator passed\n"
         info = tarfile.TarInfo("repo/result.txt")
         info.size = len(payload)
@@ -350,6 +590,82 @@ def test_safe_archive_and_private_key_text_have_explicit_dispositions(tmp_path: 
     )
     assert redacted.receipt.rule_ids == ("private-key",)
     assert redacted.path.read_text() == "before\n<redacted:private-key>\nafter\n"
+
+    safe_zip = tmp_path / "safe.zip"
+    with zipfile.ZipFile(safe_zip, "w") as archive:
+        archive.mkdir("repo/")
+        archive.writestr("repo/result.txt", b"validator passed\n")
+    clean_zip = RedactionService().sanitize_file(
+        safe_zip,
+        tmp_path / "safe-zip-approved",
+        logical_path="safe.zip",
+    )
+    assert clean_zip.receipt.status == "clean"
+
+
+def test_private_key_redaction_handles_same_line_and_trailing_end_content(tmp_path: Path) -> None:
+    same_line = tmp_path / "same-line.log"
+    same_line.write_text(
+        "before -----BEGIN " + "PRIVATE KEY-----body-----END " + "PRIVATE KEY----- after\n"
+    )
+    same_result = RedactionService().sanitize_file(
+        same_line,
+        tmp_path / "same-line-approved",
+        logical_path="same-line.log",
+    )
+    assert same_result.path.read_text() == "before <redacted:private-key> after\n"
+
+    trailing = tmp_path / "trailing.log"
+    trailing.write_text(
+        "-----BEGIN " + "PRIVATE KEY-----\r\nbody\r\n-----END " + "PRIVATE KEY----- after\n"
+    )
+    trailing_result = RedactionService().sanitize_file(
+        trailing,
+        tmp_path / "trailing-approved",
+        logical_path="trailing.log",
+    )
+    assert trailing_result.path.read_bytes() == b"<redacted:private-key>\r\n after\n"
+
+    unclosed = tmp_path / "unclosed.log"
+    unclosed.write_text("before -----BEGIN " + "PRIVATE KEY-----body")
+    unclosed_result = RedactionService().sanitize_file(
+        unclosed,
+        tmp_path / "unclosed-approved",
+        logical_path="unclosed.log",
+    )
+    assert unclosed_result.path.read_text() == "before <redacted:private-key>"
+
+
+def test_empty_and_non_utf8_binary_files_have_explicit_clean_disposition(tmp_path: Path) -> None:
+    for name, payload in (("empty.bin", b""), ("opaque.bin", b"\xff\xfe")):
+        source = tmp_path / name
+        source.write_bytes(payload)
+        result = RedactionService().sanitize_file(
+            source,
+            tmp_path / f"{name}.approved",
+            logical_path=name,
+        )
+        assert result.receipt.status == "clean"
+        assert result.path.read_bytes() == payload
+
+
+def test_uri_metadata_and_empty_scope_branches_fail_closed() -> None:
+    service = RedactionService()
+    with pytest.raises(SecretQuarantineError, match="uri-userinfo"):
+        service.assert_safe_metadata(
+            "https://agent@provider.invalid/result",
+            field="artifact.source_ref",
+        )
+    for value in (
+        "https://provider.invalid/result?page=1",
+        "https://provider.invalid/result?token=",
+        "https://provider.invalid/result?token={env:PROVIDER_TOKEN}",
+    ):
+        assert service.assert_safe_metadata(value, field="artifact.source_ref").status == "clean"
+    assert not service._is_credential_path("/")
+    assert service._has_container_magic(b"x" * 257 + b"ustar" + b"x")
+    with pytest.raises(ValueError, match="scope must not be empty"):
+        service.redact_text("safe", scope=" ")
 
 
 def test_unbounded_text_line_is_quarantined(tmp_path: Path) -> None:

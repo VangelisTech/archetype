@@ -865,6 +865,29 @@ async def test_retry_catalog_redacts_untrusted_failure_diagnostics(tmp_path, mon
         await container.shutdown()
 
 
+async def test_retry_diagnostic_fails_safe_when_the_scanner_itself_errors(
+    tmp_path,
+    monkeypatch,
+):
+    container = ServiceContainer(
+        artifact_store_config=ArtifactStoreConfig.local(tmp_path / "artifacts")
+    )
+    secret = "sk-ant-api03-" + "V" * 32
+
+    def fail_scanner(*_args, **_kwargs):
+        raise RuntimeError(f"scanner failed while handling {secret}")
+
+    monkeypatch.setattr(container.redaction_service, "redact_text", fail_scanner)
+    try:
+        detail = container.artifact_bundle_service._safe_failure_detail(
+            RuntimeError(f"provider returned {secret}")
+        )
+        assert detail == "RuntimeError: failure detail unavailable"
+        assert secret not in detail
+    finally:
+        await container.shutdown()
+
+
 async def test_upload_uses_the_controlled_snapshot_when_source_mutates_after_scan(
     tmp_path, monkeypatch
 ):
