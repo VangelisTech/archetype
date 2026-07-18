@@ -281,8 +281,12 @@ class MissionService:
 
     @staticmethod
     def _checkpoint_status(outcome: Mapping[str, Any]) -> CheckpointStatus:
+        raw_status = str(outcome["checkpoint_status"])
+        # Sandbox capture state is transport vocabulary. Mission state records
+        # the authoritative durable meaning without importing another family.
+        mission_status = "created" if raw_status == "ready" else raw_status
         try:
-            status = CheckpointStatus(str(outcome["checkpoint_status"]))
+            status = CheckpointStatus(mission_status)
         except ValueError as exc:
             raise ValueError(
                 f"unknown checkpoint status: {outcome['checkpoint_status']!r}"
@@ -293,6 +297,8 @@ class MissionService:
             raise ValueError("restorable checkpoint requires created status and state reference")
         if not restorable and status is CheckpointStatus.CREATED:
             raise ValueError("created checkpoint must be restorable")
+        if status is CheckpointStatus.DISABLED and state_ref:
+            raise ValueError("disabled checkpoint cannot have a state reference")
         return status
 
     @staticmethod

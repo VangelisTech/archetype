@@ -144,6 +144,7 @@ def test_component_state_strings_are_enum_validated_without_breaking_arrow() -> 
         Attempt(status="invented")
     with pytest.raises(ValidationError):
         Checkpoint(status="invented")
+    assert Checkpoint(status="disabled").status == "disabled"
     with pytest.raises(ValidationError):
         Finalization(phase="invented")
 

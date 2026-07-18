@@ -56,7 +56,9 @@ After validating the request and reading the repository baseline,
 5. **Checkpoint** — after evidence exists, request a provider checkpoint. A
    checkpoint failure is returned as evidence and does not erase the attempt.
    `expires_at_ms=None` means a captured checkpoint has no configured expiry;
-   epoch zero is never used for that meaning.
+   epoch zero is never used for that meaning. Capture outcomes use
+   `ready`/`failed`/`disabled`; the mission boundary explicitly projects those
+   into its durable checkpoint vocabulary instead of sharing family internals.
 6. **Artifact handoff** — declare checkpoint-qualified or live source
    references and store the sandbox-local replay receipt. This phase does not
    upload or index artifacts; authoritative mission finalization owns that

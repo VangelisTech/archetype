@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from archetype.app.missions import MissionService
 from archetype.app.sandboxes import (
     GIT_TREE_CHANGE_GATE_NAME,
     AttemptPhase,
@@ -252,6 +253,41 @@ def _attempt_kwargs() -> dict[str, Any]:
     }
 
 
+def _mission_row() -> dict[str, Any]:
+    plan = [
+        {
+            "name": "fix",
+            "prompt": "Fix the reported bug",
+            "validators": [{"name": "tests", "command": ["verify"]}],
+        }
+    ]
+    return {
+        "world_id": "world",
+        "run_id": "run",
+        "entity_id": 7,
+        "mission__name": "mission",
+        "mission__plan_json": json.dumps(plan),
+        "mission__status": "ready",
+        "mission__finished": False,
+        "mission__succeeded": False,
+        "mission__failure_reason": "",
+        "mission__pr_ready": False,
+        "mission__pr_url": "",
+        "taskgate__step_index": 0,
+        "taskgate__step_name": "fix",
+        "taskgate__prompt": "Fix the reported bug",
+        "taskgate__validators_json": json.dumps(plan[0]["validators"]),
+        "taskgate__attempts": 0,
+        "taskgate__max_attempts": 3,
+        "taskgate__status": "ready",
+        "taskgate__required_finalization_phase": "checkpointed",
+        "taskgate__passed": False,
+        "attempt__agent_session_id": "",
+        "attempt__validator_details_json": "[]",
+        "frictionlog__entries_json": "[]",
+    }
+
+
 @pytest.mark.asyncio
 async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff() -> None:
     client = _FakeClient(_Spec())
@@ -412,6 +448,38 @@ async def test_checkpoint_without_ttl_has_no_expiration_sentinel() -> None:
     assert outcome["checkpoint_status"] == "ready"
     assert outcome["checkpoint_restorable"] is True
     assert outcome["checkpoint_expires_at_ms"] is None
+
+
+@pytest.mark.parametrize(
+    ("snapshot_after_attempt", "persisted_status", "attempt_status"),
+    [(True, "created", "accepted"), (False, "disabled", "incomplete")],
+)
+@pytest.mark.asyncio
+async def test_real_sandbox_checkpoint_outcome_crosses_the_mission_boundary(
+    snapshot_after_attempt: bool,
+    persisted_status: str,
+    attempt_status: str,
+) -> None:
+    service = MissionService()
+    row = _mission_row()
+    request = service.prepare_attempt(row, tick=1)
+    assert request is not None
+    client = _FakeClient(replace(_Spec(), snapshot_after_attempt=snapshot_after_attempt))
+
+    outcome = await client.run_attempt(
+        prompt=request.prompt,
+        validators=[ValidatorSpec.from_dict(dict(value)) for value in request.validators],
+        step_name=request.step_name,
+        attempt_index=request.attempt_index,
+        idempotency_key=request.idempotency_key,
+        previous_session_id=request.previous_session_id,
+        previous_validator_details=request.previous_validator_details,
+        correlation=request.correlation,
+    )
+    updated = service.apply_attempt(row, request, outcome)
+
+    assert updated["checkpoint__status"] == persisted_status
+    assert updated["attempt__status"] == attempt_status
 
 
 @pytest.mark.asyncio
