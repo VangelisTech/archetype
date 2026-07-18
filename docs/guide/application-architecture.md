@@ -93,6 +93,7 @@ src/archetype/app/
   gateway/           authorization policy boundary
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
+  missions/          typed mission/task/attempt transition authority
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
 ```
@@ -143,6 +144,7 @@ gateway, runtime, API, or CLI boundary.
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
+| Missions | Deterministic attempt identity, typed task transitions, retry/exhaustion and evidence gates | None |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -285,6 +287,9 @@ services and the container are not top-level exports.
 `quality/architecture.toml` contains the complete allowed family DAG and zero
 migration exceptions. `scripts/check_architecture.py` enforces package
 direction, protocol imports, concrete construction, and concrete inheritance.
+
+The mission family is pure transition authority over persisted row values. It
+does not own provider clients or write around the world tick commit boundary.
 
 Two deliberately retained implementation seams are documented rather than
 hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and
