@@ -20,6 +20,7 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactCandidate,
     ArtifactStoreConfig,
+    MaterializedArtifact,
 )
 from archetype.app.artifacts.bundle_service import (
     _ARTIFACT_INDEX_TABLE,
@@ -45,6 +46,54 @@ pytestmark = [
 
 class _ArtifactProbe(Component):
     value: int = 0
+
+
+class _LegacyProviderResolver:
+    """The supported provider contract from before bounded preflight existed."""
+
+    def __init__(self, source: Path) -> None:
+        self.source = source
+        self.calls = 0
+
+    async def materialize(
+        self,
+        candidates: tuple[ArtifactCandidate, ...],
+        _destination: Path,
+    ) -> list[MaterializedArtifact]:
+        self.calls += 1
+        return [
+            MaterializedArtifact(
+                path=self.source,
+                source_ref=candidate.source_ref,
+                logical_path=candidate.logical_path,
+                kind=candidate.kind,
+            )
+            for candidate in candidates
+        ]
+
+
+class _BoundedProviderResolver(_LegacyProviderResolver):
+    def __init__(self, source: Path) -> None:
+        super().__init__(source)
+        self.limits: tuple[int, int] | None = None
+
+    async def materialize(
+        self,
+        candidates: tuple[ArtifactCandidate, ...],
+        destination: Path,
+    ) -> list[MaterializedArtifact]:
+        raise AssertionError("bounded providers must use materialize_bounded")
+
+    async def materialize_bounded(
+        self,
+        candidates: tuple[ArtifactCandidate, ...],
+        destination: Path,
+        *,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
+    ) -> list[MaterializedArtifact]:
+        self.limits = (max_artifact_bytes, max_bundle_bytes)
+        return await super().materialize(candidates, destination)
 
 
 def _request(
@@ -348,6 +397,74 @@ async def test_bundle_publication_fails_closed_when_not_configured(tmp_path):
         await container.shutdown()
 
 
+async def test_legacy_provider_resolver_contract_remains_supported(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "provider-result.txt"
+    source.write_text("legacy provider evidence")
+    resolver = _LegacyProviderResolver(source)
+    container = ServiceContainer(
+        artifact_store_config=artifact_config,
+        artifact_source_resolver=resolver,
+    )
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        receipt = await container.artifact_bundle_service.publish(
+            _request(world, source), storage_config=storage
+        )
+        assert receipt.status == "indexed"
+        assert resolver.calls == 1
+    finally:
+        await container.shutdown()
+
+
+async def test_legacy_provider_resolver_still_obeys_post_materialization_limits(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"max_artifact_bytes": 3, "max_bundle_bytes": 4}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "provider-result.bin"
+    source.write_bytes(b"1234")
+    resolver = _LegacyProviderResolver(source)
+    container = ServiceContainer(
+        artifact_store_config=artifact_config,
+        artifact_source_resolver=resolver,
+    )
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        with pytest.raises(ValueError, match="result.json.*4 bytes; limit is 3"):
+            await container.artifact_bundle_service.publish(
+                _request(world, source), storage_config=storage
+            )
+        assert resolver.calls == 1
+    finally:
+        await container.shutdown()
+
+
+async def test_bounded_provider_receives_configured_materialization_limits(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"max_artifact_bytes": 4, "max_bundle_bytes": 8}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "provider-result.bin"
+    source.write_bytes(b"1234")
+    resolver = _BoundedProviderResolver(source)
+    container = ServiceContainer(
+        artifact_store_config=artifact_config,
+        artifact_source_resolver=resolver,
+    )
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        receipt = await container.artifact_bundle_service.publish(
+            _request(world, source), storage_config=storage
+        )
+        assert receipt.status == "indexed"
+        assert resolver.calls == 1
+        assert resolver.limits == (4, 8)
+    finally:
+        await container.shutdown()
+
+
 async def test_apple_rootfs_resolver_extracts_file_and_directory(tmp_path):
     tree = tmp_path / "tree"
     (tree / "workspace/repo/.context").mkdir(parents=True)
@@ -405,7 +522,7 @@ async def test_apple_rootfs_resolver_rejects_member_before_copying(tmp_path, mon
         logical_path="oversized.bin",
     )
     with pytest.raises(ValueError, match="oversized.bin.*5 bytes; limit is 4"):
-        await CheckpointArtifactSourceResolver().materialize(
+        await CheckpointArtifactSourceResolver().materialize_bounded(
             (candidate,),
             tmp_path / "extracted",
             max_artifact_bytes=4,
@@ -438,7 +555,7 @@ async def test_apple_rootfs_resolver_bounds_recursive_cumulative_copy(tmp_path, 
         recursive=True,
     )
     with pytest.raises(ValueError, match="bundle would be at least 6 bytes; limit is 5"):
-        await CheckpointArtifactSourceResolver().materialize(
+        await CheckpointArtifactSourceResolver().materialize_bounded(
             (candidate,),
             tmp_path / "extracted",
             max_artifact_bytes=3,
@@ -458,7 +575,7 @@ async def test_artifact_resolver_rejects_invalid_materialization_limits(
     tmp_path, max_artifact_bytes, max_bundle_bytes, message
 ):
     with pytest.raises(ValueError, match=message):
-        await CheckpointArtifactSourceResolver().materialize(
+        await CheckpointArtifactSourceResolver().materialize_bounded(
             (),
             tmp_path / "extracted",
             max_artifact_bytes=max_artifact_bytes,
@@ -475,7 +592,7 @@ async def test_direct_artifact_limits_are_checked_before_archive_extraction(tmp_
     )
     resolver = CheckpointArtifactSourceResolver()
     with pytest.raises(ValueError, match="oversized.bin.*4 bytes; limit is 3"):
-        await resolver.materialize(
+        await resolver.materialize_bounded(
             (oversized_candidate,),
             tmp_path / "oversized-output",
             max_artifact_bytes=3,
@@ -487,7 +604,7 @@ async def test_direct_artifact_limits_are_checked_before_archive_extraction(tmp_
     first.write_bytes(b"123")
     second.write_bytes(b"456")
     with pytest.raises(ValueError, match="bundle is at least 6 bytes; limit is 5"):
-        await resolver.materialize(
+        await resolver.materialize_bounded(
             (
                 ArtifactCandidate(source_ref=str(first), logical_path="first.bin"),
                 ArtifactCandidate(source_ref=str(second), logical_path="second.bin"),

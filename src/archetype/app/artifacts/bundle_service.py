@@ -39,6 +39,7 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactReconcileResult,
     ArtifactSourceResolver,
     ArtifactStoreConfig,
+    BoundedArtifactSourceResolver,
     MaterializedArtifact,
     _canonical_json,
 )
@@ -103,9 +104,21 @@ class CheckpointArtifactSourceResolver:
         self,
         candidates: tuple[ArtifactCandidate, ...],
         destination: Path,
+    ) -> list[MaterializedArtifact]:
+        return await self.materialize_bounded(
+            candidates,
+            destination,
+            max_artifact_bytes=_DEFAULT_MAX_ARTIFACT_BYTES,
+            max_bundle_bytes=_DEFAULT_MAX_BUNDLE_BYTES,
+        )
+
+    async def materialize_bounded(
+        self,
+        candidates: tuple[ArtifactCandidate, ...],
+        destination: Path,
         *,
-        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
-        max_bundle_bytes: int = _DEFAULT_MAX_BUNDLE_BYTES,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
     ) -> list[MaterializedArtifact]:
         if max_artifact_bytes < 1:
             raise ValueError("max_artifact_bytes must be positive")
@@ -732,12 +745,19 @@ class ArtifactBundleService:
             expires_at_ms = created_at_ms + retention_seconds * 1000 if retention_seconds else 0
 
         with tempfile.TemporaryDirectory(prefix="archetype-artifacts-") as temp_dir:
-            materialized = await self._source_resolver.materialize(
-                request.artifacts,
-                Path(temp_dir),
-                max_artifact_bytes=config.max_artifact_bytes,
-                max_bundle_bytes=config.max_bundle_bytes,
-            )
+            destination = Path(temp_dir)
+            if isinstance(self._source_resolver, BoundedArtifactSourceResolver):
+                materialized = await self._source_resolver.materialize_bounded(
+                    request.artifacts,
+                    destination,
+                    max_artifact_bytes=config.max_artifact_bytes,
+                    max_bundle_bytes=config.max_bundle_bytes,
+                )
+            else:
+                materialized = await self._source_resolver.materialize(
+                    request.artifacts,
+                    destination,
+                )
             self._assert_materialized_metadata_safe(materialized)
             self._validate_materialized(materialized)
             sanitized, redaction_receipts = await asyncio.to_thread(
