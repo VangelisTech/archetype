@@ -95,7 +95,6 @@ class SandboxService:
         )
         failures = [result for result in results if isinstance(result, BaseException)]
         if failures:
-            error = RuntimeError(f"failed to close {len(failures)} sandbox session(s)")
-            for failure in failures:
-                error.add_note(f"{type(failure).__name__}: {failure}")
-            raise error
+            raise BaseExceptionGroup(
+                f"failed to close {len(failures)} sandbox session(s)", failures
+            )

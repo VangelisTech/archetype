@@ -7,7 +7,6 @@ from archetype.app.sandboxes.common import CodingAgentSandboxClient
 from archetype.app.sandboxes.interfaces import iSandboxBackend, iSandboxService, iSandboxSession
 from archetype.app.sandboxes.models import (
     GIT_TREE_CHANGE_GATE_NAME,
-    AgentAuthMode,
     AgentHarness,
     ArtifactHandoff,
     AttemptPhase,
@@ -22,7 +21,6 @@ from archetype.app.sandboxes.models import (
 from archetype.app.sandboxes.service import SandboxService
 
 __all__ = [
-    "AgentAuthMode",
     "AgentHarness",
     "ArtifactHandoff",
     "AttemptPhase",

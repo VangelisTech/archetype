@@ -11,7 +11,6 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 AgentHarness = Literal["codex", "claude-code", "opencode"]
-AgentAuthMode = Literal["api-key", "oauth"]
 OpenCodeWireAPI = Literal["chat-completions", "responses"]
 GIT_TREE_CHANGE_GATE_NAME = "git_tree_change"
 

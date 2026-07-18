@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -833,9 +834,24 @@ async def test_sandbox_service_rejects_unknown_duplicate_and_reports_shutdown_fa
         await service.create("fake", "same")
     assert backend.created[-1].close_calls == 1
     first.close_error = RuntimeError("close failed")
-    with pytest.raises(RuntimeError, match="failed to close 1") as captured:
+    with pytest.raises(ExceptionGroup, match="failed to close 1") as captured:
         await service.shutdown()
-    assert any("close failed" in note for note in captured.value.__notes__)
+    assert len(captured.value.exceptions) == 1
+    assert "close failed" in str(captured.value.exceptions[0])
+
+
+@pytest.mark.asyncio
+async def test_sandbox_service_preserves_cancellation_failure_identity() -> None:
+    backend = _Backend()
+    service = SandboxService([backend])
+    session = await service.create("fake", "cancelled")
+    session.close_error = asyncio.CancelledError("close cancelled")
+
+    with pytest.raises(BaseExceptionGroup, match="failed to close 1") as captured:
+        await service.shutdown()
+
+    assert len(captured.value.exceptions) == 1
+    assert isinstance(captured.value.exceptions[0], asyncio.CancelledError)
 
 
 @pytest.mark.asyncio
