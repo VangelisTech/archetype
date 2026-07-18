@@ -53,6 +53,7 @@ iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
 iArtifactBundleService -> iStorageService + iWorldService
+iMissionService    -> typed mission rows (no service dependency)
 ```
 
 `ServiceContainer` alone selects concrete implementations.
@@ -75,6 +76,7 @@ iArtifactBundleService -> iStorageService + iWorldService
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
+| `iMissionService` | `MissionService` | coding-agent orchestration | Deterministic attempt identity, typed transition graph, retry/exhaustion, and evidence gates |
 
 ## 4. Boundary rules
 
@@ -108,6 +110,13 @@ workflows. `iArtifactBundleService` owns full attempt-bundle publication and
 reconciliation while provider checkpoints remain recovery objects.
 `iAuditLog` is a projection/read port, not the authority for command outcome.
 
+### Mission transition port
+
+`iMissionService` is the sole mission/task/attempt transition authority. It is
+a pure row transformer: it owns no provider, live handle, world, storage
+client, or authorization context. Consumers persist its result through the
+ordinary world tick. See [Agent mission transitions](agent-missions.md).
+
 ## 5. Models crossing families
 
 Cross-family models are immutable or frozen where identity matters. The root
@@ -117,6 +126,7 @@ owners:
 
 - artifact descriptors and receipts: `app/artifacts/models.py`;
 - artifact bundle requests and publication receipts: `app/artifacts/bundle_models.py`;
+- mission facts, attempt requests, and typed states: `app/missions/`;
 - evaluation contracts, outcomes, and receipts: `app/evaluation/models.py`;
 - research contracts and ledger components: `app/research/`;
 - audit access events: `app/audit/models.py`;
@@ -158,3 +168,4 @@ closes container-owned world/storage resources.
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
 - [Artifact Finalization](artifact-finalization.md)
+- [Agent Mission Transitions](agent-missions.md)

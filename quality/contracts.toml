@@ -329,3 +329,15 @@ static = []
 evals = []
 benchmarks = []
 profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "missions.transition.evidence_gated"
+source = "docs/guide/agent-missions.md"
+section = "2. Typed mission/task/attempt transition graph"
+owner = "missions"
+risk = "high"
+pytest = ["tests/app/test_mission_transition_authority.py"]
+static = ["scripts/check_architecture.py"]
+evals = ["agent_mission_transition_authority"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
