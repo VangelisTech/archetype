@@ -24,28 +24,40 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
 
     steps:
+      - name: Detect Modal credentials
+        id: modal-credentials
+        shell: bash
+        run: |
+          if [[ -n "$MODAL_TOKEN_ID" && -n "$MODAL_TOKEN_SECRET" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Modal credentials are available; live integrations will run."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Modal integrations skipped::Configure MODAL_TOKEN_ID and MODAL_TOKEN_SECRET repository secrets to run this path-gated check."
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v4
+        if: steps.modal-credentials.outputs.available == 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        if: steps.modal-credentials.outputs.available == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        if: steps.modal-credentials.outputs.available == 'true'
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4.2.0
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
+        if: steps.modal-credentials.outputs.available == 'true'
         run: uv sync --group dev --extra coding-agent
 
-      - name: Verify Modal credentials
-        run: |
-          test -n "$MODAL_TOKEN_ID"
-          test -n "$MODAL_TOKEN_SECRET"
-
       - name: Run live Modal coding-agent integrations
+        if: steps.modal-credentials.outputs.available == 'true'
         run: make test-modal
