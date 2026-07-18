@@ -93,6 +93,7 @@ nav:
       - Architecture Overview: guide/architecture.md
       - Application Architecture: guide/application-architecture.md
       - Runtime Contract: guide/runtime.md
+      - Observability: guide/observability.md
       - Specifications: guide/specification.md
       - Service Protocols: guide/service-protocols.md
       - Execution Hierarchy: guide/execution-hierarchy.md

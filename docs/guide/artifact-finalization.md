@@ -166,11 +166,19 @@ never serialized into requests, control rows, manifests, or the index.
 
 ## 4. Pre-durability secret redaction
 
-`RedactionService` is the single provider-neutral authority for data that may
-cross from an agent or sandbox into a durable control row, object, index,
-trace, or external event stream. Artifact publication consumes only its
-`iRedactionService` port. Provider adapters, collectors, and proxies must use
-the same port rather than implementing separate regular-expression filters.
+`RedactionService` is the single provider-neutral authority for content-bearing
+data that may cross from an agent or sandbox into a durable control row,
+object, index, or external event record. Artifact publication consumes only
+its `iRedactionService` port. Provider adapters, collectors, and proxies must
+use the same port rather than implementing separate regular-expression
+filters.
+
+The lower `archetype._obs` signal boundary is also imported by core and cannot
+depend on this application family. It prevents signal leakage structurally:
+fixed names, fixed keys, exact value validators, bounded enums, no arbitrary
+string conversion, and no raw exception recording. A content-bearing outer
+export adapter applies `iRedactionService` as defense in depth before its own
+external write. See the [Observability contract](observability.md).
 
 The artifact handoff applies the following dispositions:
 
@@ -245,10 +253,11 @@ Payload quarantine leaves a retryable `PENDING` claim with a safe diagnostic,
 no object/index visibility, and the original provider checkpoint available for
 operator recovery.
 
-Sandbox live events, sandbox-side spans, OTel export, and policy-controlled L7
-traffic capture are required to consume this same authority before their
-respective durable/external writes. Those integrations extend this contract;
-they do not weaken the artifact gate while their transports are developed.
+Content-bearing sandbox live events, portable sandbox-side span records, and
+policy-controlled L7 capture consume this same authority before their durable
+or external writes. Closed-schema `_obs` signals carry no such content. Those
+integrations extend this contract; they do not weaken the artifact gate while
+their transports are developed.
 
 ## 5. Publication state machine
 
@@ -360,15 +369,18 @@ branch resume policy still references them.
   lower-level service accepts explicit world/run keys and works after world
   destruction or process restart.
 - `artifact.publish`, `artifact.upload`, and `artifact.index` OpenTelemetry
-  spans carry `world_id`, `run_id`, `entity_id`, `tick`, `attempt_id`, and
-  `idempotency_key`; stage spans also carry bundle and artifact counts.
+  spans carry validated canonical world/run UUIDs and entity/tick values.
+  Upload/index stage spans also carry the bundle digest and bounded artifact
+  count. Raw attempt IDs and idempotency keys are omitted; no attempt or
+  idempotency digest is claimed until the owning family supplies one explicitly.
 - Agent CLI JSONL and sandbox-side OTel output are portable artifacts. Shipping
   live sandbox spans to an OTel collector is complementary and must use the
   same correlation attributes. It is not required for publication correctness.
 - Every portable payload and generated manifest passes the pre-durability gate
-  in section 4. Live telemetry exporters must apply the same policy before
-  enqueueing or sending a span; an observability outage or quarantine never
-  changes mission state authority.
+  in section 4. Content-bearing live-event/export adapters apply the same
+  policy before their external write, while `_obs` signals admit no content by
+  schema. An observability outage or quarantine never changes mission state
+  authority.
 - Provider and model secrets are process capabilities. They must not appear in
   sandbox manifests, artifact requests, control rows, object paths, traces, or
   index rows.
