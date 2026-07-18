@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import subprocess
 import sys
@@ -21,10 +22,13 @@ from archetype.experiments.modal_coding_agent import (
     _AGENT_STREAM_SCRIPT,
     _FILESYSTEM_DIFF_SCRIPT,
     _FILESYSTEM_MANIFEST_SCRIPT,
+    CodingAgentSandboxClient,
+    CommandResult,
     ModalArtifactSourceResolver,
     ModalSandboxClient,
     ModalSandboxSpec,
     ValidatorSpec,
+    _default_agent_image,
 )
 
 
@@ -166,6 +170,8 @@ class _FakeSandbox:
                 return _Process(stdout=" M src/example.py\n" if self._dirty else "")
             if args[:2] == ("test", "-d"):
                 return _Process(1)
+            if args[:2] == ("test", "-f"):
+                return _Process(0 if args[2] in self.filesystem.files else 1)
             if args[:2] == ("git", "commit"):
                 self._head = "verified"
                 self._dirty = False
@@ -177,7 +183,7 @@ class _FakeSandbox:
             if args[0] == "rm":
                 self.filesystem.files.pop(args[-1], None)
                 return _Process()
-            if args[0] in {"git", "mkdir", "chmod", "sh", "sync"}:
+            if args[0] in {"git", "mkdir", "chmod", "python3", "sh", "sync"}:
                 return _Process()
             if args[:3] == ("codex", "login", "status"):
                 return _Process(stdout="Logged in using ChatGPT\n")
@@ -250,8 +256,12 @@ def _spec(**overrides: Any) -> ModalSandboxSpec:
 def test_spec_rejects_unsafe_or_incomplete_identity() -> None:
     with pytest.raises(ValueError, match="non-root absolute"):
         _spec(workspace="/")
+    with pytest.raises(ValueError, match="repo_url"):
+        _spec(repo_url="")
     with pytest.raises(ValueError, match="branch"):
         _spec(branch="--force")
+    with pytest.raises(ValueError, match="base_ref"):
+        _spec(base_ref="--invalid")
     with pytest.raises(ValueError, match="github_secret_name"):
         _spec(push=True)
     with pytest.raises(ValueError, match="unsupported"):
@@ -260,6 +270,38 @@ def test_spec_rejects_unsafe_or_incomplete_identity() -> None:
         _spec(auth_mode="password")
     with pytest.raises(ValueError, match="volume name"):
         _spec(codex_auth_volume_name="--invalid")
+    with pytest.raises(ValueError, match="heartbeat_seconds"):
+        _spec(heartbeat_seconds=0)
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+def test_default_image_installs_the_selected_harness(harness: str) -> None:
+    class _ImageBuilder:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def apt_install(self, *packages: str) -> _ImageBuilder:
+            self.calls.append(("apt", packages))
+            return self
+
+        def run_commands(self, *commands: str) -> _ImageBuilder:
+            self.calls.append(("run", commands))
+            return self
+
+    class _Image:
+        @staticmethod
+        def debian_slim(*, python_version: str) -> _ImageBuilder:
+            assert python_version == "3.12"
+            return _ImageBuilder()
+
+    image = _default_agent_image(type("Modal", (), {"Image": _Image})(), harness)
+    flattened = " ".join(part for _kind, values in image.calls for part in values)
+
+    assert "uv/install.sh" in flattened
+    if harness == "codex":
+        assert "codex/install.sh" in flattened
+    else:
+        assert "@anthropic-ai/claude-code" in flattened
 
 
 @pytest.mark.parametrize(
@@ -303,6 +345,39 @@ def test_validator_round_trip_normalizes_command() -> None:
         "expected_returncode": 0,
         "timeout_seconds": 42,
     }
+
+
+@pytest.mark.asyncio
+async def test_attempt_rejects_invalid_gate_inputs() -> None:
+    cases = [
+        ({"attempt_index": 0}, "attempt_index"),
+        ({"idempotency_key": ""}, "idempotency_key"),
+        ({"validators": []}, "validator"),
+        ({"validators": [ValidatorSpec("", ("verify",))]}, "validators require"),
+        ({"correlation": {"invalid": object()}}, "JSON serializable"),
+    ]
+    for overrides, match in cases:
+        client = ModalSandboxClient(_spec(), _FakeSandbox(), object())
+        arguments: dict[str, Any] = {
+            "prompt": "Fix it",
+            "validators": [ValidatorSpec("tests", ("verify",))],
+            "step_name": "gate",
+            "attempt_index": 1,
+            "idempotency_key": "attempt",
+        }
+        arguments.update(overrides)
+        with pytest.raises(ValueError, match=match):
+            await client.run_attempt(**arguments)
+
+    closed = ModalSandboxClient(_spec(), _FakeSandbox(), object(), _closed=True)
+    with pytest.raises(RuntimeError, match="already closed"):
+        await closed.run_attempt(
+            prompt="Fix it",
+            validators=[ValidatorSpec("tests", ("verify",))],
+            step_name="gate",
+            attempt_index=1,
+            idempotency_key="attempt",
+        )
 
 
 @pytest.mark.parametrize("harness", ["codex", "claude-code"])
@@ -386,6 +461,198 @@ async def test_modal_login_creates_v2_volume_verifies_and_syncs(
     assert any(call["args"][:2] == ("sync", "/auth") for call in sandbox.calls)
     assert sandbox.terminated == 1
     assert sandbox.detached == 1
+
+
+@pytest.mark.asyncio
+async def test_modal_base_and_dependency_resolution_cover_auth_modes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lookup_calls: list[tuple[str, bool]] = []
+
+    async def lookup(name: str, *, create_if_missing: bool) -> str:
+        lookup_calls.append((name, create_if_missing))
+        return "app"
+
+    app_api = type("App", (), {"lookup": _AsyncMethod(lookup)})()
+    base_modal = type("Modal", (), {"App": app_api})()
+    monkeypatch.setitem(sys.modules, "modal", base_modal)
+    assert await ModalSandboxClient._modal_base(_spec()) == (base_modal, "app")
+    assert lookup_calls == [("archetype-coding-agents", True)]
+
+    volume_calls: list[dict[str, Any]] = []
+    secret_calls: list[dict[str, Any]] = []
+
+    class _VolumeReference:
+        def __init__(self, *, error: Exception | None = None) -> None:
+            async def hydrate() -> None:
+                if error is not None:
+                    raise error
+
+            self.hydrate = _AsyncMethod(hydrate)
+
+    reference = _VolumeReference()
+
+    class _Volume:
+        @staticmethod
+        def from_name(name: str, **kwargs: Any) -> _VolumeReference:
+            volume_calls.append({"name": name, **kwargs})
+            return reference
+
+    class _Secret:
+        @staticmethod
+        def from_name(name: str, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+            secret_calls.append({"name": name, **kwargs})
+            return name, kwargs
+
+    modal = type("Modal", (), {"Volume": _Volume, "Secret": _Secret})()
+
+    async def fake_base(_spec_value: ModalSandboxSpec) -> tuple[Any, Any]:
+        return modal, "app"
+
+    monkeypatch.setattr(ModalSandboxClient, "_modal_base", staticmethod(fake_base))
+
+    oauth = await ModalSandboxClient._modal_dependencies(
+        _spec(auth_mode="oauth", github_secret_name="github")
+    )
+    codex = await ModalSandboxClient._modal_dependencies(_spec(harness="codex"))
+    claude = await ModalSandboxClient._modal_dependencies(_spec(harness="claude-code"))
+
+    assert oauth[2] is None
+    assert oauth[3] == ("github", {"required_keys": ["GITHUB_TOKEN"]})
+    assert oauth[4] is reference
+    assert codex[2] == ("archetype-codex", {"required_keys": ["CODEX_API_KEY"]})
+    assert claude[2] == (
+        "archetype-claude-code",
+        {"required_keys": ["ANTHROPIC_API_KEY"]},
+    )
+    assert volume_calls[0]["version"] == 2
+    assert len(secret_calls) == 3
+
+    broken_reference = _VolumeReference(error=RuntimeError("volume missing"))
+    monkeypatch.setattr(
+        _Volume,
+        "from_name",
+        staticmethod(lambda _name, **_kwargs: broken_reference),
+    )
+    with pytest.raises(RuntimeError, match="not initialized"):
+        await ModalSandboxClient._modal_dependencies(_spec(auth_mode="oauth"))
+
+
+@pytest.mark.asyncio
+async def test_modal_start_isolates_broker_and_cleans_it_on_mission_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mission = _FakeSandbox()
+    broker = _FakeSandbox()
+    create_calls: list[dict[str, Any]] = []
+
+    async def create(_spec_value: ModalSandboxSpec, **kwargs: Any) -> _FakeSandbox:
+        create_calls.append(kwargs)
+        return broker if kwargs.get("volumes") else mission
+
+    monkeypatch.setattr(ModalSandboxClient, "_create_modal_sandbox", staticmethod(create))
+    client = await ModalSandboxClient._start(
+        _spec(auth_mode="oauth"),
+        image="image",
+        app="app",
+        agent_secret=None,
+        github_secret=None,
+        auth_volume="volume",
+    )
+    assert client._sandbox is mission
+    assert client._auth_sandbox is broker
+    assert create_calls[0]["kind"] == "archetype-agent-auth-broker"
+
+    attempts = 0
+
+    async def fail_mission(_spec_value: ModalSandboxSpec, **kwargs: Any) -> _FakeSandbox:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return broker
+        raise RuntimeError("mission create failed")
+
+    monkeypatch.setattr(ModalSandboxClient, "_create_modal_sandbox", staticmethod(fail_mission))
+    with pytest.raises(RuntimeError, match="mission create failed"):
+        await ModalSandboxClient._start(
+            _spec(auth_mode="oauth"),
+            image="image",
+            app="app",
+            agent_secret=None,
+            github_secret=None,
+            auth_volume="volume",
+        )
+    assert broker.terminated == 1
+    assert broker.detached == 1
+
+
+@pytest.mark.asyncio
+async def test_modal_create_reports_monitor_command_and_closes_on_preparation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    image_calls: list[str] = []
+
+    class _Image:
+        @staticmethod
+        def from_name(name: str) -> str:
+            image_calls.append(name)
+            return f"image:{name}"
+
+    modal = type("Modal", (), {"Image": _Image})()
+    sandbox = _FakeSandbox()
+    client = ModalSandboxClient(
+        _spec(auth_mode="oauth", image_name="agent-image"),
+        sandbox,
+        None,
+        _auth_sandbox=_FakeSandbox(),
+    )
+
+    async def dependencies(_spec_value: ModalSandboxSpec) -> tuple[Any, Any, Any, Any, Any]:
+        return modal, "app", None, None, "auth-volume"
+
+    async def start(_spec_value: ModalSandboxSpec, **_kwargs: Any) -> ModalSandboxClient:
+        return client
+
+    checked_oauth = False
+
+    async def check_oauth() -> None:
+        nonlocal checked_oauth
+        checked_oauth = True
+
+    async def prepare() -> None:
+        return None
+
+    monkeypatch.setattr(ModalSandboxClient, "_modal_dependencies", staticmethod(dependencies))
+    monkeypatch.setattr(ModalSandboxClient, "_start", staticmethod(start))
+    monkeypatch.setattr(client, "_check_oauth", check_oauth)
+    monkeypatch.setattr(client, "_prepare_repository", prepare)
+
+    created = await ModalSandboxClient.create(client.spec)
+    assert created is client
+    assert checked_oauth is True
+    assert image_calls == ["agent-image"]
+    assert f"--monitor-sandbox {client.sandbox_id}" in capsys.readouterr().out
+
+    failing_sandbox = _FakeSandbox()
+    failing = ModalSandboxClient(
+        _spec(image_name="agent-image", stream_agent_output=False),
+        failing_sandbox,
+        object(),
+    )
+
+    async def start_failing(_spec_value: ModalSandboxSpec, **_kwargs: Any) -> ModalSandboxClient:
+        return failing
+
+    async def failed_prepare() -> None:
+        raise RuntimeError("clone failed")
+
+    monkeypatch.setattr(ModalSandboxClient, "_start", staticmethod(start_failing))
+    monkeypatch.setattr(failing, "_prepare_repository", failed_prepare)
+    with pytest.raises(RuntimeError, match="clone failed"):
+        await ModalSandboxClient.create(failing.spec)
+    assert failing_sandbox.terminated == 1
+    assert failing_sandbox.detached == 1
 
 
 @pytest.mark.parametrize(
@@ -473,6 +740,179 @@ async def test_each_attempt_is_returned_and_retry_policy_stays_outside_transport
     await client.close()
     assert sandbox.terminated == 1
     assert sandbox.detached == 1
+
+
+@pytest.mark.asyncio
+async def test_attempt_records_agent_and_git_gate_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _FakeSandbox()
+    client = ModalSandboxClient(_spec(stream_agent_output=False), sandbox, object())
+
+    async def failed_agent(prompt: str, *, session_id: str) -> CommandResult:
+        del prompt, session_id
+        return CommandResult(("codex",), 7, "partial output", "transport stderr")
+
+    monkeypatch.setattr(client, "_run_agent", failed_agent)
+    failed = await client.run_attempt(
+        prompt="Fix it",
+        validators=[ValidatorSpec("tests", ("verify",))],
+        step_name="agent-failure",
+        attempt_index=1,
+        idempotency_key="agent-failure",
+    )
+
+    assert failed["accepted"] is False
+    assert failed["validator_details"][0]["name"] == "agent_exec"
+    assert "transport stderr" in failed["validator_details"][0]["stderr"]
+    assert any(path.endswith(".stderr") for path in sandbox.filesystem.files)
+
+    no_change_sandbox = _FakeSandbox()
+    no_change_sandbox._dirty = False
+    no_change = ModalSandboxClient(_spec(stream_agent_output=False), no_change_sandbox, object())
+    outcome = await no_change.run_attempt(
+        prompt="Inspect without changing anything",
+        validators=[ValidatorSpec("tests", ("verify",))],
+        step_name="no-change",
+        attempt_index=1,
+        idempotency_key="no-change",
+    )
+
+    assert outcome["accepted"] is False
+    assert outcome["validator_details"][-1]["name"] == "git_tree_change"
+    assert "produced no git commit" in outcome["validator_details"][-1]["stderr"]
+
+
+@pytest.mark.asyncio
+async def test_attempt_preserves_primary_agent_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _FakeSandbox()
+    client = ModalSandboxClient(_spec(stream_agent_output=False), sandbox, object())
+
+    async def unavailable(prompt: str, *, session_id: str) -> CommandResult:
+        del prompt, session_id
+        raise RuntimeError("agent transport unavailable")
+
+    monkeypatch.setattr(client, "_run_agent", unavailable)
+    with pytest.raises(RuntimeError, match="transport unavailable"):
+        await client.run_attempt(
+            prompt="Fix it",
+            validators=[ValidatorSpec("tests", ("verify",))],
+            step_name="transport",
+            attempt_index=1,
+            idempotency_key="transport",
+        )
+
+    _status_path, events_path = client._live_artifact_paths()
+    events = [json.loads(line) for line in sandbox.filesystem.files[events_path].splitlines()]
+    assert events[-1]["type"] == "agent_transport_failed"
+
+
+@pytest.mark.asyncio
+async def test_provider_neutral_helpers_cover_repository_push_and_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _FakeSandbox()
+    spec = _spec(
+        model="explicit-model",
+        push=True,
+        github_secret_name="github",
+        capture_filesystem_manifests=True,
+    )
+    client = ModalSandboxClient(spec, sandbox, object(), object())
+
+    await client._prepare_repository()
+    await client._run_codex("codex prompt", session_id="")
+    claude = ModalSandboxClient(
+        _spec(harness="claude-code", model="claude-model"), sandbox, object()
+    )
+    await claude._run_claude("claude prompt", session_id="")
+    assert await client._push_if_configured() is True
+    assert client._git_auth_args()
+    assert client._git_secrets() == [client._github_secret]
+
+    clone = next(call for call in sandbox.calls if "clone" in call["args"])
+    assert spec.repo_url in clone["args"]
+    assert any("explicit-model" in call["args"] for call in sandbox.calls)
+    assert any("claude-model" in call["args"] for call in sandbox.calls)
+    assert any(call["args"][0] == "git" and "push" in call["args"] for call in sandbox.calls)
+
+    captured: list[str] = []
+
+    async def capture(path: str) -> None:
+        captured.append(path)
+
+    monkeypatch.setattr(client, "_capture_filesystem_manifest", capture)
+    start = await client._ensure_start_manifest()
+    end, diff = await client._capture_attempt_filesystem("unsafe step/name", 3)
+    assert captured == [start, end]
+    assert diff.endswith("unsafe-step-name-3-diff.jsonl")
+
+    await client._capture_filesystem_manifest("/tmp/manifest.jsonl")
+    receipt = client._receipt_path("broken")
+    sandbox.filesystem.files[receipt] = "{not-json"
+    assert await client._load_completed("broken") is None
+    assert client._session_id("not json\n{}\n") == ""
+    assert client._failure_summary([]) == "unknown failure"
+
+
+@pytest.mark.asyncio
+async def test_provider_neutral_close_and_live_hooks_are_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox = _FakeSandbox()
+    client = CodingAgentSandboxClient(_spec(), sandbox, object())
+    assert client._live_artifact_paths() == ("", "")
+    await client._emit_live_event("ignored", value=True)
+
+    async def broken_event(event_type: str, **details: Any) -> None:
+        del event_type, details
+        raise RuntimeError("telemetry unavailable")
+
+    monkeypatch.setattr(client, "_emit_live_event", broken_event)
+    await client._emit_live_event_safely("ignored")
+    await client.close()
+    await client.close()
+    assert sandbox.terminated == 1
+    assert sandbox.detached == 1
+
+
+@pytest.mark.asyncio
+async def test_snapshot_hydrates_an_unresolved_modal_image() -> None:
+    sandbox = _FakeSandbox()
+
+    class _Image:
+        object_id = ""
+
+        def __init__(self) -> None:
+            async def hydrate() -> None:
+                self.object_id = "im-hydrated"
+
+            self.hydrate = _AsyncMethod(hydrate)
+
+    async def snapshot_filesystem(*, timeout: int, ttl: int | None) -> _Image:
+        assert timeout == 120
+        assert ttl == 30 * 24 * 60 * 60
+        return _Image()
+
+    sandbox.snapshot_filesystem = _AsyncMethod(snapshot_filesystem)
+    client = ModalSandboxClient(_spec(snapshot_after_attempt=True), sandbox, object())
+
+    assert await client._snapshot_if_configured() == "modal-image://im-hydrated"
+
+
+def test_result_errors_and_stream_delta_are_explicit() -> None:
+    with pytest.raises(RuntimeError, match="exit code 2"):
+        ModalSandboxClient._raise_for_result(
+            CommandResult(("failing",), 2, "stdout", "stderr"), "command"
+        )
+
+    target = io.StringIO()
+    offsets = {"trace": 100}
+    ModalSandboxClient._write_stream_delta("trace", "replacement", offsets, target)
+    assert target.getvalue() == "replacement"
+    assert offsets == {"trace": len("replacement")}
 
 
 @pytest.mark.parametrize(
@@ -621,6 +1061,74 @@ async def test_monitor_retries_snapshot_filesystem_interruption_until_teardown(
 
 
 @pytest.mark.asyncio
+async def test_monitor_validates_identity_and_handles_empty_or_invalid_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="sandbox IDs"):
+        await ModalSandboxClient.monitor("not-a-sandbox", follow=False)
+    with pytest.raises(ValueError, match="poll_seconds"):
+        await ModalSandboxClient.monitor("sb-test", follow=False, poll_seconds=0)
+    with pytest.raises(ValueError, match="disconnect_grace_seconds"):
+        await ModalSandboxClient.monitor("sb-test", follow=False, disconnect_grace_seconds=0)
+
+    sandbox = _FakeSandbox()
+    status_path, _events_path = ModalSandboxClient.live_artifact_paths("/workspace/repo")
+    sandbox.filesystem.files[status_path] = "{invalid-json"
+
+    async def from_id(_sandbox_id: str) -> _FakeSandbox:
+        return sandbox
+
+    sandbox_api = type("Sandbox", (), {"from_id": _AsyncMethod(from_id)})()
+    monkeypatch.setitem(sys.modules, "modal", type("Modal", (), {"Sandbox": sandbox_api})())
+
+    assert await ModalSandboxClient.monitor("sb-test", follow=False) == {}
+
+
+@pytest.mark.asyncio
+async def test_monitor_surfaces_direct_read_errors_and_bounded_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sandbox = _FakeSandbox()
+
+    async def unavailable(_path: str) -> str:
+        raise RuntimeError("snapshot filesystem unavailable")
+
+    sandbox.filesystem.read_text = _AsyncMethod(unavailable)
+
+    async def from_id(_sandbox_id: str) -> _FakeSandbox:
+        return sandbox
+
+    sandbox_api = type("Sandbox", (), {"from_id": _AsyncMethod(from_id)})()
+    monkeypatch.setitem(sys.modules, "modal", type("Modal", (), {"Sandbox": sandbox_api})())
+
+    with pytest.raises(RuntimeError, match="snapshot filesystem unavailable"):
+        await ModalSandboxClient.monitor("sb-test", follow=False)
+
+    status = await ModalSandboxClient.monitor(
+        "sb-test",
+        follow=True,
+        poll_seconds=0.001,
+        disconnect_grace_seconds=0.002,
+    )
+    assert status == {}
+    assert '"type": "monitor_disconnected"' in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_report_live_event_rejects_reserved_or_empty_types() -> None:
+    client = ModalSandboxClient(_spec(), _FakeSandbox(), object())
+    for event_type in ("", "heartbeat"):
+        with pytest.raises(ValueError, match="non-heartbeat"):
+            await client.report_live_event(event_type)
+
+    assert (
+        ModalSandboxClient._phase_for_event("artifact_publication_started", {})
+        == "publishing_artifacts"
+    )
+
+
+@pytest.mark.asyncio
 async def test_running_agent_heartbeat_updates_durable_status() -> None:
     sandbox = _FakeSandbox()
     client = ModalSandboxClient(
@@ -694,6 +1202,95 @@ async def test_oauth_broker_stages_only_for_agent_then_persists_and_removes(
     assert mission.detached == 1
     assert broker.terminated == 1
     assert broker.detached == 1
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code"])
+@pytest.mark.asyncio
+async def test_oauth_status_check_stages_and_removes_credentials(harness: str) -> None:
+    spec = _spec(harness=harness, auth_mode="oauth")
+    mission = _FakeSandbox()
+    broker = _FakeSandbox()
+    broker.filesystem.files[spec.auth_volume_path] = '{"oauth":"credential"}'
+    client = ModalSandboxClient(spec, mission, None, _auth_sandbox=broker)
+
+    await client._check_oauth()
+
+    assert spec.mission_auth_path not in mission.filesystem.files
+    assert broker.filesystem.files[spec.auth_volume_path] == '{"oauth":"credential"}'
+    expected = ("codex", "login", "status") if harness == "codex" else ("claude", "auth", "status")
+    assert any(call["args"][:3] == expected for call in mission.calls)
+
+
+@pytest.mark.asyncio
+async def test_oauth_failure_paths_keep_credentials_out_of_the_mission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _spec(auth_mode="oauth")
+    mission = _FakeSandbox()
+    missing_broker = ModalSandboxClient(spec, mission, None)
+    with pytest.raises(RuntimeError, match="broker is not running"):
+        await missing_broker._stage_oauth()
+    with pytest.raises(RuntimeError, match="broker is not running"):
+        await missing_broker._auth_exec("sync", "/auth", timeout=30)
+
+    empty_broker = _FakeSandbox()
+    missing_credential = ModalSandboxClient(spec, mission, None, _auth_sandbox=empty_broker)
+    with pytest.raises(RuntimeError, match="has no codex credential"):
+        await missing_credential._stage_oauth()
+
+    async def noop() -> None:
+        return None
+
+    async def failed_status(*args: str, **kwargs: Any) -> CommandResult:
+        del kwargs
+        return CommandResult(args, 1, "", "not logged in")
+
+    monkeypatch.setattr(missing_broker, "_stage_oauth", noop)
+    monkeypatch.setattr(missing_broker, "_persist_and_remove_oauth", noop)
+    monkeypatch.setattr(missing_broker, "_exec", failed_status)
+    with pytest.raises(RuntimeError, match="valid subscription login"):
+        await missing_broker._check_oauth()
+
+    persistence = ModalSandboxClient(spec, _FakeSandbox(), None, _auth_sandbox=_FakeSandbox())
+    with pytest.raises(FileNotFoundError):
+        await persistence._persist_and_remove_oauth()
+    assert spec.mission_auth_path not in persistence._sandbox.filesystem.files
+
+    for payload, match in (("not-json", "valid JSON"), ("[]", "non-empty JSON object")):
+        with pytest.raises(RuntimeError, match=match):
+            ModalSandboxClient._validate_oauth_payload(payload)
+
+
+@pytest.mark.asyncio
+async def test_login_failure_and_passthrough_output_are_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(ValueError, match="auth_mode='oauth'"):
+        await ModalSandboxClient.login_oauth(_spec())
+
+    process = _Process(returncode=9, stdout="login output\n", stderr="login error\n")
+    monkeypatch.setattr(sys, "stdin", object())
+    assert await ModalSandboxClient._passthrough_process(process) == 9
+    captured = capsys.readouterr()
+    assert captured.out == "login output\n"
+    assert captured.err == "login error\n"
+
+
+@pytest.mark.asyncio
+async def test_modal_close_reports_termination_failure_after_detach() -> None:
+    sandbox = _FakeSandbox()
+
+    async def terminate(*, wait: bool) -> None:
+        assert wait is True
+        raise RuntimeError("terminate failed")
+
+    sandbox.terminate = _AsyncMethod(terminate)
+    client = ModalSandboxClient(_spec(), sandbox, object())
+
+    with pytest.raises(RuntimeError, match="terminate failed"):
+        await client.close()
+    assert sandbox.detached == 1
 
 
 @pytest.mark.asyncio
@@ -870,6 +1467,112 @@ async def test_modal_artifact_resolver_restores_nonmatching_checkpoint(
     assert restored_refs == ["modal-image://im-older"]
     assert values[0].path.read_text() == "from-old-snapshot"
     assert restored_sandbox.terminated == 1
+
+
+@pytest.mark.asyncio
+async def test_modal_artifact_resolver_enforces_live_and_required_contracts(
+    tmp_path: Path,
+) -> None:
+    sandbox = _FakeSandbox()
+    sandbox.filesystem.files["/workspace/repo/live.txt"] = "live"
+    client = ModalSandboxClient(_spec(), sandbox, object())
+    resolver = ModalArtifactSourceResolver(spec=_spec(), sandbox=client)
+
+    live = await resolver.materialize(
+        (
+            ArtifactCandidate(
+                source_ref="modal-sandbox://sb-test/workspace/repo/live.txt",
+                logical_path="live.txt",
+            ),
+        ),
+        tmp_path / "live",
+    )
+    assert live[0].path.read_text() == "live"
+
+    without_live = ModalArtifactSourceResolver(spec=_spec())
+    with pytest.raises(RuntimeError, match="matching live"):
+        await without_live.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref="modal-sandbox://sb-test/workspace/repo/live.txt",
+                    logical_path="live.txt",
+                ),
+            ),
+            tmp_path / "missing-client",
+        )
+
+    with pytest.raises(FileNotFoundError, match="directory is empty"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref="modal-sandbox://sb-test/workspace/repo/empty",
+                    logical_path="empty",
+                    recursive=True,
+                    required=True,
+                ),
+            ),
+            tmp_path / "empty",
+        )
+
+    optional = await resolver.materialize(
+        (
+            ArtifactCandidate(
+                source_ref="modal-sandbox://sb-test/workspace/repo/optional.txt",
+                logical_path="optional.txt",
+                required=False,
+            ),
+        ),
+        tmp_path / "optional",
+    )
+    assert optional == []
+
+    with pytest.raises(ValueError, match="accepts only"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(
+                    source_ref="file:///tmp/result",
+                    logical_path="result",
+                ),
+            ),
+            tmp_path / "invalid",
+        )
+
+    for source_ref in ("modal-image://im-without-path", "modal-sandbox://sb-test"):
+        with pytest.raises(ValueError, match="artifact refs require"):
+            resolver._split_ref(source_ref)
+
+
+@pytest.mark.asyncio
+async def test_restore_closes_new_sandbox_when_repository_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Image:
+        @staticmethod
+        def from_id(_image_id: str) -> object:
+            return object()
+
+    modal = type("Modal", (), {"Image": _Image})()
+    sandbox = _FakeSandbox()
+
+    async def fake_base(_spec_value: ModalSandboxSpec) -> tuple[Any, Any]:
+        return modal, object()
+
+    async def fake_start(spec: ModalSandboxSpec, **_kwargs: Any) -> ModalSandboxClient:
+        client = ModalSandboxClient(spec, sandbox, None)
+
+        async def invalid_repository(*_args: str) -> CommandResult:
+            raise RuntimeError("not a repository")
+
+        monkeypatch.setattr(client, "_git", invalid_repository)
+        return client
+
+    monkeypatch.setattr(ModalSandboxClient, "_modal_base", staticmethod(fake_base))
+    monkeypatch.setattr(ModalSandboxClient, "_start", staticmethod(fake_start))
+
+    with pytest.raises(RuntimeError, match="not a repository"):
+        await ModalSandboxClient.restore(_spec(), "modal-image://im-invalid")
+    assert sandbox.terminated == 1
+    assert sandbox.detached == 1
 
 
 def test_session_parser_ignores_non_json_progress() -> None:
