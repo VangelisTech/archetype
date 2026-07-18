@@ -96,6 +96,7 @@ nav:
       - Specifications: guide/specification.md
       - Service Protocols: guide/service-protocols.md
       - Execution Hierarchy: guide/execution-hierarchy.md
+      - Sandbox Execution: guide/sandbox-execution.md
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md

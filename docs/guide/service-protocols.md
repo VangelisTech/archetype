@@ -55,6 +55,7 @@ iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
 iMissionService    -> typed mission rows (no service dependency)
+iSandboxService    -> registered iSandboxBackend providers
 ```
 
 `ServiceContainer` alone selects concrete implementations.
@@ -79,6 +80,8 @@ iMissionService    -> typed mission rows (no service dependency)
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
 | `iMissionService` | `MissionService` | coding-agent orchestration | Deterministic attempt identity, typed transition graph, retry/exhaustion, and evidence gates |
+| `iSandboxService` | `SandboxService` | container, mission orchestration | Provider selection and process-local create/restore/resume/close lifetime |
+| `iSandboxBackend` | host-selected provider adapters | sandbox service | Provider-specific isolated execution and checkpoint recovery |
 
 ## 4. Boundary rules
 
@@ -122,6 +125,14 @@ a pure row transformer: it owns no provider, live handle, world, storage
 client, or authorization context. Consumers persist its result through the
 ordinary world tick. See [Agent mission transitions](agent-missions.md).
 
+### Sandbox ports
+
+`iSandboxService` owns external resource lifetime and provider selection; it
+never decides whether a task advances. `ServiceContainer` constructs an empty
+provider registry unless a trusted host supplies adapters. The common attempt
+kernel emits typed phase evidence without importing Modal, Apple Container, or
+another provider SDK. See [Sandbox Execution](sandbox-execution.md).
+
 ## 5. Models crossing families
 
 Cross-family models are immutable or frozen where identity matters. The root
@@ -137,6 +148,8 @@ owners:
 - research contracts and ledger components: `app/research/`;
 - audit access events: `app/audit/models.py`;
 - public cross-family errors: `app/errors.py`.
+- sandbox validator, phase, command, checkpoint, and handoff values:
+  `app/sandboxes/models.py`.
 
 No app model is owned by the outward `experiments` package.
 
@@ -154,8 +167,9 @@ Runtime consumes `application`; API dependency injection consumes
 `command_gateway`. Focused implementation tests may inspect internal members
 without creating compatibility.
 
-Shutdown stops new application admission, flushes the audit projection, then
-closes container-owned world/storage resources.
+Shutdown stops new application admission, closes retained sandbox handles,
+flushes the audit projection, then closes container-owned world/storage
+resources.
 
 ## 7. Executable enforcement
 
@@ -175,3 +189,4 @@ closes container-owned world/storage resources.
 - [Execution Hierarchy](execution-hierarchy.md)
 - [Artifact Finalization](artifact-finalization.md)
 - [Agent Mission Transitions](agent-missions.md)
+- [Sandbox Execution](sandbox-execution.md)

@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
@@ -30,6 +32,8 @@ from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
+from archetype.app.sandboxes.interfaces import iSandboxBackend
+from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
@@ -53,6 +57,7 @@ class ServiceContainer:
         artifact_store_config: ArtifactStoreConfig | None = None,
         artifact_source_resolver: ArtifactSourceResolver | None = None,
         redaction_service: iRedactionService | None = None,
+        sandbox_backends: Iterable[iSandboxBackend] | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -83,6 +88,10 @@ class ServiceContainer:
             redaction_service=self.redaction_service,
         )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
+
+        # External providers remain optional host adapters. The composition
+        # root owns only the provider-neutral registry and live-handle drain.
+        self.sandbox_service = SandboxService(sandbox_backends or ())
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
@@ -117,6 +126,7 @@ class ServiceContainer:
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
         await self.application.stop_admission()
+        await self.sandbox_service.shutdown()
         await self.audit_log.shutdown()
         if self._owns_storage_service:
             await self.world_service.shutdown()

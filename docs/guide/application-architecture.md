@@ -95,6 +95,7 @@ src/archetype/app/
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
   missions/          typed mission/task/attempt transition authority
+  sandboxes/         provider-neutral isolated execution and live-handle lifetime
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
 ```
@@ -147,6 +148,7 @@ gateway, runtime, API, or CLI boundary.
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
 | Missions | Deterministic attempt identity, typed task transitions, retry/exhaustion and evidence gates | None |
+| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | No other app family; provider adapters point inward |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |

@@ -1,6 +1,18 @@
 version = 1
 
 [[contract]]
+id = "sandboxes.attempt.phase_order"
+source = "docs/guide/sandbox-execution.md"
+section = "3. Six-phase attempt protocol"
+owner = "sandboxes"
+risk = "high"
+pytest = ["tests/app/test_sandbox_kernel.py"]
+static = ["scripts/check_architecture.py"]
+evals = ["sandbox_attempt_phase_contract"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "architecture.dependencies.enforced"
 source = "docs/guide/application-architecture.md"
 section = "11. Static enforcement"
