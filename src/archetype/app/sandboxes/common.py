@@ -555,6 +555,8 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         except Exception as exc:
             ref = ""
             error = f"{type(exc).__name__}: {self._tail(str(exc), 2000)}"
+        if ref:
+            self._latest_checkpoint_ref = ref
         expires_at_ms = 0
         if ref and self.spec.snapshot_ttl_seconds is not None:
             expires_at_ms = created_at_ms + self.spec.snapshot_ttl_seconds * 1000

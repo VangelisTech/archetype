@@ -253,6 +253,7 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
     assert outcome["sha"] == "committed"
     assert outcome["checkpoint_status"] == "ready"
     assert outcome["finalization_phase"] == "checkpointed"
+    assert client._latest_checkpoint_ref == "fake-checkpoint://checkpoint-1"
     assert outcome["agent_session_id"] == "thread-1"
     assert outcome["correlation"] == {"world_id": "world", "run_id": "run"}
     assert outcome["git_bundle_ref"].startswith("fake-checkpoint://checkpoint-1#")
@@ -376,12 +377,14 @@ async def test_repository_receipt_resumes_after_post_commit_evidence_crash() -> 
 @pytest.mark.asyncio
 async def test_checkpoint_failure_is_evidence_not_lost_attempt() -> None:
     client = _FakeClient(_Spec(), checkpoint_error=RuntimeError("snapshot unavailable"))
+    client._latest_checkpoint_ref = "fake-checkpoint://previous"
 
     outcome = await client.run_attempt(**_attempt_kwargs())
 
     assert outcome["accepted"] is True
     assert outcome["checkpoint_status"] == "failed"
     assert outcome["checkpoint_restorable"] is False
+    assert client._latest_checkpoint_ref == "fake-checkpoint://previous"
     assert outcome["finalization_phase"] == "captured"
     assert "snapshot unavailable" in outcome["finalization_error"]
     assert outcome["git_bundle_ref"].startswith("fake-sandbox://sandbox-1/")
