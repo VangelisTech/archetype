@@ -5,14 +5,16 @@
 
 Two rules, one principle: concrete application capabilities stay behind the
 actor-free application facade. Runtime uses ``iRuntimeApplication`` directly;
-untrusted API ingress reaches it through ``iCommandGateway``. Experiments and
-other public code use supported adapters rather than app services directly.
+untrusted API ingress reaches it through ``iCommandGateway``. Provisional
+outward capability packages use stable adapters rather than app services
+directly.
 
 1. Import scopes (per consumer):
    - ``api`` route handlers depend on ``iCommandGateway`` — only the adapter
      composition module may construct the container.
-   - ``experiments`` is public surface: it may import portable app contracts
-     and models only.
+   - ``experiments`` is a provisional outward capability package: it may
+     import portable app contracts and models only. This rule prevents an
+     internal-service dependency; it does not declare the package supported.
      Driving services directly from here is how the command-gateway bypass
      entered ``src/`` (eval_rollouts, 2026-07-17).
    - ``runtime`` hosts trusted process composition over the application port.
@@ -54,7 +56,8 @@ FORBIDDEN_APP_IMPORTS_API = {
     "archetype.app.world.service",
 }
 
-# Public surface: portable data contracts only. Capabilities arrive through the runtime.
+# Provisional outward package: portable data contracts only. Capabilities arrive
+# through the runtime.
 ALLOWED_APP_IMPORTS_EXPERIMENTS = {
     "archetype.app.models",
     "archetype.app.research.contracts",
@@ -218,11 +221,11 @@ def main() -> int:
     ]
     violations += [v for path in PUBLIC_API_SCAN_TARGETS for v in _public_api_violations(path)]
     if violations:
-        print("Public-surface boundary violations:")
+        print("Outward-boundary violations:")
         for violation in violations:
             print(f"  - {violation}")
         return 1
-    print("API import boundary audit passed.")
+    print("Outward import boundary audit passed.")
     return 0
 
 

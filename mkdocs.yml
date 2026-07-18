@@ -68,7 +68,6 @@ nav:
       - Running a Server: guide/api-layer.md
       - Trajectories: guide/trajectories.md
       - AutoResearch: guide/autoresearch.md
-      - LIBERO Recipe: guide/libero-recipe.md
       - Tragedy of the Commons: experiments/tragedy-of-the-commons.md
   - REFERENCE:
       - PYTHON API:
@@ -115,7 +114,6 @@ nav:
           - Data Flow: guide/data-flow.md
           - Durable Commands: guide/durable-commands.md
           - Services: guide/services.md
-      - Rust Core Plan: guide/rust-core-plan.md
 
 markdown_extensions:
   - admonition

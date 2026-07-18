@@ -43,7 +43,9 @@ The driver (``resolve_htn``) is structural-only and lives in ``examples/`` becau
 it must materialize rows (eager collection) at the spawn-decision boundary; the
 processors and UDFs here are pure ``DataFrame -> DataFrame`` and lazy-audit clean.
 
-See ``.context/htn/PATTERN.md`` for the full formal pattern and numbered invariants.
+Executable invariants live in ``tests/htn/test_htn_contract.py``. The eventual
+module boundary will be decided with the coding-mission capability that uses
+the planner.
 """
 
 from __future__ import annotations

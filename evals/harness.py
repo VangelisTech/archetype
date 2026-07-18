@@ -5,7 +5,8 @@
 
 Each task is a callable that returns a non-empty list of GraderResults (the outcome
 of applying all graders to the task's output).  The harness runs each task
-one or more times, collects GraderResults per trial, and produces TaskResults.
+one or more times, collects GraderResults per trial, and produces TaskResults
+with empirical pass rate, Codex pass@k, and strict pass^n metrics.
 
 Usage:
     harness = EvalHarness(trials=3)

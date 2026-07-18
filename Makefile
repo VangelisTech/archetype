@@ -340,7 +340,7 @@ examples-smoke:
 	done
 
 .PHONY: verify-pr
-verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke
+verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke docs
 	@echo "PR verification profile passed"
 
 .PHONY: verify-full
@@ -348,7 +348,7 @@ verify-full: verify-pr test-process eval-reliability
 	@echo "Full verification profile passed"
 
 .PHONY: verify-release
-verify-release: static test-cov test-process eval-conformance eval-reliability eval-capability package-smoke docs
+verify-release: verify-full
 	@echo "Release verification profile passed"
 
 .PHONY: release-check

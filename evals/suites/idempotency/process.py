@@ -16,7 +16,7 @@ from pathlib import Path
 from evals.graders import state_check
 from evals.types import GraderResult
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 WORKER_MODULE = "evals.infra.idempotency_worker"
 _READY_TIMEOUT_SECONDS = 90.0
 

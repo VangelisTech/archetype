@@ -18,7 +18,7 @@ def main() -> int:
         print("Idempotency contract audit failed:")
         for name in failed:
             print(f"  - {name}")
-        print("Update docs/guide/specification.md and evals/suites/idempotency.py together.")
+        print("Update docs/guide/specification.md and evals/suites/idempotency/ together.")
         return 1
 
     print("Idempotency contract audit passed")

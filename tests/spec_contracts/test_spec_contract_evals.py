@@ -18,8 +18,8 @@ def _runtime_import_result(tmp_path, monkeypatch, source_text):
     runtime_dir = tmp_path / "src" / "archetype" / "runtime"
     runtime_dir.mkdir(parents=True)
     (runtime_dir / "probe.py").write_text(source_text, encoding="utf-8")
-    monkeypatch.setattr(spec_contracts, "ROOT", tmp_path)
-    monkeypatch.setattr(spec_contracts, "SRC", tmp_path / "src" / "archetype")
+    monkeypatch.setattr(spec_contracts.tasks, "ROOT", tmp_path)
+    monkeypatch.setattr(spec_contracts.tasks, "SRC", tmp_path / "src" / "archetype")
 
     return next(
         result

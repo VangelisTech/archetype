@@ -41,7 +41,7 @@ from evals.types import GraderResult
 
 SUITE = "spec"
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / "src" / "archetype"
 DOCS = ROOT / "docs" / "guide"
 

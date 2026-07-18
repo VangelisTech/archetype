@@ -11,6 +11,11 @@ execution state machine tracked by issue #322, a particular reader schema, or
 the `evals/` repository-check runner. That runner reuses ordinary words such as
 task and trial as local implementation labels; it does not extend this model.
 
+The vocabulary contract is normative; its current
+`archetype.datasets.definitions` module home is provisional. The module may
+move into a domain capability family before v1 without changing the identities
+defined here.
+
 ## 1. The contract in one view
 
 ```text
