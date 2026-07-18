@@ -16,7 +16,7 @@ Usage:
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 
 from evals.types import GraderResult, TaskResult, TrialResult
 
@@ -27,11 +27,17 @@ TaskFn = Callable[[], list[GraderResult]]
 class EvalHarness:
     """Repository harness that runs tasks across repeated executions."""
 
-    def __init__(self, trials: int = 1):
+    def __init__(
+        self,
+        trials: int = 1,
+        *,
+        contract_map: Mapping[str, tuple[str, ...]] | None = None,
+    ):
         if trials < 1:
             raise ValueError(f"trials must be >= 1, got {trials}")
         self.trials = trials
         self._tasks: list[tuple[str, str, TaskFn, str]] = []  # (id, suite, fn, desc)
+        self._contract_map = dict(contract_map or {})
 
     def add(self, task_id: str, *, suite: str, fn: TaskFn, desc: str = "") -> None:
         """Register a task to be run."""
@@ -42,15 +48,25 @@ class EvalHarness:
         """Immutable live inventory of registered checks."""
         return tuple(self._tasks)
 
-    def run(self, *, suite_filter: str | None = None) -> list[TaskResult]:
+    def run(
+        self,
+        *,
+        suite_filter: str | Collection[str] | None = None,
+    ) -> list[TaskResult]:
         """Run all registered tasks and return aggregated results."""
         results = []
+        selected = {suite_filter} if isinstance(suite_filter, str) else set(suite_filter or ())
 
         for task_id, suite, fn, desc in self._tasks:
-            if suite_filter and suite != suite_filter:
+            if selected and suite not in selected:
                 continue
 
-            task_result = TaskResult(task_id=task_id, suite=suite, desc=desc)
+            task_result = TaskResult(
+                task_id=task_id,
+                suite=suite,
+                desc=desc,
+                contract_ids=self._contract_map.get(task_id, ()),
+            )
 
             for trial_idx in range(self.trials):
                 t0 = time.perf_counter()

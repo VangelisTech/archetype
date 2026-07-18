@@ -4,16 +4,46 @@ import daft
 import pytest
 import pytest_asyncio
 
+from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
-from archetype.runtime.session import configure_session
+from archetype.core.interfaces import AppendReceipt
+
+pytestmark = [
+    pytest.mark.contract("storage.cache.concurrent_no_loss"),
+    pytest.mark.race,
+]
 
 
 class Position(Component):
     x: int
     y: int
+
+
+class _BlockingInnerStore:
+    def __init__(self, *, fail_first: bool = False):
+        self.append_started = asyncio.Event()
+        self.release_append = asyncio.Event()
+        self.persisted: list[dict] = []
+        self.fail_first = fail_first
+
+    async def append(self, sig, df):
+        self.append_started.set()
+        await self.release_append.wait()
+        if self.fail_first:
+            self.fail_first = False
+            raise OSError("injected append failure")
+        rows = df.collect().to_pylist()
+        self.persisted.extend(rows)
+        return AppendReceipt(table_id=Archetype.get_name(sig), rows=len(rows), durable=True)
+
+    async def flush(self):
+        return None
+
+    async def shutdown(self):
+        return None
 
 
 @pytest_asyncio.fixture
@@ -27,6 +57,103 @@ async def inner_store(tmp_path):
         yield store
     finally:
         await store.shutdown()
+
+
+def test_default_global_cache_budget_is_one_gibibyte():
+    from archetype.core.config import CacheConfig
+
+    assert CacheConfig().global_mb == 1024
+
+
+@pytest.mark.asyncio
+async def test_flush_detaches_exact_snapshot_without_losing_concurrent_append():
+    from archetype.core.config import CacheConfig
+
+    inner = _BlockingInnerStore()
+    cached = AsyncCachedStore(
+        async_store=inner,
+        cache_config=CacheConfig(
+            flush_rows=10_000_000,
+            flush_mb=10_000,
+            global_mb=10_000,
+            idle_sec=3600,
+        ),
+    )
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+
+    def frame(entity_id: int):
+        return daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=entity_id,
+                    tick=0,
+                    components=[Position(x=entity_id, y=entity_id)],
+                    world_id="w_race",
+                    run_id="r_race",
+                )
+            ]
+        ).collect()
+
+    try:
+        await cached.append(sig, frame(1))
+        flush_task = asyncio.create_task(cached.flush())
+        await inner.append_started.wait()
+
+        await cached.append(sig, frame(2))
+        inner.release_append.set()
+        await flush_task
+
+        assert [row["entity_id"] for row in inner.persisted] == [1, 2]
+        assert cached.total_cached_bytes == 0
+        assert cached._mem[sig].rows == 0
+    finally:
+        inner.release_append.set()
+        await cached.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_flush_requeues_snapshot_before_newer_rows():
+    from archetype.core.config import CacheConfig
+
+    inner = _BlockingInnerStore(fail_first=True)
+    inner.release_append.set()
+    cached = AsyncCachedStore(
+        async_store=inner,
+        cache_config=CacheConfig(
+            flush_rows=10_000_000,
+            flush_mb=10_000,
+            global_mb=10_000,
+            idle_sec=3600,
+        ),
+    )
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+
+    def frame(entity_id: int):
+        return daft.from_pylist(
+            [
+                Archetype.to_row_dict(
+                    entity_id=entity_id,
+                    tick=0,
+                    components=[Position(x=entity_id, y=entity_id)],
+                    world_id="w_retry",
+                    run_id="r_retry",
+                )
+            ]
+        ).collect()
+
+    try:
+        await cached.append(sig, frame(1))
+        before_failure = cached.total_cached_bytes
+        with pytest.raises(OSError, match="injected append failure"):
+            await cached.flush()
+        await cached.append(sig, frame(2))
+
+        assert cached.total_cached_bytes > before_failure
+        await cached.flush()
+        assert [row["entity_id"] for row in inner.persisted] == [1, 2]
+        assert cached.total_cached_bytes == 0
+    finally:
+        await cached.shutdown()
 
 
 @pytest.mark.asyncio

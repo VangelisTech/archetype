@@ -8,7 +8,7 @@ from daft.io import IOConfig
 from daft.session import Session
 from pyiceberg.exceptions import CommitFailedException
 
-from archetype.app.iceberg import IcebergCatalogContext
+from archetype.app.storage.iceberg import IcebergCatalogContext
 
 
 def test_context_uses_daft_table_api_without_explicit_io_config():
@@ -36,7 +36,7 @@ def test_context_passes_explicit_io_config_to_native_reads(monkeypatch):
         seen.update(table=table, io_config=io_config)
         return expected
 
-    monkeypatch.setattr("archetype.app.iceberg.read_iceberg", fake_read_iceberg)
+    monkeypatch.setattr("archetype.app.storage.iceberg.read_iceberg", fake_read_iceberg)
 
     context = IcebergCatalogContext(Session(), io_config)
 
@@ -85,7 +85,7 @@ async def test_context_refreshes_and_retries_optimistic_commit_conflicts(monkeyp
     async def no_wait(_delay):
         return None
 
-    monkeypatch.setattr("archetype.app.iceberg.asyncio.sleep", no_wait)
+    monkeypatch.setattr("archetype.app.storage.iceberg.asyncio.sleep", no_wait)
     context = IcebergCatalogContext(Session(), None)
 
     await context.append(FakeTable(), object())

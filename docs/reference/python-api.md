@@ -2,7 +2,7 @@
 
 # Python API
 
-Archetype has one compatibility surface with several levels of abstraction. Most applications only need the runtime, world-handle, and building-block pages.
+Archetype's Python reference inventories and classifies the supported top-level surface. Most applications only need the runtime, world-handle, and building-block pages.
 
 | Surface | Use it for |
 | --- | --- |
@@ -10,17 +10,19 @@ Archetype has one compatibility surface with several levels of abstraction. Most
 | [World handle](python/world-handle.md) | Create entities, run simulations, query history, and manage one world. |
 | [Runtime models](python/runtime-models.md) | Configuration, result, receipt, and introspection records returned by world operations. |
 | [Building blocks](python/building-blocks.md) | Use these types to define component data, processors, and processor resources. |
-| [Hooks and identity](python/hooks.md) | Bind an actor identity to a world handle and react to world lifecycle events. |
+| [Hooks and ingress identity](python/hooks.md) | React to world lifecycle events and define the identity record used by trusted ingress adapters. |
 | [Configuration](python/configuration.md) | Runtime configuration is user-facing. `WorldConfig` is primarily for custom hosts and lower-level engine construction. |
 | [AutoResearch and evaluation](python/autoresearch.md) | Configure optimization loops and persist evaluation evidence with explicit identities. |
-| [Service integration](python/services.md) | Use the service layer when a host needs explicit authorization, command routing, or custom process wiring. Most scripts should use the runtime instead. |
+| [Command models](python/commands.md) | Typed command envelopes for supported host adapters. Scheduling, authorization, and concrete application services remain internal. |
 | [Core engine](python/core.md) | Supported engine primitives for custom execution and world lifecycle extensions. |
 | [Storage backends](python/storage.md) | Supported asynchronous storage implementations for custom engine wiring. |
 | [Compatibility API](python/compatibility.md) | The synchronous educational engine and legacy aliases remain available for compatibility. New application code should use `ArchetypeRuntime`. |
 
-## Public API rule
+## Classification rule
 
-Names exported from `archetype` are supported compatibility contracts. Types exposed by their public signatures are part of that contract as well. Recommended APIs receive examples and prominent placement; advanced and compatibility APIs remain documented without being presented as the default.
+Presence in `archetype.__all__` is an intentional supported exposure. The tier on each reference page and the focused specifications classify its stability. Types exposed by supported signatures are part of those contracts even when they are not top-level exports.
+
+The container and concrete application services are internal and are not top-level exports. Repository wiring imports them from their owning family modules; applications use the runtime or an adapter.
 
 See [API stability and docstrings](../guide/api-stability.md) for the full policy.
 

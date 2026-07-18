@@ -18,19 +18,23 @@ import textwrap
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app._catalog import ClaimConflictError, SqliteControlCatalog, claim_scope_key
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
-from archetype.core.component import Component
-from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.receipts import (
+from archetype.app.evaluation.models import (
     EvalReceipt,
     GraderContract,
     Outcome,
     subject_digest,
 )
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.storage.catalog import ClaimConflictError, SqliteControlCatalog, claim_scope_key
+from archetype.core.component import Component
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.contract("evaluation.receipt.snapshot_pinned"),
+    pytest.mark.integration,
+]
 
 
 class Telemetry(Component):
@@ -80,7 +84,7 @@ async def test_replay_returns_original_receipt_without_regrading(tmp_path):
         calls: list[int] = []
         grader = _counting_grader(calls, Outcome(status="pass", score=0.8))
 
-        first = await c.command_service.evaluate(
+        first = await c.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -90,7 +94,7 @@ async def test_replay_returns_original_receipt_without_regrading(tmp_path):
         )
         assert not first.duplicate and len(calls) == 1
 
-        replay = await c.command_service.evaluate(
+        replay = await c.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -119,14 +123,14 @@ async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, 
     try:
         storage = _storage(tmp_path)
         world = await _seeded_world(c, storage)
-        original_snapshot_ref = c.ingestion_service.snapshot_ref
+        original_snapshot_ref = c.artifact_service.snapshot_ref
 
         async def _capture_then_advance(*args, **kwargs):
             snapshot = await original_snapshot_ref(*args, **kwargs)
             await c.simulation_service.step(world.world_id, RunConfig())
             return snapshot
 
-        monkeypatch.setattr(c.ingestion_service, "snapshot_ref", _capture_then_advance)
+        monkeypatch.setattr(c.artifact_service, "snapshot_ref", _capture_then_advance)
         graded_ticks: list[int] = []
 
         def grader(df):
@@ -134,7 +138,7 @@ async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, 
             graded_ticks.extend(int(row["tick"]) for row in rows)
             return Outcome(status="pass", score=1.0)
 
-        await c.command_service.evaluate(
+        await c.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -148,13 +152,13 @@ async def test_grader_reads_the_captured_snapshot_when_world_advances(tmp_path, 
         await c.shutdown()
 
 
-async def test_grader_snapshot_includes_completed_fact_claims(tmp_path):
-    """Pinned reads retain durable facts visible when the snapshot is captured."""
+async def test_grader_snapshot_includes_completed_artifact_claims(tmp_path):
+    """Pinned reads retain durable artifacts visible when the snapshot is captured."""
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
         world = await _seeded_world(c, storage)
-        await c.ingestion_service.ingest_fact(
+        await c.artifact_service.publish(
             str(world.world_id),
             [Telemetry(reading=1.2)],
             external_id="sensor-reading-1",
@@ -166,13 +170,13 @@ async def test_grader_snapshot_includes_completed_fact_claims(tmp_path):
             graded_readings.extend(float(row["telemetry__reading"]) for row in df.to_pylist())
             return Outcome(status="pass", score=1.0)
 
-        await c.command_service.evaluate(
+        await c.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
             contract=_contract(),
             grader=grader,
-            evaluation_id="fact-aware-snapshot",
+            evaluation_id="artifact-aware-snapshot",
         )
 
         assert sorted(graded_readings) == [0.8, 1.2]
@@ -188,7 +192,7 @@ async def test_new_trials_of_nondeterministic_graders_are_new_receipts(tmp_path)
         calls: list[int] = []
 
         for i, status in enumerate(("pass", "fail")):
-            receipt = await c.command_service.evaluate(
+            receipt = await c.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -215,7 +219,7 @@ async def test_same_id_different_contract_conflicts_loudly(tmp_path):
         world = await _seeded_world(c, storage)
         grader = _counting_grader([], Outcome(status="pass"))
 
-        await c.command_service.evaluate(
+        await c.command_gateway.evaluate(
             _ctx(),
             world.world_id,
             [Telemetry],
@@ -224,7 +228,7 @@ async def test_same_id_different_contract_conflicts_loudly(tmp_path):
             evaluation_id="trial-x",
         )
         with pytest.raises(ClaimConflictError):
-            await c.command_service.evaluate(
+            await c.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -253,7 +257,7 @@ async def test_recovery_registers_orphaned_receipt_before_completion(tmp_path, m
 
         monkeypatch.setattr(SqliteControlCatalog, "register_signature", _crash)
         with pytest.raises(RuntimeError, match="before signature registration"):
-            await c.command_service.evaluate(
+            await c.command_gateway.evaluate(
                 _ctx(),
                 wid,
                 [Telemetry],
@@ -280,7 +284,7 @@ async def test_recovery_registers_orphaned_receipt_before_completion(tmp_path, m
 
         await catalog._run(_expire)
 
-        receipt = await c.command_service.evaluate(
+        receipt = await c.command_gateway.evaluate(
             _ctx(),
             wid,
             [Telemetry],
@@ -314,7 +318,7 @@ async def test_fail_closed_inputs(tmp_path):
 
         # Bare callable without a contract descriptor.
         with pytest.raises(ValueError, match="GraderContract"):
-            await c.command_service.evaluate(
+            await c.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -325,7 +329,7 @@ async def test_fail_closed_inputs(tmp_path):
 
         # Untyped grader output.
         with pytest.raises(ValueError, match="typed Outcome"):
-            await c.command_service.evaluate(
+            await c.command_gateway.evaluate(
                 _ctx(),
                 world.world_id,
                 [Telemetry],
@@ -337,7 +341,7 @@ async def test_fail_closed_inputs(tmp_path):
         # A world with no published visibility has nothing to pin.
         bare = await c.world_service.create_world(WorldConfig(name="unstepped"), storage)
         with pytest.raises(RuntimeError, match="no published visibility"):
-            await c.command_service.evaluate(
+            await c.command_gateway.evaluate(
                 _ctx(),
                 bare.world_id,
                 [Telemetry],
@@ -363,7 +367,7 @@ async def test_receipt_is_attributable_from_the_pinned_snapshot(tmp_path):
         wid, rid = str(world.world_id), str(world.run_id)
         contract = _contract()
 
-        await c.command_service.evaluate(
+        await c.command_gateway.evaluate(
             _ctx(),
             wid,
             [Telemetry],
@@ -436,7 +440,7 @@ async def test_flagship_worker_writes_then_cold_process_grades(tmp_path):
     cold = ServiceContainer()
     try:
         storage = StorageConfig(uri=uri, namespace="ns")
-        receipt = await cold.command_service.evaluate(
+        receipt = await cold.command_gateway.evaluate(
             _ctx(),
             info["world_id"],
             [Telemetry],

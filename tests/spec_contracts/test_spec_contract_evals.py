@@ -62,11 +62,11 @@ def test_runtime_gate_rejects_disallowed_plain_import(tmp_path, monkeypatch) -> 
     result = _runtime_import_result(
         tmp_path,
         monkeypatch,
-        "import archetype.app.world_service\n",
+        "import archetype.app.world.service\n",
     )
 
     assert result.passed is False
-    assert "archetype.app.world_service" in result.details
+    assert "archetype.app.world.service" in result.details
 
 
 @pytest.mark.parametrize(
@@ -85,17 +85,23 @@ def test_runtime_gate_uses_a_dotted_app_boundary(tmp_path, monkeypatch, source_t
 @pytest.mark.parametrize(
     "source_text",
     [
-        "import archetype.app.eval_service\n",
-        "from archetype.app.eval_service import EvaluationResult\n",
+        "import archetype.app.evaluation.service\n",
+        "from archetype.app.evaluation.service import EvaluationResult\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    import archetype.app.evaluation.service\n",
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from archetype.app.evaluation.service import EvaluationResult\n",
     ],
 )
-def test_runtime_gate_rejects_operational_type_only_imports(
+def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
     tmp_path, monkeypatch, source_text
 ) -> None:
     result = _runtime_import_result(tmp_path, monkeypatch, source_text)
 
     assert result.passed is False
-    assert "archetype.app.eval_service" in result.details
+    assert "archetype.app.evaluation.service" in result.details
 
 
 @pytest.mark.parametrize(
@@ -103,13 +109,13 @@ def test_runtime_gate_rejects_operational_type_only_imports(
     [
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    import archetype.app.eval_service\n",
+        "    import archetype.app.evaluation.interfaces\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from archetype.app.eval_service import EvaluationResult\n",
+        "    from archetype.app.evaluation.models import EvaluationResult\n",
     ],
 )
-def test_runtime_gate_allows_type_only_imports_under_type_checking(
+def test_runtime_gate_allows_declared_contract_imports_under_type_checking(
     tmp_path, monkeypatch, source_text
 ) -> None:
     result = _runtime_import_result(tmp_path, monkeypatch, source_text)

@@ -1,11 +1,15 @@
 # Data Flow
 
-World state has separate read and write facades in core, while the service layer adds a gate for external access.
+World state has separate read and write facades in core, while the application
+layer adds actor-free product semantics and an optional authorization boundary
+for untrusted access.
 
 The important boundary is:
 
-- Below the gate, services such as `iQueryService`, `iMutationService`, and `iWorldService` do not know about `ActorCtx`.
-- At the boundary, `iCommandService` authorizes, delegates, audits, and returns user-safe results.
+- App families and `iRuntimeApplication` do not know about `ActorCtx`.
+- `iCommandGateway` authorizes untrusted calls, delegates to
+  `iRuntimeApplication`, records access evidence, and returns safe results.
+- Trusted runtime calls `iRuntimeApplication` directly.
 
 ## Core Read/Write Split
 
@@ -22,20 +26,26 @@ The important boundary is:
 
 `QueryManager` owns reads. `UpdateManager` owns writes. This split is independent of auth.
 
-## External Direct Path
+## Direct paths
 
-Most runtime and API calls use a direct gated path:
+Trusted runtime:
 
 ```text
-Runtime / API / caller
+RuntimeWorld -> iRuntimeApplication -> owning family -> safe result
+```
+
+Untrusted adapter:
+
+```text
+API / untrusted caller
     |
-iCommandService.<method>(ctx, ...)
+iCommandGateway.<method>(ctx, ...)
     |
 guardrail_allow(command, ctx)
     |
-delegate to one service
+delegate to iRuntimeApplication
     |
-iAuditLog.record(row)
+iAuditJournal.record_access(event)
     |
 return result
 ```
@@ -47,33 +57,33 @@ Examples:
 - `run` delegates to `iSimulationService` and returns `RunResult`.
 - `query_archetype` delegates to `iQueryService` and returns a DataFrame.
 
-Reads are gated at this external boundary. The internal `iQueryService` remains ActorCtx-free.
+Untrusted reads are gated. Trusted runtime and internal workflows use the same
+actor-free application/query semantics directly.
 
 ## Tick-Deferred Path
 
-When a caller wants work applied at a tick boundary, the gate enqueues a command:
+When a caller wants work applied at a tick boundary, the commands family durably
+admits it. An untrusted caller is authorized before admission:
 
 ```text
-Runtime / API / caller
+RuntimeApplication or iCommandGateway after authorization
     |
-iCommandService.submit(ctx, world_id, cmd)
+iCommandScheduler.admit(world_id, cmd, origin/principal)
     |
-guardrail_allow(command, ctx)
-    |
-iCommandBroker.enqueue(world_id, cmd)
+iCommandLedger (durable PENDING)
     |
 SimulationService.step()
     |
-iCommandService.drain_and_apply(world_id, tick)
+iCommandDispatcher.lease_and_stage_due(world_id, tick)
     |
 MutationService / WorldService
     |
-AsyncWorld internal mutation
+AsyncWorld internal mutation -> manifest publication + command settlement
 ```
 
-`drain_and_apply` has no `ActorCtx` argument because submitted commands were validated before entering the queue.
-
-Commands are ordered by `(tick, priority, seq)` within the broker queue.
+No commands-family operation accepts `ActorCtx`. The gateway converts a
+principal into an immutable admission snapshot. Commands are ordered by a
+durable per-world `(scheduled_tick, priority, sequence)` key.
 
 ## Internal Writes
 
@@ -101,20 +111,24 @@ World lifecycle operations are direct gated methods:
 
 Destroy does not delete storage or audit rows. See [World Lifecycle](world-lifecycle.md).
 
-## Audit Flow
+## Audit flow
 
-Every gated call emits one audit row. Broker queue history is not the audit log.
+Gateway calls emit access events. Product transitions append outbox events in
+the transaction that establishes their authority. The audit projector exports
+deduplicated events to Iceberg and exposes a watermark. Command-ledger history
+is operational truth; audit history is the analytical projection.
 
-`RuntimeWorld.history(...)` and API history reads use `iCommandService.get_audit_history(...)`, which authorizes the read and delegates to `iAuditLog.query(...)`.
+`RuntimeWorld.history(...)` reads through RuntimeApplication. API history reads
+authorize through the gateway before invoking the same application operation.
 
 See [Audit Log](audit-log.md).
 
 ## Source Reference
 
-- Command service: `src/archetype/app/command_service.py`
-- Command broker: `src/archetype/app/broker.py`
-- Simulation service: `src/archetype/app/simulation_service.py`
-- Query service: `src/archetype/app/query_service.py`
-- RBAC guard: `src/archetype/app/auth/guard.py`
+- Gateway: `src/archetype/app/gateway/service.py`
+- Durable command scheduler: `src/archetype/app/commands/service.py`
+- Simulation service: `src/archetype/app/world/simulation.py`
+- Query service: `src/archetype/app/query/service.py`
+- RBAC guard: `src/archetype/app/gateway/auth/guard.py`
 - Querier: `src/archetype/core/aio/async_querier.py`
 - Updater: `src/archetype/core/aio/async_updater.py`

@@ -17,7 +17,7 @@ Resources: Type-safe dependency injection for world-level shared state.
 
 Resources are not entity data—they're the scaffolding around it:
 - Environment parameters (gravity, reward scale)
-- Shared services (CommandBroker)
+- Shared trusted application resources
 - Simulation context (recursion depth, budget)
 
 In RL terms: MDP parameters, hyperparameters, shared infrastructure.
@@ -34,11 +34,11 @@ class Resources:
 
     Usage:
         world.resources.insert(SimConfig(gravity=9.8))
-        world.resources.insert(broker)
+        world.resources.insert(PhysicsClient())
 
         # In processor
         config = resources.require(SimConfig)
-        broker = resources.get(CommandBroker)  # Returns None if not present
+        client = resources.get(EventClient)  # Returns None if not present
     """
 
     __slots__ = ("_store",)

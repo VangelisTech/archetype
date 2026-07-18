@@ -11,7 +11,8 @@ import pyarrow as pa
 import pytest
 from daft import DataFrame, col
 
-from archetype.app.storage_service import _resolve_uri
+from archetype.app.storage.service import _resolve_uri
+from archetype.app.storage.session import configure_session
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
@@ -25,7 +26,6 @@ from archetype.core.sync import (
     SyncWorld,
     UpdateManager,
 )
-from archetype.runtime.session import configure_session
 
 
 class Position(Component):

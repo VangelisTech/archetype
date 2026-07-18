@@ -1,0 +1,119 @@
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Ports owned by the world family."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol, runtime_checkable
+
+from uuid_utils import UUID
+
+from archetype.app.models import (
+    EpisodeConfig,
+    EpisodeResult,
+    RolloutConfig,
+    RolloutResult,
+    RunResult,
+)
+from archetype.core.component import Component
+from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+
+
+@runtime_checkable
+class iWorldService(Protocol):
+    """Own world lifecycle, registry access, and world/storage coordinates."""
+
+    async def create_world(
+        self,
+        config: WorldConfig,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        system: Any | None = None,
+    ) -> Any: ...
+
+    def get_world(self, world_id: str | UUID) -> Any: ...
+    def get_world_by_name(self, name: str) -> Any: ...
+    def has_world(self, world_id: str | UUID) -> bool: ...
+    def list_worlds(self) -> list[Any]: ...
+    def storage_record(
+        self, world_id: str | UUID
+    ) -> tuple[StorageConfig, CacheConfig | None] | None: ...
+    def control_catalog(self, world_id: str | UUID) -> Any: ...
+
+    async def fork_world(
+        self,
+        source_world_id: str | UUID,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> Any: ...
+
+    async def destroy_world(self, world_id: str | UUID) -> None: ...
+    async def discover_worlds(self, storage_config: StorageConfig) -> list[Any]: ...
+    async def open_world_readonly(
+        self, storage_config: StorageConfig, world_id: str | UUID
+    ) -> Any: ...
+    async def open_world_mutable(
+        self, storage_config: StorageConfig, world_id: str | UUID
+    ) -> Any: ...
+    async def record_step(self, world_id: str | UUID) -> None: ...
+    async def add_resource(self, world_id: str | UUID, resource: object) -> None: ...
+    def add_hook(
+        self, world_id: str | UUID, event_type: Any, fn: Any, *, mode: str = "blocking"
+    ) -> Any: ...
+    def remove_hook(self, world_id: str | UUID, handle: Any) -> None: ...
+    def list_processors(self, world_id: str | UUID) -> list[Any]: ...
+    def list_hooks(self, world_id: str | UUID) -> list[Any]: ...
+    def list_resources(self, world_id: str | UUID) -> list[Any]: ...
+    async def shutdown(self) -> None: ...
+
+
+@runtime_checkable
+class iMutationService(Protocol):
+    """Own staged entity, component, and processor mutations."""
+
+    async def create_entity(self, world_id: str | UUID, components: list[Component]) -> int: ...
+    async def create_entities(
+        self, world_id: str | UUID, entities: list[list[Component]]
+    ) -> list[int]: ...
+    def reserve_entity_ids(self, world_id: str | UUID, n: int) -> list[int]: ...
+    async def spawn_with_reserved_id(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+    async def remove_entity(self, world_id: str | UUID, entity_id: int) -> None: ...
+    async def update_entity(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+    async def add_components(
+        self, world_id: str | UUID, entity_id: int, components: list[Component]
+    ) -> None: ...
+    async def remove_components(
+        self,
+        world_id: str | UUID,
+        entity_id: int,
+        component_types: list[type[Component]],
+    ) -> None: ...
+    async def add_processor(self, world_id: str | UUID, processor: Any) -> None: ...
+    async def remove_processor(self, world_id: str | UUID, proc_type: type[Any]) -> None: ...
+
+
+@runtime_checkable
+class iSimulationService(Protocol):
+    """Own tick, run, episode, and rollout execution."""
+
+    def set_command_drain(
+        self, drain_commands: Callable[[str | UUID, int], Awaitable[object]]
+    ) -> None: ...
+    def set_quota_reset(self, reset_quota: Callable[[], None]) -> None: ...
+    async def step(self, world_id: str | UUID, run_config: RunConfig, **kwargs: Any) -> int: ...
+    async def run(
+        self, world_id: str | UUID, run_config: RunConfig, **kwargs: Any
+    ) -> RunResult: ...
+    async def run_episode(
+        self, world_id: str | UUID, config: EpisodeConfig, **kwargs: Any
+    ) -> EpisodeResult: ...
+    async def run_rollout(
+        self, world_id: str | UUID, config: RolloutConfig, **kwargs: Any
+    ) -> RolloutResult: ...

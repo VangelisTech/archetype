@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from archetype.app.container import ServiceContainer
-from archetype.app.query_service import QueryService
+from archetype.app.query.service import QueryService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 from bench.core.report import build_report, capture_environment, write_report
@@ -223,7 +223,7 @@ def _assert_row_count(case: QueryCase, observed: int) -> None:
 
 
 def _audit_storage_for(storage: StorageConfig) -> StorageConfig:
-    """Derive the CommandService audit store without changing the measured backend."""
+    """Derive the CommandGateway audit store without changing the measured backend."""
     return storage.model_copy(
         update={
             "namespace": f"{storage.namespace}__audit",

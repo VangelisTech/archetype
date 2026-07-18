@@ -12,15 +12,15 @@ import pytest
 from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
-from archetype.app._catalog import (
+from archetype.app.audit.service import AuditBackpressureError
+from archetype.app.errors import AvailabilityError, ConflictError
+from archetype.app.storage.catalog import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
     ClaimConflictError,
     ClaimPendingError,
     SqliteControlCatalog,
 )
-from archetype.app.audit_log import AuditBackpressureError
-from archetype.app.errors import AvailabilityError, ConflictError
 
 
 @pytest.mark.parametrize(

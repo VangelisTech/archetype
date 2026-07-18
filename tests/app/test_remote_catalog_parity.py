@@ -25,10 +25,12 @@ from pathlib import Path
 
 import pytest
 
-from archetype.app._catalog import (
+from archetype.app.storage.catalog import (
     CatalogConflictError,
     ClaimConflictError,
     ClaimPendingError,
+    CommandAdmission,
+    CommandConflictError,
     SignatureRecord,
     SqliteControlCatalog,
     WorldRecord,
@@ -104,7 +106,7 @@ def worker_url():
 
 
 def _remote(worker_url: str):
-    from archetype.app._remote_catalog import RemoteControlCatalog
+    from archetype.app.storage.remote_catalog import RemoteControlCatalog
 
     # Fresh namespace per catalog instance: parity runs are independent.
     return RemoteControlCatalog(
@@ -245,7 +247,7 @@ async def test_claim_lifecycle_parity(tmp_path, worker_url):
             lease_seconds=30.0,
         )
         assert outcome == "acquired"
-        assert claim.fact_entity_id < 0, "facts live in the negative id band"
+        assert claim.artifact_entity_id < 0, "artifacts live in the negative id band"
         assert claim.fence_epoch == 1
 
         # Live lease blocks other claimants; same digest.
@@ -328,6 +330,107 @@ async def test_claim_lifecycle_parity(tmp_path, worker_url):
         await catalog.close()
 
 
+async def test_command_ledger_and_outbox_parity(tmp_path, worker_url):
+    admissions = [
+        CommandAdmission(
+            command_id="c-a",
+            scheduled_tick=0,
+            priority=10,
+            command_type="spawn",
+            payload_json='{"entity_id":1}',
+            payload_digest="digest-a",
+            version=1,
+            principal_id="actor-1",
+            origin="gateway",
+            reserved_entity_id=1,
+        ),
+        CommandAdmission(
+            command_id="c-b",
+            scheduled_tick=0,
+            priority=0,
+            command_type="custom",
+            payload_json="{}",
+            payload_digest="digest-b",
+            version=1,
+            principal_id=None,
+            origin="local",
+        ),
+        CommandAdmission(
+            command_id="c-c",
+            scheduled_tick=2,
+            priority=0,
+            command_type="message",
+            payload_json="{}",
+            payload_digest="digest-c",
+            version=1,
+            principal_id=None,
+            origin="local",
+        ),
+    ]
+    for catalog in await _both(tmp_path, worker_url):
+        await catalog.register_world(_world())
+        admitted = await catalog.admit_commands("w1", admissions)
+        assert [record.command_id for record in admitted] == ["c-a", "c-b", "c-c"]
+        assert await catalog.pending_command_count("w1") == 3
+        assert await catalog.max_reserved_entity_id("w1") == 1
+
+        replay = await catalog.admit_commands("w1", [admissions[0]])
+        assert replay[0].sequence == admitted[0].sequence
+        changed = CommandAdmission(**{**admissions[0].__dict__, "payload_digest": "changed"})
+        with pytest.raises(CommandConflictError):
+            await catalog.admit_commands("w1", [changed])
+
+        leased = await catalog.lease_commands("w1", 0, "worker-a")
+        assert [record.command_id for record in leased] == ["c-b", "c-a"]
+        rejected = await catalog.fail_command(
+            "w1",
+            "c-b",
+            "worker-a",
+            status="REJECTED",
+            error_code="ValueError",
+            error_detail="poison",
+        )
+        assert rejected.status == "REJECTED"
+        await catalog.release_commands("w1", ["c-a"], "worker-a")
+        (leased_a,) = await catalog.lease_commands("w1", 0, "worker-b")
+        assert leased_a.command_id == "c-a" and leased_a.attempts == 1
+
+        epoch = await catalog.acquire_fence("w1", "writer")
+        await catalog.publish_manifest(
+            "w1",
+            "r1",
+            0,
+            "tick-token",
+            epoch,
+            ["t1"],
+            command_ids=["c-a"],
+            lease_owner="worker-b",
+        )
+        records = await catalog.list_commands("w1", limit=10)
+        assert [(record.command_id, record.status) for record in records] == [
+            ("c-a", "APPLIED"),
+            ("c-b", "REJECTED"),
+            ("c-c", "PENDING"),
+        ]
+        assert records[0].commit_token == "tick-token" and records[0].applied_tick == 0
+
+        events = await catalog.read_outbox("w1")
+        assert [event.status for event in events] == [
+            "queued",
+            "queued",
+            "queued",
+            "rejected",
+            "applied",
+        ]
+        assert await catalog.outbox_progress("w1") == (0, 5)
+        await catalog.mark_outbox_projected("w1", [event.event_id for event in events])
+        assert await catalog.outbox_progress("w1") == (5, 0)
+
+        assert await catalog.cancel_commands("w1", reason="destroyed") == 1
+        assert await catalog.pending_command_count("w1") == 0
+        await catalog.close()
+
+
 async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, monkeypatch):
     """The integration proof: coordinator + ingestion + receipts through the
     remote catalog with zero changes above the protocol."""
@@ -335,9 +438,9 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
     monkeypatch.setenv("ARCHETYPE_CONTROL_CATALOG_TOKEN", WORKER_TOKEN)
 
     from archetype.app.container import ServiceContainer
+    from archetype.app.evaluation.models import GraderContract, Outcome
     from archetype.core.component import Component
     from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-    from archetype.experiments.receipts import GraderContract, Outcome
 
     class Probe(Component):
         value: float = 0.0
@@ -352,13 +455,13 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
         await c.simulation_service.step(world.world_id, RunConfig())
         wid, rid = str(world.world_id), str(world.run_id)
 
-        receipt = await c.ingestion_service.ingest_fact(
-            wid, [Probe(value=42.0)], external_id="remote-fact-1", producer="probe"
+        receipt = await c.artifact_service.publish(
+            wid, [Probe(value=42.0)], external_id="remote-artifact-1", producer="probe"
         )
         assert not receipt.duplicate
 
-        eval_receipt = await c.command_service.evaluate(
-            __import__("archetype.app.auth.models", fromlist=["ActorCtx"]).ActorCtx(
+        eval_receipt = await c.command_gateway.evaluate(
+            __import__("archetype.app.gateway.auth.models", fromlist=["ActorCtx"]).ActorCtx(
                 id=__import__("uuid_utils").uuid7(), roles={"operator"}
             ),
             wid,

@@ -1,7 +1,9 @@
 # Execution Hierarchy
 
 **Document type:** Normative.
-**Scope:** `iSimulationService` and the gated proxies on `iCommandService`. Step / Run / Episode / Rollout semantics.
+**Scope:** `iSimulationService` and the gated proxies on `iCommandGateway`.
+Step / Run / Episode / Rollout semantics. The current gateway source protocol
+is named `iCommandGateway`.
 
 ## 1. The four execution levels
 
@@ -156,7 +158,7 @@ Forks happen via `iWorldService.fork_world` directly — NOT through the gate. F
 
 ## 5. Gate proxies
 
-`iCommandService` exposes thin gated proxies for both:
+`iCommandGateway` exposes thin gated proxies for both:
 
 ```python
 async def run_episode(ctx, world_id, config) -> EpisodeResult: ...
@@ -165,7 +167,9 @@ async def run_rollout(ctx, world_id, config) -> RolloutResult: ...
 
 Each follows the standard gate shape: `guardrail_allow → delegate → audit.record`. Each emits exactly ONE audit row. The rollout's audit row payload captures `num_episodes`, fork ids, and aggregate stats.
 
-`iSimulationService.run_rollout` is NOT gated internally. The gate runs once at `iCommandService.run_rollout`; per-fork operations within `iSimulationService` are not gate-visible.
+`iSimulationService.run_rollout` is NOT gated internally. The gateway runs once
+at `iCommandGateway.run_rollout`; per-fork operations within
+`iSimulationService` are not gate-visible.
 
 ## 6. Permissions
 

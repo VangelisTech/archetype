@@ -3,10 +3,8 @@
 
 """Runtime exposure of autoresearch and evals.
 
-The beginner path: ``world.autoresearch`` runs the gated optimization loop,
-``runtime.attach`` loads existing worlds (episode saves, the lab ledger),
-and ``world.grade`` composes the gated query with grader execution. All of
-it routes through the command gate with the handle's ActorCtx.
+The trusted beginner path reaches the actor-free application facade.
+Authorization remains covered separately at the untrusted command gateway.
 """
 
 import pytest
@@ -14,12 +12,12 @@ from daft import col
 from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
-from archetype.app.auth.errors import GuardrailError
-from archetype.app.auth.models import ActorCtx
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import EpisodeConfig
+from archetype.app.research.models import Run, RunStatus
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.experiments.components import Run, RunStatus
 
 TARGET = 3.0
 
@@ -103,10 +101,12 @@ async def test_world_autoresearch_denied_below_operator(tmp_path):
         await base.run(steps=1)
 
         for role in ("viewer", "player"):
-            handle = base.as_actor(ActorCtx(id=uuid7(), roles={role}))
             with pytest.raises(GuardrailError):
-                await handle.autoresearch(
-                    _config(f"denied-{role}", max_iterations=1), lambda _r: 1.0
+                await runtime._container.command_gateway.autoresearch(
+                    ActorCtx(id=uuid7(), roles={role}),
+                    base.world_id,
+                    _config(f"denied-{role}", max_iterations=1),
+                    lambda _r: 1.0,
                 )
 
 

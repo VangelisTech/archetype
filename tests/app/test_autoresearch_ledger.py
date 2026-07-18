@@ -17,12 +17,12 @@ from pathlib import Path
 import pytest
 from uuid_utils import UUID
 
-from archetype.app.autoresearch_service import AutoResearchConfig, EvaluationResult
 from archetype.app.container import ServiceContainer
 from archetype.app.models import EpisodeConfig
+from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
+from archetype.app.research.models import BranchHead, Experiment, Result, Run, RunStatus
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
-from archetype.experiments.components import BranchHead, Experiment, Result, Run, RunStatus
 
 
 class Tag(Component):

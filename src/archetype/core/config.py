@@ -76,9 +76,7 @@ class CacheConfig(BaseModel):
     flush_mb: int = Field(
         default=512, description="Flush a table after it reaches this size in megabytes."
     )
-    global_mb: int = Field(
-        default=1024 * 1024 * 1024, description="Maximum memory budget across cached tables."
-    )
+    global_mb: int = Field(default=1024, description="Maximum memory budget across cached tables.")
     idle_sec: float = Field(default=30.0, description="Flush a table after this many idle seconds.")
 
     model_config = dict(arbitrary_types_allowed=True)
@@ -91,7 +89,7 @@ class RunConfig(BaseModel):
         default_factory=uuid.uuid7,
         description="Stable identifier for this run, generated when omitted.",
     )
-    num_steps: int = Field(default=1, description="Number of ticks to execute.")
+    num_steps: int = Field(default=1, ge=0, description="Number of ticks to execute.")
     debug: bool = Field(default=False, description="Emit per-tick diagnostic panels.")
     show_rows: int = Field(
         default=8,

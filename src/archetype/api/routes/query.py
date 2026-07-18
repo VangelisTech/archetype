@@ -19,12 +19,12 @@ from typing import Any
 from daft import DataFrame
 from fastapi import APIRouter, Depends, Query
 
-from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.deps import get_actor_ctx, get_command_gateway
 from archetype.api.errors import raise_api_error
 from archetype.api.models import QueryCountResponse, dataframe_to_rows, hydrate_component_types
 from archetype.api.query_filter import parse_where
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.models import HookInfo, ProcessorInfo, ResourceInfo
 from archetype.core.config import StorageConfig
 
@@ -57,7 +57,7 @@ def _tick_range(value: str | None) -> tuple[int, int] | None:
 
 
 async def _query_all_state(
-    cs: CommandService,
+    cs: iCommandGateway,
     ctx: ActorCtx,
     world_id: str,
     *,
@@ -66,7 +66,7 @@ async def _query_all_state(
 ) -> list[dict[str, Any]]:
     query_world_id, run_id = await _query_ids(cs, ctx, world_id)
     rows: list[dict[str, Any]] = []
-    for sig in await cs.list_signatures(ctx):
+    for sig in await cs.list_signatures(ctx, world_id=world_id):
         df = await cs.query_archetype(
             ctx,
             sig,
@@ -79,7 +79,7 @@ async def _query_all_state(
     return rows
 
 
-async def _query_ids(cs: CommandService, ctx: ActorCtx, world_id: str) -> tuple[str, str]:
+async def _query_ids(cs: iCommandGateway, ctx: ActorCtx, world_id: str) -> tuple[str, str]:
     try:
         info = await cs.get_world_info(ctx, world_id)
     except KeyError:
@@ -88,7 +88,7 @@ async def _query_ids(cs: CommandService, ctx: ActorCtx, world_id: str) -> tuple[
 
 
 async def _query_components_frame(
-    cs: CommandService,
+    cs: iCommandGateway,
     ctx: ActorCtx,
     world_id: str,
     *,
@@ -111,7 +111,7 @@ async def _query_components_frame(
 
 
 async def _query_components(
-    cs: CommandService,
+    cs: iCommandGateway,
     ctx: ActorCtx,
     world_id: str,
     *,
@@ -136,7 +136,7 @@ async def get_world_state(
     tick: int | None = None,
     entity_ids: str | None = None,
     components: str | None = None,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read world state rows by component filter. Requires viewer, player, operator, or admin."""
@@ -168,16 +168,25 @@ async def get_entity(
     entity_id: int,
     tick: int | None = None,
     components: str = Query("", description="Comma-separated component type names to project"),
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read one entity by component filter. Requires viewer, player, operator, or admin."""
     try:
+        component_names = _split_csv(components)
+        if not component_names:
+            return await _query_all_state(
+                cs,
+                ctx,
+                world_id,
+                tick=tick,
+                entity_ids=[entity_id],
+            )
         return await _query_components(
             cs,
             ctx,
             world_id,
-            component_names=_split_csv(components),
+            component_names=component_names,
             tick=tick,
             entity_ids=[entity_id],
         )
@@ -207,7 +216,7 @@ async def get_components(
         None,
         description="One column comparison, for example score__value > 0.5; requires types",
     ),
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read entities containing component types. Requires viewer, player, operator, or admin."""
@@ -255,7 +264,7 @@ async def get_audit_history(
     tick_range: str | None = Query(None, description="Comma-separated inclusive start,end"),
     actor_id: str | None = None,
     idempotency_key: str | None = None,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read audit history. Requires viewer, player, operator, or admin."""
@@ -279,7 +288,7 @@ async def get_audit_history(
 @router.get("/worlds/{world_id}/processors", response_model=list[ProcessorInfo])
 async def list_processors(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured processors. Requires viewer, player, operator, or admin."""
@@ -292,7 +301,7 @@ async def list_processors(
 @router.get("/worlds/{world_id}/hooks", response_model=list[HookInfo])
 async def list_hooks(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured hooks. Requires viewer, player, operator, or admin."""
@@ -305,7 +314,7 @@ async def list_hooks(
 @router.get("/worlds/{world_id}/resources", response_model=list[ResourceInfo])
 async def list_resources(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List deployment-configured resources. Requires viewer, player, operator, or admin."""
@@ -319,7 +328,7 @@ async def list_resources(
 async def list_signatures(
     storage_uri: str | None = None,
     namespace: str | None = None,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List persisted archetype signatures. Requires viewer, player, operator, or admin."""

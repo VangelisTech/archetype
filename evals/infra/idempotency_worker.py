@@ -19,14 +19,14 @@ from pathlib import Path
 
 from uuid_utils import uuid7
 
-from archetype.app._catalog import ClaimConflictError, SqliteControlCatalog
-from archetype.app.auth.models import ActorCtx
+from archetype.app.artifacts.models import ArtifactMeta
 from archetype.app.container import ServiceContainer
-from archetype.app.facts import FactMeta
+from archetype.app.evaluation.models import EvalReceipt, GraderContract, Outcome
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.storage.catalog import ClaimConflictError, SqliteControlCatalog
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
-from archetype.experiments.receipts import EvalReceipt, GraderContract, Outcome
 
 
 class ProcessReading(Component):
@@ -183,12 +183,12 @@ async def query_world(args: argparse.Namespace) -> None:
         await container.shutdown()
 
 
-async def ingest_fact(args: argparse.Namespace) -> None:
+async def publish(args: argparse.Namespace) -> None:
     _ready(args.ready)
     _wait_for(args.go)
     container = ServiceContainer()
     try:
-        receipt = await container.ingestion_service.ingest_fact(
+        receipt = await container.artifact_service.publish(
             args.world_id,
             [ProcessReading(value=args.value)],
             external_id=args.external_id,
@@ -199,28 +199,28 @@ async def ingest_fact(args: argparse.Namespace) -> None:
             {
                 "duplicate": receipt.duplicate,
                 "commit_token": receipt.commit_token,
-                "fact_entity_id": receipt.fact_entity_id,
+                "artifact_entity_id": receipt.artifact_entity_id,
             }
         )
     finally:
         await container.shutdown()
 
 
-async def query_facts(args: argparse.Namespace) -> None:
+async def query_artifacts(args: argparse.Namespace) -> None:
     container = ServiceContainer()
     try:
         storage = _storage(args)
         info = await container.world_service.open_world_readonly(storage, args.world_id)
         rows = (
             await container.query_service.query_components(
-                [FactMeta], args.world_id, str(info.run_id), storage
+                [ArtifactMeta], args.world_id, str(info.run_id), storage
             )
         ).to_pylist()
         _emit(
             {
                 "rows": len(rows),
-                "external_ids": sorted(row["factmeta__external_id"] for row in rows),
-                "commit_ids": sorted({row["factmeta__commit_id"] for row in rows}),
+                "external_ids": sorted(row["artifactmeta__external_id"] for row in rows),
+                "commit_ids": sorted({row["artifactmeta__commit_id"] for row in rows}),
             }
         )
     finally:
@@ -237,7 +237,7 @@ async def evaluate(args: argparse.Namespace) -> None:
             _record_grader_call(args.grader_log)
             return Outcome(status="pass", score=float(frame.count_rows()))
 
-        receipt = await container.command_service.evaluate(
+        receipt = await container.command_gateway.evaluate(
             _actor(),
             args.world_id,
             [ProcessReading],
@@ -260,7 +260,7 @@ async def evaluate_conflict(args: argparse.Namespace) -> None:
             return Outcome(status="pass", score=float(frame.count_rows()))
 
         try:
-            await container.command_service.evaluate(
+            await container.command_gateway.evaluate(
                 _actor(),
                 args.world_id,
                 [ProcessReading],
@@ -318,8 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
             "resume-verify",
             "resume-race",
             "query-world",
-            "ingest-fact",
-            "query-facts",
+            "publish-artifact",
+            "query-artifacts",
             "evaluate",
             "evaluate-conflict",
             "query-receipts",
@@ -349,8 +349,8 @@ async def _main() -> None:
         "resume-verify": resume_verify,
         "resume-race": resume_race,
         "query-world": query_world,
-        "ingest-fact": ingest_fact,
-        "query-facts": query_facts,
+        "publish-artifact": publish,
+        "query-artifacts": query_artifacts,
         "evaluate": evaluate,
         "evaluate-conflict": evaluate_conflict,
         "query-receipts": query_receipts,

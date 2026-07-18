@@ -10,10 +10,14 @@ Adding a new CommandType automatically expands coverage.
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.errors import GuardrailError
-from archetype.app.auth.guard import guardrail_allow, reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
-from archetype.app.auth.permissions import COMMANDS_BY_ROLE
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.guard import (
+    guardrail_allow,
+    reset_daily_tokens,
+    reset_tick_counters,
+)
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
 from archetype.app.models import Command, CommandType
 
 ALL_ROLES = frozenset(COMMANDS_BY_ROLE.keys())

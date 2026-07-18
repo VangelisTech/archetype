@@ -57,7 +57,7 @@ no-op; a differing record for the same `world_id` raises
 
 ## 3. Gated discovery API
 
-Two read-gated operations on `iCommandService`:
+Two read-gated operations on `iCommandGateway`:
 
 ```python
 async def discover_worlds(
@@ -99,10 +99,10 @@ for every component the writing process defined.
 
 ```python
 # Process B, sharing nothing with the writer but the storage config:
-infos = await container.command_service.discover_worlds(ctx, storage_config)
+infos = await container.command_gateway.discover_worlds(ctx, storage_config)
 info = infos[0]
 assert info.run_id is not None
-df = await container.command_service.query_components(
+df = await container.command_gateway.query_components(
     ctx, [Score], world_id=str(info.world_id), run_id=str(info.run_id),
     storage_config=storage_config,
 )

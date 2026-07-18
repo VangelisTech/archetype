@@ -13,18 +13,18 @@ from datetime import UTC, datetime
 from daft import DataFrame, col
 from uuid_utils import UUID, uuid7
 
-import archetype.app.auth.guard as guard
+import archetype.app.gateway.auth.guard as guard
 from archetype import ArchetypeRuntime, RuntimeWorld, SyncRuntimeWorld
-from archetype.app.auth.errors import GuardrailError
-from archetype.app.auth.guard import (
+from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.guard import (
     estimate_token_cost,
     guardrail_allow,
     reset_daily_tokens,
     reset_tick_counters,
 )
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
-from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.service import CommandGateway
 from archetype.app.models import Command, CommandType, EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.archetype import Archetype
@@ -269,12 +269,12 @@ def task_command_ordering() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
-# Task: Command pipeline (submit → step → history)
+# Task: Command pipeline (admit → schedule → dispatch → history)
 # ---------------------------------------------------------------------------
 
 
 def task_command_pipeline() -> list[GraderResult]:
-    """Full command lifecycle through ServiceContainer."""
+    """Full durable command lifecycle through the internal composition root."""
     return asyncio.run(_task_command_pipeline())
 
 
@@ -296,13 +296,13 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
             # Submit → pending count
             cmd = Command(type=CommandType.SPAWN, tick=0, payload={"components": []})
-            await container.command_service.submit(wid, cmd, admin)
-            pending = await container.broker.get_pending_count(wid)
+            await container.command_gateway.submit(admin, wid, cmd)
+            pending = await container.command_scheduler.pending_count(wid)
 
             # Step → drains
             rc = RunConfig()
             applied = await container.simulation_service.step(world.world_id, rc)
-            pending_after = await container.broker.get_pending_count(wid)
+            pending_after = await container.command_scheduler.pending_count(wid)
 
             # History
             history = await container.query_service.get_command_history(world.world_id)
@@ -310,10 +310,10 @@ async def _task_command_pipeline() -> list[GraderResult]:
             # RBAC at service boundary
             viewer_blocked = False
             try:
-                await container.command_service.submit(
+                await container.command_gateway.submit(
+                    viewer,
                     wid,
                     Command(type=CommandType.SPAWN, payload={}),
-                    viewer,
                 )
             except PermissionError:
                 viewer_blocked = True
@@ -351,33 +351,33 @@ async def _task_query_correctness() -> list[GraderResult]:
         admin = ActorCtx(id=uuid7(), roles={"admin"})
         writer = ServiceContainer()
         try:
-            info = await writer.command_service.create_world(
+            info = await writer.command_gateway.create_world(
                 admin,
                 WorldConfig(name="query-correctness"),
                 storage,
             )
-            health_only = await writer.command_service.create_entity(
+            health_only = await writer.command_gateway.create_entity(
                 admin,
                 info.world_id,
                 [Health(hp=10)],
             )
-            tagged = await writer.command_service.create_entity(
+            tagged = await writer.command_gateway.create_entity(
                 admin,
                 info.world_id,
                 [Health(hp=20), Tag(label="target")],
             )
-            first_run = await writer.command_service.run(
+            first_run = await writer.command_gateway.run(
                 admin,
                 info.world_id,
                 RunConfig(num_steps=1),
             )
-            await writer.command_service.update_entity(
+            await writer.command_gateway.update_entity(
                 admin,
                 info.world_id,
                 health_only,
                 [Health(hp=11)],
             )
-            await writer.command_service.run(
+            await writer.command_gateway.run(
                 admin,
                 info.world_id,
                 RunConfig(num_steps=1),
@@ -397,9 +397,9 @@ async def _task_query_correctness() -> list[GraderResult]:
         viewer = ActorCtx(id=uuid7(), roles={"viewer"})
         try:
             cold_reader = not reader.world_service.has_world(world_id)
-            signatures = await reader.command_service.list_signatures(viewer, storage)
+            signatures = await reader.command_gateway.list_signatures(viewer, storage)
             tick_zero = (
-                await reader.command_service.query_components(
+                await reader.command_gateway.query_components(
                     viewer,
                     [Health],
                     world_id,
@@ -409,7 +409,7 @@ async def _task_query_correctness() -> list[GraderResult]:
                 )
             ).to_pylist()
             selected = (
-                await reader.command_service.query_components(
+                await reader.command_gateway.query_components(
                     viewer,
                     [Health],
                     world_id,
@@ -420,7 +420,7 @@ async def _task_query_correctness() -> list[GraderResult]:
                 )
             ).to_pylist()
             projected = (
-                await reader.command_service.query_archetype(
+                await reader.command_gateway.query_archetype(
                     viewer,
                     (Health, Tag),
                     world_id,
@@ -499,17 +499,17 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
         try:
             storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota")
             ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            info = await container.command_service.create_world(
+            info = await container.command_gateway.create_world(
                 ctx, WorldConfig(name="quota"), storage
             )
             # 8 ticks × (spawn + step) = 16 gated commands, 4× the ceiling, but
             # only 2 per tick. A per-tick quota that resets each tick never trips.
             try:
                 for _ in range(8):
-                    await container.command_service.create_entity(
+                    await container.command_gateway.create_entity(
                         ctx, info.world_id, [Tag(label="x")]
                     )
-                    await container.command_service.step(ctx, info.world_id, RunConfig())
+                    await container.command_gateway.step(ctx, info.world_id, RunConfig())
             except Exception:
                 blocked = True
         finally:
@@ -536,7 +536,7 @@ def _custom_commands(count: int) -> list[Command]:
 
 
 async def _submit_allowed(
-    service: CommandService,
+    service: CommandGateway,
     world_id: str | UUID,
     ctx: ActorCtx,
     count: int,
@@ -579,35 +579,37 @@ async def _task_quota_boundaries() -> list[GraderResult]:
 
             accepted_at_499 = await asyncio.gather(
                 *(
-                    _submit_allowed(container.command_service, world.world_id, actor, 499)
+                    _submit_allowed(container.command_gateway, world.world_id, actor, 499)
                     for actor in actors
                 )
             )
-            pending_at_499 = await container.broker.get_pending_count(world.world_id)
+            pending_at_499 = await container.command_scheduler.pending_count(world.world_id)
 
             bulk_overflow_allowed = await asyncio.gather(
                 *(
-                    _submit_allowed(container.command_service, world.world_id, actor, 2)
+                    _submit_allowed(container.command_gateway, world.world_id, actor, 2)
                     for actor in actors
                 )
             )
-            pending_after_bulk_rejection = await container.broker.get_pending_count(world.world_id)
+            pending_after_bulk_rejection = await container.command_scheduler.pending_count(
+                world.world_id
+            )
 
             accepted_at_500 = await asyncio.gather(
                 *(
-                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    _submit_allowed(container.command_gateway, world.world_id, actor, 1)
                     for actor in actors
                 )
             )
-            pending_at_500 = await container.broker.get_pending_count(world.world_id)
+            pending_at_500 = await container.command_scheduler.pending_count(world.world_id)
 
             command_501_allowed = await asyncio.gather(
                 *(
-                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    _submit_allowed(container.command_gateway, world.world_id, actor, 1)
                     for actor in actors
                 )
             )
-            pending_after_501 = await container.broker.get_pending_count(world.world_id)
+            pending_after_501 = await container.command_scheduler.pending_count(world.world_id)
 
             reset_tick_counters()
             reset_daily_tokens()
@@ -728,9 +730,13 @@ async def _task_runtime_contracts() -> tuple[dict[str, bool], dict[str, bool]]:
         entered = asyncio.Event()
         release = asyncio.Event()
         runtime = ArchetypeRuntime()
+        storage = StorageConfig(
+            uri=f"{tmp}/store",
+            namespace="eval_runtime_contracts",
+        )
         world = runtime.world(
             "runtime-contracts",
-            storage=StorageConfig(uri=f"{tmp}/store", namespace="eval_runtime_contracts"),
+            storage=storage,
         )
 
         pre_activation_rejected = _raises_runtime_error(lambda: world.world_id)
@@ -738,6 +744,7 @@ async def _task_runtime_contracts() -> tuple[dict[str, bool], dict[str, bool]]:
         info = await world.info()
         audit_rows = (await world.history(limit=100)).to_pylist()
         create_events = [row for row in audit_rows if row["command_type"] == "create_world"]
+        discovered = await runtime.discover(storage)
 
         await world.step()  # persist raw initial conditions
         await world.add_processor(BlockingHealthIncrement(entered, release))
@@ -756,7 +763,8 @@ async def _task_runtime_contracts() -> tuple[dict[str, bool], dict[str, bool]]:
 
         activation = {
             "property_rejects_before_activation": pre_activation_rejected,
-            "one_create_event": len(create_events) == 1,
+            "one_durable_world": len(discovered) == 1 and discovered[0].world_id == info.world_id,
+            "trusted_runtime_fabricates_no_access_audit": not create_events,
             "all_spawns_returned": len(entity_ids) == 12,
             "entity_ids_are_unique": len(set(entity_ids)) == 12,
             "handle_and_info_share_world": str(world.world_id) == str(info.world_id),
@@ -859,7 +867,7 @@ def register(harness: EvalHarness) -> None:
         "command_pipeline",
         suite=SUITE,
         fn=task_command_pipeline,
-        desc="Submit → broker → step → history + RBAC at service boundary",
+        desc="Authorize → admit → schedule → dispatch → history at the API boundary",
     )
     harness.add(
         "query_correctness",

@@ -13,15 +13,20 @@ import asyncio
 
 import pytest
 
-from archetype.app._catalog import SqliteControlCatalog
-from archetype.app._commit import CatalogCommitCoordinator
 from archetype.app.container import ServiceContainer
+from archetype.app.storage.catalog import SqliteControlCatalog
+from archetype.app.storage.commit import CatalogCommitCoordinator
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    pytest.mark.contract("world.tick.atomic_visibility"),
+    pytest.mark.contract("world.writer.fenced"),
+    pytest.mark.integration,
+]
 
 
 class Counter(Component):
@@ -363,6 +368,51 @@ async def test_v1_catalog_upgrades_additively(tmp_path):
     epoch = await catalog.acquire_fence("w1", "h")
     assert epoch == 1, "v2 tables exist after additive upgrade"
     await catalog.close()
+
+
+async def test_v4_catalog_renames_fact_claim_identity_without_data_loss(tmp_path):
+    """The artifact vocabulary migration preserves already-published claims."""
+    import sqlite3
+
+    path = tmp_path / "cat.db"
+    catalog = SqliteControlCatalog(path)
+    assert await catalog.get_world("missing") is None  # create the current schema
+    await catalog.close()
+
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE claims RENAME COLUMN artifact_entity_id TO fact_entity_id")
+    conn.execute("UPDATE catalog_meta SET value='4' WHERE key='schema_version'")
+    conn.execute(
+        """
+        INSERT INTO claims (
+            scope_key, world_id, run_id, producer, external_id, payload_digest,
+            status, commit_token, tick, fact_entity_id, table_id, claimant,
+            lease_expires_at, fence_epoch, created_at, completed_at
+        ) VALUES (
+            'scope', 'w1', 'r1', 'producer', 'external', 'digest', 'COMPLETE',
+            'token', 3, -42, 'artifact_table', 'writer', 0.0, 1,
+            '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z'
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = SqliteControlCatalog(path)
+    claim = await upgraded.get_claim("w1", "scope")
+    assert claim is not None
+    assert claim.artifact_entity_id == -42
+    assert claim.table_id == "artifact_table"
+    await upgraded.close()
+
+    conn = sqlite3.connect(path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(claims)")}
+    version = conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[
+        0
+    ]
+    conn.close()
+    assert "artifact_entity_id" in columns and "fact_entity_id" not in columns
+    assert version == "5"
 
 
 async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch):

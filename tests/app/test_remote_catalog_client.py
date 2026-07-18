@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from archetype.app import _remote_catalog
-from archetype.app._remote_catalog import RemoteControlCatalog
-from archetype.app.storage_service import StorageService
+from archetype.app.storage import remote_catalog as _remote_catalog
+from archetype.app.storage.remote_catalog import RemoteControlCatalog
+from archetype.app.storage.service import StorageService
 from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_rearm_claim_returns_the_rotated_remote_record():
                     "status": "PENDING",
                     "commit_token": "fresh-token",
                     "tick": 0,
-                    "fact_entity_id": -100001,
+                    "artifact_entity_id": -100001,
                     "table_id": None,
                     "claimant": "recovery",
                     "lease_expires_at": 10.0,

@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from archetype.app._catalog import catalog_path_for
-from archetype.app.storage_service import _resolve_uri, create_async_store
+from archetype.app.storage.catalog import catalog_path_for
+from archetype.app.storage.service import _resolve_uri, create_async_store
+from archetype.app.storage.session import configure_session
 from archetype.core.config import StorageBackend, StorageConfig
 from archetype.core.paths import require_safe_namespace, resolve_local_root
-from archetype.runtime.session import configure_session
 
 BAD_NAMESPACES = ["../up", "a/b", "a\\b", ".hidden", "..", "", "/abs", "a b", "a\x00b"]
 GOOD_NAMESPACES = ["ecs", "ns_1", "a.b", "A-2", "audit"]

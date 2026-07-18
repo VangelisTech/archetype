@@ -3,23 +3,25 @@
 
 """Enforce public-surface boundaries: imports and @public_api signatures.
 
-Two rules, one principle — **the runtime is the sole public consumer of app**;
-public capability must be expressible through ``ArchetypeRuntime`` and its
-gated handles, so every mutation carries command-audit provenance.
+Two rules, one principle: concrete application capabilities stay behind the
+actor-free application facade. Runtime uses ``iRuntimeApplication`` directly;
+untrusted API ingress reaches it through ``iCommandGateway``. Experiments and
+other public code use supported adapters rather than app services directly.
 
 1. Import scopes (per consumer):
-   - ``api`` route handlers go through CommandService — they may not reach
-     into lower-level app services directly.
-   - ``experiments`` is public surface: it may import app *models* only.
+   - ``api`` route handlers depend on ``iCommandGateway`` — only the adapter
+     composition module may construct the container.
+   - ``experiments`` is public surface: it may import portable app contracts
+     and models only.
      Driving services directly from here is how the command-gateway bypass
      entered ``src/`` (eval_rollouts, 2026-07-17).
-   - ``runtime`` is unrestricted: it hosts the gate.
+   - ``runtime`` hosts trusted process composition over the application port.
 
 2. ``@public_api`` signatures: a public callable may not accept raw services
    (typed or named like one). Deprecated migration bridges are allowlisted
    HERE, next to the import rules, with a removal deadline — auditable in one
    place, like the lazy-audit ledger. Quietly adding entries to silence this
-   check is itself a signal the change is evading the gateway; PRs that do so
+   check is itself a signal the change is evading the facade; PRs that do so
    will be reverted at review.
 """
 
@@ -39,48 +41,48 @@ EXPERIMENTS_TARGETS = sorted((ROOT / "src/archetype/experiments").rglob("*.py"))
 PUBLIC_API_SCAN_TARGETS = sorted((ROOT / "src/archetype").rglob("*.py"))
 
 ALLOWED_APP_IMPORTS_API = {
-    "archetype.app.auth.models",
-    "archetype.app.command_service",
+    "archetype.app.gateway.auth.models",
+    "archetype.app.gateway.interfaces",
     "archetype.app.container",
     "archetype.app.models",
 }
 
 FORBIDDEN_APP_IMPORTS_API = {
-    "archetype.app.broker",
-    "archetype.app.mutation_service",
-    "archetype.app.query_service",
-    "archetype.app.simulation_service",
-    "archetype.app.world_service",
+    "archetype.app.world.mutation",
+    "archetype.app.query.service",
+    "archetype.app.world.simulation",
+    "archetype.app.world.service",
 }
 
-# Public surface: models only. Anything else must arrive through the runtime.
+# Public surface: portable data contracts only. Capabilities arrive through the runtime.
 ALLOWED_APP_IMPORTS_EXPERIMENTS = {
     "archetype.app.models",
+    "archetype.app.research.contracts",
+    "archetype.app.research.models",
 }
 
 # Raw-service shapes a @public_api callable may not accept.
 SERVICE_TYPE_NAMES = {
     "WorldService",
     "SimulationService",
-    "EvalService",
+    "EvaluationService",
     "QueryService",
     "MutationService",
-    "CommandService",
+    "CommandGateway",
     "StorageService",
-    "FactService",
-    "IngestionService",
+    "ArtifactTableService",
+    "ArtifactService",
     "ServiceContainer",
-    "CommandBroker",
 }
 SERVICE_PARAM_NAMES = {
     "world_service",
     "simulation_service",
-    "eval_service",
+    "evaluation_service",
     "query_service",
     "mutation_service",
-    "command_service",
+    "command_gateway",
     "storage_service",
-    "fact_service",
+    "artifact_table_service",
     "container",
     "broker",
 }
@@ -92,13 +94,13 @@ PUBLIC_API_BRIDGE_PARAMS: dict[str, set[str]] = {
     "src/archetype/experiments/eval_rollouts.py::run_task_eval": {
         "world_service",
         "simulation_service",
-        "eval_service",
+        "evaluation_service",
     },
     # remove in v0.6 — pre-runtime callers migrate to runtime=
     "src/archetype/experiments/instruction_sweep.py::run_instruction_sweep": {
         "world_service",
         "simulation_service",
-        "eval_service",
+        "evaluation_service",
     },
 }
 
@@ -127,7 +129,7 @@ def _import_violations(path: Path, allowed: set[str], forbidden: set[str], scope
             if module in forbidden:
                 violations.append(
                     f"{path.relative_to(ROOT)} imports forbidden {module} "
-                    f"({scope}: the runtime is the sole public consumer of app)"
+                    f"({scope}: concrete app capabilities stay behind the application facade)"
                 )
                 continue
             if module not in allowed:
@@ -155,7 +157,7 @@ def _service_param_violation(param: ast.arg) -> bool:
 
     Tokenizing avoids substring hits (``SimulationServiceConfig`` is not
     ``SimulationService``). Known limit, held by the param-NAME check as the
-    backstop: an import alias (``import CommandService as Gate``) hides the
+    backstop: an import alias (``import CommandGateway as Gate``) hides the
     type token — full resolution would need import walking.
     """
     annotation = ast.unparse(param.annotation) if param.annotation else ""

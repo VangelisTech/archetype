@@ -23,13 +23,13 @@ from pathlib import Path
 from daft.io import IOConfig
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
-from archetype.app.broker import CommandBroker
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.storage.service import StorageService
+from archetype.app.storage.session import configure_session
+from archetype.app.world.service import WorldService
 from archetype.core.component import Component
 from archetype.core.config import (
     CacheConfig,
@@ -40,21 +40,20 @@ from archetype.core.config import (
 )
 from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
 from archetype.core.sync import QueryManager, SyncStore, UpdateManager
-from archetype.runtime.session import configure_session
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
 from evals.suites.idempotency_durable import (
     task_atomic_publish_retry,
+    task_durable_artifact_crash_recovery,
+    task_durable_artifact_replay,
     task_durable_discovery,
-    task_durable_fact_crash_recovery,
-    task_durable_fact_replay,
     task_evaluation_receipt_replay,
     task_resume_and_writer_fencing,
 )
 from evals.suites.idempotency_process import (
+    task_process_artifact_replay,
     task_process_crash_cold_resume,
     task_process_evaluation_replay,
-    task_process_fact_replay,
     task_process_writer_fence_race,
 )
 from evals.types import GraderResult
@@ -98,20 +97,25 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.storage_pooling_and_shutdown",
     ),
     IdempotencyCase(
-        operation="`CommandBroker.enqueue()`",
-        expected_contract="Not idempotent; duplicate logical commands remain distinct",
-        task_id="idempotency.broker_and_submit_non_idempotent",
+        operation="Command admission with the same `command_id` and content",
+        expected_contract="Idempotent; returns the existing durable record",
+        task_id="idempotency.command_identity",
     ),
     IdempotencyCase(
-        operation="`CommandService.submit()`",
-        expected_contract="Not idempotent; duplicate submits create duplicate commands",
-        task_id="idempotency.broker_and_submit_non_idempotent",
+        operation="Command admission with the same `command_id` and changed content",
+        expected_contract="Conflicts",
+        task_id="idempotency.command_identity",
     ),
     IdempotencyCase(
-        operation="`CommandService.submit_spawn()`",
+        operation="Command admission with a new `command_id`",
+        expected_contract="Creates a distinct logical command",
+        task_id="idempotency.command_identity",
+    ),
+    IdempotencyCase(
+        operation="Deferred spawn",
         expected_contract=(
-            "Returns one reserved `entity_id` per successful call; repeated calls create new "
-            "entities unless the caller reuses an explicit reservation"
+            "Returns one reserved `entity_id` per successful admission; replay of the same "
+            "command converges on that reservation"
         ),
         task_id="idempotency.submit_spawn_distinct_entities",
     ),
@@ -126,13 +130,6 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.async_world_entity_ids_and_missing_remove",
     ),
     IdempotencyCase(
-        operation="`RuntimeWorld.as_actor(ctx)`",
-        expected_contract=(
-            "Idempotent as handle binding only; creates another alias, not another world"
-        ),
-        task_id="idempotency.runtime_aliases_and_history",
-    ),
-    IdempotencyCase(
         operation="Duplicate despawn in one tick",
         expected_contract="Idempotent collapse by entity ID",
         task_id="idempotency.same_tick_duplicate_mutations",
@@ -143,14 +140,16 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.staged_spawn_last_write_wins",
     ),
     IdempotencyCase(
-        operation="Replay of an already-registered reserved spawn through `CommandService`",
-        expected_contract="First spawn applies; replay is rejected",
+        operation="Replay of an already-settled reserved spawn command",
+        expected_contract=(
+            "Returns or observes the existing terminal outcome; never materializes twice"
+        ),
         task_id="idempotency.same_tick_duplicate_mutations",
     ),
     IdempotencyCase(
         operation="`RuntimeWorld.history()`",
         expected_contract="Idempotent for fixed audit history",
-        task_id="idempotency.runtime_aliases_and_history",
+        task_id="idempotency.runtime_handles_and_history",
     ),
     IdempotencyCase(
         operation="`add_components()` with no signature change",
@@ -224,18 +223,20 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.resume_and_writer_fencing",
     ),
     IdempotencyCase(
-        operation="`ingest_fact()` replay",
+        operation="Artifact publication replay",
         expected_contract=(
-            "Identical external identity and payload converges on one visible fact; changed payload conflicts"
+            "Identical producer identity and payload converges on one visible artifact/link; "
+            "changed payload conflicts"
         ),
-        task_id="idempotency.durable_fact_replay",
+        task_id="idempotency.durable_artifact_replay",
     ),
     IdempotencyCase(
-        operation="`ingest_fact()` crash recovery",
+        operation="Artifact publication crash recovery",
         expected_contract=(
-            "Lease takeover completes an appended orphan without creating a second visible fact"
+            "Lease takeover completes an appended orphan without creating a second visible "
+            "publication"
         ),
-        task_id="idempotency.durable_fact_crash_recovery",
+        task_id="idempotency.durable_artifact_crash_recovery",
     ),
     IdempotencyCase(
         operation="`evaluate()` replay",
@@ -257,9 +258,9 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.process_writer_fence_race",
     ),
     IdempotencyCase(
-        operation="Independent process `ingest_fact()` replay",
-        expected_contract="Concurrent processes converge on one visible external fact",
-        task_id="idempotency.process_fact_replay",
+        operation="Independent process `publish()` replay",
+        expected_contract="Concurrent processes converge on one visible external artifact",
+        task_id="idempotency.process_artifact_replay",
     ),
     IdempotencyCase(
         operation="Independent process `evaluate()` replay",
@@ -460,25 +461,15 @@ async def _task_world_lifecycle_idempotency() -> list[GraderResult]:
             await worlds.shutdown()
 
 
-def task_broker_and_submit_are_not_idempotent() -> list[GraderResult]:
-    """Duplicate logical broker/submit commands remain distinct queued work."""
-    return asyncio.run(_task_broker_and_submit_are_not_idempotent())
+def task_command_identity() -> list[GraderResult]:
+    """Command identity converges replays while distinct IDs remain distinct."""
+    return asyncio.run(_task_command_identity())
 
 
-async def _task_broker_and_submit_are_not_idempotent() -> list[GraderResult]:
+async def _task_command_identity() -> list[GraderResult]:
     reset_tick_counters()
     reset_daily_tokens()
     try:
-        broker = CommandBroker()
-        direct_a = Command(type=CommandType.SPAWN, payload={"components": []})
-        direct_b = Command(type=CommandType.SPAWN, payload={"components": []})
-        await broker.enqueue("direct-world", direct_a)
-        await broker.enqueue("direct-world", direct_b)
-        direct_pending = await broker.get_pending_count("direct-world")
-        direct_history = await broker.get_history("direct-world")
-        direct_dequeued = await broker.dequeue("direct-world")
-        direct_pending_after = await broker.get_pending_count("direct-world")
-
         with tempfile.TemporaryDirectory() as tmp:
             container = ServiceContainer()
             try:
@@ -491,33 +482,49 @@ async def _task_broker_and_submit_are_not_idempotent() -> list[GraderResult]:
                 service_a = Command(type=CommandType.SPAWN, payload={"components": []})
                 service_b = Command(type=CommandType.SPAWN, payload={"components": []})
 
-                service_id_a = await container.command_service.submit(
+                service_id_a = await container.command_gateway.submit(
                     admin,
                     world.world_id,
                     service_a,
                 )
-                service_id_b = await container.command_service.submit(
+                service_id_b = await container.command_gateway.submit(
                     admin,
                     world.world_id,
                     service_b,
                 )
-                service_pending = await container.broker.get_pending_count(world.world_id)
-                service_history = await container.broker.get_history(world.world_id)
+                replay_id = await container.command_gateway.submit(
+                    admin,
+                    world.world_id,
+                    service_a,
+                )
+                changed_content_conflicted = False
+                try:
+                    await container.command_gateway.submit(
+                        admin,
+                        world.world_id,
+                        Command(
+                            id=service_a.id,
+                            type=CommandType.SPAWN,
+                            payload={"components": [], "changed": True},
+                        ),
+                    )
+                except Exception:
+                    changed_content_conflicted = True
+                service_pending = await container.command_scheduler.pending_count(world.world_id)
+                service_history = await container.command_scheduler.history(world.world_id)
             finally:
                 await container.shutdown()
 
         return [
             state_check(
                 {
-                    "broker_keeps_two_pending_commands": direct_pending == 2,
-                    "broker_history_keeps_both_commands": len(direct_history) == 2,
-                    "broker_dequeues_both_commands": len(direct_dequeued) == 2,
-                    "broker_drain_clears_queue": direct_pending_after == 0,
                     "submit_returns_distinct_command_ids": service_id_a != service_id_b,
+                    "identical_id_replay_converges": replay_id == service_id_a,
+                    "changed_content_conflicts": changed_content_conflicted,
                     "submit_keeps_two_pending_commands": service_pending == 2,
                     "submit_history_keeps_both_commands": len(service_history) == 2,
                 },
-                name="queued_commands_are_not_deduplicated",
+                name="durable_command_identity",
             )
         ]
     finally:
@@ -542,19 +549,19 @@ async def _task_submit_spawn_reserves_distinct_entities() -> list[GraderResult]:
                 storage,
             )
             admin = _admin()
-            first = await container.command_service.submit_spawn(
+            first = await container.command_gateway.submit_spawn(
                 admin,
                 world.world_id,
                 [IdemCounter(value=1)],
             )
-            second = await container.command_service.submit_spawn(
+            second = await container.command_gateway.submit_spawn(
                 admin,
                 world.world_id,
                 [IdemCounter(value=2)],
             )
-            pending_before = await container.broker.get_pending_count(world.world_id)
+            pending_before = await container.command_scheduler.pending_count(world.world_id)
             applied = await container.simulation_service.step(world.world_id, RunConfig())
-            pending_after = await container.broker.get_pending_count(world.world_id)
+            pending_after = await container.command_scheduler.pending_count(world.world_id)
 
             rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
             values_by_entity = {row["entity_id"]: row["idemcounter__value"] for row in rows}
@@ -646,65 +653,53 @@ async def _task_async_world_entity_ids_and_missing_remove() -> list[GraderResult
             await worlds.shutdown()
 
 
-def task_runtime_aliases_and_history() -> list[GraderResult]:
-    """Runtime aliases bind handles without creating worlds; fixed history is stable."""
-    return asyncio.run(_task_runtime_aliases_and_history())
+def task_runtime_handles_and_history() -> list[GraderResult]:
+    """Attached handles preserve one world identity; fixed history is stable."""
+    return asyncio.run(_task_runtime_handles_and_history())
 
 
-async def _task_runtime_aliases_and_history() -> list[GraderResult]:
+async def _task_runtime_handles_and_history() -> list[GraderResult]:
     from archetype.runtime import ArchetypeRuntime
 
-    reset_tick_counters()
-    reset_daily_tokens()
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            admin = _admin()
-            sibling_ctx = ActorCtx(id=uuid7(), roles={"admin"})
-            async with ArchetypeRuntime(actor_ctx=admin) as runtime:
-                storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_runtime")
-                world = runtime.world("runtime-alias", storage=storage)
-                sibling_a = world.as_actor(sibling_ctx)
-                sibling_b = world.as_actor(sibling_ctx)
-                aliases_before_activation = len(world._state.aliases)
-                worlds_before_activation = len(runtime._container.world_service.list_worlds())
+    with tempfile.TemporaryDirectory() as tmp:
+        async with ArchetypeRuntime() as runtime:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_runtime")
+            world = runtime.world("runtime-handles", storage=storage)
+            worlds_before_activation = len(runtime._container.world_service.list_worlds())
 
-                await world.spawn(IdemCounter(value=7))
-                worlds_after_activation = len(runtime._container.world_service.list_worlds())
-                world_info = await world.info()
-                sibling_info = await sibling_a.info()
+            await world.spawn(IdemCounter(value=7))
+            world_info = await world.info()
+            sibling_a = runtime.attach(world_info.world_id, storage=storage)
+            sibling_b = runtime.attach(world_info.world_id, storage=storage)
+            worlds_after_activation = len(runtime._container.world_service.list_worlds())
+            sibling_a_info = await sibling_a.info()
+            sibling_b_info = await sibling_b.info()
 
-                # Fixed empty filter: each gated read emits an audit row, but not
-                # one matching this key, so the visible history remains stable.
-                history_a = await sibling_a.history(idempotency_key="no-such-idempotency-key")
-                history_b = await sibling_b.history(idempotency_key="no-such-idempotency-key")
+            history_a = await sibling_a.history(idempotency_key="no-such-idempotency-key")
+            history_b = await sibling_b.history(idempotency_key="no-such-idempotency-key")
 
-                return [
-                    state_check(
-                        {
-                            "aliases_share_state": (
-                                world._state is sibling_a._state is sibling_b._state
-                            ),
-                            "aliases_keep_distinct_actor_contexts": (
-                                world._ctx.id == admin.id and sibling_a._ctx.id == sibling_ctx.id
-                            ),
-                            "aliases_do_not_create_worlds_pre_activation": (
-                                aliases_before_activation == 3 and worlds_before_activation == 0
-                            ),
-                            "aliases_create_only_one_world_on_activation": (
-                                worlds_after_activation == 1
-                            ),
-                            "alias_resolves_same_world_id": (
-                                str(world_info.world_id) == str(sibling_info.world_id)
-                            ),
-                            "fixed_history_first_read_empty": history_a.count_rows() == 0,
-                            "fixed_history_second_read_still_empty": history_b.count_rows() == 0,
-                        },
-                        name="runtime_aliases_and_history",
-                    )
-                ]
-    finally:
-        reset_tick_counters()
-        reset_daily_tokens()
+            return [
+                state_check(
+                    {
+                        "lazy_handle_creates_no_world": worlds_before_activation == 0,
+                        "activation_creates_only_one_world": worlds_after_activation == 1,
+                        "attached_handles_are_actor_free": all(
+                            not hasattr(handle, "_ctx") for handle in (world, sibling_a, sibling_b)
+                        ),
+                        "attached_handles_resolve_same_world": len(
+                            {
+                                str(world_info.world_id),
+                                str(sibling_a_info.world_id),
+                                str(sibling_b_info.world_id),
+                            }
+                        )
+                        == 1,
+                        "fixed_history_first_read_empty": history_a.count_rows() == 0,
+                        "fixed_history_second_read_still_empty": history_b.count_rows() == 0,
+                    },
+                    name="runtime_handles_and_history",
+                )
+            ]
 
 
 def task_staged_spawn_last_write_wins() -> list[GraderResult]:
@@ -753,7 +748,7 @@ async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
 
 
 def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
-    """Reserved-spawn replays reject; duplicate despawns collapse."""
+    """Settled spawn replay converges; duplicate despawns collapse."""
     return asyncio.run(_task_duplicate_same_tick_mutations_collapse())
 
 
@@ -770,33 +765,36 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             )
             admin = _admin()
 
-            await container.command_service.submit(
-                admin,
-                world.world_id,
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"entity_id": 77, "components": [IdemCounter(value=1)]},
-                ),
+            spawn_command = Command(
+                type=CommandType.SPAWN,
+                tick=0,
+                payload={"entity_id": 77, "components": [IdemCounter(value=1)]},
             )
-            await container.command_service.submit(
+            admitted_id = await container.command_gateway.submit(
                 admin,
                 world.world_id,
-                Command(
-                    type=CommandType.SPAWN,
-                    tick=0,
-                    payload={"entity_id": 77, "components": [IdemCounter(value=9)]},
-                ),
+                spawn_command,
             )
             spawn_applied = await container.simulation_service.step(world.world_id, RunConfig())
             spawn_rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
+            replay_id = await container.command_gateway.submit(
+                admin,
+                world.world_id,
+                spawn_command,
+            )
+            pending_after_replay = await container.command_scheduler.pending_count(world.world_id)
+            spawn_records = [
+                record
+                for record in await container.command_scheduler.records(world.world_id)
+                if record.command_type == CommandType.SPAWN.value
+            ]
 
-            await container.command_service.submit(
+            await container.command_gateway.submit(
                 admin,
                 world.world_id,
                 Command(type=CommandType.DESPAWN, tick=1, payload={"entity_id": 77}),
             )
-            await container.command_service.submit(
+            await container.command_gateway.submit(
                 admin,
                 world.world_id,
                 Command(type=CommandType.DESPAWN, tick=1, payload={"entity_id": 77}),
@@ -820,9 +818,15 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             return [
                 state_check(
                     {
-                        "replayed_reserved_spawn_rejected": spawn_applied == 1,
+                        "settled_spawn_replay_returns_same_identity": replay_id
+                        == admitted_id
+                        == spawn_command.id,
+                        "settled_spawn_replay_is_not_requeued": pending_after_replay == 0,
+                        "one_terminal_spawn_record": len(spawn_records) == 1
+                        and spawn_records[0].status == "APPLIED",
+                        "first_spawn_applied_once": spawn_applied == 1,
                         "reserved_spawn_materialized_once": len(spawn_rows) == 1,
-                        "first_reserved_spawn_preserved": spawn_value == 1,
+                        "reserved_spawn_value_preserved": spawn_value == 1,
                         "spawn_row_starts_active": spawn_active is True,
                         "both_duplicate_despawns_applied": despawn_applied == 2,
                         "duplicate_despawn_materialized_once": len(despawn_rows) == 1,
@@ -870,7 +874,7 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
             world.add_hook(OnComponentRemoved, on_removed)
 
             signature_before = world.entity2sig[entity_id]
-            await container.command_service.add_components(
+            await container.command_gateway.add_components(
                 admin,
                 world.world_id,
                 entity_id,
@@ -879,7 +883,7 @@ async def _task_component_signature_noops_are_idempotent() -> list[GraderResult]
             after_add_signature = world.entity2sig[entity_id]
             after_add_pending = _pending_rows(world)
 
-            await container.command_service.remove_components(
+            await container.command_gateway.remove_components(
                 admin,
                 world.world_id,
                 entity_id,
@@ -928,7 +932,7 @@ async def _task_fixed_reads_are_idempotent() -> list[GraderResult]:
                 storage,
             )
             admin = _admin()
-            await container.command_service.submit_spawn(
+            await container.command_gateway.submit_spawn(
                 admin,
                 world.world_id,
                 [IdemCounter(value=5)],
@@ -1113,10 +1117,10 @@ def register(harness: EvalHarness) -> None:
         desc="WorldService explicit-ID create and missing/double destroy idempotency.",
     )
     harness.add(
-        "idempotency.broker_and_submit_non_idempotent",
+        "idempotency.command_identity",
         suite=SUITE,
-        fn=task_broker_and_submit_are_not_idempotent,
-        desc="CommandBroker.enqueue and CommandService.submit keep duplicate logical commands.",
+        fn=task_command_identity,
+        desc="Command IDs converge exact replays, reject conflicts, and preserve distinct IDs.",
     )
     harness.add(
         "idempotency.submit_spawn_distinct_entities",
@@ -1131,10 +1135,10 @@ def register(harness: EvalHarness) -> None:
         desc="AsyncWorld create_entity allocates IDs and missing remove is observable no-op.",
     )
     harness.add(
-        "idempotency.runtime_aliases_and_history",
+        "idempotency.runtime_handles_and_history",
         suite=SUITE,
-        fn=task_runtime_aliases_and_history,
-        desc="RuntimeWorld.as_actor aliases handles and fixed-filter history remains stable.",
+        fn=task_runtime_handles_and_history,
+        desc="Actor-free attached handles preserve one world and fixed-filter history is stable.",
     )
     harness.add(
         "idempotency.staged_spawn_last_write_wins",
@@ -1191,16 +1195,16 @@ def register(harness: EvalHarness) -> None:
         desc="Fenced resume owns the next tick and stale writer attempts remain invisible.",
     )
     harness.add(
-        "idempotency.durable_fact_replay",
+        "idempotency.durable_artifact_replay",
         suite=SUITE,
-        fn=task_durable_fact_replay,
-        desc="Concurrent fact replay converges and identity-content conflicts fail loudly.",
+        fn=task_durable_artifact_replay,
+        desc="Concurrent artifact replay converges and identity-content conflicts fail loudly.",
     )
     harness.add(
-        "idempotency.durable_fact_crash_recovery",
+        "idempotency.durable_artifact_crash_recovery",
         suite=SUITE,
-        fn=task_durable_fact_crash_recovery,
-        desc="Lease takeover completes an appended orphan without a duplicate visible fact.",
+        fn=task_durable_artifact_crash_recovery,
+        desc="Lease takeover completes an appended orphan without a duplicate visible artifact.",
     )
     harness.add(
         "idempotency.evaluation_receipt_replay",
@@ -1221,10 +1225,10 @@ def register(harness: EvalHarness) -> None:
         desc="Two independent writer processes race and exactly one publishes.",
     )
     harness.add(
-        "idempotency.process_fact_replay",
+        "idempotency.process_artifact_replay",
         suite=SUITE,
-        fn=task_process_fact_replay,
-        desc="Concurrent processes converge on one externally identified fact.",
+        fn=task_process_artifact_replay,
+        desc="Concurrent processes converge on one externally identified artifact.",
     )
     harness.add(
         "idempotency.process_evaluation_replay",

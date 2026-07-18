@@ -2,7 +2,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generate the tiered Python reference from Archetype's public API contract."""
+"""Generate the tiered Python reference and top-level exposure inventory."""
 
 from __future__ import annotations
 
@@ -59,8 +59,8 @@ PAGES: tuple[ReferencePage, ...] = (
             "EpisodeResult",
             "RolloutConfig",
             "RolloutResult",
-            "FactReceipt",
-            "FactWriteReceipt",
+            "ArtifactReceipt",
+            "ArtifactWriteReceipt",
         ),
     ),
     ReferencePage(
@@ -68,13 +68,13 @@ PAGES: tuple[ReferencePage, ...] = (
         "Building blocks",
         "Extension API",
         "Use these types to define component data, processors, and processor resources.",
-        ("Component", "AsyncProcessor", "FactProcessor", "Resources"),
+        ("Component", "AsyncProcessor", "ArtifactProcessor", "Resources"),
     ),
     ReferencePage(
         "hooks",
-        "Hooks and identity",
+        "Hooks and ingress identity",
         "Extension API",
-        "Bind an actor identity to a world handle and react to world lifecycle events.",
+        "React to world lifecycle events and define the identity record used by trusted ingress adapters.",
         (
             "ActorCtx",
             "HookEvent",
@@ -113,20 +113,12 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
-        "services",
-        "Service integration",
+        "commands",
+        "Command models",
         "Integration API",
-        "Use the service layer when a host needs explicit authorization, command routing, "
-        "or custom process wiring. Most scripts should use the runtime instead.",
+        "Typed command envelopes for supported host adapters. Scheduling, authorization, "
+        "and concrete application services remain internal.",
         (
-            "ServiceContainer",
-            "CommandService",
-            "WorldService",
-            "SimulationService",
-            "QueryService",
-            "FactService",
-            "StorageService",
-            "CommandBroker",
             "Command",
             "CommandType",
         ),
@@ -184,11 +176,11 @@ ALIASES: dict[str, str] = {
 # These types are part of the public signature closure but are intentionally
 # namespaced rather than promoted to the top-level import surface.
 SUPPLEMENTAL: dict[str, tuple[str, str]] = {
-    "ActorCtx": ("archetype.app.auth", "ActorCtx"),
+    "ActorCtx": ("archetype.app.gateway.auth", "ActorCtx"),
     "HookEvent": ("archetype.core.hooks", "HookEvent"),
     "HookHandle": ("archetype.core.hooks", "HookHandle"),
     "HookInfo": ("archetype.app.models", "HookInfo"),
-    "IterationResult": ("archetype.app.autoresearch_service", "IterationResult"),
+    "IterationResult": ("archetype.app.research.contracts", "IterationResult"),
     "ProcessorInfo": ("archetype.app.models", "ProcessorInfo"),
     "ResourceInfo": ("archetype.app.models", "ResourceInfo"),
     "StorageBackend": ("archetype.core.config", "StorageBackend"),
@@ -216,8 +208,8 @@ RECORDS = frozenset(
         "EpisodeResult",
         "RolloutConfig",
         "RolloutResult",
-        "FactReceipt",
-        "FactWriteReceipt",
+        "ArtifactReceipt",
+        "ArtifactWriteReceipt",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -244,7 +236,7 @@ RECORDS = frozenset(
 EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
-    "FactWriteReceipt": ("duplicate",),
+    "ArtifactWriteReceipt": ("duplicate",),
     "GraderContract": ("digest",),
 }
 
@@ -265,7 +257,7 @@ HIDDEN_SIGNATURES = frozenset({"RuntimeWorld", "SyncRuntimeWorld"})
 
 
 def _validate_coverage() -> dict[str, tuple[str, str]]:
-    """Return export locations after checking tier and alias coverage."""
+    """Return export locations after checking classification and alias coverage."""
     import archetype
 
     documented = {name for page in PAGES for name in page.names}
@@ -281,9 +273,9 @@ def _validate_coverage() -> dict[str, tuple[str, str]]:
     if missing or stale or duplicates:
         problems = []
         if missing:
-            problems.append(f"undocumented public exports: {', '.join(missing)}")
+            problems.append(f"unclassified top-level exports: {', '.join(missing)}")
         if stale:
-            problems.append(f"non-public documented names: {', '.join(stale)}")
+            problems.append(f"classified names not exported at top level: {', '.join(stale)}")
         if duplicates:
             problems.append(f"exports assigned more than once: {', '.join(duplicates)}")
         raise RuntimeError("; ".join(problems))
@@ -431,8 +423,9 @@ def _render_index() -> str:
         "",
         "# Python API",
         "",
-        "Archetype has one compatibility surface with several levels of abstraction. "
-        "Most applications only need the runtime, world-handle, and building-block pages.",
+        "Archetype's Python reference inventories and classifies the supported "
+        "top-level surface. Most "
+        "applications only need the runtime, world-handle, and building-block pages.",
         "",
         "| Surface | Use it for |",
         "| --- | --- |",
@@ -442,12 +435,16 @@ def _render_index() -> str:
     lines.extend(
         (
             "",
-            "## Public API rule",
+            "## Classification rule",
             "",
-            "Names exported from `archetype` are supported compatibility contracts. "
-            "Types exposed by their public signatures are part of that contract as well. "
-            "Recommended APIs receive examples and prominent placement; advanced and "
-            "compatibility APIs remain documented without being presented as the default.",
+            "Presence in `archetype.__all__` is an intentional supported exposure. The tier "
+            "on each reference page and the focused specifications classify its stability. "
+            "Types exposed by supported "
+            "signatures are part of those contracts even when they are not top-level exports.",
+            "",
+            "The container and concrete application services are internal and are not "
+            "top-level exports. Repository wiring imports them from their owning family "
+            "modules; applications use the runtime or an adapter.",
             "",
             "See [API stability and docstrings](../guide/api-stability.md) for the full policy.",
             "",

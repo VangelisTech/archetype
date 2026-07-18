@@ -2,18 +2,17 @@
 
 The app layer wraps the core ECS engine with service boundaries for storage, world lifecycle, mutation, simulation, reads, command queuing, and audit history. The API layer exposes those boundaries over HTTP.
 
-For normative service contracts, see [Service Protocols](service-protocols.md).
+For normative ownership and dependency rules, see
+[Application Architecture](application-architecture.md). For active internal
+ports, see [Service Protocols](service-protocols.md). Concrete services and
+`ServiceContainer` are internal.
 
 ## Layers
 
 ```text
-archetype.api / cli          HTTP surface and thin client
-       |
-archetype.runtime            Script boundary, RuntimeWorld handles
-       |
-archetype.app                Services, command gate, audit, broker
-       |
-archetype.core               AsyncWorld, processors, resources, storage
+application -> runtime -> RuntimeApplication
+CLI         -> API -> CommandGateway -> RuntimeApplication
+RuntimeApplication -> internal app-family capabilities -> core
 ```
 
 Dependencies point downward. Core does not import app. The CLI does not import app except for `serve`; it talks to the server over HTTP.
@@ -41,22 +40,10 @@ The app layer adds those concerns.
 
 ## WorldFactory Boundary
 
-`WorldFactory` is where app-level storage resolution plugs concrete core interfaces into `AsyncWorld`.
-
-```python
-class WorldFactory:
-    async def create_world(self, world_config, storage_config, cache_config=None, system=None):
-        store = await self._storage_service.get_or_create_store(
-            storage_config,
-            cache_config,
-        )
-        return AsyncWorld(
-            world_config=world_config,
-            querier=AsyncQueryManager(store),
-            updater=AsyncUpdateManager(store),
-            system=system or AsyncSystem(),
-        )
-```
+`WorldFactory` is where the store resolved by `WorldService` is composed into
+core. It gives that same store to `AsyncQueryManager` and
+`AsyncUpdateManager`, constructs the system, resources, and hooks, and returns
+an `AsyncWorld`.
 
 The factory constructs. The core executes.
 
@@ -68,68 +55,75 @@ The factory constructs. The core executes.
 
 **SimulationService** owns step, run, episode, and rollout. Rollout-internal forks are implementation details; the gated rollout call is the audit unit.
 
-**QueryService** is the internal storage-backed read path. It has no `ActorCtx`; external reads go through `iCommandService`.
+**QueryService** is the internal storage-backed read path. It has no `ActorCtx`;
+trusted reads enter through RuntimeApplication and untrusted reads first pass
+CommandGateway.
 
-**CommandBroker** is a pure queue for tick-deferred commands. It does not own RBAC or audit history.
+**CommandLedger/Dispatcher** durably admits, orders, leases, applies, retries,
+and settles tick-deferred commands. It does not own RBAC.
 
-**AuditLog** is append-only and records gated operations.
+**Audit** owns journals, transactional outboxes, and the analytical projection.
 
-**CommandService** is the command gate. It is the only ActorCtx-aware service and the only service the runtime calls.
+**RuntimeApplication** is the actor-free application facade consumed by the
+runtime and gateway. **CommandGateway** is the only ActorCtx-aware application
+boundary and is consumed by API/untrusted adapters only.
 
-## Gate-Centric Flow
+## Trusted and authorized flow
 
 Direct operation:
 
 ```text
-Runtime / API
-  -> CommandService.<method>(ctx, ...)
+Runtime
+  -> RuntimeApplication.<method>(...)
+  -> owning family workflow
+
+API
+  -> CommandGateway.<method>(ctx, ...)
   -> guardrail_allow
-  -> delegate to WorldService / MutationService / SimulationService / QueryService
-  -> AuditLog.record
-  -> return result or info snapshot
+  -> RuntimeApplication.<method>(...)
+  -> AuditJournal.record_access
 ```
 
 Tick-deferred operation:
 
 ```text
-Runtime / API
-  -> CommandService.submit(ctx, world_id, cmd)
-  -> guardrail_allow
-  -> CommandBroker.enqueue
+RuntimeApplication or authorized gateway
+  -> CommandScheduler.admit
+  -> CommandLedger
   -> SimulationService.step
-  -> CommandService.drain_and_apply
-  -> MutationService / WorldService
+  -> CommandDispatcher
+  -> MutationService + tick settlement
 ```
 
 See [Data Flow](data-flow.md) for details.
 
 ## Creating a World
 
-`create_world` is a direct gated lifecycle call:
+`create_world` is an actor-free application operation; untrusted calls are
+authorized before delegation:
 
 ```text
-1. API route or runtime handle
-   -> CommandService.create_world(ctx, WorldConfig(...), storage, cache)
+1. Runtime handle or authorized API route
+   -> RuntimeApplication.create_world(WorldConfig(...), storage, cache)
 
-2. CommandService
-   -> guardrail_allow(CommandType.CREATE_WORLD, ctx)
-   -> WorldService.create_world(...)
+2. RuntimeApplication -> WorldService.create_world(...)
 
 3. WorldService / WorldFactory
    -> StorageService.get_or_create_store(...)
    -> AsyncWorld(...)
    -> register world by id/name
 
-4. CommandService
-   -> AuditLog.record(...)
-   -> return WorldInfo
+4. RuntimeApplication -> return WorldInfo
 ```
 
-Runtime activation then adds staged processors, resources, and hooks through their own gated methods.
+Runtime activation then adds staged processors, resources, and hooks through
+their application operations.
 
 ## API and CLI
 
-The API layer injects `CommandService` and `ActorCtx` into route handlers. Routes translate HTTP payloads into service calls and return response models.
+The API layer injects the command-gateway port and `ActorCtx` into route
+handlers. The current implementation type is `CommandGateway`. Routes
+translate HTTP payloads into gateway calls and return response models.
 
 The CLI is an HTTP client against that server.
 
@@ -137,7 +131,7 @@ See [API Layer](api-layer.md).
 
 ## Source Reference
 
-- Factory: `src/archetype/app/factory.py`
+- Factory: `src/archetype/app/world/service.py`
 - Container: `src/archetype/app/container.py`
-- Service protocols: `src/archetype/app/interfaces.py`
+- Service protocols: `src/archetype/app/<family>/interfaces.py`
 - Core interfaces: `src/archetype/core/interfaces.py`

@@ -73,7 +73,7 @@ config = RunConfig.benchmark(
 
 ## WorldConfig
 
-Identifies a world instance. Runtime/API callers create worlds through `iCommandService.create_world(...)`; lower-level internal callers use `WorldService.create_world()`.
+Identifies a world instance. Runtime/API callers create worlds through `iCommandGateway.create_world(...)`; lower-level internal callers use `WorldService.create_world()`.
 
 ```python
 from archetype.core.config import WorldConfig

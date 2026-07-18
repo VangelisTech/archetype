@@ -20,10 +20,13 @@ When repository sources disagree, use this order:
 4. Teaching material: guides, README, examples, and `LEARNINGS.md`.
 
 This order is a way to locate authority, not permission to ignore a conflict.
-If a focused specification and its executable oracle disagree, stop and surface
-that mismatch explicitly. Decide which contract is intended before changing
-behavior. A stale teaching example should become its own documentation fix
-rather than quietly steering an unrelated implementation.
+If a focused specification and its executable oracle disagree, record the
+mismatch. Stop for adjudication only when it changes public compatibility, a
+core invariant, durability/concurrency/security semantics, an irreversible
+migration, or a trust boundary. Otherwise follow the accepted specification,
+fix or register the stale evidence, and continue. A stale teaching example
+should become its own documentation fix rather than quietly steering an
+unrelated implementation.
 
 ## Contract-First Issue Loop
 
@@ -62,6 +65,7 @@ These documents are the current orientation pack for contributors:
 | [`CLAUDE.md`](https://github.com/VangelisTech/archetype/blob/main/CLAUDE.md) | Local development workflow and repo-specific guardrails for coding agents |
 | [Repository Harness](repository-harness.md) | Evidence types, dependency boundary, and how to choose the smallest executable oracle |
 | [Specification Overview](specification.md) | Umbrella contract and historical context |
+| [Application Architecture](application-architecture.md) | Normative supported boundaries, service ownership, dependency order, and lint inputs |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |
 | [Runtime](runtime.md) | Script-boundary runtime contract |
@@ -80,7 +84,7 @@ This repository is opinionated about where changes should land.
 | Area | Guidance |
 |---|---|
 | `src/archetype/core/` | Treat as curated and effectively read-only unless the change has been explicitly approved |
-| `src/archetype/app/` | Safe to extend carefully; this is where most orchestration and service work belongs |
+| `src/archetype/app/` | Internal implementation layer; extend carefully behind the supported runtime or adapter boundary |
 | `src/archetype/api/`, `src/archetype/cli/`, `docs/`, `examples/`, `tests/` | Good contribution targets |
 
 If you are proposing a core behavior change, you should document the contract
@@ -121,6 +125,12 @@ These cover:
 
 ### Executable contract suites
 
+`quality/contracts.toml` is the machine-readable contract index. It maps each
+approved contract to its normative source, owner, risk, pytest/static/eval
+oracles, benchmarks, and execution profiles. The generated
+[Contract Traceability](../reference/contract-traceability.md) page is the
+reviewable view; edit the registry, never the generated table.
+
 Some of the most important contracts are enforced directly in tests:
 
 - [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py)
@@ -131,7 +141,9 @@ Some of the most important contracts are enforced directly in tests:
 - [`tests/cli/test_cli.py`](https://github.com/VangelisTech/archetype/blob/main/tests/cli/test_cli.py)
 
 If you change behavior, update or add the contract test that proves the new
-behavior is intentional.
+behavior is intentional. `make contract-audit` rejects unknown or orphaned
+contract references, stale source anchors, and a generated traceability page
+that no longer matches the registry.
 
 ## Issue Template Guidance
 
@@ -148,11 +160,11 @@ Required validation:
 Documentation affected:
 ```
 
-Keep each field concrete. "Owning layer: app/CommandService" is useful;
-"backend" is not. "Invariants at risk: failed commands must not debit quota or
-enter the broker" gives a reviewer something to verify. Empty fields are useful
-signals too: if no executable oracle exists, the issue has identified a test
-that needs to be written.
+Keep each field concrete. "Owning layer: app/gateway" is useful; "backend" is
+not. "Invariants at risk: rejected commands must not debit quota or enter the
+durable scheduler" gives a reviewer something to verify. Empty fields are
+useful signals too: if no executable oracle exists, the issue has identified a
+test that needs to be written.
 
 Good examples:
 
@@ -176,14 +188,25 @@ uv sync --group dev
 ### Useful commands
 
 ```bash
-make test        # fast test suite
-make test-cov    # test suite with coverage report
-make check       # format + lint
-make ci          # main gate: lint + lock-check + tests with coverage
-make bench       # record one local ECS microbenchmark snapshot
-make bench-query # record materialized QueryService latency
-uv run mkdocs build
+make test             # full parallel pytest suite
+make test-contract    # tests carrying approved contract IDs
+make test-integration # multi-layer tests
+make test-process     # subprocess/crash/independent-writer tests
+make static           # format, lint, types, lock, contracts, benchmarks
+make eval-conformance # blocking regression + specification evidence
+make eval-reliability # blocking retry/replay/crash/recovery evidence
+make eval-capability  # blocking architectural capability evidence
+make verify-pr        # local equivalent of the required PR profile
+make verify-release   # installed-artifact release profile
+make bench            # record one local ECS microbenchmark report
+make bench-query      # record materialized QueryService latency
+make docs
 ```
+
+Test directories identify the owning subsystem. Orthogonal markers identify
+evidence type and cost: `unit`, `contract(<id>)`, `integration`, `race`,
+`process`, `smoke`, `external`, and `slow`. Do not move a test merely to make a
+profile select it; mark it and keep it beside its owner.
 
 ### Before you open a PR
 
@@ -193,8 +216,8 @@ Validation follows risk rather than patch size alone:
 |---|---|
 | Typo or prose-only documentation | `git diff --check`; build the affected docs when navigation, links, or rendering may change |
 | Executable example or public snippet | Run the example or snippet path, then build the docs |
-| API, CLI, runtime, or app behavior | Closest contract/regression tests, then `make check`; use `make ci` when behavior crosses service or lifecycle boundaries |
-| Core, storage, concurrency, or durability | Prior contract discussion, focused failure/race coverage, `make ci`, and the relevant eval or infrastructure gate |
+| API, CLI, runtime, or app behavior | Closest contract/regression tests, then `make static`; use `make verify-pr` when behavior crosses service or lifecycle boundaries |
+| Core, storage, concurrency, or durability | Prior contract discussion, focused failure/race coverage, `make verify-full`, and the relevant eval or infrastructure gate |
 | Dependency or release metadata | Lock check plus the workflow-specific build or release validation |
 
 Report the commands that actually ran and their outcomes. Do not write "tests
@@ -209,7 +232,7 @@ Keep the work narrow and contract-driven.
 - Add or update a regression test before or alongside the fix.
 - Prefer service-layer changes over core changes when both could solve the same
   problem.
-- Do not bypass `iCommandService`, runtime, or world lifecycle semantics just to make
+- Do not bypass `iCommandGateway`, runtime, or world lifecycle semantics just to make
   a wrapper API feel shorter.
 - Do not introduce `coder` or `maintainer` in new docs or examples; use the four-role model in [Command Gate](command-gate.md).
 - If a proposed ergonomic change weakens a contract, document the tradeoff and

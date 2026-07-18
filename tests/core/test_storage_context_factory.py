@@ -2,8 +2,8 @@ import pathlib
 
 from daft.session import Session
 
+from archetype.app.storage.session import configure_session
 from archetype.core.config import StorageConfig
-from archetype.runtime.session import configure_session
 
 
 def test_configure_session_resolves_relative_path_to_absolute(tmp_path):

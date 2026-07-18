@@ -16,7 +16,7 @@
 
 from fastapi import APIRouter, Depends
 
-from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.deps import get_actor_ctx, get_command_gateway
 from archetype.api.errors import raise_api_error
 from archetype.api.models import (
     EpisodeConfig,
@@ -26,8 +26,8 @@ from archetype.api.models import (
     StepRequest,
     StepResponse,
 )
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.models import EpisodeResult, RolloutResult
 
 router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/worlds/{world_id}", tags=["simulation"])
 async def step_world(
     world_id: str,
     req: StepRequest | None = None,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Advance one tick. Requires operator or admin."""
@@ -53,7 +53,7 @@ async def step_world(
 async def run_world(
     world_id: str,
     req: RunRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Run a bounded simulation. Requires operator or admin."""
@@ -74,7 +74,7 @@ async def run_world(
 async def run_episode(
     world_id: str,
     config: EpisodeConfig,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Run one episode. Requires operator or admin."""
@@ -88,7 +88,7 @@ async def run_episode(
 async def run_rollout(
     world_id: str,
     config: RolloutConfig,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Run a rollout. Requires operator or admin; emits one rollout audit row."""

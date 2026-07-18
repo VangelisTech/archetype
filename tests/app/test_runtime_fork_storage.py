@@ -22,7 +22,7 @@ import pytest
 from daft import DataFrame, col
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 
 
@@ -191,11 +191,9 @@ async def test_fork_lineage_persisted_under_fork_run_id(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_gated_query_resolves_world_storage_without_config(tmp_path):
-    """The gate knows where a world's rows live: a gated read with no
+async def test_application_query_resolves_world_storage_without_config(tmp_path):
+    """The application knows where a world's rows live: a read with no
     storage_config resolves the world's recorded store."""
-    from archetype.runtime._actor import default_actor_ctx
-
     storage = _storage(tmp_path)
     async with ArchetypeRuntime() as rt:
         world = rt.world("src", storage=storage, processors=[Inc()])
@@ -204,8 +202,7 @@ async def test_gated_query_resolves_world_storage_without_config(tmp_path):
 
         container = rt._container
         live = container.world_service.get_world(world.world_id)
-        df = await container.command_service.query_components(
-            default_actor_ctx(),
+        df = await container.application.query_components(
             [Meter],
             str(world.world_id),
             str(live.run_id),

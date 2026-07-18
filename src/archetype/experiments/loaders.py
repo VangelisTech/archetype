@@ -19,7 +19,7 @@ Experiment Loaders
 Ingest external state into experiment Components, starting with
 archetype-runner's SQLite registry.
 
-Direct ingestion path (no CommandBroker / RBAC) following the
+Direct artifact path (no CommandGateway / RBAC) following the
 ``scripts/ingest_claude_sessions.py`` pattern: SQLite → list of Run
 Components → ``world.create_entity(...)``. The runner's SQLite uses
 WAL mode, so these reads are safe even while the runner is actively
@@ -33,7 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from archetype.experiments.components import Run
+from archetype.app.research.models import Run
 
 if TYPE_CHECKING:
     from archetype.core.aio import AsyncWorld

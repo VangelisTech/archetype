@@ -117,8 +117,8 @@ def _dedup(items: Sequence[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-class _GatedSweepOps:
-    """Every sweep operation as a gated runtime command (the supported path)."""
+class _RuntimeSweepOps:
+    """Every sweep operation through the supported actor-free runtime path."""
 
     def __init__(self, runtime: ArchetypeRuntime) -> None:
         self._runtime = runtime
@@ -137,12 +137,14 @@ class _GatedSweepOps:
 
 
 class _ServiceSweepOps:
-    """DEPRECATED bridge: raw services, no command gateway. Removed in v0.6."""
+    """DEPRECATED raw-service bridge; removed in v0.6."""
 
-    def __init__(self, world_service: Any, simulation_service: Any, eval_service: Any) -> None:
+    def __init__(
+        self, world_service: Any, simulation_service: Any, evaluation_service: Any
+    ) -> None:
         self._worlds = world_service
         self._sim = simulation_service
-        self._eval = eval_service
+        self._eval = evaluation_service
 
     async def make_world(self, name: str, storage: StorageConfig) -> Any:
         return await self._worlds.create_world(WorldConfig(name=name), storage)
@@ -177,7 +179,7 @@ async def run_instruction_sweep(
     with_frames: bool = False,
     world_service: Any | None = None,  # deprecated bridge — remove in v0.6
     simulation_service: Any | None = None,  # deprecated bridge — remove in v0.6
-    eval_service: Any | None = None,  # deprecated bridge — remove in v0.6
+    evaluation_service: Any | None = None,  # deprecated bridge — remove in v0.6
 ) -> SweepReport:
     """Run every instruction variant of one task in a single batched world.
 
@@ -195,20 +197,21 @@ async def run_instruction_sweep(
     control steps. Size it as ``desired_control_steps + 1``.
     """
     if runtime is not None:
-        ops: Any = _GatedSweepOps(runtime)
+        ops: Any = _RuntimeSweepOps(runtime)
     else:
-        if world_service is None or simulation_service is None or eval_service is None:
+        if world_service is None or simulation_service is None or evaluation_service is None:
             raise TypeError(
                 "run_instruction_sweep requires `runtime=ArchetypeRuntime(...)` "
-                "(or, deprecated, all of world_service/simulation_service/eval_service)"
+                "(or, deprecated, all of world_service/simulation_service/evaluation_service)"
             )
         warnings.warn(
-            "run_instruction_sweep(world_service=..., ...) bypasses the command "
-            "gateway and is deprecated; pass runtime= instead. Removed in v0.6.",
+            "run_instruction_sweep(world_service=..., ...) bypasses the "
+            "RuntimeApplication facade and is deprecated; pass runtime= instead. "
+            "Removed in v0.6.",
             DeprecationWarning,
             stacklevel=2,
         )
-        ops = _ServiceSweepOps(world_service, simulation_service, eval_service)
+        ops = _ServiceSweepOps(world_service, simulation_service, evaluation_service)
 
     unique_variants = _dedup(variants)
     if not unique_variants:

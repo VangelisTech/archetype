@@ -8,15 +8,18 @@ Repo-specific guidance for AI collaborators. For normative behavior, read the sp
 archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
-│   ├── app/            # Service layer
-│   │   ├── auth/       #   RBAC guard (ActorCtx, roles, quotas)
-│   │   ├── broker.py   #   CommandBroker (priority queue)
-│   │   ├── command_service.py    # Gate: authorize / delegate / audit
-│   │   ├── world_service.py      # World lifecycle
-│   │   ├── simulation_service.py # Tick stepping and runs
-│   │   ├── query_service.py      # Read path
-│   │   ├── storage_service.py    # Backend pooling
-│   │   └── container.py          # Composition root
+│   ├── app/            # Internal application families
+│   │   ├── application/ #   Actor-free RuntimeApplication facade
+│   │   ├── gateway/     #   CommandGateway + RBAC/auth
+│   │   ├── commands/    #   Durable scheduler/dispatcher
+│   │   ├── world/       #   Lifecycle, mutation, simulation
+│   │   ├── storage/     #   Store pool + control authority
+│   │   ├── query/       #   Persisted read path
+│   │   ├── artifacts/   #   Publication + typed ingestion
+│   │   ├── evaluation/  #   Grading + receipts
+│   │   ├── research/    #   Autoresearch workflows
+│   │   ├── audit/       #   Append-only projection
+│   │   └── container.py #   Sole concrete composition root
 │   ├── api/            # FastAPI REST layer
 │   ├── cli/            # Typer CLI (thin HTTP client)
 │   └── runtime/        # Top-level runtime over the service layer
@@ -30,8 +33,8 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `app/` | Extend carefully. Service contracts are in the specification. Lower-level interface. |
-| `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Additive only; top-level exports stay stable. |
+| `app/` | Extend carefully. Internal service implementation; contracts are in the specification. |
+| `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
 | `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
 
 ## Top-level runtime (recommended)
@@ -54,31 +57,39 @@ asyncio.run(main())
 
 Sync scripts use `with ArchetypeRuntime.sync() as runtime:` instead.
 
-## Using the service layer (lower-level)
+## Inspecting the service layer (internal)
 
-`ServiceContainer`, `CommandService`, and broker semantics are lower-level interfaces. Reach for them when you need explicit `ActorCtx` / RBAC, custom command routing, or to wire a non-script host. Beginner docs and quickstarts should default to `ArchetypeRuntime`.
+`ServiceContainer` and concrete services are internal implementation
+machinery, not supported application APIs. Focused implementation tests and
+repository wiring code may use them. Application code and examples use
+`ArchetypeRuntime`; untrusted hosts use the REST/API gateway boundary.
+
+The container exposes actor-free `application` and authorized
+`command_gateway` ports. The runtime consumes only `application`; FastAPI
+consumes only `iCommandGateway`. `ActorCtx` is an ingress/gateway concept and
+never belongs on a runtime handle.
 
 ```python
 import asyncio
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType
-from archetype.app.auth.models import ActorCtx
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.config import WorldConfig, StorageConfig, RunConfig
 from uuid_utils import uuid7
 
 async def main():
     container = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    info = await container.command_service.create_world(
+    info = await container.command_gateway.create_world(
         ctx,
         WorldConfig(name="experiment"),
         StorageConfig(),
     )
 
     cmd = Command(type=CommandType.SPAWN, payload={"components": []})
-    await container.command_service.submit(ctx, info.world_id, cmd)
+    await container.command_gateway.submit(ctx, info.world_id, cmd)
 
-    result = await container.command_service.run(
+    result = await container.command_gateway.run(
         ctx,
         info.world_id,
         RunConfig(num_steps=10),
@@ -137,9 +148,11 @@ The CLI (except `serve`) is an HTTP client against the running server. See `READ
 ## Tests and CI
 
 ```bash
-make ci          # lint + lock-check + tests with coverage (gate before push)
+make ci          # complete PR verification profile
+make verify-full # PR profile + process/reliability evidence
+make verify-release # installed-artifact release profile
 make test        # fast tests, no coverage
-make check       # format + lint
+make static      # format/lint/type/lock/registry checks
 make test-cov    # coverage report
 ```
 
@@ -149,15 +162,20 @@ automerge workflow arms after the review gate passes your current head
 never merges sooner). Reply to footgun review threads with what you
 changed before resolving them.
 
-## Command flow
+## Application flow
 
 ```text
-API / CLI / caller
-    → CommandService
-    → direct delegate or CommandBroker (tick-deferred queue)
-    → WorldService / SimulationService
-    → AsyncWorld       (query → mutate → execute → persist)
-    → QueryService / AuditLog
+Trusted script → ArchetypeRuntime → RuntimeApplication
+
+CLI → API authentication → CommandGateway authorization
+                             → RuntimeApplication
+
+RuntimeApplication → family workflow ports → AsyncWorld / durable storage
+
+Deferred admission → CommandScheduler → durable control catalog
+Simulation tick    → CommandScheduler drain → tick commit + command settlement
+
+CLI → API over HTTP (except server startup)
 ```
 
 Roles (flat, not hierarchical):
@@ -171,9 +189,10 @@ Roles (flat, not hierarchical):
 
 ## Change-safety quick reference
 
-- Keep dependencies pointing downward: runtime/API/CLI → app → core. Runtime
-  and API calls go through `CommandService`; do not leak `AsyncWorld` or
-  lower-level services past that gate.
+- Keep dependencies pointing downward: runtime → actor-free app application
+  port; API → gateway port; gateway → application port; app → core. CLI is an
+  HTTP client of API. Do not leak `AsyncWorld`, the container, backend clients,
+  or concrete services across either boundary.
 - Treat `src/archetype/core/` as invariant-owned. Prefer an app or runtime
   extension when it can meet the requirement; discuss any core behavior change
   before implementing it.
@@ -183,7 +202,7 @@ Roles (flat, not hierarchical):
 - A tick is a commit boundary: compute all archetypes before persistence, and
   do not consume staged mutations or advance the tick until durable visibility
   is published. Failed ticks must remain retryable.
-- Keep runtime and world lifetimes distinct. Handles are lazy and actor-bound;
+- Keep runtime and world lifetimes distinct. Handles are lazy and actor-free;
   world shutdown is local, while runtime teardown owns shared services.
 - When changing behavior, update the focused contract test (and the
   specification if the contract itself changes), not only a happy-path test.
@@ -233,14 +252,15 @@ change, and report the exact validation that ran. See
 | File | Purpose |
 |------|---------|
 | `docs/guide/specification.md` | Specification overview |
+| `docs/guide/application-architecture.md` | Normative dependency and encapsulation policy |
 | `docs/guide/runtime.md` | Runtime contract |
 | `docs/guide/service-protocols.md` | App service contracts |
 | `docs/guide/command-gate.md` | Roles, permissions, and audit gate |
 | `LEARNINGS.md` | Daft patterns, UDF rules, data-centric principle |
 | `src/archetype/runtime/` | `ArchetypeRuntime` — recommended top-level API |
 | `src/archetype/app/container.py` | Service wiring |
-| `src/archetype/app/command_service.py` | Mutation dispatch |
-| `src/archetype/app/broker.py` | Priority queue |
+| `src/archetype/app/gateway/service.py` | Authorized ingress gateway |
+| `src/archetype/app/commands/service.py` | Durable scheduler and dispatcher |
 | `src/archetype/core/aio/async_world.py` | World runtime |
 | `tests/app/test_runtime_contracts.py` | Executable runtime contracts |
 | `tests/sync/test_sync_stack_contracts.py` | Executable sync engine contracts |

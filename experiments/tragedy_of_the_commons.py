@@ -50,7 +50,6 @@ from archetype.core.component import Component
 from archetype.core.config import RunConfig, WorldConfig
 from archetype.core.resources import Resources
 
-
 # ---------------------------------------------------------------------------
 # In-memory infrastructure (same pattern as examples/simulation_script.py)
 # ---------------------------------------------------------------------------
@@ -194,7 +193,7 @@ class HarvestProcessor(AsyncProcessor):
         # Apply harvests
         updated_rows = []
         total_taken = 0.0
-        for row, want in zip(rows, desired):
+        for row, want in zip(rows, desired, strict=True):
             actual = want * scale
             total_taken += actual
             row["gatherer__total_harvested"] = row["gatherer__total_harvested"] + actual
@@ -227,9 +226,7 @@ class RegenerationProcessor(AsyncProcessor):
     components = (Gatherer,)
     priority = 20
 
-    async def process(
-        self, df: DataFrame, resources: Resources = None, **kwargs
-    ) -> DataFrame:
+    async def process(self, df: DataFrame, resources: Resources = None, **kwargs) -> DataFrame:
         pool = resources.require(CommonPool)
         pool.regenerate()
         pool.record()
@@ -245,15 +242,15 @@ class RegenerationProcessor(AsyncProcessor):
 def make_agents(scenario: str) -> list[tuple[str, str]]:
     """Return (name, strategy) pairs for a scenario."""
     if scenario == "all_cooperative":
-        return [(f"Coop-{i+1}", "cooperative") for i in range(6)]
+        return [(f"Coop-{i + 1}", "cooperative") for i in range(6)]
     elif scenario == "mixed":
         return (
-            [(f"Greedy-{i+1}", "greedy") for i in range(2)]
-            + [(f"Moderate-{i+1}", "moderate") for i in range(2)]
-            + [(f"Coop-{i+1}", "cooperative") for i in range(2)]
+            [(f"Greedy-{i + 1}", "greedy") for i in range(2)]
+            + [(f"Moderate-{i + 1}", "moderate") for i in range(2)]
+            + [(f"Coop-{i + 1}", "cooperative") for i in range(2)]
         )
     elif scenario == "all_greedy":
-        return [(f"Greedy-{i+1}", "greedy") for i in range(6)]
+        return [(f"Greedy-{i + 1}", "greedy") for i in range(6)]
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
 
@@ -421,7 +418,9 @@ def print_results(results: list[dict]):
     mixed_total = sum(a["total_harvested"] for a in mixed["agents"])
     print(f"\n  Total harvest over {len(coop['pool_history'])} ticks:")
     print(f"    All cooperative: {coop_total:>10.1f}  (pool healthy at {coop['final_pool']:.0f})")
-    print(f"    Mixed society:   {mixed_total:>10.1f}  (pool stressed at {mixed['final_pool']:.0f})")
+    print(
+        f"    Mixed society:   {mixed_total:>10.1f}  (pool stressed at {mixed['final_pool']:.0f})"
+    )
     print(f"    All greedy:      {greedy_total:>10.1f}  (pool collapsed)")
 
     if coop_total > greedy_total:
@@ -430,8 +429,8 @@ def print_results(results: list[dict]):
 
     if mixed_total > coop_total:
         print(f"  2. BUT the mixed society harvests the most overall ({mixed_total:.0f})!")
-        print(f"     This is the free-rider paradox: greedy agents exploit a pool")
-        print(f"     kept alive by cooperators, extracting more individually.")
+        print("     This is the free-rider paradox: greedy agents exploit a pool")
+        print("     kept alive by cooperators, extracting more individually.")
 
         # Show the per-agent inequity in mixed
         mixed_greedy = [a for a in mixed["agents"] if a["strategy"] == "greedy"]
@@ -440,9 +439,13 @@ def print_results(results: list[dict]):
         if mixed_greedy and mixed_coop:
             g_avg = mixed_greedy[0]["total_harvested"]
             c_avg = mixed_coop[0]["total_harvested"]
-            print(f"  3. Inequity: greedy agents harvest {g_avg:.0f} each vs {c_avg:.0f} for cooperators.")
-            print(f"     Cooperators earn LESS ({c_avg:.0f}) than in an all-cooperative world ({coop_in_coop:.0f}).")
-            print(f"     Greedy agents free-ride: {g_avg/c_avg:.1f}x the harvest of cooperators.")
+            print(
+                f"  3. Inequity: greedy agents harvest {g_avg:.0f} each vs {c_avg:.0f} for cooperators."
+            )
+            print(
+                f"     Cooperators earn LESS ({c_avg:.0f}) than in an all-cooperative world ({coop_in_coop:.0f})."
+            )
+            print(f"     Greedy agents free-ride: {g_avg / c_avg:.1f}x the harvest of cooperators.")
 
     print(f"{'─' * 72}\n")
 

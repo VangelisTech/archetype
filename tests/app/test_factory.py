@@ -5,8 +5,8 @@
 
 import pytest
 
-from archetype.app.storage_service import StorageService, _resolve_uri
-from archetype.app.world_service import WorldService
+from archetype.app.storage.service import StorageService, _resolve_uri
+from archetype.app.world.service import WorldService
 from archetype.core.aio import AsyncSystem, AsyncWorld
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 

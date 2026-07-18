@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""EvalService contracts."""
+"""EvaluationService contracts."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 from daft import DataFrame, col
 
 from archetype.app.container import ServiceContainer
-from archetype.app.eval_service import EvalService
+from archetype.app.evaluation.service import EvaluationService
 from archetype.app.models import EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
@@ -37,16 +37,16 @@ def _score_rows(df: DataFrame) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_container_wires_eval_service():
+async def test_container_wires_evaluation_service():
     container = ServiceContainer()
     try:
-        assert isinstance(container.eval_service, EvalService)
+        assert isinstance(container.evaluation_service, EvaluationService)
     finally:
         await container.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_eval_service_queries_explicit_component_window(tmp_path):
+async def test_evaluation_service_queries_explicit_component_window(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval")
@@ -55,7 +55,7 @@ async def test_eval_service_queries_explicit_component_window(tmp_path):
         await world.create_entity([Score(value=1)])
 
         run = await container.simulation_service.run(world.world_id, RunConfig(num_steps=3))
-        df = await container.eval_service.query_components(
+        df = await container.evaluation_service.query_components(
             [Score],
             world_id=world.world_id,
             run_id=run.run_id,
@@ -70,7 +70,7 @@ async def test_eval_service_queries_explicit_component_window(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_eval_service_queries_episode_dataframe(tmp_path):
+async def test_evaluation_service_queries_episode_dataframe(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval_episode")
@@ -84,7 +84,7 @@ async def test_eval_service_queries_episode_dataframe(tmp_path):
             EpisodeConfig(max_steps=2),
         )
 
-        df = await container.eval_service.query_episode(
+        df = await container.evaluation_service.query_episode(
             episode,
             components=[Score],
             storage_config=storage,
@@ -99,7 +99,7 @@ async def test_eval_service_queries_episode_dataframe(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_eval_service_filters_trajectory_component_and_runs_graders(tmp_path):
+async def test_evaluation_service_filters_trajectory_component_and_runs_graders(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval_trajectory")
@@ -132,7 +132,7 @@ async def test_eval_service_filters_trajectory_component_and_runs_graders(tmp_pa
         )
 
         run = await container.simulation_service.run(world.world_id, RunConfig(num_steps=1))
-        df = await container.eval_service.query_trajectory_component(
+        df = await container.evaluation_service.query_trajectory_component(
             Trajectory,
             world_id=world.world_id,
             run_id=run.run_id,
@@ -154,7 +154,7 @@ async def test_eval_service_filters_trajectory_component_and_runs_graders(tmp_pa
                 name="selected_trajectory",
             )
 
-        results = await container.eval_service.run_graders(df, [grade_failure])
+        results = await container.evaluation_service.run_graders(df, [grade_failure])
 
         assert len(results) == 1
         assert isinstance(results[0], GraderResult)
@@ -164,7 +164,7 @@ async def test_eval_service_filters_trajectory_component_and_runs_graders(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_eval_service_grades_trajectory_component_with_custom_sampling(tmp_path):
+async def test_evaluation_service_grades_trajectory_component_with_custom_sampling(tmp_path):
     container = ServiceContainer()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="eval_rewards")
@@ -183,7 +183,7 @@ async def test_eval_service_grades_trajectory_component_with_custom_sampling(tmp
                 exact_match(total_reward, 1.25, name="total_reward"),
             ]
 
-        results = await container.eval_service.grade_trajectory_component(
+        results = await container.evaluation_service.grade_trajectory_component(
             TrajectoryReward,
             world_id=world.world_id,
             run_id=run.run_id,
@@ -199,7 +199,7 @@ async def test_eval_service_grades_trajectory_component_with_custom_sampling(tmp
             ValueError,
             match=r"TrajectoryReward does not store requested trajectory filter field\(s\): task_id",
         ):
-            await container.eval_service.query_trajectory_component(
+            await container.evaluation_service.query_trajectory_component(
                 TrajectoryReward,
                 world_id=world.world_id,
                 run_id=run.run_id,
@@ -211,18 +211,18 @@ async def test_eval_service_grades_trajectory_component_with_custom_sampling(tmp
 
 
 @pytest.mark.asyncio
-async def test_eval_service_rejects_vacuous_grader_sets():
+async def test_evaluation_service_rejects_vacuous_grader_sets():
     container = ServiceContainer()
     try:
         df = daft.from_pydict({"value": [1]})
 
         with pytest.raises(ValueError, match="at least one grader"):
-            await container.eval_service.run_graders(df, [])
+            await container.evaluation_service.run_graders(df, [])
 
         def no_results(_frame: DataFrame) -> list[object]:
             return []
 
         with pytest.raises(ValueError, match="returned no outputs"):
-            await container.eval_service.run_graders(df, [no_results])
+            await container.evaluation_service.run_graders(df, [no_results])
     finally:
         await container.shutdown()

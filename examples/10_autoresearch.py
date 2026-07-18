@@ -29,9 +29,9 @@ from daft import col
 
 from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
 from archetype.app.models import EpisodeConfig
+from archetype.app.research.models import Run
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.experiments.components import Run
 
 TARGET = 3.0
 

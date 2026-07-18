@@ -18,14 +18,13 @@ trial lifecycle described in the
 ## Run or inspect checks
 
 ```bash
-make eval          # run every group; optionally write eval-results.json
-make eval-reg      # required behavior checks
-make eval-idem     # retry and replay checks
-make eval-cap      # broader end-to-end scenarios
+make eval-conformance  # blocking regression + spec profile
+make eval-reliability  # blocking idempotency/recovery profile
+make eval-capability   # blocking architectural capability profile
+make eval              # every suite; writes eval-results.json
 
 uv run python -m evals.run --suite spec
-uv run python -m evals.run --suite regression --trials 3
-uv run python -m evals.run --out eval-results.json
+uv run python -m evals.run --profile reliability --trials 3
 uv run python -m evals.run --list
 uv run python -m evals.run --list --suite capability
 ```
@@ -33,6 +32,10 @@ uv run python -m evals.run --list --suite capability
 `--list` reads the live registry built by `evals.run.build_harness()` and does
 not execute tasks. That command is the task inventory; this guide deliberately
 does not duplicate it in a hand-maintained table.
+
+`quality/eval_profiles.toml` is the machine-readable authority for profile
+membership and failure semantics. The short aliases `make eval-reg`,
+`make eval-idem`, and `make eval-cap` remain available for focused local use.
 
 ## Execution model
 
@@ -51,27 +54,36 @@ Reports use literal measurements:
 | `all_passed` | Whether every recorded execution passed |
 
 These are repository results, not statistical estimates of model capability.
+Every retained JSON result uses the provenance envelope from
+`quality/results.py`: schema and result kind, selected profile and suites,
+declared failure policy, outcome and timing, Git revision, Python/platform
+environment, trial configuration, and per-task contract IDs.
 
-## Execution groups
+## What passes the gate
 
-The four group names select checks and determine CLI failure behavior. They are
-not a product taxonomy.
+Profiles define release semantics; suites remain useful implementation and
+diagnostic groupings:
 
-| Group | Contents | Nonzero exit |
+| Profile | Suites | CLI exit condition |
 |---|---|---|
-| `regression` | Established behavior | Any missed grader or task error |
-| `spec` | Structural checks derived from normative guides | Any missed grader or task error |
-| `idempotency` | Repetition, replay, race, and crash-recovery boundaries | Any missed grader or task error |
-| `capability` | Broader end-to-end scenarios | Any missed grader or task error |
+| Conformance | Regression + spec | Every required task passes every trial |
+| Reliability | Idempotency | Every retry, replay, crash, race, and recovery task passes every trial |
+| Capability | Capability | Every architectural scenario passes every trial |
 
-An explicitly requested empty group fails instead of succeeding vacuously. A
-full run also requires all four groups to exist.
+An empty requested profile or suite is a failure, never a vacuous success. A
+full unprofiled run requires all four suites to be present and passing.
 
-Pytest executes the spec group and its CLI smoke contract. GitHub's repository
-check job runs regression, idempotency, and capability once on Python 3.12;
-the ordinary Python matrix owns `make ci`. `make idempotency-audit` is the fast
-static check that the normative matrix and its registered scenarios still
-correspond.
+The required PR `evals` context runs conformance, reliability, and capability
+once on Python 3.12, then verifies the installed wheel. The ordinary Python
+matrix owns compatibility tests; examples and documentation have their own
+required contexts. Main additionally runs process tests. Release verification
+runs the blocking static, test, process, conformance, reliability, capability,
+package, and documentation gates.
+
+`make idempotency-audit` is the fast static check that the normative matrix and
+its registered scenarios still correspond. `quality/contracts.toml` maps
+stable task IDs to normative contracts, and `make contract-audit` rejects
+missing, unknown, or orphaned mappings.
 
 ## Grader and logging behavior
 
@@ -88,30 +100,31 @@ change library logging or `RunConfig(debug=True)`.
 ## Add or change a check
 
 First ask whether a focused or parameterized pytest contract proves the whole
-behavior. The `regression` and `spec` groups contain valuable historical
+behavior. The `regression` and `spec` suites contain valuable historical
 coverage, but they are migration surfaces rather than the default destination
 for new exact bugs or static rules.
 
 When a repository scenario is warranted:
 
-1. Put it in the group whose purpose matches the scenario.
-2. Exercise the highest stable boundary that proves the behavior.
-3. Grade externally visible outcomes rather than duplicating implementation
+1. Put it in the suite that owns its failure semantics.
+2. Drive the highest stable boundary that proves the contract. Use lower-level
+   seams only when the task is about that seam or must construct a crash state
+   that public calls cannot produce deterministically.
+3. Grade externally visible outcomes instead of duplicating implementation
    logic in the assertion.
-4. Register the task in that module's `register(harness)` function.
-5. Run the focused group and the broader gate appropriate to the changed
-   boundary.
+4. Register the task in the suite's `register(harness)` function and map its
+   stable ID in `quality/contracts.toml`.
+5. Run the focused suite, its traceability audit, and the broader gate
+   appropriate to the changed boundary.
 
-Keep task identifiers stable when specifications or issue receipts cite them.
-When semantics change, update the normative source, implementation, and
-executable evidence together.
+When semantics genuinely change, update the normative source, implementation,
+task, registry mapping, and executable evidence as one reviewable unit.
 
-## Relationship to other evidence
+## Relationship to other checks
 
-- Pytest provides focused diagnosis for units, integrations, races, and
-  contract matrices.
-- Repository scenarios compose those boundaries into independent architectural
-  outcomes.
+- Pytest provides focused unit, integration, race, and contract diagnosis.
+- Repository scenarios provide independent architectural outcomes and
+  traceability.
 - [Mutation testing](mutation-testing.md) probes whether focused assertions
   detect controlled implementation changes.
 - [Benchmarks](benchmarking.md) measure cost and trends, not correctness.

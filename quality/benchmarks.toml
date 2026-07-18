@@ -1,0 +1,33 @@
+version = 1
+
+[[benchmark]]
+id = "core.ecs.micro"
+suite = "ecs"
+owner = "core"
+entrypoint = "bench/core/ecs/run.py"
+correctness_oracles = ["tests/bench/test_ecs_run_isolation.py"]
+report_schema = "bench.core.report/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "elapsed_s", direction = "lower" },
+  { name = "steps_per_sec", direction = "higher" },
+  { name = "entities_per_sec", direction = "higher" },
+]
+
+[[benchmark]]
+id = "app.query.latency"
+suite = "query_latency"
+owner = "query"
+entrypoint = "bench/core/query_latency.py"
+correctness_oracles = ["tests/bench/test_query_latency.py"]
+report_schema = "bench.core.report/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "elapsed_s", direction = "lower" },
+  { name = "steps_per_sec", direction = "higher" },
+  { name = "entities_per_sec", direction = "higher" },
+]

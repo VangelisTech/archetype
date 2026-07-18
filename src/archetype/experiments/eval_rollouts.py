@@ -124,7 +124,7 @@ async def run_task_eval(
     instruction: str = "reach",
     world_service: Any | None = None,  # deprecated bridge — remove in v0.6
     simulation_service: Any | None = None,  # deprecated bridge — remove in v0.6
-    eval_service: Any | None = None,  # deprecated bridge — remove in v0.6
+    evaluation_service: Any | None = None,  # deprecated bridge — remove in v0.6
 ) -> TaskEvalReport:
     """Run ``trials`` trials of one task in a single batched world and grade them.
 
@@ -135,11 +135,12 @@ async def run_task_eval(
     ``ManipStatus.done`` latches (or ``max_steps``), then success/length are
     graded from the persisted rows.
 
-    Pass ``runtime`` (an ``ArchetypeRuntime``): every operation — world
-    creation, spawns, the episode, the grading query — routes through the
-    command gateway with audit rows. The raw-service keyword form is a
-    DEPRECATED bridge (it drives services directly, bypassing the gate) and
-    is removed in v0.6.
+    Pass ``runtime`` (an ``ArchetypeRuntime``): world creation, spawns, the
+    episode, and the grading query route through the actor-free application
+    facade. Product evaluation receipts remain durable domain evidence; trusted
+    scripting does not fabricate gateway access-audit rows. The raw-service
+    keyword form is a DEPRECATED bridge that bypasses the facade and is removed
+    in v0.6.
     """
     if runtime is not None:
         return await _run_task_eval_runtime(
@@ -154,22 +155,22 @@ async def run_task_eval(
             with_frames=with_frames,
             instruction=instruction,
         )
-    if world_service is None or simulation_service is None or eval_service is None:
+    if world_service is None or simulation_service is None or evaluation_service is None:
         raise TypeError(
             "run_task_eval requires `runtime=ArchetypeRuntime(...)` "
-            "(or, deprecated, all of world_service/simulation_service/eval_service)"
+            "(or, deprecated, all of world_service/simulation_service/evaluation_service)"
         )
     warnings.warn(
-        "run_task_eval(world_service=..., simulation_service=..., eval_service=...) "
-        "bypasses the command gateway and is deprecated; pass runtime= instead. "
+        "run_task_eval(world_service=..., simulation_service=..., evaluation_service=...) "
+        "bypasses the RuntimeApplication facade and is deprecated; pass runtime= instead. "
         "The service bridge is removed in v0.6.",
         DeprecationWarning,
         stacklevel=2,
     )
-    return await _run_task_eval_services(
+    return await _run_task_evaluation_services(
         world_service=world_service,
         simulation_service=simulation_service,
-        eval_service=eval_service,
+        evaluation_service=evaluation_service,
         env_client=env_client,
         policy_client=policy_client,
         suite=suite,
@@ -265,7 +266,7 @@ async def _run_task_eval_runtime(
     with_frames: bool,
     instruction: str,
 ) -> TaskEvalReport:
-    """The gated path: every mutation and read is a command with an audit row."""
+    """The supported runtime path through the actor-free application facade."""
     # Unique per call: the registry enforces name uniqueness, so a retry / a
     # second variance run on the same (suite, task_id) would otherwise crash.
     world = runtime.world(name=f"eval:{suite}:t{task_id}:{uuid.uuid7()}", storage=storage)
@@ -308,7 +309,7 @@ async def _run_task_eval_runtime(
         )
     )
 
-    # Grade from the persisted ledger through the gated query (scoped to this
+    # Grade from the persisted ledger through the runtime query (scoped to this
     # world's run — the run the episode just executed).
     final = _final_row_per_entity(await world.query(ManipStatus, ManipTask))
     return _assemble_report(
@@ -323,11 +324,11 @@ async def _run_task_eval_runtime(
     )
 
 
-async def _run_task_eval_services(
+async def _run_task_evaluation_services(
     *,
     world_service: Any,
     simulation_service: Any,
-    eval_service: Any,
+    evaluation_service: Any,
     env_client: Any,
     policy_client: Any | None,
     suite: str,
@@ -338,9 +339,11 @@ async def _run_task_eval_services(
     with_frames: bool,
     instruction: str,
 ) -> TaskEvalReport:
-    """DEPRECATED bridge: drives services directly, bypassing the command
-    gateway (no audit rows). Kept one minor version for callers pinned to the
-    pre-runtime signature; removed in v0.6."""
+    """DEPRECATED bridge that bypasses the RuntimeApplication facade.
+
+    Kept one minor version for callers pinned to the pre-runtime signature;
+    removed in v0.6.
+    """
     world = await world_service.create_world(
         WorldConfig(name=f"eval:{suite}:t{task_id}:{uuid.uuid7()}"), storage
     )
@@ -385,7 +388,7 @@ async def _run_task_eval_services(
         ),
     )
 
-    df = await eval_service.query_components(
+    df = await evaluation_service.query_components(
         [ManipStatus, ManipTask],
         world_id=world.world_id,
         run_id=episode.run_id,

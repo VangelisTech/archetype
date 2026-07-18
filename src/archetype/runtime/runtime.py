@@ -26,12 +26,11 @@ from weakref import WeakSet
 from uuid_utils import UUID
 
 from archetype import _obs
-from archetype.app.auth.models import ActorCtx
+from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.container import ServiceContainer
 from archetype.app.models import WorldInfo
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
-from archetype.runtime._actor import default_actor_ctx
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
 
@@ -82,12 +81,10 @@ class ArchetypeRuntime:
         ...     result = await world.run(steps=10)
     """
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
+    def __init__(self, *, log: str | None = None) -> None:
         """Initialize the runtime.
 
         Args:
-            actor_ctx: Identity, roles, and quotas for operations. The default
-                identity is suitable for local scripts.
             log: Package log level: `debug`, `info`, `warning`, or `error`.
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
@@ -110,7 +107,7 @@ class ArchetypeRuntime:
         )
 
         self._container = ServiceContainer()
-        self._actor_ctx = actor_ctx or default_actor_ctx()
+        self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
         self._closed = False
 
@@ -186,7 +183,7 @@ class ArchetypeRuntime:
             init_resources=list(resources or []),
             init_hooks=list(hooks or []),
         )
-        handle = RuntimeWorld(state=state, actor_ctx=self._actor_ctx)
+        handle = RuntimeWorld(state=state)
         state.aliases.add(handle)
         self._handles.add(handle)
         return handle
@@ -213,9 +210,8 @@ class ArchetypeRuntime:
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
-        gate = self._container.command_service
-        info = await gate.resume_world(
-            self._actor_ctx, coerce_storage(storage) or StorageConfig(), world_id
+        info = await self._container.application.resume_world(
+            coerce_storage(storage) or StorageConfig(), world_id
         )
         return self.attach(info.world_id, name=name)
 
@@ -233,9 +229,8 @@ class ArchetypeRuntime:
         """
         if self._closed:
             raise RuntimeError("ArchetypeRuntime is closed")
-        gate = self._container.command_service
-        return await gate.discover_worlds(
-            self._actor_ctx, coerce_storage(storage) or StorageConfig()
+        return await self._container.application.discover_worlds(
+            coerce_storage(storage) or StorageConfig()
         )
 
     def attach(
@@ -273,17 +268,15 @@ class ArchetypeRuntime:
             world_id=world_id,
             owns_world=False,
         )
-        handle = RuntimeWorld(state=state, actor_ctx=self._actor_ctx)
+        handle = RuntimeWorld(state=state)
         state.aliases.add(handle)
         self._handles.add(handle)
         return handle
 
     @classmethod
-    def sync(
-        cls, *, actor_ctx: ActorCtx | None = None, log: str | None = None
-    ) -> SyncArchetypeRuntime:
+    def sync(cls, *, log: str | None = None) -> SyncArchetypeRuntime:
         """Create the synchronous runtime facade."""
-        return SyncArchetypeRuntime(actor_ctx=actor_ctx, log=log)
+        return SyncArchetypeRuntime(log=log)
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
         self._handles.add(handle)
@@ -303,8 +296,8 @@ class SyncArchetypeRuntime:
     `ArchetypeRuntime` directly.
     """
 
-    def __init__(self, *, actor_ctx: ActorCtx | None = None, log: str | None = None) -> None:
-        self._runtime = ArchetypeRuntime(actor_ctx=actor_ctx, log=log)
+    def __init__(self, *, log: str | None = None) -> None:
+        self._runtime = ArchetypeRuntime(log=log)
         self._runner: asyncio.Runner | None = None
 
     def __enter__(self) -> SyncArchetypeRuntime:

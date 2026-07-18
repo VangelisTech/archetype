@@ -8,16 +8,17 @@ import logging
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.audit_log import AuditBackpressureError, AuditLog, make_audit_row
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
+from archetype.app.audit.models import make_audit_row
+from archetype.app.audit.service import AuditBackpressureError, AuditLog
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import CommandType
-from archetype.app.query_service import QueryService
-from archetype.app.storage_service import StorageService
+from archetype.app.query.service import QueryService
+from archetype.app.storage.service import StorageService
+from archetype.app.storage.session import configure_session
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
-from archetype.runtime.session import configure_session
 
 
 class APos(Component):
@@ -34,9 +35,12 @@ def _storage(tmp_path, namespace: str = "audit") -> StorageConfig:
 
 def test_audit_configuration_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="flush_rows"):
-        AuditLog(storage_config=_storage(tmp_path), flush_rows=0)
+        AuditLog(StorageService(), storage_config=_storage(tmp_path), flush_rows=0)
     with pytest.raises(ValueError, match="backend=iceberg"):
-        AuditLog(storage_config=StorageConfig(uri=str(tmp_path / "lance")))
+        AuditLog(
+            StorageService(),
+            storage_config=StorageConfig(uri=str(tmp_path / "lance")),
+        )
 
 
 @pytest.mark.asyncio
@@ -53,8 +57,8 @@ async def test_command_gate_keeps_audit_backpressure_advisory(
 
     monkeypatch.setattr(container.audit_log, "record", reject_record)
     try:
-        with caplog.at_level(logging.WARNING, logger="archetype.app.command_service"):
-            world = await container.command_service.create_world(
+        with caplog.at_level(logging.WARNING, logger="archetype.app.gateway.service"):
+            world = await container.command_gateway.create_world(
                 ctx,
                 WorldConfig(name="applied-despite-audit-backpressure"),
                 StorageConfig(uri=str(tmp_path / "world")),
@@ -80,7 +84,7 @@ async def test_injected_session_requires_and_enforces_audit_identity(tmp_path):
             audit_storage_config=storage,
         )
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        world = await container.command_service.create_world(
+        world = await container.command_gateway.create_world(
             ctx,
             WorldConfig(name="managed"),
             storage,
@@ -117,19 +121,19 @@ async def test_gated_mutations_emit_exactly_one_audit_row(tmp_path):
         wid = world.world_id
 
         before = (await c.audit_log.query()).count_rows()
-        entity_id = await c.command_service.create_entity(ctx, wid, [APos(x=1)])
+        entity_id = await c.command_gateway.create_entity(ctx, wid, [APos(x=1)])
         rows = (await c.audit_log.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "spawn"
 
         before = len(rows)
-        await c.command_service.step(ctx, wid, RunConfig())
+        await c.command_gateway.step(ctx, wid, RunConfig())
         rows = (await c.audit_log.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "step"
 
         before = len(rows)
-        await c.command_service.remove_entity(ctx, wid, entity_id)
+        await c.command_gateway.remove_entity(ctx, wid, entity_id)
         rows = (await c.audit_log.query()).to_pylist()
         assert len(rows) == before + 1
         assert rows[-1]["command_type"] == "despawn"

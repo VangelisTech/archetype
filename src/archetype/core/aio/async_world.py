@@ -742,7 +742,7 @@ class AsyncWorld(iAsyncWorld):
             live_sigs = {_canonicalize(s) for s in self.active_signatures}
             all_known = live_sigs | committed_sigs
             known_ids = {Archetype.get_name(s) for s in all_known}
-            if all_known and Archetype.get_name(sig) not in known_ids:
+            if Archetype.get_name(sig) not in known_ids:
                 raise _unknown_signature_error(sig)
 
         async def _query_one(target_world: str, target_run: str, target_ticks: list[int]):

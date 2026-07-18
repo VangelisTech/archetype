@@ -96,7 +96,7 @@ class AsyncQueryManager(iAsyncQueryManager):
         world_validated: bool = kwargs.pop("_world_validated", False)
         if not world_validated:
             committed_sigs = {_canonicalize(s) for s in await self.list_committed_signatures()}
-            if committed_sigs and sig not in committed_sigs:
+            if sig not in committed_sigs:
                 raise _unknown_signature_error(sig)
 
         df = await self._store.get_archetype_df(

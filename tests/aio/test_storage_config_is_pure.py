@@ -1,7 +1,7 @@
 import os
 
+from archetype.app.storage.session import configure_session
 from archetype.core.config import StorageConfig
-from archetype.runtime.session import configure_session
 
 
 def test_storage_config_is_pure(tmp_path):

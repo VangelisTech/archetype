@@ -8,7 +8,7 @@ SHELL := /bin/bash
 
 PYTHONPATH ?= src
 VERSION := $(shell grep -m1 'version = ' pyproject.toml | cut -d'"' -f2)
-RUFF_PATHS := src tests evals bench scripts/check_*.py
+RUFF_PATHS := src tests evals bench scripts quality experiments examples
 
 .PHONY: help
 help:
@@ -21,6 +21,10 @@ help:
 	@echo "Quality:"
 	@echo "  make format         Format code (ruff)"
 	@echo "  make lint           Lint code (ruff)"
+	@echo "  make static         All version-independent blocking validation"
+	@echo "  make contract-audit Validate normative sources and executable oracles"
+	@echo "  make benchmark-audit Validate benchmark ownership and policies"
+	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
 	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
@@ -29,7 +33,11 @@ help:
 	@echo "  make test           Run tests (fast)"
 	@echo "  make test-cov       Run tests with coverage"
 	@echo "  make test-all       Run all tests verbose"
-	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
+	@echo "  make test-unit      Fast tests outside contract/integration/process lanes"
+	@echo "  make test-contract  Approved normative contract evidence"
+	@echo "  make test-integration  Multi-layer repository evidence"
+	@echo "  make test-process   Subprocess/crash evidence"
+	@echo "  make ci             Compatibility alias for the PR verification profile"
 	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
 	@echo "  make mutmut-results Show mutmut survivors from the last run"
 	@echo "  make mutmut-browse  Interactive TUI to inspect surviving mutants"
@@ -43,10 +51,17 @@ help:
 	@echo "  make eval-reg       Run regression checks only"
 	@echo "  make eval-idem      Run idempotency checks only"
 	@echo "  make eval-cap       Run broad capability scenarios only"
+	@echo "  make eval-conformance  Blocking public-boundary conformance profile"
+	@echo "  make eval-reliability  Blocking retry/crash/recovery profile"
+	@echo "  make eval-capability  Blocking architectural capability profile"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
 	@echo "  make build          Build sdist + wheel"
+	@echo "  make package-smoke  Install and probe the built wheel outside the checkout"
+	@echo "  make verify-pr      Complete pull-request profile"
+	@echo "  make verify-full    Main-branch profile"
+	@echo "  make verify-release Installed-artifact release profile"
 	@echo "  make release-check  Full pre-release validation"
 	@echo "  make publish-test   Publish to TestPyPI"
 	@echo "  make publish        Publish to PyPI"
@@ -82,7 +97,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit api-boundary-audit idempotency-audit gate-coverage-audit
+lint: lazy-audit architecture-audit api-boundary-audit idempotency-audit gate-coverage-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -96,6 +111,23 @@ format-check:
 .PHONY: check
 check: format lint
 
+.PHONY: typecheck
+typecheck:
+	@uvx ty@0.0.48 check --python .venv
+
+.PHONY: contract-audit
+contract-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_contracts.py
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/generate_contract_traceability.py --check
+
+.PHONY: benchmark-audit
+benchmark-audit:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/validate_benchmarks.py
+
+.PHONY: static
+static: format-check lint typecheck lock-check contract-audit benchmark-audit
+	@echo "Static validation passed"
+
 # Lazy-evaluation audit: gate .collect()/.to_pylist() call sites against
 # lazy_audit.toml. Every premature materialization is a contract exception
 # and must be justified in writing. See scripts/check_lazy_audit.py.
@@ -106,6 +138,10 @@ lazy-audit:
 .PHONY: api-boundary-audit
 api-boundary-audit:
 	@uv run python scripts/check_api_import_boundaries.py
+
+.PHONY: architecture-audit
+architecture-audit:
+	@uv run python scripts/check_architecture.py
 
 # Keep every normative idempotency-matrix row mapped to a registered eval.
 # This is static and fast; make eval-idem executes the behavioral scenarios.
@@ -168,9 +204,26 @@ test-cov:
 test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
+.PHONY: test-unit
+test-unit:
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup \
+		-m "not contract and not integration and not process and not external and not slow"
+
+.PHONY: test-contract
+test-contract:
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup -m contract
+
+.PHONY: test-integration
+test-integration:
+	@PYTHONPATH=$(PYTHONPATH) uv run pytest -q -n auto --dist loadgroup \
+		-m "integration and not process and not external"
+
+.PHONY: test-process
+test-process:
+	@PYTHONPATH=$(PYTHONPATH):. uv run pytest -q -m process
+
 .PHONY: ci
-ci: format-check lint lock-check test-cov
-	@echo "CI gate passed"
+ci: verify-pr
 
 # Mutation testing (mutmut). Not part of `make ci` — each mutation runs the
 # full pilot test suite, so even the narrow scope takes minutes. Run
@@ -196,6 +249,7 @@ mutmut-clean:
 # Repository harness
 # ------------------------------------------------------------------------------
 
+EVAL_TRIALS ?= 1
 .PHONY: bench
 bench:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 1 --out bench-results.json
@@ -220,12 +274,25 @@ eval-reg:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite regression
 
 .PHONY: eval-idem
-eval-idem:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite idempotency
+eval-idem: eval-reliability
 
 .PHONY: eval-cap
-eval-cap:
-	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --suite capability
+eval-cap: eval-capability
+
+.PHONY: eval-conformance
+eval-conformance:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python -m evals.run \
+		--profile conformance --out eval-conformance-results.json
+
+.PHONY: eval-reliability
+eval-reliability:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python -m evals.run \
+		--profile reliability --trials $(EVAL_TRIALS) --out eval-reliability-results.json
+
+.PHONY: eval-capability
+eval-capability:
+	@PYTHONPATH=$(PYTHONPATH):. uv run python -m evals.run \
+		--profile capability --out eval-capability-results.json
 
 .PHONY: test-infra
 test-infra:
@@ -261,8 +328,31 @@ build: clean
 	@echo "Built:"
 	@ls -lh dist/
 
+.PHONY: package-smoke
+package-smoke: build
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/package_smoke.py dist
+
+.PHONY: examples-smoke
+examples-smoke:
+	@set -e; for f in examples/[0-9][0-9]_*.py; do \
+		echo "Running $$f"; \
+		PYTHONPATH=$(PYTHONPATH) uv run python "$$f"; \
+	done
+
+.PHONY: verify-pr
+verify-pr: static test-cov eval-conformance eval-capability package-smoke examples-smoke
+	@echo "PR verification profile passed"
+
+.PHONY: verify-full
+verify-full: verify-pr test-process eval-reliability
+	@echo "Full verification profile passed"
+
+.PHONY: verify-release
+verify-release: static test-cov test-process eval-conformance eval-reliability eval-capability package-smoke docs
+	@echo "Release verification profile passed"
+
 .PHONY: release-check
-release-check: sync-dev check test-cov lock-check build
+release-check: sync-dev verify-release
 	@echo ""
 	@echo "✅ Release check passed for v$(VERSION)"
 	@echo ""
@@ -288,6 +378,7 @@ publish: build
 .PHONY: docs-gen
 docs-gen:
 	@echo "Generating API & CLI reference docs..."
+	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/generate_contract_traceability.py
 	@uv run python scripts/generate_python_api_docs.py
 	@uv run python scripts/generate_api_docs.py
 	@uv run python scripts/generate_cli_docs.py

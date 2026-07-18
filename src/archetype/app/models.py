@@ -22,9 +22,9 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
-from archetype.app.facts import FactProcessor as FactProcessor
-from archetype.app.facts import FactReceipt as FactReceipt
-from archetype.app.facts import FactWriteReceipt as FactWriteReceipt
+from archetype.app.artifacts.models import ArtifactProcessor as ArtifactProcessor
+from archetype.app.artifacts.models import ArtifactReceipt as ArtifactReceipt
+from archetype.app.artifacts.models import ArtifactWriteReceipt as ArtifactWriteReceipt
 from archetype.core.config import JsonUUID, RunConfig
 
 # Global sequence counter for command ordering
@@ -33,16 +33,16 @@ _SEQ = count()
 
 class CommandType(StrEnum):
     """
-    Command types for the command broker.
+    Command types for durable admission and tick-boundary dispatch.
 
-    The broker is the universal simulation interface supporting:
+    The command envelope supports:
     - Entity-level mutations (spawn, despawn, components)
     - Processor mutations (hot-swap behavior)
     - Simulation-level operations (recursive simulation, rollouts)
     """
 
     # Entity-level commands
-    INGEST_FACT = "ingest_fact"  # Durable external fact write
+    PUBLISH_ARTIFACT = "publish_artifact"  # Durable external artifact publication
     EVALUATE = "evaluate"  # Claim-before-grade: one visible receipt per evaluation_id
     SPAWN = "spawn"
     DESPAWN = "despawn"
@@ -81,7 +81,7 @@ class CommandType(StrEnum):
     ADD_HOOK = "add_hook"
     REMOVE_HOOK = "remove_hook"
 
-    # Application-defined message envelope (the broker supplies queueing only)
+    # Application-defined message envelope (the scheduler supplies ordering only)
     MESSAGE = "message"
 
     # Extensible
@@ -191,7 +191,7 @@ class EpisodeConfig(BaseModel):
         default_factory=uuid.uuid7, description="Stable identifier for this episode."
     )
     run_config: RunConfig = Field(default_factory=RunConfig, description="Tick execution options.")
-    max_steps: int = Field(default=1000, description="Maximum ticks before stopping.")
+    max_steps: int = Field(default=1000, ge=0, description="Maximum ticks before stopping.")
     terminal_component: Any | None = Field(
         default=None, description="Component type used for structural or value termination."
     )
@@ -216,7 +216,7 @@ class RolloutConfig(BaseModel):
     episode_config: EpisodeConfig = Field(
         default_factory=EpisodeConfig, description="Configuration shared by each episode."
     )
-    num_episodes: int = Field(default=1, description="Number of episode forks to run.")
+    num_episodes: int = Field(default=1, ge=0, description="Number of episode forks to run.")
     parallel: bool = Field(default=False, description="Run episode forks concurrently.")
     name_prefix: str = Field(default="ep", description="Name prefix for episode worlds.")
     destroy_forks_on_complete: bool = Field(

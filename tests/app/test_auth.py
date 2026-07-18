@@ -9,9 +9,9 @@ import pytest
 from pydantic import ValidationError
 from uuid_utils import uuid7
 
-from archetype.app.auth import guard as _guard
-from archetype.app.auth.errors import GuardrailError
-from archetype.app.auth.guard import (
+from archetype.app.gateway.auth import guard as _guard
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.guard import (
     MAX_CMDS_PER_TICK,
     MAX_TOKENS_PER_DAY,
     guardrail_allow,
@@ -19,7 +19,7 @@ from archetype.app.auth.guard import (
     reset_daily_tokens,
     reset_tick_counters,
 )
-from archetype.app.auth.models import ActorCtx
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 
 

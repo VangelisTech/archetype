@@ -2,21 +2,25 @@
 
 Archetype is a data-centric Entity-Component-System simulation engine. World state is stored as columnar DataFrames, and each tick appends new rows instead of overwriting previous state. That storage model supports time-travel queries, forking, replay, and audit.
 
-![Archetype architecture](../assets/archetype_diagram2.png)
+This page is an explanatory overview. The written rules and dependency tables
+in [Application Architecture](application-architecture.md) are normative;
+visual layout is not.
 
 ## Layers
 
 ```text
-archetype.api / cli          REST API and thin HTTP client
-       |
-archetype.runtime            ArchetypeRuntime, RuntimeWorld
-       |
-archetype.app                ServiceContainer, iCommandService, audit, broker
-       |
-archetype.core               AsyncWorld, AsyncProcessor, Resources, Storage
+application code -> ArchetypeRuntime -> RuntimeApplication
+CLI              -> REST API -> CommandGateway -> RuntimeApplication
+RuntimeApplication -> internal app-family capabilities -> archetype.core
 ```
 
-`ArchetypeRuntime` is the recommended script boundary. It owns a `ServiceContainer`, returns lazy world handles, binds each handle to an `ActorCtx`, and forwards every operation through `iCommandService`.
+The trusted runtime bypasses authorization; the API authenticates and enters
+through the gateway. Both converge on the actor-free `RuntimeApplication`.
+`ServiceContainer` and concrete app services are internal machinery.
+
+`ArchetypeRuntime` is the recommended script boundary. It owns process lifetime,
+returns lazy actor-free world handles, and forwards operations through
+`iRuntimeApplication`.
 
 ```python
 from archetype import ArchetypeRuntime, Component
@@ -33,22 +37,27 @@ async with ArchetypeRuntime() as runtime:
     await world.run(steps=10)
 ```
 
-Drop to `ServiceContainer` for lower-level hosting, explicit command routing, or tests that need direct service access.
+Applications do not construct `ServiceContainer` or call concrete services.
+Repository composition modules and focused implementation tests may use them
+because they are internal seams.
 
 ## Command Gate
 
-All external operations flow through `iCommandService`, the policy enforcement point.
+All untrusted operations flow through `iCommandGateway`, the policy
+enforcement point.
 
 ```text
-Runtime / API / caller
-  -> iCommandService
+API / untrusted caller
+  -> iCommandGateway
   -> guardrail_allow
-  -> delegate to one service
-  -> iAuditLog.record
+  -> iRuntimeApplication
+  -> iAuditJournal.record_access
   -> return result
 ```
 
-The broker is only the queue for tick-deferred commands. It is not the authorization boundary and it is not the audit log.
+The durable ledger/dispatcher belongs to the commands family. Audit owns the
+journal, transactional outbox, and analytical projection. The gateway consumes
+narrow admission/application/audit ports but owns none of that state.
 
 ## Roles
 
@@ -85,9 +94,9 @@ A tick has two service-level phases:
 ```text
 SimulationService.step(world_id, run_config)
   |
-  1. CommandService.drain_and_apply(world_id, tick)
-  |    CommandBroker.dequeue_due(world_id, tick)
-  |    MutationService / WorldService applies due commands
+  1. CommandDispatcher.lease_and_stage_due(world_id, tick)
+  |    CommandLedger leases in durable order
+  |    MutationService stages due commands
   |
   2. AsyncWorld.step(run_config)
        |
@@ -95,10 +104,14 @@ SimulationService.step(world_id, run_config)
        b. Materialize pending structural mutations
        c. Execute matching processors
        d. Persist appended rows
-       e. Refresh live state and hooks
+       e. Publish manifest + settle command outcomes
+       f. Refresh live state and hooks
 ```
 
 Processors are trusted internal code once registered. External callers do not bypass the gate.
+
+A tick is a world execution and commit boundary. It does not necessarily imply
+a task, mission, or physical-workflow state transition.
 
 ## World Lifecycle
 
@@ -116,6 +129,7 @@ See [World Lifecycle](world-lifecycle.md).
 
 ### Specifications
 
+- [Application Architecture](application-architecture.md)
 - [Runtime](runtime.md)
 - [Service Protocols](service-protocols.md)
 - [Command Gate](command-gate.md)
@@ -141,6 +155,6 @@ See [World Lifecycle](world-lifecycle.md).
 
 - [App Overview](app-overview.md)
 - [Services](services.md)
-- [Command Broker](broker.md)
+- [Durable Commands](durable-commands.md)
 - [API Layer](api-layer.md)
 - [Data Flow](data-flow.md)

@@ -1,10 +1,10 @@
 import pytest
 
+from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
-from archetype.runtime.session import configure_session
 
 
 class Demo(Component):

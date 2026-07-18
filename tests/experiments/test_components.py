@@ -171,7 +171,7 @@ class TestRunComponent:
         assert required.issubset(set(schema.names))
 
     def test_no_eval_or_reward_fields(self):
-        # Run holds facts only. Evaluation lives in Result.
+        # Run holds execution records only. Evaluation lives in Result.
         for forbidden in (
             "metric",
             "metric_name",

@@ -28,8 +28,8 @@ from __future__ import annotations
 import pytest
 from daft import DataFrame
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.experiments.manipulation import (
@@ -140,7 +140,7 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
         expected_rate = sum(s for s, _ in replay.values()) / len(replay)
 
         # The eval service reads the raw rows it persisted.
-        df = await container.eval_service.query_episode(
+        df = await container.evaluation_service.query_episode(
             episode, components=[ManipStatus], storage_config=storage
         )
         final = _final_per_entity(df)
@@ -165,7 +165,7 @@ async def test_eval_reproduces_success_and_length_from_raw_manipstatus(tmp_path)
             }
             return state_check(checks, name="episode_lengths")
 
-        results = await container.eval_service.run_graders(df, [grade_rate, grade_lengths])
+        results = await container.evaluation_service.run_graders(df, [grade_rate, grade_lengths])
         assert [r.passed for r in results] == [True, True]
         assert results[0].score == 1.0  # 3/3 success
     finally:
@@ -203,7 +203,7 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
         expected_success = {eids[k]: replay[k][0] for k in targets}
         expected_rate = sum(s for s, _ in replay.values()) / len(replay)
 
-        df = await container.eval_service.query_episode(
+        df = await container.evaluation_service.query_episode(
             episode, components=[ManipStatus], storage_config=storage
         )
         final = _final_per_entity(df)
@@ -229,7 +229,9 @@ async def test_eval_grades_a_failed_trial_and_fractional_success_rate(tmp_path):
             }
             return state_check(checks, name="success_lengths")
 
-        results = await container.eval_service.run_graders(df, [grade_rate, grade_success_lengths])
+        results = await container.evaluation_service.run_graders(
+            df, [grade_rate, grade_success_lengths]
+        )
         assert [r.passed for r in results] == [True, True]
     finally:
         await container.shutdown()

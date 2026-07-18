@@ -48,9 +48,9 @@ await world.remove_components(car_id, Velocity)
 await world.despawn(car_id)
 ```
 
-All of these calls go through the command gate. In a normal script the runtime
-uses a local admin actor; a service can bind a handle to a restricted actor
-with `world.as_actor(actor_ctx)`.
+All of these calls go through the actor-free `RuntimeApplication` facade. A
+local runtime is a trusted capability and does not invent an admin actor.
+Untrusted or role-scoped access belongs at the REST/`CommandGateway` boundary.
 
 ## Run ticks
 
