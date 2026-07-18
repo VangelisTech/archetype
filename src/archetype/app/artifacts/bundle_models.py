@@ -105,6 +105,7 @@ class ArtifactBundleRequest(BaseModel):
     tick: int = Field(ge=0)
     attempt_id: str
     idempotency_key: str
+    redaction_policy_id: str = ""
     checkpoint_ref: str
     checkpoint_provider: str
     checkpoint_restorable: bool = True
@@ -129,6 +130,11 @@ class ArtifactBundleRequest(BaseModel):
         if not value:
             raise ValueError("must not be empty")
         return value
+
+    @field_validator("redaction_policy_id")
+    @classmethod
+    def _optional_policy_identity(cls, value: str) -> str:
+        return value.strip()
 
     @model_validator(mode="after")
     def _unique_logical_paths(self) -> ArtifactBundleRequest:
@@ -161,7 +167,13 @@ class ArtifactBundleRequest(BaseModel):
         return _canonical_json(payload)
 
     def digest(self) -> str:
-        return hashlib.sha256(self.canonical_json().encode()).hexdigest()
+        # ``redaction_policy_id`` is bound by the service, not supplied by the
+        # producer. Excluding it preserves producer idempotency across scanner
+        # upgrades while the persisted canonical request still pins the exact
+        # policy required to resume a PENDING publication.
+        payload = json.loads(self.canonical_json())
+        payload.pop("redaction_policy_id", None)
+        return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
 
 
 class ArtifactIndexRecord(BaseModel):

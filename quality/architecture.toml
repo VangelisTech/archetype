@@ -14,6 +14,7 @@ types = [
   "MutationService",
   "MissionService",
   "QueryService",
+  "RedactionService",
   "RuntimeApplication",
   "ServiceContainer",
   "SimulationService",
@@ -92,8 +93,18 @@ name = "artifact-family"
 consumer = "archetype.app.artifacts"
 allowed_app = [
   "archetype.app.artifacts",
+  "archetype.app.redaction.interfaces",
+  "archetype.app.redaction.models",
   "archetype.app.storage",
   "archetype.app.world.interfaces",
+]
+
+[[family_rule]]
+name = "redaction-family"
+consumer = "archetype.app.redaction"
+allowed_app = [
+  "archetype.app.redaction",
+  "archetype.app.errors",
 ]
 
 [[family_rule]]
@@ -232,12 +243,21 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.artifacts.bundle_service"
 allowed_interfaces = [
+  "archetype.app.redaction.interfaces.iRedactionService",
   "archetype.app.storage.interfaces.iStorageService",
   "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
   "archetype.app.artifacts.bundle_models",
+  "archetype.app.redaction.models",
   "archetype.app.storage.catalog",
+]
+
+[[module_rule]]
+module = "archetype.app.redaction.service"
+allowed_interfaces = []
+allowed_app = [
+  "archetype.app.redaction.models",
 ]
 
 [[module_rule]]

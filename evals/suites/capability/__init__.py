@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 from evals.harness import EvalHarness
-from evals.suites.capability import agent_missions, tasks
+from evals.suites.capability import agent_missions, redaction, tasks
 
 
 def register(harness: EvalHarness) -> None:
     """Register the stable capability suite in diagnostic order."""
     tasks.register(harness)
     agent_missions.register(harness)
+    redaction.register(harness)
 
 
-__all__ = ["agent_missions", "register", "tasks"]
+__all__ = ["agent_missions", "redaction", "register", "tasks"]

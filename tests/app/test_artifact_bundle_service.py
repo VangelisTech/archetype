@@ -4,6 +4,7 @@
 """ArtifactBundleService contracts: extraction, idempotency, recovery, and cold reads."""
 
 import hashlib
+import json
 import tarfile
 import time
 from dataclasses import replace
@@ -24,6 +25,11 @@ from archetype.app.artifacts.bundle_service import (
     CheckpointArtifactSourceResolver,
 )
 from archetype.app.container import ServiceContainer
+from archetype.app.redaction import (
+    RedactionPolicyConfig,
+    RedactionService,
+    SecretQuarantineError,
+)
 from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
     artifact_publication_key,
@@ -659,3 +665,327 @@ async def test_durable_request_identity_and_digest_are_authenticated(tmp_path):
             )
     finally:
         await container.shutdown()
+
+
+async def test_secret_metadata_is_rejected_before_the_durable_claim(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    secret = "signed-credential-" + "X" * 32
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source).model_copy(
+            update={"checkpoint_ref": "https://provider.invalid/checkpoint?" + "token=" + secret}
+        )
+        with pytest.raises(SecretQuarantineError) as error:
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+        assert secret not in str(error.value)
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        assert await catalog.get_artifact_publication(request.world_id, key) is None
+    finally:
+        await container.shutdown()
+
+
+async def test_credential_source_path_is_rejected_before_the_durable_claim(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / ".codex" / "auth.json"
+    source.parent.mkdir()
+    source.write_text("otherwise-unrecognized-credential")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, logical_path="innocent-result.json")
+        with pytest.raises(SecretQuarantineError, match="credential-file-path"):
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        assert await catalog.get_artifact_publication(request.world_id, key) is None
+    finally:
+        await container.shutdown()
+
+
+async def test_caller_cannot_select_a_different_redaction_policy(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source).model_copy(
+            update={"redaction_policy_id": "archetype-secret-redaction-v0:retired"}
+        )
+        with pytest.raises(ValueError, match="does not match the active policy"):
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        assert await catalog.get_artifact_publication(request.world_id, key) is None
+    finally:
+        await container.shutdown()
+
+
+async def test_text_secrets_are_redacted_before_hash_upload_manifest_and_index(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    secret = "codex-refresh-" + "Y" * 32
+    source = tmp_path / "session.jsonl"
+    source.write_text(f'{{"refresh_token":"{secret}","status":"complete"}}\n')
+    original = source.read_bytes()
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, logical_path="sessions/session.jsonl")
+        receipt = await container.artifact_bundle_service.publish(
+            request,
+            storage_config=storage,
+        )
+
+        assert source.read_bytes() == original
+        payload = next(record for record in receipt.records if record.kind == "result")
+        uploaded = _local_uri_path(payload.object_uri).read_bytes()
+        assert secret.encode() not in uploaded
+        assert b"<redacted:sensitive-assignment>" in uploaded
+        assert payload.content_hash == hashlib.sha256(uploaded).hexdigest()
+
+        manifest_record = next(
+            record for record in receipt.records if record.kind == "bundle_manifest"
+        )
+        manifest_bytes = _local_uri_path(manifest_record.object_uri).read_bytes()
+        manifest = json.loads(manifest_bytes)
+        assert secret.encode() not in manifest_bytes
+        assert manifest["redaction"]["policy_id"] == container.redaction_service.policy_id
+        assert manifest["redaction"]["status"] == "redacted"
+        assert manifest["redaction"]["redaction_count"] == 1
+        assert manifest["redaction"]["rule_ids"] == ["sensitive-assignment"]
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None
+        assert secret not in publication.request_json
+        durable_request = ArtifactBundleRequest.model_validate_json(publication.request_json)
+        assert durable_request.redaction_policy_id == container.redaction_service.policy_id
+        assert secret not in publication.records_json
+    finally:
+        await container.shutdown()
+
+
+async def test_binary_secret_quarantine_has_no_object_or_index_visibility(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    secret = "ghp_" + "Z" * 36
+    source = tmp_path / "opaque.bin"
+    source.write_bytes(b"\x00binary" + secret.encode())
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, logical_path="opaque.bin")
+        with pytest.raises(SecretQuarantineError) as error:
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+        assert secret not in str(error.value)
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None and publication.status == "PENDING"
+        assert "github-token" in publication.last_error
+        assert secret not in publication.last_error
+        object_root = Path(artifact_config.object_uri)
+        assert not object_root.exists() or not any(
+            path.is_file() for path in object_root.rglob("*")
+        )
+        indexed = await container.artifact_bundle_service.query(
+            request.world_id,
+            request.run_id,
+        )
+        assert indexed.collect().to_pylist() == []
+    finally:
+        await container.shutdown()
+
+
+async def test_retry_catalog_redacts_untrusted_failure_diagnostics(tmp_path, monkeypatch):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("safe input")
+    secret = "sk-ant-api03-" + "U" * 32
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+
+        async def fail_with_untrusted_detail(*_args, **_kwargs):
+            raise RuntimeError(f"provider failed with {secret}")
+
+        monkeypatch.setattr(
+            container.artifact_bundle_service,
+            "_upload_bundle",
+            fail_with_untrusted_detail,
+        )
+        with pytest.raises(RuntimeError, match="provider failed"):
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None and publication.status == "PENDING"
+        assert secret not in publication.last_error
+        assert "<redacted:anthropic-api-key>" in publication.last_error
+    finally:
+        await container.shutdown()
+
+
+async def test_upload_uses_the_controlled_snapshot_when_source_mutates_after_scan(
+    tmp_path, monkeypatch
+):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("approved-before-scan")
+    redaction = RedactionService()
+    real_sanitize = redaction.sanitize_file
+
+    def sanitize_then_mutate(*args, **kwargs):
+        result = real_sanitize(*args, **kwargs)
+        source.write_text("mutated-after-scan")
+        return result
+
+    monkeypatch.setattr(redaction, "sanitize_file", sanitize_then_mutate)
+    container = ServiceContainer(
+        artifact_store_config=artifact_config,
+        redaction_service=redaction,
+    )
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        receipt = await container.artifact_bundle_service.publish(
+            _request(world, source),
+            storage_config=storage,
+        )
+        payload = next(record for record in receipt.records if record.kind == "result")
+        assert source.read_text() == "mutated-after-scan"
+        assert _local_uri_path(payload.object_uri).read_text() == "approved-before-scan"
+    finally:
+        await container.shutdown()
+
+
+async def test_indexed_replay_remains_idempotent_across_scanner_upgrade(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("stable evidence")
+    first = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await first.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        original = await first.artifact_bundle_service.publish(request, storage_config=storage)
+    finally:
+        await first.shutdown()
+
+    upgraded = ServiceContainer(
+        artifact_store_config=artifact_config,
+        redaction_service=RedactionService(RedactionPolicyConfig(max_archive_members=9)),
+    )
+    try:
+        duplicate = await upgraded.artifact_bundle_service.publish(
+            request,
+            storage_config=storage,
+        )
+        assert duplicate.duplicate
+        assert duplicate.records == original.records
+    finally:
+        await upgraded.shutdown()
+
+
+async def test_uploaded_recovery_does_not_require_retired_scanner(tmp_path, monkeypatch):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("already sanitized")
+    first = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await first.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+
+        async def fail_index(_records):
+            raise RuntimeError("index unavailable during old policy")
+
+        monkeypatch.setattr(first.artifact_bundle_service, "_index_records", fail_index)
+        with pytest.raises(RuntimeError, match="old policy"):
+            await first.artifact_bundle_service.publish(request, storage_config=storage)
+    finally:
+        await first.shutdown()
+
+    upgraded = ServiceContainer(
+        artifact_store_config=artifact_config,
+        redaction_service=RedactionService(RedactionPolicyConfig(max_archive_members=9)),
+    )
+    try:
+        recovered = await upgraded.artifact_bundle_service.publish(
+            request,
+            storage_config=storage,
+        )
+        assert recovered.status == "indexed"
+        assert not recovered.duplicate
+    finally:
+        await upgraded.shutdown()
+
+
+async def test_pending_recovery_requires_its_bound_scanner_policy(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    secret = "ghp_" + "P" * 36
+    source = tmp_path / "opaque.bin"
+    source.write_bytes(b"\x00" + secret.encode())
+    first = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await first.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, logical_path="opaque.bin")
+        with pytest.raises(SecretQuarantineError):
+            await first.artifact_bundle_service.publish(request, storage_config=storage)
+    finally:
+        await first.shutdown()
+
+    upgraded = ServiceContainer(
+        artifact_store_config=artifact_config,
+        redaction_service=RedactionService(RedactionPolicyConfig(max_archive_members=9)),
+    )
+    try:
+        with pytest.raises(ValueError, match="unavailable redaction policy") as error:
+            await upgraded.artifact_bundle_service.publish(request, storage_config=storage)
+        assert secret not in str(error.value)
+    finally:
+        await upgraded.shutdown()

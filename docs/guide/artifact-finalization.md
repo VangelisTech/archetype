@@ -77,8 +77,12 @@ One publication request is identified by:
 bundle_id = SHA256(domain, world_id, run_id, idempotency_key)
 ```
 
-Reusing that key with the same canonical request returns the original receipt.
-Reusing it with a different request digest is a conflict and fails closed.
+Reusing that key with the same producer request returns the original receipt.
+Reusing it with a different producer request digest is a conflict and fails
+closed. The digest excludes the service-bound `redaction_policy_id`: upgrading
+the scanner must not turn replay of an already indexed bundle into an identity
+conflict. The persisted canonical request still records the exact policy that
+processed the payload.
 The control row's immutable claim time supplies `created_at_ms` and any derived
 retention deadline, so replaying a `PENDING` upload produces the same manifest
 and index rows rather than resetting their lifecycle clock.
@@ -148,7 +152,93 @@ back to the logical filename's registered MIME type. Upload uses
 `IOConfig`. Credentials remain in that process-local configuration and are
 never serialized into requests, control rows, manifests, or the index.
 
-## 4. Publication state machine
+## 4. Pre-durability secret redaction
+
+`RedactionService` is the single provider-neutral authority for data that may
+cross from an agent or sandbox into a durable control row, object, index,
+trace, or external event stream. Artifact publication consumes only its
+`iRedactionService` port. Provider adapters, collectors, and proxies must use
+the same port rather than implementing separate regular-expression filters.
+
+The artifact handoff applies the following dispositions:
+
+| Input | Pre-durability disposition |
+|---|---|
+| Request identity, source/checkpoint references, logical paths, object-store roots, returned object URIs, index strings | Scan before the catalog claim or next durable write; quarantine on any finding because rewriting identity would break recovery |
+| UTF-8 text, JSON/JSONL, logs, patches, and declared text artifacts | Copy into a controlled local snapshot, redact deterministically, then hash and upload the sanitized bytes |
+| Opaque binary | Scan the complete byte stream for the shared high-confidence corpus; quarantine on a finding because byte replacement may corrupt the artifact |
+| Tar or ZIP archive | Traverse regular members without extraction, validate every member name, enforce declared and observed member/count/expanded-byte bounds, and quarantine on a finding, link or special member, encrypted member, unsafe member path, nested/disguised container, or incomplete inspection |
+| Known credential path such as `.codex/auth.json`, `.claude/.credentials.json`, `.config/opencode/auth.json`, `.aws/credentials`, `.git-credentials`, `.netrc`, or a private SSH key | Quarantine by path even when content patterns do not recognize the credential |
+
+The scanner covers Codex/OpenAI, Claude/Anthropic, GitHub, Modal, OpenRouter,
+AWS and common cloud formats, OAuth access/refresh tokens, signed URLs,
+private-key blocks, Authorization/Bearer headers, and generic sensitive
+assignments. This is defense in depth, not a claim that arbitrary encrypted or
+proprietary binary encodings can be semantically decoded. Uninspectable
+containers fail closed; other opaque binaries receive complete byte-pattern
+scanning. Credential files must still be excluded from mission checkpoints and
+artifact declarations by construction.
+
+The order is authoritative:
+
+1. Bind the active scanner `policy_id` into a copy of the immutable request.
+2. Scan all request and destination metadata before the control-catalog claim.
+3. Persist the credential-free claim before provider or object-store I/O.
+4. Materialize sources, copy each file into a controlled snapshot, and scan or
+   redact that copy.
+5. Compute MIME type, size, and content hash from exactly the approved copy;
+   upload those same bytes.
+6. Generate and scan the manifest, validate every index string, then record
+   upload metadata and append the index.
+
+Every retry diagnostic is also redacted and bounded before the control catalog
+records it. Quarantine exceptions retain only rule identifiers—not the matched
+value or caller-provided scope—and the HTTP adapter maps them to a fixed 422
+detail. Reconciler logs emit error types rather than raw provider diagnostics,
+so an untrusted exception cannot turn the retry ledger or reconciliation log
+into a credential side channel.
+
+The caller's source and the provider checkpoint are never mutated. This both
+preserves resumability and prevents a source-file change between scan and
+upload from bypassing the gate. Snapshot copying opens a verified regular-file
+handle without following symlinks and rejects an inode swap between inspection
+and open; hashes and uploads then consume only that controlled copy.
+
+`ArtifactBundleRequest.redaction_policy_id` is empty at ingress and bound by
+the service. Its canonical durable form always contains the active policy ID.
+A caller-supplied mismatch fails before the claim. A reconciler may resume a
+`PENDING` publication only when that exact policy implementation remains
+available; policy deployments must therefore retain old implementations or
+drain their pending claims. Reapplying a compatible policy is deterministic,
+and content-addressed placement reuses prior sanitized uploads. `UPLOADED`
+recovery and `INDEXED` replay no longer need the retired implementation because
+their approved bytes and safe records are already durable; the current policy
+still scans their metadata before index or receipt visibility.
+
+Deployments upgrading an existing catalog must treat rows without a bound
+policy explicitly. Legacy `INDEXED` rows remain queryable historical evidence,
+but their payload bytes are not retroactively certified by this gate and must
+not be labeled redaction-approved. Legacy `PENDING` rows fail closed rather
+than reopening a checkpoint under an unknown policy; an operator must expire
+and republish them through the current scanner. Legacy `UPLOADED` rows may be
+indexed only after their durable metadata passes the current scanner, while
+retaining the same historical limitation for already-uploaded payload bytes.
+
+Successful manifests contain only safe evidence: policy ID, clean/redacted
+status, file and byte counts, redaction count, rule IDs, and per-file receipts.
+Receipts and quarantine errors never retain or echo matched text. A text
+finding is redacted; a metadata, credential-file, archive, or opaque-binary
+finding raises `SecretQuarantineError`. Metadata quarantine creates no claim.
+Payload quarantine leaves a retryable `PENDING` claim with a safe diagnostic,
+no object/index visibility, and the original provider checkpoint available for
+operator recovery.
+
+Sandbox live events, sandbox-side spans, OTel export, and policy-controlled L7
+traffic capture are required to consume this same authority before their
+respective durable/external writes. Those integrations extend this contract;
+they do not weaken the artifact gate while their transports are developed.
+
+## 5. Publication state machine
 
 The control catalog records the canonical request **before external I/O**.
 
@@ -196,7 +286,7 @@ rare physical duplicates without changing the index contract.
 | After Iceberg commit | Query rows visible, control row `UPLOADED` | Verify rows, mark `INDEXED` |
 | After completion | `INDEXED` | Return duplicate receipt |
 
-## 5. Reconciler contract
+## 6. Reconciler contract
 
 `ArtifactBundleService.reconcile(world_id, limit=N)` is one bounded,
 idempotent pass.
@@ -222,7 +312,7 @@ Long operations renew the lease. Reconciler attempts are expected to be
 at-least-once; object placement and index verification make their effects
 idempotent.
 
-## 6. Lifecycle policy for review
+## 7. Lifecycle policy for review
 
 There are two independent clocks:
 
@@ -250,7 +340,7 @@ primary policy, because lifecycle rules cannot evaluate index columns. Provider
 checkpoints must not be deleted until the bundle is `INDEXED` and no task or
 branch resume policy still references them.
 
-## 7. Query, authorization, and telemetry
+## 8. Query, authorization, and telemetry
 
 - `RuntimeApplication` owns actor-free publish, reconcile, and query semantics;
   an untrusted API adapter must apply gateway authorization before invoking it.
@@ -263,6 +353,10 @@ branch resume policy still references them.
 - Agent CLI JSONL and sandbox-side OTel output are portable artifacts. Shipping
   live sandbox spans to an OTel collector is complementary and must use the
   same correlation attributes. It is not required for publication correctness.
+- Every portable payload and generated manifest passes the pre-durability gate
+  in section 4. Live telemetry exporters must apply the same policy before
+  enqueueing or sending a span; an observability outage or quarantine never
+  changes mission state authority.
 - Provider and model secrets are process capabilities. They must not appear in
   sandbox manifests, artifact requests, control rows, object paths, traces, or
   index rows.
@@ -275,7 +369,7 @@ branch resume policy still references them.
   the sandbox-provider credential. It must not require or inject the model or
   GitHub secret; the Modal resolver enforces this separation.
 
-## 8. Relationship to tick progression
+## 9. Relationship to tick progression
 
 An Archetype tick records an attempt whether it is accepted or rejected. A
 validator failure does not abort persistence of that tick. What is gated is the

@@ -88,6 +88,7 @@ src/archetype/app/
   storage/           stores, catalog/control authority, backend construction
   query/             persisted ECS read paths
   artifacts/         ingestion, publication claims, content and indexes
+  redaction/         pre-durability secret scanning, receipts and quarantine
   evaluation/        graders, snapshot pinning, receipts
   commands/          durable ledger, scheduling, dispatch, settlement
   gateway/           authorization policy boundary
@@ -139,7 +140,8 @@ gateway, runtime, API, or CLI boundary.
 | Mutation | Mutate a resolved live world | World port |
 | Simulation | Step, run, episode, and rollout | World port plus named command-drain and quota-reset callables |
 | Query | Persisted ECS reads, durable discovery, and compatibility history reads | Storage and audit ports |
-| Artifacts | Durable ingestion, immutable content, contextual links, publication claims and indexes | Storage and world-coordinate ports |
+| Redaction | Provider-neutral secret scanning, deterministic text redaction, safe receipts and quarantine | None |
+| Artifacts | Durable ingestion, immutable content, contextual links, publication claims and indexes | Redaction, storage and world-coordinate ports |
 | Evaluation | Snapshot pinning, grader contracts, grading, evidence and durable receipts | Query and artifact ports |
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |

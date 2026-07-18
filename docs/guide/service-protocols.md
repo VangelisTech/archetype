@@ -43,6 +43,8 @@ iRuntimeApplication
   -> iResearchService
 
 iEvaluationService -> iQueryService + iArtifactService
+iArtifactBundleService -> iRedactionService + iStorageService + iWorldService
+iRedactionService -> no lower application family
 iArtifactService   -> iStorageService + iWorldService
 iArtifactTableService -> iStorageService + iWorldService
 iQueryService      -> iStorageService + iAuditLog
@@ -52,7 +54,6 @@ iSimulationService -> iWorldService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
-iArtifactBundleService -> iStorageService + iWorldService
 iMissionService    -> typed mission rows (no service dependency)
 ```
 
@@ -72,6 +73,7 @@ iMissionService    -> typed mission rows (no service dependency)
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
 | `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
+| `iRedactionService` | `RedactionService` | artifact bundles; future sandbox/telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
 | `iEvaluationService` | `EvaluationService` | application | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
@@ -107,7 +109,10 @@ its drain and quota-reset callables.
 the control catalog. Tick publication performs terminal applied settlement.
 `iArtifactService` and `iEvaluationService` expose separate claim-backed
 workflows. `iArtifactBundleService` owns full attempt-bundle publication and
-reconciliation while provider checkpoints remain recovery objects.
+reconciliation while provider checkpoints remain recovery objects. It consumes
+`iRedactionService` before its control, object, manifest, and index durability
+boundaries. Future live-event, OTel, and proxy exporters consume that same port;
+they do not fork scanner policy.
 `iAuditLog` is a projection/read port, not the authority for command outcome.
 
 ### Mission transition port
@@ -127,6 +132,7 @@ owners:
 - artifact descriptors and receipts: `app/artifacts/models.py`;
 - artifact bundle requests and publication receipts: `app/artifacts/bundle_models.py`;
 - mission facts, attempt requests, and typed states: `app/missions/`;
+- redaction policy configuration, safe receipts, and quarantine errors: `app/redaction/models.py`;
 - evaluation contracts, outcomes, and receipts: `app/evaluation/models.py`;
 - research contracts and ledger components: `app/research/`;
 - audit access events: `app/audit/models.py`;

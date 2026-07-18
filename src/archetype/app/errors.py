@@ -44,6 +44,18 @@ class AvailabilityError(RuntimeError):
     public_detail = "Service is temporarily unavailable"
 
 
+class PayloadRejectedError(RuntimeError):
+    """A payload is well-formed but cannot cross a safety boundary.
+
+    Concrete services subclass this public contract so transport adapters can
+    reject unsafe content without importing the owning service family or
+    exposing internal findings. The internal exception message may contain
+    safe diagnostic context; adapters expose only ``public_detail``.
+    """
+
+    public_detail = "Payload rejected by safety policy"
+
+
 class WorldNotFoundError(LookupError):
     """Raised when a gated operation targets a ``world_id`` not in the registry.
 

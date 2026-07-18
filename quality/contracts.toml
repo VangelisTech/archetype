@@ -316,7 +316,7 @@ profiles = ["main", "release"]
 [[contract]]
 id = "artifacts.bundle.publication_replay"
 source = "docs/guide/artifact-finalization.md"
-section = "4. Publication state machine"
+section = "5. Publication state machine"
 owner = "artifacts"
 risk = "high"
 pytest = [
@@ -339,5 +339,24 @@ risk = "high"
 pytest = ["tests/app/test_mission_transition_authority.py"]
 static = ["scripts/check_architecture.py"]
 evals = ["agent_mission_transition_authority"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "security.redaction.pre_durability"
+source = "docs/guide/artifact-finalization.md"
+section = "4. Pre-durability secret redaction"
+owner = "redaction"
+risk = "high"
+pytest = [
+  "tests/app/test_redaction_service.py",
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/scripts/test_check_pre_durability_redaction.py",
+]
+static = [
+  "scripts/check_pre_durability_redaction.py",
+  "scripts/check_architecture.py",
+]
+evals = ["security.pre_durability_redaction"]
 benchmarks = []
 profiles = ["pr", "main", "release"]
