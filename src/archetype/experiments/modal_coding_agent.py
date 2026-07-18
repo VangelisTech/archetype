@@ -19,7 +19,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
+import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -27,6 +29,24 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, Protocol
 
 AgentHarness = Literal["codex", "claude-code"]
+AgentAuthMode = Literal["api-key", "oauth"]
+
+_OAUTH_MOUNT = "/auth"
+_CODEX_AUTH_VOLUME_PATH = f"{_OAUTH_MOUNT}/auth.json"
+_CODEX_MISSION_AUTH_PATH = "/root/.codex/auth.json"
+_CLAUDE_AUTH_VOLUME_PATH = f"{_OAUTH_MOUNT}/.credentials.json"
+_CLAUDE_MISSION_AUTH_PATH = "/root/.claude/.credentials.json"
+
+_AGENT_STREAM_SCRIPT = r"""
+set -o pipefail
+trace_path=$1
+stderr_path=$2
+shift 2
+mkdir -p "$(dirname "$trace_path")"
+: > "$trace_path"
+: > "$stderr_path"
+"$@" > >(tee -a "$trace_path") 2> >(tee -a "$stderr_path" >&2)
+"""
 
 _FILESYSTEM_MANIFEST_SCRIPT = r"""
 import hashlib
@@ -194,11 +214,13 @@ class ValidatorSpec:
 class ModalSandboxSpec:
     """Picklable configuration for one sandbox-backed coding mission.
 
-    The selected harness secret is injected only into the agent process, not
-    sandbox setup or validators. Codex's shell environment policy also excludes
-    key/secret/token variables from model-generated commands. Claude Code does
-    not currently document an equivalent subprocess environment filter, so use
-    a dedicated key and trusted repository content for that harness.
+    API-key mode injects the selected harness Secret only into the agent
+    process. OAuth mode mounts a named Volume only into a separate broker
+    Sandbox, stages the credential file for the CLI process, persists refreshes
+    atomically, and removes the staged file before validators and snapshots.
+    Codex's shell environment policy also excludes key/secret/token variables
+    from model-generated commands. Use trusted repository content: an agent
+    process can still inspect its own process and filesystem while authenticated.
 
     A named image is recommended for repeated runs.  If ``image_name`` is
     empty, Modal builds a cached Debian image containing git, uv, and the
@@ -211,8 +233,11 @@ class ModalSandboxSpec:
     app_name: str = "archetype-coding-agents"
     image_name: str = ""
     harness: AgentHarness = "codex"
+    auth_mode: AgentAuthMode = "api-key"
     codex_secret_name: str = "archetype-codex"
     claude_secret_name: str = "archetype-claude-code"
+    codex_auth_volume_name: str = "archetype-codex-auth"
+    claude_auth_volume_name: str = "archetype-claude-code-auth"
     github_secret_name: str = ""
     model: str = ""
     workspace: str = "/workspace/repo"
@@ -223,6 +248,8 @@ class ModalSandboxSpec:
     snapshot_ttl_seconds: int | None = 30 * 24 * 60 * 60
     snapshot_after_attempt: bool = True
     capture_filesystem_manifests: bool = True
+    stream_agent_output: bool = True
+    heartbeat_seconds: int = 15
     push: bool = False
     git_author_name: str = "Archetype Coding Agent"
     git_author_email: str = "coding-agent@archetype.local"
@@ -241,6 +268,33 @@ class ModalSandboxSpec:
             raise ValueError("push=True requires github_secret_name")
         if self.harness not in {"codex", "claude-code"}:
             raise ValueError(f"unsupported coding-agent harness: {self.harness!r}")
+        if self.auth_mode not in {"api-key", "oauth"}:
+            raise ValueError(f"unsupported coding-agent auth mode: {self.auth_mode!r}")
+        if self.heartbeat_seconds < 1:
+            raise ValueError("heartbeat_seconds must be at least 1")
+        for volume_name in (self.codex_auth_volume_name, self.claude_auth_volume_name):
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", volume_name):
+                raise ValueError(f"invalid Modal auth volume name: {volume_name!r}")
+
+    @property
+    def auth_volume_name(self) -> str:
+        """Named Modal Volume holding only the selected harness credential."""
+
+        if self.harness == "codex":
+            return self.codex_auth_volume_name
+        return self.claude_auth_volume_name
+
+    @property
+    def auth_volume_path(self) -> str:
+        if self.harness == "codex":
+            return _CODEX_AUTH_VOLUME_PATH
+        return _CLAUDE_AUTH_VOLUME_PATH
+
+    @property
+    def mission_auth_path(self) -> str:
+        if self.harness == "codex":
+            return _CODEX_MISSION_AUTH_PATH
+        return _CLAUDE_MISSION_AUTH_PATH
 
 
 class CodingAgentSandboxSpec(Protocol):
@@ -287,6 +341,9 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
     _closed: bool = False
     _completed: dict[str, dict[str, Any]] = field(default_factory=dict)
     _latest_checkpoint_ref: str = ""
+    _active_trace_path: str = ""
+    _active_trace_stderr_path: str = ""
+    _live_context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sandbox_id(self) -> str:
@@ -341,18 +398,47 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
         attempt_id = hashlib.sha256(idempotency_key.encode()).hexdigest()
         baseline = (await self._git("rev-parse", "HEAD")).stdout.strip()
         trace_dir = f"{self.spec.workspace}/.archetype-agent/traces"
-        await self._checked("mkdir", "-p", trace_dir)
+        live_status_path, live_events_path = self._live_artifact_paths()
+        directories = [trace_dir]
+        if live_status_path:
+            directories.append(str(PurePosixPath(live_status_path).parent))
+        await self._checked("mkdir", "-p", *directories)
         start_manifest_path = await self._ensure_start_manifest()
+        trace_path = (
+            f"{trace_dir}/{self._safe_step(step_name)}-{attempt_index}-{attempt_id[:12]}.jsonl"
+        )
+        self._active_trace_path = trace_path
+        self._active_trace_stderr_path = f"{trace_path}.stderr"
+        self._live_context = {
+            "attempt_id": attempt_id,
+            "attempt_index": attempt_index,
+            "step_name": step_name,
+            "trace_path": trace_path,
+            "trace_stderr_path": self._active_trace_stderr_path,
+            "correlation": correlation_data,
+        }
+        await self._emit_live_event("attempt_started", baseline_sha=baseline)
 
         agent_prompt = (
             self._repair_prompt(prompt, previous_validator_details)
             if previous_validator_details
             else self._initial_prompt(prompt, step_name)
         )
-        agent = await self._run_agent(agent_prompt, session_id=previous_session_id)
-        trace_path = (
-            f"{trace_dir}/{self._safe_step(step_name)}-{attempt_index}-{attempt_id[:12]}.jsonl"
+        await self._emit_live_event(
+            "agent_started",
+            harness=self.spec.harness,
+            resumed=bool(previous_session_id),
         )
+        try:
+            agent = await self._run_agent(agent_prompt, session_id=previous_session_id)
+        except BaseException as exc:
+            await self._emit_live_event_safely(
+                "agent_transport_failed",
+                error_type=type(exc).__name__,
+                error=self._tail(str(exc), 1000),
+            )
+            raise
+        await self._emit_live_event("agent_finished", returncode=agent.returncode)
         await self._write_text(trace_path, agent.stdout)
         if agent.stderr:
             await self._write_text(f"{trace_path}.stderr", agent.stderr)
@@ -376,6 +462,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
         message = f"{step_name}: {self._subject(prompt)}"
         pushed = False
         if accepted:
+            await self._emit_live_event("commit_started")
             try:
                 sha = await self._commit_verified_tree(step_name, prompt, baseline)
             except GateFailedError as exc:
@@ -391,6 +478,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
                 accepted = False
             else:
                 pushed = await self._push_if_configured()
+                await self._emit_live_event("commit_finished", sha=sha, pushed=pushed)
 
         failed = [detail for detail in details if not detail["passed"]]
         friction = []
@@ -404,6 +492,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
                 }
             )
 
+        await self._emit_live_event("evidence_capture_started")
         git_recovery = await self._capture_git_recovery(attempt_id, baseline)
         context_path = f"{self.spec.workspace}/.context"
         context_exists = await self._exec("test", "-d", context_path, timeout=30)
@@ -433,6 +522,8 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             "artifacts": {
                 "trace": trace_path,
                 "trace_stderr": f"{trace_path}.stderr" if agent.stderr else "",
+                "live_status": live_status_path,
+                "live_events": live_events_path,
                 "filesystem_start": start_manifest_path,
                 "filesystem_end": end_manifest_path,
                 "filesystem_diff": filesystem_diff_path,
@@ -443,9 +534,16 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             },
         }
         await self._write_text(attempt_manifest_path, json.dumps(attempt_manifest, sort_keys=True))
+        await self._emit_live_event(
+            "evidence_capture_finished",
+            attempt_manifest_path=attempt_manifest_path,
+            filesystem_diff_path=filesystem_diff_path,
+            git_bundle_path=git_recovery["bundle"],
+        )
 
         checkpoint_created_at_ms = int(time.time() * 1000)
         checkpoint_error = ""
+        await self._emit_live_event("checkpoint_started")
         try:
             snapshot_ref = await self._snapshot_if_configured(attempt_id)
         except Exception as exc:
@@ -465,6 +563,15 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
                 checkpoint_created_at_ms + self.spec.snapshot_ttl_seconds * 1000
             )
         checkpoint_ready = bool(snapshot_ref)
+        checkpoint_status = (
+            "ready" if checkpoint_ready else "failed" if checkpoint_error else "disabled"
+        )
+        await self._emit_live_event(
+            "checkpoint_finished",
+            checkpoint_status=checkpoint_status,
+            checkpoint_ref=snapshot_ref,
+            error=checkpoint_error,
+        )
         outcome = {
             "attempt_id": attempt_id,
             "idempotency_key": idempotency_key,
@@ -481,10 +588,13 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             "validator_details": details,
             "trace_ref": self._artifact_ref(snapshot_ref, trace_path),
             "traces_ref": self._artifact_ref(snapshot_ref, trace_dir),
+            # These point at the live sandbox, rather than the just-created
+            # checkpoint, so the terminal checkpoint/attempt events remain
+            # available to artifact ingestion before teardown.
+            "live_status_ref": self._sandbox_uri(live_status_path) if live_status_path else "",
+            "live_events_ref": self._sandbox_uri(live_events_path) if live_events_path else "",
             "sandbox_state_ref": snapshot_ref,
-            "checkpoint_status": (
-                "ready" if checkpoint_ready else "failed" if checkpoint_error else "disabled"
-            ),
+            "checkpoint_status": checkpoint_status,
             "checkpoint_provider": self._checkpoint_provider(),
             "checkpoint_restorable": checkpoint_ready,
             "checkpoint_error": checkpoint_error,
@@ -510,6 +620,13 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
         }
         await self._store_completed(idempotency_key, outcome)
         self._completed[idempotency_key] = outcome
+        await self._emit_live_event(
+            "attempt_completed",
+            status=outcome["status"],
+            accepted=accepted,
+            checkpoint_status=outcome["checkpoint_status"],
+            commit_sha=sha,
+        )
         return outcome
 
     async def close(self) -> None:
@@ -565,6 +682,8 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             'shell_environment_policy.inherit="core"',
             "-c",
             'shell_environment_policy.exclude=["*KEY*","*SECRET*","*TOKEN*"]',
+            "-c",
+            'cli_auth_credentials_store="file"',
         ]
         if self.spec.model:
             common.extend(["--model", self.spec.model])
@@ -572,12 +691,12 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
             argv = ["codex", "exec", "resume", *common, session_id, prompt]
         else:
             argv = ["codex", "exec", *common, prompt]
-        return await self._exec(
+        return await self._exec_agent(
             *argv,
             workdir=self.spec.workspace,
             timeout=self.spec.agent_timeout_seconds,
-            secrets=[self._agent_secret],
-            env={"NO_COLOR": "1"},
+            secrets=[self._agent_secret] if self._agent_secret is not None else (),
+            env={"NO_COLOR": "1", "CODEX_HOME": "/root/.codex"},
         )
 
     async def _run_claude(self, prompt: str, *, session_id: str) -> CommandResult:
@@ -596,17 +715,22 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
         if session_id:
             argv.extend(["--resume", session_id])
         argv.append(prompt)
-        return await self._exec(
+        return await self._exec_agent(
             *argv,
             workdir=self.spec.workspace,
             timeout=self.spec.agent_timeout_seconds,
-            secrets=[self._agent_secret],
-            env={"NO_COLOR": "1", "DISABLE_AUTOUPDATER": "1"},
+            secrets=[self._agent_secret] if self._agent_secret is not None else (),
+            env={
+                "NO_COLOR": "1",
+                "DISABLE_AUTOUPDATER": "1",
+                "CLAUDE_CONFIG_DIR": "/root/.claude",
+            },
         )
 
     async def _run_validators(self, validators: Sequence[ValidatorSpec]) -> list[dict[str, Any]]:
         details: list[dict[str, Any]] = []
         for validator in validators:
+            await self._emit_live_event("validator_started", validator=validator.name)
             result = await self._exec(
                 *validator.command,
                 workdir=self.spec.workspace,
@@ -623,7 +747,49 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
                     "stderr": self._tail(result.stderr),
                 }
             )
+            await self._emit_live_event(
+                "validator_finished",
+                validator=validator.name,
+                returncode=result.returncode,
+                passed=result.returncode == validator.expected_returncode,
+            )
         return details
+
+    async def _exec_agent(
+        self,
+        *args: str,
+        workdir: str | None = None,
+        timeout: int | None = None,
+        secrets: Sequence[Any] = (),
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        """Provider hook for a live-streamed agent command."""
+
+        return await self._exec(
+            *args,
+            workdir=workdir,
+            timeout=timeout,
+            secrets=secrets,
+            env=env,
+        )
+
+    async def _emit_live_event(self, event_type: str, **details: Any) -> None:
+        """Provider hook for live attempt status; unsupported providers are no-ops."""
+
+        del event_type, details
+
+    def _live_artifact_paths(self) -> tuple[str, str]:
+        """Return provider-observable status and event paths when supported."""
+
+        return "", ""
+
+    async def _emit_live_event_safely(self, event_type: str, **details: Any) -> None:
+        try:
+            await self._emit_live_event(event_type, **details)
+        except BaseException:
+            # Preserve the primary transport/finalization failure. Live status
+            # is valuable evidence, but it is not the system of record.
+            return
 
     async def _commit_verified_tree(self, step_name: str, prompt: str, baseline: str) -> str:
         status = (await self._git("status", "--porcelain")).stdout
@@ -866,8 +1032,218 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec]:
         )
 
 
+@dataclass
 class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
     """A live Modal sandbox running the provider-neutral attempt protocol."""
+
+    _auth_sandbox: Any | None = None
+    _live_event_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _live_sequence: int = 0
+    _live_phase: str = "idle"
+    _live_phase_started_at: float = field(default_factory=time.monotonic)
+    _live_session_started_at: float = field(default_factory=time.monotonic)
+    _agent_stream_bytes: dict[str, int] = field(default_factory=lambda: {"stdout": 0, "stderr": 0})
+    _agent_last_output_at: float | None = None
+
+    @staticmethod
+    def live_artifact_paths(workspace: str) -> tuple[str, str]:
+        """Stable files that an independent process can poll by sandbox ID."""
+
+        live_dir = f"{workspace}/.archetype-agent/live"
+        return f"{live_dir}/session.json", f"{live_dir}/events.jsonl"
+
+    def _live_artifact_paths(self) -> tuple[str, str]:
+        return self.live_artifact_paths(self.spec.workspace)
+
+    async def run_attempt(
+        self,
+        *,
+        prompt: str,
+        validators: Sequence[ValidatorSpec | dict[str, Any]],
+        step_name: str,
+        attempt_index: int,
+        idempotency_key: str,
+        previous_session_id: str = "",
+        previous_validator_details: Sequence[dict[str, Any]] = (),
+        correlation: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run an attempt with a heartbeat spanning every finalization phase."""
+
+        self._live_session_started_at = time.monotonic()
+        heartbeat = asyncio.create_task(self._heartbeat_session())
+        try:
+            return await super().run_attempt(
+                prompt=prompt,
+                validators=validators,
+                step_name=step_name,
+                attempt_index=attempt_index,
+                idempotency_key=idempotency_key,
+                previous_session_id=previous_session_id,
+                previous_validator_details=previous_validator_details,
+                correlation=correlation,
+            )
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+
+    @classmethod
+    async def monitor(
+        cls,
+        sandbox_id: str,
+        *,
+        workspace: str = "/workspace/repo",
+        follow: bool = True,
+        poll_seconds: float = 1.0,
+        disconnect_grace_seconds: float = 180.0,
+    ) -> dict[str, Any]:
+        """Attach to a running sandbox's durable live session files.
+
+        Modal can temporarily reject filesystem reads while snapshotting.  A
+        following monitor retains its offsets and retries through that bounded
+        provider interruption; ``sandbox_closing`` is the clean terminal event.
+        """
+
+        if not sandbox_id.startswith("sb-"):
+            raise ValueError("Modal sandbox IDs must start with 'sb-'")
+        if poll_seconds <= 0:
+            raise ValueError("poll_seconds must be positive")
+        if disconnect_grace_seconds <= 0:
+            raise ValueError("disconnect_grace_seconds must be positive")
+        try:
+            import modal
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "Modal support is optional; install it with `uv sync --extra coding-agent`"
+            ) from exc
+
+        sandbox = await modal.Sandbox.from_id.aio(sandbox_id)
+        status_path, events_path = cls.live_artifact_paths(workspace)
+        offsets: dict[str, int] = {}
+        status: dict[str, Any] = {}
+        disconnected_at: float | None = None
+        last_disconnect_notice_at = 0.0
+
+        async def read(path: str) -> str:
+            try:
+                return str(await sandbox.filesystem.read_text.aio(path))
+            except Exception as exc:
+                if cls._is_missing_sandbox_path(exc):
+                    return ""
+                raise
+
+        while True:
+            try:
+                status_text, events_text = await asyncio.gather(
+                    read(status_path), read(events_path)
+                )
+                if status_text:
+                    try:
+                        value = json.loads(status_text)
+                    except json.JSONDecodeError:
+                        value = {}
+                    if isinstance(value, dict):
+                        status = value
+
+                cls._write_stream_delta(events_path, events_text, offsets, sys.stdout)
+                trace_path = str(status.get("trace_path") or "")
+                stderr_path = str(status.get("trace_stderr_path") or "")
+                if trace_path:
+                    cls._write_stream_delta(
+                        trace_path,
+                        await read(trace_path),
+                        offsets,
+                        sys.stdout,
+                    )
+                if stderr_path:
+                    cls._write_stream_delta(
+                        stderr_path,
+                        await read(stderr_path),
+                        offsets,
+                        sys.stderr,
+                    )
+            except Exception as exc:
+                if not follow:
+                    raise
+                now = time.monotonic()
+                if disconnected_at is None:
+                    disconnected_at = now
+                disconnected_seconds = now - disconnected_at
+                if disconnected_seconds >= disconnect_grace_seconds:
+                    print(
+                        json.dumps(
+                            {
+                                "type": "monitor_disconnected",
+                                "sandbox_id": sandbox_id,
+                                "disconnected_seconds": round(disconnected_seconds, 3),
+                                "error": cls._tail(str(exc), 1000),
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                    return status
+                if last_disconnect_notice_at == 0.0 or now - last_disconnect_notice_at >= 15:
+                    last_disconnect_notice_at = now
+                    print(
+                        json.dumps(
+                            {
+                                "type": "monitor_read_interrupted",
+                                "sandbox_id": sandbox_id,
+                                "disconnected_seconds": round(disconnected_seconds, 3),
+                                "retrying": True,
+                                "grace_seconds": disconnect_grace_seconds,
+                                "error": cls._tail(str(exc), 1000),
+                            },
+                            sort_keys=True,
+                        ),
+                        flush=True,
+                    )
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            if disconnected_at is not None:
+                print(
+                    json.dumps(
+                        {
+                            "type": "monitor_reconnected",
+                            "sandbox_id": sandbox_id,
+                            "disconnected_seconds": round(time.monotonic() - disconnected_at, 3),
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+                disconnected_at = None
+                last_disconnect_notice_at = 0.0
+
+            if not follow:
+                return status
+            if status.get("type") == "sandbox_closing":
+                return status
+            await asyncio.sleep(poll_seconds)
+
+    async def report_live_event(self, event_type: str, **details: Any) -> None:
+        """Publish a driver-owned phase into the sandbox's live event stream."""
+
+        if not event_type or event_type == "heartbeat":
+            raise ValueError("event_type must name a non-heartbeat phase event")
+        await self._emit_live_event_safely(event_type, **details)
+
+    @staticmethod
+    def _write_stream_delta(
+        path: str,
+        value: str,
+        offsets: dict[str, int],
+        target: Any,
+    ) -> None:
+        previous = offsets.get(path, 0)
+        if previous > len(value):
+            previous = 0
+        delta = value[previous:]
+        offsets[path] = len(value)
+        if delta:
+            target.write(delta)
+            target.flush()
 
     @classmethod
     async def _modal_base(cls, spec: ModalSandboxSpec) -> tuple[Any, Any]:
@@ -881,18 +1257,187 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
         app = await modal.App.lookup.aio(spec.app_name, create_if_missing=True)
         return modal, app
 
+    async def _exec_agent(
+        self,
+        *args: str,
+        workdir: str | None = None,
+        timeout: int | None = None,
+        secrets: Sequence[Any] = (),
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        """Stream agent output immediately while teeing the canonical trace in-sandbox."""
+
+        if not self._active_trace_path:
+            return await super()._exec_agent(
+                *args,
+                workdir=workdir,
+                timeout=timeout,
+                secrets=secrets,
+                env=env,
+            )
+        wrapped = (
+            "bash",
+            "-o",
+            "pipefail",
+            "-c",
+            _AGENT_STREAM_SCRIPT,
+            "archetype-agent-stream",
+            self._active_trace_path,
+            self._active_trace_stderr_path,
+            *args,
+        )
+        process = await self._sandbox.exec.aio(
+            *wrapped,
+            workdir=workdir,
+            timeout=timeout,
+            secrets=list(secrets),
+            env=env,
+        )
+        # Modal exposes stdin as an open pipe. Both noninteractive CLIs may
+        # consume additional prompt input from stdin and will wait forever if
+        # the writer is left open, even when a prompt argument was supplied.
+        process.stdin.write_eof()
+        await process.stdin.drain.aio()
+        self._agent_stream_bytes = {"stdout": 0, "stderr": 0}
+        self._agent_last_output_at = None
+        stdout_task = asyncio.create_task(
+            self._pump_agent_stream(process.stdout, sys.stdout, stream_name="stdout")
+        )
+        stderr_task = asyncio.create_task(
+            self._pump_agent_stream(process.stderr, sys.stderr, stream_name="stderr")
+        )
+        returncode, stdout, stderr = await asyncio.gather(
+            process.wait.aio(), stdout_task, stderr_task
+        )
+        return CommandResult(tuple(args), int(returncode), stdout, stderr)
+
+    async def _pump_agent_stream(
+        self,
+        reader: Any,
+        target: Any,
+        *,
+        stream_name: str,
+    ) -> str:
+        chunks: list[str] = []
+        async for chunk in reader:
+            value = chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+            chunks.append(value)
+            self._agent_stream_bytes[stream_name] += len(value.encode())
+            self._agent_last_output_at = time.monotonic()
+            if self.spec.stream_agent_output:
+                target.write(value)
+                target.flush()
+        return "".join(chunks)
+
+    async def _heartbeat_session(self) -> None:
+        while True:
+            await asyncio.sleep(self.spec.heartbeat_seconds)
+            now = time.monotonic()
+            await self._emit_live_event(
+                "heartbeat",
+                phase=self._live_phase,
+                elapsed_seconds=int(now - self._live_session_started_at),
+                phase_elapsed_seconds=int(now - self._live_phase_started_at),
+                agent_stdout_bytes=self._agent_stream_bytes["stdout"],
+                agent_stderr_bytes=self._agent_stream_bytes["stderr"],
+                agent_output_bytes=sum(self._agent_stream_bytes.values()),
+                seconds_since_agent_output=(
+                    int(now - self._agent_last_output_at)
+                    if self._agent_last_output_at is not None
+                    else None
+                ),
+            )
+
+    async def _emit_live_event(self, event_type: str, **details: Any) -> None:
+        status_path, events_path = self._live_artifact_paths()
+        async with self._live_event_lock:
+            if event_type != "heartbeat":
+                phase = self._phase_for_event(event_type, details)
+                if phase != self._live_phase:
+                    self._live_phase = phase
+                    self._live_phase_started_at = time.monotonic()
+                details.setdefault("phase", phase)
+            self._live_sequence += 1
+            event = {
+                "schema_version": 1,
+                "sequence": self._live_sequence,
+                "timestamp_ms": int(time.time() * 1000),
+                "type": event_type,
+                "sandbox_id": self.sandbox_id,
+                "harness": self.spec.harness,
+                **self._live_context,
+                **details,
+            }
+            line = json.dumps(event, sort_keys=True) + "\n"
+            try:
+                existing = str(await self._sandbox.filesystem.read_text.aio(events_path))
+            except Exception as exc:
+                if not self._is_missing_sandbox_path(exc):
+                    raise
+                existing = ""
+            await self._sandbox.filesystem.write_text.aio(existing + line, events_path)
+            await self._sandbox.filesystem.write_text.aio(line, status_path)
+        if self.spec.stream_agent_output:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    @staticmethod
+    def _phase_for_event(event_type: str, details: Mapping[str, Any]) -> str:
+        explicit = details.get("phase")
+        if explicit:
+            return str(explicit)
+        if event_type == "agent_started":
+            return "agent_running"
+        if event_type == "validator_started":
+            return f"validator:{details.get('validator', 'unknown')}"
+        if event_type == "commit_started":
+            return "committing"
+        if event_type == "evidence_capture_started":
+            return "capturing_evidence"
+        if event_type == "checkpoint_started":
+            return "checkpointing"
+        if event_type == "artifact_publication_started":
+            return "publishing_artifacts"
+        if event_type == "attempt_completed":
+            return "completed"
+        return event_type
+
+    @staticmethod
+    def _is_missing_sandbox_path(exc: BaseException) -> bool:
+        """Normalize Modal's missing-file error without importing Modal eagerly."""
+
+        return isinstance(exc, FileNotFoundError) or type(exc).__name__ == (
+            "SandboxFilesystemNotFoundError"
+        )
+
     @classmethod
-    async def _modal_dependencies(cls, spec: ModalSandboxSpec) -> tuple[Any, Any, Any, Any | None]:
+    async def _modal_dependencies(
+        cls, spec: ModalSandboxSpec
+    ) -> tuple[Any, Any, Any | None, Any | None, Any | None]:
         modal, app = await cls._modal_base(spec)
-        if spec.harness == "codex":
+        auth_volume = None
+        if spec.auth_mode == "oauth":
+            auth_volume = modal.Volume.from_name(
+                spec.auth_volume_name,
+                create_if_missing=False,
+                version=2,
+            )
+            try:
+                await auth_volume.hydrate.aio()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Modal OAuth volume {spec.auth_volume_name!r} is not initialized. Run "
+                    "the coding-agent example with --modal-login and complete the subscription "
+                    "login, then retry."
+                ) from exc
+            agent_secret = None
+        elif spec.harness == "codex":
             agent_secret = modal.Secret.from_name(
-                spec.codex_secret_name,
-                required_keys=["CODEX_API_KEY"],
+                spec.codex_secret_name, required_keys=["CODEX_API_KEY"]
             )
         else:
             agent_secret = modal.Secret.from_name(
-                spec.claude_secret_name,
-                required_keys=["ANTHROPIC_API_KEY"],
+                spec.claude_secret_name, required_keys=["ANTHROPIC_API_KEY"]
             )
         github_secret = None
         if spec.github_secret_name:
@@ -900,7 +1445,7 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
                 spec.github_secret_name,
                 required_keys=["GITHUB_TOKEN"],
             )
-        return modal, app, agent_secret, github_secret
+        return modal, app, agent_secret, github_secret, auth_volume
 
     @classmethod
     async def _start(
@@ -909,14 +1454,44 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
         *,
         image: Any,
         app: Any,
-        agent_secret: Any,
+        agent_secret: Any | None,
         github_secret: Any | None,
+        auth_volume: Any | None,
     ) -> ModalSandboxClient:
-        sandbox = await cls._create_modal_sandbox(spec, image=image, app=app)
-        return cls(spec, sandbox, agent_secret, github_secret)
+        auth_sandbox = None
+        if auth_volume is not None:
+            auth_sandbox = await cls._create_modal_sandbox(
+                spec,
+                image=image,
+                app=app,
+                volumes={_OAUTH_MOUNT: auth_volume},
+                workdir=_OAUTH_MOUNT,
+                kind="archetype-agent-auth-broker",
+            )
+        try:
+            sandbox = await cls._create_modal_sandbox(spec, image=image, app=app)
+        except BaseException:
+            if auth_sandbox is not None:
+                await cls._terminate(auth_sandbox)
+            raise
+        return cls(
+            spec,
+            sandbox,
+            agent_secret,
+            github_secret,
+            _auth_sandbox=auth_sandbox,
+        )
 
     @staticmethod
-    async def _create_modal_sandbox(spec: ModalSandboxSpec, *, image: Any, app: Any) -> Any:
+    async def _create_modal_sandbox(
+        spec: ModalSandboxSpec,
+        *,
+        image: Any,
+        app: Any,
+        volumes: Mapping[str, Any] | None = None,
+        workdir: str | None = None,
+        kind: str = "archetype-coding-agent",
+    ) -> Any:
         import modal
 
         return await modal.Sandbox.create.aio(
@@ -924,15 +1499,16 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             image=image,
             timeout=spec.timeout_seconds,
             idle_timeout=spec.idle_timeout_seconds,
-            workdir=str(PurePosixPath(spec.workspace).parent),
-            tags={"kind": "archetype-coding-agent", "branch": spec.branch},
+            workdir=workdir or str(PurePosixPath(spec.workspace).parent),
+            volumes=({key: value for key, value in volumes.items()} if volumes is not None else {}),
+            tags={"kind": kind, "branch": spec.branch, "harness": spec.harness},
         )
 
     @classmethod
     async def create(cls, spec: ModalSandboxSpec) -> ModalSandboxClient:
         """Create a Modal Sandbox, clone the repository, and prepare its branch."""
 
-        modal, app, agent_secret, github_secret = await cls._modal_dependencies(spec)
+        modal, app, agent_secret, github_secret, auth_volume = await cls._modal_dependencies(spec)
         image = (
             modal.Image.from_name(spec.image_name)
             if spec.image_name
@@ -944,13 +1520,356 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             app=app,
             agent_secret=agent_secret,
             github_secret=github_secret,
+            auth_volume=auth_volume,
         )
+        if spec.stream_agent_output:
+            print(
+                json.dumps(
+                    {
+                        "type": "sandbox_created",
+                        "sandbox_id": client.sandbox_id,
+                        "harness": spec.harness,
+                        "branch": spec.branch,
+                        "monitor_command": (
+                            "uv run --extra coding-agent python "
+                            "examples/11_coding_agent_mission.py "
+                            f"--monitor-sandbox {client.sandbox_id}"
+                        ),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         try:
+            if spec.auth_mode == "oauth":
+                await client._check_oauth()
             await client._prepare_repository()
-        except BaseException:
+            status_path, _events_path = client._live_artifact_paths()
+            await client._checked("mkdir", "-p", str(PurePosixPath(status_path).parent))
+            await client._emit_live_event("sandbox_ready", phase="ready")
+        except BaseException as exc:
+            await client._emit_live_event_safely(
+                "sandbox_preparation_failed",
+                error_type=type(exc).__name__,
+                error=client._tail(str(exc), 1000),
+            )
             await client.close()
             raise
         return client
+
+    @classmethod
+    async def login_oauth(cls, spec: ModalSandboxSpec) -> None:
+        """Persist an interactive subscription login in a named Modal Volume."""
+
+        if spec.auth_mode != "oauth":
+            raise ValueError("Modal subscription login requires auth_mode='oauth'")
+        modal, app = await cls._modal_base(spec)
+        volume = modal.Volume.from_name(
+            spec.auth_volume_name,
+            create_if_missing=True,
+            version=2,
+        )
+        await volume.hydrate.aio()
+        image = (
+            modal.Image.from_name(spec.image_name)
+            if spec.image_name
+            else _default_agent_image(modal, spec.harness)
+        )
+        sandbox = await cls._create_modal_sandbox(
+            spec,
+            image=image,
+            app=app,
+            volumes={_OAUTH_MOUNT: volume},
+            workdir=_OAUTH_MOUNT,
+            kind="archetype-agent-oauth-login",
+        )
+        try:
+            if spec.harness == "codex":
+                argv = (
+                    "codex",
+                    "login",
+                    "--device-auth",
+                    "-c",
+                    'cli_auth_credentials_store="file"',
+                )
+                env = {"CODEX_HOME": _OAUTH_MOUNT, "NO_COLOR": "1"}
+            else:
+                argv = ("claude", "auth", "login", "--claudeai")
+                env = {
+                    "CLAUDE_CONFIG_DIR": _OAUTH_MOUNT,
+                    "DISABLE_AUTOUPDATER": "1",
+                    "NO_COLOR": "1",
+                }
+            process = await sandbox.exec.aio(
+                *argv,
+                workdir=_OAUTH_MOUNT,
+                timeout=spec.agent_timeout_seconds,
+                env=env,
+                pty=True,
+            )
+            returncode = await cls._passthrough_process(process)
+            if returncode != 0:
+                raise RuntimeError(
+                    f"{spec.harness} subscription login failed with exit code {returncode}"
+                )
+
+            status_argv = (
+                ("codex", "login", "status")
+                if spec.harness == "codex"
+                else ("claude", "auth", "status")
+            )
+            status = await cls._sandbox_exec(
+                sandbox,
+                *status_argv,
+                timeout=60,
+                env=env,
+            )
+            cls._raise_for_result(status, f"{spec.harness} subscription login verification")
+        finally:
+            cleanup = asyncio.create_task(cls._cleanup_oauth_login(sandbox, spec))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                # Ctrl-C cancels the caller, but credential-volume cleanup and
+                # sandbox termination are part of the durability boundary.
+                # Wait for the shielded task before propagating cancellation.
+                await cleanup
+                raise
+
+    @classmethod
+    async def _cleanup_oauth_login(cls, sandbox: Any, spec: ModalSandboxSpec) -> None:
+        try:
+            credential_name = PurePosixPath(spec.auth_volume_path).name
+            cleanup_script = (
+                f"find {_OAUTH_MOUNT} -mindepth 1 -maxdepth 1 "
+                f"! -name {credential_name} -exec rm -rf -- {{}} +"
+            )
+            cleaned = await cls._sandbox_exec(
+                sandbox,
+                "sh",
+                "-c",
+                cleanup_script,
+                timeout=60,
+            )
+            cls._raise_for_result(cleaned, f"{spec.harness} OAuth volume cleanup")
+            synced = await cls._sandbox_exec(sandbox, "sync", _OAUTH_MOUNT, timeout=60)
+            cls._raise_for_result(synced, f"{spec.harness} OAuth volume sync")
+        finally:
+            await cls._terminate(sandbox)
+
+    @staticmethod
+    async def _passthrough_process(process: Any) -> int:
+        """Bridge a remote login PTY to the caller's terminal without logging secrets."""
+
+        loop = asyncio.get_running_loop()
+        write_tasks: set[asyncio.Task[Any]] = set()
+        stdin_fd: int | None = None
+
+        async def write_remote(data: bytes) -> None:
+            await process.stdin.write.aio(data)
+            await process.stdin.drain.aio()
+
+        def stdin_ready() -> None:
+            assert stdin_fd is not None
+            try:
+                data = os.read(stdin_fd, 4096)
+            except OSError:
+                data = b""
+            if not data:
+                loop.remove_reader(stdin_fd)
+                return
+            task = asyncio.create_task(write_remote(data))
+            write_tasks.add(task)
+            task.add_done_callback(write_tasks.discard)
+
+        async def pump_output(reader: Any, target: Any) -> None:
+            async for chunk in reader:
+                value = chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+                target.write(value)
+                target.flush()
+
+        try:
+            try:
+                stdin_fd = sys.stdin.fileno()
+                loop.add_reader(stdin_fd, stdin_ready)
+            except (AttributeError, OSError, ValueError, NotImplementedError):
+                stdin_fd = None
+            output = asyncio.create_task(pump_output(process.stdout, sys.stdout))
+            errors = asyncio.create_task(pump_output(process.stderr, sys.stderr))
+            returncode = int(await process.wait.aio())
+            await asyncio.gather(output, errors)
+            return returncode
+        finally:
+            if stdin_fd is not None:
+                try:
+                    loop.remove_reader(stdin_fd)
+                except (OSError, ValueError):
+                    pass
+            if write_tasks:
+                await asyncio.gather(*write_tasks, return_exceptions=True)
+
+    @staticmethod
+    async def _sandbox_exec(
+        sandbox: Any,
+        *args: str,
+        timeout: int,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        process = await sandbox.exec.aio(*args, timeout=timeout, env=env)
+        stdout_task = asyncio.create_task(process.stdout.read.aio())
+        stderr_task = asyncio.create_task(process.stderr.read.aio())
+        returncode, stdout, stderr = await asyncio.gather(
+            process.wait.aio(), stdout_task, stderr_task
+        )
+        return CommandResult(tuple(args), int(returncode), str(stdout), str(stderr))
+
+    async def _run_codex(self, prompt: str, *, session_id: str) -> CommandResult:
+        if self.spec.auth_mode == "api-key":
+            return await super()._run_codex(prompt, session_id=session_id)
+        await self._stage_oauth()
+        try:
+            return await super()._run_codex(prompt, session_id=session_id)
+        finally:
+            await self._persist_and_remove_oauth()
+
+    async def _run_claude(self, prompt: str, *, session_id: str) -> CommandResult:
+        if self.spec.auth_mode == "api-key":
+            return await super()._run_claude(prompt, session_id=session_id)
+        await self._stage_oauth()
+        try:
+            return await super()._run_claude(prompt, session_id=session_id)
+        finally:
+            await self._persist_and_remove_oauth()
+
+    async def _check_oauth(self) -> None:
+        await self._stage_oauth()
+        try:
+            if self.spec.harness == "codex":
+                status = await self._exec(
+                    "codex",
+                    "login",
+                    "status",
+                    timeout=60,
+                    env={"CODEX_HOME": "/root/.codex", "NO_COLOR": "1"},
+                )
+            else:
+                status = await self._exec(
+                    "claude",
+                    "auth",
+                    "status",
+                    timeout=60,
+                    env={
+                        "CLAUDE_CONFIG_DIR": "/root/.claude",
+                        "DISABLE_AUTOUPDATER": "1",
+                        "NO_COLOR": "1",
+                    },
+                )
+        finally:
+            await self._persist_and_remove_oauth()
+        if status.returncode != 0:
+            raise RuntimeError(
+                f"The {self.spec.harness} OAuth volume does not contain a valid subscription "
+                "login. Run the coding-agent example with --modal-login and retry."
+            )
+
+    async def _stage_oauth(self) -> None:
+        if self._auth_sandbox is None:
+            raise RuntimeError("Modal OAuth credential broker is not running")
+        try:
+            payload = await self._auth_sandbox.filesystem.read_text.aio(self.spec.auth_volume_path)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Modal OAuth volume {self.spec.auth_volume_name!r} has no {self.spec.harness} "
+                "credential. Run the coding-agent example with --modal-login and retry."
+            ) from exc
+        self._validate_oauth_payload(payload)
+        parent = str(PurePosixPath(self.spec.mission_auth_path).parent)
+        await self._checked("mkdir", "-p", parent)
+        await self._sandbox.filesystem.write_text.aio(payload, self.spec.mission_auth_path)
+        secured = await self._exec("chmod", "600", self.spec.mission_auth_path, timeout=30)
+        self._raise_for_result(secured, f"stage {self.spec.harness} OAuth credential")
+
+    async def _persist_and_remove_oauth(self) -> None:
+        persistence_error: BaseException | None = None
+        try:
+            payload = await self._sandbox.filesystem.read_text.aio(self.spec.mission_auth_path)
+            self._validate_oauth_payload(payload)
+            assert self._auth_sandbox is not None
+            temporary_path = f"{self.spec.auth_volume_path}.next"
+            await self._auth_sandbox.filesystem.write_text.aio(payload, temporary_path)
+            secured = await self._auth_exec("chmod", "600", temporary_path, timeout=30)
+            self._raise_for_result(
+                secured, f"secure refreshed {self.spec.harness} OAuth credential"
+            )
+            promoted = await self._auth_exec(
+                "mv",
+                "-f",
+                temporary_path,
+                self.spec.auth_volume_path,
+                timeout=30,
+            )
+            self._raise_for_result(
+                promoted, f"persist refreshed {self.spec.harness} OAuth credential"
+            )
+            synced = await self._auth_exec("sync", _OAUTH_MOUNT, timeout=60)
+            self._raise_for_result(synced, f"sync {self.spec.harness} OAuth volume")
+        except BaseException as exc:
+            persistence_error = exc
+        finally:
+            removed = await self._exec("rm", "-f", self.spec.mission_auth_path, timeout=30)
+            self._raise_for_result(removed, f"remove staged {self.spec.harness} OAuth credential")
+        if persistence_error is not None:
+            raise persistence_error
+
+    async def _auth_exec(
+        self,
+        *args: str,
+        timeout: int,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        if self._auth_sandbox is None:
+            raise RuntimeError("Modal OAuth credential broker is not running")
+        return await self._sandbox_exec(
+            self._auth_sandbox,
+            *args,
+            timeout=timeout,
+            env=env,
+        )
+
+    @staticmethod
+    def _validate_oauth_payload(payload: str) -> None:
+        try:
+            value = json.loads(payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("OAuth credential payload is not valid JSON") from exc
+        if not isinstance(value, dict) or not value:
+            raise RuntimeError("OAuth credential payload must be a non-empty JSON object")
+
+    async def close(self) -> None:
+        """Terminate the mission and its credential broker without deleting the auth volume."""
+
+        if self._closed:
+            return
+        if self._live_sequence:
+            await self._emit_live_event_safely("sandbox_closing", phase="teardown")
+        self._closed = True
+        failures: list[BaseException] = []
+        for sandbox in (self._sandbox, self._auth_sandbox):
+            if sandbox is None:
+                continue
+            try:
+                await self._terminate(sandbox)
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise failures[0]
+
+    @staticmethod
+    async def _terminate(sandbox: Any) -> None:
+        try:
+            await sandbox.terminate.aio(wait=True)
+        finally:
+            await sandbox.detach.aio()
 
     @classmethod
     async def restore(cls, spec: ModalSandboxSpec, checkpoint_ref: str) -> ModalSandboxClient:
@@ -970,6 +1889,7 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             # GitHub secrets are deliberately absent from restored sandboxes.
             agent_secret=None,
             github_secret=None,
+            auth_volume=None,
         )
         try:
             await client._git("rev-parse", "--is-inside-work-tree")
@@ -1112,6 +2032,7 @@ class ModalArtifactSourceResolver:
 
 
 __all__ = [
+    "AgentAuthMode",
     "AgentHarness",
     "CodingAgentSandboxClient",
     "CodingAgentSandboxSpec",

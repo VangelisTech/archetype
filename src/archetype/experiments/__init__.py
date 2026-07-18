@@ -43,6 +43,7 @@ from archetype.experiments.loaders import (
     load_runner_state_db,
 )
 from archetype.experiments.modal_coding_agent import (
+    AgentAuthMode,
     AgentHarness,
     CodingAgentSandboxClient,
     GateFailedError,
@@ -63,6 +64,7 @@ from archetype.experiments.trajectories import (
 )
 
 __all__ = [
+    "AgentAuthMode",
     "AgentHarness",
     "AppleContainerSandboxClient",
     "AppleContainerSandboxSpec",

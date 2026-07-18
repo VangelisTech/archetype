@@ -38,6 +38,38 @@ passed to validator processes. To use a Platform API key instead, set
 Claude Code currently uses ``ANTHROPIC_API_KEY``. Set
 ``CODING_AGENT_HARNESS=claude-code`` to select it.
 
+For Modal, either use the API-key Secrets documented below or persist a
+subscription login in a dedicated Modal Volume. Codex uses device code auth;
+Claude Code prints a browser URL and may ask you to paste the returned code:
+
+    CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=codex \
+      CODING_AGENT_MODAL_AUTH_MODE=oauth \
+      uv run python examples/11_coding_agent_mission.py --modal-login
+
+    CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=claude-code \
+      CODING_AGENT_MODAL_AUTH_MODE=oauth \
+      uv run python examples/11_coding_agent_mission.py --modal-login
+
+Rerun the same command without ``--modal-login`` to start the mission. The
+named auth Volume is mounted only into a separate credential-broker Sandbox.
+The credential file is staged into the mission Sandbox only while the selected
+CLI runs, refreshed back into the Volume, and removed before validators,
+filesystem manifests, and provider snapshots.
+
+Modal sessions are observable while they run. The driver prints the ``sb-...``
+sandbox ID before the first tick, streams Codex/Claude JSONL immediately, and
+emits phase changes plus a heartbeat every 15 seconds. In another terminal,
+attach directly to the durable status, event, stdout, and stderr files:
+
+    uv run --extra coding-agent python examples/11_coding_agent_mission.py \
+      --monitor-sandbox sb-REPLACE_ME
+
+The attach command needs no model credential. If ``CODING_AGENT_WORKSPACE``
+was customized for the run, provide the same value to the monitor command.
+Heartbeats include agent stdout/stderr byte counts and time since the last
+output. The monitor retries temporary filesystem interruptions during Modal
+snapshotting and exits cleanly only after the sandbox emits its teardown event.
+
 Tick grain: NOT physics / NOT every tool call. One tick = one coding-agent
 submission, whether accepted or rejected. Validators never abort an ordinary
 tick. ``TaskGate.step_index`` advances only when the submission is accepted and
@@ -90,6 +122,7 @@ from archetype.core.config import StorageConfig
 from archetype.core.hooks import OnDestroy, PostTick, PreTick
 from archetype.core.resources import Resources
 from archetype.experiments import (
+    AgentAuthMode,
     AgentHarness,
     AppleContainerSandboxClient,
     AppleContainerSandboxSpec,
@@ -101,30 +134,236 @@ from archetype.experiments import (
 
 # ── Mission plan (would later be HTN-compiled into TaskGate rows) ────────────
 
+_ISSUE_457_CONCURRENCY_CONTRACT = r"""
+import asyncio
+import tempfile
+from pathlib import Path
+
+from daft import DataFrame, col
+from uuid_utils import uuid7
+
+from archetype import Component
+from archetype.app.auth.models import ActorCtx
+from archetype.app.container import ServiceContainer
+from archetype.core.aio.async_processor import AsyncProcessor
+from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+
+
+class Counter(Component):
+    value: int = 0
+
+
+class BlockingIncrement(AsyncProcessor):
+    components = (Counter,)
+
+    def __init__(self, *, block_first: bool = True) -> None:
+        self.block_first = block_first
+        self.calls = 0
+        self.active = 0
+        self.max_active = 0
+        self.entered = asyncio.Event()
+        self.both_entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        self.calls += 1
+        call = self.calls
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        if self.calls >= 2:
+            self.both_entered.set()
+        try:
+            if self.block_first and call == 1:
+                await self.release.wait()
+            elif not self.block_first:
+                await self.release.wait()
+            return df.with_column("counter__value", col("counter__value") + 1)
+        finally:
+            self.active -= 1
+
+
+async def create_counter_world(container, ctx, storage, name):
+    cs = container.command_service
+    info = await cs.create_world(ctx, WorldConfig(name=name), storage)
+    await cs.create_entity(ctx, info.world_id, [Counter()])
+    await cs.step(ctx, info.world_id, RunConfig(num_steps=1))
+    return info
+
+
+async def assert_same_world_steps_are_serialized(root: Path) -> None:
+    container = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(root / "same-world"))
+    probe = BlockingIncrement()
+    first = second = None
+    try:
+        info = await create_counter_world(container, ctx, storage, "same-world")
+        world = container.world_service.get_world(info.world_id)
+        await container.command_service.add_processor(ctx, info.world_id, probe)
+        first = asyncio.create_task(
+            container.command_service.step(ctx, info.world_id, RunConfig(num_steps=1))
+        )
+        await asyncio.wait_for(probe.entered.wait(), timeout=10)
+        second = asyncio.create_task(
+            container.command_service.step(ctx, info.world_id, RunConfig(num_steps=1))
+        )
+        await asyncio.sleep(0.25)
+        assert probe.calls == 1, "two same-world processors entered concurrently"
+        assert not second.done(), "second same-world step completed before the first"
+        probe.release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=60)
+        assert probe.max_active == 1, probe.max_active
+        catalog = container.storage_service.get_control_catalog(storage)
+        manifest_tick = await catalog.max_manifest_tick(
+            str(info.world_id), str(world.run_id)
+        )
+        rows = (
+            await container.query_service.query_components(
+                [Counter],
+                str(info.world_id),
+                str(world.run_id),
+                storage,
+                ticks=[0, 1, 2],
+            )
+        ).to_pylist()
+        observed = sorted((row["tick"], row["counter__value"]) for row in rows)
+        assert world.tick == 3, world.tick
+        assert manifest_tick == 2, manifest_tick
+        assert observed == [(0, 0), (1, 1), (2, 2)], observed
+    finally:
+        probe.release.set()
+        pending = [task for task in (first, second) if task is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await container.shutdown()
+
+
+async def assert_destroy_waits_for_admitted_run(root: Path) -> None:
+    container = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(root / "destroy-order"))
+    probe = BlockingIncrement()
+    run_task = destroy_task = None
+    try:
+        info = await create_counter_world(container, ctx, storage, "destroy-order")
+        world = container.world_service.get_world(info.world_id)
+        run_id = str(world.run_id)
+        await container.command_service.add_processor(ctx, info.world_id, probe)
+        run_task = asyncio.create_task(
+            container.command_service.run(ctx, info.world_id, RunConfig(num_steps=2))
+        )
+        await asyncio.wait_for(probe.entered.wait(), timeout=10)
+        destroy_task = asyncio.create_task(
+            container.command_service.destroy_world(ctx, info.world_id)
+        )
+        await asyncio.sleep(0.25)
+        assert not destroy_task.done(), "destroy overtook an admitted run"
+        probe.release.set()
+        result, _ = await asyncio.wait_for(
+            asyncio.gather(run_task, destroy_task), timeout=60
+        )
+        assert result.ticks_completed == 2, result
+        assert all(
+            candidate.world_id != info.world_id
+            for candidate in container.world_service.list_worlds()
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        manifest_tick = await catalog.max_manifest_tick(str(info.world_id), run_id)
+        rows = (
+            await container.query_service.query_components(
+                [Counter], str(info.world_id), run_id, storage, ticks=[0, 1, 2]
+            )
+        ).to_pylist()
+        observed = sorted((row["tick"], row["counter__value"]) for row in rows)
+        assert manifest_tick == 2, manifest_tick
+        assert observed == [(0, 0), (1, 1), (2, 2)], observed
+    finally:
+        probe.release.set()
+        pending = [task for task in (run_task, destroy_task) if task is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await container.shutdown()
+
+
+async def assert_different_worlds_remain_concurrent(root: Path) -> None:
+    container = ServiceContainer()
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+    storage = StorageConfig(uri=str(root / "different-worlds"))
+    probe = BlockingIncrement(block_first=False)
+    left_task = right_task = None
+    try:
+        left = await create_counter_world(container, ctx, storage, "left")
+        right = await create_counter_world(container, ctx, storage, "right")
+        await container.command_service.add_processor(ctx, left.world_id, probe)
+        await container.command_service.add_processor(ctx, right.world_id, probe)
+        left_task = asyncio.create_task(
+            container.command_service.step(ctx, left.world_id, RunConfig(num_steps=1))
+        )
+        right_task = asyncio.create_task(
+            container.command_service.step(ctx, right.world_id, RunConfig(num_steps=1))
+        )
+        await asyncio.wait_for(probe.both_entered.wait(), timeout=10)
+        assert probe.active == 2, probe.active
+        probe.release.set()
+        await asyncio.wait_for(asyncio.gather(left_task, right_task), timeout=60)
+    finally:
+        probe.release.set()
+        pending = [task for task in (left_task, right_task) if task is not None]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        await container.shutdown()
+
+
+async def main() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        await assert_same_world_steps_are_serialized(root)
+        await assert_destroy_waits_for_admitted_run(root)
+        await assert_different_worlds_remain_concurrent(root)
+
+
+asyncio.run(main())
+"""
+
+
 PLAN: list[dict[str, Any]] = [
     {
         "step": 0,
-        "name": "fix_issue_342",
-        "prompt": (
-            "Fix https://github.com/VangelisTech/archetype/issues/342: GET /signatures "
-            "currently treats a blank storage_uri query value as a real URI, so "
-            "?storage_uri=&namespace=custom resolves to the process working directory instead "
-            "of StorageConfig().uri. Add a focused regression test in tests/api/test_routes.py "
-            "that proves a blank storage_uri uses the default URI while preserving the supplied "
-            "namespace, then implement the smallest API-layer fix. Do not modify core/."
-        ),
+        "name": "fix_issue_457",
+        # Intentionally naive. The issue is the task specification; independent
+        # validators below, rather than prompt detail, decide whether it is done.
+        "prompt": "Fix https://github.com/VangelisTech/archetype/issues/457.",
         "validators": [
             {
-                "name": "signatures_api_contracts",
+                "name": "same_world_lifecycle_contract",
+                "command": ["uv", "run", "python", "-c", _ISSUE_457_CONCURRENCY_CONTRACT],
+                "timeout_seconds": 300,
+            },
+            {
+                "name": "material_app_diff",
                 "command": [
                     "uv",
                     "run",
-                    "pytest",
-                    "-q",
-                    "tests/api/test_routes.py",
-                    "-k",
-                    "signatures",
+                    "python",
+                    "-c",
+                    (
+                        "import subprocess; "
+                        "changed=set(subprocess.check_output("
+                        "['git','diff','--name-only','HEAD'], text=True).splitlines()); "
+                        "implementation={p for p in changed if p.startswith('src/archetype/app/')}; "
+                        "tests={p for p in changed if p.startswith('tests/')}; "
+                        "core={p for p in changed if p.startswith('src/archetype/core/')}; "
+                        "assert implementation, ('missing app implementation', changed); "
+                        "assert tests, ('missing regression tests', changed); "
+                        "assert not core, ('issue owns the app boundary, not core', core)"
+                    ),
                 ],
+            },
+            {
+                "name": "app_api_regression_tests",
+                "command": ["uv", "run", "pytest", "-q", "tests/app", "tests/api"],
+                "timeout_seconds": 1200,
             },
             {
                 "name": "ruff",
@@ -133,10 +372,12 @@ PLAN: list[dict[str, Any]] = [
                     "run",
                     "ruff",
                     "check",
-                    "src/archetype/api/routes/query.py",
-                    "tests/api/test_routes.py",
+                    "src/archetype/app",
+                    "tests/app",
+                    "tests/api",
                 ],
             },
+            {"name": "git_diff_check", "command": ["git", "diff", "--check"]},
             {"name": "tests", "command": ["make", "test"], "timeout_seconds": 1800},
         ],
     },
@@ -219,6 +460,8 @@ class Evidence(Component):
     results_json: str = "{}"
     trace_ref: str = ""
     traces_ref: str = ""
+    live_status_ref: str = ""
+    live_events_ref: str = ""
     sandbox_state_ref: str = ""
     filesystem_start_ref: str = ""
     filesystem_end_ref: str = ""
@@ -248,9 +491,13 @@ class SandboxSpec:
     workspace: str = "/workspace/repo"
     repo_url: str = "https://github.com/VangelisTech/archetype.git"
     base_ref: str = "main"
-    branch: str = "agent/issue-342-blank-storage-uri"
+    branch: str = "agent/issue-457-same-world-serialization"
     codex_secret_name: str = "archetype-codex"
     claude_secret_name: str = "archetype-claude-code"
+    modal_auth_mode: str = "api-key"
+    modal_codex_auth_volume: str = "archetype-codex-auth"
+    modal_claude_auth_volume: str = "archetype-claude-code-auth"
+    stream_agent_output: bool = True
     github_secret_name: str = ""
     local_image_name: str = ""
     local_state_dir: str = ".context/apple-container-snapshots"
@@ -316,6 +563,10 @@ def _modal_spec(spec: SandboxSpec) -> ModalSandboxSpec:
         workspace=spec.workspace,
         codex_secret_name=spec.codex_secret_name,
         claude_secret_name=spec.claude_secret_name,
+        auth_mode=cast(AgentAuthMode, spec.modal_auth_mode),
+        codex_auth_volume_name=spec.modal_codex_auth_volume,
+        claude_auth_volume_name=spec.modal_claude_auth_volume,
+        stream_agent_output=spec.stream_agent_output,
         github_secret_name=spec.github_secret_name,
         push=spec.push,
     )
@@ -365,6 +616,22 @@ def _artifact_bundle_from_row(row: dict[str, Any]) -> ArtifactBundleRequest:
             kind="git_bundle",
         ),
     ]
+    if row["evidence__live_status_ref"]:
+        candidates.append(
+            ArtifactCandidate(
+                source_ref=row["evidence__live_status_ref"],
+                logical_path="attempt/live-session.json",
+                kind="agent_live_status",
+            )
+        )
+    if row["evidence__live_events_ref"]:
+        candidates.append(
+            ArtifactCandidate(
+                source_ref=row["evidence__live_events_ref"],
+                logical_path="attempt/live-events.jsonl",
+                kind="agent_live_events",
+            )
+        )
     if row["evidence__context_ref"]:
         candidates.append(
             ArtifactCandidate(
@@ -538,6 +805,8 @@ class CodingAgentProcessor(AsyncProcessor):
                     "evidence__results_json": json.dumps(outcome["results"]),
                     "evidence__trace_ref": outcome["trace_ref"],
                     "evidence__traces_ref": outcome["traces_ref"],
+                    "evidence__live_status_ref": outcome.get("live_status_ref", ""),
+                    "evidence__live_events_ref": outcome.get("live_events_ref", ""),
                     "evidence__sandbox_state_ref": outcome["sandbox_state_ref"],
                     "evidence__filesystem_start_ref": outcome["filesystem_start_ref"],
                     "evidence__filesystem_end_ref": outcome["filesystem_end_ref"],
@@ -608,20 +877,44 @@ async def main() -> None:
         action="store_true",
         help="complete a one-time ChatGPT device login in an Apple Container volume",
     )
+    parser.add_argument(
+        "--modal-login",
+        action="store_true",
+        help="persist the selected Codex/Claude subscription login in a Modal Volume",
+    )
+    parser.add_argument(
+        "--monitor-sandbox",
+        metavar="SB_ID",
+        help="attach to live Modal events and agent output for an existing sandbox",
+    )
+    parser.add_argument(
+        "--monitor-disconnect-grace-seconds",
+        type=float,
+        default=180.0,
+        help="seconds to retry transient Modal filesystem interruptions",
+    )
     args = parser.parse_args()
-    storage = StorageConfig(uri="./archetype_data", namespace="coding_agent_issue_342_v1")
+    storage = StorageConfig(uri="./archetype_data", namespace="coding_agent_issue_457_v2")
     backend = os.environ.get("CODING_AGENT_BACKEND", "local")
     spec = SandboxSpec(
         backend=backend,
         harness=os.environ.get("CODING_AGENT_HARNESS", "codex"),
         model=os.environ.get("CODING_AGENT_MODEL", ""),
+        workspace=os.environ.get("CODING_AGENT_WORKSPACE", "/workspace/repo"),
         repo_url=os.environ.get(
             "CODING_AGENT_REPO_URL", "https://github.com/VangelisTech/archetype.git"
         ),
         base_ref=os.environ.get("CODING_AGENT_BASE_REF", "main"),
-        branch=os.environ.get("CODING_AGENT_BRANCH", "agent/issue-342-blank-storage-uri"),
+        branch=os.environ.get("CODING_AGENT_BRANCH", "agent/issue-457-same-world-serialization"),
         codex_secret_name=os.environ.get("CODEX_MODAL_SECRET", "archetype-codex"),
         claude_secret_name=os.environ.get("CLAUDE_MODAL_SECRET", "archetype-claude-code"),
+        modal_auth_mode=os.environ.get("CODING_AGENT_MODAL_AUTH_MODE", "api-key"),
+        modal_codex_auth_volume=os.environ.get("CODEX_MODAL_AUTH_VOLUME", "archetype-codex-auth"),
+        modal_claude_auth_volume=os.environ.get(
+            "CLAUDE_MODAL_AUTH_VOLUME", "archetype-claude-code-auth"
+        ),
+        stream_agent_output=os.environ.get("CODING_AGENT_STREAM_AGENT_OUTPUT", "1").lower()
+        in {"1", "true", "yes"},
         github_secret_name=os.environ.get("GITHUB_MODAL_SECRET", ""),
         local_image_name=os.environ.get("CODING_AGENT_LOCAL_IMAGE", ""),
         local_state_dir=os.environ.get(
@@ -634,13 +927,39 @@ async def main() -> None:
         local_claude_auth_env=os.environ.get("CODING_AGENT_CLAUDE_AUTH_ENV", "ANTHROPIC_API_KEY"),
         push=os.environ.get("CODING_AGENT_PUSH", "").lower() in {"1", "true", "yes"},
     )
+    if args.monitor_sandbox:
+        await ModalSandboxClient.monitor(
+            args.monitor_sandbox,
+            workspace=spec.workspace,
+            disconnect_grace_seconds=args.monitor_disconnect_grace_seconds,
+        )
+        return
     if args.codex_login:
         if spec.backend != "local" or spec.harness != "codex":
             parser.error("--codex-login requires the local backend and codex harness")
         await AppleContainerSandboxClient.login_codex(_local_spec(spec))
         print("Codex OAuth login saved; rerun without --codex-login to start the mission.")
         return
+    if args.modal_login:
+        if spec.backend != "modal":
+            parser.error("--modal-login requires CODING_AGENT_BACKEND=modal")
+        if spec.modal_auth_mode != "oauth":
+            parser.error("--modal-login requires CODING_AGENT_MODAL_AUTH_MODE=oauth")
+        await ModalSandboxClient.login_oauth(_modal_spec(spec))
+        print(
+            f"{spec.harness} subscription login saved in its Modal auth volume; "
+            "rerun without --modal-login to start the mission."
+        )
+        return
     sandbox = await build_sandbox(spec)
+    print(f"sandbox_session={sandbox.sandbox_id}", flush=True)
+    if spec.backend == "modal":
+        print(
+            "monitor_command=uv run --extra coding-agent python "
+            "examples/11_coding_agent_mission.py "
+            f"--monitor-sandbox {sandbox.sandbox_id}",
+            flush=True,
+        )
 
     tick_log: list[str] = []
 
@@ -685,7 +1004,7 @@ async def main() -> None:
         first = PLAN[0]
         await world.spawn(
             Mission(
-                name="fix-archetype-issue-342",
+                name="fix-archetype-issue-457",
                 repo=spec.repo_url,
                 branch=spec.branch,
                 plan_json=json.dumps(PLAN),
@@ -747,6 +1066,13 @@ async def main() -> None:
         # be promoted into a checkpoint-qualified portable bundle.
         publications = []
         seen_attempts: set[str] = set()
+        if isinstance(sandbox, ModalSandboxClient):
+            await sandbox.report_live_event(
+                "artifact_publication_started",
+                recoverable_attempts=sum(
+                    1 for attempt_row in attempt_rows if attempt_row["checkpoint__restorable"]
+                ),
+            )
         for attempt_row in attempt_rows:
             attempt_id = str(attempt_row["attempt__attempt_id"])
             if attempt_id in seen_attempts:
@@ -758,6 +1084,12 @@ async def main() -> None:
                 await world.publish_artifacts(_artifact_bundle_from_row(attempt_row))
             )
         indexed_artifacts = (await world.artifacts()).collect().to_pylist()
+        if isinstance(sandbox, ModalSandboxClient):
+            await sandbox.report_live_event(
+                "artifact_publication_finished",
+                published_attempts=len(publications),
+                indexed_artifacts=len(indexed_artifacts),
+            )
 
         print("\n── final mission state ──")
         print(
@@ -773,6 +1105,8 @@ async def main() -> None:
         print(f"evidence={row['evidence__results_json']}")
         print(f"trace={row['evidence__trace_ref']}")
         print(f"traces={row['evidence__traces_ref']}")
+        print(f"live_status={row['evidence__live_status_ref']}")
+        print(f"live_events={row['evidence__live_events_ref']}")
         print(f"sandbox_state={row['evidence__sandbox_state_ref']}")
         print(f"filesystem_diff={row['evidence__filesystem_diff_ref']}")
         print(f"git_bundle={row['evidence__git_bundle_ref']}")

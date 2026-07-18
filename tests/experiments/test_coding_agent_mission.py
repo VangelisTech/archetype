@@ -61,6 +61,8 @@ def _outcome(*, index: int, accepted: bool) -> dict[str, Any]:
         "validator_details": details,
         "trace_ref": f"{snapshot}#/workspace/.archetype-agent/traces/attempt-{index}.jsonl",
         "traces_ref": f"{snapshot}#/workspace/.archetype-agent/traces",
+        "live_status_ref": f"modal-sandbox://sb-test/workspace/live/session-{index}.json",
+        "live_events_ref": f"modal-sandbox://sb-test/workspace/live/events-{index}.jsonl",
         "sandbox_state_ref": snapshot,
         "checkpoint_status": "ready",
         "checkpoint_provider": "modal",
@@ -116,6 +118,23 @@ def _mission_row() -> dict[str, Any]:
     return row
 
 
+def test_checked_in_live_mission_keeps_prompt_naive_and_gate_authoritative() -> None:
+    step = mission_example.PLAN[0]
+
+    assert step["prompt"] == "Fix https://github.com/VangelisTech/archetype/issues/457."
+    assert [validator["name"] for validator in step["validators"]] == [
+        "same_world_lifecycle_contract",
+        "material_app_diff",
+        "app_api_regression_tests",
+        "ruff",
+        "git_diff_check",
+        "tests",
+    ]
+    assert step["validators"][0]["command"][-1] == mission_example._ISSUE_457_CONCURRENCY_CONTRACT
+    assert step["validators"][2]["command"][-2:] == ["tests/app", "tests/api"]
+    assert step["validators"][-1]["command"] == ["make", "test"]
+
+
 @pytest.mark.asyncio
 async def test_one_tick_records_one_attempt_and_only_accepted_checkpoint_advances() -> None:
     sandbox = _FakeSandbox([_outcome(index=1, accepted=False), _outcome(index=2, accepted=True)])
@@ -135,6 +154,8 @@ async def test_one_tick_records_one_attempt_and_only_accepted_checkpoint_advance
     assert first_row["taskgate__step_index"] == 0
     assert first_row["mission__finished"] is False
     assert first_row["checkpoint__restorable"] is True
+    assert first_row["evidence__live_status_ref"].endswith("session-1.json")
+    assert first_row["evidence__live_events_ref"].endswith("events-1.jsonl")
 
     second = await processor.process(first, resources, tick=1)
     second_row = second.collect().to_pylist()[0]

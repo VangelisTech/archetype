@@ -33,7 +33,7 @@ uv run python examples/11_coding_agent_mission.py --codex-login
 uv run python examples/11_coding_agent_mission.py
 ```
 
-The checked-in mission currently targets Archetype issue #342. The persisted
+The checked-in mission currently targets Archetype issue #457. The persisted
 login is staged only while Codex runs, removed before validators run, and never
 included in workspace snapshots. To use OpenAI Platform API billing instead,
 set `CODEX_API_KEY` and
@@ -48,6 +48,48 @@ Secrets are `archetype-codex` containing `CODEX_API_KEY` and
 `CODING_AGENT_PUSH=1` when verified commits should be pushed. Both backends
 inject agent credentials only into the agent process; validator commands do not
 receive them.
+
+Modal can instead use the Codex or Claude subscription attached to an OAuth
+login. Bootstrap each harness once; Codex prints a device code, while Claude
+prints a browser URL and may ask you to paste the returned code:
+
+```bash
+CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=codex \
+  CODING_AGENT_MODAL_AUTH_MODE=oauth uv run --extra coding-agent \
+  python examples/11_coding_agent_mission.py --modal-login
+
+CODING_AGENT_BACKEND=modal CODING_AGENT_HARNESS=claude-code \
+  CODING_AGENT_MODAL_AUTH_MODE=oauth uv run --extra coding-agent \
+  python examples/11_coding_agent_mission.py --modal-login
+```
+
+The default durable Volumes are `archetype-codex-auth` and
+`archetype-claude-code-auth`; override them with `CODEX_MODAL_AUTH_VOLUME` and
+`CLAUDE_MODAL_AUTH_VOLUME`. The Volume is mounted only into a credential-broker
+Sandbox. The mission receives the credential file only for the agent CLI
+process; the refreshed file is returned to the broker and removed before any
+validator, filesystem manifest, or provider snapshot runs. Run the mission with
+the same environment and omit `--modal-login`.
+
+The Modal driver prints its `sb-...` ID as soon as the mission sandbox exists,
+streams Codex or Claude Code JSONL in the launching terminal, and emits phase
+events plus a heartbeat every 15 seconds. A second terminal can attach directly
+to the running sandbox without a model credential:
+
+```bash
+uv run --extra coding-agent python examples/11_coding_agent_mission.py \
+  --monitor-sandbox sb-REPLACE_ME
+```
+
+The monitor polls the fixed live status/event files and the active stdout and
+stderr traces without executing a command in the sandbox. If the run used a
+custom `CODING_AGENT_WORKSPACE`, pass the same environment value when attaching.
+Heartbeats expose stdout/stderr byte counts and time since the last agent output.
+Modal filesystem reads can pause while a snapshot is created; the monitor keeps
+its offsets and retries those interruptions for 180 seconds by default instead
+of declaring the mission dead. Override that bound with
+`--monitor-disconnect-grace-seconds`. The terminal live files are included in
+the attempt's artifact bundle before the sandbox is torn down.
 
 Each tick records an accepted or rejected `Attempt` instead of retrying inside
 the sandbox client. Before the task can advance, the client captures a complete
@@ -78,9 +120,11 @@ CODING_AGENT_BACKEND=modal uv run --extra coding-agent \
 ```
 
 `make test-modal-sandbox` runs the live, keyless Modal infrastructure proof for
-both CLIs. `make test-modal-agent` additionally performs a real API-backed edit,
+both CLIs. `make test-modal-agent` additionally performs a real agent edit,
 validation, commit, and snapshot for both harnesses and therefore requires both
-Modal Secrets. `make test-modal` runs both tiers. The live suite is excluded
+Modal Secrets by default. Set `ARCHETYPE_MODAL_AGENT_AUTH_MODE=oauth` to use the
+initialized subscription Volumes instead. `make test-modal` runs both tiers.
+The live suite is excluded
 from normal `make test`, `make test-all`, and `make ci` runs; CI invokes it only
 when `examples/11_coding_agent_mission.py` changes.
 

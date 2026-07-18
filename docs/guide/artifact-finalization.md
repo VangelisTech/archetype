@@ -26,6 +26,49 @@ Telemetry is operational evidence, not the state authority. Losing a trace
 must not make an otherwise indexed bundle disappear; losing the control record
 or artifact index is a durability failure.
 
+### Live sandbox observation
+
+A remote coding attempt must expose progress before it completes. Modal mission
+sandboxes maintain two fixed files under
+`<workspace>/.archetype-agent/live/`:
+
+- `session.json` is the latest status event and is safe to poll.
+- `events.jsonl` is the append-only phase and heartbeat history.
+
+The active canonical agent stdout and stderr paths are carried in each status
+event. Codex and Claude Code output is streamed to the launching process as it
+arrives and tee'd to those in-sandbox files. While the agent process is quiet,
+an `agent_running` heartbeat is emitted at least every configured heartbeat
+interval. Heartbeats report stdout, stderr, and total byte counts plus the age
+of the most recent agent output, so a connected-but-silent CLI is distinguishable
+from an agent that is actively producing events. Phase events cover sandbox
+readiness, attempt start, agent execution, each validator, commit, recovery
+evidence capture, checkpoint, artifact publication, completion, and teardown. Every event
+carries `sandbox_id`, harness, attempt identity when known, and the world/run/
+entity/tick correlation map supplied by the caller.
+
+The transport closes the child process's stdin immediately after launch.
+Remote process APIs commonly expose stdin as an open pipe; Codex and Claude
+Code may wait for additional prompt input and emit no session event until that
+pipe reaches EOF. Supplying the complete prompt as an argument and closing
+stdin is therefore part of the noninteractive execution contract.
+
+An independent operator can attach by provider sandbox ID; no model credential
+is required for the monitor process. Observation is deliberately read-only and
+must not extend the sandbox idle timeout by executing commands inside it.
+Modal may briefly reject filesystem reads while it snapshots the sandbox. A
+following monitor preserves its byte offsets and retries for a bounded grace
+period, emits interruption and reconnection records, and treats
+`sandbox_closing` as the clean terminal event. Exhausting the grace period is an
+explicit `monitor_disconnected` result, never an implied mission success.
+
+These files are operational evidence, not the attempt authority. A checkpoint
+captures the stream through `checkpoint_started`; events emitted after the
+provider returns the checkpoint reference remain on the live sandbox and are
+ingested before teardown. The persisted attempt receipt, Archetype component
+row, checkpoint reference, and portable artifact index remain authoritative if
+the live observer disconnects.
+
 ## 2. Identities and primary keys
 
 One publication request is identified by:
@@ -222,6 +265,11 @@ branch resume policy still references them.
 - Provider and model secrets are process capabilities. They must not appear in
   sandbox manifests, artifact requests, control rows, object paths, traces, or
   index rows.
+- A Modal subscription credential lives in a named Volume mounted only into a
+  separate auth-broker Sandbox. The broker stages only the selected CLI's
+  credential file for agent execution, atomically persists any refresh, and
+  removes the mission copy before validators, filesystem manifests, or provider
+  snapshots. The auth Volume itself is never part of a mission checkpoint.
 - A reconciler restoring a checkpoint for artifact extraction receives only
   the sandbox-provider credential. It must not require or inject the model or
   GitHub secret; the Modal resolver enforces this separation.
