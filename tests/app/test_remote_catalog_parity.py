@@ -431,6 +431,46 @@ async def test_command_ledger_and_outbox_parity(tmp_path, worker_url):
         await catalog.close()
 
 
+async def test_world_deactivation_rejects_open_and_future_commands(tmp_path, worker_url):
+    admission = CommandAdmission(
+        command_id="c-before-destroy",
+        scheduled_tick=0,
+        priority=0,
+        command_type="custom",
+        payload_json="{}",
+        payload_digest="before-destroy",
+        version=1,
+        principal_id=None,
+        origin="local",
+    )
+    after_destroy = CommandAdmission(
+        **{
+            **admission.__dict__,
+            "command_id": "c-after-destroy",
+            "payload_digest": "after-destroy",
+        }
+    )
+
+    for catalog in await _both(tmp_path, worker_url):
+        await catalog.register_world(_world())
+        await catalog.admit_commands("w1", [admission])
+
+        # Status and cancellation share one catalog transaction. A remote
+        # admission racing the transition is therefore either cancelled by
+        # it or rejected after it; it cannot remain pending.
+        await catalog.set_world_status("w1", "destroyed")
+        assert await catalog.pending_command_count("w1") == 0
+        (record,) = await catalog.list_commands("w1")
+        assert record.status == "REJECTED"
+        assert record.last_error_code == "world_destroyed"
+
+        with pytest.raises(CommandConflictError, match="not active"):
+            await catalog.admit_commands("w1", [after_destroy])
+        with pytest.raises(CommandConflictError, match="not active"):
+            await catalog.lease_commands("w1", 0, "worker-after-destroy")
+        await catalog.close()
+
+
 async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, monkeypatch):
     """The integration proof: coordinator + ingestion + receipts through the
     remote catalog with zero changes above the protocol."""

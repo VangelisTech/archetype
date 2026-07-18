@@ -112,6 +112,54 @@ async def test_flush_detaches_exact_snapshot_without_losing_concurrent_append():
 
 
 @pytest.mark.asyncio
+async def test_flush_waits_for_already_inflight_background_append():
+    """A commit drain is a barrier for rows already detached by idle flush."""
+    from archetype.core.config import CacheConfig
+
+    inner = _BlockingInnerStore()
+    cached = AsyncCachedStore(
+        async_store=inner,
+        cache_config=CacheConfig(
+            flush_rows=10_000_000,
+            flush_mb=10_000,
+            global_mb=10_000,
+            idle_sec=3600,
+        ),
+    )
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    frame = daft.from_pylist(
+        [
+            Archetype.to_row_dict(
+                entity_id=1,
+                tick=0,
+                components=[Position(x=1, y=1)],
+                world_id="w_inflight",
+                run_id="r_inflight",
+            )
+        ]
+    ).collect()
+
+    try:
+        await cached.append(sig, frame)
+        background = asyncio.create_task(cached._background_flush_sig(sig))
+        await inner.append_started.wait()
+        assert sig in cached._inflight and cached._mem[sig].rows == 0
+
+        barrier = asyncio.create_task(cached.flush())
+        await asyncio.sleep(0)
+        assert not barrier.done(), "flush returned before the detached append became durable"
+
+        inner.release_append.set()
+        assert await background is True
+        await barrier
+        assert [row["entity_id"] for row in inner.persisted] == [1]
+        assert cached.total_cached_bytes == 0
+    finally:
+        inner.release_append.set()
+        await cached.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_failed_flush_requeues_snapshot_before_newer_rows():
     from archetype.core.config import CacheConfig
 

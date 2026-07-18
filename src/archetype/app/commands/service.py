@@ -39,8 +39,6 @@ _DEFERRED_COMMAND_TYPES = frozenset(
         CommandType.DESPAWN,
         CommandType.ADD_COMPONENT,
         CommandType.REMOVE_COMPONENT,
-        CommandType.ADD_PROCESSOR,
-        CommandType.REMOVE_PROCESSOR,
         CommandType.MESSAGE,
         CommandType.CUSTOM,
         CommandType.QUERY_WORLD,
@@ -397,11 +395,6 @@ class CommandScheduler:
                     _parse_entity_id(payload["entity_id"]),
                     self._hydrate_component_types(payload.get("component_types", [])),
                 )
-            case CommandType.ADD_PROCESSOR | CommandType.REMOVE_PROCESSOR:
-                # Executable processor instances are intentionally not a
-                # durable wire format. Portable processor registries can add a
-                # versioned dispatcher later without serializing live Python.
-                raise TypeError("processor commands require a registered portable processor ID")
             case CommandType.MESSAGE | CommandType.CUSTOM | CommandType.QUERY_WORLD:
                 return
             case _:

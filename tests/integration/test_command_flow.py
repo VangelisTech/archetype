@@ -27,8 +27,6 @@ _DEFERRED_COMMAND_TYPES = frozenset(
         CommandType.DESPAWN,
         CommandType.ADD_COMPONENT,
         CommandType.REMOVE_COMPONENT,
-        CommandType.ADD_PROCESSOR,
-        CommandType.REMOVE_PROCESSOR,
         CommandType.MESSAGE,
         CommandType.CUSTOM,
         CommandType.QUERY_WORLD,
@@ -242,7 +240,7 @@ async def test_rejected_submit_batch_does_not_debit_quota(tmp_path):
         )
         commands = [
             Command(type=CommandType.CUSTOM),
-            Command(type=CommandType.ADD_PROCESSOR),
+            Command(type=CommandType.ADD_COMPONENT),
         ]
 
         with pytest.raises(GuardrailError):

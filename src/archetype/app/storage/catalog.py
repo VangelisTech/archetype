@@ -590,7 +590,14 @@ class SqliteControlCatalog:
         def _set() -> None:
             conn = self._connect_sync()
             with conn:
+                conn.execute("BEGIN IMMEDIATE")
                 conn.execute("UPDATE worlds SET status=? WHERE world_id=?", (status, world_id))
+                if status != "active":
+                    _reject_unsettled_commands(
+                        conn,
+                        world_id=world_id,
+                        reason=f"world transitioned to {status}",
+                    )
 
         await self._run(_set)
 
@@ -1013,6 +1020,13 @@ class SqliteControlCatalog:
             expires = now + lease_seconds
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
+                world = conn.execute(
+                    "SELECT status FROM worlds WHERE world_id=?", (world_id,)
+                ).fetchone()
+                if world is None or world["status"] != "active":
+                    raise CommandConflictError(
+                        f"world {world_id} is not active in catalog {self.path}"
+                    )
                 rows = conn.execute(
                     "SELECT * FROM commands WHERE world_id=? AND scheduled_tick<=? AND ("
                     "status IN ('PENDING', 'RETRYABLE') OR "
@@ -1187,30 +1201,7 @@ class SqliteControlCatalog:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
-                rows = conn.execute(
-                    "SELECT * FROM commands WHERE world_id=? "
-                    "AND status IN ('PENDING', 'RETRYABLE', 'LEASED') ORDER BY sequence",
-                    (world_id,),
-                ).fetchall()
-                now = _utcnow()
-                for row in rows:
-                    conn.execute(
-                        "UPDATE commands SET status='REJECTED', lease_owner=NULL, "
-                        "lease_expires_at=NULL, last_error_code='world_destroyed', "
-                        "last_error_detail=?, updated_at=? WHERE command_id=?",
-                        (reason[:2000], now, row["command_id"]),
-                    )
-                    _append_command_event(
-                        conn,
-                        world_id=world_id,
-                        command_id=row["command_id"],
-                        command_type=row["command_type"],
-                        status="rejected",
-                        actor_id=row["principal_id"],
-                        payload_json=json.dumps({"error_code": "world_destroyed"}),
-                        occurred_at=now,
-                    )
-                return len(rows)
+                return _reject_unsettled_commands(conn, world_id=world_id, reason=reason)
 
         return await self._run(_cancel)
 
@@ -1637,6 +1628,39 @@ def _append_command_event(
             occurred_at,
         ),
     )
+
+
+def _reject_unsettled_commands(
+    conn: sqlite3.Connection,
+    *,
+    world_id: str,
+    reason: str,
+) -> int:
+    """Reject open commands inside the caller's world-state transaction."""
+    rows = conn.execute(
+        "SELECT * FROM commands WHERE world_id=? "
+        "AND status IN ('PENDING', 'RETRYABLE', 'LEASED') ORDER BY sequence",
+        (world_id,),
+    ).fetchall()
+    now = _utcnow()
+    for row in rows:
+        conn.execute(
+            "UPDATE commands SET status='REJECTED', lease_owner=NULL, "
+            "lease_expires_at=NULL, last_error_code='world_destroyed', "
+            "last_error_detail=?, updated_at=? WHERE command_id=?",
+            (reason[:2000], now, row["command_id"]),
+        )
+        _append_command_event(
+            conn,
+            world_id=world_id,
+            command_id=row["command_id"],
+            command_type=row["command_type"],
+            status="rejected",
+            actor_id=row["principal_id"],
+            payload_json=json.dumps({"error_code": "world_destroyed"}),
+            occurred_at=now,
+        )
+    return len(rows)
 
 
 def _utcnow() -> str:

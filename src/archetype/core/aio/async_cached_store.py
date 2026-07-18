@@ -130,37 +130,41 @@ class AsyncCachedStore(iAsyncStore):
     # Private helpers, Cache Management
     # ---------------------------------------------------
 
-    async def _background_flush_sig(self, sig: ArchetypeSignature) -> bool:
-        """Atomically detach and persist one signature's current batch.
+    async def _flush_sig_locked(self, sig: ArchetypeSignature) -> bool:
+        """Detach and persist one signature while ``_flush_lock`` is held.
 
         The durable append is serialized, but the state lock is released
         before I/O so concurrent appends can accumulate in a fresh memtable.
         A failed or cancelled append restores the detached rows *before* any
         newer rows and leaves the byte accounting unchanged.
         """
-        async with self._flush_lock:
-            async with self._state_lock:
-                snapshot = self._mem.get(sig)
-                if snapshot is None or not snapshot.rows:
-                    return False
-                self._mem[sig] = MemTable()
-                self._inflight[sig] = snapshot
+        async with self._state_lock:
+            snapshot = self._mem.get(sig)
+            if snapshot is None or not snapshot.rows:
+                return False
+            self._mem[sig] = MemTable()
+            self._inflight[sig] = snapshot
 
-            try:
-                tbl = await asyncio.to_thread(snapshot.to_table)
-                await self._inner.append(sig, daft.from_arrow(tbl))
-            except BaseException:
-                async with self._state_lock:
-                    newer = self._mem.get(sig, MemTable())
-                    self._mem[sig] = MemTable.followed_by(snapshot, newer)
-                    self._inflight.pop(sig, None)
-                raise
-
+        try:
+            tbl = await asyncio.to_thread(snapshot.to_table)
+            await self._inner.append(sig, daft.from_arrow(tbl))
+        except BaseException:
             async with self._state_lock:
+                newer = self._mem.get(sig, MemTable())
+                self._mem[sig] = MemTable.followed_by(snapshot, newer)
                 self._inflight.pop(sig, None)
-                self._update_total_bytes(-snapshot.bytes)
-            self._committed_sigs.add(sig)
-            return True
+            raise
+
+        async with self._state_lock:
+            self._inflight.pop(sig, None)
+            self._update_total_bytes(-snapshot.bytes)
+        self._committed_sigs.add(sig)
+        return True
+
+    async def _background_flush_sig(self, sig: ArchetypeSignature) -> bool:
+        """Serialize one background/threshold flush against explicit drains."""
+        async with self._flush_lock:
+            return await self._flush_sig_locked(sig)
 
     async def _background_flush(self, idle_sec=30):
         while self._bg_on:
@@ -303,14 +307,19 @@ class AsyncCachedStore(iAsyncStore):
         Called by the commit coordinator's owner before a manifest head is
         published, so visibility never outruns durability.
         """
-        while True:
-            async with self._state_lock:
-                sigs = [sig for sig, mt in self._mem.items() if mt.rows]
-            if not sigs:
-                break
-            for sig in sigs:
-                await self._background_flush_sig(sig)
-        await self._inner.flush()
+        # Taking the same lock as idle/threshold flushes is the durability
+        # barrier. A detached batch may leave ``_mem`` empty while its append
+        # still lives in ``_inflight``; checking only ``_mem`` would let a tick
+        # manifest publish before that append completed.
+        async with self._flush_lock:
+            while True:
+                async with self._state_lock:
+                    sigs = [sig for sig, mt in self._mem.items() if mt.rows]
+                if not sigs:
+                    break
+                for sig in sigs:
+                    await self._flush_sig_locked(sig)
+            await self._inner.flush()
 
     async def shutdown(self) -> None:
         """

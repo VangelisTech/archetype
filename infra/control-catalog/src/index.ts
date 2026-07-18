@@ -54,6 +54,41 @@ function appendCommandEvent(
   );
 }
 
+function rejectUnsettledCommands(
+  sql: SqlStorage,
+  reason: string,
+  occurredAt: string,
+): number {
+  const rows = sql
+    .exec(
+      "SELECT * FROM commands WHERE status IN ('PENDING', 'RETRYABLE', 'LEASED') ORDER BY sequence",
+    )
+    .toArray() as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    sql.exec(
+      "UPDATE commands SET status = 'REJECTED', lease_owner = NULL, lease_expires_at = NULL, last_error_code = 'world_destroyed', last_error_detail = ?, updated_at = ? WHERE command_id = ?",
+      reason.slice(0, 2000),
+      occurredAt,
+      row.command_id,
+    );
+    appendCommandEvent(
+      sql,
+      row,
+      "rejected",
+      JSON.stringify({ error_code: "world_destroyed" }),
+      occurredAt,
+    );
+  }
+  return rows.length;
+}
+
+function requireActiveWorld(sql: SqlStorage, worldId: string): void {
+  const rows = sql.exec("SELECT status FROM world_state WHERE singleton = 1").toArray();
+  if (rows.length === 0 || String(rows[0].status) !== "active") {
+    throw new Error(`command_conflict:world ${worldId} is not active`);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     if (!env.CATALOG_TOKEN) {
@@ -74,6 +109,47 @@ export default {
       return json({ error: "bad_route", message: url.pathname }, 404);
     }
     const namespace = parts[1];
+    const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
+
+    // World status is mirrored into the per-world authority before command
+    // traffic can reach it. Status transitions hit WorldCommitDO first, where
+    // they serialize with admission/leasing and atomically reject open work;
+    // the directory remains the cross-world discovery index.
+    if (parts[2] === "worlds" && parts.length === 3 && request.method === "POST") {
+      const record = (await request.clone().json()) as Record<string, unknown>;
+      const response = await directory.fetch(request);
+      if (!response.ok) return response;
+      const result = (await response.clone().json()) as Record<string, unknown>;
+      const worldId = String(record.world_id ?? "");
+      const status = String(result.status ?? record.status ?? "active");
+      const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
+      const statusResponse = await world.fetch(
+        new Request(`${url.origin}/ns/${namespace}/w/${worldId}/status`, {
+          method: "PATCH",
+          headers: JSON_HEADERS,
+          body: JSON.stringify({ status }),
+        }),
+      );
+      return statusResponse.ok ? response : statusResponse;
+    }
+
+    if (parts[2] === "worlds" && parts.length === 4 && request.method === "PATCH") {
+      const patch = (await request.clone().json()) as Record<string, unknown>;
+      if (typeof patch.status === "string") {
+        const worldId = parts[3];
+        const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
+        const statusResponse = await world.fetch(
+          new Request(`${url.origin}/ns/${namespace}/w/${worldId}/status`, {
+            method: "PATCH",
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ status: patch.status }),
+          }),
+        );
+        if (!statusResponse.ok) return statusResponse;
+      }
+      return directory.fetch(request);
+    }
+
     if (parts[2] === "w" && parts.length >= 4) {
       const worldId = parts[3];
       const stub = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
@@ -87,7 +163,6 @@ export default {
         const body = (await request.clone().json()) as { tick?: number };
         const response = await stub.fetch(request);
         if (response.ok && typeof body.tick === "number") {
-          const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
           try {
             const headResponse = await directory.fetch(
               new Request(`${url.origin}/ns/${namespace}/worlds/${worldId}`, {
@@ -107,8 +182,7 @@ export default {
       }
       return stub.fetch(request);
     }
-    const stub = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
-    return stub.fetch(request);
+    return directory.fetch(request);
   },
 };
 
@@ -157,7 +231,7 @@ export class CatalogDirectoryDO implements DurableObject {
             `world ${rec.world_id} already registered with different identity`,
           );
         }
-        return json({ ok: true, idempotent: true });
+        return json({ ok: true, idempotent: true, status: row.status });
       }
       this.sql.exec(
         "INSERT INTO worlds (world_id, name, run_id, parent_world_id, status, tick_head) VALUES (?, ?, ?, ?, ?, ?)",
@@ -168,7 +242,7 @@ export class CatalogDirectoryDO implements DurableObject {
         rec.status ?? "active",
         rec.tick_head ?? 0,
       );
-      return json({ ok: true });
+      return json({ ok: true, status: rec.status ?? "active" });
     }
 
     if (route[0] === "worlds" && route.length === 1 && method === "GET") {
@@ -246,6 +320,10 @@ export class WorldCommitDO implements DurableObject {
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
         epoch INTEGER NOT NULL, holder TEXT NOT NULL, acquired_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS world_state (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        status TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS manifests (
         run_id TEXT NOT NULL, tick INTEGER NOT NULL,
         commit_token TEXT NOT NULL, writer_epoch INTEGER NOT NULL,
@@ -305,11 +383,48 @@ export class WorldCommitDO implements DurableObject {
     const method = request.method;
     const now = new Date().toISOString();
 
+    if (route[0] === "status" && route.length === 1) {
+      if (method === "GET") {
+        const rows = this.sql
+          .exec("SELECT status FROM world_state WHERE singleton = 1")
+          .toArray();
+        return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
+      }
+      if (method === "PATCH") {
+        const body = (await request.json()) as { status?: unknown };
+        if (body.status !== "active" && body.status !== "destroyed") {
+          return json(
+            { error: "invalid_request", message: "status must be active or destroyed" },
+            422,
+          );
+        }
+        const result = this.state.storage.transactionSync(() => {
+          this.sql.exec(
+            "INSERT INTO world_state (singleton, status) VALUES (1, ?) " +
+              "ON CONFLICT(singleton) DO UPDATE SET status = excluded.status",
+            body.status,
+          );
+          const cancelled =
+            body.status === "active"
+              ? 0
+              : rejectUnsettledCommands(
+                  this.sql,
+                  `world transitioned to ${body.status}`,
+                  now,
+                );
+          return { ok: true, status: body.status, cancelled };
+        });
+        return json(result);
+      }
+    }
+
     if (route[0] === "commands" && route[1] === "admit" && method === "POST") {
       const body = (await request.json()) as { admissions?: Array<Record<string, unknown>> };
       const admissions = body.admissions ?? [];
+      if (admissions.length === 0) return json([]);
       try {
         const records = this.state.storage.transactionSync(() => {
+          requireActiveWorld(this.sql, parts[3]);
           const seen = new Map<string, string>();
           for (const admission of admissions) {
             const commandId = String(admission.command_id);
@@ -387,36 +502,45 @@ export class WorldCommitDO implements DurableObject {
         return json({ error: "invalid_request", message: "invalid lease parameters" }, 422);
       }
       const nowSec = Date.now() / 1000;
-      const records = this.state.storage.transactionSync(() => {
-        const rows = this.sql
-          .exec(
-            "SELECT * FROM commands WHERE scheduled_tick <= ? AND (status IN ('PENDING', 'RETRYABLE') OR (status = 'LEASED' AND (lease_owner = ? OR lease_expires_at <= ?))) ORDER BY scheduled_tick, priority, sequence LIMIT ?",
-            tick,
-            owner,
-            nowSec,
-            limit,
-          )
-          .toArray() as Array<Record<string, unknown>>;
-        return rows.map((row) => {
-          const sameLive =
-            row.status === "LEASED" &&
-            row.lease_owner === owner &&
-            Number(row.lease_expires_at ?? 0) > nowSec;
-          const attempts = Number(row.attempts) + (sameLive ? 0 : 1);
-          this.sql.exec(
-            "UPDATE commands SET status = 'LEASED', attempts = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE command_id = ?",
-            attempts,
-            owner,
-            nowSec + leaseSeconds,
-            now,
-            row.command_id,
-          );
-          return this.sql
-            .exec("SELECT * FROM commands WHERE command_id = ?", row.command_id)
-            .toArray()[0];
+      try {
+        const records = this.state.storage.transactionSync(() => {
+          requireActiveWorld(this.sql, parts[3]);
+          const rows = this.sql
+            .exec(
+              "SELECT * FROM commands WHERE scheduled_tick <= ? AND (status IN ('PENDING', 'RETRYABLE') OR (status = 'LEASED' AND (lease_owner = ? OR lease_expires_at <= ?))) ORDER BY scheduled_tick, priority, sequence LIMIT ?",
+              tick,
+              owner,
+              nowSec,
+              limit,
+            )
+            .toArray() as Array<Record<string, unknown>>;
+          return rows.map((row) => {
+            const sameLive =
+              row.status === "LEASED" &&
+              row.lease_owner === owner &&
+              Number(row.lease_expires_at ?? 0) > nowSec;
+            const attempts = Number(row.attempts) + (sameLive ? 0 : 1);
+            this.sql.exec(
+              "UPDATE commands SET status = 'LEASED', attempts = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE command_id = ?",
+              attempts,
+              owner,
+              nowSec + leaseSeconds,
+              now,
+              row.command_id,
+            );
+            return this.sql
+              .exec("SELECT * FROM commands WHERE command_id = ?", row.command_id)
+              .toArray()[0];
+          });
         });
-      });
-      return json(records);
+        return json(records);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message.startsWith("command_conflict:")) {
+          return conflict("command_conflict", message.slice("command_conflict:".length));
+        }
+        throw error;
+      }
     }
 
     if (route[0] === "commands" && route[1] === "release" && method === "POST") {
@@ -506,21 +630,13 @@ export class WorldCommitDO implements DurableObject {
 
     if (route[0] === "commands" && route[1] === "cancel" && method === "POST") {
       const body = (await request.json()) as { reason?: string };
-      const count = this.state.storage.transactionSync(() => {
-        const rows = this.sql
-          .exec("SELECT * FROM commands WHERE status IN ('PENDING', 'RETRYABLE', 'LEASED') ORDER BY sequence")
-          .toArray() as Array<Record<string, unknown>>;
-        for (const row of rows) {
-          this.sql.exec(
-            "UPDATE commands SET status = 'REJECTED', lease_owner = NULL, lease_expires_at = NULL, last_error_code = 'world_destroyed', last_error_detail = ?, updated_at = ? WHERE command_id = ?",
-            String(body.reason ?? "world destroyed").slice(0, 2000),
-            now,
-            row.command_id,
-          );
-          appendCommandEvent(this.sql, row, "rejected", JSON.stringify({ error_code: "world_destroyed" }), now);
-        }
-        return rows.length;
-      });
+      const count = this.state.storage.transactionSync(() =>
+        rejectUnsettledCommands(
+          this.sql,
+          String(body.reason ?? "world destroyed"),
+          now,
+        ),
+      );
       return json({ count });
     }
 

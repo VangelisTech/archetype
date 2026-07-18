@@ -61,16 +61,19 @@ the same owner or a later owner after expiry can resume it.
 
 The local reference implementation is the per-storage SQLite control catalog.
 The remote implementation is the per-world Cloudflare Durable Object. Both
-implement the same command state machine and ordering contract.
+implement the same command state machine and ordering contract. Admission and
+leasing fail closed unless the catalog records the world as active.
 
 ## Dispatch and settlement
 
 The dispatcher has an explicit arm for every admitted deferred `CommandType`.
-Entity/component mutations stage through `MutationService`. Processor objects
-are rejected until a portable processor registry exists. Message, custom, and
-query envelopes currently have explicit no-op dispositions; application
-extensions must replace that disposition with a versioned portable handler
-rather than deserialize live code.
+Entity/component mutations stage through `MutationService`. Processor changes
+are direct gated operations and the generic deferred submission surface rejects
+them before admission; a future portable processor registry may add a versioned
+deferred dispatcher without serializing live Python. Message, custom, and query
+envelopes currently have explicit no-op dispositions; application extensions
+must replace that disposition with a versioned portable handler rather than
+deserialize live code.
 
 A successfully dispatched command is staged on the world's commit coordinator.
 It becomes `APPLIED` only in the transaction that publishes the tick manifest
@@ -87,9 +90,11 @@ lease recoverable and the failed tick retryable.
   later independent commands may continue.
 - Process-fatal `BaseException` values are never converted into product state.
 
-Destroying a live world terminally rejects its unsettled commands before the
-world is removed from the registry. Destroying an already-absent world remains
-idempotent.
+At the per-world command authority, transitioning a world out of `active` and
+terminally rejecting its unsettled commands is one transaction. The remote
+directory status follows as a discovery index. This closes
+admission/cancellation races across hosts; destroying an already-absent world
+remains idempotent.
 
 ## Audit projection
 
