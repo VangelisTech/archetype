@@ -24,12 +24,14 @@ from typing import Any
 from archetype.app.sandboxes.models import (
     AgentExecution,
     ArtifactHandoff,
+    AttemptPhase,
     CheckpointCapture,
     CodingAgentSandboxSpec,
     CommandResult,
     EvidenceCapture,
     PreparedAttempt,
     RepositoryFinalization,
+    RepositoryPhaseReceipt,
     ValidationEvidence,
     ValidatorSpec,
 )
@@ -231,6 +233,10 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
                 raise ValueError("idempotency_key was reused with a different attempt request")
             return cached
 
+        recovered = await self._load_repository_receipt(idempotency_key)
+        if recovered is not None and recovered.request_fingerprint != request_fingerprint:
+            raise ValueError("idempotency_key was reused with a different attempt request")
+
         prepared = await self._prepare_attempt(
             prompt=prompt,
             step_name=step_name,
@@ -239,10 +245,13 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             previous_validator_details=previous_validator_details,
             correlation=correlation_data,
             request_fingerprint=request_fingerprint,
+            recovered=recovered,
         )
-        execution = await self._execution_phase(prepared, previous_session_id)
-        validation = await self._validation_phase(normalized)
-        repository = await self._repository_finalization_phase(prepared, execution, validation)
+        execution = await self._execution_phase(prepared, previous_session_id, recovered)
+        validation = await self._validation_phase(normalized, recovered)
+        repository = await self._repository_finalization_phase(
+            prepared, execution, validation, recovered
+        )
         evidence = await self._evidence_phase(prepared, execution, repository)
         checkpoint = await self._checkpoint_phase(prepared)
         outcome = await self._artifact_handoff_phase(
@@ -271,36 +280,40 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         previous_validator_details: Sequence[dict[str, Any]],
         correlation: dict[str, Any],
         request_fingerprint: str,
+        recovered: RepositoryPhaseReceipt | None = None,
     ) -> PreparedAttempt:
         attempt_id = hashlib.sha256(idempotency_key.encode()).hexdigest()
-        baseline = (await self._git("rev-parse", "HEAD")).stdout.strip()
         trace_dir = f"{self.spec.workspace}/.archetype-agent/traces"
+        gate_dir = f"{self.spec.workspace}/.archetype-agent/gates"
+        manifest_dir = f"{self.spec.workspace}/.archetype-agent/manifests"
         live_status_path, live_events_path = self._live_artifact_paths()
-        directories = [trace_dir]
+        directories = [trace_dir, gate_dir, manifest_dir]
         if live_status_path:
             directories.append(str(PurePosixPath(live_status_path).parent))
         await self._checked("mkdir", "-p", *directories)
+        if recovered is not None:
+            prepared = recovered.prepared
+            if (
+                prepared.attempt_id != attempt_id
+                or prepared.idempotency_key != idempotency_key
+                or prepared.request_fingerprint != request_fingerprint
+            ):
+                raise ValueError("repository phase receipt does not match the attempt identity")
+            self._activate_attempt(prepared)
+            return prepared
+
+        baseline = (await self._git("rev-parse", "HEAD")).stdout.strip()
         start_manifest_path = await self._ensure_start_manifest()
         trace_path = (
             f"{trace_dir}/{self._safe_step(step_name)}-{attempt_index}-{attempt_id[:12]}.jsonl"
         )
         trace_stderr_path = f"{trace_path}.stderr"
-        self._active_trace_path = trace_path
-        self._active_trace_stderr_path = trace_stderr_path
-        self._live_context = {
-            "attempt_id": attempt_id,
-            "attempt_index": attempt_index,
-            "step_name": step_name,
-            "trace_path": trace_path,
-            "trace_stderr_path": trace_stderr_path,
-            "correlation": correlation,
-        }
         agent_prompt = (
             self._repair_prompt(prompt, previous_validator_details)
             if previous_validator_details
             else self._initial_prompt(prompt, step_name)
         )
-        return PreparedAttempt(
+        prepared = PreparedAttempt(
             attempt_id=attempt_id,
             request_fingerprint=request_fingerprint,
             idempotency_key=idempotency_key,
@@ -317,10 +330,34 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             live_events_path=live_events_path,
             filesystem_start_path=start_manifest_path,
         )
+        self._activate_attempt(prepared)
+        return prepared
+
+    def _activate_attempt(self, prepared: PreparedAttempt) -> None:
+        self._active_trace_path = prepared.trace_path
+        self._active_trace_stderr_path = prepared.trace_stderr_path
+        self._live_context = {
+            "attempt_id": prepared.attempt_id,
+            "attempt_index": prepared.attempt_index,
+            "step_name": prepared.step_name,
+            "trace_path": prepared.trace_path,
+            "trace_stderr_path": prepared.trace_stderr_path,
+            "correlation": prepared.correlation,
+        }
 
     async def _execution_phase(
-        self, prepared: PreparedAttempt, previous_session_id: str
+        self,
+        prepared: PreparedAttempt,
+        previous_session_id: str,
+        recovered: RepositoryPhaseReceipt | None = None,
     ) -> AgentExecution:
+        if recovered is not None:
+            await self._emit_live_event(
+                "attempt_resumed",
+                resumed_from=AttemptPhase.REPOSITORY_FINALIZATION.value,
+                baseline_sha=prepared.baseline_sha,
+            )
+            return recovered.execution
         await self._emit_live_event("attempt_started", baseline_sha=prepared.baseline_sha)
         await self._emit_live_event(
             "agent_started",
@@ -363,7 +400,13 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             )
         return AgentExecution(result, session_id, metadata, friction)
 
-    async def _validation_phase(self, validators: Sequence[ValidatorSpec]) -> ValidationEvidence:
+    async def _validation_phase(
+        self,
+        validators: Sequence[ValidatorSpec],
+        recovered: RepositoryPhaseReceipt | None = None,
+    ) -> ValidationEvidence:
+        if recovered is not None:
+            return ValidationEvidence(recovered.repository.details)
         return ValidationEvidence(tuple(await self._run_validators(validators)))
 
     async def _repository_finalization_phase(
@@ -371,8 +414,10 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         prepared: PreparedAttempt,
         execution: AgentExecution,
         validation: ValidationEvidence,
+        recovered: RepositoryPhaseReceipt | None = None,
     ) -> RepositoryFinalization:
-        del execution
+        if recovered is not None:
+            return recovered.repository
         details = list(validation.details)
         accepted = validation.accepted
         sha = ""
@@ -410,7 +455,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
                     "learning": self._failure_summary(failed),
                 },
             )
-        return RepositoryFinalization(
+        repository = RepositoryFinalization(
             accepted=accepted,
             details=tuple(details),
             commit_sha=sha,
@@ -418,6 +463,15 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             pushed=pushed,
             friction=friction,
         )
+        await self._store_repository_receipt(
+            RepositoryPhaseReceipt(
+                request_fingerprint=prepared.request_fingerprint,
+                prepared=prepared,
+                execution=execution,
+                repository=repository,
+            )
+        )
+        return repository
 
     async def _evidence_phase(
         self,
@@ -437,6 +491,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         attempt_manifest_path = (
             f"{self.spec.workspace}/.archetype-agent/manifests/{prepared.attempt_id}.json"
         )
+        await self._checked("mkdir", "-p", str(PurePosixPath(attempt_manifest_path).parent))
         evidence = EvidenceCapture(
             attempt_manifest_path=attempt_manifest_path,
             trace_path=prepared.trace_path,
@@ -785,10 +840,25 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             return
 
     async def _commit_verified_tree(self, step_name: str, prompt: str, baseline: str) -> str:
+        current_head = (await self._git("rev-parse", "HEAD")).stdout.strip()
+        if current_head != baseline:
+            await self._git("reset", "--mixed", baseline)
+            raise ValueError(
+                "repository HEAD changed during agent execution; "
+                "agent-authored commits are not accepted and were returned to the worktree"
+            )
         status = (await self._git("status", "--porcelain")).stdout
         if status.strip():
             await self._git("add", "-A")
-            await self._git("commit", "-m", f"{step_name}: {self._subject(prompt)}")
+            await self._git(
+                "-c",
+                f"user.name={self.spec.git_author_name}",
+                "-c",
+                f"user.email={self.spec.git_author_email}",
+                "commit",
+                "-m",
+                f"{step_name}: {self._subject(prompt)}",
+            )
         sha = (await self._git("rev-parse", "HEAD")).stdout.strip()
         if sha == baseline:
             raise ValueError(
@@ -890,11 +960,149 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         return outcome
 
     async def _store_completed(self, key: str, outcome: dict[str, Any]) -> None:
-        await self._write_text(self._receipt_path(key), json.dumps(outcome, sort_keys=True))
+        path = self._receipt_path(key)
+        await self._checked("mkdir", "-p", str(PurePosixPath(path).parent))
+        await self._write_text(path, json.dumps(outcome, sort_keys=True))
+
+    async def _load_repository_receipt(self, key: str) -> RepositoryPhaseReceipt | None:
+        result = await self._exec("cat", self._repository_receipt_path(key), timeout=30)
+        if result.returncode != 0:
+            return None
+        try:
+            value = json.loads(result.stdout)
+            return self._parse_repository_receipt(value)
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("repository phase receipt is invalid; refusing replay") from exc
+
+    async def _store_repository_receipt(self, receipt: RepositoryPhaseReceipt) -> None:
+        path = self._repository_receipt_path(receipt.prepared.idempotency_key)
+        await self._checked("mkdir", "-p", str(PurePosixPath(path).parent))
+        await self._write_text(
+            path,
+            json.dumps(self._repository_receipt_payload(receipt), sort_keys=True),
+        )
 
     def _receipt_path(self, key: str) -> str:
         digest = hashlib.sha256(key.encode()).hexdigest()
         return f"{self.spec.workspace}/.archetype-agent/gates/{digest}.json"
+
+    def _repository_receipt_path(self, key: str) -> str:
+        return self._receipt_path(key).removesuffix(".json") + ".repository.json"
+
+    @staticmethod
+    def _repository_receipt_payload(receipt: RepositoryPhaseReceipt) -> dict[str, Any]:
+        prepared = receipt.prepared
+        execution = receipt.execution
+        repository = receipt.repository
+        return {
+            "schema_version": 1,
+            "phase": AttemptPhase.REPOSITORY_FINALIZATION.value,
+            "request_fingerprint": receipt.request_fingerprint,
+            "prepared": {
+                "attempt_id": prepared.attempt_id,
+                "request_fingerprint": prepared.request_fingerprint,
+                "idempotency_key": prepared.idempotency_key,
+                "attempt_index": prepared.attempt_index,
+                "step_name": prepared.step_name,
+                "prompt": prepared.prompt,
+                "agent_prompt": prepared.agent_prompt,
+                "correlation": prepared.correlation,
+                "baseline_sha": prepared.baseline_sha,
+                "trace_dir": prepared.trace_dir,
+                "trace_path": prepared.trace_path,
+                "trace_stderr_path": prepared.trace_stderr_path,
+                "live_status_path": prepared.live_status_path,
+                "live_events_path": prepared.live_events_path,
+                "filesystem_start_path": prepared.filesystem_start_path,
+            },
+            "execution": {
+                "argv": list(execution.result.argv),
+                "returncode": execution.result.returncode,
+                "stderr_present": bool(execution.result.stderr),
+                "session_id": execution.session_id,
+                "metadata": execution.metadata,
+                "friction": list(execution.friction),
+            },
+            "repository": {
+                "accepted": repository.accepted,
+                "details": list(repository.details),
+                "commit_sha": repository.commit_sha,
+                "message": repository.message,
+                "pushed": repository.pushed,
+                "friction": list(repository.friction),
+            },
+        }
+
+    @staticmethod
+    def _parse_repository_receipt(value: Any) -> RepositoryPhaseReceipt:
+        if not isinstance(value, dict):
+            raise TypeError("repository receipt must be a JSON object")
+        if value["schema_version"] != 1:
+            raise ValueError("unsupported repository receipt schema")
+        if value["phase"] != AttemptPhase.REPOSITORY_FINALIZATION.value:
+            raise ValueError("repository receipt has the wrong phase")
+
+        prepared_value = value["prepared"]
+        execution_value = value["execution"]
+        repository_value = value["repository"]
+        if not all(
+            isinstance(item, dict) for item in (prepared_value, execution_value, repository_value)
+        ):
+            raise TypeError("repository receipt sections must be JSON objects")
+
+        correlation = prepared_value["correlation"]
+        metadata = execution_value["metadata"]
+        details = repository_value["details"]
+        execution_friction = execution_value["friction"]
+        repository_friction = repository_value["friction"]
+        if not isinstance(correlation, dict) or not isinstance(metadata, dict):
+            raise TypeError("repository receipt mappings are invalid")
+        if not all(
+            isinstance(items, list) and all(isinstance(item, dict) for item in items)
+            for items in (details, execution_friction, repository_friction)
+        ):
+            raise TypeError("repository receipt evidence must be lists of objects")
+
+        prepared = PreparedAttempt(
+            attempt_id=str(prepared_value["attempt_id"]),
+            request_fingerprint=str(prepared_value["request_fingerprint"]),
+            idempotency_key=str(prepared_value["idempotency_key"]),
+            attempt_index=int(prepared_value["attempt_index"]),
+            step_name=str(prepared_value["step_name"]),
+            prompt=str(prepared_value["prompt"]),
+            agent_prompt=str(prepared_value["agent_prompt"]),
+            correlation=dict(correlation),
+            baseline_sha=str(prepared_value["baseline_sha"]),
+            trace_dir=str(prepared_value["trace_dir"]),
+            trace_path=str(prepared_value["trace_path"]),
+            trace_stderr_path=str(prepared_value["trace_stderr_path"]),
+            live_status_path=str(prepared_value["live_status_path"]),
+            live_events_path=str(prepared_value["live_events_path"]),
+            filesystem_start_path=str(prepared_value["filesystem_start_path"]),
+        )
+        execution = AgentExecution(
+            result=CommandResult(
+                argv=tuple(str(item) for item in execution_value["argv"]),
+                returncode=int(execution_value["returncode"]),
+                stdout="",
+                stderr="captured" if bool(execution_value["stderr_present"]) else "",
+            ),
+            session_id=str(execution_value["session_id"]),
+            metadata=dict(metadata),
+            friction=tuple(dict(item) for item in execution_friction),
+        )
+        repository = RepositoryFinalization(
+            accepted=bool(repository_value["accepted"]),
+            details=tuple(dict(item) for item in details),
+            commit_sha=str(repository_value["commit_sha"]),
+            message=str(repository_value["message"]),
+            pushed=bool(repository_value["pushed"]),
+            friction=tuple(dict(item) for item in repository_friction),
+        )
+        fingerprint = str(value["request_fingerprint"])
+        if fingerprint != prepared.request_fingerprint:
+            raise ValueError("repository receipt fingerprint is inconsistent")
+        return RepositoryPhaseReceipt(fingerprint, prepared, execution, repository)
 
     @staticmethod
     def _request_fingerprint(

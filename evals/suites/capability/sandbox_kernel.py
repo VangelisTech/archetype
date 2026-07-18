@@ -74,7 +74,7 @@ class _KernelClient(CodingAgentSandboxClient[_Spec]):
             return CommandResult(args, 0, f"{self.head}\n", "")
         if args[:3] == ("git", "status", "--porcelain"):
             return CommandResult(args, 0, " M fix.py\n", "")
-        if args[:2] == ("git", "commit"):
+        if args[0] == "git" and "commit" in args:
             self.head = "verified-commit"
         return CommandResult(args, 0, "", "")
 

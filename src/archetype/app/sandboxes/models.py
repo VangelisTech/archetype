@@ -141,6 +141,16 @@ class RepositoryFinalization:
 
 
 @dataclass(frozen=True)
+class RepositoryPhaseReceipt:
+    """Replay-safe state captured immediately after repository finalization."""
+
+    request_fingerprint: str
+    prepared: PreparedAttempt
+    execution: AgentExecution
+    repository: RepositoryFinalization
+
+
+@dataclass(frozen=True)
 class EvidenceCapture:
     """Portable paths captured before a provider checkpoint."""
 

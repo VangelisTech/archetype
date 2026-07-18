@@ -25,6 +25,7 @@ from archetype.app.sandboxes.models import (
     EvidenceCapture,
     PreparedAttempt,
     RepositoryFinalization,
+    RepositoryPhaseReceipt,
     ValidationEvidence,
 )
 
@@ -66,11 +67,13 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
         )
     )
     agent_error: BaseException | None = None
+    agent_head_after_run: str = ""
     validator_returncode: int = 0
     tree_changed: bool = True
     head: str = "baseline"
     checkpoint_ref: str = "fake-checkpoint://checkpoint-1"
     checkpoint_error: BaseException | None = None
+    evidence_error: BaseException | None = None
     context_exists: bool = True
     close_calls: int = 0
 
@@ -113,7 +116,10 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
             return CommandResult(args, 0, f"{self.head}\n", "")
         if args[:3] == ("git", "status", "--porcelain"):
             return CommandResult(args, 0, " M file.py\n" if self.tree_changed else "", "")
-        if args[:2] == ("git", "commit"):
+        if args[:3] == ("git", "reset", "--mixed"):
+            self.head = args[3]
+            return CommandResult(args, 0, "", "")
+        if args[0] == "git" and "commit" in args:
             self.head = "committed"
             return CommandResult(args, 0, "committed", "")
         return CommandResult(args, 0, "", "")
@@ -137,6 +143,8 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
         self.agent_calls.append((prompt, session_id))
         if self.agent_error is not None:
             raise self.agent_error
+        if self.agent_head_after_run:
+            self.head = self.agent_head_after_run
         return self.agent_result
 
     async def _capture_git_recovery(self, attempt_id: str, baseline: str) -> dict[str, str]:
@@ -165,23 +173,33 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
         self.events.append((event_type, details))
 
     async def _execution_phase(
-        self, prepared: PreparedAttempt, previous_session_id: str
+        self,
+        prepared: PreparedAttempt,
+        previous_session_id: str,
+        recovered: RepositoryPhaseReceipt | None = None,
     ) -> AgentExecution:
         self.phases.append(AttemptPhase.EXECUTION)
-        return await super()._execution_phase(prepared, previous_session_id)
+        return await super()._execution_phase(prepared, previous_session_id, recovered)
 
-    async def _validation_phase(self, validators: Sequence[ValidatorSpec]) -> ValidationEvidence:
+    async def _validation_phase(
+        self,
+        validators: Sequence[ValidatorSpec],
+        recovered: RepositoryPhaseReceipt | None = None,
+    ) -> ValidationEvidence:
         self.phases.append(AttemptPhase.VALIDATION)
-        return await super()._validation_phase(validators)
+        return await super()._validation_phase(validators, recovered)
 
     async def _repository_finalization_phase(
         self,
         prepared: PreparedAttempt,
         execution: AgentExecution,
         validation: ValidationEvidence,
+        recovered: RepositoryPhaseReceipt | None = None,
     ) -> RepositoryFinalization:
         self.phases.append(AttemptPhase.REPOSITORY_FINALIZATION)
-        return await super()._repository_finalization_phase(prepared, execution, validation)
+        return await super()._repository_finalization_phase(
+            prepared, execution, validation, recovered
+        )
 
     async def _evidence_phase(
         self,
@@ -190,6 +208,8 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
         repository: RepositoryFinalization,
     ) -> EvidenceCapture:
         self.phases.append(AttemptPhase.EVIDENCE)
+        if self.evidence_error is not None:
+            raise self.evidence_error
         return await super()._evidence_phase(prepared, execution, repository)
 
     async def _checkpoint_phase(self, prepared: PreparedAttempt) -> CheckpointCapture:
@@ -238,6 +258,9 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
     assert outcome["git_bundle_ref"].startswith("fake-checkpoint://checkpoint-1#")
     assert outcome["live_events_ref"].startswith("fake-sandbox://sandbox-1/")
     assert any(path.endswith(".json") for path in client.files)
+    initial_mkdir = next(call[0] for call in client.commands if call[0][:2] == ("mkdir", "-p"))
+    assert f"{client.spec.workspace}/.archetype-agent/manifests" in initial_mkdir
+    assert f"{client.spec.workspace}/.archetype-agent/gates" in initial_mkdir
     assert [event for event, _ in client.events][-3:] == [
         "artifact_handoff_started",
         "artifact_handoff_finished",
@@ -304,6 +327,50 @@ async def test_passing_validator_without_tree_change_is_rejected() -> None:
     assert outcome["accepted"] is False
     assert outcome["results"] == {"tests": True, "git_tree_change": False}
     assert outcome["checkpoint_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_agent_authored_commit_is_rejected_before_trusted_finalization() -> None:
+    client = _FakeClient(_Spec(), agent_head_after_run="agent-commit")
+
+    outcome = await client.run_attempt(**_attempt_kwargs())
+
+    assert outcome["accepted"] is False
+    assert outcome["sha"] == ""
+    assert outcome["pushed"] is False
+    assert client.head == "baseline"
+    assert outcome["results"] == {"tests": True, "git_tree_change": False}
+    gate = next(item for item in outcome["validator_details"] if item["name"] == "git_tree_change")
+    assert "agent-authored commits are not accepted" in gate["stderr"]
+    assert any(call[0][:3] == ("git", "reset", "--mixed") for call in client.commands)
+    assert not any(call[0][0] == "git" and "commit" in call[0] for call in client.commands)
+    assert not any(call[0][0] == "git" and "push" in call[0] for call in client.commands)
+
+
+@pytest.mark.asyncio
+async def test_repository_receipt_resumes_after_post_commit_evidence_crash() -> None:
+    client = _FakeClient(_Spec(), evidence_error=RuntimeError("evidence unavailable"))
+
+    with pytest.raises(RuntimeError, match="evidence unavailable"):
+        await client.run_attempt(**_attempt_kwargs())
+
+    assert client.head == "committed"
+    assert len(client.agent_calls) == 1
+    assert client._repository_receipt_path(_attempt_kwargs()["idempotency_key"]) in client.files
+    commit_calls = [call for call in client.commands if call[0][0] == "git" and "commit" in call[0]]
+    assert len(commit_calls) == 1
+
+    client.evidence_error = None
+    client.agent_result = CommandResult(("codex",), 99, "", "must not run")
+    outcome = await client.run_attempt(**_attempt_kwargs())
+
+    assert outcome["accepted"] is True
+    assert outcome["sha"] == "committed"
+    assert len(client.agent_calls) == 1
+    assert (
+        len([call for call in client.commands if call[0][0] == "git" and "commit" in call[0]]) == 1
+    )
+    assert any(event == "attempt_resumed" for event, _ in client.events)
 
 
 @pytest.mark.asyncio
@@ -459,6 +526,11 @@ async def test_common_recovery_capture_push_and_receipt_edges(monkeypatch) -> No
     assert await CodingAgentSandboxClient._load_completed(client, corrupt_key) is None
     client.files[corrupt_path] = '{"accepted":true}'
     assert await CodingAgentSandboxClient._load_completed(client, corrupt_key) == {"accepted": True}
+
+    corrupt_repository_path = client._repository_receipt_path(corrupt_key)
+    client.files[corrupt_repository_path] = "{not-json"
+    with pytest.raises(ValueError, match="refusing replay"):
+        await CodingAgentSandboxClient._load_repository_receipt(client, corrupt_key)
 
     assert client._artifact_ref("checkpoint", "") == ""
     assert client._git_auth_args()

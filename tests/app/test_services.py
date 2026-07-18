@@ -74,6 +74,38 @@ class TestServiceContainer:
         container = ServiceContainer()
         await container.shutdown()  # should not raise
 
+    @pytest.mark.asyncio
+    async def test_container_shutdown_drains_later_services_after_sandbox_failure(
+        self, monkeypatch
+    ):
+        container = ServiceContainer()
+        calls: list[str] = []
+
+        async def stop_admission():
+            calls.append("admission")
+
+        async def fail_sandboxes():
+            calls.append("sandboxes")
+            raise RuntimeError("sandbox close failed")
+
+        async def shutdown_audit():
+            calls.append("audit")
+
+        async def shutdown_worlds():
+            calls.append("worlds")
+
+        monkeypatch.setattr(container.application, "stop_admission", stop_admission)
+        monkeypatch.setattr(container.sandbox_service, "shutdown", fail_sandboxes)
+        monkeypatch.setattr(container.audit_log, "shutdown", shutdown_audit)
+        monkeypatch.setattr(container.world_service, "shutdown", shutdown_worlds)
+
+        with pytest.raises(ExceptionGroup, match="failed for 1 step") as captured:
+            await container.shutdown()
+
+        assert calls == ["admission", "sandboxes", "audit", "worlds"]
+        assert len(captured.value.exceptions) == 1
+        assert "sandbox close failed" in str(captured.value.exceptions[0])
+
 
 class TestSimulationService:
     @pytest.mark.asyncio

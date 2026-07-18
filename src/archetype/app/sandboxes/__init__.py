@@ -15,6 +15,7 @@ from archetype.app.sandboxes.models import (
     CommandResult,
     EvidenceCapture,
     OpenCodeWireAPI,
+    RepositoryPhaseReceipt,
     ValidatorSpec,
 )
 from archetype.app.sandboxes.service import SandboxService
@@ -30,6 +31,7 @@ __all__ = [
     "CommandResult",
     "EvidenceCapture",
     "OpenCodeWireAPI",
+    "RepositoryPhaseReceipt",
     "SandboxService",
     "ValidatorSpec",
     "iSandboxBackend",

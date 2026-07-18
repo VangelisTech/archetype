@@ -27,7 +27,9 @@ persisted Archetype facts are the recovery inputs after process loss.
 
 The container owns shutdown of retained handles. Closing one handle is
 idempotent. Shutdown stops new admission, attempts every close, and reports all
-close failures after the drain.
+close failures after the drain. A sandbox close failure does not prevent audit
+or owned world/storage shutdown; the composition root drains every later step
+and raises one aggregate failure afterward.
 
 ## 3. Six-phase attempt protocol
 
@@ -40,7 +42,11 @@ After validating the request and reading the repository baseline,
    without agent secrets. A nonzero agent exit does not bypass validators.
 3. **Repository finalization** — only after every validator passes, create a
    commit for the verified tree and optionally push the configured branch. A
-   passing validator set with no commit or tree change is rejected.
+   passing validator set with no commit or tree change is rejected. The agent
+   may edit the worktree but may not move `HEAD`; an agent-authored commit is
+   rejected rather than accepted or pushed, and its changes are returned to the
+   worktree on top of the trusted baseline. The outer gate supplies the commit
+   identity and message.
 4. **Evidence** — capture the attempt manifest, agent trace, validator details,
    Git status, binary patch, Git bundle source, filesystem manifests and diff,
    live-event paths, and `.context` when present. These sources remain
@@ -64,6 +70,7 @@ guessing at control flow.
 | Agent exits nonzero | Continue all phases | Agent friction plus authoritative validator outcome |
 | Validator fails | Continue evidence and checkpoint | Rejected, resumable attempt |
 | Validators pass but tree is unchanged | Continue evidence and checkpoint | Rejected `git_tree_change` gate |
+| Agent moves repository `HEAD` | Continue evidence and checkpoint | Rejected `git_tree_change` gate; untrusted commit is never pushed |
 | Commit or push transport fails | Raise; do not claim completed handoff | External supervisor resumes from durable state |
 | Evidence capture fails | Raise before checkpoint | Incomplete finalization; never task success |
 | Checkpoint fails | Continue artifact handoff | Captured but non-restorable evidence, never checkpoint-qualified advancement |
@@ -78,13 +85,20 @@ archive, event, or artifact is published.
 
 ## 6. Idempotency and explicit non-claims
 
-The kernel writes a receipt inside the sandbox under `.archetype-agent/gates/`.
-That receipt suppresses duplicate work while the sandbox or checkpoint remains
-available. The receipt binds the key to a hash of the complete attempt request
-and rejects key reuse with changed inputs. It is not a durable pre-execution
-claim. A crash after model
-submission but before receipt storage is therefore **possibly submitted**, and
-the architecture makes no exactly-once model-execution claim.
+The kernel creates the gate and manifest directories before agent execution,
+then writes two receipts under `.archetype-agent/gates/`. A repository-phase
+receipt is stored immediately after trusted commit/push finalization. If
+evidence, checkpoint, or handoff then crashes, replay reconstructs the prepared
+attempt and repository result from that receipt and resumes at evidence without
+another model call, validator run, commit, or push. A separate final receipt
+suppresses all work once artifact handoff completes. Corrupt repository-phase
+state fails closed instead of replaying model execution.
+
+Both receipts bind the key to a hash of the complete attempt request and reject
+key reuse with changed inputs. They are not a durable pre-execution claim. A
+crash after model submission but before the repository-phase receipt is stored
+is therefore **possibly submitted**, and the architecture makes no exactly-once
+model-execution claim.
 
 Durable claim ownership and recovery policy belong above this transport. The
 claim must be acquired before entering the execution phase.

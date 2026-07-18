@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
@@ -125,8 +125,23 @@ class ServiceContainer:
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
-        await self.application.stop_admission()
-        await self.sandbox_service.shutdown()
-        await self.audit_log.shutdown()
+        steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
+            ("application admission", self.application.stop_admission),
+            ("sandbox sessions", self.sandbox_service.shutdown),
+            ("audit log", self.audit_log.shutdown),
+        ]
         if self._owns_storage_service:
-            await self.world_service.shutdown()
+            steps.append(("world and storage services", self.world_service.shutdown))
+
+        failures: list[Exception] = []
+        for label, shutdown in steps:
+            try:
+                await shutdown()
+            except Exception as exc:
+                exc.add_note(f"ServiceContainer shutdown step failed: {label}")
+                failures.append(exc)
+        if failures:
+            raise ExceptionGroup(
+                f"ServiceContainer shutdown failed for {len(failures)} step(s)",
+                failures,
+            )
