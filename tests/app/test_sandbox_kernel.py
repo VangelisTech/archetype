@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,15 @@ class _Spec:
     base_ref: str = "main"
     harness: str = "codex"
     model: str = ""
+    opencode_base_url: str = "https://endpoint.example/v1"
+    opencode_provider_id: str = "test-endpoint"
+    opencode_wire_api: str = "chat-completions"
+    opencode_header_env: Mapping[str, str] = field(
+        default_factory=lambda: {
+            "Modal-Key": "MODAL_ENDPOINT_TOKEN_ID",
+            "Modal-Secret": "MODAL_ENDPOINT_TOKEN_SECRET",
+        }
+    )
     workspace: str = "/workspace/repo"
     agent_timeout_seconds: int = 60
     snapshot_timeout_seconds: int = 30
@@ -488,9 +498,75 @@ async def test_common_repository_setup_and_agent_command_shapes() -> None:
     assert "--model" in claude_call[0]
     assert claude_call[1]["env"]["DISABLE_AUTOUPDATER"] == "1"
 
-    unsupported = _FakeClient(replace(_Spec(), harness="opencode"))
+    unsupported = _FakeClient(replace(_Spec(), harness="unknown"))
     with pytest.raises(ValueError, match="unsupported coding-agent harness"):
         await CodingAgentSandboxClient._run_agent(unsupported, "fix", session_id="")
+
+
+@pytest.mark.parametrize(
+    ("wire_api", "provider_package"),
+    [
+        ("chat-completions", "@ai-sdk/openai-compatible"),
+        ("responses", "@ai-sdk/openai"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_common_opencode_command_and_secret_placeholder_contract(
+    wire_api: str,
+    provider_package: str,
+) -> None:
+    secret = object()
+    client = _FakeClient(
+        replace(
+            _Spec(),
+            harness="opencode",
+            model="Qwen/Qwen3.6-35B-A3B-FP8",
+            opencode_wire_api=wire_api,
+        ),
+        _agent_secret=secret,
+    )
+
+    await CodingAgentSandboxClient._run_agent(
+        client,
+        "repair the bug",
+        session_id="open-session-1",
+    )
+
+    config_path = "/root/.config/archetype/opencode.json"
+    config = json.loads(client.files[config_path])
+    provider = config["provider"]["test-endpoint"]
+    assert config["model"] == "test-endpoint/Qwen/Qwen3.6-35B-A3B-FP8"
+    assert provider["npm"] == provider_package
+    assert provider["options"] == {
+        "baseURL": "https://endpoint.example/v1",
+        "headers": {
+            "Modal-Key": "{env:MODAL_ENDPOINT_TOKEN_ID}",
+            "Modal-Secret": "{env:MODAL_ENDPOINT_TOKEN_SECRET}",
+        },
+    }
+    assert "MODAL_ENDPOINT_TOKEN_SECRET" in client.files[config_path]
+
+    command = next(call for call in client.commands if call[0][0] == "opencode")
+    assert command[0] == (
+        "opencode",
+        "run",
+        "--pure",
+        "--format",
+        "json",
+        "--model",
+        "test-endpoint/Qwen/Qwen3.6-35B-A3B-FP8",
+        "--auto",
+        "--session",
+        "open-session-1",
+        "repair the bug",
+    )
+    assert command[1]["secrets"] == (secret,)
+    assert command[1]["env"] == {
+        "NO_COLOR": "1",
+        "OPENCODE_CONFIG": config_path,
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+    }
 
 
 @pytest.mark.asyncio

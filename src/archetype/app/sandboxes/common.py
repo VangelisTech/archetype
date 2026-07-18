@@ -36,6 +36,7 @@ from archetype.app.sandboxes.models import (
     ValidatorSpec,
 )
 
+_OPENCODE_CONFIG_PATH = "/root/.config/archetype/opencode.json"
 _FILESYSTEM_MANIFEST_SCRIPT = r"""
 import hashlib
 import json
@@ -728,6 +729,8 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             return await self._run_codex(prompt, session_id=session_id)
         if self.spec.harness == "claude-code":
             return await self._run_claude(prompt, session_id=session_id)
+        if self.spec.harness == "opencode":
+            return await self._run_opencode(prompt, session_id=session_id)
         raise ValueError(f"unsupported coding-agent harness: {self.spec.harness!r}")
 
     async def _run_codex(self, prompt: str, *, session_id: str) -> CommandResult:
@@ -782,6 +785,75 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
                 "NO_COLOR": "1",
                 "DISABLE_AUTOUPDATER": "1",
                 "CLAUDE_CONFIG_DIR": "/root/.claude",
+            },
+        )
+
+    async def _run_opencode(self, prompt: str, *, session_id: str) -> CommandResult:
+        if not self.spec.model:
+            raise ValueError("OpenCode requires an explicit model")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.spec.opencode_provider_id):
+            raise ValueError(f"invalid OpenCode provider id: {self.spec.opencode_provider_id!r}")
+        packages = {
+            "chat-completions": "@ai-sdk/openai-compatible",
+            "responses": "@ai-sdk/openai",
+        }
+        try:
+            provider_package = packages[self.spec.opencode_wire_api]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported OpenCode wire API: {self.spec.opencode_wire_api!r}"
+            ) from exc
+
+        headers: dict[str, str] = {}
+        for header, env_name in sorted(self.spec.opencode_header_env.items()):
+            if not header.strip() or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", env_name):
+                raise ValueError("OpenCode header environment bindings must be valid names")
+            headers[header] = f"{{env:{env_name}}}"
+
+        model_ref = f"{self.spec.opencode_provider_id}/{self.spec.model}"
+        config = {
+            "$schema": "https://opencode.ai/config.json",
+            "model": model_ref,
+            "share": "disabled",
+            "permission": "allow",
+            "provider": {
+                self.spec.opencode_provider_id: {
+                    "name": "Archetype OpenCode endpoint",
+                    "npm": provider_package,
+                    "options": {
+                        "baseURL": self.spec.opencode_base_url,
+                        "headers": headers,
+                    },
+                    "models": {self.spec.model: {"name": self.spec.model}},
+                }
+            },
+        }
+        await self._checked("mkdir", "-p", str(PurePosixPath(_OPENCODE_CONFIG_PATH).parent))
+        await self._write_text(_OPENCODE_CONFIG_PATH, json.dumps(config, sort_keys=True))
+
+        argv = [
+            "opencode",
+            "run",
+            "--pure",
+            "--format",
+            "json",
+            "--model",
+            model_ref,
+            "--auto",
+        ]
+        if session_id:
+            argv.extend(["--session", session_id])
+        argv.append(prompt)
+        return await self._exec_agent(
+            *argv,
+            workdir=self.spec.workspace,
+            timeout=self.spec.agent_timeout_seconds,
+            secrets=[self._agent_secret] if self._agent_secret is not None else (),
+            env={
+                "NO_COLOR": "1",
+                "OPENCODE_CONFIG": _OPENCODE_CONFIG_PATH,
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
             },
         )
 

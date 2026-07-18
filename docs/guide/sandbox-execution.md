@@ -83,6 +83,15 @@ checkpoint metadata receive none. Provider adapters must preserve this process
 boundary. Durable redaction is a separate required gate before any trace,
 archive, event, or artifact is published.
 
+Codex, Claude Code, and OpenCode are executable harnesses in the common
+kernel. OpenCode writes a sandbox-local config outside the repository, disables
+project configuration and sharing, and stores only environment placeholders
+for endpoint headers. The provider adapter injects the selected secret into the
+OpenCode process; the config never contains the credential values. Its endpoint
+URL, provider identifier, wire API (`chat-completions` or `responses`), model,
+and header-to-environment bindings come from the provider specification.
+OpenCode resume uses the prior session ID through `opencode run --session`.
+
 ## 6. Idempotency and explicit non-claims
 
 The kernel creates the gate and manifest directories before agent execution,

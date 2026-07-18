@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Literal, Protocol
@@ -65,6 +66,10 @@ class CodingAgentSandboxSpec(Protocol):
     base_ref: str
     harness: AgentHarness
     model: str
+    opencode_base_url: str
+    opencode_provider_id: str
+    opencode_wire_api: OpenCodeWireAPI
+    opencode_header_env: Mapping[str, str]
     workspace: str
     agent_timeout_seconds: int
     snapshot_timeout_seconds: int
