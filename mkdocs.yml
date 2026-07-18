@@ -104,6 +104,7 @@ nav:
       - Audit Log: guide/audit-log.md
       - Evaluation Harness: guide/evals.md
       - Performance Benchmarking: guide/benchmarking.md
+      - Modal OpenCode H200 Calibration: guide/benchmark-runs/modal-opencode-single-h200-2026-07-18.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md

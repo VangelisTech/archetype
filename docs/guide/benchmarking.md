@@ -73,6 +73,8 @@ following:
 Without those pieces, a local history directory and statistical threshold add
 machinery without producing a trustworthy decision. The snapshots preserve
 the context needed to revisit comparison once those prerequisites exist.
+An explicitly reviewed calibration note does not establish automated history
+or change this policy.
 
 ## Modal endpoint and coding-agent capacity
 
@@ -141,6 +143,12 @@ not contain endpoint credential values. See Modal's
 [server scaling semantics](https://modal.com/docs/guide/servers), and
 [Sandbox snapshot contract](https://modal.com/docs/guide/sandbox-snapshots)
 when interpreting results.
+
+Explicitly promoted calibration notes may summarize a run without checking in
+its transient sample-level snapshot. The first such note is the
+[2026-07-18 single-H200 OpenCode fanout calibration](benchmark-runs/modal-opencode-single-h200-2026-07-18.md).
+It records the raw report checksum and workload declaration, but it is not a
+trend baseline.
 
 Remaining workload coverage and the runner/retention decision stay tracked in
 [issue #141](https://github.com/VangelisTech/archetype/issues/141).
