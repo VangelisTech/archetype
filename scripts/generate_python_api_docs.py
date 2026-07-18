@@ -78,6 +78,7 @@ PAGES: tuple[ReferencePage, ...] = (
             "ArtifactPublishReceipt",
             "ArtifactReconcileResult",
             "ArtifactSourceResolver",
+            "BoundedArtifactSourceResolver",
             "ArtifactStoreConfig",
             "MaterializedArtifact",
         ),

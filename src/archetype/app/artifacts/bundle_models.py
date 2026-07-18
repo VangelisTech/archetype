@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from daft.io import IOConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -40,12 +40,31 @@ class MaterializedArtifact(BaseModel):
 
 
 class ArtifactSourceResolver(Protocol):
-    """Materialize immutable source references into ordinary local files."""
+    """Materialize immutable source references into ordinary local files.
+
+    This two-argument method is the stable provider contract. Resolvers that
+    can reject oversized provider objects before copying them may additionally
+    implement :class:`BoundedArtifactSourceResolver`.
+    """
 
     async def materialize(
         self,
         candidates: tuple[ArtifactCandidate, ...],
         destination: Path,
+    ) -> list[MaterializedArtifact]: ...
+
+
+@runtime_checkable
+class BoundedArtifactSourceResolver(ArtifactSourceResolver, Protocol):
+    """Optional provider capability for resource-bounded materialization."""
+
+    async def materialize_bounded(
+        self,
+        candidates: tuple[ArtifactCandidate, ...],
+        destination: Path,
+        *,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
     ) -> list[MaterializedArtifact]: ...
 
 

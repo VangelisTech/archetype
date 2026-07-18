@@ -140,30 +140,30 @@ reason = "same grading-boundary site as the collect above: per-entity terminal r
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 865
+line = 957
 method = "to_pylist"
 reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 917
+line = 1009
 method = "to_pylist"
 reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 930
+line = 1022
 method = "to_pylist"
 reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 945
+line = 1037
 method = "to_pylist"
 reason = "Content-addressed retry boundary: only object paths inside one deterministic artifact folder are materialized so imperative reconciliation can choose a stable existing upload rather than issue duplicate external I/O."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 961
+line = 1053
 method = "to_pylist"
 reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."

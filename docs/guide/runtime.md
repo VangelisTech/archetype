@@ -142,7 +142,8 @@ identity, complete publication claims, or expose generic domain "artifacts."
 The artifact-bundle DTOs exported from the top-level `archetype` package are
 supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
 `ArtifactIndexRecord`, `ArtifactPublishReceipt`, `ArtifactReconcileResult`,
-`ArtifactSourceResolver`, `ArtifactStoreConfig`, and `MaterializedArtifact`.
+`ArtifactSourceResolver`, `BoundedArtifactSourceResolver`,
+`ArtifactStoreConfig`, and `MaterializedArtifact`.
 Their physical `app.artifacts.bundle_models` module is internal; application
 code imports the top-level names. The runtime's narrow import allowance for
 that module exists only to type its actor-free application-port methods and

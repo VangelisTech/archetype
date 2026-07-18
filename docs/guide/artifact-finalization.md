@@ -128,7 +128,19 @@ Provider-qualified source references are data, not live handles. The built-in
 resolver supports direct files and
 `apple-container-rootfs://<archive>#<path>`. The Modal provider supplies a
 resolver that reads a live sandbox or restores a `modal-image://` checkpoint.
-Other providers implement `ArtifactSourceResolver`.
+Other providers implement the stable
+`ArtifactSourceResolver.materialize(candidates, destination)` contract.
+
+Resolvers that can preflight provider objects implement the optional
+`BoundedArtifactSourceResolver.materialize_bounded` capability. The service
+passes the configured per-artifact and aggregate bundle byte limits through
+that capability. Archive resolvers must reject a member from its declared
+size before copying its bytes and must account for repeated and recursive
+selections cumulatively. Legacy two-argument resolvers remain supported and
+are checked after materialization, but they cannot provide resource control
+during the copy itself. The service always validates materialized files again
+before Daft reads them; bounded preflight is the resource control, while the
+second check defends against legacy resolvers and stale or dishonest metadata.
 
 Every `ArtifactIndexRecord` is scalar and Parquet-friendly:
 

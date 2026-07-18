@@ -102,6 +102,8 @@
 
 ::: archetype.app.artifacts.bundle_models.ArtifactSourceResolver
 
+::: archetype.app.artifacts.bundle_models.BoundedArtifactSourceResolver
+
 ::: archetype.app.artifacts.bundle_models.ArtifactStoreConfig
     options:
       members:

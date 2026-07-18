@@ -102,6 +102,7 @@ __all__ = [
     "ArtifactPublishReceipt",
     "ArtifactReconcileResult",
     "ArtifactSourceResolver",
+    "BoundedArtifactSourceResolver",
     "ArtifactStoreConfig",
     "MaterializedArtifact",
     # Models
@@ -190,6 +191,10 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ArtifactSourceResolver": (
         "archetype.app.artifacts.bundle_models",
         "ArtifactSourceResolver",
+    ),
+    "BoundedArtifactSourceResolver": (
+        "archetype.app.artifacts.bundle_models",
+        "BoundedArtifactSourceResolver",
     ),
     "ArtifactStoreConfig": ("archetype.app.artifacts.bundle_models", "ArtifactStoreConfig"),
     "MaterializedArtifact": (
