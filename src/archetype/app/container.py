@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 from archetype.app.application.service import RuntimeApplication
+from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
+from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.artifacts.table_service import ArtifactTableService
 from archetype.app.audit.service import AuditLog
@@ -46,6 +48,8 @@ class ServiceContainer:
         self,
         storage_service: StorageService | None = None,
         audit_storage_config: StorageConfig | None = None,
+        artifact_store_config: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -65,6 +69,12 @@ class ServiceContainer:
         self.query_service = QueryService(self.storage_service, self.audit_log)
         self.artifact_table_service = ArtifactTableService(self.storage_service, self.world_service)
         self.artifact_service = ArtifactService(self.storage_service, self.world_service)
+        self.artifact_bundle_service = ArtifactBundleService(
+            self.storage_service,
+            self.world_service,
+            artifact_store_config,
+            artifact_source_resolver,
+        )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
 
         # Services that depend on WorldService
@@ -88,6 +98,7 @@ class ServiceContainer:
             audit=self.audit_log,
             artifact_tables=self.artifact_table_service,
             artifacts=self.artifact_service,
+            artifact_bundles=self.artifact_bundle_service,
             evaluations=self.evaluation_service,
             research=self.autoresearch_service,
         )

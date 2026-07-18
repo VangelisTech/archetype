@@ -25,6 +25,11 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
+from archetype.app.artifacts.bundle_models import (
+    ArtifactBundleRequest,
+    ArtifactPublishReceipt,
+    ArtifactReconcileResult,
+)
 from archetype.app.models import (
     ArtifactProcessor,
     ArtifactReceipt,
@@ -336,6 +341,18 @@ class RuntimeWorld:
                 table_name,
                 artifacts,
                 storage_config=self._state.storage_config,
+            )
+
+    async def publish_artifact_bundle(
+        self, request: ArtifactBundleRequest
+    ) -> ArtifactPublishReceipt:
+        """Durably publish one portable attempt bundle and provider checkpoint."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            if str(request.world_id) != str(wid):
+                raise ValueError("artifact bundle world_id does not match this world handle")
+            return await self._app.publish_artifact_bundle(
+                request, storage_config=self._state.storage_config
             )
 
     async def spawn_many(self, entities: list[list[Component]]) -> list[int]:
@@ -663,6 +680,33 @@ class RuntimeWorld:
                 storage_config=self._state.storage_config,
             )
 
+    async def artifact_bundles(
+        self,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame:
+        """Return portable evidence rows indexed for this world's current run."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            info = await self._resolve_info(wid)
+            return await self._app.query_artifact_bundles(
+                wid,
+                str(info.run_id or ""),
+                attempt_id=attempt_id,
+                kinds=kinds,
+            )
+
+    async def reconcile_artifact_bundles(self, *, limit: int = 100) -> ArtifactReconcileResult:
+        """Run one bounded recovery pass for interrupted bundle publications."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            return await self._app.reconcile_artifact_bundles(
+                wid,
+                storage_config=self._state.storage_config,
+                limit=limit,
+            )
+
     async def list_processors(self) -> list[ProcessorInfo]:
         """Return summaries of installed processors."""
         async with self._state.op_lock:
@@ -771,6 +815,9 @@ class SyncRuntimeWorld:
 
     def write_artifacts(self, table_name: str, artifacts: DataFrame) -> ArtifactWriteReceipt:
         return self._run(lambda: self._world.write_artifacts(table_name, artifacts))
+
+    def publish_artifact_bundle(self, request: ArtifactBundleRequest) -> ArtifactPublishReceipt:
+        return self._run(lambda: self._world.publish_artifact_bundle(request))
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -893,6 +940,17 @@ class SyncRuntimeWorld:
 
     def artifacts(self, table_name: str) -> DataFrame:
         return self._run(lambda: self._world.artifacts(table_name))
+
+    def artifact_bundles(
+        self,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame:
+        return self._run(lambda: self._world.artifact_bundles(attempt_id=attempt_id, kinds=kinds))
+
+    def reconcile_artifact_bundles(self, *, limit: int = 100) -> ArtifactReconcileResult:
+        return self._run(lambda: self._world.reconcile_artifact_bundles(limit=limit))
 
     def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())

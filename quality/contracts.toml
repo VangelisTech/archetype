@@ -312,3 +312,20 @@ static = ["scripts/validate_r2_substrate.py"]
 evals = []
 benchmarks = []
 profiles = ["main", "release"]
+
+[[contract]]
+id = "artifacts.bundle.publication_replay"
+source = "docs/guide/artifact-finalization.md"
+section = "4. Publication state machine"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/app/test_artifact_bundle_models.py",
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_artifact_publication_catalog.py",
+  "tests/app/test_remote_catalog_parity.py::test_artifact_publication_lifecycle_parity",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]

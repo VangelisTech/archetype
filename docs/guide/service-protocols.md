@@ -36,7 +36,7 @@ ArchetypeRuntime -> iRuntimeApplication <- iCommandGateway <- FastAPI
 iRuntimeApplication
   -> iWorldService + iMutationService + iSimulationService
   -> iQueryService
-  -> iArtifactService + iArtifactTableService
+  -> iArtifactService + iArtifactTableService + iArtifactBundleService
   -> iEvaluationService
   -> iCommandScheduler
   -> iAuditLog
@@ -52,6 +52,7 @@ iSimulationService -> iWorldService + injected callbacks
 iCommandScheduler  -> iWorldService + iMutationService
 iResearchService   -> iWorldService + iSimulationService
 iAuditLog          -> iStorageService
+iArtifactBundleService -> iStorageService + iWorldService
 ```
 
 `ServiceContainer` alone selects concrete implementations.
@@ -69,6 +70,7 @@ iAuditLog          -> iStorageService
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
+| `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
 | `iEvaluationService` | `EvaluationService` | application | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
@@ -102,8 +104,9 @@ its drain and quota-reset callables.
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
 `iArtifactService` and `iEvaluationService` expose separate claim-backed
-workflows. `iAuditLog` is a projection/read port, not the authority for command
-outcome.
+workflows. `iArtifactBundleService` owns full attempt-bundle publication and
+reconciliation while provider checkpoints remain recovery objects.
+`iAuditLog` is a projection/read port, not the authority for command outcome.
 
 ## 5. Models crossing families
 
@@ -113,6 +116,7 @@ runtime/application result records. Family-specific models remain with their
 owners:
 
 - artifact descriptors and receipts: `app/artifacts/models.py`;
+- artifact bundle requests and publication receipts: `app/artifacts/bundle_models.py`;
 - evaluation contracts, outcomes, and receipts: `app/evaluation/models.py`;
 - research contracts and ledger components: `app/research/`;
 - audit access events: `app/audit/models.py`;
@@ -153,3 +157,4 @@ closes container-owned world/storage resources.
 - [Durable Commands](durable-commands.md)
 - [Audit Log](audit-log.md)
 - [Execution Hierarchy](execution-hierarchy.md)
+- [Artifact Finalization](artifact-finalization.md)

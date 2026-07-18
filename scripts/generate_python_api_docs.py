@@ -64,6 +64,25 @@ PAGES: tuple[ReferencePage, ...] = (
         ),
     ),
     ReferencePage(
+        "artifact-bundles",
+        "Durable artifact bundles",
+        "Recommended API",
+        "These top-level `archetype` exports are supported runtime contracts. "
+        "Use them to configure durable sandbox-checkpoint evidence, publish portable "
+        "artifacts, and query or reconcile their content-addressed index; the rendered "
+        "implementation-module paths are internal.",
+        (
+            "ArtifactBundleRequest",
+            "ArtifactCandidate",
+            "ArtifactIndexRecord",
+            "ArtifactPublishReceipt",
+            "ArtifactReconcileResult",
+            "ArtifactSourceResolver",
+            "ArtifactStoreConfig",
+            "MaterializedArtifact",
+        ),
+    ),
+    ReferencePage(
         "building-blocks",
         "Building blocks",
         "Extension API",
@@ -210,6 +229,13 @@ RECORDS = frozenset(
         "RolloutResult",
         "ArtifactReceipt",
         "ArtifactWriteReceipt",
+        "ArtifactBundleRequest",
+        "ArtifactCandidate",
+        "ArtifactIndexRecord",
+        "ArtifactPublishReceipt",
+        "ArtifactReconcileResult",
+        "ArtifactStoreConfig",
+        "MaterializedArtifact",
         "ProcessorInfo",
         "HookInfo",
         "ResourceInfo",
@@ -237,6 +263,8 @@ EXPLICIT_MEMBERS: dict[str, tuple[str, ...]] = {
     "RunConfig": ("dev", "benchmark"),
     "AutoResearchResult": ("improved",),
     "ArtifactWriteReceipt": ("duplicate",),
+    "ArtifactBundleRequest": ("canonical_json", "digest"),
+    "ArtifactStoreConfig": ("local", "retention_seconds"),
     "GraderContract": ("digest",),
 }
 

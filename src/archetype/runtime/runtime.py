@@ -27,6 +27,7 @@ from uuid_utils import UUID
 
 from archetype import _obs
 from archetype.app.application.interfaces import iRuntimeApplication
+from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.models import WorldInfo
 from archetype.core.config import CacheConfig, StorageConfig
@@ -81,13 +82,23 @@ class ArchetypeRuntime:
         ...     result = await world.run(steps=10)
     """
 
-    def __init__(self, *, log: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+    ) -> None:
         """Initialize the runtime.
 
         Args:
             log: Package log level: `debug`, `info`, `warning`, or `error`.
                 When omitted, `ARCHETYPE_LOG` is used and logging stays quiet
                 if that variable is unset.
+            artifact_store: Optional object-store and artifact-index
+                configuration for portable attempt bundles.
+            artifact_source_resolver: Optional provider resolver used to copy
+                immutable sandbox references into portable bundle objects.
         """
         # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
         # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
@@ -106,7 +117,10 @@ class ArchetypeRuntime:
             debug_console=level == logging.DEBUG,
         )
 
-        self._container = ServiceContainer()
+        self._container = ServiceContainer(
+            artifact_store_config=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
         self._application: iRuntimeApplication = self._container.application
         self._handles: WeakSet[RuntimeWorld] = WeakSet()
         self._closed = False
@@ -274,9 +288,19 @@ class ArchetypeRuntime:
         return handle
 
     @classmethod
-    def sync(cls, *, log: str | None = None) -> SyncArchetypeRuntime:
+    def sync(
+        cls,
+        *,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+    ) -> SyncArchetypeRuntime:
         """Create the synchronous runtime facade."""
-        return SyncArchetypeRuntime(log=log)
+        return SyncArchetypeRuntime(
+            log=log,
+            artifact_store=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
 
     def _register_handle(self, handle: RuntimeWorld) -> None:
         self._handles.add(handle)
@@ -296,8 +320,18 @@ class SyncArchetypeRuntime:
     `ArchetypeRuntime` directly.
     """
 
-    def __init__(self, *, log: str | None = None) -> None:
-        self._runtime = ArchetypeRuntime(log=log)
+    def __init__(
+        self,
+        *,
+        log: str | None = None,
+        artifact_store: ArtifactStoreConfig | None = None,
+        artifact_source_resolver: ArtifactSourceResolver | None = None,
+    ) -> None:
+        self._runtime = ArchetypeRuntime(
+            log=log,
+            artifact_store=artifact_store,
+            artifact_source_resolver=artifact_source_resolver,
+        )
         self._runner: asyncio.Runner | None = None
 
     def __enter__(self) -> SyncArchetypeRuntime:

@@ -10,6 +10,11 @@ from typing import Any, Protocol, runtime_checkable
 
 from daft import DataFrame
 
+from archetype.app.artifacts.bundle_models import (
+    ArtifactBundleRequest,
+    ArtifactPublishReceipt,
+    ArtifactReconcileResult,
+)
 from archetype.app.artifacts.models import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
@@ -76,3 +81,35 @@ class iArtifactTableService(Protocol):
         *,
         storage_config: StorageConfig | None = None,
     ) -> DataFrame: ...
+
+
+@runtime_checkable
+class iArtifactBundleService(Protocol):
+    """Publish portable blobs and provider checkpoints for one episode attempt."""
+
+    @property
+    def enabled(self) -> bool: ...
+
+    async def publish(
+        self,
+        request: ArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt: ...
+
+    async def query(
+        self,
+        world_id: str,
+        run_id: str,
+        *,
+        attempt_id: str | None = None,
+        kinds: list[str] | None = None,
+    ) -> DataFrame: ...
+
+    async def reconcile(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+    ) -> ArtifactReconcileResult: ...
