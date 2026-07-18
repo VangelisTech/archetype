@@ -24,6 +24,7 @@ The current contract set is split across design docs and executable tests.
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
+| [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
 | [Agent Mission Transitions](agent-missions.md) | Mission/task/attempt authority | Typed completed-attempt graph, evidence gate, retry, exhaustion, and task advancement. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |

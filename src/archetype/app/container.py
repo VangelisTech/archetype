@@ -27,6 +27,8 @@ from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.query.service import QueryService
+from archetype.app.redaction.interfaces import iRedactionService
+from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
@@ -50,6 +52,7 @@ class ServiceContainer:
         audit_storage_config: StorageConfig | None = None,
         artifact_store_config: ArtifactStoreConfig | None = None,
         artifact_source_resolver: ArtifactSourceResolver | None = None,
+        redaction_service: iRedactionService | None = None,
     ):
         if storage_service is not None and storage_service.has_injected_session:
             if audit_storage_config is None:
@@ -62,6 +65,9 @@ class ServiceContainer:
         # Leaf services
         self._owns_storage_service = storage_service is None
         self.storage_service = storage_service if storage_service is not None else StorageService()
+        self.redaction_service = (
+            redaction_service if redaction_service is not None else RedactionService()
+        )
 
         # Storage-backed services
         self.world_service = WorldService(self.storage_service)
@@ -74,6 +80,7 @@ class ServiceContainer:
             self.world_service,
             artifact_store_config,
             artifact_source_resolver,
+            redaction_service=self.redaction_service,
         )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
 

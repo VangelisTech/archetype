@@ -118,6 +118,16 @@ def test_bundle_request_identity_is_canonical_across_artifact_order():
     assert forward.digest() == reverse.digest()
 
 
+def test_bundle_request_policy_identity_is_canonical_and_bound_at_service_time():
+    request = ArtifactBundleRequest(**_request_data())
+    assert request.redaction_policy_id == ""
+    bound = request.model_copy(
+        update={"redaction_policy_id": "archetype-secret-redaction-v1:" + "a" * 64}
+    )
+    assert bound.redaction_policy_id in bound.canonical_json()
+    assert bound.digest() == request.digest()
+
+
 def test_bundle_request_rejects_blank_identity():
     values = _request_data()
     values["checkpoint_provider"] = "  "

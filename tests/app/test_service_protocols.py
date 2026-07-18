@@ -11,7 +11,12 @@ import pytest
 
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.artifacts.interfaces import iArtifactService, iArtifactTableService
+from archetype.app.artifacts.bundle_service import ArtifactBundleService
+from archetype.app.artifacts.interfaces import (
+    iArtifactBundleService,
+    iArtifactService,
+    iArtifactTableService,
+)
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.artifacts.table_service import ArtifactTableService
 from archetype.app.audit.interfaces import iAuditLog
@@ -25,6 +30,8 @@ from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.gateway.service import CommandGateway
 from archetype.app.query.interfaces import iQueryService
 from archetype.app.query.service import QueryService
+from archetype.app.redaction.interfaces import iRedactionService
+from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
 from archetype.app.storage.interfaces import iStorageService
@@ -45,6 +52,8 @@ SERVICE_PROTOCOLS = (
     (QueryService, iQueryService),
     (ArtifactService, iArtifactService),
     (ArtifactTableService, iArtifactTableService),
+    (ArtifactBundleService, iArtifactBundleService),
+    (RedactionService, iRedactionService),
     (EvaluationService, iEvaluationService),
     (AutoResearchService, iResearchService),
     (AuditLog, iAuditLog),
@@ -80,6 +89,8 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
             (container.query_service, iQueryService),
             (container.artifact_service, iArtifactService),
             (container.artifact_table_service, iArtifactTableService),
+            (container.artifact_bundle_service, iArtifactBundleService),
+            (container.redaction_service, iRedactionService),
             (container.evaluation_service, iEvaluationService),
             (container.autoresearch_service, iResearchService),
             (container.audit_log, iAuditLog),

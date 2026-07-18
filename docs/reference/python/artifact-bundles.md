@@ -18,6 +18,7 @@
 | `tick` | `int` | `required` |
 | `attempt_id` | `str` | `required` |
 | `idempotency_key` | `str` | `required` |
+| `redaction_policy_id` | `str` | `''` |
 | `checkpoint_ref` | `str` | `required` |
 | `checkpoint_provider` | `str` | `required` |
 | `checkpoint_restorable` | `bool` | `True` |

@@ -13,7 +13,8 @@ from fastapi import HTTPException
 
 from archetype.api.errors import raise_api_error
 from archetype.app.audit.service import AuditBackpressureError
-from archetype.app.errors import AvailabilityError, ConflictError
+from archetype.app.errors import AvailabilityError, ConflictError, PayloadRejectedError
+from archetype.app.redaction import SecretQuarantineError
 from archetype.app.storage.catalog import (
     CatalogConflictError,
     CatalogSchemaMismatchError,
@@ -77,6 +78,23 @@ def test_availability_contract_defaults_to_a_safe_public_detail() -> None:
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "Service is temporarily unavailable"
+
+
+def test_payload_rejection_contract_maps_to_safe_unprocessable_content() -> None:
+    secret = "sk-proj-" + "example-secret-never-expose"
+    error = SecretQuarantineError(
+        f"artifact metadata containing {secret}",
+        ("openai-api-key",),
+    )
+
+    assert isinstance(error, PayloadRejectedError)
+    assert secret not in str(error)
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail == "Payload rejected by safety policy"
+    assert secret not in raised.value.detail
 
 
 def test_catalog_schema_mismatch_remains_an_internal_error() -> None:

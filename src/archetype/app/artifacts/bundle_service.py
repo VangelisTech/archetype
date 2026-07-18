@@ -42,6 +42,8 @@ from archetype.app.artifacts.bundle_models import (
     MaterializedArtifact,
     _canonical_json,
 )
+from archetype.app.redaction.interfaces import iRedactionService
+from archetype.app.redaction.models import RedactionReceipt
 from archetype.app.storage.catalog import (
     ArtifactPublicationExpiredError,
     ArtifactPublicationRecord,
@@ -55,6 +57,7 @@ if TYPE_CHECKING:
 
 _ARTIFACT_INDEX_TABLE = "artifact_index_v1"
 _ROOTFS_SCHEME = "apple-container-rootfs://"
+_MAX_FAILURE_DETAIL_CHARS = 4096
 logger = logging.getLogger(__name__)
 
 
@@ -275,15 +278,89 @@ class ArtifactBundleService:
         world_service: iWorldService,
         config: ArtifactStoreConfig | None = None,
         source_resolver: ArtifactSourceResolver | None = None,
+        *,
+        redaction_service: iRedactionService,
     ) -> None:
         self._storage_service = storage_service
         self._world_service = world_service
         self._config = config
         self._source_resolver = source_resolver or CheckpointArtifactSourceResolver()
+        self._redaction_service = redaction_service
 
     @property
     def enabled(self) -> bool:
         return self._config is not None
+
+    def _bind_redaction_policy(self, request: ArtifactBundleRequest) -> ArtifactBundleRequest:
+        policy_id = self._redaction_service.policy_id
+        if request.redaction_policy_id and request.redaction_policy_id != policy_id:
+            raise ValueError(
+                "artifact request redaction_policy_id does not match the active policy"
+            )
+        bound = (
+            request
+            if request.redaction_policy_id
+            else request.model_copy(update={"redaction_policy_id": policy_id})
+        )
+        self._assert_request_metadata_safe(bound)
+        self._redaction_service.assert_safe_metadata(
+            self._normalized_object_uri(),
+            field="artifact_store.object_uri",
+        )
+        return bound
+
+    def _assert_request_metadata_safe(self, request: ArtifactBundleRequest) -> None:
+        values = {
+            "world_id": request.world_id,
+            "run_id": request.run_id,
+            "attempt_id": request.attempt_id,
+            "idempotency_key": request.idempotency_key,
+            "redaction_policy_id": request.redaction_policy_id,
+            "checkpoint_ref": request.checkpoint_ref,
+            "checkpoint_provider": request.checkpoint_provider,
+        }
+        for field, value in values.items():
+            self._redaction_service.assert_safe_metadata(
+                value,
+                field=f"artifact_request.{field}",
+            )
+        for index, candidate in enumerate(request.artifacts):
+            for field in ("source_ref", "logical_path", "kind"):
+                self._redaction_service.assert_safe_metadata(
+                    str(getattr(candidate, field)),
+                    field=f"artifact_request.artifacts[{index}].{field}",
+                )
+
+    def _assert_records_safe(self, records: tuple[ArtifactIndexRecord, ...]) -> None:
+        for index, record in enumerate(records):
+            for field, value in record.model_dump(mode="python").items():
+                if isinstance(value, str):
+                    self._redaction_service.assert_safe_metadata(
+                        value,
+                        field=f"artifact_index[{index}].{field}",
+                    )
+
+    def _assert_materialized_metadata_safe(
+        self,
+        values: list[MaterializedArtifact],
+    ) -> None:
+        for index, value in enumerate(values):
+            for field in ("source_ref", "logical_path", "kind"):
+                self._redaction_service.assert_safe_metadata(
+                    str(getattr(value, field)),
+                    field=f"materialized_artifact[{index}].{field}",
+                )
+
+    def _safe_failure_detail(self, exc: BaseException) -> str:
+        """Return a bounded diagnostic approved for the durable retry catalog."""
+        try:
+            result = self._redaction_service.redact_text(
+                f"{type(exc).__name__}: {exc}",
+                scope="artifact.failure_detail",
+            )
+        except BaseException:
+            return f"{type(exc).__name__}: failure detail unavailable"
+        return result.text[:_MAX_FAILURE_DETAIL_CHARS]
 
     async def publish(
         self,
@@ -293,6 +370,7 @@ class ArtifactBundleService:
     ) -> ArtifactPublishReceipt:
         """Upload and index one bundle, or return its original receipt."""
         config = self._require_config()
+        request = self._bind_redaction_policy(request)
         catalog = await self._control_catalog(request, storage_config)
         claimant = f"artifact-{uuid7()}"
         now_ms = int(time.time() * 1000)
@@ -320,22 +398,26 @@ class ArtifactBundleService:
                     publication.last_error
                     or f"artifact publication {publication.publication_key} expired"
                 )
-
             try:
+                if outcome == "recovered":
+                    request = self._request_from_publication(
+                        publication,
+                        require_policy=publication.status == "PENDING",
+                    )
                 return await self._resume(request, publication, claimant, catalog)
             except Exception as exc:
+                failure_detail = self._safe_failure_detail(exc)
                 try:
                     await catalog.fail_artifact_publication(
                         request.world_id,
                         publication.publication_key,
                         claimant,
-                        f"{type(exc).__name__}: {exc}",
+                        failure_detail,
                         retry_at=time.time() + config.retry_delay_seconds,
                     )
                 except Exception as record_error:
                     exc.add_note(
-                        "failed to record artifact retry state: "
-                        f"{type(record_error).__name__}: {record_error}"
+                        f"failed to record artifact retry state: {type(record_error).__name__}"
                     )
                 raise
 
@@ -406,46 +488,52 @@ class ArtifactBundleService:
                     expired += 1
                     continue
                 owned = True
-                request = self._request_from_publication(publication)
                 if publication.status == "PENDING" and (
                     int(time.time() * 1000) > publication.retry_until_ms
                 ):
                     await catalog.expire_artifact_publication(
-                        request.world_id,
+                        publication.world_id,
                         publication.publication_key,
                         claimant,
                         "artifact publication retry window elapsed before upload",
                     )
                     expired += 1
                     continue
+                request = self._request_from_publication(
+                    publication,
+                    require_policy=publication.status == "PENDING",
+                )
                 await self._resume(request, publication, claimant, catalog)
                 indexed += 1
             except Exception as exc:
                 failed += 1
                 if not owned:
-                    logger.exception(
-                        "artifact reconciliation failed before lease acquisition for %s",
+                    logger.error(
+                        "artifact reconciliation failed before lease acquisition for %s (%s)",
                         stale.publication_key,
+                        type(exc).__name__,
                     )
                     continue
+                failure_detail = self._safe_failure_detail(exc)
                 try:
                     await catalog.fail_artifact_publication(
                         publication.world_id,
                         publication.publication_key,
                         claimant,
-                        f"{type(exc).__name__}: {exc}",
+                        failure_detail,
                         retry_at=time.time() + config.retry_delay_seconds,
                     )
                 except Exception as record_error:
                     exc.add_note(
                         "failed to record artifact reconciliation retry state: "
-                        f"{type(record_error).__name__}: {record_error}"
+                        f"{type(record_error).__name__}"
                     )
-                    logger.exception(
-                        "artifact reconciler failed to record retry state for %s after %s: %s",
+                    logger.error(
+                        "artifact reconciler failed to record retry state for %s after %s; "
+                        "retry-state recording also failed (%s)",
                         publication.publication_key,
                         type(exc).__name__,
-                        exc,
+                        type(record_error).__name__,
                     )
         return ArtifactReconcileResult(
             examined=len(due),
@@ -455,9 +543,11 @@ class ArtifactBundleService:
             bundle_ids=tuple(bundle_ids),
         )
 
-    @staticmethod
     def _request_from_publication(
+        self,
         publication: ArtifactPublicationRecord,
+        *,
+        require_policy: bool = True,
     ) -> ArtifactBundleRequest:
         """Decode and authenticate a durable request after owning its lease."""
         request = ArtifactBundleRequest.model_validate_json(publication.request_json)
@@ -477,6 +567,9 @@ class ArtifactBundleService:
             raise ValueError("durable artifact request identity does not match its publication row")
         if request.digest() != publication.request_digest:
             raise ValueError("durable artifact request digest does not match its publication row")
+        if require_policy and request.redaction_policy_id != self._redaction_service.policy_id:
+            raise ValueError("durable artifact request requires an unavailable redaction policy")
+        self._assert_request_metadata_safe(request)
         return request
 
     async def _resume(
@@ -526,6 +619,7 @@ class ArtifactBundleService:
                 ArtifactIndexRecord.model_validate(value)
                 for value in json.loads(publication.records_json)
             )
+            self._assert_records_safe(records)
 
         await catalog.renew_artifact_publication(
             request.world_id,
@@ -572,8 +666,15 @@ class ArtifactBundleService:
             materialized = await self._source_resolver.materialize(
                 request.artifacts, Path(temp_dir)
             )
+            self._assert_materialized_metadata_safe(materialized)
             self._validate_materialized(materialized)
-            metadata = self._file_metadata(materialized)
+            sanitized, redaction_receipts = await asyncio.to_thread(
+                self._sanitize_materialized,
+                materialized,
+                Path(temp_dir) / "redacted",
+            )
+            self._validate_materialized(sanitized)
+            metadata = self._file_metadata(sanitized)
             total = sum(int(row["size_bytes"]) for row in metadata)
             if total > config.max_bundle_bytes:
                 raise ValueError(
@@ -635,18 +736,28 @@ class ArtifactBundleService:
                 "tick": request.tick,
                 "attempt_id": request.attempt_id,
                 "idempotency_key": request.idempotency_key,
+                "redaction": self._redaction_manifest(redaction_receipts),
                 "checkpoint": checkpoint.model_dump(mode="json"),
                 "artifacts": [
                     record.model_dump(mode="json")
                     for record in sorted(portable, key=lambda value: value.logical_path)
                 ],
             }
-            manifest_bytes = _canonical_json(manifest_payload).encode()
+            manifest_json = _canonical_json(manifest_payload)
+            self._redaction_service.assert_safe_metadata(
+                manifest_json,
+                field="artifact.bundle_manifest",
+            )
+            manifest_bytes = manifest_json.encode()
             manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
             manifest_id = self._artifact_id(bundle_id, "artifact-manifest.json", manifest_hash)
             manifest_folder = self._object_folder(request, bundle_id, manifest_id)
             manifest_uri = self._existing_object(manifest_folder) or self._upload_bytes(
                 manifest_bytes, manifest_folder
+            )
+            self._redaction_service.assert_safe_metadata(
+                manifest_uri,
+                field="artifact.manifest_uri",
             )
             manifest_record = ArtifactIndexRecord(
                 schema_version=1,
@@ -679,7 +790,45 @@ class ArtifactBundleService:
                     [*portable, checkpoint, manifest_record], key=lambda value: value.artifact_id
                 )
             )
+            self._assert_records_safe(records)
             return records, manifest_uri
+
+    def _sanitize_materialized(
+        self,
+        values: list[MaterializedArtifact],
+        destination: Path,
+    ) -> tuple[list[MaterializedArtifact], list[RedactionReceipt]]:
+        destination.mkdir(parents=True, exist_ok=True)
+        sanitized: list[MaterializedArtifact] = []
+        receipts: list[RedactionReceipt] = []
+        for index, value in enumerate(values):
+            result = self._redaction_service.sanitize_file(
+                value.path,
+                destination / f"{index:08d}",
+                logical_path=value.logical_path,
+            )
+            sanitized.append(
+                MaterializedArtifact(
+                    path=result.path,
+                    source_ref=value.source_ref,
+                    logical_path=value.logical_path,
+                    kind=value.kind,
+                )
+            )
+            receipts.append(result.receipt)
+        return sanitized, receipts
+
+    def _redaction_manifest(self, receipts: list[RedactionReceipt]) -> dict[str, object]:
+        redacted = [receipt for receipt in receipts if receipt.status == "redacted"]
+        return {
+            "policy_id": self._redaction_service.policy_id,
+            "status": "redacted" if redacted else "clean",
+            "files_scanned": len(receipts),
+            "bytes_scanned": sum(receipt.scanned_bytes for receipt in receipts),
+            "redaction_count": sum(receipt.redaction_count for receipt in receipts),
+            "rule_ids": sorted({rule for receipt in receipts for rule in receipt.rule_ids}),
+            "files": [receipt.model_dump(mode="json") for receipt in receipts],
+        }
 
     def _file_metadata(self, values: list[MaterializedArtifact]) -> list[_FileMetadata]:
         if not values:
@@ -1022,17 +1171,22 @@ class ArtifactBundleService:
                     raise
                 body_error.add_note(
                     "artifact publication lease renewal also failed: "
-                    f"{type(heartbeat_error).__name__}: {heartbeat_error}"
+                    f"{type(heartbeat_error).__name__}"
                 )
 
-    @staticmethod
     def _receipt(
-        publication: ArtifactPublicationRecord, *, duplicate: bool
+        self, publication: ArtifactPublicationRecord, *, duplicate: bool
     ) -> ArtifactPublishReceipt:
         records = tuple(
             ArtifactIndexRecord.model_validate(value)
             for value in json.loads(publication.records_json)
         )
+        self._assert_records_safe(records)
+        if publication.manifest_uri:
+            self._redaction_service.assert_safe_metadata(
+                publication.manifest_uri,
+                field="artifact.manifest_uri",
+            )
         return ArtifactPublishReceipt(
             bundle_id=publication.publication_key,
             world_id=publication.world_id,
