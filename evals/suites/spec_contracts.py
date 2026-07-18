@@ -98,11 +98,38 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         anchors=("Append-only invariant", "no `drop_*` or `delete_*` methods"),
         task_id="spec.append_only_protocols",
     ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.1",
+        source="dataset-eval-ontology.md",
+        anchors=("Dataset coordinates are natural keys", "Runtime coordinates are provenance"),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.2",
+        source="dataset-eval-ontology.md",
+        anchors=(
+            "A trial produces exactly one dataset episode",
+            "A runtime episode MAY batch many trials",
+        ),
+        task_id="spec.dataset_eval_ontology",
+    ),
+    SpecCase(
+        spec_id="dataset-eval-ontology.3",
+        source="dataset-eval-ontology.md",
+        anchors=("FactService envelope is storage ownership", "does not replace dataset"),
+        task_id="spec.dataset_eval_ontology",
+    ),
 )
 
 _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
-_RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
+_RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
+    {
+        "archetype.app.autoresearch_service",
+        "archetype.app.eval_service",
+    }
+)
+_RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     {
         "archetype.app.command_service",
         "archetype.app.container",
@@ -111,10 +138,6 @@ _RUNTIME_ALLOWED_APP_IMPORTS = frozenset(
         # route through CommandService.
         "archetype.app.artifacts",
         "archetype.app.auth.models",
-        # Type-only signature references; the operations themselves route
-        # through the gate (CommandType.AUTORESEARCH, QUERY_WORLD).
-        "archetype.app.autoresearch_service",
-        "archetype.app.eval_service",
     }
 )
 
@@ -223,7 +246,10 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "submit_spawn": CommandType.SPAWN,
 }
 
-_DYNAMIC_GATE_METHODS = frozenset({"submit", "submit_batch"})
+_DYNAMIC_GATE_METHODS = {
+    "submit": "_gate",
+    "submit_batch": "_gate_batch",
+}
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -255,6 +281,18 @@ def _type_checking_ranges(tree: ast.AST) -> list[tuple[int, int]]:
 
 def _in_ranges(lineno: int, ranges: list[tuple[int, int]]) -> bool:
     return any(start <= lineno <= end for start, end in ranges)
+
+
+def _is_app_module(module: str) -> bool:
+    return module == "archetype.app" or module.startswith("archetype.app.")
+
+
+def _runtime_app_import_is_allowed(
+    module: str, lineno: int, type_checking_ranges: list[tuple[int, int]]
+) -> bool:
+    return module in _RUNTIME_ALLOWED_APP_IMPORTS and (
+        module not in _RUNTIME_TYPE_ONLY_APP_IMPORTS or _in_ranges(lineno, type_checking_ranges)
+    )
 
 
 def _called_attr_name(call: ast.Call) -> str | None:
@@ -364,9 +402,11 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
         rel = py.relative_to(ROOT)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith("archetype.app"):
+                if _is_app_module(node.module):
                     key = f"{rel}:{node.lineno}:allowed_app_import:{node.module}"
-                    import_checks[key] = node.module in _RUNTIME_ALLOWED_APP_IMPORTS
+                    import_checks[key] = _runtime_app_import_is_allowed(
+                        node.module, node.lineno, tc_ranges
+                    )
                 for alias in node.names:
                     if alias.name in {"iWorld", "AsyncWorld"}:
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
@@ -374,6 +414,11 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
 
             if isinstance(node, ast.Import):
                 for alias in node.names:
+                    if _is_app_module(alias.name):
+                        key = f"{rel}:{node.lineno}:allowed_app_import:{alias.name}"
+                        import_checks[key] = _runtime_app_import_is_allowed(
+                            alias.name, node.lineno, tc_ranges
+                        )
                     if alias.name in {"iWorld", "AsyncWorld"}:
                         key = f"{rel}:{node.lineno}:world_import:{alias.name}"
                         world_ref_checks[key] = _in_ranges(node.lineno, tc_ranges)
@@ -423,14 +468,14 @@ def task_command_service_gate_map() -> list[GraderResult]:
                 c.lineno for c in emit_calls
             )
 
-    for method in _DYNAMIC_GATE_METHODS:
+    for method, gate_method in _DYNAMIC_GATE_METHODS.items():
         node = functions.get(method)
         checks[f"{method}:exists"] = node is not None
         if node is None:
             continue
         calls = [call for call in ast.walk(node) if isinstance(call, ast.Call)]
         checks[f"{method}:has_dynamic_gate"] = any(
-            _called_attr_name(call) == "_gate" for call in calls
+            _called_attr_name(call) == gate_method for call in calls
         )
         checks[f"{method}:emits_audit"] = any(_called_attr_name(call) == "_emit" for call in calls)
 
@@ -592,7 +637,7 @@ class _UnusedService:
 def _registered_task_ids() -> list[str]:
     harness = EvalHarness()
     register(harness)
-    return [task_id for task_id, _, _, _ in harness._tasks]
+    return [task_id for task_id, _, _, _ in harness.registered_tasks]
 
 
 def task_receipt_authority_firewall() -> list[GraderResult]:
@@ -622,6 +667,61 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
         fields = {name.lower() for name in component.model_fields}
         checks[f"{component.__name__}_carries_no_authority"] = not (fields & forbidden)
     return [state_check(checks, name="receipt_authority_firewall")]
+
+
+def task_dataset_eval_ontology() -> list[GraderResult]:
+    """Typed vocabulary preserves dataset identity and runtime provenance."""
+    from dataclasses import fields, is_dataclass
+    from typing import get_type_hints
+
+    from archetype.datasets import definitions as defs
+
+    task = defs.TaskRef(benchmark="libero", suite="libero_spatial", task_key="3")
+    episode = defs.EpisodeRef(benchmark="libero", episode_id=17)
+    runtime = defs.RuntimeSlice(
+        world_id="world-7",
+        run_id="run-9",
+        entity_id=12,
+        start_tick=0,
+        final_tick=41,
+    )
+    trial = defs.Trial(task=task, seed=5, episode=episode, runtime=runtime)
+    rubric = defs.Rubric(graders=(defs.Grader(name="success", kind=defs.GraderKind.CHECK),))
+    evaluation = defs.Eval(task=task, rubric=rubric)
+    vocabulary = (
+        defs.TaskRef,
+        defs.EpisodeRef,
+        defs.RuntimeSlice,
+        defs.Grader,
+        defs.Rubric,
+        defs.Eval,
+        defs.Trial,
+    )
+    episode_hints = get_type_hints(defs.EpisodeRef)
+
+    checks = {
+        "task_natural_key_fields": [field.name for field in fields(defs.TaskRef)]
+        == ["benchmark", "suite", "task_key"],
+        "episode_natural_key_fields": [field.name for field in fields(defs.EpisodeRef)]
+        == ["benchmark", "episode_id"],
+        "episode_id_is_integer": episode_hints["episode_id"] is int,
+        "runtime_slice_fields": [field.name for field in fields(defs.RuntimeSlice)]
+        == ["world_id", "run_id", "entity_id", "start_tick", "final_tick"],
+        "dataset_coordinates_are_independent": trial.dataset_coordinates
+        == ("libero", "libero_spatial", "3", 17),
+        "runtime_provenance_is_preserved": trial.runtime == runtime,
+        "trial_produces_one_episode": trial.episode is episode,
+        "reader_runtime_is_optional": defs.Trial(task=task, seed=5, episode=episode).runtime
+        is None,
+        "eval_binds_one_task": evaluation.task is task,
+        "rubric_is_non_empty": evaluation.rubric.graders == rubric.graders,
+        "grader_kinds_are_exact": {kind.value for kind in defs.GraderKind}
+        == {"check", "test", "judge"},
+        "vocabulary_is_frozen": all(
+            is_dataclass(item) and item.__dataclass_params__.frozen for item in vocabulary
+        ),
+    }
+    return [state_check(checks, name="dataset_eval_ontology")]
 
 
 def register(harness: EvalHarness) -> None:
@@ -660,6 +760,12 @@ def register(harness: EvalHarness) -> None:
         suite=SUITE,
         fn=task_receipt_authority_firewall,
         desc="Receipt/fact components carry no authority fields (evidence only).",
+    )
+    harness.add(
+        "spec.dataset_eval_ontology",
+        suite=SUITE,
+        fn=task_dataset_eval_ontology,
+        desc="Dataset identity remains separate from optional runtime provenance.",
     )
     harness.add(
         "spec.info_class_downgrades",

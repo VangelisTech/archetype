@@ -1,6 +1,7 @@
 ---
 name: archetype-components
 description: Enforces correct Component definitions. Use when creating or editing Component subclasses, ECS entities, or archetype schema code — anywhere under src/, tests/, or examples/.
+paths: "src/**/*.py,tests/**/*.py,examples/**/*.py"
 user_invocable: true
 ---
 

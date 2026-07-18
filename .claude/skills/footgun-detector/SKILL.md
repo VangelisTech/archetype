@@ -39,9 +39,25 @@ You do NOT need to read these if you already have them in context from this sess
 
 Check every changed file in the diff against the categories below. For each file, read enough surrounding context (the full file or relevant functions) to understand intent — don't just pattern-match on the diff lines.
 
+**Sibling sweep.** When the diff fixes or establishes an invariant — a guard,
+an unwind, a containment check, an ordering — enumerate the codebase's mirror
+implementations and verify each sibling upholds the same invariant in this
+same review: sync (`core/sync/`) vs async (`core/aio/`) worlds, LanceDB vs
+Iceberg storage paths, `create_world` vs `fork_world` vs `open_world_mutable`
+lifecycle. A sibling that violates the invariant is a finding even though its
+code is unchanged; anchor it to the changed line that establishes the
+invariant it breaks. This exists because serial rounds on one PR repeatedly
+found the fixed hunk's unfixed twin one round later.
+
 In deterministic CI, the working tree is the protected base. Use it for
 surrounding context and `.footgun-review.diff` for the exact candidate changes;
 a newly added file is represented in full by its diff.
+
+When deterministic CI requests structured output, `reviewed_files` and every
+`review_context.files` array are changed-file coverage fields: they may contain
+only paths from `.footgun-review-scope.json`. Name any protected-base files used
+as implementation evidence in the assessment prose instead. Never substitute
+schema examples or placeholder paths/categories for the authoritative scope.
 
 ### Footgun categories
 

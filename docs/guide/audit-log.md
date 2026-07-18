@@ -41,6 +41,12 @@ unavailable, the incoming row is rejected with `AuditBackpressureError`, the
 full batch remains intact, and `rejected_rows` increments. The log never grows
 an unbounded process-memory queue to conceal a storage outage.
 
+`AuditBackpressureError` implements the public `AvailabilityError` contract so
+a host that directly exposes audit operations can classify it without importing
+the concrete audit module. The built-in `CommandService` does not propagate
+audit backpressure to REST callers: the gated operation has already applied by
+the time audit emission runs, so returning 503 would invite an unsafe retry.
+
 Concurrent processes append to the same table using Iceberg's optimistic
 commit protocol. A conflicting append refreshes table metadata and retries
 with bounded backoff; it does not create a process-local audit fork.
@@ -66,6 +72,13 @@ Multi-step gate methods still emit exactly one audit row:
 - Runtime activation emits one row per gated activation step: create world, each staged processor, each staged resource, and each staged hook.
 
 The row payload captures sub-operation outcomes when one gated method performs multiple internal actions.
+
+Spawn metadata is structured rather than encoded in the command name:
+
+- `create_entities` records one `spawn_batch` row with
+  `payload_json = {"count": N}`, not one row per entity.
+- `spawn_with_reserved_id` records one `spawn_reserved` row with
+  `payload_json = {"entity_id": N}`.
 
 ## 5. Row Schema
 

@@ -593,31 +593,77 @@ def rollout(
 @app.command()
 def query(
     world_id: str = typer.Argument(..., help="World ID"),
+    component_types: str | None = typer.Argument(
+        None,
+        help="Comma-separated component types, for example Agent,Score",
+    ),
     types: str | None = typer.Option(None, "--types", help="Comma-separated component types"),
     tick: int | None = typer.Option(None, "--tick", "-t", help="Tick to query"),
     ticks: str | None = typer.Option(None, "--ticks", help="Comma-separated ticks; first is used"),
     entity_ids: str | None = typer.Option(None, "--entity-ids", help="Comma-separated entity IDs"),
+    show: int | None = typer.Option(None, "--show", "-s", min=1, help="Limit to N rows"),
+    count: bool = typer.Option(False, "--count", "-c", help="Return the row count only"),
+    where: str | None = typer.Option(
+        None,
+        "--where",
+        "-w",
+        help='Filter with one comparison, for example "score__value > 0.5"',
+    ),
     url: str | None = typer.Option(None, "--url", help="Override ARCHETYPE_URL for this command"),
     role: Role | None = ROLE_OPTION,
     token: str | None = typer.Option(None, "--token", help="Bearer token to send verbatim"),
     json_output: bool = typer.Option(False, "--json", help="Emit raw JSON"),
 ):
-    """Query world state."""
+    """Query world state or lazily filter matching component rows."""
+    if component_types and types:
+        typer.echo(
+            "validation error: pass component types positionally or with --types, not both",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    selected_types = component_types or types
+    if count and show is not None:
+        typer.echo("validation error: --count and --show are mutually exclusive", err=True)
+        raise typer.Exit(code=1)
+    if (show is not None or count or where) and not selected_types:
+        typer.echo(
+            "validation error: --show, --count, and --where require component types",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
     params: dict[str, Any] = {}
-    if types:
-        params["components"] = types
     if entity_ids:
         params["entity_ids"] = entity_ids
     if tick is not None:
         params["tick"] = tick
     elif ticks:
         params["tick"] = _csv(ticks)[0]
-    data = _request_list(
-        "get",
-        f"/worlds/{world_id}/state",
-        params=params,
+
+    path = f"/worlds/{world_id}/state"
+    if selected_types:
+        path = f"/worlds/{world_id}/components"
+        params["types"] = selected_types
+        if show is not None:
+            params["show"] = show
+        if count:
+            params["count"] = True
+        if where:
+            params["where"] = where
+
+    request_kwargs = {
+        "params": params,
         **_common_request_kwargs(url, role, token),
-    )
+    }
+    if count:
+        result = _request_obj("get", path, **request_kwargs)
+        if json_output:
+            _print_json(result)
+        else:
+            typer.echo(f"Count: {result['count']}")
+        return
+
+    data = _request_list("get", path, **request_kwargs)
     if json_output:
         _print_json(data)
         return

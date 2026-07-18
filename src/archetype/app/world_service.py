@@ -23,6 +23,7 @@ WorldService  — facade (bridges StorageService into the orchestrator)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import socket
@@ -31,8 +32,9 @@ from typing import TYPE_CHECKING
 
 from uuid_utils import UUID, uuid7
 
-from archetype.app._catalog import SignatureRecord, WorldRecord, schema_fingerprint
+from archetype.app._catalog import SignatureRecord, WorldRecord
 from archetype.app._commit import CatalogCommitCoordinator
+from archetype.app._signature_resolution import resolve_signature_records
 from archetype.app.models import WorldInfo
 from archetype.app.storage_service import StorageService
 from archetype.core.aio import (
@@ -41,8 +43,6 @@ from archetype.core.aio import (
     AsyncUpdateManager,
     AsyncWorld,
 )
-from archetype.core.archetype import Archetype
-from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.interfaces import iAsyncStore, iAsyncSystem
@@ -53,26 +53,6 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
-
-
-def _component_classes_by_name() -> dict[str, list[type[Component]]]:
-    """All importable Component subclasses, keyed by class name.
-
-    Distinct classes may share a name across modules (test doubles, forks of
-    an old component). Resume disambiguates by schema fingerprint — identity
-    is the schema, never the name alone.
-    """
-    classes: dict[str, list[type[Component]]] = {}
-    stack: list[type[Component]] = list(Component.__subclasses__())
-    seen: set[type[Component]] = set()
-    while stack:
-        cls = stack.pop()
-        if cls in seen:
-            continue
-        seen.add(cls)
-        stack.extend(cls.__subclasses__())
-        classes.setdefault(cls.__name__, []).append(cls)
-    return classes
 
 
 @dataclass(frozen=True)
@@ -225,7 +205,7 @@ class WorldOrchestrator:
         self._registry.insert(world)
         return world
 
-    def get_world(self, world_id: UUID) -> AsyncWorld:
+    def get_world(self, world_id: str | UUID) -> AsyncWorld:
         return self._registry.get(world_id)
 
     def get_world_by_name(self, name: str) -> AsyncWorld:
@@ -329,6 +309,7 @@ class WorldService:
         # Records the storage/cache config that backs each world so fork_world
         # can default to "same store as source" per world-lifecycle.md § 4.5.
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
+        self._create_locks: dict[str, asyncio.Lock] = {}
 
     async def create_world(
         self,
@@ -338,36 +319,47 @@ class WorldService:
         system: iAsyncSystem | None = None,
     ) -> AsyncWorld:
         """Resolve storage, then delegate world creation to the orchestrator."""
-        if storage_config is None:
-            storage_config = StorageConfig()
+        if config.world_id is None:
+            config = config.model_copy(update={"world_id": uuid7()})
+        world_id = str(config.world_id)
+        lock = self._create_locks.setdefault(world_id, asyncio.Lock())
 
-        store = await self._storage_service.get_or_create_store(storage_config, cache_config)
-        world = self._orchestrator.create_world(store, config, system=system)
-        # Durable identity is authoritative (issue #272): registration failure
-        # fails the create, loudly — a world the catalog cannot describe would
-        # be undiscoverable after this process exits. Unwind the registry so
-        # the failed create leaves no live, mutable world behind.
-        catalog = self._storage_service.get_control_catalog(storage_config)
-        try:
-            await catalog.register_world(
-                WorldRecord(
-                    world_id=str(world.world_id),
-                    name=world.name,
-                    run_id=str(world.run_id) if world.run_id else None,
-                    parent_world_id=None,
-                    status="active",
-                    tick_head=world.tick,
+        async with lock:
+            if self._orchestrator.has_world(world_id):
+                return self._orchestrator.get_world(world_id)
+
+            if storage_config is None:
+                storage_config = StorageConfig()
+
+            store = await self._storage_service.get_or_create_store(storage_config, cache_config)
+            world = self._orchestrator.create_world(store, config, system=system)
+            # Durable identity is authoritative (issue #272): registration failure
+            # fails the create, loudly — a world the catalog cannot describe would
+            # be undiscoverable after this process exits. Unwind the registry so
+            # the failed create leaves no live, mutable world behind. Catalog
+            # acquisition sits inside the unwind: path/namespace resolution can
+            # raise too (issue #327), and that failure must not orphan the world.
+            try:
+                catalog = self._storage_service.get_control_catalog(storage_config)
+                await catalog.register_world(
+                    WorldRecord(
+                        world_id=str(world.world_id),
+                        name=world.name,
+                        run_id=str(world.run_id) if world.run_id else None,
+                        parent_world_id=None,
+                        status="active",
+                        tick_head=world.tick,
+                    )
                 )
-            )
-            # Fenced writer (issue #273): this process is the world's one live
-            # writer; every tick it commits publishes under this epoch.
-            epoch = await catalog.acquire_fence(str(world.world_id), _writer_holder())
-        except Exception:
-            self._registry.remove(world.world_id)
-            raise
-        world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
-        self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
-        return world
+                # Fenced writer (issue #273): this process is the world's one live
+                # writer; every tick it commits publishes under this epoch.
+                epoch = await catalog.acquire_fence(str(world.world_id), _writer_holder())
+            except Exception:
+                self._registry.remove(world.world_id)
+                raise
+            world.commit_coordinator = CatalogCommitCoordinator(catalog, epoch=epoch)
+            self._storage_configs[str(world.world_id)] = (storage_config, cache_config)
+            return world
 
     def get_world(self, world_id: UUID) -> AsyncWorld:
         return self._orchestrator.get_world(world_id)
@@ -428,9 +420,10 @@ class WorldService:
         store = await self._storage_service.get_or_create_store(storage_config, cache_config)
         fork = self._orchestrator.fork_world(store, source_world_id, name=name)
         # Same authoritative-identity contract as create_world: a fork the
-        # catalog cannot describe must not survive as a live world.
-        catalog = self._storage_service.get_control_catalog(storage_config)
+        # catalog cannot describe must not survive as a live world. Catalog
+        # acquisition sits inside the unwind for the same reason (issue #327).
         try:
+            catalog = self._storage_service.get_control_catalog(storage_config)
             await catalog.register_world(
                 WorldRecord(
                     world_id=str(fork.world_id),
@@ -745,50 +738,7 @@ class WorldService:
         the rows were written is refused rather than silently misread.
         Fails loudly, naming every table it cannot faithfully resolve.
         """
-        from itertools import product
-
-        available = _component_classes_by_name()
-        resolved: dict[str, tuple] = {}
-        problems: dict[str, str] = {}
-        for rec in directory.values():
-            if rec.table_id in resolved or rec.table_id in problems:
-                continue
-            missing = sorted(n for n in rec.component_names if not available.get(n))
-            if missing:
-                problems[rec.table_id] = (
-                    f"component class(es) {', '.join(missing)} are not imported"
-                )
-                continue
-            matches: list[tuple] = []
-            candidates = (
-                sorted(available[n], key=lambda t: (t.__module__, t.__qualname__))
-                for n in rec.component_names
-            )
-            for combo in product(*candidates):
-                sig = tuple(sorted(set(combo), key=lambda t: t.__name__))
-                try:
-                    fingerprint = schema_fingerprint(Archetype.get_archetype_schema(sig))
-                except Exception:
-                    continue
-                if fingerprint == rec.fingerprint and sig not in matches:
-                    matches.append(sig)
-            if matches:
-                # Multiple matches are interchangeable BY CONSTRUCTION: the
-                # fingerprint covers every column name and type, so any
-                # matching combination reads and writes this table
-                # faithfully. Candidate order makes the pick deterministic.
-                resolved[rec.table_id] = matches[0]
-            else:
-                problems[rec.table_id] = (
-                    "no imported class combination matches the stored schema "
-                    "(the definitions may have drifted since the rows were written)"
-                )
-        if problems:
-            detail = "; ".join(f"table {tid}: {msg}" for tid, msg in sorted(problems.items()))
-            raise RuntimeError(
-                f"cannot resume: {detail} (code is not rows — import the exact component "
-                "definitions before resuming)"
-            )
+        resolved = resolve_signature_records(directory.values(), operation="resume")
         entity2sig = {eid: resolved[rec.table_id] for eid, rec in directory.items()}
         return entity2sig, set(resolved)
 

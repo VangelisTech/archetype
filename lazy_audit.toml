@@ -44,7 +44,7 @@ reason = "Storage write boundary: materialize the incoming frame once for the em
 
 [[entries]]
 path = "src/archetype/core/aio/async_world.py"
-line = 380
+line = 409
 method = "to_pylist"
 reason = "Cross-archetype entity migration: extract the latest tick row as a Python dict for component-overlay, which mutates field-by-field before re-insertion into the new archetype."
 
@@ -56,7 +56,7 @@ reason = "Debug-mode-only logging: materialise so count_rows and df.show emit di
 
 [[entries]]
 path = "src/archetype/core/sync/world.py"
-line = 270
+line = 289
 method = "to_pylist"
 reason = "Cross-archetype entity migration (sync mirror of async_world): extract the latest tick row for component overlay before re-insertion."
 
@@ -92,7 +92,7 @@ reason = "Episode-termination boundary: the value-based 'all entities done' chec
 
 [[entries]]
 path = "src/archetype/app/query_service.py"
-line = 335
+line = 365
 method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
@@ -146,24 +146,24 @@ reason = "Bundle index idempotency boundary: rows are already filtered lazily to
 
 [[entries]]
 path = "src/archetype/app/world_service.py"
-line = 710
+line = 703
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
 [[entries]]
 path = "src/archetype/experiments/boundary.py"
-line = 119
+line = 122
 method = "to_pylist"
 reason = "series_to_rows helper: converts each Series parameter to a Python list inside a list comprehension. This function is called exclusively from @daft.method.batch UDF bodies (MuJoCo C-library boundary, env RPC boundary, policy inference boundary) where the Daft executor has already materialised the batch. The AST checker auto-exempts to_pylist calls on named parameters of @daft.method.batch functions but cannot trace through this plain helper indirection; the call is semantically equivalent to an auto-sanctioned UDF-boundary access."
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 228
+line = 413
 method = "collect"
 reason = "grading boundary: latest-tick row per entity from the already-filtered episode query becomes the scalar TaskEvalReport — the analysis edge where eval graders also collect; nothing downstream re-enters the DAG"
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 228
+line = 413
 method = "to_pylist"
 reason = "same grading-boundary site as the collect above: per-entity terminal rows to Python for success/length aggregation into the report"

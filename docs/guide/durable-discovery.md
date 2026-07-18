@@ -82,7 +82,7 @@ async def open_world_readonly(
 Both operations respect the info-class downgrade: callers get `WorldInfo`,
 never a world handle.
 
-## 4. Cold subset queries
+## 4. Cold queries and signature discovery
 
 `query_components` unions two sources:
 
@@ -107,6 +107,19 @@ df = await container.command_service.query_components(
     storage_config=storage_config,
 )
 ```
+
+`list_signatures` uses the same authority split: it unions the store's
+process-local cache with every durable catalog record. Listing a complete
+Python signature requires the corresponding component classes to be imported;
+records are matched to those classes by full schema fingerprint, never by name
+alone, and the recomputed table identity must equal the durable `table_id`.
+Missing, drifted, or identity-mismatched historical records are skipped with a
+warning so one unrelated old world cannot block storage-wide discovery. Mutable
+world resume remains strict because it resolves only the target world's live
+entity signatures. When both sources know a table, the exact process-local
+class identity takes precedence over an ambiguous catalog reconstruction. If
+the catalog itself is unavailable, discovery returns the process-local subset
+and logs the degradation; commit-visibility checks remain fail-closed.
 
 ## 5. Fail-closed schema check
 

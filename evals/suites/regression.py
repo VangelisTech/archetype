@@ -1,25 +1,21 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression eval suite: tasks that must always pass (~100%).
-
-These protect against backsliding.  A decline in score signals something
-is broken.  Tasks here were once capability evals that graduated to
-regression status after reaching consistent pass rates.
-
-Graders are deterministic (code-based) since these test well-understood,
-stable behavior.
-"""
+"""Required repository checks for established behavior."""
 
 from __future__ import annotations
 
 import asyncio
 import tempfile
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 from daft import DataFrame, col
-from uuid_utils import uuid7
+from uuid_utils import UUID, uuid7
 
 import archetype.app.auth.guard as guard
+from archetype import ArchetypeRuntime, RuntimeWorld, SyncRuntimeWorld
+from archetype.app.auth.errors import GuardrailError
 from archetype.app.auth.guard import (
     estimate_token_cost,
     guardrail_allow,
@@ -27,6 +23,7 @@ from archetype.app.auth.guard import (
     reset_tick_counters,
 )
 from archetype.app.auth.models import ActorCtx
+from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
 from archetype.app.models import Command, CommandType, EpisodeConfig
 from archetype.core.aio.async_processor import AsyncProcessor
@@ -69,6 +66,21 @@ class CountToGoal(AsyncProcessor):
         return df.with_column("countdown__step", nxt).with_column(
             "countdown__done", (nxt >= col("countdown__goal")) | col("countdown__done")
         )
+
+
+class BlockingHealthIncrement(AsyncProcessor):
+    """Hold one admitted step open so runtime shutdown ordering is observable."""
+
+    components = (Health,)
+
+    def __init__(self, entered: asyncio.Event, release: asyncio.Event) -> None:
+        self.entered = entered
+        self.release = release
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        self.entered.set()
+        await self.release.wait()
+        return df.with_column("health__hp", col("health__hp") + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +333,151 @@ async def _task_command_pipeline() -> list[GraderResult]:
 
 
 # ---------------------------------------------------------------------------
+# Task: cold service-layer query correctness
+# ---------------------------------------------------------------------------
+
+
+def task_query_correctness() -> list[GraderResult]:
+    """Gated durable reads remain correct without a live AsyncWorld."""
+    return asyncio.run(_task_query_correctness())
+
+
+async def _task_query_correctness() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_query")
+        admin = ActorCtx(id=uuid7(), roles={"admin"})
+        writer = ServiceContainer()
+        try:
+            info = await writer.command_service.create_world(
+                admin,
+                WorldConfig(name="query-correctness"),
+                storage,
+            )
+            health_only = await writer.command_service.create_entity(
+                admin,
+                info.world_id,
+                [Health(hp=10)],
+            )
+            tagged = await writer.command_service.create_entity(
+                admin,
+                info.world_id,
+                [Health(hp=20), Tag(label="target")],
+            )
+            first_run = await writer.command_service.run(
+                admin,
+                info.world_id,
+                RunConfig(num_steps=1),
+            )
+            await writer.command_service.update_entity(
+                admin,
+                info.world_id,
+                health_only,
+                [Health(hp=11)],
+            )
+            await writer.command_service.run(
+                admin,
+                info.world_id,
+                RunConfig(num_steps=1),
+            )
+            world_id = str(info.world_id)
+            run_id = str(first_run.run_id)
+        finally:
+            try:
+                await writer.shutdown()
+            finally:
+                reset_tick_counters()
+                reset_daily_tokens()
+
+        # A new composition root has no live world object. Reads must cross
+        # the public gate and resolve the durable QueryService path instead.
+        reader = ServiceContainer()
+        viewer = ActorCtx(id=uuid7(), roles={"viewer"})
+        try:
+            cold_reader = not reader.world_service.has_world(world_id)
+            signatures = await reader.command_service.list_signatures(viewer, storage)
+            tick_zero = (
+                await reader.command_service.query_components(
+                    viewer,
+                    [Health],
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[0],
+                )
+            ).to_pylist()
+            selected = (
+                await reader.command_service.query_components(
+                    viewer,
+                    [Health],
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[1],
+                    entity_ids=[health_only],
+                )
+            ).to_pylist()
+            projected = (
+                await reader.command_service.query_archetype(
+                    viewer,
+                    (Health, Tag),
+                    world_id,
+                    run_id,
+                    storage,
+                    ticks=[0],
+                    components=[Health],
+                )
+            ).to_pylist()
+
+            signature_names = {
+                tuple(component.__name__ for component in signature) for signature in signatures
+            }
+            tick_zero_values = sorted((row["entity_id"], row["health__hp"]) for row in tick_zero)
+            selected_values = [
+                (row["entity_id"], row["tick"], row["health__hp"]) for row in selected
+            ]
+            projection = projected[0] if len(projected) == 1 else {}
+
+            return [
+                exact_match(cold_reader, True, name="no_live_world_shortcut"),
+                exact_match(
+                    tick_zero_values,
+                    [(health_only, 10), (tagged, 20)],
+                    name="subset_union_across_signatures",
+                ),
+                exact_match(
+                    selected_values,
+                    [(health_only, 1, 11)],
+                    name="tick_and_entity_filters",
+                ),
+                state_check(
+                    {
+                        "one_exact_row": len(projected) == 1,
+                        "exact_entity": projection.get("entity_id") == tagged,
+                        "health_projected": projection.get("health__hp") == 20,
+                        "tag_not_projected": "tag__label" not in projection,
+                    },
+                    name="exact_signature_projection",
+                ),
+                state_check(
+                    {
+                        "health_signature": ("Health",) in signature_names,
+                        "health_tag_signature": ("Health", "Tag") in signature_names,
+                    },
+                    name="cold_signature_discovery",
+                ),
+            ]
+        finally:
+            try:
+                await reader.shutdown()
+            finally:
+                reset_tick_counters()
+                reset_daily_tokens()
+
+
+# ---------------------------------------------------------------------------
 # Task: per-tick RBAC quota resets across ticks (bug B1)
 # ---------------------------------------------------------------------------
 
@@ -362,6 +519,262 @@ async def _task_tick_quota_resets() -> list[GraderResult]:
             reset_daily_tokens()
 
     return [exact_match(blocked, False, name="quota_resets_across_ticks")]
+
+
+# ---------------------------------------------------------------------------
+# Task: exact quota boundaries, atomic bulk accounting, and UTC rollover
+# ---------------------------------------------------------------------------
+
+
+def task_quota_boundaries() -> list[GraderResult]:
+    """Quota accounting is exact, actor-local, atomic, and UTC-day scoped."""
+    return asyncio.run(_task_quota_boundaries())
+
+
+def _custom_commands(count: int) -> list[Command]:
+    return [Command(type=CommandType.CUSTOM) for _ in range(count)]
+
+
+async def _submit_allowed(
+    service: CommandService,
+    world_id: str | UUID,
+    ctx: ActorCtx,
+    count: int,
+) -> bool:
+    try:
+        if count == 1:
+            await service.submit(ctx, world_id, _custom_commands(1)[0])
+        else:
+            await service.submit_batch(ctx, world_id, _custom_commands(count))
+    except GuardrailError:
+        return False
+    return True
+
+
+def _guard_allowed(ctx: ActorCtx, now: datetime) -> bool:
+    try:
+        guardrail_allow(Command(type=CommandType.CUSTOM), ctx, now=now)
+    except GuardrailError:
+        return False
+    return True
+
+
+async def _task_quota_boundaries() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+    saved_daily_limit = guard.MAX_TOKENS_PER_DAY
+
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="eval_quota_boundaries")
+            world = await container.world_service.create_world(
+                WorldConfig(name="quota-boundaries"),
+                storage,
+            )
+            actors = (
+                ActorCtx(id=uuid7(), roles={"admin"}),
+                ActorCtx(id=uuid7(), roles={"admin"}),
+            )
+
+            accepted_at_499 = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 499)
+                    for actor in actors
+                )
+            )
+            pending_at_499 = await container.broker.get_pending_count(world.world_id)
+
+            bulk_overflow_allowed = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 2)
+                    for actor in actors
+                )
+            )
+            pending_after_bulk_rejection = await container.broker.get_pending_count(world.world_id)
+
+            accepted_at_500 = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    for actor in actors
+                )
+            )
+            pending_at_500 = await container.broker.get_pending_count(world.world_id)
+
+            command_501_allowed = await asyncio.gather(
+                *(
+                    _submit_allowed(container.command_service, world.world_id, actor, 1)
+                    for actor in actors
+                )
+            )
+            pending_after_501 = await container.broker.get_pending_count(world.world_id)
+
+            reset_tick_counters()
+            reset_daily_tokens()
+            guard.MAX_TOKENS_PER_DAY = 20
+            before_midnight = datetime(2030, 1, 1, 23, 59, 59, tzinfo=UTC)
+            at_midnight = datetime(2030, 1, 2, tzinfo=UTC)
+            guard._last_reset_date = before_midnight.date()
+            daily_actor = ActorCtx(id=uuid7(), roles={"admin"})
+            daily_peer = ActorCtx(id=uuid7(), roles={"admin"})
+
+            daily_exact_limit = all(_guard_allowed(daily_actor, before_midnight) for _ in range(2))
+            daily_over_limit_allowed = _guard_allowed(daily_actor, before_midnight)
+            peer_allowed_same_day = _guard_allowed(daily_peer, before_midnight)
+
+            actor_allowed_at_midnight = _guard_allowed(daily_actor, at_midnight)
+            peer_exact_limit_after_rollover = all(
+                _guard_allowed(daily_peer, at_midnight) for _ in range(2)
+            )
+            peer_over_limit_after_rollover = _guard_allowed(daily_peer, at_midnight)
+
+            return [
+                state_check(
+                    {
+                        "both_actors_accepted": all(accepted_at_499),
+                        "499_each_queued": pending_at_499 == 998,
+                    },
+                    name="concurrent_actor_499_boundary",
+                ),
+                state_check(
+                    {
+                        "both_bulk_overflows_rejected": not any(bulk_overflow_allowed),
+                        "queue_unchanged": pending_after_bulk_rejection == pending_at_499,
+                        "quota_unchanged": all(accepted_at_500),
+                    },
+                    name="bulk_overflow_atomic",
+                ),
+                state_check(
+                    {
+                        "500_each_queued": pending_at_500 == 1000,
+                        "both_501_commands_rejected": not any(command_501_allowed),
+                        "rejection_did_not_enqueue": pending_after_501 == pending_at_500,
+                    },
+                    name="exact_500_501_boundary",
+                ),
+                state_check(
+                    {
+                        "exact_daily_budget_allowed": daily_exact_limit,
+                        "next_token_cost_rejected": not daily_over_limit_allowed,
+                        "peer_budget_is_independent": peer_allowed_same_day,
+                    },
+                    name="daily_budget_actor_isolation",
+                ),
+                state_check(
+                    {
+                        "blocked_actor_recovers_at_midnight": actor_allowed_at_midnight,
+                        "peer_receives_full_new_budget": peer_exact_limit_after_rollover,
+                        "new_day_budget_still_enforced": not peer_over_limit_after_rollover,
+                    },
+                    name="utc_midnight_rollover",
+                ),
+            ]
+        finally:
+            guard.MAX_TOKENS_PER_DAY = saved_daily_limit
+            await container.shutdown()
+            reset_tick_counters()
+            reset_daily_tokens()
+
+
+# ---------------------------------------------------------------------------
+# Task: runtime activation, shutdown ordering, invalidation, and sync parity
+# ---------------------------------------------------------------------------
+
+
+def task_runtime_contracts() -> list[GraderResult]:
+    """Compose the public runtime's activation and lifecycle boundaries."""
+    reset_tick_counters()
+    reset_daily_tokens()
+    try:
+        activation, shutdown = asyncio.run(_task_runtime_contracts())
+        return [
+            state_check(activation, name="lazy_single_flight_activation"),
+            state_check(shutdown, name="wait_then_close_shutdown"),
+            exact_match(
+                _public_methods(SyncRuntimeWorld),
+                _public_methods(RuntimeWorld),
+                name="sync_async_world_surface",
+            ),
+        ]
+    finally:
+        reset_tick_counters()
+        reset_daily_tokens()
+
+
+def _public_methods(cls: type[object]) -> set[str]:
+    return {name for name in dir(cls) if not name.startswith("_") and callable(getattr(cls, name))}
+
+
+def _raises_runtime_error(operation: Callable[[], object]) -> bool:
+    try:
+        operation()
+    except RuntimeError:
+        return True
+    return False
+
+
+async def _raises_runtime_error_async(
+    operation: Callable[[], Awaitable[object]],
+) -> bool:
+    try:
+        await operation()
+    except RuntimeError:
+        return True
+    return False
+
+
+async def _task_runtime_contracts() -> tuple[dict[str, bool], dict[str, bool]]:
+    with tempfile.TemporaryDirectory() as tmp:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "runtime-contracts",
+            storage=StorageConfig(uri=f"{tmp}/store", namespace="eval_runtime_contracts"),
+        )
+
+        pre_activation_rejected = _raises_runtime_error(lambda: world.world_id)
+        entity_ids = await asyncio.gather(*(world.spawn(Health(hp=index)) for index in range(12)))
+        info = await world.info()
+        audit_rows = (await world.history(limit=100)).to_pylist()
+        create_events = [row for row in audit_rows if row["command_type"] == "create_world"]
+
+        await world.step()  # persist raw initial conditions
+        await world.add_processor(BlockingHealthIncrement(entered, release))
+        step_task = asyncio.create_task(world.step())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+
+        shutdown_task = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)  # shutdown stops admission before waiting on op_lock
+        shutdown_started = _raises_runtime_error(lambda: runtime.world("too-late"))
+        shutdown_waited = not shutdown_task.done()
+
+        release.set()
+        await asyncio.wait_for(asyncio.gather(step_task, shutdown_task), timeout=10)
+        handle_invalidated = await _raises_runtime_error_async(world.info)
+        await runtime.shutdown()  # idempotent after the first completion
+
+        activation = {
+            "property_rejects_before_activation": pre_activation_rejected,
+            "one_create_event": len(create_events) == 1,
+            "all_spawns_returned": len(entity_ids) == 12,
+            "entity_ids_are_unique": len(set(entity_ids)) == 12,
+            "handle_and_info_share_world": str(world.world_id) == str(info.world_id),
+        }
+        shutdown = {
+            "new_handles_rejected_during_shutdown": shutdown_started,
+            "shutdown_waited_for_step": shutdown_waited,
+            "in_flight_step_completed": (
+                step_task.done() and not step_task.cancelled() and step_task.exception() is None
+            ),
+            "shutdown_completed": (
+                shutdown_task.done()
+                and not shutdown_task.cancelled()
+                and shutdown_task.exception() is None
+            ),
+            "existing_handle_invalidated": handle_invalidated,
+        }
+        return activation, shutdown
 
 
 # ---------------------------------------------------------------------------
@@ -449,10 +862,28 @@ def register(harness: EvalHarness) -> None:
         desc="Submit → broker → step → history + RBAC at service boundary",
     )
     harness.add(
+        "query_correctness",
+        suite=SUITE,
+        fn=task_query_correctness,
+        desc="Cold gated component/archetype reads, filters, projection, and discovery",
+    )
+    harness.add(
         "tick_quota_resets",
         suite=SUITE,
         fn=task_tick_quota_resets,
         desc="Per-tick RBAC command quota resets each tick, not process-wide (B1)",
+    )
+    harness.add(
+        "quota_boundaries",
+        suite=SUITE,
+        fn=task_quota_boundaries,
+        desc="Exact per-tick and daily quota edges, atomic bulk debit, and actor isolation",
+    )
+    harness.add(
+        "runtime_contracts",
+        suite=SUITE,
+        fn=task_runtime_contracts,
+        desc="Lazy activation, wait-then-close shutdown, handle invalidation, and sync parity",
     )
     harness.add(
         "episode_value_termination",

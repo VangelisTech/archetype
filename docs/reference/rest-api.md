@@ -282,6 +282,9 @@ Read entities containing component types. Requires viewer, player, operator, or 
 | `types` | string | `""` | Comma-separated component type names |
 | `tick` | integer \| null | — |  |
 | `entity_ids` | string \| null | — |  |
+| `show` | integer \| null | — | Maximum matching rows to return; requires types |
+| `count` | boolean | `false` | Return the matching row count instead of rows; requires types |
+| `where` | string \| null | — | One column comparison, for example score__value > 0.5; requires types |
 
 **Error codes:** `422`
 
@@ -625,7 +628,8 @@ DELETE /worlds/{world_id}
 
 Drop the in-memory world instance. Persisted storage and audit rows are retained.
 
-Requires operator or admin. Destroying an unknown world is a no-op.
+Requires operator or admin. Destroying an unknown world is a no-op; an
+unparsable world id is rejected as a client error.
 
 **Path parameters:**
 

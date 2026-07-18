@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from click import unstyle
 from click.exceptions import Exit as ClickExit
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
@@ -93,6 +94,80 @@ class TestCLI:
     def test_world_create_help(self):
         result = runner.invoke(app, ["world", "create", "--help"])
         assert result.exit_code == 0
+
+    def test_query_help_exposes_lazy_terminals(self):
+        result = runner.invoke(app, ["query", "--help"], color=True)
+        assert result.exit_code == 0, result.output
+        output = unstyle(result.output)
+        assert "COMPONENT_TYPES" in output
+        assert "--show" in output
+        assert "--count" in output
+        assert "--where" in output
+
+    def test_query_forwards_positional_components_and_options(self, monkeypatch):
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, kwargs=kwargs)
+            return [{"score__value": 0.75}]
+
+        monkeypatch.setattr(cli_mod, "_request", fake_request)
+        result = runner.invoke(
+            app,
+            [
+                "query",
+                "world-1",
+                "Agent,Score",
+                "--tick",
+                "3",
+                "--entity-ids",
+                "7,8",
+                "--where",
+                "score__value > 0.5",
+                "--show",
+                "5",
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert captured["method"] == "get"
+        assert captured["path"] == "/worlds/world-1/components"
+        assert captured["kwargs"]["params"] == {
+            "entity_ids": "7,8",
+            "tick": 3,
+            "types": "Agent,Score",
+            "show": 5,
+            "where": "score__value > 0.5",
+        }
+
+    def test_query_count_uses_object_terminal(self, monkeypatch):
+        captured = {}
+
+        def fake_request(method, path, **kwargs):
+            captured.update(method=method, path=path, kwargs=kwargs)
+            return {"count": 3}
+
+        monkeypatch.setattr(cli_mod, "_request", fake_request)
+        result = runner.invoke(app, ["query", "world-1", "Score", "--count"])
+
+        assert result.exit_code == 0, result.output
+        assert "Count: 3" in result.output
+        assert captured["path"] == "/worlds/world-1/components"
+        assert captured["kwargs"]["params"] == {"types": "Score", "count": True}
+
+    @pytest.mark.parametrize(
+        "arguments",
+        (
+            ["world-1", "Score", "--types", "Score"],
+            ["world-1", "Score", "--count", "--show", "2"],
+            ["world-1", "--where", "score__value > 0.5"],
+        ),
+    )
+    def test_query_rejects_ambiguous_option_combinations(self, arguments):
+        result = runner.invoke(app, ["query", *arguments])
+        assert result.exit_code == 1
+        assert "validation error" in result.output
 
     def test_base_url_uses_env_and_strips_trailing_slash(self, monkeypatch):
         monkeypatch.setenv(ENV_BASE_URL, "http://example.com/api/")
@@ -355,6 +430,15 @@ class TestCLIIntegration:
             assert empty in result.output
 
 
+def _is_app_module(module: str) -> bool:
+    return module == "archetype.app" or module.startswith("archetype.app.")
+
+
+def test_cli_app_import_boundary_uses_dotted_segments():
+    assert _is_app_module("archetype.app.models")
+    assert not _is_app_module("archetype.application")
+
+
 def test_cli_does_not_import_forbidden_app_modules():
     source = cli_mod.__file__
     tree = ast.parse(open(source).read())
@@ -366,9 +450,9 @@ def test_cli_does_not_import_forbidden_app_modules():
             module = node.module
         elif isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.startswith("archetype.app") and alias.name not in allowed:
+                if _is_app_module(alias.name) and alias.name not in allowed:
                     forbidden.append(alias.name)
-        if module and module.startswith("archetype.app") and module not in allowed:
+        if module and _is_app_module(module) and module not in allowed:
             forbidden.append(module)
     assert forbidden == []
 

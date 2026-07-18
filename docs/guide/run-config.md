@@ -4,20 +4,31 @@ Archetype uses Pydantic models for all configuration. There are four config type
 
 ## RunConfig
 
-`RunConfig` controls the behavior of `step` and `run`. Each run gets a unique `run_id` (UUID7) for storage isolation.
+`RunConfig` describes one bounded sequence of ticks. A normal world already
+owns an active `run_id` when it is constructed; execution keeps that identity
+across ticks and repeated calls so its append-only history stays continuous.
+The config's generated `run_id` is a call-level candidate retained for
+lower-level compatibility, not a request to rename an active world.
 
 ```python
 from archetype.core.config import RunConfig
 
 config = RunConfig(num_steps=10, debug=True)
-await world.run(config)
+await world.run(config=config)
 ```
 
 ### Contract
 
-- A `RunConfig` identifies a run — one `run_id` shared by every tick in the run.
-- `SimulationService.step()` and `world.step()` **require** an explicit `RunConfig`. They MUST NOT mint one per call. Callers driving a multi-tick run reuse the same `RunConfig` across every step so persisted rows stay addressable by `run_id`.
-- `SimulationService.run()` and `world.run()` thread the caller's `RunConfig` into every internal `step()` call.
+- A new world mints its active `run_id`; mutable resume restores it, and a fork
+  mints a fresh identity for its new lineage.
+- A `RunConfig` carries one candidate `run_id`, but execution does not replace
+  an active world's identity with it. `RunResult.run_id` reports the identity
+  actually stamped on durable rows.
+- `SimulationService.step()` and the lower-level `AsyncWorld.step()` require an
+  explicit `RunConfig`. `RuntimeWorld.step()` creates the ordinary one-step
+  config when the public caller omits it.
+- `SimulationService.run()` and the world implementations thread the caller's
+  `RunConfig` into every internal `step()` call.
 - `EpisodeConfig` wraps `RunConfig` with termination semantics.
 - `RolloutConfig` wraps `EpisodeConfig` with fork-and-aggregate semantics.
 
@@ -25,27 +36,13 @@ await world.run(config)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `run_id` | `UUID` | auto (uuid7) | Unique identifier for this run sequence |
+| `run_id` | `str \| UUID` | auto (uuid7) | Call-level candidate; the world's active identity remains authoritative |
 | `num_steps` | `int` | `1` | Number of ticks to execute |
-| `debug` | `bool` | `False` | Emit structured debug events (tick start/end, entity counts) |
-| `enable_validation` | `bool` | `False` | Enable schema validation checks during processing |
-| `show_rows` | `int` | `3` | Max rows in debug DataFrame snapshots (0 disables) |
-| `explain` | `bool` | `False` | Render DataFrame logical plans in debug panels |
-| `prefer_live_reads` | `bool` | `False` | Read from in-memory `_live` cache instead of store |
-| `suite` | `str?` | `None` | Optional label for grouping runs (benchmarks, ensembles) |
-| `trial` | `int?` | `None` | Optional trial index for ensemble/grid runs |
-| `metadata` | `dict?` | `None` | Arbitrary metadata for experiment tracking |
+| `debug` | `bool` | `False` | Emit per-tick diagnostic panels |
+| `show_rows` | `int` | `8` | Maximum rows in each debug snapshot; `0` disables snapshots |
+| `metadata` | `dict?` | `None` | Optional metadata recorded with the run |
 
 `RunConfig` is frozen (immutable after construction).
-
-### prefer_live_reads
-
-Controls how `_run_archetype` fetches previous state at the start of each tick:
-
-- **`False` (default):** Reads from the store via the querier. Suitable for single-step runs, validation, and benchmarks where you want to verify that persisted state round-trips correctly.
-- **`True`:** Reads from the in-memory `_live` cache. Avoids redundant store reads between consecutive ticks. Required for multi-step runs where each step's `run_id` differs from the persisted rows.
-
-In practice, `_live` is always used after tick 0 regardless of this flag -- the core tick loop falls back to `_live` when it is populated for a given signature. This flag controls the intent at the `RunConfig` level; the actual behavior is governed by the `_live` cache population logic in `AsyncWorld._run_archetype`.
 
 ### Named Constructors
 
@@ -53,29 +50,25 @@ In practice, `_live` is always used after tick 0 regardless of this flag -- the 
 
 #### RunConfig.dev()
 
-Interactive development. Debug output on, live reads enabled, higher row display limit.
+Interactive development with debug output and a five-row display limit by
+default.
 
 ```python
 config = RunConfig.dev(steps=5)
-# debug=True, prefer_live_reads=True, show_rows=5
+# debug=True, show_rows=5
 ```
 
 #### RunConfig.benchmark()
 
-Performance measurement. Debug off, no row display, optional suite/trial labels for organizing results.
+Performance measurement with debug output and row snapshots disabled. Put
+experiment labels in `metadata` when needed.
 
 ```python
-config = RunConfig.benchmark(steps=100, suite="latency", trial=0)
-# debug=False, show_rows=0, suite="benchmark"
-```
-
-#### RunConfig.validate()
-
-Schema and invariant checking. Validation enabled, debug on, reads from store to verify persistence.
-
-```python
-config = RunConfig.validate(steps=3)
-# enable_validation=True, debug=True, prefer_live_reads=False, suite="validate"
+config = RunConfig.benchmark(
+    steps=100,
+    metadata={"suite": "latency", "trial": 0},
+)
+# debug=False, show_rows=0
 ```
 
 ## WorldConfig

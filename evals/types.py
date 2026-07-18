@@ -1,14 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Core eval types following Anthropic's agent eval framework.
-
-Vocabulary matches the article:
-- Task: a single test with inputs, expected outcomes, and graders
-- Trial: one attempt at a task (run multiple for non-determinism)
-- Grader: scoring logic applied to the outcome of a trial
-- EvalResult: aggregated result across trials for a task
-"""
+"""Result records for Archetype's repository verification runner."""
 
 from __future__ import annotations
 
@@ -40,39 +33,23 @@ class TrialResult:
 
 @dataclass
 class TaskResult:
-    """Aggregated result of running a task across k trials."""
+    """Aggregated result of running one repository check repeatedly."""
 
     task_id: str
-    suite: str  # "regression" or "capability"
+    suite: str
     trials: list[TrialResult] = field(default_factory=list)
     desc: str = ""
 
     @property
-    def k(self) -> int:
+    def trial_count(self) -> int:
         return len(self.trials)
 
     @property
-    def pass_at_k(self) -> float:
-        """Fraction of the k trials that passed (empirical pass rate).
-
-        For mixed outcomes this is ``passed / k``; for uniformly passing
-        or failing tasks it collapses to 1.0 or 0.0.
-        """
+    def pass_rate(self) -> float:
+        """Fraction of recorded trials that passed."""
         if not self.trials:
             return 0.0
         return sum(1 for t in self.trials if t.passed) / len(self.trials)
-
-    @property
-    def pass_pow_k(self) -> float:
-        """Did ALL k trials succeed?
-
-        Returns 1.0 if every trial passed, 0.0 otherwise.
-        For reliability-critical tasks where anything less than
-        100% consistency is a failure.
-        """
-        if not self.trials:
-            return 0.0
-        return 1.0 if all(t.passed for t in self.trials) else 0.0
 
     @property
     def avg_score(self) -> float:
@@ -90,9 +67,8 @@ class TaskResult:
             "task_id": self.task_id,
             "suite": self.suite,
             "desc": self.desc,
-            "k": self.k,
-            "pass_at_k": round(self.pass_at_k, 4),
-            "pass_pow_k": round(self.pass_pow_k, 4),
+            "trial_count": self.trial_count,
+            "pass_rate": round(self.pass_rate, 4),
             "avg_score": round(self.avg_score, 4),
             "all_passed": self.all_passed,
             "trials": [

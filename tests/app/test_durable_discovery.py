@@ -9,6 +9,7 @@ committed there. P0 tests use true subprocess restarts — same-process
 container recycling would not prove cold discovery.
 """
 
+import gc
 import json
 import logging
 import multiprocessing
@@ -25,10 +26,14 @@ from archetype.app._catalog import (
     SignatureRecord,
     SqliteControlCatalog,
     WorldRecord,
+    arrow_schema_descriptor,
     catalog_path_for,
     schema_fingerprint,
+    storage_fingerprint,
 )
+from archetype.app._signature_resolution import match_signature_records
 from archetype.app.container import ServiceContainer
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -75,6 +80,15 @@ def test_catalog_path_is_a_pure_function_of_storage_identity(tmp_path):
             for backend in (StorageBackend.LANCEDB, StorageBackend.ICEBERG)
         }
         assert len(pairs) == 2, "backends must never share a catalog"
+
+
+def test_catalog_identity_normalizes_equivalent_file_uri(tmp_path):
+    target = tmp_path / "file store"
+    path_config = StorageConfig(uri=str(target), namespace="ns")
+    uri_config = StorageConfig(uri=target.as_uri(), namespace="ns")
+
+    assert catalog_path_for(uri_config) == catalog_path_for(path_config)
+    assert storage_fingerprint(uri_config) == storage_fingerprint(path_config)
 
 
 @pytest.mark.asyncio
@@ -310,11 +324,121 @@ async def test_p0_cold_subset_query_across_process_boundary(tmp_path):
         assert [str(i.world_id) for i in infos] == [world_id]
         info = await c.world_service.open_world_readonly(storage, world_id)
 
+        signatures = await c.query_service.list_signatures(storage)
+        signature_names = {
+            tuple(component.__name__ for component in signature) for signature in signatures
+        }
+        assert {("Score",), ("Flag", "Score")} <= signature_names, (
+            "cold signature discovery must use the durable catalog, not the "
+            "fresh store's empty process-local registry"
+        )
+
         df = await c.query_service.query_components([Score], world_id, str(info.run_id), storage)
         points = sorted(row["score__points"] for row in df.to_pylist())
         assert points == [2.5, 7.5], "subset query must union both archetypes, cold"
     finally:
         await c.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplog):
+    """One unrelated stale record cannot poison storage-wide discovery."""
+    storage = _storage(tmp_path)
+    writer = ServiceContainer()
+    try:
+        world = await writer.world_service.create_world(WorldConfig(name="current"), storage)
+        await writer.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await writer.simulation_service.step(world.world_id, RunConfig())
+
+        schema = Archetype.get_archetype_schema((Score,))
+        catalog = writer.storage_service.get_control_catalog(storage)
+        await catalog.register_signature(
+            SignatureRecord(
+                table_id="a_removed_history",
+                component_names=("RemovedQueryHistoryComponent",),
+                schema_json="{}",
+                fingerprint="removed",
+            )
+        )
+        await catalog.register_signature(
+            SignatureRecord(
+                table_id="a_schema_match_wrong_identity",
+                component_names=("Score",),
+                schema_json=json.dumps(arrow_schema_descriptor(schema)),
+                fingerprint=schema_fingerprint(schema),
+            )
+        )
+    finally:
+        await writer.shutdown()
+
+    reader = ServiceContainer()
+    try:
+        with caplog.at_level(logging.WARNING, logger="archetype.app.query_service"):
+            signatures = await reader.query_service.list_signatures(storage)
+
+        names = {tuple(component.__name__ for component in sig) for sig in signatures}
+        assert ("Score",) in names
+        assert "a_removed_history" in caplog.text
+        assert "a_schema_match_wrong_identity" in caplog.text
+    finally:
+        await reader.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warm_signature_listing_preserves_local_class_identity(tmp_path):
+    """Catalog ambiguity fills cold gaps but cannot replace an exact local class."""
+    storage = _storage(tmp_path)
+    container = ServiceContainer()
+    shadow_score_type: type[Component] | None = None
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
+        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        shadow_score_type = type(
+            "Score",
+            (Component,),
+            {
+                "__module__": "aaa_catalog_shadow",
+                "__annotations__": {"points": float},
+                "points": 0.0,
+            },
+        )
+        assert Archetype.get_name((shadow_score_type,)) == Archetype.get_name((Score,))
+
+        signatures = await container.query_service.list_signatures(storage)
+        score_table_id = Archetype.get_name((Score,))
+        by_table_id = {Archetype.get_name(signature): signature for signature in signatures}
+
+        assert by_table_id[score_table_id] == (Score,)
+        assert by_table_id[score_table_id] != (shadow_score_type,)
+    finally:
+        shadow_score_type = None
+        gc.collect()
+        await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeypatch, caplog):
+    """Best-effort discovery retains the complete pre-catalog local answer."""
+    storage = _storage(tmp_path)
+    container = ServiceContainer()
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="warm"), storage)
+        await container.mutation_service.create_entity(world.world_id, [Score(points=1.0)])
+        await container.simulation_service.step(world.world_id, RunConfig())
+
+        def _unavailable(_storage_config):
+            raise RuntimeError("injected catalog outage")
+
+        monkeypatch.setattr(container.storage_service, "get_control_catalog", _unavailable)
+        with caplog.at_level(logging.ERROR, logger="archetype.app.query_service"):
+            signatures = await container.query_service.list_signatures(storage)
+
+        assert (Score,) in signatures
+        assert "control catalog unavailable for durable signature discovery" in caplog.text
+    finally:
+        await container.shutdown()
 
 
 @pytest.mark.asyncio
@@ -421,6 +545,22 @@ async def test_signature_record_roundtrip(tmp_path):
             )
         )
     await catalog.close()
+
+
+def test_signature_resolution_requires_durable_table_identity():
+    """A normalized schema match cannot redirect a read to a new table id."""
+    schema = Archetype.get_archetype_schema((Score,))
+    record = SignatureRecord(
+        table_id="a_schema_match_wrong_identity",
+        component_names=("Score",),
+        schema_json=json.dumps(arrow_schema_descriptor(schema)),
+        fingerprint=schema_fingerprint(schema),
+    )
+
+    resolved, problems = match_signature_records([record])
+
+    assert resolved == {}
+    assert "different table identity" in problems[record.table_id]
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
+import footgun_review_gate as gate  # noqa: E402
 from footgun_review_gate import (  # noqa: E402
     BOT_LOGIN,
     REQUIRED_CATEGORIES,
@@ -125,6 +126,40 @@ def _finding(**overrides) -> dict:
     }
     finding.update(overrides)
     return finding
+
+
+def _run_attempt(tmp_path: Path, result: dict | None) -> tuple[Path, Path, Path]:
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    output_path = tmp_path / "validated" / "normalized.json"
+    feedback_path = tmp_path / "validation-feedback.txt"
+    github_output = tmp_path / "github-output.txt"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text("" if result is None else json.dumps(result), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "attempt",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+                "--feedback",
+                str(feedback_path),
+                "--github-output",
+                str(github_output),
+            ]
+        )
+        == 0
+    )
+    return output_path, feedback_path, github_output
 
 
 def _bot_item(**values) -> dict:
@@ -231,6 +266,39 @@ def test_file_spanning_multiple_context_areas_is_accepted():
     assert normalized["review_context"][2]["files"] == ["old.py"]
 
 
+def test_context_evidence_path_is_rejected_with_actionable_retry_feedback():
+    result = _result()
+    result["review_context"][0]["files"].append("src/archetype/core/aio/async_system.py")
+
+    with pytest.raises(GateError, match="outside the diff") as caught:
+        validate_result(result, _scope(), DIFF)
+
+    feedback = gate.retry_feedback(caught.value)
+    assert "src/archetype/core/aio/async_system.py" in feedback
+    assert "changed paths only" in feedback
+    assert "assessment prose" in feedback
+
+
+def test_schema_placeholder_result_is_rejected_with_actionable_retry_feedback():
+    placeholder = _result()
+    placeholder["reviewed_files"] = ["a.md"]
+    placeholder["reviewed_categories"] = ["row-dropping"]
+    placeholder["review_context"] = [
+        {
+            "area": "test area name",
+            "files": ["a.md"],
+            "assessment": "test assessment text that is at least thirty characters long.",
+        }
+    ]
+
+    with pytest.raises(GateError, match="reviewed_files") as caught:
+        validate_result(placeholder, _scope(), DIFF)
+
+    feedback = gate.retry_feedback(caught.value)
+    assert "a.md" in feedback
+    assert "schema examples or placeholder values" in feedback
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
@@ -273,6 +341,137 @@ def test_rendered_no_findings_evidence_is_specific_and_digest_bound():
     assert "2 changed file(s), 22 detector categories" in rendered
     assert "old.py" in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+
+
+def test_rendered_evidence_inlines_validated_artifact_and_run_link():
+    normalized = validate_result(_result(), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(
+        normalized,
+        digest,
+        run_url="https://example.test/runs/7",
+        artifact_name="footgun-review-validated-7",
+    )
+
+    assert "<summary>Validated review artifact</summary>" in rendered
+    start = rendered.index("```json\n") + len("```json\n")
+    end = rendered.index("\n```\n", start)
+    assert json.loads(rendered[start:end]) == normalized
+    assert "[footgun-review-validated-7](https://example.test/runs/7#artifacts)" in rendered
+
+
+def test_inline_artifact_fence_outruns_backticks_in_findings():
+    finding = _finding(fix="Replace the call:\n```python\nsafe_call()\n```\nand keep the guard.")
+    normalized = validate_result(_result(findings=[finding]), _scope(), DIFF)
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(normalized, digest)
+
+    assert "````json\n" in rendered
+    assert rendered.count("````") == 2
+
+
+def test_full_published_body_budget_defers_duplicated_artifact_to_workflow_run():
+    normalized = validate_result(_result(), _scope(), DIFF)
+    normalized["summary"] = "s" * 20000
+    normalized["review_context"][0]["assessment"] = "c" * 20000
+    digest = artifact_digest(normalized)
+    rendered = render_evidence(
+        normalized,
+        digest,
+        run_url="https://example.test/runs/7",
+        artifact_name="footgun-review-validated-7",
+    )
+
+    assert (
+        len(json.dumps(normalized, ensure_ascii=False).encode("utf-8")) < gate._PUBLISHED_BODY_LIMIT
+    )
+    assert len(rendered.encode("utf-8")) <= gate._PUBLISHED_BODY_LIMIT
+    assert "exceeds the inline comment budget" in rendered
+    assert "```json" not in rendered
+    assert "[footgun-review-validated-7](https://example.test/runs/7#artifacts)" in rendered
+    assert evidence_marker(HEAD_SHA, 0, digest) in rendered
+
+
+def test_oversized_evidence_without_named_validated_artifact_fails_closed():
+    normalized = validate_result(_result(), _scope(), DIFF)
+    normalized["summary"] = "s" * 20000
+    normalized["review_context"][0]["assessment"] = "c" * 20000
+    digest = artifact_digest(normalized)
+
+    with pytest.raises(GateError, match="named validated artifact"):
+        render_evidence(normalized, digest, run_url="https://example.test/runs/7")
+
+
+def test_normalize_command_does_not_render_unpublished_evidence(tmp_path):
+    result = _result()
+    result["summary"] = "s" * 40000
+    result["review_context"][0]["assessment"] = "c" * 40000
+    scope_path = tmp_path / "scope.json"
+    diff_path = tmp_path / "review.diff"
+    result_path = tmp_path / "result.json"
+    output_path = tmp_path / "validated" / "normalized.json"
+    scope_path.write_text(json.dumps(_scope()), encoding="utf-8")
+    diff_path.write_text(DIFF, encoding="utf-8")
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+
+    assert (
+        gate.main(
+            [
+                "normalize",
+                "--scope",
+                str(scope_path),
+                "--diff",
+                str(diff_path),
+                "--result",
+                str(result_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        == 0
+    )
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"] == "s" * 40000
+    assert list(output_path.parent.iterdir()) == [output_path]
+
+
+def test_attempt_command_requests_one_retry_with_exact_validator_feedback(tmp_path):
+    result = _result()
+    result["reviewed_files"] = ["a.md"]
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, result)
+
+    assert not output_path.exists()
+    assert "reviewed_files does not match scope" in feedback_path.read_text(encoding="utf-8")
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+
+
+def test_attempt_command_requests_retry_when_detector_returns_no_output(tmp_path):
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, None)
+
+    assert not output_path.exists()
+    assert "could not read valid JSON" in feedback_path.read_text(encoding="utf-8")
+    assert github_output.read_text(encoding="utf-8") == "valid=false\n"
+
+
+def test_attempt_command_writes_validated_result_without_requesting_retry(tmp_path):
+    output_path, feedback_path, github_output = _run_attempt(tmp_path, _result())
+
+    assert json.loads(output_path.read_text(encoding="utf-8"))["head_sha"] == HEAD_SHA
+    assert not feedback_path.exists()
+    assert github_output.read_text(encoding="utf-8") == "valid=true\n"
+
+
+def test_workflow_has_one_bounded_validator_feedback_retry():
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deterministic-review.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow.count("uses: anthropics/claude-code-action@") == 2
+    assert "id: first_validation" in workflow
+    assert "id: detector_retry" in workflow
+    assert "steps.first_validation.outputs.valid != 'true'" in workflow
+    assert ".footgun-review-validation.txt" in workflow
+    assert "Require detector completion" not in workflow
 
 
 def test_review_payload_batches_each_finding_as_an_inline_thread():

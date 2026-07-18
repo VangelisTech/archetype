@@ -456,50 +456,46 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 
 ---
 
-## Agent Communication: Messaging Pipeline (Mar 2026)
+## Agent Communication: Queueing vs Delivery (updated Jul 2026)
 
-Agent-to-agent messaging is processor-driven, not broker-driven.
+Archetype provides messaging mechanisms, not a framework delivery policy:
 
-**The broker is governance only** — RBAC, quotas, command queuing. It does NOT own message delivery or conversation structure.
+- `CommandType.MESSAGE` is an RBAC-visible command envelope.
+- `CommandBroker` can queue, order, and record recent in-memory enqueue history.
+- `Resources`, processors, and hooks are the primitives applications can
+  compose into routing and realization behavior.
 
-**Components:**
+The framework does not define a message payload schema, recipient validation,
+inbox/outbox components, delivery receipts, channels, or a conversation graph.
+The command-service drain also has no `MESSAGE` application branch, so
+submitting a message command is not equivalent to delivering it to an entity.
+A host that uses brokered message envelopes must supply the consumer and its
+delivery semantics.
 
-```python
-class Outbox(Component):
-    messages: list[str] = []  # JSON-encoded: {"receiver_id": int, "channel": str, "content": str}
-
-class Inbox(Component):
-    messages: list[str] = []  # JSON-encoded: {"sender_id": int, "channel": str, "content": str, "tick": int}
-```
-
-**Delivery pipeline:**
+[`examples/04_messaging.py`](examples/04_messaging.py) demonstrates one such
+policy entirely in application code:
 
 ```text
-Agent processor writes to Outbox (priority 10+)
-        ↓
-MessageDeliveryProcessor (priority -100, runs first next tick)
-  ├── reads Outbox via DataFrame
-  ├── validates: receiver exists? not self-messaging?
-  ├── routes to recipient Inbox via @daft.func
-  ├── updates ChatGraph Resource (if present)
-  └── rejected → sender's DeliveryReceipt
-        ↓
-Downstream processors read Inbox for LLM context
+MessageRealizationProcessor (priority -100)
+  └── drains the example-local Mailbox resource into Inbox components
+GreetingProcessor (priority 10)
+  └── deposits new greetings into Mailbox
+MoodProcessor (priority 20)
+  └── reads the realized Inbox state
 ```
 
-**Key insight:** Messages written to Outbox at tick N are delivered to Inbox at tick N+1. This enforces causal ordering — no agent can read a message from the same tick it was sent.
+Because realization runs before greeting generation, work deposited during
+tick N remains pending until the realization pass in tick N+1. That causal
+delay is a property of this example's priorities and shared `Mailbox`; it is
+not an automatic guarantee of `CommandType.MESSAGE`. The example's `Mailbox`,
+`Inbox`, `Outbox`, and processors are local definitions, not exports from
+`archetype`.
 
-**ChatGraph** is a Resource (not entity data). It tracks conversation structure as a DAG per (world, channel):
-
-```python
-registry = resources.require(ChatGraphRegistry)
-graph = registry.channel(world_id, "strategy")
-context = graph.active_path()  # root → cursor, for LLM context windows
-```
-
-**Channels** are first-class routing keys. Each channel gets its own independent conversation graph. Default is `"general"`.
-
-**`append_history` toggle:** a command with `payload={"append_history": False}` (or equivalent) makes a message ephemeral — delivered but not recorded in broker history or ChatGraph. Use for heartbeats, probes, system messages.
+The mailbox is also mutable world-shared state. The demo keeps all agents in
+one archetype table. A composition that accesses the same mailbox from
+multiple table tasks must add synchronization or use another explicit
+deferred boundary; processor priority orders work within a table, not across
+concurrent table tasks.
 
 ---
 
@@ -534,8 +530,6 @@ Enable with `run_config.debug = True`:
 [archetype] {"event": "tick_start", "world_id": "...", "tick": 0}
 [archetype] processor_start: PhysicsProcessor (priority=10)
 [archetype] processor_end: PhysicsProcessor (rows_out=100)
-[broker] enqueue: world=demo, type=message, pending=6
-[broker] dequeue: world=demo, returned=6, types={'message': 6}
 ```
 
 ---
@@ -643,25 +637,52 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging pipeline** — Outbox/Inbox components + MessageDeliveryProcessor (not broker)
+10. **Messaging delivery is application composition** — the broker queues
+    `MESSAGE` envelopes; applications define payloads, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 
 ---
 
-## Single Process, Single Event Loop (Apr 2026)
+## Process and Coordination Boundaries (Apr 2026, updated Jul 2026)
 
-Archetype runs as **one `archetype serve` process**. This is a hard architectural constraint — do not design for multi-process or multi-server deployments. Daft owns the cores — it manages thread pools, memory, and parallelism internally. `SimulationService.run_all` drives all worlds concurrently via `asyncio.gather` in a single event loop. `AsyncWorld.step` parallelizes across archetypes the same way.
+One `ArchetypeRuntime` or `archetype serve` process owns its live world objects,
+service container, and event loop. Daft owns data-plane parallelism inside that
+process: it manages worker pools and executes lazy processor plans across rows
+and archetypes. Two server processes do not share an in-memory world registry,
+so a request that needs a particular live world must reach the process hosting
+that world.
+
+That live-process boundary is not the durability boundary. Persisted worlds can
+be discovered and queried from a fresh process. Mutable cold resume reconstructs
+a world from visible rows and manifests, then acquires a writer fence. The local
+SQLite control catalog coordinates processes on one host; deployments that need
+cross-host fencing use the remote control catalog. One live writer per world is
+the invariant, not one process for the whole deployment. See
+`docs/guide/durable-discovery.md`, `docs/guide/atomic-visibility.md`, and
+`docs/guide/world-lifecycle.md` for the normative contracts.
 
 **Consequences:**
 
-- **The CLI is a thin HTTP client.** Every command (except `serve`) is an `httpx` call to the running server. The CLI never instantiates a `ServiceContainer` — that would create an isolated, ephemeral process that can't participate in the server's event loop or share world state.
-- **Never spin up a second server.** There is no multi-node or multi-process coordination layer. If you need more compute, scale the Daft cluster, not the server count.
-- **World lifecycle mutations route through the CommandBroker.** `CREATE_WORLD`, `DESTROY_WORLD`, `FORK_WORLD` go through `CommandService.submit()` → broker lock → `apply_world_lifecycle()`. This gives RBAC, audit history, and serialized writes for free. Use `tick=0` for immediate execution (not tick-scheduled).
+- **The CLI is a thin HTTP client.** Every command except `serve` is an HTTP
+  call to a running server. The CLI does not instantiate its own
+  `ServiceContainer`, because that would create an unrelated live-world scope.
+- **Scale simulation work through Daft.** Adding an API process does not split
+  one live world's in-memory execution. Multi-process discovery, cold reads,
+  and fenced resume are control-plane capabilities, not a replacement for
+  Daft's data-plane execution model.
+- **World lifecycle operations are direct gated calls.** `create_world`,
+  `fork_world`, and `destroy_world` flow through `iCommandService` for RBAC and
+  audit, then delegate to `iWorldService`. The `CommandBroker` queues
+  tick-deferred commands; it is not the lifecycle or authorization boundary.
 
 **State across restarts:**
 
-A `WorldRegistry` (JSON file at `./archetype_data/archetype_registry.json`) catalogs world metadata (id, name, storage URI, namespace, tick). The server calls `discover_worlds()` on startup to rehydrate. This is a **boot catalog**, not a coordination mechanism — single writer, no locking needed.
+The control catalog attached to a storage identity records durable world
+metadata, signatures, writer fences, and tick manifests. `discover_worlds()`
+reads that catalog without constructing live worlds; `resume_world()` rebuilds
+a mutable world and acquires its fence. There is no JSON boot registry in the
+current architecture.
 
 ---
 
@@ -683,22 +704,25 @@ df = df.with_column("position__y", col("position__y") + col("velocity__vy"))
 
 ---
 
-## The Blessed LIBERO Run Recipe (Jun 2026)
+## The Blessed LIBERO Run Recipe (Jun 2026 — moved to robot-evals Jul 2026)
 
 LIBERO/VLA-JEPA are genuinely broken research code, but re-solving their
-packaging from scratch every deploy is failure-mode **D5**. The recipe is frozen
-once in **`docs/guide/libero-recipe.md`** — read it before touching anything in
-`bench/libero/` or arguing about torch pins / a Modal split. Highlights:
+packaging from scratch every deploy is failure-mode **D5**. The recipe — and
+the whole harness — now lives in **`everettVT/robot-evals`** (extracted
+2026-07-16 with history; consumes archetype from the package index). Read its
+recipe before touching torch pins or arguing about a Modal split. Highlights
+(still true, recorded here because the lessons are archetype-shaped):
 
 - **LIBERO and the VLA-JEPA policy run in-process**, one Python 3.12
-  interpreter shared with Archetype. `bench/libero/image.py` builds both images
-  and owns the **RUN LEDGER** (what has actually executed, with dates — check
-  it before citing any number from this surface); `in_process.py` drives
-  `OffScreenRenderEnv` directly; `in_process_policy.py` runs the VLA in the
-  same container. **No Modal interpreter split** —
+  interpreter shared with Archetype. In robot-evals,
+  `src/robot_evals/image.py` builds both images and owns the **RUN LEDGER**
+  (what has actually executed, with dates — check it before citing any number
+  from this surface); `src/robot_evals/in_process.py` drives
+  `OffScreenRenderEnv` directly; `src/robot_evals/in_process_policy.py` runs
+  the VLA in the same container. **No Modal interpreter split** —
   `modal_worker.py`/`vla_jepa_worker.py` were deleted 2026-07-15 (git history).
-- **Two commands:** `modal run bench/libero/image.py` (env-only smoke) and
-  `modal run bench/libero/image.py::colocated_eval_task` (policy-driven eval).
+- **Two commands** (in robot-evals): `modal run src/robot_evals/image.py`
+  (env-only smoke) and `...::colocated_eval_task` (policy-driven eval).
 - **One real constraint:** Linux + EGL offscreen rendering + GPU. The pins we
   removed were laziness, not law — `torch<2.6` (the one `torch.load`
   `weights_only` flip, patched in-process), Python 3.8–3.10 → 3.12. **Keep
@@ -728,8 +752,8 @@ mean 65/255 — the step-7 PNG was EGL noise.
 
 **Rule: any renderer (MuJoCo/EGL, OpenGL, most GPU sims) driven from archetype
 processors must marshal ALL calls — creation, reset, step — onto one
-persistent thread.** Reference implementation:
-`bench/libero/in_process.py::_EnvThread` (a daemon worker thread;
+persistent thread.** Reference implementation (in `everettVT/robot-evals`):
+`src/robot_evals/in_process.py::_EnvThread` (a daemon worker thread;
 `ThreadPoolExecutor` holds container shutdown hostage). Verification: dump an
 actual mid-episode frame and look at it — file-write success and correct
 proprio prove nothing about pixels.

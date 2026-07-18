@@ -144,8 +144,13 @@ IDEMPOTENCY_CASES: tuple[IdempotencyCase, ...] = (
         task_id="idempotency.same_tick_duplicate_mutations",
     ),
     IdempotencyCase(
-        operation="Duplicate spawn for same entity in one tick",
-        expected_contract="Deterministic last-write-wins",
+        operation="Duplicate staged spawn rows for the same entity in one tick",
+        expected_contract="Deterministic last-write-wins at materialization",
+        task_id="idempotency.staged_spawn_last_write_wins",
+    ),
+    IdempotencyCase(
+        operation="Replay of an already-registered reserved spawn through `CommandService`",
+        expected_contract="First spawn applies; replay is rejected",
         task_id="idempotency.same_tick_duplicate_mutations",
     ),
     IdempotencyCase(
@@ -313,7 +318,7 @@ def contract_map() -> list[dict[str, str]]:
 def _registered_tasks() -> list[tuple[str, str, object, str]]:
     harness = EvalHarness()
     register(harness)
-    return list(harness._tasks)
+    return list(harness.registered_tasks)
 
 
 def _registered_task_ids() -> set[str]:
@@ -716,8 +721,53 @@ async def _task_runtime_aliases_and_history() -> list[GraderResult]:
         reset_daily_tokens()
 
 
+def task_staged_spawn_last_write_wins() -> list[GraderResult]:
+    """Duplicate raw staged rows retain the last value at materialization."""
+    return asyncio.run(_task_staged_spawn_last_write_wins())
+
+
+async def _task_staged_spawn_last_write_wins() -> list[GraderResult]:
+    reset_tick_counters()
+    reset_daily_tokens()
+    with tempfile.TemporaryDirectory() as tmp:
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="idem_staged_spawns")
+            world = await container.world_service.create_world(
+                WorldConfig(name="staged-spawn-last-write-wins"),
+                storage,
+            )
+
+            entity_id = await world.create_entity([IdemCounter(value=1)])
+            sig = world.entity2sig[entity_id]
+            duplicate_row = {
+                **world.spawn_cache[sig][-1],
+                "idemcounter__value": 9,
+            }
+            world.spawn_cache[sig].append(duplicate_row)
+            staged_count = len(world.spawn_cache[sig])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            rows = (await world.query_archetype(sig=(IdemCounter,), ticks=[0])).to_pylist()
+
+            return [
+                state_check(
+                    {
+                        "two_raw_rows_staged_for_same_entity": staged_count == 2,
+                        "duplicate_staged_spawn_materialized_once": len(rows) == 1,
+                        "duplicate_staged_spawn_last_write_wins": bool(rows)
+                        and rows[0]["idemcounter__value"] == 9,
+                    },
+                    name="staged_spawn_last_write_wins",
+                )
+            ]
+        finally:
+            await container.shutdown()
+            reset_tick_counters()
+            reset_daily_tokens()
+
+
 def task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
-    """Same-entity duplicate spawn/despawn commands collapse at materialization."""
+    """Reserved-spawn replays reject; duplicate despawns collapse."""
     return asyncio.run(_task_duplicate_same_tick_mutations_collapse())
 
 
@@ -784,9 +834,9 @@ async def _task_duplicate_same_tick_mutations_collapse() -> list[GraderResult]:
             return [
                 state_check(
                     {
-                        "both_duplicate_spawns_applied": spawn_applied == 2,
-                        "duplicate_spawn_materialized_once": len(spawn_rows) == 1,
-                        "duplicate_spawn_last_write_wins": spawn_value == 9,
+                        "replayed_reserved_spawn_rejected": spawn_applied == 1,
+                        "reserved_spawn_materialized_once": len(spawn_rows) == 1,
+                        "first_reserved_spawn_preserved": spawn_value == 1,
                         "spawn_row_starts_active": spawn_active is True,
                         "both_duplicate_despawns_applied": despawn_applied == 2,
                         "duplicate_despawn_materialized_once": len(despawn_rows) == 1,
@@ -1180,10 +1230,16 @@ def register(harness: EvalHarness) -> None:
         desc="RuntimeWorld.as_actor aliases handles and fixed-filter history remains stable.",
     )
     harness.add(
+        "idempotency.staged_spawn_last_write_wins",
+        suite=SUITE,
+        fn=task_staged_spawn_last_write_wins,
+        desc="Duplicate raw staged spawn rows resolve last-write-wins at materialization.",
+    )
+    harness.add(
         "idempotency.same_tick_duplicate_mutations",
         suite=SUITE,
         fn=task_duplicate_same_tick_mutations_collapse,
-        desc="Duplicate same-entity spawn/despawn commands collapse at materialization.",
+        desc="Reserved-spawn replays reject and duplicate despawns collapse.",
     )
     harness.add(
         "idempotency.component_signature_noops",

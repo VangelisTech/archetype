@@ -1,12 +1,11 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Eval harness: runs tasks, manages trials, grades outcomes, aggregates results.
+"""Run repository checks repeatedly and aggregate their grader evidence.
 
-Each task is a callable that returns a list of GraderResults (the outcome
+Each task is a callable that returns a non-empty list of GraderResults (the outcome
 of applying all graders to the task's output).  The harness runs each task
-k times (trials), collects GraderResults per trial, and produces TaskResults
-with pass@k / pass^k metrics.
+one or more times, collects GraderResults per trial, and produces TaskResults.
 
 Usage:
     harness = EvalHarness(trials=3)
@@ -21,7 +20,7 @@ from collections.abc import Callable
 
 from evals.types import GraderResult, TaskResult, TrialResult
 
-# A task function returns the grader results for one trial.
+# A task function returns one or more grader results for one trial.
 TaskFn = Callable[[], list[GraderResult]]
 
 
@@ -38,6 +37,11 @@ class EvalHarness:
         """Register a task to be run."""
         self._tasks.append((task_id, suite, fn, desc))
 
+    @property
+    def registered_tasks(self) -> tuple[tuple[str, str, TaskFn, str], ...]:
+        """Immutable live inventory of registered checks."""
+        return tuple(self._tasks)
+
     def run(self, *, suite_filter: str | None = None) -> list[TaskResult]:
         """Run all registered tasks and return aggregated results."""
         results = []
@@ -53,13 +57,11 @@ class EvalHarness:
                 try:
                     grader_results = fn()
                     elapsed = time.perf_counter() - t0
+                    if not grader_results:
+                        raise ValueError(f"task {task_id!r} produced no grader evidence")
 
                     all_passed = all(g.passed for g in grader_results)
-                    avg_score = (
-                        sum(g.score for g in grader_results) / len(grader_results)
-                        if grader_results
-                        else 0.0
-                    )
+                    avg_score = sum(g.score for g in grader_results) / len(grader_results)
 
                     task_result.trials.append(
                         TrialResult(

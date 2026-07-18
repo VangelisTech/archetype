@@ -285,6 +285,8 @@ async def run_rollout(ctx, world_id, config, **kw) -> RolloutResult
 ```python
 async def query_archetype(ctx, sig, world_id, run_id, storage_config=None,
                            *, ticks=None, entity_ids=None, components=None) -> DataFrame
+async def query_components(ctx, components, world_id, run_id, storage_config=None,
+                           *, ticks=None, entity_ids=None) -> DataFrame
 async def list_signatures(ctx, storage_config=None) -> list[ArchetypeSignature]
 async def query_facts(ctx, world_id, table_name,
                       storage_config=None) -> DataFrame

@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batched control-plane eval contract (bench/libero/eval_run.py).
+"""Batched control-plane eval contract (archetype.experiments.eval_rollouts).
 
 Proves the redesign that replaces the old per-trial-world driver, using the
 in-process scripted env+policy (no Modal, no LIBERO) — the exact same
@@ -120,3 +120,86 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         assert len({r["entity_id"] for r in rows}) == 4, "all 4 trials must persist, none orphaned"
     finally:
         await container.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runtime_path_matches_replay_and_leaves_command_audit_rows(tmp_path):
+    """The gated path: identical numbers to the service bridge, PLUS command
+    provenance — spawn/run_episode audit rows exist (the gateway-bypass
+    regression this module shipped with, fixed)."""
+    from archetype import ArchetypeRuntime
+
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evalrt")
+    async with ArchetypeRuntime() as runtime:
+        env = ScriptedReachEnv(targets=TARGETS, tolerance=TOL)
+        policy = ScriptedReachPolicy(targets=TARGETS, gain=GAIN, max_step=MAX_STEP)
+
+        report = await run_task_eval(
+            runtime,
+            env_client=env,
+            policy_client=policy,
+            suite="scripted",
+            task_id=0,
+            trials=4,
+            max_steps=MAX_STEPS,
+            storage=storage,
+        )
+
+        expected = {ek: _simulate(TARGETS[ek], ek) for ek in TARGETS}
+        got = {t.env_key: (t.success, t.episode_length) for t in report.trials}
+        for ek in TARGETS:
+            exp_success, exp_len = expected[ek]
+            assert got[ek][0] == exp_success
+            if exp_success:
+                assert got[ek][1] == exp_len
+        assert report.success_rate == 3 / 4
+
+        # THE contract: every mutation and the episode itself are commands.
+        audit = runtime.attach(report.world_id, storage=storage)
+        rows = (await audit.history(limit=200)).collect().to_pylist()
+        commands = " ".join(str(r) for r in rows)
+        assert "run_episode" in commands, "run_episode must leave a command-audit row"
+        assert "spawn" in commands, "trial spawns must leave command-audit rows"
+
+
+@pytest.mark.asyncio
+async def test_service_bridge_is_deprecated(tmp_path):
+    container = ServiceContainer()
+    storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evaldep")
+    try:
+        env = ScriptedReachEnv(targets={0: TARGETS[0]}, tolerance=TOL)
+        policy = ScriptedReachPolicy(targets={0: TARGETS[0]}, gain=GAIN, max_step=MAX_STEP)
+        with pytest.warns(DeprecationWarning, match="bypasses the command gateway"):
+            await run_task_eval(
+                world_service=container.world_service,
+                simulation_service=container.simulation_service,
+                eval_service=container.eval_service,
+                env_client=env,
+                policy_client=policy,
+                suite="scripted",
+                task_id=0,
+                trials=1,
+                max_steps=MAX_STEPS,
+                storage=storage,
+            )
+    finally:
+        await container.shutdown()
+
+
+def test_runtime_or_services_required():
+    with pytest.raises(TypeError, match="requires `runtime"):
+        import asyncio
+
+        asyncio.get_event_loop_policy()
+        coro = run_task_eval(
+            env_client=object(),
+            suite="s",
+            task_id=0,
+            trials=1,
+            max_steps=1,
+            storage=StorageConfig(uri="/tmp/x", namespace="x"),
+        )
+        try:
+            coro.send(None)
+        finally:
+            coro.close()

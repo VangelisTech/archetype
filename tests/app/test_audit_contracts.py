@@ -3,6 +3,8 @@
 
 """Contracts for the bounded, append-only Iceberg audit table."""
 
+import logging
+
 import pytest
 from uuid_utils import uuid7
 
@@ -35,6 +37,33 @@ def test_audit_configuration_fails_closed(tmp_path):
         AuditLog(storage_config=_storage(tmp_path), flush_rows=0)
     with pytest.raises(ValueError, match="backend=iceberg"):
         AuditLog(storage_config=StorageConfig(uri=str(tmp_path / "lance")))
+
+
+@pytest.mark.asyncio
+async def test_command_gate_keeps_audit_backpressure_advisory(
+    tmp_path,
+    caplog,
+    monkeypatch,
+):
+    container = ServiceContainer(audit_storage_config=_storage(tmp_path, "advisory"))
+    ctx = ActorCtx(id=uuid7(), roles={"admin"})
+
+    async def reject_record(_row):
+        raise AuditBackpressureError("bounded audit batch is full")
+
+    monkeypatch.setattr(container.audit_log, "record", reject_record)
+    try:
+        with caplog.at_level(logging.WARNING, logger="archetype.app.command_service"):
+            world = await container.command_service.create_world(
+                ctx,
+                WorldConfig(name="applied-despite-audit-backpressure"),
+                StorageConfig(uri=str(tmp_path / "world")),
+            )
+
+        assert world.name == "applied-despite-audit-backpressure"
+        assert "audit emission failed" in caplog.text
+    finally:
+        await container.shutdown()
 
 
 @pytest.mark.asyncio

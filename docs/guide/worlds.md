@@ -75,7 +75,7 @@ world = AsyncWorld(
 | `name` | `str` | Human-readable name |
 | `tick` | `int` | Current simulation tick (starts at 0) |
 | `resources` | `Resources` | Type-safe dependency injection container |
-| `run_id` | `str` | Current run identifier (set by `run()`) |
+| `run_id` | `str` | Active durable timeline identifier, retained across repeated runs |
 
 ## Entity Management
 
@@ -115,6 +115,10 @@ await world.remove_components(entity_id, [Health])
 
 Component mutations trigger **archetype migration**: the entity's row is marked inactive in the old archetype table and a new row (with carried-over field values) is spawned in the target archetype table.
 
+The target row is a carried initial condition. It materializes on the next
+successful step after that step's processor pass; processors newly matched by
+the target signature first transform it on the following step.
+
 ## Tick Lifecycle
 
 Each call to `step()` executes one simulation tick:
@@ -123,13 +127,17 @@ Each call to `step()` executes one simulation tick:
 1. `PreTick` hooks fire
 2. For each archetype (in parallel):
    a. Query previous state (from _live cache or store)
-   b. Materialize deferred mutations (spawns/despawns)
-   c. Execute matching processors in priority order
-   d. Persist updated DataFrame to store
-3. Update _live snapshots
-4. Increment tick counter
-5. `PostTick` hooks fire
+   b. Apply pending despawns and prepare raw spawn/migration rows
+   c. Execute matching processors over the existing population in priority order
+   d. Append the raw spawn/migration rows to the computed frame
+3. If every archetype computed successfully, persist all frames
+4. Update _live snapshots
+5. Increment tick counter
+6. `PostTick` hooks fire
 ```
+
+The compute barrier in step 3 is the failure boundary: one processor failure
+prevents every archetype from appending and leaves the tick retryable.
 
 ### Running Multiple Ticks
 
@@ -139,7 +147,10 @@ from archetype.core.config import RunConfig
 await world.run(RunConfig(num_steps=10))
 ```
 
-This calls `step()` in a loop. Each run gets a unique `run_id` for storage isolation.
+This calls `step()` in a loop. The world keeps one active `run_id` across
+repeated steps and `run()` calls so every row belongs to one continuous
+timeline. A fork, by contrast, mints its own `run_id` and carries explicit
+lineage back to its source.
 
 ## The _live Cache
 
@@ -147,9 +158,13 @@ This calls `step()` in a loop. Each run gets a unique `run_id` for storage isola
 
 ### Why It Exists
 
-The store is the durability layer, but reading from it between consecutive ticks is fragile. Each `SimulationService.step()` emits a fresh `run_id`, so store reads filtered by the current `run_id` miss rows written by earlier ticks. World forks exhibit the same issue: the cloned snapshot is persisted under a placeholder run_id and the next step queries under a different one.
+The store is an append-only historical ledger, while the next engine tick
+needs exactly the latest active frame. Reconstructing that frame from durable
+history on every step would add query work to the hot execution path.
 
-`_live` fixes this (archetype#72). After all archetypes finish processing, `step()` updates `_live` with the output DataFrames filtered to active rows:
+`_live` retains the already-computed frame. After all archetypes finish
+processing, `step()` updates it with the output DataFrames filtered to active
+rows:
 
 ```python
 self._live = {
@@ -166,7 +181,10 @@ else:
     df = await self.query_archetype(sig, ...)
 ```
 
-The store read is only used for tick 0 (when there is no prior output) or for archetypes not yet in `_live`.
+The store read is only used for tick 0 (when there is no prior output) or for
+archetypes not yet in `_live`. This cache is an engine implementation detail,
+not a user-facing read preference: `RuntimeWorld.query()` goes through the
+durable query path for both live and cold worlds.
 
 ## Mutation Internals
 

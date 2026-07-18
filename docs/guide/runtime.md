@@ -25,6 +25,13 @@ The runtime module imports from `archetype.app` ONLY:
 - `archetype.app.models`
 - `archetype.app.auth.models`
 - `archetype.app.artifacts` (immutable artifact contracts only)
+- `archetype.app.autoresearch_service` inside `TYPE_CHECKING` only
+- `archetype.app.eval_service` inside `TYPE_CHECKING` only
+
+The two type-only modules supply public callback and result annotations for
+`world.autoresearch()` and `world.grade()`. They do not provide an operational
+path around the gate; both operations still route through the authorized
+runtime surface.
 
 Imports from `archetype.app.{mutation_service, simulation_service, query_service, world_service, broker}` are forbidden. Any such import is a spec violation; the gate is leaking.
 
@@ -54,13 +61,21 @@ async with ArchetypeRuntime() as runtime: ...
 
 `__aexit__` MUST:
 
-1. Shut down all live world handles (LIFO order).
-2. Call `container.shutdown()`.
-3. Be idempotent. Errors during shutdown are aggregated and re-raised after best-effort completion.
+1. Stop admitting new runtime and handle operations.
+2. Await the operation lock for every live shared world state. A lock-protected
+   call already in progress — including `run()`, `step()`, or `query()` —
+   finishes before that state and all of its aliases close.
+3. Call `container.shutdown()` only after admitted world work has drained.
+4. Be idempotent. Errors during shutdown are aggregated and re-raised after
+   best-effort completion.
 
 ### R6 — Sync parity is part of the contract
 
-`SyncArchetypeRuntime` exposes the same surface as the async runtime, implemented via `asyncio.Runner`. Every method on `RuntimeWorld` has a matching method on `SyncRuntimeWorld`.
+`SyncArchetypeRuntime` exposes the same world-operation surface as the async
+runtime, implemented via `asyncio.Runner`. Every public method on
+`RuntimeWorld` has a matching method on `SyncRuntimeWorld`. Runtime lifecycle
+syntax remains idiomatic to each mode: `async with` / `await shutdown()` for
+async, `with` for sync.
 
 The sync facade owns its own `asyncio.Runner` and does NOT share with any outer event loop.
 
@@ -155,7 +170,30 @@ path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
 the handle's current world and run; fork handles do not inherit ancestor fact
 rows.
 
-### R19 — Artifact finalization is an optional gated surface
+### R19 — Public API is gate-addressable, and the machine checks
+
+`@public_api` (top-level export) marks archetype's supported callable surface
+and carries an enforced contract: **a public callable may not accept raw
+services**. Public capability must be expressible through `ArchetypeRuntime`
+and its gated handles, so every mutation carries command-audit provenance —
+a function taking `world_service=`/`simulation_service=` forces callers to
+hand-roll a `ServiceContainer` and bypass the gate (observed twice before
+this rule existed). `scripts/check_api_import_boundaries.py` enforces the
+signature rule and the import scopes (`experiments` may import app *models*
+only; the runtime is the sole public consumer of app). Deprecated
+service-shaped bridge parameters live in the checker's allowlist with a
+removal deadline.
+
+`@archetype.entrypoint()` is the script boundary as a decorator — an
+evolution of the runtime, not a surface beside it: it constructs the runtime
+(env-driven configuration per R16/R17), bridges sync/async, injects the
+runtime as the first argument, and guarantees teardown. Eval helpers
+(`archetype.experiments.eval_rollouts.run_task_eval`,
+`archetype.experiments.instruction_sweep.run_instruction_sweep`) are
+runtime-first: pass `runtime=`; their raw-service keyword forms are
+deprecated bridges removed in v0.6.
+
+### R20 — Artifact finalization is an optional gated surface
 
 `ArchetypeRuntime(artifact_store=...)` configures one process-level
 `iArtifactService`. `world.publish_artifacts(request)` and

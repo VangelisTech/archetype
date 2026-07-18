@@ -194,6 +194,18 @@ async def test_eval_service_grades_trajectory_component_with_custom_sampling(tmp
 
         assert [result.passed for result in results] == [True, True]
         assert [result.grader_name for result in results] == ["sample_count", "total_reward"]
+
+        with pytest.raises(
+            ValueError,
+            match=r"TrajectoryReward does not store requested trajectory filter field\(s\): task_id",
+        ):
+            await container.eval_service.query_trajectory_component(
+                TrajectoryReward,
+                world_id=world.world_id,
+                run_id=run.run_id,
+                task_ids=["reach"],
+                storage_config=storage,
+            )
     finally:
         await container.shutdown()
 

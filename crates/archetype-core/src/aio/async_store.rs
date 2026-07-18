@@ -14,6 +14,7 @@ pub struct ReadFilter {
 
 #[async_trait]
 pub trait Store: Send + Sync {
+    /// Atomically publish one table batch: `Err` must leave the batch invisible.
     async fn append(&self, table_name: &str, batch: &RecordBatch) -> Result<()>;
 
     async fn read_table(&self, table_name: &str, filter: ReadFilter) -> Result<Vec<RecordBatch>>;

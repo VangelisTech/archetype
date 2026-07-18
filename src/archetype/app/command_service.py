@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from uuid_utils import UUID
 
 from archetype._obs import instrument
-from archetype.app.auth.guard import guardrail_allow
+from archetype.app.auth.guard import guardrail_allow, guardrail_check, guardrail_commit
 from archetype.app.models import (
     Command,
     CommandType,
@@ -89,6 +89,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DEFERRED_COMMAND_TYPES = frozenset(
+    {
+        CommandType.SPAWN,
+        CommandType.UPDATE,
+        CommandType.DESPAWN,
+        CommandType.ADD_COMPONENT,
+        CommandType.REMOVE_COMPONENT,
+        CommandType.ADD_PROCESSOR,
+        CommandType.REMOVE_PROCESSOR,
+        CommandType.MESSAGE,
+        CommandType.CUSTOM,
+        CommandType.QUERY_WORLD,
+    }
+)
+
+
+def _parse_entity_id(value: object) -> int:
+    """Decode an entity ID without lossy numeric coercion."""
+    if type(value) is int:
+        return value
+
+    if isinstance(value, str):
+        digits = value[1:] if value[:1] in {"+", "-"} else value
+        if digits and digits.isascii() and digits.isdecimal():
+            return int(value)
+
+    raise TypeError("entity_id must be an integer or decimal-integer string")
+
 
 class CommandService:
     """Policy enforcement point.
@@ -127,6 +155,27 @@ class CommandService:
         """RBAC + quota check. Raises GuardrailError if denied."""
         guardrail_allow(cmd, ctx)
 
+    @staticmethod
+    def _gate_batch(cmds: list[Command], ctx: ActorCtx) -> None:
+        """Validate a batch completely, then debit its quota once."""
+        projected_tokens = 0
+        for index, cmd in enumerate(cmds):
+            projected_tokens += guardrail_check(
+                cmd,
+                ctx,
+                projected_count=index,
+                projected_tokens=projected_tokens,
+            )
+        guardrail_commit(ctx, count=len(cmds), tokens=projected_tokens)
+
+    @staticmethod
+    def _validate_deferred_command(cmd: Command) -> None:
+        if cmd.type not in _DEFERRED_COMMAND_TYPES:
+            raise ValueError(
+                f"{cmd.type.value} is a direct gated operation with no tick-deferred dispatcher; "
+                "it cannot enter the tick-deferred broker"
+            )
+
     def _require_world(self, world_id: str | UUID) -> None:
         """Reject submissions to worlds not in the registry.
 
@@ -140,14 +189,30 @@ class CommandService:
         if not self._worlds.has_world(world_id):
             raise WorldNotFoundError(world_id)
 
-    async def _emit(self, ctx: ActorCtx, command_type: str, world_id=None, **kw) -> None:
+    async def _emit(
+        self,
+        ctx: ActorCtx,
+        command_type: str,
+        world_id: str | UUID | None = None,
+        *,
+        command_id: UUID | None = None,
+        status: str = "applied",
+        payload_json: str = "{}",
+    ) -> None:
         """Emit one audit row. Best-effort — never raises."""
         if self._audit is None:
             return
         try:
             from archetype.app.audit_log import make_audit_row
 
-            row = make_audit_row(ctx, command_type, world_id, **kw)
+            row = make_audit_row(
+                ctx,
+                command_type,
+                world_id,
+                command_id=command_id,
+                status=status,
+                payload_json=payload_json,
+            )
             await self._audit.record(row)
         except Exception:
             logger.warning("audit emission failed", exc_info=True)
@@ -176,7 +241,12 @@ class CommandService:
         """Batch-spawn entities. Applies one RBAC gate check for the batch."""
         self._gate(Command(type=CommandType.SPAWN), ctx)
         result = await self._mutations.create_entities(world_id, entities)
-        await self._emit(ctx, "spawn_batch", world_id, count=len(entities))
+        await self._emit(
+            ctx,
+            "spawn_batch",
+            world_id,
+            payload_json=json.dumps({"count": len(entities)}),
+        )
         return result
 
     @instrument("gate.reserve_entity_ids")
@@ -201,7 +271,12 @@ class CommandService:
         """Materialise a previously reserved entity ID."""
         self._gate(Command(type=CommandType.SPAWN), ctx)
         await self._mutations.spawn_with_reserved_id(world_id, entity_id, components)
-        await self._emit(ctx, "spawn_reserved", world_id, entity_id=entity_id)
+        await self._emit(
+            ctx,
+            "spawn_reserved",
+            world_id,
+            payload_json=json.dumps({"entity_id": entity_id}),
+        )
 
     @instrument("gate.remove_entity")
     async def remove_entity(
@@ -1091,6 +1166,7 @@ class CommandService:
         """Gate, then enqueue for application at cmd.tick."""
         ctx, world_id, cmd = self._normalize_submit_args(ctx, world_id, cmd)
         self._require_world(world_id)
+        self._validate_deferred_command(cmd)
         self._gate(cmd, ctx)
         await self._broker.enqueue(world_id, cmd)
         await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
@@ -1106,7 +1182,8 @@ class CommandService:
         ctx, world_id, cmds = self._normalize_submit_args(ctx, world_id, cmds)
         self._require_world(world_id)
         for cmd in cmds:
-            self._gate(cmd, ctx)
+            self._validate_deferred_command(cmd)
+        self._gate_batch(cmds, ctx)
         await self._broker.enqueue_bulk(world_id, cmds)
         for cmd in cmds:
             await self._emit(ctx, cmd.type.value, world_id, command_id=cmd.id, status="queued")
@@ -1206,27 +1283,35 @@ class CommandService:
                 components = self._hydrate_components(payload.get("components", []))
                 entity_id = payload.get("entity_id")
                 if entity_id is not None:
-                    # Deferred spawn with reserved id — register directly
-                    # on the world so the pre-reserved ID is honored.
-                    from archetype.core.aio import AsyncWorld
-
-                    world = self._worlds.get_world(UUID(str(world_id)))
-                    if isinstance(world, AsyncWorld):
-                        await world._register_entity(int(entity_id), components)
+                    await self._mutations.spawn_with_reserved_id(
+                        world_id,
+                        _parse_entity_id(entity_id),
+                        components,
+                    )
                 else:
                     await self._mutations.create_entity(world_id, components)
 
+            case CommandType.UPDATE:
+                components = self._hydrate_components(payload.get("components", []))
+                await self._mutations.update_entity(
+                    world_id, _parse_entity_id(payload["entity_id"]), components
+                )
+
             case CommandType.DESPAWN:
-                await self._mutations.remove_entity(world_id, payload["entity_id"])
+                await self._mutations.remove_entity(
+                    world_id, _parse_entity_id(payload["entity_id"])
+                )
 
             case CommandType.ADD_COMPONENT:
                 components = self._hydrate_components(payload.get("components", []))
-                await self._mutations.add_components(world_id, payload["entity_id"], components)
+                await self._mutations.add_components(
+                    world_id, _parse_entity_id(payload["entity_id"]), components
+                )
 
             case CommandType.REMOVE_COMPONENT:
                 component_types = self._hydrate_component_types(payload.get("component_types", []))
                 await self._mutations.remove_components(
-                    world_id, payload["entity_id"], component_types
+                    world_id, _parse_entity_id(payload["entity_id"]), component_types
                 )
 
             case CommandType.ADD_PROCESSOR:

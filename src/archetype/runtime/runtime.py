@@ -139,8 +139,11 @@ class ArchetypeRuntime:
         await self.shutdown()
 
     async def shutdown(self) -> None:
-        """Close every world handle and release process-level resources.
+        """Drain admitted world operations, then release process resources.
 
+        New operations are rejected as soon as shutdown starts. Each shared
+        world state waits for its current lock-protected operation to finish
+        before closing, so storage stays available to an admitted call.
         Repeated calls have no effect.
         """
         if self._closed:

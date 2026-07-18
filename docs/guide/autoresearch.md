@@ -162,8 +162,9 @@ Experiment state gets the same operational properties as any other simulation in
 
 ## LIBERO on the ledger
 
-The same lab-world pattern extends to robotics benchmarks. `bench/libero/eval_run.py`
-runs batched LIBERO evals the Archetype-native way:
+The same lab-world pattern extends to robotics benchmarks. The external
+`everettVT/robot-evals` harness runs batched LIBERO evals against Archetype's
+packaged experiment services:
 
 - **One control-plane world per task, N trial entities** keyed by `env_key`. The env
   client batches by `env_key`, so one tick steps every live trial at once; finished
@@ -176,17 +177,20 @@ runs batched LIBERO evals the Archetype-native way:
   service**, not computed in the driver, so there is no summary component to drift
   from the ledger. (The old `eval_driver.py` / `EvalTrialResult` stack had exactly
   that drift problem and was removed.)
-- `bench/libero/in_process.py` runs LIBERO envs in-process (no Modal required);
-  `bench/libero/instruction_sweep.py` layers instruction optimization on top, and
-  `bench/libero/in_process_policy.py` colocates a VLA policy with the env.
+- In robot-evals, `src/robot_evals/in_process.py` runs LIBERO envs in-process;
+  `src/robot_evals/instruction_sweep.py` layers instruction optimization on
+  top, and `src/robot_evals/in_process_policy.py` colocates a VLA policy with
+  the env.
 
-`docs/guide/libero-recipe.md` is the full recipe. The large benchmark sweeps are
-**user-triggered actions** (GPU cost); never run them in CI.
+`docs/guide/libero-recipe.md` records the extraction boundary and retained
+Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
+(GPU cost); never run them in CI.
 
 ## References
 
 - Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
 - `src/archetype/experiments/` — the current component implementations
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
-- `bench/libero/eval_run.py` — batched control-plane LIBERO eval
-- `docs/guide/libero-recipe.md` — the end-to-end LIBERO recipe
+- `src/archetype/experiments/eval_rollouts.py` — packaged batched rollout orchestration
+- `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers
+- `docs/guide/libero-recipe.md` — extraction pointer and retained Archetype boundary

@@ -15,7 +15,7 @@ not a new mechanism — it is:
     control-plane world, batch-step them, grade success-rate *per variant*
     from the persisted ledger, then mutate the winner and repeat.
 
-That is the same orchestration as :func:`bench.libero.eval_run.run_task_eval`
+That is the same orchestration as :func:`archetype.experiments.eval_rollouts.run_task_eval`
 — one world, N entities, batch-stepped, graded by the eval service — with the
 single difference that the per-entity instruction varies. The scripted
 ``InstructionConditionedReachPolicy`` proves the loop end-to-end in CI (no GPU,
@@ -31,22 +31,23 @@ rollout in the world model, no env step — without changing the search.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import uuid_utils as uuid
 
 from archetype.app.models import EpisodeConfig
 from archetype.core.config import StorageConfig, WorldConfig
-from archetype.experiments.eval_rollouts import _final_row_per_entity
+from archetype.experiments.eval_rollouts import _final_row_per_entity, _trial_components
+
+if TYPE_CHECKING:  # runtime imports app at module scope; keep this edge type-only
+    from archetype.runtime import ArchetypeRuntime
+from archetype._api import public_api
 from archetype.experiments.manipulation import (
-    ACTION_DIM,
     EnvStepProcessor,
     FramedEnvStepProcessor,
-    ManipAction,
-    ManipFrameRef,
-    ManipProprio,
     ManipStatus,
     ManipTask,
 )
@@ -116,11 +117,55 @@ def _dedup(items: Sequence[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+class _GatedSweepOps:
+    """Every sweep operation as a gated runtime command (the supported path)."""
+
+    def __init__(self, runtime: ArchetypeRuntime) -> None:
+        self._runtime = runtime
+
+    async def make_world(self, name: str, storage: StorageConfig) -> Any:
+        return self._runtime.world(name=name, storage=storage)
+
+    async def spawn(self, world: Any, components: list[Any]) -> None:
+        await world.spawn(*components)
+
+    async def run_episode(self, world: Any, config: EpisodeConfig) -> Any:
+        return await world.run_episode(config)
+
+    async def query_final(self, world: Any, episode: Any, storage: StorageConfig) -> Any:
+        return await world.query(ManipStatus, ManipTask)
+
+
+class _ServiceSweepOps:
+    """DEPRECATED bridge: raw services, no command gateway. Removed in v0.6."""
+
+    def __init__(self, world_service: Any, simulation_service: Any, eval_service: Any) -> None:
+        self._worlds = world_service
+        self._sim = simulation_service
+        self._eval = eval_service
+
+    async def make_world(self, name: str, storage: StorageConfig) -> Any:
+        return await self._worlds.create_world(WorldConfig(name=name), storage)
+
+    async def spawn(self, world: Any, components: list[Any]) -> None:
+        await world.create_entity(components)
+
+    async def run_episode(self, world: Any, config: EpisodeConfig) -> Any:
+        return await self._sim.run_episode(world.world_id, config)
+
+    async def query_final(self, world: Any, episode: Any, storage: StorageConfig) -> Any:
+        return await self._eval.query_components(
+            [ManipStatus, ManipTask],
+            world_id=world.world_id,
+            run_id=episode.run_id,
+            storage_config=storage,
+        )
+
+
+@public_api
 async def run_instruction_sweep(
+    runtime: ArchetypeRuntime | None = None,
     *,
-    world_service: Any,
-    simulation_service: Any,
-    eval_service: Any,
     env_client: Any,
     policy_client: Any,
     suite: str,
@@ -130,6 +175,9 @@ async def run_instruction_sweep(
     max_steps: int,
     storage: StorageConfig,
     with_frames: bool = False,
+    world_service: Any | None = None,  # deprecated bridge — remove in v0.6
+    simulation_service: Any | None = None,  # deprecated bridge — remove in v0.6
+    eval_service: Any | None = None,  # deprecated bridge — remove in v0.6
 ) -> SweepReport:
     """Run every instruction variant of one task in a single batched world.
 
@@ -146,15 +194,29 @@ async def run_instruction_sweep(
     (tick 0 is the reset observation), so each trial receives ``max_steps - 1``
     control steps. Size it as ``desired_control_steps + 1``.
     """
+    if runtime is not None:
+        ops: Any = _GatedSweepOps(runtime)
+    else:
+        if world_service is None or simulation_service is None or eval_service is None:
+            raise TypeError(
+                "run_instruction_sweep requires `runtime=ArchetypeRuntime(...)` "
+                "(or, deprecated, all of world_service/simulation_service/eval_service)"
+            )
+        warnings.warn(
+            "run_instruction_sweep(world_service=..., ...) bypasses the command "
+            "gateway and is deprecated; pass runtime= instead. Removed in v0.6.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        ops = _ServiceSweepOps(world_service, simulation_service, eval_service)
+
     unique_variants = _dedup(variants)
     if not unique_variants:
         raise ValueError("run_instruction_sweep needs at least one instruction variant")
 
     # Unique per sweep: the optimizer runs many sweeps with the same
     # suite/task_id, and the world registry enforces name uniqueness.
-    world = await world_service.create_world(
-        WorldConfig(name=f"isweep:{suite}:t{task_id}:{uuid.uuid7()}"), storage
-    )
+    world = await ops.make_world(f"isweep:{suite}:t{task_id}:{uuid.uuid7()}", storage)
     await world.add_processor(PolicyActionProcessor(policy_client))
     processor = FramedEnvStepProcessor(env_client) if with_frames else EnvStepProcessor(env_client)
     await world.add_processor(processor)
@@ -179,35 +241,22 @@ async def run_instruction_sweep(
         for seed_slot in range(seeds_per_variant):
             seed = task_id * 1000 + seed_slot
             obs = env_client.reset(env_key, seed)
-            components: list[Any] = [
-                ManipProprio(
-                    eef_pos=list(obs.get("eef_pos", [0.0, 0.0, 0.0])),
-                    eef_quat=list(obs.get("eef_quat", [1.0, 0.0, 0.0, 0.0])),
-                    gripper=float(obs.get("gripper", 0.0)),
-                    gripper_qpos=list(obs.get("gripper_qpos", [0.0, 0.0])),
-                ),
-                ManipAction(values=[0.0] * ACTION_DIM),
-                ManipStatus(),
-                ManipTask(
+            await ops.spawn(
+                world,
+                _trial_components(
+                    obs,
                     suite=suite,
                     task_id=task_id,
-                    instruction=variant,
+                    task_instruction=variant,
                     seed=seed,
                     env_key=env_key,
+                    with_frames=with_frames,
                 ),
-            ]
-            if with_frames:
-                components.append(
-                    ManipFrameRef(
-                        agentview_ref=str(obs.get("agentview_ref", "")),
-                        wrist_ref=str(obs.get("wrist_ref", "")),
-                    )
-                )
-            await world.create_entity(components)
+            )
             env_key += 1
 
-    episode = await simulation_service.run_episode(
-        world.world_id,
+    episode = await ops.run_episode(
+        world,
         EpisodeConfig(
             max_steps=max_steps,
             terminal_component=ManipStatus,
@@ -216,12 +265,7 @@ async def run_instruction_sweep(
         ),
     )
 
-    df = await eval_service.query_components(
-        [ManipStatus, ManipTask],
-        world_id=world.world_id,
-        run_id=episode.run_id,
-        storage_config=storage,
-    )
+    df = await ops.query_final(world, episode, storage)
     final = _final_row_per_entity(df)
 
     # Group the latched final rows by instruction, preserving variant order.

@@ -19,6 +19,7 @@ from uuid_utils import uuid7
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import PostTick
@@ -216,7 +217,43 @@ async def test_destroy_audit_row_preservation(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 5. 10-world destroy stress test
+# 5. Destroy clears only the target world's broker state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gated_destroy_clears_only_target_world_broker_state(tmp_path):
+    """Gated destroy removes the target queue/history without touching a sibling."""
+    c = ServiceContainer()
+    storage = _storage(tmp_path)
+    ctx = _admin_ctx()
+    try:
+        target = await c.command_service.create_world(ctx, WorldConfig(name="target"), storage)
+        sibling = await c.command_service.create_world(ctx, WorldConfig(name="sibling"), storage)
+
+        target_command = Command(type=CommandType.CUSTOM)
+        sibling_command = Command(type=CommandType.CUSTOM)
+        await c.command_service.submit(ctx, target.world_id, target_command)
+        await c.command_service.submit(ctx, sibling.world_id, sibling_command)
+
+        assert await c.broker.get_pending_count(target.world_id) == 1
+        assert await c.broker.get_pending_count(sibling.world_id) == 1
+
+        await c.command_service.destroy_world(ctx, target.world_id)
+
+        assert await c.broker.get_pending_count(target.world_id) == 0
+        assert await c.broker.get_history(target.world_id) == []
+        assert await c.broker.get_pending_count(sibling.world_id) == 1
+        assert [command.id for command in await c.broker.get_history(sibling.world_id)] == [
+            sibling_command.id
+        ]
+        assert c.world_service.get_world(sibling.world_id).world_id == sibling.world_id
+    finally:
+        await c.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# 6. 10-world destroy stress test
 # ---------------------------------------------------------------------------
 
 
@@ -264,7 +301,7 @@ async def test_10_world_destroy_stress(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 6. Audit row monotonicity
+# 7. Audit row monotonicity
 # ---------------------------------------------------------------------------
 
 
@@ -305,7 +342,7 @@ async def test_audit_row_monotonicity(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. Fork inherits source's storage by default
+# 8. Fork inherits source's storage by default
 # ---------------------------------------------------------------------------
 
 
@@ -411,7 +448,7 @@ async def test_fork_explicit_storage_override(tmp_path):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# 8. Fork lineage: pre-fork ticks readable through ancestry
+# 9. Fork lineage: pre-fork ticks readable through ancestry
 # ---------------------------------------------------------------------------
 
 
@@ -571,7 +608,7 @@ async def test_unstepped_fork_has_no_lineage_segment(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 9. Persisted lineage: ancestry survives dead worlds
+# 10. Persisted lineage: ancestry survives dead worlds
 # ---------------------------------------------------------------------------
 
 

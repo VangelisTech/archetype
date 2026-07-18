@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from archetype.core.aio.async_world import AsyncWorld
 from evals.run import build_harness
 from evals.suites import idempotency
 from evals.suites.idempotency_process import _wait_for_markers
@@ -17,7 +18,9 @@ from evals.suites.idempotency_process import _wait_for_markers
 
 def test_idempotency_eval_suite_is_registered_and_traceable() -> None:
     harness = build_harness(trials=1)
-    registered = {task_id for task_id, suite, _, _ in harness._tasks if suite == idempotency.SUITE}
+    registered = {
+        task_id for task_id, suite, _, _ in harness.registered_tasks if suite == idempotency.SUITE
+    }
     mapped = {case.task_id for case in idempotency.IDEMPOTENCY_CASES}
 
     assert registered == mapped | {"idempotency.manifest_traceability"}
@@ -49,6 +52,26 @@ def test_idempotency_contract_audit_detects_unmapped_spec_row(tmp_path, monkeypa
     checks = idempotency.traceability_checks()
 
     assert not checks["matrix_rows_match_eval_manifest"]
+
+
+def test_staged_spawn_eval_detects_first_write_wins_regression(monkeypatch) -> None:
+    original_spawn_frame = AsyncWorld._spawn_frame
+
+    def first_write_wins(self, sig):
+        rows = self.spawn_cache.get(sig)
+        if rows:
+            self.spawn_cache[sig] = list(reversed(rows))
+        try:
+            return original_spawn_frame(self, sig)
+        finally:
+            if rows is not None:
+                self.spawn_cache[sig] = rows
+
+    monkeypatch.setattr(AsyncWorld, "_spawn_frame", first_write_wins)
+
+    results = idempotency.task_staged_spawn_last_write_wins()
+
+    assert any(not result.passed for result in results)
 
 
 def test_process_readiness_failure_reports_child_stderr(tmp_path) -> None:

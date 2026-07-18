@@ -38,7 +38,7 @@ from typing import Any
 # `setdefault` honors an explicit `DO_NOT_TRACK=0` if a user wants telemetry on.
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-__version__ = "0.3.0"
+__version__ = "0.4.1"
 
 __all__ = [
     # Core types
@@ -83,6 +83,9 @@ __all__ = [
     "SyncRuntimeWorld",
     "run_sync",
     "configure_session",
+    "entrypoint",
+    # Public-API marker (machine-enforced: no raw-service params)
+    "public_api",
     # Runtime configuration and result types
     "WorldInfo",
     "RunResult",
@@ -162,6 +165,8 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "WorldConfig": ("archetype.core", "WorldConfig"),
     # Runtime
     "ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime"),
+    "entrypoint": ("archetype.runtime.entrypoint", "entrypoint"),
+    "public_api": ("archetype._api", "public_api"),
     "RuntimeWorld": ("archetype.runtime", "RuntimeWorld"),
     "SyncArchetypeRuntime": ("archetype.runtime", "SyncArchetypeRuntime"),
     "SyncRuntimeWorld": ("archetype.runtime", "SyncRuntimeWorld"),

@@ -199,7 +199,9 @@ async def test_crash_between_append_and_complete_recovers_without_duplication(
         await c.shutdown()
 
 
-async def test_crash_before_append_recovers_by_reappending(tmp_path, monkeypatch):
+async def test_recovery_rearms_before_append_so_expired_writer_stays_invisible(
+    tmp_path, monkeypatch
+):
     c = ServiceContainer()
     try:
         storage = _storage(tmp_path)
@@ -209,16 +211,26 @@ async def test_crash_before_append_recovers_by_reappending(tmp_path, monkeypatch
         from archetype.app.ingestion_service import IngestionService
 
         real_append = IngestionService._append_fact
+        expired_append: tuple | None = None
 
-        async def _crash(self, *args, **kwargs):
-            raise RuntimeError("injected crash before append")
+        async def _controlled_append(self, *args, **kwargs):
+            nonlocal expired_append
+            if expired_append is None:
+                expired_append = args
+                raise RuntimeError("injected crash before append")
 
-        monkeypatch.setattr(IngestionService, "_append_fact", _crash)
+            # The expired writer resumes after takeover and appends with its
+            # stale token immediately before the recovery's fresh append.
+            await real_append(self, *expired_append)
+            await real_append(self, *args, **kwargs)
+
+        monkeypatch.setattr(IngestionService, "_append_fact", _controlled_append)
         with pytest.raises(RuntimeError, match="injected crash"):
             await c.ingestion_service.ingest_fact(
                 wid, [Reading(value=4.0)], external_id="pre-append", producer="p"
             )
-        monkeypatch.setattr(IngestionService, "_append_fact", real_append)
+        assert expired_append is not None
+        expired_claim = expired_append[2]
 
         catalog = c.storage_service.get_control_catalog(storage)
         scope = claim_scope_key(wid, str(world.run_id), "p", "pre-append")
@@ -234,7 +246,17 @@ async def test_crash_before_append_recovers_by_reappending(tmp_path, monkeypatch
             wid, [Reading(value=4.0)], external_id="pre-append", producer="p"
         )
         assert not receipt.duplicate
-        assert len(await _visible_facts(c, world, storage)) == 1
+        assert receipt.commit_token != expired_claim.commit_token
+
+        visible = await _visible_facts(c, world, storage)
+        assert len(visible) == 1
+        assert visible[0]["factmeta__commit_id"] == receipt.commit_token
+
+        store = await c.storage_service.get_or_create_store(storage)
+        physical = await store.get_existing_table_df(receipt.table_id, wid, str(world.run_id))
+        assert physical.count_rows() == 2, (
+            "the late old-token row may exist physically but must stay invisible"
+        )
     finally:
         await c.shutdown()
 

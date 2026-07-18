@@ -66,7 +66,7 @@ from daft import DataType, Series, col
 
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
-from archetype.experiments.boundary import series_to_rows
+from archetype.experiments.boundary import external_call_indices, series_to_rows
 
 from .manipulation import (
     ACTION_DIM,
@@ -157,6 +157,7 @@ class _PolicyCaller:
         gripper: Series,
         gripper_qpos: Series,
         done: Series,
+        is_active: Series,
         prev_action: Series,
         agentview_ref: Series,
         wrist_ref: Series,
@@ -170,6 +171,7 @@ class _PolicyCaller:
                 "gripper",
                 "gripper_qpos",
                 "done",
+                "is_active",
                 "prev_action",
                 "agentview_ref",
                 "wrist_ref",
@@ -181,14 +183,15 @@ class _PolicyCaller:
             gripper,
             gripper_qpos,
             done,
+            is_active,
             prev_action,
             agentview_ref,
             wrist_ref,
         )
 
-        # Done rows are frozen: keep the terminal action unchanged.
+        # Done or inactive rows are frozen: keep the prior action unchanged.
         actions = [row["prev_action"] for row in rows]
-        live = [i for i, row in enumerate(rows) if not row["done"]]
+        live = external_call_indices(rows)
         if live:
             chosen = self._client.act(
                 [rows[i]["env_key"] for i in live],
@@ -231,22 +234,33 @@ class _PolicyCallerNoRefs:
         eef_quat: Series,
         gripper: Series,
         done: Series,
+        is_active: Series,
         prev_action: Series,
     ) -> Series:
         rows = series_to_rows(
-            ["env_key", "instruction", "eef_pos", "eef_quat", "gripper", "done", "prev_action"],
+            [
+                "env_key",
+                "instruction",
+                "eef_pos",
+                "eef_quat",
+                "gripper",
+                "done",
+                "is_active",
+                "prev_action",
+            ],
             env_key,
             instruction,
             eef_pos,
             eef_quat,
             gripper,
             done,
+            is_active,
             prev_action,
         )
 
-        # Done rows are frozen: keep the terminal action unchanged.
+        # Done or inactive rows are frozen: keep the prior action unchanged.
         actions = [row["prev_action"] for row in rows]
-        live = [i for i, row in enumerate(rows) if not row["done"]]
+        live = external_call_indices(rows)
         if live:
             chosen = self._client.act(
                 [rows[i]["env_key"] for i in live],
@@ -354,6 +368,7 @@ class PolicyActionProcessor(AsyncProcessor):
                     col("manipproprio__gripper"),
                     col("manipproprio__gripper_qpos"),
                     col("manipstatus__done"),
+                    col("is_active"),
                     col("manipaction__values"),
                     col("manipframeref__agentview_ref"),
                     col("manipframeref__wrist_ref"),
@@ -369,6 +384,7 @@ class PolicyActionProcessor(AsyncProcessor):
                     col("manipproprio__eef_quat"),
                     col("manipproprio__gripper"),
                     col("manipstatus__done"),
+                    col("is_active"),
                     col("manipaction__values"),
                 ),
             )

@@ -51,12 +51,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import urlparse
 
 import pyarrow as pa
 
+from archetype._storage_uri import local_storage_path, normalized_storage_uri
+from archetype.app.errors import ConflictError
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
+from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,14 @@ _SCHEMA_VERSION = 4
 _DIGEST_DOMAIN = "archetype.catalog.v1"
 
 
-class CatalogConflictError(RuntimeError):
+class CatalogConflictError(ConflictError):
     """Same identity registered with different content — never silently resolved."""
+
+    public_detail = "Catalog entry conflicts with existing state"
 
 
 class CatalogSchemaMismatchError(RuntimeError):
-    """A stored signature descriptor disagrees with the physical table schema."""
+    """Durable catalog schema is incompatible with this build or physical data."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ def storage_fingerprint(config: StorageConfig) -> str:
         {
             "domain": _DIGEST_DOMAIN,
             "kind": "storage",
-            "uri": _normalized_uri(config),
+            "uri": normalized_storage_uri(str(config.uri)),
             "namespace": config.namespace,
             "backend": config.backend.value,
         },
@@ -150,15 +154,6 @@ def storage_fingerprint(config: StorageConfig) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _normalized_uri(config: StorageConfig) -> str:
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        path = parsed.path if parsed.scheme == "file" else uri
-        return str(Path(path).expanduser().resolve())
-    return uri.rstrip("/")
 
 
 def catalog_path_for(config: StorageConfig) -> Path:
@@ -171,12 +166,15 @@ def catalog_path_for(config: StorageConfig) -> Path:
     (single-host authority is the documented v0.3 limit). The backend is
     part of the identity in both forms, mirroring storage_fingerprint.
     """
-    uri = str(config.uri)
-    parsed = urlparse(uri)
-    if parsed.scheme in ("", "file"):
-        base = Path(parsed.path if parsed.scheme == "file" else uri).expanduser()
-        return base / config.namespace / f".archetype-catalog-{config.backend.value}.db"
+    namespace = require_safe_namespace(config.namespace)
+    if local_storage_path(str(config.uri)) is not None:
+        base = resolve_local_root(str(config.uri))
+        candidate = base / namespace / f".archetype-catalog-{config.backend.value}.db"
+        if not candidate.resolve().is_relative_to(base):
+            raise ValueError(f"catalog path {candidate} escapes storage root {base} (fail closed)")
+        return candidate
     root = Path(os.environ.get("ARCHETYPE_CATALOG_DIR", "~/.archetype/catalogs")).expanduser()
+    # The remote-form filename is fingerprint-derived hex, never request data.
     return root / f"{storage_fingerprint(config)[:24]}.db"
 
 
@@ -216,12 +214,16 @@ class ManifestRecord:
     created_at: str
 
 
-class ClaimConflictError(RuntimeError):
+class ClaimConflictError(ConflictError):
     """Same external id claimed/completed with a different payload digest."""
 
+    public_detail = "Claim conflicts with existing state"
 
-class ClaimPendingError(RuntimeError):
+
+class ClaimPendingError(ConflictError):
     """A live lease holds this claim; back off — never blind-retry."""
+
+    public_detail = "Claim is currently pending"
 
 
 @dataclass(frozen=True)
@@ -497,7 +499,8 @@ class SqliteControlCatalog:
             conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[0]
         )
         if version > _SCHEMA_VERSION:
-            raise CatalogConflictError(
+            conn.close()
+            raise CatalogSchemaMismatchError(
                 f"catalog {self.path} has schema_version={version}, "
                 f"this build expects {_SCHEMA_VERSION}"
             )
@@ -616,8 +619,9 @@ class SqliteControlCatalog:
         Returns (outcome, record) where outcome is one of:
         - "acquired": this claimant owns a fresh PENDING claim (new token).
         - "recovered": this claimant took over an expired PENDING claim —
-          the ORIGINAL token is kept so recovery can find an already-
-          appended orphan and complete without re-appending.
+          the original token is kept only long enough to probe for an
+          already-appended orphan. A recovery with no orphan must re-arm
+          the claim with a fresh token before appending.
         - "duplicate": an identical fact is already COMPLETE — the original
           record is the receipt; nothing to do.
         Raises ClaimConflictError on same id + different digest, and
@@ -703,6 +707,57 @@ class SqliteControlCatalog:
                 )
 
         return await self._run(_acquire)
+
+    async def rearm_claim(
+        self,
+        world_id: str,
+        scope_key: str,
+        claimant: str,
+        commit_token: str,
+    ) -> ClaimRecord:
+        """Rotate a recovered, empty claim to a fresh commit identity.
+
+        This is a claimant-checked CAS. Rows appended late by the expired
+        owner retain the old token and can therefore never become visible
+        when the recovered claim completes.
+        """
+
+        def _rearm() -> ClaimRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM claims WHERE scope_key=?", (scope_key,)
+                ).fetchone()
+                if row is None:
+                    raise ClaimConflictError(f"no claim recorded for scope {scope_key}")
+                existing = _claim_from_row(row)
+                if existing.world_id != world_id:
+                    raise ClaimConflictError(
+                        f"claim {scope_key} belongs to world {existing.world_id}, not {world_id}"
+                    )
+                if existing.status != "PENDING":
+                    raise ClaimConflictError(
+                        f"claim {scope_key} is already {existing.status}; refusing to re-arm"
+                    )
+                if existing.claimant != claimant:
+                    raise ClaimPendingError(
+                        f"claim {scope_key} is held by {existing.claimant}; "
+                        "this claimant cannot re-arm it"
+                    )
+                if existing.commit_token == commit_token:
+                    raise ClaimConflictError(
+                        f"claim {scope_key} re-arm must use a fresh commit token"
+                    )
+                conn.execute(
+                    "UPDATE claims SET commit_token=?, table_id=NULL WHERE scope_key=?",
+                    (commit_token, scope_key),
+                )
+                return _claim_from_row(
+                    conn.execute("SELECT * FROM claims WHERE scope_key=?", (scope_key,)).fetchone()
+                )
+
+        return await self._run(_rearm)
 
     async def record_claim_table(self, world_id: str, scope_key: str, table_id: str) -> None:
         """Record where a claim's rows will land, BEFORE the append.
@@ -1277,9 +1332,12 @@ class SqliteControlCatalog:
 
         Unions tick manifests with COMPLETE fact claims (issue #274): a tick
         may carry one manifest token plus any number of fact tokens. None
-        when the pair has neither manifests nor completed claims AND no
-        fence — an uncoordinated or pre-#273 world whose rows are implicitly
-        visible. A fenced world with nothing published filters everything.
+        only when the pair has neither manifests nor claims AND no fence —
+        an uncoordinated or pre-#273 world whose rows are implicitly visible.
+        A fence or any claim activates filtering; only published manifests
+        and COMPLETE claim tokens are then visible. When the first claim is
+        added to a never-fenced legacy run, its empty epoch-0 token remains
+        allowed so coordination does not hide pre-existing rows.
         """
 
         def _tokens() -> dict[int, list[str]] | None:
@@ -1289,16 +1347,16 @@ class SqliteControlCatalog:
                 (world_id, run_id),
             ).fetchone()
             any_claim = conn.execute(
-                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? AND status='COMPLETE' LIMIT 1",
+                "SELECT 1 FROM claims WHERE world_id=? AND run_id=? LIMIT 1",
                 (world_id, run_id),
+            ).fetchone()
+            fence = conn.execute(
+                "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
             ).fetchone()
             if any_manifest is None and any_claim is None:
                 # Distinguish true pre-#273 history (never fenced — implicitly
                 # visible) from a coordinated world whose first commit hasn't
                 # published (fence exists — nothing is visible yet).
-                fence = conn.execute(
-                    "SELECT 1 FROM writer_fence WHERE world_id=?", (world_id,)
-                ).fetchone()
                 return None if fence is None else {}
             if ticks is None:
                 tick_clause, args = "", []
@@ -1307,6 +1365,10 @@ class SqliteControlCatalog:
                 tick_clause = f" AND tick IN ({placeholders})"
                 args = [int(t) for t in ticks]
             visible: dict[int, list[str]] = {}
+            if any_manifest is None and fence is None:
+                legacy_ticks = [0] if ticks is None else [int(tick) for tick in ticks]
+                for tick in legacy_ticks:
+                    visible.setdefault(tick, []).append("")
             for row in conn.execute(
                 "SELECT tick, commit_token FROM manifests WHERE world_id=? AND run_id=?"
                 + tick_clause,

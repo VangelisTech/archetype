@@ -41,6 +41,7 @@ help:
 	@echo "Benchmarks & Evals:"
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
+	@echo "  make bench-query    Run QueryService latency benchmarks"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
 	@echo "  make eval-idem      Run idempotency suite only"
@@ -86,7 +87,7 @@ format:
 		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
 
 .PHONY: lint
-lint: lazy-audit api-boundary-audit idempotency-audit
+lint: lazy-audit api-boundary-audit idempotency-audit gate-coverage-audit
 	@uv run ruff check src tests evals/suites/idempotency.py \
 		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
 		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
@@ -120,6 +121,12 @@ api-boundary-audit:
 .PHONY: idempotency-audit
 idempotency-audit:
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/check_idempotency_contracts.py
+
+# Command-disposition manifest + API error taxonomy. Static guard for the
+# accepted-then-dropped class (#178/#368) and unmapped-500 class (#180).
+.PHONY: gate-coverage-audit
+gate-coverage-audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/check_gate_coverage.py
 
 # Cyclomatic complexity + maintainability report.
 # Uses uvx so radon stays out of the project lock file.
@@ -237,6 +244,11 @@ bench-full:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.ecs.run --steps 3 --out bench-results.json
 	@echo "Benchmark results written to bench-results.json"
 
+.PHONY: bench-query
+bench-query:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json
+	@echo "Query benchmark results written to query-bench-results.json"
+
 .PHONY: eval
 eval:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m evals.run --out eval-results.json
@@ -332,7 +344,7 @@ docs-serve: docs
 docs-lint:
 	@echo "=== Spelling (typos) ==="
 	@if command -v typos >/dev/null 2>&1; then \
-		typos "docs/**/*.md" "docs/**/*.mdx" "*.md" "*.mdx"; \
+		typos --config ./_typos.toml .; \
 	else \
 		echo "typos not installed — install via: cargo install typos-cli"; \
 		echo "  or: brew install typos-cli"; \
@@ -341,9 +353,9 @@ docs-lint:
 	@echo ""
 	@echo "=== Markdown lint ==="
 	@if command -v markdownlint-cli2 >/dev/null 2>&1; then \
-		markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
-	elif npx --yes markdownlint-cli2 --help >/dev/null 2>&1; then \
-		npx --yes markdownlint-cli2 "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+		markdownlint-cli2 --config .markdownlint.yaml "docs/**/*.md" "*.md"; \
+	elif command -v npx >/dev/null 2>&1; then \
+		npx --yes markdownlint-cli2 --config .markdownlint.yaml "docs/**/*.md" "*.md"; \
 	else \
 		echo "markdownlint-cli2 not available"; \
 		exit 1; \
@@ -351,7 +363,7 @@ docs-lint:
 	@echo ""
 	@echo "=== Link check (lychee) ==="
 	@if command -v lychee >/dev/null 2>&1; then \
-		lychee --config lychee.toml "docs/**/*.md" "docs/**/*.mdx" "*.md"; \
+		lychee --config lychee.toml "docs/" "README.md" "CONTRIBUTING.md" "AGENTS.md"; \
 	else \
 		echo "lychee not installed — install via: cargo install lychee"; \
 		echo "  or: brew install lychee"; \
