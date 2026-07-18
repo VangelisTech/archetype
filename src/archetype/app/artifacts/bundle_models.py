@@ -46,6 +46,9 @@ class ArtifactSourceResolver(Protocol):
         self,
         candidates: tuple[ArtifactCandidate, ...],
         destination: Path,
+        *,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
     ) -> list[MaterializedArtifact]: ...
 
 

@@ -5,6 +5,7 @@
 
 import hashlib
 import json
+import shutil
 import tarfile
 import time
 from dataclasses import replace
@@ -379,6 +380,122 @@ async def test_apple_rootfs_resolver_extracts_file_and_directory(tmp_path):
         "context/findings.md",
     }
     assert {value.path.read_text() for value in values} == {'{"ok":true}', "finding"}
+
+
+async def test_apple_rootfs_resolver_rejects_member_before_copying(tmp_path, monkeypatch):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "oversized.bin").write_bytes(b"12345")
+    archive = tmp_path / "rootfs.tar"
+    with tarfile.open(archive, "w") as output:
+        output.add(tree / "oversized.bin", arcname="workspace/oversized.bin")
+
+    copied = False
+
+    def unexpected_copy(*args, **kwargs):
+        nonlocal copied
+        copied = True
+        raise AssertionError("oversized checkpoint member must not be copied")
+
+    monkeypatch.setattr(
+        "archetype.app.artifacts.bundle_service.shutil.copyfileobj", unexpected_copy
+    )
+    candidate = ArtifactCandidate(
+        source_ref=f"apple-container-rootfs://{archive}#/workspace/oversized.bin",
+        logical_path="oversized.bin",
+    )
+    with pytest.raises(ValueError, match="oversized.bin.*5 bytes; limit is 4"):
+        await CheckpointArtifactSourceResolver().materialize(
+            (candidate,),
+            tmp_path / "extracted",
+            max_artifact_bytes=4,
+            max_bundle_bytes=8,
+        )
+    assert not copied
+
+
+async def test_apple_rootfs_resolver_bounds_recursive_cumulative_copy(tmp_path, monkeypatch):
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    (tree / "first.bin").write_bytes(b"123")
+    (tree / "second.bin").write_bytes(b"456")
+    archive = tmp_path / "rootfs.tar"
+    with tarfile.open(archive, "w") as output:
+        output.add(tree, arcname="workspace")
+
+    real_copy = shutil.copyfileobj
+    copies = 0
+
+    def counted_copy(*args, **kwargs):
+        nonlocal copies
+        copies += 1
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr("archetype.app.artifacts.bundle_service.shutil.copyfileobj", counted_copy)
+    candidate = ArtifactCandidate(
+        source_ref=f"apple-container-rootfs://{archive}#/workspace",
+        logical_path="workspace",
+        recursive=True,
+    )
+    with pytest.raises(ValueError, match="bundle would be at least 6 bytes; limit is 5"):
+        await CheckpointArtifactSourceResolver().materialize(
+            (candidate,),
+            tmp_path / "extracted",
+            max_artifact_bytes=3,
+            max_bundle_bytes=5,
+        )
+    assert copies == 1
+
+
+@pytest.mark.parametrize(
+    ("max_artifact_bytes", "max_bundle_bytes", "message"),
+    [
+        (0, 1, "max_artifact_bytes must be positive"),
+        (2, 1, "max_bundle_bytes must be >= max_artifact_bytes"),
+    ],
+)
+async def test_artifact_resolver_rejects_invalid_materialization_limits(
+    tmp_path, max_artifact_bytes, max_bundle_bytes, message
+):
+    with pytest.raises(ValueError, match=message):
+        await CheckpointArtifactSourceResolver().materialize(
+            (),
+            tmp_path / "extracted",
+            max_artifact_bytes=max_artifact_bytes,
+            max_bundle_bytes=max_bundle_bytes,
+        )
+
+
+async def test_direct_artifact_limits_are_checked_before_archive_extraction(tmp_path):
+    oversized = tmp_path / "oversized.bin"
+    oversized.write_bytes(b"1234")
+    oversized_candidate = ArtifactCandidate(
+        source_ref=str(oversized),
+        logical_path="oversized.bin",
+    )
+    resolver = CheckpointArtifactSourceResolver()
+    with pytest.raises(ValueError, match="oversized.bin.*4 bytes; limit is 3"):
+        await resolver.materialize(
+            (oversized_candidate,),
+            tmp_path / "oversized-output",
+            max_artifact_bytes=3,
+            max_bundle_bytes=5,
+        )
+
+    first = tmp_path / "first.bin"
+    second = tmp_path / "second.bin"
+    first.write_bytes(b"123")
+    second.write_bytes(b"456")
+    with pytest.raises(ValueError, match="bundle is at least 6 bytes; limit is 5"):
+        await resolver.materialize(
+            (
+                ArtifactCandidate(source_ref=str(first), logical_path="first.bin"),
+                ArtifactCandidate(source_ref=str(second), logical_path="second.bin"),
+            ),
+            tmp_path / "bundle-output",
+            max_artifact_bytes=3,
+            max_bundle_bytes=5,
+        )
 
 
 async def test_runtime_world_exposes_publish_query_and_reconcile(tmp_path):

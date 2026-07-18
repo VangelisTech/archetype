@@ -58,6 +58,8 @@ if TYPE_CHECKING:
 _ARTIFACT_INDEX_TABLE = "artifact_index_v1"
 _ROOTFS_SCHEME = "apple-container-rootfs://"
 _MAX_FAILURE_DETAIL_CHARS = 4096
+_DEFAULT_MAX_ARTIFACT_BYTES = 1 << 30
+_DEFAULT_MAX_BUNDLE_BYTES = 4 << 30
 logger = logging.getLogger(__name__)
 
 
@@ -101,13 +103,28 @@ class CheckpointArtifactSourceResolver:
         self,
         candidates: tuple[ArtifactCandidate, ...],
         destination: Path,
+        *,
+        max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
+        max_bundle_bytes: int = _DEFAULT_MAX_BUNDLE_BYTES,
     ) -> list[MaterializedArtifact]:
-        return await asyncio.to_thread(self._materialize_sync, candidates, destination)
+        if max_artifact_bytes < 1:
+            raise ValueError("max_artifact_bytes must be positive")
+        if max_bundle_bytes < max_artifact_bytes:
+            raise ValueError("max_bundle_bytes must be >= max_artifact_bytes")
+        return await asyncio.to_thread(
+            self._materialize_sync,
+            candidates,
+            destination,
+            max_artifact_bytes,
+            max_bundle_bytes,
+        )
 
     def _materialize_sync(
         self,
         candidates: tuple[ArtifactCandidate, ...],
         destination: Path,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
     ) -> list[MaterializedArtifact]:
         destination.mkdir(parents=True, exist_ok=True)
         direct: list[ArtifactCandidate] = []
@@ -125,10 +142,45 @@ class CheckpointArtifactSourceResolver:
                 direct.append(candidate)
 
         resolved = self._materialize_direct(direct)
+        materialized_bytes = self._bounded_existing_size(
+            resolved,
+            max_artifact_bytes=max_artifact_bytes,
+            max_bundle_bytes=max_bundle_bytes,
+        )
         for archive, requested in archives.items():
-            resolved.extend(self._materialize_archive(archive, requested, destination))
+            extracted, materialized_bytes = self._materialize_archive(
+                archive,
+                requested,
+                destination,
+                materialized_bytes=materialized_bytes,
+                max_artifact_bytes=max_artifact_bytes,
+                max_bundle_bytes=max_bundle_bytes,
+            )
+            resolved.extend(extracted)
         self._reject_logical_collisions(resolved)
         return sorted(resolved, key=lambda value: value.logical_path)
+
+    @staticmethod
+    def _bounded_existing_size(
+        values: list[MaterializedArtifact],
+        *,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
+    ) -> int:
+        total = 0
+        for value in values:
+            size = value.path.stat().st_size
+            if size > max_artifact_bytes:
+                raise ValueError(
+                    f"artifact {value.logical_path!r} is {size} bytes; "
+                    f"limit is {max_artifact_bytes}"
+                )
+            total += size
+            if total > max_bundle_bytes:
+                raise ValueError(
+                    f"artifact bundle is at least {total} bytes; limit is {max_bundle_bytes}"
+                )
+        return total
 
     @staticmethod
     def _split_rootfs_ref(source_ref: str) -> tuple[Path, str]:
@@ -208,7 +260,11 @@ class CheckpointArtifactSourceResolver:
         archive: Path,
         requested: list[tuple[ArtifactCandidate, str]],
         destination: Path,
-    ) -> list[MaterializedArtifact]:
+        *,
+        materialized_bytes: int,
+        max_artifact_bytes: int,
+        max_bundle_bytes: int,
+    ) -> tuple[list[MaterializedArtifact], int]:
         matches = [0] * len(requested)
         resolved: list[MaterializedArtifact] = []
         archive_destination = destination / hashlib.sha256(str(archive).encode()).hexdigest()[:16]
@@ -234,9 +290,22 @@ class CheckpointArtifactSourceResolver:
                         if relative
                         else candidate.logical_path
                     )
+                    size = int(member.size)
+                    if size > max_artifact_bytes:
+                        raise ValueError(
+                            f"artifact {logical_path!r} is {size} bytes; "
+                            f"limit is {max_artifact_bytes}"
+                        )
+                    next_total = materialized_bytes + size
+                    if next_total > max_bundle_bytes:
+                        raise ValueError(
+                            f"artifact bundle would be at least {next_total} bytes; "
+                            f"limit is {max_bundle_bytes}"
+                        )
                     output = archive_destination / f"{len(resolved):08d}-{Path(member_name).name}"
                     with output.open("wb") as target:
                         shutil.copyfileobj(stream, target, length=1 << 20)
+                    materialized_bytes = next_total
                     matches[index] += 1
                     source_ref = f"{_ROOTFS_SCHEME}{archive}#/{member_name}"
                     resolved.append(
@@ -253,7 +322,7 @@ class CheckpointArtifactSourceResolver:
                 raise FileNotFoundError(
                     f"required artifact {member!r} is absent from checkpoint {archive}"
                 )
-        return resolved
+        return resolved, materialized_bytes
 
     @staticmethod
     def _reject_logical_collisions(values: list[MaterializedArtifact]) -> None:
@@ -664,7 +733,10 @@ class ArtifactBundleService:
 
         with tempfile.TemporaryDirectory(prefix="archetype-artifacts-") as temp_dir:
             materialized = await self._source_resolver.materialize(
-                request.artifacts, Path(temp_dir)
+                request.artifacts,
+                Path(temp_dir),
+                max_artifact_bytes=config.max_artifact_bytes,
+                max_bundle_bytes=config.max_bundle_bytes,
             )
             self._assert_materialized_metadata_safe(materialized)
             self._validate_materialized(materialized)

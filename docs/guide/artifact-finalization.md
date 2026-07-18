@@ -130,6 +130,13 @@ resolver supports direct files and
 resolver that reads a live sandbox or restores a `modal-image://` checkpoint.
 Other providers implement `ArtifactSourceResolver`.
 
+The service passes the configured per-artifact and aggregate bundle byte
+limits into every resolver. Archive resolvers must reject a member from its
+declared size before copying its bytes and must account for repeated and
+recursive selections cumulatively. The service validates the materialized
+files again before Daft reads them; the archive preflight is the resource
+control, while the second check defends against stale or dishonest metadata.
+
 Every `ArtifactIndexRecord` is scalar and Parquet-friendly:
 
 | Group | Fields |
