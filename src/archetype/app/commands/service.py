@@ -233,6 +233,12 @@ class CommandScheduler:
         self._catalogs[key] = catalog
         return catalog
 
+    def _refresh_known_catalogs(self) -> None:
+        """Resolve every catalog coordinate discovered by the world family."""
+        for world_id in self._worlds.catalog_world_ids():
+            if world_id not in self._catalogs:
+                self._catalog(world_id)
+
     async def admit(
         self,
         world_id,
@@ -478,6 +484,7 @@ class CommandScheduler:
         return await self._catalog(world_id).cancel_commands(str(world_id), reason=reason)
 
     async def read_outbox(self, *, limit: int = 1000) -> list[OutboxRecord]:
+        self._refresh_known_catalogs()
         events: list[OutboxRecord] = []
         for world_id, catalog in sorted(self._catalogs.items()):
             if len(events) >= limit:
@@ -491,10 +498,12 @@ class CommandScheduler:
             by_world.setdefault(event.world_id, []).append(event.event_id)
         for world_id, event_ids in by_world.items():
             catalog = self._catalogs.get(world_id)
-            if catalog is not None:
-                await catalog.mark_outbox_projected(world_id, event_ids)
+            if catalog is None:
+                catalog = self._catalog(world_id)
+            await catalog.mark_outbox_projected(world_id, event_ids)
 
     async def outbox_progress(self) -> dict[str, tuple[int, int]]:
+        self._refresh_known_catalogs()
         return {
             world_id: await catalog.outbox_progress(world_id)
             for world_id, catalog in sorted(self._catalogs.items())

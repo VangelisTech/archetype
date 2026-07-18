@@ -75,6 +75,13 @@ Deferred command admission and outcome also create command-outbox events.
 Those are projected independently and deduplicated by event identity; they do
 not change the one-access-event-per-gated-call rule.
 
+Projection discovers catalogs through the world family's retained durable
+storage coordinates, not only through command activity in the current process.
+Creating, forking, discovering, opening read-only, or resuming a world records
+those coordinates. Consequently, a fresh process that discovers or opens a
+world projects its pre-restart outbox on history reads and shutdown even when
+that process has not admitted or drained a command for the world.
+
 Multi-step gate methods still emit exactly one audit row:
 
 - `destroy_world` records one row for the lifecycle cleanup.

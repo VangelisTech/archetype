@@ -305,6 +305,32 @@ async def test_command_outbox_projects_queued_and_applied_with_watermark(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_cold_readonly_open_discovers_unprojected_command_outbox(tmp_path):
+    world_storage = _storage(tmp_path, "cold-outbox")
+    audit_storage = _audit_storage(tmp_path, "cold-outbox-audit")
+    writer = ServiceContainer(audit_storage_config=audit_storage)
+    reader = ServiceContainer(audit_storage_config=audit_storage)
+    command = Command(type=CommandType.CUSTOM)
+    try:
+        world = await writer.world_service.create_world(
+            WorldConfig(name="cold-outbox"), world_storage
+        )
+        await writer.command_scheduler.admit(world.world_id, command)
+
+        assert await reader.command_scheduler.outbox_progress() == {}
+        info = await reader.application.open_world_readonly(world_storage, world.world_id)
+        assert info.world_id == world.world_id
+
+        rows = (await reader.audit_log.query(world_id=world.world_id)).to_pylist()
+        command_rows = [row for row in rows if row["command_id"] == str(command.id)]
+        assert [row["status"] for row in command_rows] == ["queued"]
+        assert await reader.command_scheduler.outbox_progress() == {str(world.world_id): (1, 0)}
+    finally:
+        await reader.shutdown()
+        await writer.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_message_commands_wait_for_scheduled_tick_and_settle_as_noops(tmp_path):
     container = ServiceContainer(audit_storage_config=_audit_storage(tmp_path))
     ctx = ActorCtx(id=uuid7(), roles={"admin"})

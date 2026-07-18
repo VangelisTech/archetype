@@ -381,6 +381,22 @@ class WorldService:
         """
         return self._storage_configs.get(str(world_id))
 
+    def catalog_world_ids(self) -> list[str]:
+        """World IDs whose durable control-catalog coordinates are known."""
+        return sorted(self._storage_configs)
+
+    def _remember_storage_identity(
+        self,
+        world_id: str | UUID,
+        storage_config: StorageConfig,
+    ) -> None:
+        key = str(world_id)
+        existing = self._storage_configs.get(key)
+        if existing is not None and existing[0] != storage_config:
+            raise RuntimeError(f"world {key} is already bound to a different storage identity")
+        if existing is None:
+            self._storage_configs[key] = (storage_config, None)
+
     def control_catalog(self, world_id: str | UUID):
         """Resolve the control authority for a known live or retained world."""
         record = self._storage_configs.get(str(world_id))
@@ -489,7 +505,10 @@ class WorldService:
         (their rows are still queryable; append-only).
         """
         catalog = self._storage_service.get_control_catalog(storage_config)
-        return [_world_info_from_record(record) for record in await catalog.list_worlds()]
+        records = await catalog.list_worlds()
+        for record in records:
+            self._remember_storage_identity(record.world_id, storage_config)
+        return [_world_info_from_record(record) for record in records]
 
     async def open_world_readonly(
         self, storage_config: StorageConfig, world_id: str | UUID
@@ -506,6 +525,7 @@ class WorldService:
         record = await catalog.get_world(str(world_id))
         if record is None:
             raise KeyError(f"world {world_id} is not recorded in catalog for {storage_config.uri}")
+        self._remember_storage_identity(record.world_id, storage_config)
         return _world_info_from_record(record)
 
     async def open_world_mutable(

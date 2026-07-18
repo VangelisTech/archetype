@@ -78,6 +78,10 @@ async def open_world_readonly(
   `KeyError` for unrecorded worlds. It never constructs a live mutable
   world — that is `resume_world` (gated as `CREATE_WORLD`; see
   [World Lifecycle](world-lifecycle.md) § Resume).
+- Both discovery operations retain the resolved world-to-storage coordinates
+  for dependent read services. In particular, audit projection can discover
+  and drain pre-restart command-outbox events without requiring new command
+  activity in the current process.
 
 Both operations respect the info-class downgrade: callers get `WorldInfo`,
 never a world handle.
