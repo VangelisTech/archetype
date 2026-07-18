@@ -15,7 +15,9 @@ The final test runs the real service stack — coordinator, ingestion,
 receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 """
 
+import os
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -37,7 +39,13 @@ from archetype.app._catalog import (
 )
 from archetype.core.interfaces import StaleWriterError
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.asyncio,
+    # One Wrangler process serves this integration module. Under the suite's
+    # ``--dist loadgroup`` policy this prevents every test from launching a
+    # separate local Durable Object runtime and exhausting the worker host.
+    pytest.mark.xdist_group(name="remote-control-catalog"),
+]
 
 WORKER_DIR = Path(__file__).resolve().parents[2] / "infra" / "control-catalog"
 WORKER_TOKEN = "archetype-parity-token"
@@ -50,10 +58,16 @@ def _free_port() -> int:
 
 
 @pytest.fixture(scope="module")
-def worker_url():
+def worker_url(tmp_path_factory):
     if shutil.which("npx") is None:
         pytest.skip("npx unavailable; wrangler dev harness skipped")
     port = _free_port()
+    inspector_port = _free_port()
+    # xdist may instantiate this module-scoped fixture in multiple workers.
+    # Wrangler's defaults share both .wrangler/state and inspector port 9229,
+    # which lets independent Durable Object harnesses corrupt or interrupt one
+    # another. Give every fixture instance its own complete runtime state.
+    state_dir = tmp_path_factory.mktemp("wrangler-state")
     worker_log = tempfile.TemporaryFile(mode="w+")
     proc = subprocess.Popen(
         [
@@ -64,6 +78,10 @@ def worker_url():
             "--local",
             "--port",
             str(port),
+            "--inspector-port",
+            str(inspector_port),
+            "--persist-to",
+            str(state_dir),
             "--var",
             f"CATALOG_TOKEN:{WORKER_TOKEN}",
         ],
@@ -71,6 +89,8 @@ def worker_url():
         stdout=worker_log,
         stderr=subprocess.STDOUT,
         text=True,
+        # Own Wrangler, its node child, and workerd as one teardown unit.
+        start_new_session=True,
     )
     url = f"http://127.0.0.1:{port}"
     try:
@@ -97,11 +117,25 @@ def worker_url():
             pytest.skip("wrangler dev did not become ready in 120s")
         yield url
     finally:
-        proc.terminate()
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait(timeout=10)
+        else:
+            # npx can exit before its descendants. Do not leave an orphaned
+            # workerd consuming ports/resources for the next xdist group.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         worker_log.close()
 
 

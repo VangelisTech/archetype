@@ -571,18 +571,18 @@ export class WorldCommitDO implements DurableObject {
         // Match SqliteControlCatalog's per-operation missing-row contracts.
         // Failure release is deliberately idempotent; every other lifecycle
         // mutation requires a publication to exist.
-        if (route.length === 3 && method === "POST" && route[2] === "fail") {
-          return json({ ok: true });
-        }
-        if (
-          route.length === 3 &&
-          method === "POST" &&
-          ["renew", "uploads", "complete", "expire"].includes(route[2])
-        ) {
-          return conflict(
-            "artifact_publication_conflict",
-            `no artifact publication recorded for ${key}`,
-          );
+        if (route.length === 3 && method === "POST") {
+          // A Durable Object must consume the incoming body before returning;
+          // otherwise workerd reports an uncaught stream error after sending
+          // this response and a subsequent request can receive a spurious 503.
+          await request.arrayBuffer();
+          if (route[2] === "fail") return json({ ok: true });
+          if (["renew", "uploads", "complete", "expire"].includes(route[2])) {
+            return conflict(
+              "artifact_publication_conflict",
+              `no artifact publication recorded for ${key}`,
+            );
+          }
         }
         return json({ error: "not_found" }, 404);
       }
