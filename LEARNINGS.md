@@ -253,49 +253,46 @@ class Trainer:
 
 ---
 
-## Two "Resources" Concepts (Jan 2026)
+## World Resources vs Storage Services (updated Jul 2026)
 
 There are two distinct concepts, unfortunately both historically called "resources":
 
 | Concept | Module | Purpose |
 |---------|--------|---------|
 | **Resources** | `core/resources.py` | Type-safe DI container for processors |
-| **StorageBackendManager** | `app/storage_manager.py` | Pools storage backends (Lance/Iceberg) |
+| **StorageService** | `app/storage/service.py` | Pools stores and resolves control catalogs |
 
-**StorageBackendManager** (formerly `StorageResourceManager`) is infrastructure plumbing—it creates and pools `(Store, Querier, Updater)` triplets using a multiton pattern. The orchestrator owns one.
+**StorageService** is internal infrastructure plumbing. `ServiceContainer`
+owns it and `WorldService` uses its store pool. It is never placed in a
+world's resource container.
 
 **Resources** is the runtime DI container that passes services to processors. Each world has one.
 
 ```python
-# Infrastructure (app layer)
-orchestrator = WorldOrchestrator()  # owns a StorageBackendManager internally
-
 # Runtime DI (core layer, per-world)
-world.resources.insert(CommandBroker())
 world.resources.insert(MemoryBank.default())
 
 # In processor
-broker = resources.require(CommandBroker)
+memory = resources.require(MemoryBank)
 ```
 
 ---
 
 ## Resources: Type-Safe DI (Jan 2026)
 
-Processors often need shared state (configs, brokers, services). The `Resources` container provides type-safe dependency injection:
+Processors often need shared state (configs and concurrency-safe domain
+clients). The `Resources` container provides type-safe dependency injection:
 
 ```python
 from archetype.core.resources import Resources
-from archetype.app.broker import CommandBroker
-
 # Register resources on the world
-world.resources.insert(CommandBroker())
+world.resources.insert(MemoryBank.default())
 world.resources.insert(SimConfig(tick_duration=1.0))
 
 # Access in processors
 class MyProcessor(AsyncProcessor):
     async def process(self, df, resources: Resources = None, **kwargs):
-        broker = resources.require(CommandBroker)  # Raises if missing
+        memory = resources.require(MemoryBank)  # Raises if missing
         config = resources.get(SimConfig)  # Returns None if missing
         # ...
 ```
@@ -461,15 +458,16 @@ See ``lazy_audit.toml`` for the authoritative policy header and
 Archetype provides messaging mechanisms, not a framework delivery policy:
 
 - `CommandType.MESSAGE` is an RBAC-visible command envelope.
-- `CommandBroker` can queue, order, and record recent in-memory enqueue history.
+- `CommandScheduler` durably orders portable deferred envelopes, but it is an
+  application service and is not injected into processor resources.
 - `Resources`, processors, and hooks are the primitives applications can
   compose into routing and realization behavior.
 
 The framework does not define a message payload schema, recipient validation,
 inbox/outbox components, delivery receipts, channels, or a conversation graph.
-The command-service drain also has no `MESSAGE` application branch, so
+The default dispatcher gives `MESSAGE` an explicit no-op disposition, so
 submitting a message command is not equivalent to delivering it to an entity.
-A host that uses brokered message envelopes must supply the consumer and its
+A host that uses message envelopes must supply the consumer and its
 delivery semantics.
 
 [`examples/04_messaging.py`](examples/04_messaging.py) demonstrates one such
@@ -637,8 +635,8 @@ for entry in history:
 7. **JSON-encode** complex types (`list[dict]`, nested objects) for Arrow compatibility
 8. **Resources** for type-safe DI in processors
 9. **Hooks** for observability without processor coupling
-10. **Messaging delivery is application composition** — the broker queues
-    `MESSAGE` envelopes; applications define payloads, routing, and realization
+10. **Messaging delivery is application composition** — durable scheduling can
+    order `MESSAGE` envelopes; applications define payloads, routing, and realization
 11. **Tick-gating** for expensive operations (LLM calls, inner worlds)
 12. **Keep columns in DAG** — avoid intermediate `.collect()` breaking lazy evaluation
 
@@ -672,9 +670,10 @@ the invariant, not one process for the whole deployment. See
   and fenced resume are control-plane capabilities, not a replacement for
   Daft's data-plane execution model.
 - **World lifecycle operations are direct gated calls.** `create_world`,
-  `fork_world`, and `destroy_world` flow through `iCommandService` for RBAC and
-  audit, then delegate to `iWorldService`. The `CommandBroker` queues
-  tick-deferred commands; it is not the lifecycle or authorization boundary.
+  `fork_world`, and `destroy_world` flow through `iCommandGateway` for RBAC and
+  access audit, then delegate to `iRuntimeApplication`. `CommandScheduler`
+  durably owns tick-deferred commands; it is not the lifecycle or authorization
+  boundary.
 
 **State across restarts:**
 

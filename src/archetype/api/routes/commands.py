@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.deps import get_actor_ctx, get_command_gateway
 from archetype.api.errors import raise_api_error
 from archetype.api.models import (
     CommandBatchResponse,
@@ -27,8 +27,8 @@ from archetype.api.models import (
     SubmitCommandRequest,
     dataframe_to_rows,
 )
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.models import Command, CommandType
 
 router = APIRouter(prefix="/worlds/{world_id}/commands", tags=["commands"])
@@ -38,7 +38,7 @@ router = APIRouter(prefix="/worlds/{world_id}/commands", tags=["commands"])
 async def submit_command(
     world_id: str,
     req: SubmitCommandRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Queue a command. Required role depends on the command type."""
@@ -60,7 +60,7 @@ async def submit_command(
 async def submit_batch(
     world_id: str,
     req: SubmitBatchRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Queue commands atomically. Required roles depend on the command types."""
@@ -84,7 +84,7 @@ async def submit_batch(
 async def get_command_history(
     world_id: str,
     limit: int = 100,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Read audit history for a world. Requires viewer, player, operator, or admin."""

@@ -57,7 +57,7 @@ no-op; a differing record for the same `world_id` raises
 
 ## 3. Gated discovery API
 
-Two read-gated operations on `iCommandService`:
+Two read-gated operations on `iCommandGateway`:
 
 ```python
 async def discover_worlds(
@@ -78,6 +78,10 @@ async def open_world_readonly(
   `KeyError` for unrecorded worlds. It never constructs a live mutable
   world — that is `resume_world` (gated as `CREATE_WORLD`; see
   [World Lifecycle](world-lifecycle.md) § Resume).
+- Both discovery operations retain the resolved world-to-storage coordinates
+  for dependent read services. In particular, audit projection can discover
+  and drain pre-restart command-outbox events without requiring new command
+  activity in the current process.
 
 Both operations respect the info-class downgrade: callers get `WorldInfo`,
 never a world handle.
@@ -99,10 +103,10 @@ for every component the writing process defined.
 
 ```python
 # Process B, sharing nothing with the writer but the storage config:
-infos = await container.command_service.discover_worlds(ctx, storage_config)
+infos = await container.command_gateway.discover_worlds(ctx, storage_config)
 info = infos[0]
 assert info.run_id is not None
-df = await container.command_service.query_components(
+df = await container.command_gateway.query_components(
     ctx, [Score], world_id=str(info.world_id), run_id=str(info.run_id),
     storage_config=storage_config,
 )

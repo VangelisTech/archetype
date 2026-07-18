@@ -13,12 +13,9 @@ import asyncio
 
 import pytest
 from daft import DataFrame, col
-from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.auth.errors import GuardrailError
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 from archetype.runtime import SyncRuntimeWorld
 from archetype.runtime.world import RuntimeWorld
@@ -116,6 +113,61 @@ class TestShutdownErrorAggregation:
         with pytest.raises(RuntimeError, match="closed"):
             await world.info()
 
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_admitted_autoresearch(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "autoresearch-drain",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_autoresearch(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return "finished"
+
+        monkeypatch.setattr(world._app, "autoresearch", blocked_autoresearch)
+        operation = asyncio.create_task(world.autoresearch(object(), object()))
+        await entered.wait()
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)
+
+        assert not shutdown.done()
+        release.set()
+        assert await operation == "finished"
+        await shutdown
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_post_query_grading(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        world = runtime.world(
+            "grade-drain",
+            storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+        )
+        await world.spawn(Pos())
+        await world.step()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_graders(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return ["finished"]
+
+        monkeypatch.setattr(runtime._container.evaluation_service, "run_graders", blocked_graders)
+        operation = asyncio.create_task(world.grade(Pos, graders=[object()]))
+        await entered.wait()
+        shutdown = asyncio.create_task(runtime.shutdown())
+        await asyncio.sleep(0)
+
+        assert not shutdown.done()
+        release.set()
+        assert await operation == ["finished"]
+        await shutdown
+
 
 # ── 2. op_lock serialization ──────────────────────────────────────────
 
@@ -207,15 +259,8 @@ class TestSyncAsyncSurfaceParity:
 
 class TestViewerGuardrail:
     @pytest.mark.asyncio
-    async def test_viewer_cannot_create_world(self, tmp_path):
-        """ArchetypeRuntime(actor_ctx=ActorCtx(roles={'viewer'})) should
-        raise GuardrailError on the first operation that needs admin
-        (world creation via spawn)."""
-        viewer_ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-
-        async with ArchetypeRuntime(actor_ctx=viewer_ctx) as rt:
+    async def test_trusted_runtime_does_not_require_adapter_identity(self, tmp_path):
+        async with ArchetypeRuntime() as rt:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = rt.world("viewer-test", storage=storage)
-
-            with pytest.raises(GuardrailError):
-                await world.spawn(Pos(x=1.0))
+            world = rt.world("trusted-test", storage=storage)
+            assert isinstance(await world.spawn(Pos(x=1.0)), int)

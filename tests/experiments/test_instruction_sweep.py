@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 from archetype.experiments.instruction_sweep import (
     TemplatePerturbation,
@@ -138,7 +138,7 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         report = await run_instruction_sweep(
             world_service=container.world_service,
             simulation_service=container.simulation_service,
-            eval_service=container.eval_service,
+            evaluation_service=container.evaluation_service,
             env_client=env,
             policy_client=policy,
             suite="scripted",
@@ -165,7 +165,7 @@ async def test_instruction_sweep_grades_success_rate_per_variant(tmp_path):
         assert report.best is not None and report.best.instruction == "reach red block"
 
         # A2 addressability: every trial persists under one (world_id, run_id).
-        df = await container.eval_service.query_components(
+        df = await container.evaluation_service.query_components(
             [ManipStatus, ManipTask],
             world_id=report.world_id,
             run_id=report.run_id,
@@ -195,7 +195,7 @@ async def test_optimize_instruction_climbs_from_vague_to_precise(tmp_path):
             report = await run_instruction_sweep(
                 world_service=container.world_service,
                 simulation_service=container.simulation_service,
-                eval_service=container.eval_service,
+                evaluation_service=container.evaluation_service,
                 env_client=env,
                 policy_client=policy,
                 suite="scripted",
@@ -252,7 +252,7 @@ async def test_sweep_is_paired_and_position_invariant(tmp_path):
             report = await run_instruction_sweep(
                 world_service=container.world_service,
                 simulation_service=container.simulation_service,
-                eval_service=container.eval_service,
+                evaluation_service=container.evaluation_service,
                 env_client=env,
                 policy_client=policy,
                 suite="scripted",
@@ -299,7 +299,7 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
             await run_instruction_sweep(
                 world_service=container.world_service,
                 simulation_service=container.simulation_service,
-                eval_service=container.eval_service,
+                evaluation_service=container.evaluation_service,
                 env_client=env,
                 policy_client=policy,
                 suite="scripted",
@@ -315,9 +315,8 @@ async def test_sweep_resets_policy_state_between_runs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sweep_runtime_path_is_gated_and_matches_service_bridge(tmp_path):
-    """The gated runtime path produces the same per-variant grades as the
-    deprecated service bridge, and leaves run_episode command-audit rows."""
+async def test_sweep_runtime_path_matches_service_bridge_without_access_audit(tmp_path):
+    """Actor-free runtime sweep grades match the deprecated service bridge."""
     from archetype import ArchetypeRuntime
 
     targets = _targets()
@@ -348,4 +347,4 @@ async def test_sweep_runtime_path_is_gated_and_matches_service_bridge(tmp_path):
             storage=StorageConfig(uri=str(tmp_path / "store"), namespace="isweeprt"),
         )
         rows = (await audit.history(limit=200)).collect().to_pylist()
-        assert any("run_episode" in str(r) for r in rows)
+        assert rows == []

@@ -6,12 +6,12 @@
 Two checks that keep the command gate's claim-vs-effect surface honest:
 
 1. **Command disposition manifest** — every ``CommandType`` member is
-   classified below, and ``CommandService._apply``'s match arms equal the
-   applied-in-drain set exactly. A new enum member without a classification,
-   or a drain arm drifting from the manifest, fails this audit. This is the
+   classified below, and ``CommandScheduler._apply``'s match arms equal the
+   tick-deferred set exactly. A new enum member without a classification, or
+   a dispatcher arm drifting from the manifest, fails this audit. This is the
    static guard for the accepted-then-dropped class (issues #178/#368): a
-   command the gate accepts must either have a drain arm, be a direct-gated
-   operation, or be documented broker-queued data.
+   command admitted to durable scheduling must have an explicit disposition;
+   every other command is a direct application operation.
 
 2. **API error taxonomy** — every exception class defined in the app layer's
    error modules must be mapped by ``api.errors.raise_api_error`` to a
@@ -32,28 +32,31 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-COMMAND_SERVICE = ROOT / "src/archetype/app/command_service.py"
+COMMAND_SERVICE = ROOT / "src/archetype/app/commands/service.py"
 API_ERRORS = ROOT / "src/archetype/api/errors.py"
 
 # ── Check 1 manifest ─────────────────────────────────────────────────────────
 # Every CommandType member must appear in exactly one bucket. Reclassifying a
 # type is a contract decision: update the manifest in the same PR as the code.
 
-# Tick-deferred mutations: submit() enqueues them and _apply MUST have an arm.
-APPLIED_IN_DRAIN = {
+# Tick-deferred commands: durable admission accepts them and _apply MUST have
+# an explicit arm. MESSAGE, CUSTOM, and QUERY_WORLD are data/no-op envelopes,
+# but naming them here makes that behavior deliberate rather than fallthrough.
+DEFERRED_DISPATCHED = {
     "SPAWN",
     "DESPAWN",
     "UPDATE",
     "ADD_COMPONENT",
     "REMOVE_COMPONENT",
-    "ADD_PROCESSOR",
-    "REMOVE_PROCESSOR",
+    "MESSAGE",
+    "CUSTOM",
+    "QUERY_WORLD",
 }
 
-# Direct-gated operations (CommandService exposes an explicit method; the
-# broker is not their application path).
+# Direct-gated operations (CommandGateway exposes an explicit method; the
+# scheduler is not their application path).
 DIRECT_ONLY = {
-    "INGEST_FACT",
+    "PUBLISH_ARTIFACT",
     "EVALUATE",
     "CREATE_WORLD",
     "DESTROY_WORLD",
@@ -70,15 +73,12 @@ DIRECT_ONLY = {
     "LIST_PROCESSORS",
     "LIST_HOOKS",
     "LIST_RESOURCES",
+    "ADD_PROCESSOR",
+    "REMOVE_PROCESSOR",
     "ADD_RESOURCE",
     "ADD_HOOK",
     "REMOVE_HOOK",
 }
-
-# Application-defined envelopes: the broker supplies queueing only; consumers
-# dequeue and interpret them. QUERY_WORLD remains a compatibility envelope;
-# gated reads use CommandService's direct query methods.
-BROKER_DATA = {"MESSAGE", "CUSTOM", "QUERY_WORLD"}
 
 
 def _drain_case_arms(path: Path) -> set[str]:
@@ -91,10 +91,11 @@ def _drain_case_arms(path: Path) -> set[str]:
                 if not isinstance(inner, ast.Match):
                     continue
                 for case in inner.cases:
-                    pattern = case.pattern
-                    if isinstance(pattern, ast.MatchValue) and isinstance(
-                        pattern.value, ast.Attribute
-                    ):
+                    for pattern in ast.walk(case.pattern):
+                        if not isinstance(pattern, ast.MatchValue) or not isinstance(
+                            pattern.value, ast.Attribute
+                        ):
+                            continue
                         value = pattern.value
                         if isinstance(value.value, ast.Name) and value.value.id == "CommandType":
                             arms.add(value.attr)
@@ -106,13 +107,9 @@ def check_command_dispositions() -> list[str]:
 
     problems: list[str] = []
     members = set(CommandType.__members__)
-    classified = APPLIED_IN_DRAIN | DIRECT_ONLY | BROKER_DATA
+    classified = DEFERRED_DISPATCHED | DIRECT_ONLY
 
-    overlap = (
-        (APPLIED_IN_DRAIN & DIRECT_ONLY)
-        | (APPLIED_IN_DRAIN & BROKER_DATA)
-        | (DIRECT_ONLY & BROKER_DATA)
-    )
+    overlap = DEFERRED_DISPATCHED & DIRECT_ONLY
     if overlap:
         problems.append(f"manifest buckets overlap: {sorted(overlap)}")
 
@@ -127,17 +124,17 @@ def check_command_dispositions() -> list[str]:
         problems.append(f"manifest names non-existent CommandType members: {sorted(phantom)}")
 
     arms = _drain_case_arms(COMMAND_SERVICE)
-    missing_arms = APPLIED_IN_DRAIN - arms
+    missing_arms = DEFERRED_DISPATCHED - arms
     if missing_arms:
         problems.append(
             "applied-in-drain commands with NO _apply arm (accepted-then-"
             f"dropped at drain): {sorted(missing_arms)}"
         )
-    surprise_arms = arms - APPLIED_IN_DRAIN
+    surprise_arms = arms - DEFERRED_DISPATCHED
     if surprise_arms:
         problems.append(
             "_apply handles commands the manifest does not classify as "
-            f"applied-in-drain (update the manifest): {sorted(surprise_arms)}"
+            f"tick-deferred (update the manifest): {sorted(surprise_arms)}"
         )
     return problems
 
@@ -151,7 +148,7 @@ def check_command_dispositions() -> list[str]:
 # a rationale and an issue; a stale entry (class gone or now mapped) fails
 # the audit so the manifest cannot rot.
 INTENTIONAL_UNMAPPED = {
-    "archetype.app._catalog.CatalogSchemaMismatchError": (
+    "archetype.app.storage.catalog.CatalogSchemaMismatchError": (
         "integrity violation intentionally surfaces as 500; decision recorded in #413"
     ),
 }
@@ -242,8 +239,8 @@ def main() -> int:
         for problem in problems:
             print(f"  - {problem}")
         print(
-            "\nEvery CommandType needs a disposition (drain arm, direct-gated, "
-            "or broker data), and every app-layer error needs a non-500 HTTP "
+            "\nEvery CommandType needs a disposition (durable dispatcher arm or "
+            "direct application operation), and every app-layer error needs a non-500 HTTP "
             "mapping. See the manifest in this script."
         )
         return 1

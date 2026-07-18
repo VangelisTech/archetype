@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 from daft.io import IOConfig, UnityConfig
 
-from archetype.app.storage_service import create_async_store
+from archetype.app.storage.service import create_async_store
+from archetype.app.storage.session import configure_session
 from archetype.core.aio import AsyncStore
 from archetype.core.config import StorageBackend, StorageConfig
-from archetype.runtime.session import configure_session
 
 
 def test_builtin_iceberg_factory_rejects_remote_uri(tmp_path, monkeypatch):

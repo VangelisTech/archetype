@@ -14,8 +14,8 @@
 
 """Dataframe-first simulations and agent workflows.
 
-`ArchetypeRuntime` is the recommended entry point for applications. Lower-level
-engine and service exports remain available for extensions and custom hosts.
+`ArchetypeRuntime` is the recommended entry point for applications. Concrete
+services and the service container are internal and are not re-exported here.
 
 Examples:
     >>> from archetype import ArchetypeRuntime
@@ -93,18 +93,9 @@ __all__ = [
     "EpisodeResult",
     "RolloutConfig",
     "RolloutResult",
-    "FactReceipt",
-    "FactWriteReceipt",
-    "FactProcessor",
-    # App layer services
-    "CommandBroker",
-    "WorldService",
-    "StorageService",
-    "CommandService",
-    "SimulationService",
-    "QueryService",
-    "FactService",
-    "ServiceContainer",
+    "ArtifactReceipt",
+    "ArtifactWriteReceipt",
+    "ArtifactProcessor",
     # Models
     "Command",
     "CommandType",
@@ -171,29 +162,21 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "EpisodeResult": ("archetype.app.models", "EpisodeResult"),
     "RolloutConfig": ("archetype.app.models", "RolloutConfig"),
     "RolloutResult": ("archetype.app.models", "RolloutResult"),
-    "FactReceipt": ("archetype.app.facts", "FactReceipt"),
-    "FactWriteReceipt": ("archetype.app.facts", "FactWriteReceipt"),
-    "FactProcessor": ("archetype.app.facts", "FactProcessor"),
-    # App layer
-    "CommandBroker": ("archetype.app", "CommandBroker"),
-    "WorldService": ("archetype.app", "WorldService"),
-    "StorageService": ("archetype.app", "StorageService"),
-    "CommandService": ("archetype.app", "CommandService"),
-    "SimulationService": ("archetype.app", "SimulationService"),
-    "QueryService": ("archetype.app", "QueryService"),
-    "FactService": ("archetype.app", "FactService"),
-    "ServiceContainer": ("archetype.app", "ServiceContainer"),
-    "Command": ("archetype.app", "Command"),
-    "CommandType": ("archetype.app", "CommandType"),
+    "ArtifactReceipt": ("archetype.app.artifacts.models", "ArtifactReceipt"),
+    "ArtifactWriteReceipt": ("archetype.app.artifacts.models", "ArtifactWriteReceipt"),
+    "ArtifactProcessor": ("archetype.app.artifacts.models", "ArtifactProcessor"),
+    # Command models used by supported host adapters
+    "Command": ("archetype.app.models", "Command"),
+    "CommandType": ("archetype.app.models", "CommandType"),
     # AutoResearch
-    "AutoResearchConfig": ("archetype.app.autoresearch_service", "AutoResearchConfig"),
-    "AutoResearchResult": ("archetype.app.autoresearch_service", "AutoResearchResult"),
-    "CandidateContext": ("archetype.app.autoresearch_service", "CandidateContext"),
-    "EvaluationResult": ("archetype.app.autoresearch_service", "EvaluationResult"),
+    "AutoResearchConfig": ("archetype.app.research.contracts", "AutoResearchConfig"),
+    "AutoResearchResult": ("archetype.app.research.contracts", "AutoResearchResult"),
+    "CandidateContext": ("archetype.app.research.contracts", "CandidateContext"),
+    "EvaluationResult": ("archetype.app.research.contracts", "EvaluationResult"),
     # Durable evaluation types
-    "Outcome": ("archetype.experiments.receipts", "Outcome"),
-    "GraderContract": ("archetype.experiments.receipts", "GraderContract"),
-    "EvalReceipt": ("archetype.experiments.receipts", "EvalReceipt"),
+    "Outcome": ("archetype.app.evaluation.models", "Outcome"),
+    "GraderContract": ("archetype.app.evaluation.models", "GraderContract"),
+    "EvalReceipt": ("archetype.app.evaluation.models", "EvalReceipt"),
 }
 
 

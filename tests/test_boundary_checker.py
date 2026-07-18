@@ -68,7 +68,7 @@ def test_bridge_allowlist_suppresses_with_deadline(tmp_path, monkeypatch):
 
 def test_experiments_scope_blocks_service_imports(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", tmp_path)
-    path = _write(tmp_path, "from archetype.app.simulation_service import SimulationService\n")
+    path = _write(tmp_path, "from archetype.app.world.simulation import SimulationService\n")
     violations = checker._import_violations(
         path, checker.ALLOWED_APP_IMPORTS_EXPERIMENTS, set(), "experiments"
     )
@@ -104,7 +104,7 @@ def test_experiments_scope_scans_nested_subdirectories(tmp_path, monkeypatch):
     monkeypatch.setattr(checker, "ROOT", tmp_path)
     nested = tmp_path / "src" / "archetype" / "experiments" / "vla" / "bridge.py"
     nested.parent.mkdir(parents=True)
-    nested.write_text("from archetype.app.world_service import WorldService\n")
+    nested.write_text("from archetype.app.world.service import WorldService\n")
     targets = sorted((tmp_path / "src/archetype/experiments").rglob("*.py"))
     assert nested in targets
     violations = [

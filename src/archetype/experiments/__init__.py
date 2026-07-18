@@ -23,16 +23,16 @@ Ingestion from archetype-runner's SQLite registry is provided by
 :func:`load_runner_state_db` and :func:`ingest_runner_state`.
 """
 
-from archetype.experiments.claude_sessions import (
-    load_claude_session,
-    load_claude_sessions,
-)
-from archetype.experiments.components import (
+from archetype.app.research.models import (
     BranchHead,
     Experiment,
     Result,
     Run,
     RunStatus,
+)
+from archetype.experiments.claude_sessions import (
+    load_claude_session,
+    load_claude_sessions,
 )
 from archetype.experiments.loaders import (
     ingest_runner_state,

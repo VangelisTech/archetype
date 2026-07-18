@@ -17,11 +17,11 @@
 from fastapi import APIRouter, Depends, Response, status
 from uuid_utils import UUID
 
-from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.deps import get_actor_ctx, get_command_gateway
 from archetype.api.errors import raise_api_error
 from archetype.api.models import CreateWorldRequest, ForkWorldRequest
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 from archetype.app.models import WorldInfo
 
 router = APIRouter(prefix="/worlds", tags=["worlds"])
@@ -30,7 +30,7 @@ router = APIRouter(prefix="/worlds", tags=["worlds"])
 @router.post("", response_model=WorldInfo, status_code=status.HTTP_201_CREATED)
 async def create_world(
     req: CreateWorldRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Create a world. Requires admin."""
@@ -42,7 +42,7 @@ async def create_world(
 
 @router.get("", response_model=list[WorldInfo])
 async def list_worlds(
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """List live worlds. Requires admin."""
@@ -55,7 +55,7 @@ async def list_worlds(
 @router.get("/{world_id}", response_model=WorldInfo)
 async def get_world(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Get world metadata. Requires viewer, player, operator, or admin."""
@@ -68,7 +68,7 @@ async def get_world(
 @router.delete("/{world_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def destroy_world(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Drop the in-memory world instance. Persisted storage and audit rows are retained.
@@ -88,7 +88,7 @@ async def destroy_world(
 async def fork_world(
     world_id: str,
     req: ForkWorldRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Fork a world. Requires operator or admin."""
@@ -101,4 +101,4 @@ async def fork_world(
             cache_config=req.cache_config,
         )
     except Exception as exc:
-        raise_api_error(exc)
+        raise_api_error(exc, conflict=True)

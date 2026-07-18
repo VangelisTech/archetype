@@ -17,20 +17,20 @@ from unittest.mock import patch
 
 from uuid_utils import uuid7
 
-from archetype.app._catalog import (
+from archetype.app.artifacts.models import ArtifactMeta
+from archetype.app.container import ServiceContainer
+from archetype.app.evaluation.models import EvalReceipt, GraderContract, Outcome
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.storage.catalog import (
     CatalogConflictError,
     ClaimConflictError,
     SqliteControlCatalog,
     WorldRecord,
     claim_scope_key,
 )
-from archetype.app.auth.models import ActorCtx
-from archetype.app.container import ServiceContainer
-from archetype.app.facts import FactMeta
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import StaleWriterError
-from archetype.experiments.receipts import EvalReceipt, GraderContract, Outcome
 from evals.graders import exact_match, state_check
 from evals.types import GraderResult
 
@@ -271,21 +271,21 @@ async def _task_resume_and_writer_fencing() -> list[GraderResult]:
             await resumed.shutdown()
 
 
-def task_durable_fact_replay() -> list[GraderResult]:
-    """Concurrent identical facts converge; changed content conflicts."""
-    return asyncio.run(_task_durable_fact_replay())
+def task_durable_artifact_replay() -> list[GraderResult]:
+    """Concurrent identical artifacts converge; changed content conflicts."""
+    return asyncio.run(_task_durable_artifact_replay())
 
 
-async def _task_durable_fact_replay() -> list[GraderResult]:
+async def _task_durable_artifact_replay() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="facts")
-            world = await _seed_world(container, storage, name="fact-world")
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="artifacts")
+            world = await _seed_world(container, storage, name="artifact-world")
             wid, rid = str(world.world_id), str(world.run_id)
 
             async def submit():
-                return await container.ingestion_service.ingest_fact(
+                return await container.artifact_service.publish(
                     wid,
                     [DurableReading(value=21.5)],
                     external_id="sensor:event-1",
@@ -293,10 +293,10 @@ async def _task_durable_fact_replay() -> list[GraderResult]:
                 )
 
             receipts = await asyncio.gather(*(submit() for _ in range(32)))
-            rows = await _visible_rows(container, FactMeta, wid, rid, storage)
+            rows = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
             conflict_loud = False
             try:
-                await container.ingestion_service.ingest_fact(
+                await container.artifact_service.publish(
                     wid,
                     [DurableReading(value=99.0)],
                     external_id="sensor:event-1",
@@ -316,39 +316,41 @@ async def _task_durable_fact_replay() -> list[GraderResult]:
                             not receipt.duplicate for receipt in receipts
                         )
                         == 1,
-                        "one_fact_is_visible": len(rows) == 1,
-                        "visible_fact_keeps_external_identity": (
-                            rows[0]["factmeta__external_id"] == "sensor:event-1" if rows else False
+                        "one_artifact_is_visible": len(rows) == 1,
+                        "visible_artifact_keeps_external_identity": (
+                            rows[0]["artifactmeta__external_id"] == "sensor:event-1"
+                            if rows
+                            else False
                         ),
                         "changed_payload_conflicts": conflict_loud,
                     },
-                    name="durable_fact_replay",
+                    name="durable_artifact_replay",
                 )
             ]
         finally:
             await container.shutdown()
 
 
-def task_durable_fact_crash_recovery() -> list[GraderResult]:
+def task_durable_artifact_crash_recovery() -> list[GraderResult]:
     """An append-before-complete crash is recovered without duplication."""
-    return asyncio.run(_task_durable_fact_crash_recovery())
+    return asyncio.run(_task_durable_artifact_crash_recovery())
 
 
-async def _task_durable_fact_crash_recovery() -> list[GraderResult]:
+async def _task_durable_artifact_crash_recovery() -> list[GraderResult]:
     with tempfile.TemporaryDirectory() as tmp:
         container = ServiceContainer()
         try:
-            storage = StorageConfig(uri=f"{tmp}/store", namespace="fact-crash")
-            world = await _seed_world(container, storage, name="fact-crash")
+            storage = StorageConfig(uri=f"{tmp}/store", namespace="artifact-crash")
+            world = await _seed_world(container, storage, name="artifact-crash")
             wid, rid = str(world.world_id), str(world.run_id)
 
             async def crash_complete(self, *args, **kwargs):
-                raise RuntimeError("injected crash after fact append")
+                raise RuntimeError("injected crash after artifact append")
 
             crashed = False
             with patch.object(SqliteControlCatalog, "complete_claim", crash_complete):
                 try:
-                    await container.ingestion_service.ingest_fact(
+                    await container.artifact_service.publish(
                         wid,
                         [DurableReading(value=3.0)],
                         external_id="crash-boundary",
@@ -357,17 +359,17 @@ async def _task_durable_fact_crash_recovery() -> list[GraderResult]:
                 except RuntimeError as exc:
                     crashed = "injected crash" in str(exc)
 
-            invisible = await _visible_rows(container, FactMeta, wid, rid, storage)
+            invisible = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
             catalog = container.storage_service.get_control_catalog(storage)
             scope = claim_scope_key(wid, rid, "sensor", "crash-boundary")
             await _expire_claim(catalog, scope)
-            receipt = await container.ingestion_service.ingest_fact(
+            receipt = await container.artifact_service.publish(
                 wid,
                 [DurableReading(value=3.0)],
                 external_id="crash-boundary",
                 producer="sensor",
             )
-            recovered = await _visible_rows(container, FactMeta, wid, rid, storage)
+            recovered = await _visible_rows(container, ArtifactMeta, wid, rid, storage)
 
             return [
                 state_check(
@@ -375,14 +377,14 @@ async def _task_durable_fact_crash_recovery() -> list[GraderResult]:
                         "fault_was_injected": crashed,
                         "pending_claim_was_invisible": invisible == [],
                         "takeover_kept_original_claim": not receipt.duplicate,
-                        "takeover_exposed_one_fact": len(recovered) == 1,
+                        "takeover_exposed_one_artifact": len(recovered) == 1,
                         "recovered_external_identity": (
-                            recovered[0]["factmeta__external_id"] == "crash-boundary"
+                            recovered[0]["artifactmeta__external_id"] == "crash-boundary"
                             if recovered
                             else False
                         ),
                     },
-                    name="durable_fact_crash_recovery",
+                    name="durable_artifact_crash_recovery",
                 )
             ]
         finally:
@@ -412,7 +414,7 @@ async def _task_evaluation_receipt_replay() -> list[GraderResult]:
                 implementation_version="1",
                 thresholds={"minimum": 1.0},
             )
-            first = await container.command_service.evaluate(
+            first = await container.command_gateway.evaluate(
                 _actor(),
                 wid,
                 [DurableReading],
@@ -420,7 +422,7 @@ async def _task_evaluation_receipt_replay() -> list[GraderResult]:
                 grader=grader,
                 evaluation_id="stable-evaluation",
             )
-            replay = await container.command_service.evaluate(
+            replay = await container.command_gateway.evaluate(
                 _actor(),
                 wid,
                 [DurableReading],
@@ -432,7 +434,7 @@ async def _task_evaluation_receipt_replay() -> list[GraderResult]:
 
             conflict_loud = False
             try:
-                await container.command_service.evaluate(
+                await container.command_gateway.evaluate(
                     _actor(),
                     wid,
                     [DurableReading],

@@ -19,7 +19,7 @@ from logging import basicConfig
 
 from fastapi import FastAPI
 
-from archetype import _obs
+from archetype import __version__, _obs
 from archetype.api.deps import get_container, set_container
 from archetype.api.routes import commands, entities, query, simulation, worlds
 
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="Archetype ECS",
         description="Dataframe-first ECS runtime for simulations and AI agents.",
-        version="0.2.0",
+        version=__version__,
         lifespan=lifespan,
     )
     # Route-level tracing is optional: use it when logfire is installed,
@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        return {"name": "archetype-ecs", "version": "0.2.0"}
+        return {"name": "archetype-ecs", "version": __version__}
 
     @app.get("/healthz")
     async def healthz():

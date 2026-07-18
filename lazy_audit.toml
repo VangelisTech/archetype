@@ -67,56 +67,56 @@ method = "to_pylist"
 reason = "Lineage metadata extract: a fork's ancestor segments (bounded by fork depth, typically 1-3 rows) must become Python (world_id, run_id, up_to_tick) tuples because they route subsequent per-tick store queries; the routing decision cannot be expressed inside a single Daft plan."
 
 [[entries]]
-path = "src/archetype/app/autoresearch_service.py"
-line = 590
+path = "src/archetype/app/research/service.py"
+line = 458
 method = "to_pylist"
 reason = "Single-row experiment-contract extract: the persisted identity and JSON configuration digest must enter Python control flow for exact collision rejection before the service records a resumed attempt; this is an imperative lifecycle gate, not a downstream dataframe computation."
 
 [[entries]]
-path = "src/archetype/app/autoresearch_service.py"
-line = 598
+path = "src/archetype/app/research/service.py"
+line = 466
 method = "to_pylist"
 reason = "Single-row loop-state extract: the latest BranchHead row must enter Python control flow for incumbent score comparison and entity-id routing of the next append; these values drive imperative orchestration, not a further dataframe computation."
 
 [[entries]]
-path = "src/archetype/app/autoresearch_service.py"
-line = 610
+path = "src/archetype/app/research/service.py"
+line = 478
 method = "to_pylist"
 reason = "Bounded control-plane history extract: deterministic Run ids and terminal statuses must enter Python control flow to reject active, corrupt, duplicate, or non-contiguous attempts before resume; the result chooses whether any new work may start rather than feeding a dataframe computation."
 
 [[entries]]
-path = "src/archetype/app/simulation_service.py"
+path = "src/archetype/app/world/simulation.py"
 line = 221
 method = "to_pylist"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 
 [[entries]]
-path = "src/archetype/app/query_service.py"
-line = 365
+path = "src/archetype/app/query/service.py"
+line = 408
 method = "to_pylist"
 reason = "Bounded compatibility boundary: queued audit rows are already filtered and limited lazily, then materialized into the legacy list[Command] return contract used by pre-gate callers."
 
 [[entries]]
-path = "src/archetype/app/iceberg.py"
+path = "src/archetype/app/storage/iceberg.py"
 line = 75
 method = "collect"
-reason = "Storage write boundary: Daft has already committed the fact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No fact-row payload is materialized."
+reason = "Storage write boundary: Daft has already committed the artifact pipeline through its native Iceberg writer; only per-output-file row counts enter Python to construct the bounded write receipt. No artifact-row payload is materialized."
 
 [[entries]]
-path = "src/archetype/app/fact_service.py"
+path = "src/archetype/app/artifacts/table_service.py"
 line = 144
 method = "collect"
-reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed fact payload rows remain lazy through the Iceberg write."
+reason = "File discovery boundary: materializes only the current call's file references, source URIs, and content hashes once before deduplication so zero matched sources are distinguishable from a retry and file bytes are not rehashed. Typed artifact payload rows remain lazy through the Iceberg write."
 
 [[entries]]
-path = "src/archetype/app/fact_service.py"
+path = "src/archetype/app/artifacts/table_service.py"
 line = 167
 method = "collect"
-reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed fact payload rows."
+reason = "Processor candidate boundary: materializes the distinct, existing-key-filtered identities derived from the already materialized discovery frame so the emptiness check, processor, and identity validation reuse one candidate set. It does not reread file bytes or materialize typed artifact payload rows."
 
 [[entries]]
-path = "src/archetype/app/world_service.py"
-line = 703
+path = "src/archetype/app/world/service.py"
+line = 741
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 
@@ -128,12 +128,12 @@ reason = "series_to_rows helper: converts each Series parameter to a Python list
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 413
+line = 416
 method = "collect"
 reason = "grading boundary: latest-tick row per entity from the already-filtered episode query becomes the scalar TaskEvalReport — the analysis edge where eval graders also collect; nothing downstream re-enters the DAG"
 
 [[entries]]
 path = "src/archetype/experiments/eval_rollouts.py"
-line = 413
+line = 416
 method = "to_pylist"
 reason = "same grading-boundary site as the collect above: per-entity terminal rows to Python for success/length aggregation into the report"

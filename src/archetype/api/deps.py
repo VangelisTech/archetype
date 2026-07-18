@@ -17,11 +17,11 @@
 from __future__ import annotations
 
 from fastapi import Header, HTTPException, Request
-from uuid_utils import uuid7
+from uuid_utils import NAMESPACE_URL, uuid5
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 
 # Test/development override. The lifespan handler attaches the resolved
 # container to app.state; request dependencies read from app.state.
@@ -41,8 +41,8 @@ def set_container(container: ServiceContainer | None) -> None:
     _container = container
 
 
-async def get_command_service(request: Request) -> CommandService:
-    return request.app.state.container.command_service
+async def get_command_gateway(request: Request) -> iCommandGateway:
+    return request.app.state.container.command_gateway
 
 
 async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
@@ -53,7 +53,11 @@ async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
     - "Bearer <role>" accepts admin/operator/player/viewer
     """
     if authorization is None:
-        return ActorCtx(id=uuid7(), roles={"admin"})
+        role = "admin"
+        return ActorCtx(
+            id=uuid5(NAMESPACE_URL, f"archetype:development-principal:{role}"),
+            roles={role},
+        )
 
     scheme, _, token = authorization.partition(" ")
     if scheme.lower() != "bearer" or not token:
@@ -63,4 +67,7 @@ async def get_actor_ctx(authorization: str | None = Header(None)) -> ActorCtx:
     if role not in {"admin", "operator", "player", "viewer"}:
         raise HTTPException(status_code=401, detail="Unknown bearer role")
 
-    return ActorCtx(id=uuid7(), roles={role})
+    return ActorCtx(
+        id=uuid5(NAMESPACE_URL, f"archetype:development-principal:{role}"),
+        roles={role},
+    )

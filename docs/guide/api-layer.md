@@ -2,7 +2,9 @@
 
 Archetype runs as a single `archetype serve` process. The API layer is a FastAPI application over the service layer, and the CLI is a thin HTTP client.
 
-External API operations should enter through `iCommandService` so authorization, audit emission, and info-class downgrades are consistent with the runtime.
+External API operations enter through `iCommandGateway`. The gateway
+authorizes and delegates to the same actor-free `iRuntimeApplication` semantics
+used by the trusted runtime.
 
 ## Application Factory
 
@@ -27,7 +29,7 @@ All worlds live in the server event loop. CLI invocations and remote clients tal
 
 Routes that expose user-visible operations should inject:
 
-- `CommandService` for reads, writes, lifecycle, and simulation control.
+- `iCommandGateway` for reads, writes, lifecycle, and simulation control.
 - `ActorCtx` from auth middleware.
 
 Lower-level services may still be injected for internal/admin diagnostics, but they are not the normal public boundary.
@@ -36,25 +38,24 @@ Lower-level services may still be injected for internal/admin diagnostics, but t
 @router.post("/worlds/{world_id}/run")
 async def run_world(
     world_id: str,
-    cs: CommandService = Depends(get_command_service),
+    gateway: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    return await cs.run(ctx, UUID(world_id), RunConfig(num_steps=10))
+    return await gateway.run(ctx, UUID(world_id), RunConfig(num_steps=10))
 ```
 
-## Default Actor Context
+## Authentication context
 
-Until real multi-tenant auth is wired, `get_actor_ctx()` returns a default admin actor:
-
-```python
-ActorCtx(id=uuid7(), roles={"admin"})
-```
-
-That mirrors the script runtime default. API servers with real auth should map authenticated principals into `ActorCtx` explicitly. See [Command Gate](command-gate.md).
+Production ingress authenticates a stable principal and fails closed when
+credentials are absent or invalid. A development-only anonymous-admin mode, if
+enabled explicitly, uses one stable process principal so quotas and audit
+identity do not reset on every request. The trusted runtime has no actor
+context. See [Command Gate](command-gate.md).
 
 ## Route Structure
 
-Routes are thin translators: validate payloads, call `iCommandService`, return response models.
+Routes are thin translators: validate payloads, authenticate, call
+`iCommandGateway`, and return response models.
 
 ### Worlds
 
@@ -66,17 +67,17 @@ Routes are thin translators: validate payloads, call `iCommandService`, return r
 | `/worlds/{id}` | DELETE | Destroy the live world; persisted data remains |
 | `/worlds/{id}/fork` | POST | Fork a world through the gate |
 
-Lifecycle operations are direct gate calls, not global lifecycle commands submitted through the broker.
+Lifecycle operations are direct gate calls, not tick-deferred scheduler commands.
 
 ### Commands
 
 | Endpoint | Method | What it does |
 |---|---|---|
-| `/worlds/{id}/commands` | POST | Tick-deferred submit through `iCommandService.submit` |
+| `/worlds/{id}/commands` | POST | Authorized durable deferred admission |
 | `/worlds/{id}/commands/batch` | POST | Tick-deferred batch submit |
 | `/worlds/{id}/commands` | GET | Audit-backed command history |
 
-Broker pending state is an implementation detail. User-facing history is
+Command-ledger pending state is an implementation detail. User-facing history is
 audit-backed through `/worlds/{id}/history` and `/worlds/{id}/commands`.
 
 ### Simulation
@@ -100,7 +101,8 @@ See [Execution Hierarchy](execution-hierarchy.md).
 | `/worlds/{id}/components` | GET | Lazily filter, limit, or count component projections |
 | `/worlds/{id}/history` | GET | Audit history through `get_audit_history` |
 
-Reads are authorized at `iCommandService`; `iQueryService` remains the internal read implementation.
+Reads are authorized at `iCommandGateway`; `iQueryService` remains the internal
+read implementation behind RuntimeApplication.
 The component route accepts one inert comparison through `where`, then applies either the
 `show` row limit or the `count` terminal. Filtering happens before either terminal and before
 row serialization. All three options require at least one component type; `show` and `count` are
@@ -118,10 +120,10 @@ Example `create_world` route:
 @router.post("", response_model=WorldResponse)
 async def create_world(
     req: CreateWorldRequest,
-    cs: CommandService = Depends(get_command_service),
+    gateway: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
-    info = await cs.create_world(
+    info = await gateway.create_world(
         ctx,
         WorldConfig(name=req.name),
         StorageConfig(uri=req.storage_uri) if req.storage_uri else None,

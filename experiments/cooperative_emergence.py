@@ -21,8 +21,8 @@ from daft import DataFrame, col
 from daft.functions import when
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.app.autoresearch_service import AutoResearchConfig
 from archetype.app.models import EpisodeConfig, RolloutResult
+from archetype.app.research.service import AutoResearchConfig
 from archetype.core.config import RunConfig
 from archetype.core.hooks import PostTick
 

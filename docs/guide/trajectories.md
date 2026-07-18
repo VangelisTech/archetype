@@ -161,7 +161,9 @@ fork = await world.fork(
 await fork.step(config=RunConfig(num_steps=1))
 ```
 
-Forks share resource instances by default. For a strict-vs-lenient comparison, stage distinct resources on separate worlds or attach replacement resources through the gated resource-management path before running the fork.
+Forks share resource instances by default. For a strict-vs-lenient comparison,
+stage distinct resources on separate worlds or attach replacement resources
+through the runtime before running the fork.
 
 Both worlds persist to the same storage by default, partitioned by `world_id`. Query either one at any tick.
 

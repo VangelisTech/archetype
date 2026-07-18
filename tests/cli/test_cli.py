@@ -22,8 +22,8 @@ from typer.testing import CliRunner
 
 from archetype.api.app import create_app
 from archetype.api.deps import set_container
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.cli import main as cli_mod
 from archetype.cli.main import ENV_BASE_URL, _base_url, _check_server, _handle_response, app
 
@@ -443,7 +443,7 @@ def test_cli_does_not_import_forbidden_app_modules():
     source = cli_mod.__file__
     tree = ast.parse(open(source).read())
     forbidden = []
-    allowed = {"archetype.app.models", "archetype.app.auth.models"}
+    allowed = {"archetype.app.models", "archetype.app.gateway.auth.models"}
     for node in ast.walk(tree):
         module = None
         if isinstance(node, ast.ImportFrom):

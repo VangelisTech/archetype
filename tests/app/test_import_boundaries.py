@@ -24,29 +24,31 @@ _API_DIR = _ROOT / "api"
 
 _RUNTIME_TYPE_ONLY_APP = frozenset(
     {
-        "archetype.app.autoresearch_service",
-        "archetype.app.eval_service",
+        "archetype.app.research.contracts",
+        "archetype.app.evaluation.interfaces",
+        "archetype.app.evaluation.models",
     }
 )
 
 # Modules inside archetype.app that runtime/ may import from.
 _RUNTIME_ALLOWED_APP = _RUNTIME_TYPE_ONLY_APP | frozenset(
     {
-        "archetype.app.command_service",
+        "archetype.app.application.interfaces",
         "archetype.app.container",
         "archetype.app.models",
-        "archetype.app.auth.models",
+        "archetype.app.gateway.auth.models",
+        "archetype.app.storage.session",
     }
 )
 
 # Modules inside archetype.app that api/ may import from.
 _API_ALLOWED_APP = frozenset(
     {
-        "archetype.app.command_service",
+        "archetype.app.gateway.interfaces",
         "archetype.app.container",
         "archetype.app.models",
-        "archetype.app.auth.models",
-        "archetype.app.auth.errors",
+        "archetype.app.gateway.auth.models",
+        "archetype.app.gateway.auth.errors",
         # The gate's typed error contract; mapping it to HTTP status codes
         # is the adapter's job (issue #180: WorldNotFoundError -> 404).
         "archetype.app.errors",
@@ -174,25 +176,25 @@ class TestRuntimeAppBoundary:
     ("source_text", "expected"),
     [
         (
-            "import archetype.app.world_service\n",
-            [("archetype.app.world_service", False)],
+            "import archetype.app.world.service\n",
+            [("archetype.app.world.service", False)],
         ),
         (
-            "from archetype.app.eval_service import EvaluationResult\n",
-            [("archetype.app.eval_service", False)],
+            "from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
+            [("archetype.app.evaluation.interfaces", False)],
         ),
         ("from archetype.application import Service\n", []),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    import archetype.app.eval_service\n",
-            [("archetype.app.eval_service", True)],
+            "    import archetype.app.evaluation.interfaces\n",
+            [("archetype.app.evaluation.interfaces", True)],
         ),
         (
             "from typing import TYPE_CHECKING\n"
             "if TYPE_CHECKING:\n"
-            "    from archetype.app.eval_service import EvaluationResult\n",
-            [("archetype.app.eval_service", True)],
+            "    from archetype.app.evaluation.interfaces import TrajectoryGrader\n",
+            [("archetype.app.evaluation.interfaces", True)],
         ),
     ],
 )
@@ -225,10 +227,10 @@ class TestApiAppBoundary:
 @pytest.mark.parametrize(
     ("module", "expected"),
     [
-        ("archetype.app.command_service", True),
+        ("archetype.app.gateway.interfaces", True),
         ("archetype.app.errors", True),
-        ("archetype.app.eval_service", False),
-        ("archetype.app.autoresearch_service", False),
+        ("archetype.app.evaluation.service", False),
+        ("archetype.app.research.service", False),
     ],
 )
 def test_api_app_import_oracle_contract(module: str, expected: bool) -> None:

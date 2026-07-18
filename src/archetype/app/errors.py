@@ -14,7 +14,7 @@
 
 """Service-layer error types.
 
-Auth-specific errors live in ``archetype.app.auth.errors``. This module holds
+Auth-specific errors live in ``archetype.app.gateway.auth.errors``. This module holds
 cross-service exception contracts that gates and transport adapters may depend
 on without importing concrete service implementations.
 """
@@ -49,7 +49,7 @@ class WorldNotFoundError(LookupError):
 
     Per ``docs/guide/specification.md`` "Required Hardening Work" item 3,
     submission to an unknown world is rejected at the gate so callers get a
-    typed signal instead of a silently orphaned broker entry.
+    typed signal instead of a silently orphaned command-ledger entry.
     """
 
     def __init__(self, world_id) -> None:

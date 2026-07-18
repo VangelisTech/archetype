@@ -2,6 +2,7 @@ import pytest
 import pytest_asyncio
 from daft import col
 
+from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_querier import AsyncQueryManager
 from archetype.core.aio.async_store import AsyncStore
@@ -13,7 +14,6 @@ from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageBackend, StorageConfig
 from archetype.core.hooks import HookRegistry
 from archetype.core.resources import Resources
-from archetype.runtime.session import configure_session
 
 
 class Position(Component):

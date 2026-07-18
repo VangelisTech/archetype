@@ -14,9 +14,9 @@ import daft
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.resources import Resources
@@ -186,7 +186,7 @@ async def test_sampling_processor_filters_by_min_turns(tmp_path):
                     ],
                 },
             )
-            await container.command_service.submit(ctx, str(world.world_id), cmd)
+            await container.command_gateway.submit(ctx, str(world.world_id), cmd)
 
         # First step materializes the spawns with raw initial conditions;
         # SamplingProcessor first applies on the following tick.
@@ -234,7 +234,7 @@ async def test_scoring_processor_clamps_score(tmp_path):
                 ],
             },
         )
-        await container.command_service.submit(ctx, str(world.world_id), cmd)
+        await container.command_gateway.submit(ctx, str(world.world_id), cmd)
 
         # First step materializes the spawn with raw initial conditions
         # (score=5.0); ScoringProcessor clamps on the following tick.
@@ -282,7 +282,7 @@ async def test_full_pipeline_without_llm(tmp_path):
                     ],
                 },
             )
-            await container.command_service.submit(ctx, str(world.world_id), cmd)
+            await container.command_gateway.submit(ctx, str(world.world_id), cmd)
 
         # First step materializes the spawns with raw initial conditions;
         # the sample -> score pipeline applies on the following tick.

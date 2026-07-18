@@ -21,7 +21,7 @@ a local Iceberg warehouse with SQLite metadata.
 
 ```python
 from archetype.core.config import StorageConfig, StorageBackend
-from archetype.app.storage_service import StorageService
+from archetype.app.storage.service import StorageService
 
 storage = StorageConfig(
     uri="./my_data",
@@ -51,7 +51,7 @@ that session at the composition root:
 ```python
 from daft.session import Session
 from archetype.app.container import ServiceContainer
-from archetype.app.storage_service import StorageService
+from archetype.app.storage.service import StorageService
 
 session = Session()
 session.attach_catalog(configured_catalog)
@@ -224,7 +224,7 @@ storage = StorageConfig(
 | `AsyncStore` | Daft `Session`, optional Daft `IOConfig` |
 | `AsyncLancedbStore` | resolved `uri`, `namespace` |
 
-Storage context helpers live in `archetype.app.storage_service` as
+Storage context helpers live in `archetype.app.storage.service` as
 compatibility shims for the old `StorageContext` name. New code should use the
 Daft-native session and app-level factories.
 
@@ -344,6 +344,6 @@ Pass `CacheConfig` through runtime/world creation or `StorageService.get_or_crea
 
 - Store (Iceberg): `src/archetype/core/aio/async_store.py`
 - Store (LanceDB): `src/archetype/core/storage/lancedb.py`
-- Storage service/builders: `src/archetype/app/storage_service.py`
+- Storage service/builders: `src/archetype/app/storage/service.py`
 - Cached store: `src/archetype/core/aio/async_cached_store.py`
-- Storage service: `src/archetype/app/storage_service.py`
+- Storage service: `src/archetype/app/storage/service.py`

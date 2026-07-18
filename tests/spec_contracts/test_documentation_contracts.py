@@ -9,7 +9,6 @@ import ast
 import re
 from pathlib import Path
 
-from archetype.app.auth.permissions import ROLES_BY_COMMAND
 from archetype.app.models import CommandType
 
 _GUIDE_ROOT = Path("docs/guide")
@@ -50,33 +49,16 @@ def test_numeric_command_type_claims_match_the_enum() -> None:
     assert not stale, "stale command-type totals:\n" + "\n".join(stale)
 
 
-def test_curated_example_command_roles_follow_permissions() -> None:
-    """The examples table may be selective, but every listed role must be authoritative."""
+def test_trusted_runtime_example_keeps_rbac_at_the_adapter_boundary() -> None:
+    """Trusted scripting must not imply that it constructs an authorization actor."""
     guide = (_GUIDE_ROOT / "examples.md").read_text()
-    heading = "**Gated operations in this example (curated, not exhaustive):**"
-    lines = guide.splitlines()
-    start = lines.index(heading)
-    role_order = ("viewer", "player", "operator", "admin")
-    rows: list[str] = []
+    world_mutations = guide.split("## 2. Fork for Counterfactuals", maxsplit=1)[0]
 
-    for line in lines[start + 1 :]:
-        if line.startswith("|"):
-            if "---" not in line and "Gate command" not in line:
-                rows.append(line)
-        elif rows:
-            break
-
-    assert rows, "the curated command table is missing"
-    for row in rows:
-        _runtime_call, command_text, roles_text = [
-            cell.strip() for cell in row.strip("|").split("|")
-        ]
-        command = CommandType(command_text.strip("`"))
-        documented = tuple(role.strip() for role in roles_text.split(","))
-        expected = tuple(role for role in role_order if role in ROLES_BY_COMMAND[command])
-        assert documented == expected, (
-            f"{command.value}: documented {documented}, expected {expected}"
-        )
+    assert "actor-free `ArchetypeRuntime`" in world_mutations
+    assert "does not construct\nan `ActorCtx`" in world_mutations
+    assert "pass through `CommandGateway`" in world_mutations
+    assert "Runtime operations in this example" in world_mutations
+    assert "Gated operations in this example" not in world_mutations
 
 
 def test_current_robotics_guides_point_to_extracted_libero_harness() -> None:

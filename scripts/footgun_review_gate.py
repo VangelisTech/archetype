@@ -494,9 +494,7 @@ def _artifact_section(
         lines.extend([f"{fence}json", payload, fence, ""])
     else:
         if not run_url or not artifact_name:
-            raise GateError(
-                "oversized review evidence requires a named validated artifact"
-            )
+            raise GateError("oversized review evidence requires a named validated artifact")
         lines.extend(
             [
                 "The validated structured output exceeds the inline comment budget; "
@@ -507,8 +505,7 @@ def _artifact_section(
     if run_url and artifact_name:
         lines.extend(
             [
-                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) "
-                "(1-day retention).",
+                f"Validated artifact: [{artifact_name}]({run_url}#artifacts) (1-day retention).",
                 "",
             ]
         )

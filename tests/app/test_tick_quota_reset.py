@@ -26,10 +26,10 @@ from __future__ import annotations
 import pytest
 from uuid_utils import UUID, uuid7
 
-import archetype.app.auth.guard as guard
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
+import archetype.app.gateway.auth.guard as guard
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 
@@ -83,14 +83,14 @@ async def test_actor_not_blocked_across_many_ticks(tmp_path, monkeypatch):
     the ceiling allows. Without the reset the actor is rejected partway
     through; with it, every tick starts fresh and all ticks succeed.
     """
-    from archetype.app.auth.errors import GuardrailError
+    from archetype.app.gateway.auth.errors import GuardrailError
 
     monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 4)
 
     container = ServiceContainer()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
     try:
-        info = await container.command_service.create_world(
+        info = await container.command_gateway.create_world(
             ctx, WorldConfig(name="long-run"), StorageConfig(uri=str(tmp_path / "store"))
         )
 
@@ -98,8 +98,8 @@ async def test_actor_not_blocked_across_many_ticks(tmp_path, monkeypatch):
         # ceiling of 4. Each individual tick issues only 2 commands (< 4), so a
         # correct per-tick quota never trips.
         for _ in range(8):
-            await container.command_service.create_entity(ctx, info.world_id, [Marker(tag="x")])
-            await container.command_service.step(ctx, info.world_id, RunConfig())
+            await container.command_gateway.create_entity(ctx, info.world_id, [Marker(tag="x")])
+            await container.command_gateway.step(ctx, info.world_id, RunConfig())
     except GuardrailError as exc:  # pragma: no cover - the bug path
         pytest.fail(f"per-tick quota accumulated across ticks: {exc}")
     finally:

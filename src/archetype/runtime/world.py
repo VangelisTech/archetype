@@ -18,18 +18,19 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 from weakref import WeakSet
 
 from uuid_utils import UUID
 
-from archetype.app.auth.models import ActorCtx
 from archetype.app.models import (
+    ArtifactProcessor,
+    ArtifactReceipt,
+    ArtifactWriteReceipt,
     EpisodeConfig,
     EpisodeResult,
-    FactProcessor,
-    FactReceipt,
-    FactWriteReceipt,
     HookInfo,
     ProcessorInfo,
     ResourceInfo,
@@ -48,19 +49,22 @@ if TYPE_CHECKING:
 
     from daft import DataFrame
 
-    from archetype.app.autoresearch_service import (
+    from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
+    from archetype.app.evaluation.models import GraderContract
+    from archetype.app.research.contracts import (
         AutoResearchConfig,
         AutoResearchResult,
         CandidatePreparer,
         Evaluator,
         IterationResult,
     )
-    from archetype.app.eval_service import GraderOutput, TrajectoryGrader
     from archetype.core.hooks import HookHandle
-    from archetype.experiments.receipts import GraderContract
     from archetype.runtime.runtime import ArchetypeRuntime, SyncArchetypeRuntime
 
 _FireMode = Any  # Literal["blocking", "spawn"] — kept loose for forward compat
+_ADMITTED_STATE: ContextVar[_RuntimeWorldState | None] = ContextVar(
+    "archetype_runtime_admitted_state", default=None
+)
 
 
 def _clone_components(components: tuple[Component, ...]) -> list[Component]:
@@ -99,7 +103,7 @@ def _parse_spawn_batch_args(
 
 
 class _RuntimeWorldState:
-    """Shared activation state. One per logical world, N handles (via as_actor)."""
+    """Shared activation and lifetime state for one logical world."""
 
     def __init__(
         self,
@@ -130,10 +134,43 @@ class _RuntimeWorldState:
         self.initialized: bool = world_id is not None
         self.init_lock = asyncio.Lock()
         self.op_lock = asyncio.Lock()
+        self.admission_lock = asyncio.Lock()
+        self.drained = asyncio.Event()
+        self.drained.set()
+        self.active_operations = 0
+        self.closing = False
         self.closed = False
         self.aliases: WeakSet[RuntimeWorld] = WeakSet()
 
-    async def ensure_init(self, ctx: ActorCtx) -> str | UUID:
+    @asynccontextmanager
+    async def admit(self):
+        """Track a whole operation without holding the serialization lock.
+
+        Nested calls inherit the outer admission through a ContextVar. This
+        lets callbacks re-enter a handle while shutdown still waits on the
+        outer workflow, without deadlocking on a non-reentrant lock.
+        """
+        if _ADMITTED_STATE.get() is self:
+            yield
+            return
+
+        async with self.admission_lock:
+            if self.closing or self.closed or self.runtime._closed:
+                raise RuntimeError("World handle is closed")
+            self.active_operations += 1
+            self.drained.clear()
+
+        token = _ADMITTED_STATE.set(self)
+        try:
+            yield
+        finally:
+            _ADMITTED_STATE.reset(token)
+            async with self.admission_lock:
+                self.active_operations -= 1
+                if self.active_operations == 0:
+                    self.drained.set()
+
+    async def ensure_init(self) -> str | UUID:
         """Single-flight activation. Returns world_id."""
         if self.initialized:
             assert self.world_id is not None  # set before `initialized` flips true
@@ -144,35 +181,48 @@ class _RuntimeWorldState:
                 assert self.world_id is not None
                 return self.world_id
 
-            gate = self.runtime._container.command_service
+            application = self.runtime._container.application
 
-            # Create the world (serializable config only)
-            info = await gate.create_world(
-                ctx,
-                WorldConfig(name=self.name),
-                self.storage_config,
-                self.cache_config,
-            )
-            self.world_id = info.world_id
+            try:
+                # Create the world (serializable config only)
+                info = await application.create_world(
+                    WorldConfig(name=self.name),
+                    self.storage_config,
+                    self.cache_config,
+                )
+                self.world_id = info.world_id
 
-            # Wire non-serializable config through dedicated gate methods
-            # Order: processors → resources → hooks (hooks may depend on resources)
-            for proc in self.init_processors:
-                await gate.add_processor(ctx, self.world_id, proc)
+                # Wire non-serializable config through dedicated gate methods
+                # Order: processors → resources → hooks (hooks may depend on resources)
+                for proc in self.init_processors:
+                    await application.add_processor(self.world_id, proc)
 
-            for resource in self.init_resources:
-                await gate.add_resource(ctx, self.world_id, resource)
+                for resource in self.init_resources:
+                    await application.add_resource(self.world_id, resource)
 
-            for event_type, fn in self.init_hooks:
-                await gate.add_hook(ctx, self.world_id, event_type, fn)
+                for event_type, fn in self.init_hooks:
+                    await application.add_hook(self.world_id, event_type, fn)
 
-            self.initialized = True
+                self.initialized = True
+            except BaseException:
+                # Activation is atomic at the handle boundary. Roll back a
+                # partially registered world directly through the lifecycle
+                # owner; another authorization/quota check must not prevent
+                # internal compensation for an already-authorized create.
+                if self.world_id is not None:
+                    await application.destroy_world(self.world_id)
+                self.world_id = None
+                self.initialized = False
+                raise
 
         assert self.world_id is not None
         return self.world_id
 
     async def shutdown(self, *, from_runtime: bool) -> None:
         """Wait for admitted work, then shut down this world state once."""
+        async with self.admission_lock:
+            self.closing = True
+        await self.drained.wait()
         async with self.op_lock:
             if self.closed:
                 return
@@ -184,11 +234,7 @@ class _RuntimeWorldState:
                 and self.initialized
                 and self.world_id is not None
             ):
-                gate = self.runtime._container.command_service
-                # Use a default admin ctx for shutdown
-                from archetype.runtime._actor import default_actor_ctx
-
-                await gate.destroy_world(default_actor_ctx(), self.world_id)
+                await self.runtime._application.destroy_world(self.world_id)
 
             for alias in list(self.aliases):
                 self.runtime._unregister_handle(alias)
@@ -204,23 +250,23 @@ class RuntimeWorld:
 
     Handles are lazy and safe to create before the world exists. The first
     operation activates the world. A handle also carries the identity used for
-    authorization; `as_actor()` creates another view with a different
-    identity while sharing the same world lifecycle.
+    The trusted runtime path is actor-free; authorization belongs to remote
+    adapters and their ``CommandGateway``.
     """
 
-    def __init__(self, *, state: _RuntimeWorldState, actor_ctx: ActorCtx) -> None:
+    def __init__(self, *, state: _RuntimeWorldState) -> None:
         self._state = state
-        self._ctx = actor_ctx
 
     @property
-    def _gate(self):
-        return self._state.runtime._container.command_service
+    def _app(self):
+        return self._state.runtime._application
 
     async def _ensure_id(self) -> str | UUID:
-        self._state.runtime._ensure_open()
+        if _ADMITTED_STATE.get() is not self._state:
+            self._state.runtime._ensure_open()
         if self._state.closed:
             raise RuntimeError("World handle is closed")
-        return await self._state.ensure_init(self._ctx)
+        return await self._state.ensure_init()
 
     # ── Properties (sync, no round-trip) ──────────────────────────────────
 
@@ -242,55 +288,53 @@ class RuntimeWorld:
         """Create an entity and return its reserved identifier."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.create_entity(self._ctx, wid, list(components))
+            return await self._app.create_entity(wid, list(components))
 
-    async def ingest(
+    async def publish(
         self,
         *components: Component,
         external_id: str,
         producer: str = "default",
-    ) -> FactReceipt:
-        """Persist an external fact exactly once per external identity.
+    ) -> ArtifactReceipt:
+        """Persist an external artifact exactly once per external identity.
 
-        Facts become durable immediately and do not join the active simulation.
+        Artifacts become durable immediately and do not join the active simulation.
         Repeating an identity with the same payload returns the original
         receipt; repeating it with a different payload raises an error.
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.ingest_fact(
-                self._ctx, wid, list(components), external_id=external_id, producer=producer
+            return await self._app.ingest_artifact(
+                wid, list(components), external_id=external_id, producer=producer
             )
 
     async def ingest_files(
         self,
         paths: str | Path | list[str | Path],
-        processor: FactProcessor,
-    ) -> FactWriteReceipt:
-        """Process files with Daft and persist typed rows in an Iceberg fact table."""
+        processor: ArtifactProcessor,
+    ) -> ArtifactWriteReceipt:
+        """Process files with Daft and persist typed rows in an Iceberg artifact table."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.ingest_files(
-                self._ctx,
+            return await self._app.ingest_files(
                 wid,
                 paths,
                 processor,
                 storage_config=self._state.storage_config,
             )
 
-    async def write_facts(
+    async def write_artifacts(
         self,
         table_name: str,
-        facts: DataFrame,
-    ) -> FactWriteReceipt:
-        """Persist an existing Daft pipeline in a typed Iceberg fact table."""
+        artifacts: DataFrame,
+    ) -> ArtifactWriteReceipt:
+        """Persist an existing Daft pipeline in a typed Iceberg artifact table."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.write_facts(
-                self._ctx,
+            return await self._app.write_artifacts(
                 wid,
                 table_name,
-                facts,
+                artifacts,
                 storage_config=self._state.storage_config,
             )
 
@@ -308,7 +352,7 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.create_entities(self._ctx, wid, entities)
+            return await self._app.create_entities(wid, entities)
 
     async def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -349,7 +393,7 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return self._gate.reserve_entity_ids(self._ctx, wid, n)
+            return self._app.reserve_entity_ids(wid, n)
 
     async def spawn_reserved(self, entity_id: int, *components: Component) -> None:
         """Create an entity with a previously reserved identifier.
@@ -363,43 +407,43 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.spawn_with_reserved_id(self._ctx, wid, entity_id, list(components))
+            await self._app.spawn_with_reserved_id(wid, entity_id, list(components))
 
     async def despawn(self, entity_id: int) -> None:
         """Remove an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.remove_entity(self._ctx, wid, entity_id)
+            await self._app.remove_entity(wid, entity_id)
 
     async def update(self, entity_id: int, *components: Component) -> None:
         """Replace values on component types already held by an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.update_entity(self._ctx, wid, entity_id, list(components))
+            await self._app.update_entity(wid, entity_id, list(components))
 
     async def add_components(self, entity_id: int, *components: Component) -> None:
         """Add component types to an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.add_components(self._ctx, wid, entity_id, list(components))
+            await self._app.add_components(wid, entity_id, list(components))
 
     async def remove_components(self, entity_id: int, *component_types: type[Component]) -> None:
         """Remove component types from an entity."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.remove_components(self._ctx, wid, entity_id, list(component_types))
+            await self._app.remove_components(wid, entity_id, list(component_types))
 
     async def add_processor(self, processor) -> None:
         """Install a processor on this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.add_processor(self._ctx, wid, processor)
+            await self._app.add_processor(wid, processor)
 
     async def remove_processor(self, proc_type) -> None:
         """Remove every installed processor of a type."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.remove_processor(self._ctx, wid, proc_type)
+            await self._app.remove_processor(wid, proc_type)
 
     # ── Simulation ────────────────────────────────────────────────────────
 
@@ -408,7 +452,7 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             rc = config or RunConfig(num_steps=1, debug=debug)
-            await self._gate.step(self._ctx, wid, rc, **kw)
+            await self._app.step(wid, rc, **kw)
 
     async def run(
         self, steps: int = 1, *, debug: bool = False, config: RunConfig | None = None, **kw
@@ -417,19 +461,19 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             rc = config or RunConfig(num_steps=steps, debug=debug)
-            return await self._gate.run(self._ctx, wid, rc, **kw)
+            return await self._app.run(wid, rc, **kw)
 
     async def run_episode(self, config: EpisodeConfig, **kw) -> EpisodeResult:
         """Run until an episode termination condition or step limit is reached."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.run_episode(self._ctx, wid, config, **kw)
+            return await self._app.run_episode(wid, config, **kw)
 
     async def run_rollout(self, config: RolloutConfig, **kw) -> RolloutResult:
         """Run several episodes on forks of this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.run_rollout(self._ctx, wid, config, **kw)
+            return await self._app.run_rollout(wid, config, **kw)
 
     async def autoresearch(
         self,
@@ -447,17 +491,17 @@ class RuntimeWorld:
         never mutated. Reusing `config.experiment_id` resumes the loop, and
         episode worlds remain available for inspection by default.
         """
-        async with self._state.op_lock:
-            wid = await self._ensure_id()
-        return await self._gate.autoresearch(
-            self._ctx,
-            wid,
-            config,
-            evaluator,
-            prepare_candidate=prepare_candidate,
-            lab_world_id=lab_world_id,
-            on_iteration=on_iteration,
-        )
+        async with self._state.admit():
+            async with self._state.op_lock:
+                wid = await self._ensure_id()
+            return await self._app.autoresearch(
+                wid,
+                config,
+                evaluator,
+                prepare_candidate=prepare_candidate,
+                lab_world_id=lab_world_id,
+                on_iteration=on_iteration,
+            )
 
     async def grade(
         self,
@@ -470,8 +514,9 @@ class RuntimeWorld:
         Graders receive one lazy Daft DataFrame. Returned values are ephemeral;
         use `evaluate()` when the outcome needs a durable receipt.
         """
-        df = await self.query(*component_types, entity_ids=entity_ids)
-        return await self._state.runtime._container.eval_service.run_graders(df, graders)
+        async with self._state.admit():
+            df = await self.query(*component_types, entity_ids=entity_ids)
+            return await self._app.run_graders(df, graders)
 
     async def evaluate(
         self,
@@ -482,7 +527,7 @@ class RuntimeWorld:
         producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> FactReceipt:
+    ) -> ArtifactReceipt:
         """Persist one evaluation receipt for an evaluation identity.
 
         The receipt is pinned to the current snapshot and grader contract.
@@ -491,8 +536,7 @@ class RuntimeWorld:
         """
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.evaluate(
-                self._ctx,
+            return await self._app.evaluate(
                 wid,
                 list(component_types),
                 contract=contract,
@@ -514,11 +558,11 @@ class RuntimeWorld:
         world to be live.
         """
         try:
-            return await self._gate.get_world_info(self._ctx, wid)
+            return await self._app.get_world_info(wid)
         except Exception:
             if self._state.storage_config is None:
                 raise
-            return await self._gate.open_world_readonly(self._ctx, self._state.storage_config, wid)
+            return await self._app.open_world_readonly(self._state.storage_config, wid)
 
     async def info(self) -> WorldInfo:
         """Get an immutable snapshot of world state (live or cold)."""
@@ -544,8 +588,7 @@ class RuntimeWorld:
 
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            info = await self._gate.fork_world(
-                self._ctx,
+            info = await self._app.fork_world(
                 wid,
                 name,
                 storage_config=fork_storage,
@@ -563,7 +606,7 @@ class RuntimeWorld:
                 init_hooks=[],
                 world_id=info.world_id,
             )
-            fork_handle = RuntimeWorld(state=fork_state, actor_ctx=self._ctx)
+            fork_handle = RuntimeWorld(state=fork_state)
             fork_state.aliases.add(fork_handle)
             self._state.runtime._register_handle(fork_handle)
             return fork_handle
@@ -572,7 +615,7 @@ class RuntimeWorld:
         """Destroy the live world while retaining its durable rows."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.destroy_world(self._ctx, wid)
+            await self._app.destroy_world(wid)
             self._state.closed = True
             for alias in list(self._state.aliases):
                 self._state.runtime._unregister_handle(alias)
@@ -596,8 +639,7 @@ class RuntimeWorld:
         async with self._state.op_lock:
             wid = await self._ensure_id()
             info = await self._resolve_info(wid)
-            return await self._gate.query_components(
-                self._ctx,
+            return await self._app.query_components(
                 list(component_types),
                 str(wid),
                 str(info.run_id or ""),
@@ -609,14 +651,13 @@ class RuntimeWorld:
         """Return recent audit-log rows for this world."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.get_audit_history(self._ctx, wid, limit=limit, **filters)
+            return await self._app.get_audit_history(wid, limit=limit, **filters)
 
-    async def facts(self, table_name: str) -> DataFrame:
-        """Return this run's rows from a typed Iceberg fact table."""
+    async def artifacts(self, table_name: str) -> DataFrame:
+        """Return this run's rows from a typed Iceberg artifact table."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.query_facts(
-                self._ctx,
+            return await self._app.query_artifacts(
                 wid,
                 table_name,
                 storage_config=self._state.storage_config,
@@ -626,13 +667,13 @@ class RuntimeWorld:
         """Return summaries of installed processors."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.list_processors(self._ctx, wid)
+            return await self._app.list_processors(wid)
 
     async def list_hooks(self) -> list[HookInfo]:
         """Return summaries of installed hooks."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.list_hooks(self._ctx, wid)
+            return await self._app.list_hooks(wid)
 
     async def add_hook(
         self,
@@ -651,28 +692,21 @@ class RuntimeWorld:
             )
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.add_hook(self._ctx, wid, event_type, fn, mode=mode)
+            return await self._app.add_hook(wid, event_type, fn, mode=mode)
 
     async def remove_hook(self, handle: HookHandle) -> None:
         """Remove a hook by handle."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            await self._gate.remove_hook(self._ctx, wid, handle)
+            await self._app.remove_hook(wid, handle)
 
     async def list_resources(self) -> list[ResourceInfo]:
         """Return summaries of installed resources."""
         async with self._state.op_lock:
             wid = await self._ensure_id()
-            return await self._gate.list_resources(self._ctx, wid)
+            return await self._app.list_resources(wid)
 
     # ── Aliasing ──────────────────────────────────────────────────────────
-
-    def as_actor(self, actor_ctx: ActorCtx) -> RuntimeWorld:
-        """Return a handle sharing this world but using another identity."""
-        sibling = RuntimeWorld(state=self._state, actor_ctx=actor_ctx)
-        self._state.aliases.add(sibling)
-        self._state.runtime._register_handle(sibling)
-        return sibling
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -720,23 +754,23 @@ class SyncRuntimeWorld:
     def spawn_many(self, entities: list[list[Component]]) -> list[int]:
         return self._run(lambda: self._world.spawn_many(entities))
 
-    def ingest(
+    def publish(
         self, *components: Component, external_id: str, producer: str = "default"
-    ) -> FactReceipt:
-        """Persist an external fact exactly once per external identity."""
+    ) -> ArtifactReceipt:
+        """Persist an external artifact exactly once per external identity."""
         return self._run(
-            lambda: self._world.ingest(*components, external_id=external_id, producer=producer)
+            lambda: self._world.publish(*components, external_id=external_id, producer=producer)
         )
 
     def ingest_files(
         self,
         paths: str | Path | list[str | Path],
-        processor: FactProcessor,
-    ) -> FactWriteReceipt:
+        processor: ArtifactProcessor,
+    ) -> ArtifactWriteReceipt:
         return self._run(lambda: self._world.ingest_files(paths, processor))
 
-    def write_facts(self, table_name: str, facts: DataFrame) -> FactWriteReceipt:
-        return self._run(lambda: self._world.write_facts(table_name, facts))
+    def write_artifacts(self, table_name: str, artifacts: DataFrame) -> ArtifactWriteReceipt:
+        return self._run(lambda: self._world.write_artifacts(table_name, artifacts))
 
     def spawn_batch(
         self, *components_or_count: Component | int, count: int | None = None
@@ -825,7 +859,7 @@ class SyncRuntimeWorld:
         producer: str = "evals",
         ticks: list[int] | None = None,
         entity_ids: list[int] | None = None,
-    ) -> FactReceipt:
+    ) -> ArtifactReceipt:
         """Persist one evaluation receipt for an evaluation identity."""
         return self._run(
             lambda: self._world.evaluate(
@@ -857,8 +891,8 @@ class SyncRuntimeWorld:
     def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         return self._run(lambda: self._world.history(limit=limit, **filters))
 
-    def facts(self, table_name: str) -> DataFrame:
-        return self._run(lambda: self._world.facts(table_name))
+    def artifacts(self, table_name: str) -> DataFrame:
+        return self._run(lambda: self._world.artifacts(table_name))
 
     def list_processors(self) -> list[ProcessorInfo]:
         return self._run(lambda: self._world.list_processors())
@@ -880,9 +914,6 @@ class SyncRuntimeWorld:
 
     def remove_hook(self, handle: HookHandle) -> None:
         self._run(lambda: self._world.remove_hook(handle))
-
-    def as_actor(self, actor_ctx: ActorCtx) -> SyncRuntimeWorld:
-        return SyncRuntimeWorld(self._world.as_actor(actor_ctx), self._runtime)
 
     def shutdown(self) -> None:
         self._run(lambda: self._world.shutdown())

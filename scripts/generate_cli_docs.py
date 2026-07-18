@@ -107,9 +107,7 @@ def render_command(name: str, cmd: click.Command, prefix: str = "archetype") -> 
     return lines
 
 
-def render_group(
-    name: str, group: click.Group, prefix: str = "archetype"
-) -> list[str]:
+def render_group(name: str, group: click.Group, prefix: str = "archetype") -> list[str]:
     """Render a command group and all its subcommands."""
     full_name = f"{prefix} {name}"
     lines: list[str] = []

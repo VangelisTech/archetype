@@ -8,14 +8,14 @@ import asyncio
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
+from archetype.app.commands.service import CommandScheduler
 from archetype.app.container import ServiceContainer
-from archetype.app.query_service import QueryService
-from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.service import CommandGateway
+from archetype.app.query.service import QueryService
+from archetype.app.storage.service import StorageService
+from archetype.app.world.service import WorldService
+from archetype.app.world.simulation import SimulationService
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from tests.conftest import make_world_service
@@ -38,9 +38,9 @@ class TestServiceContainer:
     def test_container_wires_services(self):
         container = ServiceContainer()
         assert isinstance(container.storage_service, StorageService)
-        assert isinstance(container.broker, CommandBroker)
+        assert isinstance(container.command_scheduler, CommandScheduler)
         assert isinstance(container.world_service, WorldService)
-        assert isinstance(container.command_service, CommandService)
+        assert isinstance(container.command_gateway, CommandGateway)
         assert isinstance(container.simulation_service, SimulationService)
         assert isinstance(container.query_service, QueryService)
 
@@ -191,6 +191,28 @@ class TestWorldService:
             world = await container.world_service.create_world(WorldConfig(name="alpha"), storage)
             found = container.world_service.get_world_by_name("alpha")
             assert found.world_id == world.world_id
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_fork_rejects_duplicate_live_name_without_corrupting_index(self, tmp_path):
+        container = ServiceContainer()
+        try:
+            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+            base = await container.world_service.create_world(
+                WorldConfig(name="duplicate"), storage
+            )
+
+            with pytest.raises(ValueError, match="duplicate"):
+                await container.world_service.fork_world(
+                    base.world_id,
+                    name="duplicate",
+                    storage_config=storage,
+                )
+
+            assert container.world_service.get_world_by_name("duplicate") is base
+            assert container.world_service.list_worlds() == [base]
+            assert len(await container.world_service.discover_worlds(storage)) == 1
         finally:
             await container.shutdown()
 

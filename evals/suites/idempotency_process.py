@@ -228,18 +228,18 @@ def task_process_writer_fence_race() -> list[GraderResult]:
         ]
 
 
-def task_process_fact_replay() -> list[GraderResult]:
-    """Eight processes submit one external fact; one visible identity wins."""
+def task_process_artifact_replay() -> list[GraderResult]:
+    """Eight processes submit one external artifact; one visible identity wins."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         uri = str(root / "store")
-        namespace = "fact_race"
-        seed = _run("seed", uri, namespace, "--name", "fact-race")
+        namespace = "artifact_race"
+        seed = _run("seed", uri, namespace, "--name", "artifact-race")
         go = root / "go"
         ready = [root / f"ready-{index}" for index in range(8)]
         processes = [
             _spawn(
-                "ingest-fact",
+                "publish-artifact",
                 uri,
                 namespace,
                 "--world-id",
@@ -267,7 +267,7 @@ def task_process_fact_replay() -> list[GraderResult]:
                     proc.kill()
                     proc.wait(timeout=10)
 
-        facts = _run("query-facts", uri, namespace, "--world-id", seed["world_id"])
+        artifacts = _run("query-artifacts", uri, namespace, "--world-id", seed["world_id"])
         return [
             state_check(
                 {
@@ -279,12 +279,12 @@ def task_process_fact_replay() -> list[GraderResult]:
                         not result["duplicate"] for result in results
                     )
                     == 1,
-                    "one_fact_is_visible": facts["rows"] == 1,
-                    "external_identity_is_durable": facts["external_ids"]
+                    "one_artifact_is_visible": artifacts["rows"] == 1,
+                    "external_identity_is_durable": artifacts["external_ids"]
                     == ["shared-process-event"],
-                    "one_visible_commit_identity": len(facts["commit_ids"]) == 1,
+                    "one_visible_commit_identity": len(artifacts["commit_ids"]) == 1,
                 },
-                name="process_fact_replay",
+                name="process_artifact_replay",
             )
         ]
 

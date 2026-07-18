@@ -1,174 +1,146 @@
-# Services
+# Application families and wiring
 
-The service layer wraps the core ECS engine with multi-world management, command governance, audit history, and storage lifecycle. The core layer has no knowledge of actors, roles, commands, or process-level orchestration.
+The internal application layer wraps the core ECS engine with multi-world
+lifecycle, durable commands, artifacts, evaluation, audit projection, and
+storage ownership. Concrete services and `ServiceContainer` are not supported
+application APIs. Use `ArchetypeRuntime`, REST, or CLI.
 
-For normative signatures, see [Service Protocols](service-protocols.md).
-
-```text
-archetype.app
-  ServiceContainer          Wires everything
-    |
-    +-- StorageService       Multiton storage pool
-    +-- CommandBroker        Pure priority queue
-    +-- AuditLog             Append-only audit rows
-    |
-    +-- WorldService         World lifecycle, lookup, fork, destroy
-    +-- MutationService      Entity, component, and processor mutations
-    +-- SimulationService    Step, run, episode, rollout
-    +-- QueryService         Internal storage-backed reads
-    |
-    +-- CommandService       The gate: auth, audit, delegation
-```
+Normative dependency rules live in
+[Application Architecture](application-architecture.md); active ports live in
+[Service Protocols](service-protocols.md).
 
 ## ServiceContainer
 
-`ServiceContainer` is the lower-level composition root. Script users usually start with `ArchetypeRuntime`; host processes and tests use `ServiceContainer` when they need explicit service wiring.
-
-```python
-from archetype.app.container import ServiceContainer
-
-container = ServiceContainer()
-```
-
-Construction is synchronous. Storage backends are opened lazily on first use.
-
-## Dependency Graph
-
-Services depend only on lower tiers:
+`ServiceContainer` is the sole concrete cross-family composition root. It
+constructs two outward objects:
 
 ```text
-iStorageService
-    ↑             ↑                              ↑
-iWorldService     iQueryService           iAuditLog
-    ↑               ↑                              ↑
-iMutationService    iSimulationService            |
-    ↑               ↑              ↑              ↑
-    └───────────────┴──────────────┴──────────────┘
-                          ↑
-                   iCommandBroker
-                          ↑
-                   iCommandService
+container.application      RuntimeApplication (trusted, actor-free)
+container.command_gateway  CommandGateway (authorized ingress)
 ```
 
-`iCommandService` is the only `ActorCtx`-aware service. It is also the only service the runtime calls.
+Construction is synchronous; stores and catalogs open lazily. Shutdown stops
+new application admission, flushes audit projection, then closes container-owned
+world/storage resources.
 
-## StorageService
+## Wiring overview
 
-`StorageService` creates and pools async stores. It is a multiton keyed by effective storage configuration.
+Arrows mean consumer to dependency:
 
-```python
-store = await container.storage_service.get_or_create_store(
-    storage_config,
-    cache_config,
-)
+```text
+ArchetypeRuntime -> RuntimeApplication <- CommandGateway <- REST API
+                         |
+                         +-> MutationService -> WorldService -> StorageService
+                         +-> SimulationService -> WorldService
+                         +-> QueryService -> StorageService
+                         +-> ArtifactService -> StorageService + WorldService
+                         +-> ArtifactTableService -> StorageService + WorldService
+                         +-> EvaluationService -> QueryService + ArtifactService
+                         +-> AutoResearchService -> WorldService + SimulationService
+                         +-> CommandScheduler -> WorldService + MutationService
+                         +-> AuditLog -> StorageService
 ```
 
-See [Stores](stores.md) for backend behavior.
+The container injects `RuntimeApplication.drain_and_apply` and the quota-reset
+callable into `SimulationService`. These named callbacks avoid reverse static
+imports. It also connects `CommandScheduler`'s transactional outbox to
+`AuditLog`'s analytical projection.
 
-## WorldService
+## Storage family
 
-`WorldService` manages live world instances:
+`StorageService` pools async stores and resolves local SQLite or remote control
+catalogs for a storage identity. It owns backend lifetime, not the meaning of a
+tick, command, artifact, or evaluation commit.
 
-- `create_world` establishes a new world identity.
-- `fork_world` snapshots a source world into a new world identity.
-- `destroy_world` removes the live in-memory world from the registry.
-- lookup methods return live `iWorld` objects for internal service callers.
+See [Stores](stores.md).
 
-External callers do not receive live `iWorld` objects. `iCommandService` downgrades lifecycle returns to `WorldInfo`.
+## World family
 
-World lifecycle details are normative in [World Lifecycle](world-lifecycle.md).
+`WorldService` owns live-world lifecycle and registry access. Its world factory
+composes an `AsyncWorld` from a shared store, querier, updater, system,
+resources, and hooks. `MutationService` and `SimulationService` are siblings
+over that lifecycle port:
 
-## MutationService
+- mutation stages entity, component, processor, resource, and hook changes;
+- simulation owns step, run, episode, and rollout execution.
 
-`MutationService` mutates world contents after the gate has authorized the operation:
+Live worlds never escape the application boundary. See
+[World Lifecycle](world-lifecycle.md) and
+[Execution Hierarchy](execution-hierarchy.md).
 
-- create and remove entities
-- update existing components
-- add and remove component types
-- add and remove processors
+## Query family
 
-It has no `ActorCtx` parameter. Authorization belongs to `iCommandService`.
+`QueryService` reads persisted component state and durable signature/lineage
+metadata without requiring a live world. Runtime/application callers receive
+Daft DataFrames or safe descriptors. Its current audit dependency serves the
+history compatibility read; command outcome authority remains the command
+ledger/outbox.
 
-## SimulationService
+## Artifact family
 
-`SimulationService` owns the execution hierarchy:
+The family has two explicit workflows:
 
-- `step`: one tick
-- `run`: N steps, no termination, no fork
-- `run_episode`: step until termination or cap on the supplied world
-- `run_rollout`: fork N worlds and run one episode in each
+- `ArtifactService` owns claim-backed component publication, snapshot pinning,
+  recovery, and receipts.
+- `ArtifactTableService` owns typed file/row ingestion keyed to world and run.
 
-Rollout-internal forks use `iWorldService` directly. The gated `run_rollout` call is the audit unit, not each internal fork.
+Both use storage plus world/run coordinates. See [Artifacts](artifacts.md).
 
-See [Execution Hierarchy](execution-hierarchy.md).
+## Evaluation and research families
 
-## QueryService
+`EvaluationService` reads through `iQueryService`, pins a subject through
+`iArtifactService`, executes caller-provided graders, validates typed outcomes,
+and publishes one durable receipt.
 
-`QueryService` is the internal storage-backed read path. It has no `ActorCtx` argument because it sits below the gate.
+`AutoResearchService` owns the multi-iteration rollout workflow and its durable
+research ledger. It depends on world and simulation ports; scoring remains an
+explicit callback contract.
 
-External reads go through `iCommandService`:
+## Commands family
 
-- `query_archetype`
-- `query_components`
-- `list_signatures`
-- `get_world_info`
-- `get_audit_history`
-- `list_processors`
-- `list_hooks`
-- `list_resources`
+`CommandScheduler` admits, leases, dispatches, retries, settles, and inspects
+durable tick-deferred commands. It does not authorize users. Applied outcomes
+settle atomically with the tick visibility manifest; authoritative events are
+written to its outbox.
 
-The `viewer` role is meaningful at the gate. See [Command Gate](command-gate.md).
+See [Durable Commands](durable-commands.md).
 
-## CommandBroker
+## Audit family
 
-`CommandBroker` is a pure queue for tick-deferred commands. It stores, orders, dequeues, acknowledges, and clears commands.
-
-It does not own RBAC, quota checks, or user-facing audit history. Those belong to `iCommandService` and `iAuditLog`.
-
-See [Command Broker](broker.md).
-
-## AuditLog
-
-`AuditLog` is append-only. It records accepted-and-applied gated operations and backs `world.history(...)` through `iCommandService.get_audit_history(...)`.
-
-Broker history is queue introspection; audit history is the durable record.
+`AuditLog` projects access events and command-outbox events into append-only
+Iceberg rows. The outbox/command ledger is authoritative for workflow outcome;
+the analytical projection can lag.
 
 See [Audit Log](audit-log.md).
 
-## CommandService
+## RuntimeApplication
 
-`CommandService` is the policy enforcement point. Every external mutation, lifecycle operation, simulation control call, and read flows through it.
+`RuntimeApplication` is the canonical actor-free application facade. It owns
+operation admission and per-world serialization while delegating each workflow
+to its family port. It does not own concrete services or durable state.
 
-Each gated method follows the same shape:
+Trusted local runtime calls terminate here. No `ActorCtx` is invented for local
+scripting.
 
-```text
-guardrail_allow(command, ctx)
-delegate to one underlying service
-audit.record(row)
-return downgraded/user-safe result
-```
+## CommandGateway
 
-There are two paths through the gate:
+`CommandGateway` is the policy boundary for untrusted adapters. It accepts
+`ActorCtx`, checks RBAC/quota policy, delegates to `iRuntimeApplication`, and
+attempts one access-audit emission. It does not implement evaluation, world
+lifecycle, command dispatch, or persistence.
 
-- Direct calls apply now and return a result, such as `create_world`, `create_entity`, `run`, and `query_archetype`.
-- Tick-deferred calls use `submit`, `submit_batch`, and `submit_spawn`; `SimulationService.step` later calls `drain_and_apply`.
+FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 
-Live objects do not escape the gate. `create_world`, `fork_world`, and `get_world_info` return `WorldInfo`; list methods return `ProcessorInfo`, `HookInfo`, and `ResourceInfo`.
+## Source reference
 
-## How Services Connect to the API
-
-The [API Layer](api-layer.md) exposes the gate and selected queue/introspection endpoints through FastAPI. Route handlers translate HTTP into typed service calls and pass an `ActorCtx` from auth middleware.
-
-The CLI is a thin HTTP client.
-
-## Source Reference
-
-- Service container: `src/archetype/app/container.py`
-- Service protocols: `src/archetype/app/interfaces.py`
-- Command service: `src/archetype/app/command_service.py`
-- Command broker: `src/archetype/app/broker.py`
-- World service: `src/archetype/app/world_service.py`
-- Mutation service: `src/archetype/app/mutation_service.py`
-- Simulation service: `src/archetype/app/simulation_service.py`
-- Query service: `src/archetype/app/query_service.py`
-- Storage service: `src/archetype/app/storage_service.py`
+- composition root: `src/archetype/app/container.py`
+- application facade: `src/archetype/app/application/`
+- gateway: `src/archetype/app/gateway/`
+- durable commands: `src/archetype/app/commands/`
+- world family: `src/archetype/app/world/`
+- storage family: `src/archetype/app/storage/`
+- query family: `src/archetype/app/query/`
+- artifacts: `src/archetype/app/artifacts/`
+- evaluation: `src/archetype/app/evaluation/`
+- research: `src/archetype/app/research/`
+- audit: `src/archetype/app/audit/`

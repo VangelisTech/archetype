@@ -15,6 +15,8 @@ from evals.run import build_harness
 from evals.suites import idempotency
 from evals.suites.idempotency_process import _wait_for_markers
 
+pytestmark = [pytest.mark.process, pytest.mark.slow]
+
 
 def test_idempotency_eval_suite_is_registered_and_traceable() -> None:
     harness = build_harness(trials=1)

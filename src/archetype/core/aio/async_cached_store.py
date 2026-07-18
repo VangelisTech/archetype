@@ -53,6 +53,23 @@ class MemTable:
             self.bytes += sum(col.nbytes for col in batch.columns)
         self.last_mut = time.time()
 
+    def extend(self, other: "MemTable") -> None:
+        """Append another memtable without rebuilding its Arrow batches."""
+        if not other.rows:
+            return
+        self.batches.extend(other.batches)
+        self.rows += other.rows
+        self.bytes += other.bytes
+        self.last_mut = max(self.last_mut, other.last_mut)
+
+    @classmethod
+    def followed_by(cls, older: "MemTable", newer: "MemTable") -> "MemTable":
+        """Return ``older + newer`` while preserving append order."""
+        merged = cls(last_mut=max(older.last_mut, newer.last_mut))
+        merged.extend(older)
+        merged.extend(newer)
+        return merged
+
     def to_table(self) -> pa.Table:
         return pa.Table.from_batches(self.batches)
 
@@ -74,6 +91,10 @@ class AsyncCachedStore(iAsyncStore):
     ):
         self._inner: iAsyncStore = async_store
         self._mem: dict[ArchetypeSignature, MemTable] = {}
+        # A detached batch remains readable while its durable append is in
+        # flight. New rows land in ``_mem`` and can never be cleared by that
+        # append's completion.
+        self._inflight: dict[ArchetypeSignature, MemTable] = {}
         self._committed_sigs: set[ArchetypeSignature] = set()
 
         # thresholds
@@ -91,8 +112,13 @@ class AsyncCachedStore(iAsyncStore):
         self.total_cached_bytes: int = 0
 
         # background loop turned on/off flag
+        self._state_lock = asyncio.Lock()
         self._flush_lock = asyncio.Lock()
+        self._shutdown_lock = asyncio.Lock()
+        self._shutdown_complete = False
+        self._accepting_appends = True
         self._bg_on = True
+        self._bg_stop = asyncio.Event()
         self._bg_task: asyncio.Task | None = asyncio.create_task(
             self._background_flush(self.idle_sec)
         )
@@ -104,33 +130,56 @@ class AsyncCachedStore(iAsyncStore):
     # Private helpers, Cache Management
     # ---------------------------------------------------
 
-    def _build_arrow_table(self, sig: ArchetypeSignature) -> pa.Table | None:
-        mt = self._mem.get(sig)
-        return mt.to_table() if mt and mt.rows else None
+    async def _flush_sig_locked(self, sig: ArchetypeSignature) -> bool:
+        """Detach and persist one signature while ``_flush_lock`` is held.
 
-    async def _background_flush_sig(self, sig: ArchetypeSignature):
-        # 1. Build the Arrow table synchronously in a worker thread
-        async with self._flush_lock:  # serialises flushes
-            tbl = await asyncio.to_thread(self._build_arrow_table, sig)
-            if tbl is None:
-                return
-        flushed_bytes = tbl.nbytes
+        The durable append is serialized, but the state lock is released
+        before I/O so concurrent appends can accumulate in a fresh memtable.
+        A failed or cancelled append restores the detached rows *before* any
+        newer rows and leaves the byte accounting unchanged.
+        """
+        async with self._state_lock:
+            snapshot = self._mem.get(sig)
+            if snapshot is None or not snapshot.rows:
+                return False
+            self._mem[sig] = MemTable()
+            self._inflight[sig] = snapshot
 
-        # 2. Convert to Daft and flush on the event-loop thread
-        df = daft.from_arrow(tbl)
-        await self._inner.append(sig, df)
+        try:
+            tbl = await asyncio.to_thread(snapshot.to_table)
+            await self._inner.append(sig, daft.from_arrow(tbl))
+        except BaseException:
+            async with self._state_lock:
+                newer = self._mem.get(sig, MemTable())
+                self._mem[sig] = MemTable.followed_by(snapshot, newer)
+                self._inflight.pop(sig, None)
+            raise
+
+        async with self._state_lock:
+            self._inflight.pop(sig, None)
+            self._update_total_bytes(-snapshot.bytes)
         self._committed_sigs.add(sig)
+        return True
 
-        # 3. Clear the memtable
-        self._mem[sig].clear()
-        self._update_total_bytes(-flushed_bytes)
+    async def _background_flush_sig(self, sig: ArchetypeSignature) -> bool:
+        """Serialize one background/threshold flush against explicit drains."""
+        async with self._flush_lock:
+            return await self._flush_sig_locked(sig)
 
     async def _background_flush(self, idle_sec=30):
         while self._bg_on:
-            await asyncio.sleep(idle_sec)
+            try:
+                await asyncio.wait_for(self._bg_stop.wait(), timeout=idle_sec)
+            except TimeoutError:
+                pass
+            if not self._bg_on:
+                return
             now = time.time()
 
-            idle_sigs = [s for s, m in self._mem.items() if now - m.last_mut >= idle_sec]
+            async with self._state_lock:
+                idle_sigs = [
+                    s for s, m in self._mem.items() if m.rows and now - m.last_mut >= idle_sec
+                ]
 
             for sig in idle_sigs:
                 await self._background_flush_sig(sig)
@@ -169,12 +218,18 @@ class AsyncCachedStore(iAsyncStore):
             commit_tokens=commit_tokens,
         )
 
-        mt = self._mem.get(sig)
-        if not (mt and mt.rows):
+        async with self._state_lock:
+            inflight = self._inflight.get(sig)
+            live = self._mem.get(sig)
+            batches = [
+                *(inflight.batches if inflight and inflight.rows else []),
+                *(live.batches if live and live.rows else []),
+            ]
+        if not batches:
             return disk_df
 
         target_schema = Archetype.get_archetype_schema(sig)
-        mem_table = mt.to_table().select(target_schema.names).cast(target_schema)
+        mem_table = pa.Table.from_batches(batches).select(target_schema.names).cast(target_schema)
         mem_df = daft.from_arrow(mem_table)
         # (Daft stubs type Expression.__eq__ as bool; these are Expressions.)
         wid, rid = str(world_id), str(run_id)
@@ -217,30 +272,34 @@ class AsyncCachedStore(iAsyncStore):
         head — a head must never claim RAM-only rows are durable.
         """
         # 1) convert the tiny incoming Daft DataFrame slice → RecordBatch
-        added_bytes = 0
-        added_rows = 0
+        pending = MemTable()
         for batch in df.to_arrow_iter():
-            self._mem.setdefault(sig, MemTable()).append(batch)
-            added_bytes += batch.nbytes
-            added_rows += batch.num_rows
+            pending.append(batch)
 
-        self._update_total_bytes(added_bytes)
-
-        if added_rows == 0:
+        if pending.rows == 0:
             return AppendReceipt(table_id=Archetype.get_name(sig), rows=0, durable=True)
 
-        # cheap in‑mem stats
-        needs_flush = (
-            self._mem[sig].rows >= self.flush_rows
-            or self._mem[sig].bytes >= self.flush_bytes
-            or sum(m.bytes for m in self._mem.values()) >= self.global_budget_bytes
-        )
+        async with self._state_lock:
+            if not self._accepting_appends:
+                raise RuntimeError("cannot append to a shut down cached store")
+            self._mem.setdefault(sig, MemTable()).extend(pending)
+            self._update_total_bytes(pending.bytes)
+
+            # Cheap in-memory stats. ``total_cached_bytes`` includes detached
+            # in-flight batches until their durable append succeeds.
+            needs_flush = (
+                self._mem[sig].rows >= self.flush_rows
+                or self._mem[sig].bytes >= self.flush_bytes
+                or self.total_cached_bytes >= self.global_budget_bytes
+            )
 
         if needs_flush:
             await self._background_flush_sig(sig)
 
         self._committed_sigs.add(sig)
-        return AppendReceipt(table_id=Archetype.get_name(sig), rows=added_rows, durable=needs_flush)
+        return AppendReceipt(
+            table_id=Archetype.get_name(sig), rows=pending.rows, durable=needs_flush
+        )
 
     async def flush(self) -> None:
         """Drain every memtable to the inner store.
@@ -248,28 +307,35 @@ class AsyncCachedStore(iAsyncStore):
         Called by the commit coordinator's owner before a manifest head is
         published, so visibility never outruns durability.
         """
-        for sig, mt in list(self._mem.items()):
-            if mt.rows:
-                await self._background_flush_sig(sig)
-        await self._inner.flush()
+        # Taking the same lock as idle/threshold flushes is the durability
+        # barrier. A detached batch may leave ``_mem`` empty while its append
+        # still lives in ``_inflight``; checking only ``_mem`` would let a tick
+        # manifest publish before that append completed.
+        async with self._flush_lock:
+            while True:
+                async with self._state_lock:
+                    sigs = [sig for sig, mt in self._mem.items() if mt.rows]
+                if not sigs:
+                    break
+                for sig in sigs:
+                    await self._flush_sig_locked(sig)
+            await self._inner.flush()
 
     async def shutdown(self) -> None:
         """
         Stop background flushing and ensure all pending data is flushed to the inner store.
         """
-        # Stop the background task quickly
-        self._bg_on = False
-        if self._bg_task is not None:
-            self._bg_task.cancel()
-            try:
+        async with self._shutdown_lock:
+            if self._shutdown_complete:
+                return
+
+            async with self._state_lock:
+                self._accepting_appends = False
+            self._bg_on = False
+            self._bg_stop.set()
+            if self._bg_task is not None:
                 await self._bg_task
-            except asyncio.CancelledError:
-                pass
 
-        # Flush any remaining signatures
-        for sig, mt in list(self._mem.items()):
-            if mt.rows:
-                await self._background_flush_sig(sig)
-
-        # Delegate shutdown to inner store
-        await self._inner.shutdown()
+            await self.flush()
+            await self._inner.shutdown()
+            self._shutdown_complete = True

@@ -4,9 +4,8 @@
 """Runtime contract tests.
 
 Exercises ArchetypeRuntime and RuntimeWorld invariants that the
-specification guarantees: single-flight activation, actor binding,
-default admin identity, shutdown idempotency, fork handles,
-and pre-activation hook rejection.
+specification guarantees: actor-free trust, single-flight activation,
+shutdown idempotency, fork handles, and pre-activation hook rejection.
 """
 
 from __future__ import annotations
@@ -14,11 +13,9 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from uuid_utils import uuid7
 
 from archetype import ArchetypeRuntime, Component
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 from archetype.core.hooks import PreTick
 
@@ -54,8 +51,8 @@ class TestSingleFlightActivation:
             storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
             world = rt.world("single-flight", storage=storage)
 
-            gate = rt._container.command_service
-            original_create = gate.create_world
+            application = rt._container.application
+            original_create = application.create_world
             call_count = 0
 
             async def counting_create(*args, **kwargs):
@@ -63,7 +60,7 @@ class TestSingleFlightActivation:
                 call_count += 1
                 return await original_create(*args, **kwargs)
 
-            gate.create_world = counting_create
+            application.create_world = counting_create
 
             # Launch 50 concurrent spawns. Each triggers ensure_init if
             # the world is not yet activated.  The init_lock should
@@ -79,73 +76,82 @@ class TestSingleFlightActivation:
             # All 50 entities should have been created
             assert len(results) == 50
 
+    @pytest.mark.asyncio
+    async def test_failed_activation_rolls_back_and_can_retry(self, tmp_path, monkeypatch):
+        runtime = ArchetypeRuntime()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = runtime.world("activation-retry", storage=storage, processors=[object()])
+        application = runtime._container.application
+        original_add = application.add_processor
+        calls = 0
+
+        async def fail_once(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("injected wiring failure")
+            return await original_add(*args, **kwargs)
+
+        monkeypatch.setattr(application, "add_processor", fail_once)
+        try:
+            with pytest.raises(RuntimeError, match="injected wiring failure"):
+                await world.spawn(Pos())
+
+            assert not world._state.initialized
+            assert runtime._container.world_service.list_worlds() == []
+
+            # Replace the invalid processor as well as the transient failure;
+            # retry must perform one clean activation rather than collide with
+            # the rolled-back name registration.
+            world._state.init_processors = []
+            entity_id = await world.spawn(Pos())
+            assert isinstance(entity_id, int)
+            assert world._state.initialized
+        finally:
+            await runtime.shutdown()
+
 
 # ── 2. Actor binding ────────────────────────────────────────────────────
 
 
 class TestActorBinding:
     @pytest.mark.asyncio
-    async def test_as_actor_produces_sibling_with_different_ctx(self, tmp_path):
-        """world.as_actor(ctx) returns a sibling sharing the same underlying
-        world state but bound to a different ActorCtx."""
-        admin_ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        player_ctx = ActorCtx(id=uuid7(), roles={"admin", "player"})
+    async def test_runtime_bypasses_untrusted_command_gateway(self, tmp_path, monkeypatch):
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "trusted-runtime",
+                storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+            )
 
-        async with ArchetypeRuntime(actor_ctx=admin_ctx) as rt:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = rt.world("actor-test", storage=storage)
-            sibling = world.as_actor(player_ctx)
+            async def forbidden_gateway_call(*args, **kwargs):
+                raise AssertionError("trusted runtime must not call CommandGateway")
 
-            # Both share the same _state (same logical world)
-            assert world._state is sibling._state
-            # But different contexts
-            assert world._ctx is not sibling._ctx
-            assert world._ctx.id == admin_ctx.id
-            assert sibling._ctx.id == player_ctx.id
+            monkeypatch.setattr(
+                runtime._container.command_gateway,
+                "create_world",
+                forbidden_gateway_call,
+            )
+            assert isinstance(await world.spawn(Pos()), int)
 
     @pytest.mark.asyncio
-    async def test_sibling_operations_use_sibling_ctx(self, tmp_path):
-        """Operations through the sibling handle use the sibling's ActorCtx,
-        verified via audit row actor_id."""
-        admin_ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        player_ctx = ActorCtx(id=uuid7(), roles={"admin", "player"})
-
-        async with ArchetypeRuntime(actor_ctx=admin_ctx) as rt:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = rt.world("actor-audit", storage=storage)
-
-            # Activate via the admin handle
-            await world.spawn(Pos(x=1.0))
-
-            sibling = world.as_actor(player_ctx)
-            await sibling.spawn(Pos(x=2.0))
-
-            # Query audit log — filter by the sibling's actor_id
-            audit = rt._container.audit_log
-            sibling_rows = (await audit.query(actor_id=player_ctx.id)).to_pylist()
-            assert len(sibling_rows) >= 1, "Sibling operation should appear in audit log"
-            assert sibling_rows[0]["command_type"] == "spawn"
+    async def test_runtime_has_no_access_audit_identity(self, tmp_path):
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "actor-free",
+                storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+            )
+            await world.spawn(Pos())
+            assert (await runtime._container.audit_log.query()).count_rows() == 0
 
 
 # ── 3. Default admin identity ───────────────────────────────────────────
 
 
 class TestDefaultAdminIdentity:
-    @pytest.mark.asyncio
-    async def test_default_ctx_has_admin_role(self, tmp_path):
-        """ArchetypeRuntime() without explicit ctx defaults to {admin} roles,
-        which is required for create_world."""
-        async with ArchetypeRuntime() as rt:
-            storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
-            world = rt.world("admin-test", storage=storage)
+    def test_runtime_constructor_has_no_actor_context(self):
+        import inspect
 
-            # create_world is admin-only. If the default ctx lacks admin,
-            # this will raise GuardrailError.
-            eid = await world.spawn(Pos(x=1.0))
-            assert isinstance(eid, int)
-
-            # Double-check the runtime's actor ctx
-            assert "admin" in rt._actor_ctx.roles
+        assert "actor_ctx" not in inspect.signature(ArchetypeRuntime).parameters
 
 
 # ── 3.5. Batch spawn sugar ─────────────────────────────────────────────

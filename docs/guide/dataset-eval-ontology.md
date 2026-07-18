@@ -3,7 +3,7 @@
 **Document type:** Normative.
 
 **Scope:** Dataset readers and exporters, physical-AI evaluation, typed dataset
-fact tables, and every public surface that names benchmarks, suites, tasks,
+artifact tables, and every public surface that names benchmarks, suites, tasks,
 trials, or dataset episodes.
 
 This page defines public vocabulary and identity. It does not define the trial
@@ -70,7 +70,7 @@ stream records MUST carry explicit sampling rates; path names and row counts
 do not define timing.
 
 Episode is not a synonym for trajectory. One episode can be represented across
-several strict typed fact tables as long as each row carries the same dataset
+several strict typed artifact tables as long as each row carries the same dataset
 coordinates and the streams retain their own timing.
 
 ### Trial
@@ -161,20 +161,20 @@ runtime EpisodeResult
 This is what “datasets are frozen trials” means. It does not require one
 runtime world, run, or `EpisodeResult` per trial.
 
-## 5. Persistence in typed fact tables
+## 5. Persistence in typed artifact tables
 
 Dataset readers and exporters write domain rows through the typed Iceberg
-fact-table path in [Durable Facts](durable-facts.md). The division of
+artifact-table path in [Artifacts](artifacts.md). The division of
 responsibility is strict:
 
 | Owner | Columns / concern |
 |---|---|
-| `FactService` | `fact_id`, owning `world_id` / `run_id`, `source_uri`, `content_hash`, strict append and dedup behavior |
+| `ArtifactTableService` | `artifact_id`, owning `world_id` / `run_id`, `source_uri`, `content_hash`, strict append and dedup behavior |
 | Dataset adapter | `benchmark`, `suite`, `task_key`, `episode_id`, stream/timing fields, domain payload |
 | Live-trial exporter | Optional source `RuntimeSlice` provenance in addition to dataset coordinates |
 
-**The FactService envelope is storage ownership and write identity.** Its
-`world_id` and `run_id` scope the fact view; `source_uri` and `content_hash`
+**The ArtifactTableService envelope is storage ownership and write identity.** Its
+`world_id` and `run_id` scope the artifact view; `source_uri` and `content_hash`
 form part of the logical write key. That envelope **does not replace dataset
 coordinates** and does not prove where an imported episode originally ran.
 
@@ -184,7 +184,7 @@ table rows, not a fictional original simulation. Conversely, exporting a live
 trial MAY persist its source `RuntimeSlice` as typed payload provenance.
 
 Typed tables fail on schema drift. Adapters MUST normalize native vocabulary
-before the `FactService` boundary and MUST NOT depend on silent widening.
+before the `ArtifactTableService` boundary and MUST NOT depend on silent widening.
 Large media remains content-addressed data referenced from typed rows rather
 than an opaque path masquerading as identity.
 
@@ -232,7 +232,7 @@ and exact grader kinds.
 
 Current implementation truth:
 
-- typed fact tables and query-backed colocated evaluation exist;
+- typed artifact tables and query-backed colocated evaluation exist;
 - the colocated evaluator keeps N trial entities in one ledger and derives its
   report from persisted rows;
 - the canonical dataset episode row schemas, exporters, reader adapters, and

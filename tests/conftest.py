@@ -13,8 +13,8 @@ import pytest
 # sets it, but a test module may `import daft` before importing archetype.)
 os.environ.setdefault("DO_NOT_TRACK", "1")
 
-from archetype.app.storage_service import StorageService  # noqa: E402
-from archetype.app.world_service import WorldService  # noqa: E402
+from archetype.app.storage.service import StorageService  # noqa: E402
+from archetype.app.world.service import WorldService  # noqa: E402
 from archetype.core.config import StorageBackend, StorageConfig  # noqa: E402
 
 
@@ -27,7 +27,7 @@ def isolate_default_audit_storage(tmp_path, monkeypatch):
         backend=StorageBackend.ICEBERG,
     )
     monkeypatch.setattr(
-        "archetype.app.audit_log.default_audit_storage",
+        "archetype.app.audit.service.default_audit_storage",
         lambda: config,
     )
 

@@ -16,7 +16,7 @@
 
 from fastapi import APIRouter, Depends, Response, status
 
-from archetype.api.deps import get_actor_ctx, get_command_service
+from archetype.api.deps import get_actor_ctx, get_command_gateway
 from archetype.api.errors import raise_api_error
 from archetype.api.models import (
     ComponentsRequest,
@@ -25,8 +25,8 @@ from archetype.api.models import (
     hydrate_component_types,
     hydrate_components,
 )
-from archetype.app.auth.models import ActorCtx
-from archetype.app.command_service import CommandService
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.interfaces import iCommandGateway
 
 router = APIRouter(prefix="/worlds/{world_id}/entities", tags=["entities"])
 
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/worlds/{world_id}/entities", tags=["entities"])
 async def create_entity(
     world_id: str,
     req: ComponentsRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Create an entity. Requires player, operator, or admin."""
@@ -50,7 +50,7 @@ async def create_entity(
 async def remove_entity(
     world_id: str,
     entity_id: int,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Remove an entity. Requires player, operator, or admin."""
@@ -66,7 +66,7 @@ async def update_entity(
     world_id: str,
     entity_id: int,
     req: ComponentsRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Overlay component values on an entity. Requires player, operator, or admin."""
@@ -82,7 +82,7 @@ async def add_components(
     world_id: str,
     entity_id: int,
     req: ComponentsRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Extend an entity with components. Requires operator or admin."""
@@ -98,7 +98,7 @@ async def remove_components(
     world_id: str,
     entity_id: int,
     req: ComponentTypesRequest,
-    cs: CommandService = Depends(get_command_service),
+    cs: iCommandGateway = Depends(get_command_gateway),
     ctx: ActorCtx = Depends(get_actor_ctx),
 ):
     """Remove component types from an entity. Requires operator or admin."""

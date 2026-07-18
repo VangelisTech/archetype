@@ -16,7 +16,7 @@ The next feature is not "rewrite Archetype in Rust." The feature is:
 > A Rust Arrow/Parquet tick kernel, callable from the existing Python runtime
 > boundary, passing core parity tests against the Python async world, with
 > benchmarks showing reduced per-tick overhead without taking over app,
-> runtime, auth, audit, or broker semantics.
+> runtime, auth, audit, or durable-command semantics.
 
 ### Rust Owns
 
@@ -31,7 +31,7 @@ The next feature is not "rewrite Archetype in Rust." The feature is:
 ### Python Owns
 
 - `ArchetypeRuntime`, service container, API, CLI, and docs examples.
-- RBAC, quotas, audit emission, command broker ordering, and command policy.
+- RBAC, quotas, audit emission, durable command ordering, and command policy.
 - Python component classes and table-name hashing.
 - Python processors, hooks, resources, and object lifetimes.
 - Daft/Iceberg/LanceDB production paths until a later storage boundary is
@@ -439,7 +439,7 @@ Each step must leave the Python public surface stable.
 ### Acceptance
 
 - At each migration point, Python and Rust contract tests both pass.
-- The app/runtime layers still call through `CommandService`.
+- The app/runtime layers still call through `CommandGateway`.
 
 ## 10. Phase 8: Retirement
 

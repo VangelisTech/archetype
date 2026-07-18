@@ -8,10 +8,15 @@ import sys
 
 import pytest
 
+from archetype import __version__
 from archetype.api.app import create_app
-from archetype.api.deps import set_container
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.api.deps import get_actor_ctx, set_container
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth import guard
+from archetype.app.gateway.auth.errors import GuardrailError
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.models import Command, CommandType, EpisodeConfig, RolloutConfig
+from archetype.core.config import RunConfig
 
 pytest.importorskip("httpx", reason="httpx required for API tests")
 
@@ -51,6 +56,8 @@ class TestRootRoute:
         assert resp.status_code == 200
         data = resp.json()
         assert data["name"] == "archetype-ecs"
+        assert data["version"] == __version__
+        assert client.get("/openapi.json").json()["info"]["version"] == __version__
 
     def test_healthz_does_not_require_auth(self, client):
         resp = client.get("/healthz")
@@ -130,6 +137,16 @@ class TestWorldRouteErrors:
         resp = client.post("/worlds", json=body)
         assert resp.status_code == 409
         assert "dup_name" in resp.json()["detail"]
+
+    def test_fork_world_duplicate_name_conflict(self, client, tmp_path):
+        body = {"name": "dup_fork", "storage_uri": str(tmp_path / "store")}
+        created = client.post("/worlds", json=body)
+        world_id = created.json()["world_id"]
+
+        resp = client.post(f"/worlds/{world_id}/fork", json={"name": "dup_fork"})
+
+        assert resp.status_code == 409
+        assert client.get(f"/worlds/{world_id}").status_code == 200
 
     def test_delete_world_invalid_uuid(self, client):
         """Issue #180: an unparsable id is a client error, not a silent no-op.
@@ -357,6 +374,18 @@ class TestSimulationRoutes:
         )
         assert resp.status_code == 404
 
+    def test_negative_run_count_is_rejected_before_execution(self, client, tmp_path):
+        create_resp = client.post(
+            "/worlds",
+            json={"name": "negative-run", "storage_uri": str(tmp_path / "store")},
+        )
+        world_id = create_resp.json()["world_id"]
+
+        response = client.post(f"/worlds/{world_id}/run", json={"num_steps": -1})
+
+        assert response.status_code == 422
+        assert client.get(f"/worlds/{world_id}").json()["tick"] == 0
+
     def test_step_schema_is_pinned(self, client):
         schema = client.get("/openapi.json").json()
         response_schema = schema["paths"]["/worlds/{world_id}/step"]["post"]["responses"]["200"][
@@ -401,6 +430,18 @@ class TestQueryRoutes:
         rows = response.json()
         assert len(rows) == 2
         assert all(row["queryroutemetric104__value"] >= 2 for row in rows)
+
+    def test_unfiltered_state_and_entity_use_world_storage(self, client, tmp_path):
+        world_id = self._create_metric_world(client, tmp_path)
+
+        state = client.get(f"/worlds/{world_id}/state")
+        target_entity = min(row["entity_id"] for row in state.json())
+        entity = client.get(f"/worlds/{world_id}/entities/{target_entity}")
+
+        assert state.status_code == 200, state.text
+        assert entity.status_code == 200, entity.text
+        assert len(state.json()) == 5
+        assert [row["entity_id"] for row in entity.json()] == [target_entity]
 
     def test_component_query_count_is_a_distinct_terminal(self, client, tmp_path, monkeypatch):
         world_id = self._create_metric_world(client, tmp_path)
@@ -521,7 +562,7 @@ class TestQueryRoutes:
         expected_uri,
         expected_namespace,
     ):
-        from archetype.app.command_service import CommandService
+        from archetype.app.gateway.service import CommandGateway
         from archetype.core.config import StorageConfig
 
         captured = {}
@@ -530,7 +571,7 @@ class TestQueryRoutes:
             captured["config"] = storage_config
             return []
 
-        monkeypatch.setattr(CommandService, "list_signatures", list_signatures)
+        monkeypatch.setattr(CommandGateway, "list_signatures", list_signatures)
         assert client.get(f"/signatures?{query}").status_code == 200
 
         defaults = StorageConfig()
@@ -634,11 +675,10 @@ class TestQueryRoutes:
 def test_route_modules_do_not_import_forbidden_services():
     route_dir = __import__("pathlib").Path("src/archetype/api/routes")
     forbidden = (
-        "archetype.app.mutation_service",
-        "archetype.app.simulation_service",
-        "archetype.app.query_service",
-        "archetype.app.world_service",
-        "archetype.app.broker",
+        "archetype.app.world.mutation",
+        "archetype.app.world.simulation",
+        "archetype.app.query.service",
+        "archetype.app.world.service",
     )
     offenders = []
     for path in route_dir.glob("*.py"):
@@ -647,6 +687,31 @@ def test_route_modules_do_not_import_forbidden_services():
             if needle in text:
                 offenders.append(f"{path}:{needle}")
     assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_development_principal_identity_is_stable_across_requests(monkeypatch):
+    monkeypatch.setattr(guard, "MAX_CMDS_PER_TICK", 1)
+    first = await get_actor_ctx("Bearer player")
+    second = await get_actor_ctx("Bearer player")
+
+    assert first.id == second.id
+    guard.guardrail_allow(Command(type=CommandType.CUSTOM), first)
+    with pytest.raises(GuardrailError):
+        guard.guardrail_allow(Command(type=CommandType.CUSTOM), second)
+
+
+@pytest.mark.parametrize(
+    ("model", "field"),
+    (
+        (lambda: RunConfig(num_steps=-1), "num_steps"),
+        (lambda: EpisodeConfig(max_steps=-1), "max_steps"),
+        (lambda: RolloutConfig(num_episodes=-1), "num_episodes"),
+    ),
+)
+def test_negative_execution_counts_fail_model_validation(model, field):
+    with pytest.raises(ValueError, match=field):
+        model()
 
 
 def test_api_import_boundary_lint_script_passes():

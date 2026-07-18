@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.component import Component
 from archetype.core.config import StorageBackend, StorageConfig, WorldConfig
 
@@ -43,18 +43,18 @@ async def test_spawn_operations_emit_one_row_with_structured_metadata(
             StorageConfig(uri=str(tmp_path / "world-store")),
         )
 
-        with caplog.at_level(logging.WARNING, logger="archetype.app.command_service"):
-            batch_ids = await container.command_service.create_entities(
+        with caplog.at_level(logging.WARNING, logger="archetype.app.gateway.service"):
+            batch_ids = await container.command_gateway.create_entities(
                 actor,
                 world.world_id,
                 [[AuditPosition(x=1.0)], [AuditPosition(x=2.0)]],
             )
-            reserved_id = container.command_service.reserve_entity_ids(
+            reserved_id = container.command_gateway.reserve_entity_ids(
                 actor,
                 world.world_id,
                 1,
             )[0]
-            await container.command_service.spawn_with_reserved_id(
+            await container.command_gateway.spawn_with_reserved_id(
                 actor,
                 world.world_id,
                 reserved_id,

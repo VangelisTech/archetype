@@ -236,7 +236,7 @@ def test_regression_cli_reports_poison_outcomes_without_library_tracebacks() -> 
 
 def _apply_failure_record(error: Exception) -> logging.LogRecord:
     return logging.LogRecord(
-        name="archetype.app.command_service",
+        name="archetype.app.gateway.service",
         level=logging.ERROR,
         pathname=__file__,
         lineno=1,

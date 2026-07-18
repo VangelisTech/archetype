@@ -1,0 +1,297 @@
+version = 2
+source_root = "src"
+
+[concrete_services]
+types = [
+  "ArtifactService",
+  "ArtifactTableService",
+  "AuditLog",
+  "AutoResearchService",
+  "CommandGateway",
+  "CommandScheduler",
+  "EvaluationService",
+  "MutationService",
+  "QueryService",
+  "RuntimeApplication",
+  "ServiceContainer",
+  "SimulationService",
+  "StorageService",
+  "WorldService",
+]
+composition_roots = [
+  "archetype.app.container",
+  "archetype.api.deps",
+  "archetype.runtime.runtime",
+]
+
+[[package_rule]]
+name = "core-does-not-import-outward"
+consumer = "archetype.core"
+forbidden = [
+  "archetype.app",
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+  "archetype.experiments",
+]
+
+[[package_rule]]
+name = "app-does-not-import-outward"
+consumer = "archetype.app"
+forbidden = [
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+  "archetype.experiments",
+]
+
+# Family rules apply to every module in the package, not only service.py.
+# This is the executable dependency DAG represented by the container wiring.
+
+[[family_rule]]
+name = "storage-family"
+consumer = "archetype.app.storage"
+allowed_app = [
+  "archetype.app.storage",
+  "archetype.app.errors",
+]
+
+[[family_rule]]
+name = "world-family"
+consumer = "archetype.app.world"
+allowed_app = [
+  "archetype.app.world",
+  "archetype.app.storage",
+  "archetype.app.models",
+]
+
+[[family_rule]]
+name = "audit-family"
+consumer = "archetype.app.audit"
+allowed_app = [
+  "archetype.app.audit",
+  "archetype.app.storage",
+  "archetype.app.models",
+  "archetype.app.errors",
+]
+
+[[family_rule]]
+name = "query-family"
+consumer = "archetype.app.query"
+allowed_app = [
+  "archetype.app.query",
+  "archetype.app.storage",
+  "archetype.app.audit.interfaces",
+  "archetype.app.models",
+]
+
+[[family_rule]]
+name = "artifact-family"
+consumer = "archetype.app.artifacts"
+allowed_app = [
+  "archetype.app.artifacts",
+  "archetype.app.storage",
+  "archetype.app.world.interfaces",
+]
+
+[[family_rule]]
+name = "evaluation-family"
+consumer = "archetype.app.evaluation"
+allowed_app = [
+  "archetype.app.evaluation",
+  "archetype.app.query.interfaces",
+  "archetype.app.artifacts.interfaces",
+  "archetype.app.models",
+]
+
+[[family_rule]]
+name = "research-family"
+consumer = "archetype.app.research"
+allowed_app = [
+  "archetype.app.research",
+  "archetype.app.world.interfaces",
+  "archetype.app.models",
+]
+
+[[family_rule]]
+name = "command-family"
+consumer = "archetype.app.commands"
+allowed_app = [
+  "archetype.app.commands",
+  "archetype.app.world.interfaces",
+  "archetype.app.storage.catalog",
+  "archetype.app.models",
+  "archetype.app.errors",
+]
+
+[[family_rule]]
+name = "application-family"
+consumer = "archetype.app.application"
+allowed_app = [
+  "archetype.app.application",
+  "archetype.app.artifacts.interfaces",
+  "archetype.app.audit.interfaces",
+  "archetype.app.commands.interfaces",
+  "archetype.app.evaluation.interfaces",
+  "archetype.app.query.interfaces",
+  "archetype.app.research.interfaces",
+  "archetype.app.world.interfaces",
+  "archetype.app.models",
+]
+
+[[family_rule]]
+name = "gateway-family"
+consumer = "archetype.app.gateway"
+allowed_app = [
+  "archetype.app.gateway",
+  "archetype.app.application.interfaces",
+  "archetype.app.audit.interfaces",
+  "archetype.app.audit.models",
+  "archetype.app.models",
+  "archetype.app.errors",
+]
+
+[[module_rule]]
+module = "archetype.app.storage.service"
+allowed_interfaces = ["archetype.core.interfaces.iAsyncStore"]
+allowed_app = [
+  "archetype.app.storage.catalog",
+  "archetype.app.storage.remote_catalog",
+  "archetype.app.storage.iceberg",
+  "archetype.app.storage.session",
+]
+
+[[module_rule]]
+module = "archetype.app.world.service"
+allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.core.interfaces.iAsyncStore",
+  "archetype.core.interfaces.iAsyncSystem",
+]
+allowed_app = [
+  "archetype.app.storage.catalog",
+  "archetype.app.storage.commit",
+  "archetype.app.storage.signatures",
+  "archetype.app.models",
+]
+
+[[module_rule]]
+module = "archetype.app.world.mutation"
+allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
+allowed_app = []
+
+[[module_rule]]
+module = "archetype.app.world.simulation"
+allowed_interfaces = ["archetype.app.world.interfaces.iWorldService"]
+allowed_app = ["archetype.app.models"]
+
+[[module_rule]]
+module = "archetype.app.query.service"
+allowed_interfaces = [
+  "archetype.app.audit.interfaces.iAuditLog",
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.core.interfaces.ArchetypeSignature",
+]
+allowed_app = [
+  "archetype.app.storage.catalog",
+  "archetype.app.storage.signatures",
+  "archetype.app.models",
+]
+
+[[module_rule]]
+module = "archetype.app.artifacts.table_service"
+allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.artifacts.models",
+  "archetype.app.storage.iceberg",
+]
+
+[[module_rule]]
+module = "archetype.app.artifacts.service"
+allowed_interfaces = [
+  "archetype.app.storage.interfaces.iStorageService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.artifacts.models",
+  "archetype.app.storage.catalog",
+]
+
+[[module_rule]]
+module = "archetype.app.evaluation.service"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactService",
+  "archetype.app.evaluation.interfaces.GraderOutput",
+  "archetype.app.evaluation.interfaces.TrajectoryGrader",
+  "archetype.app.query.interfaces.iQueryService",
+]
+allowed_app = [
+  "archetype.app.evaluation.models",
+  "archetype.app.models",
+]
+
+[[module_rule]]
+module = "archetype.app.research.service"
+allowed_interfaces = [
+  "archetype.app.world.interfaces.iSimulationService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.research.contracts",
+  "archetype.app.research.models",
+  "archetype.app.models",
+]
+
+[[module_rule]]
+module = "archetype.app.audit.service"
+allowed_interfaces = ["archetype.app.storage.interfaces.iStorageService"]
+allowed_app = [
+  "archetype.app.errors",
+  "archetype.app.models",
+  "archetype.app.storage.catalog",
+  "archetype.app.storage.iceberg",
+]
+
+[[module_rule]]
+module = "archetype.app.commands.service"
+allowed_interfaces = [
+  "archetype.app.world.interfaces.iMutationService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = [
+  "archetype.app.errors",
+  "archetype.app.models",
+  "archetype.app.storage.catalog",
+]
+
+[[module_rule]]
+module = "archetype.app.application.service"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactService",
+  "archetype.app.artifacts.interfaces.iArtifactTableService",
+  "archetype.app.audit.interfaces.iAuditLog",
+  "archetype.app.commands.interfaces.iCommandScheduler",
+  "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.query.interfaces.iQueryService",
+  "archetype.app.research.interfaces.iResearchService",
+  "archetype.app.world.interfaces.iMutationService",
+  "archetype.app.world.interfaces.iSimulationService",
+  "archetype.app.world.interfaces.iWorldService",
+]
+allowed_app = ["archetype.app.models"]
+
+[[module_rule]]
+module = "archetype.app.gateway.service"
+allowed_interfaces = [
+  "archetype.app.application.interfaces.iRuntimeApplication",
+  "archetype.app.audit.interfaces.iAuditLog",
+]
+allowed_app = [
+  "archetype.app.audit.models",
+  "archetype.app.gateway.auth.guard",
+  "archetype.app.gateway.auth.models",
+  "archetype.app.models",
+]

@@ -8,14 +8,15 @@ The marker carries a machine-enforced contract (checked by
 ``scripts/check_api_import_boundaries.py``):
 
     A public callable may not accept raw services. Public capability must be
-    expressible through ``ArchetypeRuntime`` and its gated handles.
+    expressible through ``ArchetypeRuntime`` or a supported adapter.
 
 Rationale: a public function with ``world_service=`` / ``simulation_service=``
 parameters forces every caller to hand-roll a ``ServiceContainer`` and drive
-services directly — bypassing the command gateway, so worlds mutate with no
-command-audit provenance. That bypass entered ``src/`` twice through exactly
-this signature shape (validate_r2_substrate 2026-07-15; eval_rollouts
-2026-07-17). Convention did not hold; enforcement does.
+services directly, bypassing ``RuntimeApplication`` ownership and its lifecycle
+and durability wiring. That bypass entered ``src/`` twice through exactly this
+signature shape (validate_r2_substrate 2026-07-15; eval_rollouts 2026-07-17).
+Convention did not hold; enforcement does. Untrusted adapters additionally
+pass through ``CommandGateway`` for RBAC and access audit.
 
 Deprecated service-shaped parameters that exist only as migration bridges are
 allowlisted (with a removal deadline) in the checker itself, next to

@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from daft import col
 
 from archetype import ArchetypeRuntime
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.storage.service import StorageService
+from archetype.app.world.service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig

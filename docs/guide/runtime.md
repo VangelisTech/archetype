@@ -1,377 +1,264 @@
 # Runtime
 
 **Document type:** Normative.
-**Scope:** `src/archetype/runtime/` — the script-boundary layer.
+**Scope:** `src/archetype/runtime/` — the trusted Python scripting boundary.
+
+The runtime depends on the actor-free `iRuntimeApplication` port. It never
+depends on the command gateway, authorization models, or concrete app services.
 
 ## 1. Purpose
 
-The runtime is the **script boundary**. It is what users import to drive Archetype from a Python script — distinct from the API layer (HTTP / FastAPI) and the CLI layer.
+`ArchetypeRuntime` is the primary supported Python API. It:
 
-It exists to do four things, and nothing else:
+1. owns one internal `ServiceContainer` and its actor-free
+   `RuntimeApplication`;
+2. owns lazy world handles and process lifetime;
+3. provides ergonomic async and sync scripting semantics; and
+4. delegates canonical operations to `iRuntimeApplication`.
 
-1. Own process-lifetime state — one `ServiceContainer`, one default `ActorCtx`, a registry of live world handles.
-2. Provide an ergonomic, typed user surface. Verbose service-layer signatures end at the gate; the runtime absorbs the noise.
-3. Forward every operation through `iCommandService` with the handle's bound `ActorCtx`. The runtime is the *only* layer that holds an `ActorCtx`-script default.
-4. Provide a sync facade for users who don't want to type `await`.
+The runtime is a trusted in-process boundary. Possession of the runtime grants
+the host the capabilities it was constructed with; it does not fabricate a
+default administrator or simulate RBAC. Untrusted callers use
+`CommandGateway` through an ingress adapter.
 
 ## 2. Hard requirements
 
-### R1 — Single-gate enforcement
+### R1 — Application-port-only execution
 
-The runtime module imports from `archetype.app` ONLY:
+Ordinary runtime modules may import only:
 
-- `archetype.app.command_service`
-- `archetype.app.container`
-- `archetype.app.models`
-- `archetype.app.auth.models`
-- `archetype.app.autoresearch_service` inside `TYPE_CHECKING` only
-- `archetype.app.eval_service` inside `TYPE_CHECKING` only
+- the `app.application` port and boundary-safe models;
+- supported cross-boundary component/configuration/result types; and
+- the internal container from runtime composition code only.
 
-The two type-only modules supply public callback and result annotations for
-`world.autoresearch()` and `world.grade()`. They do not provide an operational
-path around the gate; both operations still route through the authorized
-runtime surface.
+They may not import `app.gateway`, `app.auth`, concrete family services,
+  command schedulers, ledgers, backend clients, or API modules.
 
-Imports from `archetype.app.{mutation_service, simulation_service, query_service, world_service, broker}` are forbidden. Any such import is a spec violation; the gate is leaking.
+### R2 — Handles hold identity, never live capabilities
 
-### R2 — Handles hold `world_id`, never `iWorld`
+`RuntimeWorld` holds its runtime/application reference, configuration, local
+lifecycle state, and a `world_id` after activation. It never holds an
+`AsyncWorld`, concrete app service, backend client, or container reference.
 
-`RuntimeWorld` MUST hold only `world_id: UUID` (plus the bound `ActorCtx`, runtime reference, and configuration). It MUST NOT hold a reference to an `iWorld` / `AsyncWorld` instance.
+### R3 — Runtime is actor-free
 
-This is what makes R1 enforceable. With no instance to hold, there is no path to bypass the gate — every operation MUST flow through `iCommandService` because there is no other path.
+`ArchetypeRuntime`, `RuntimeWorld`, and their sync variants do not accept or
+retain `ActorCtx`. The supported runtime surface has no `as_actor()` operation.
+Role testing and multi-tenant embedding exercise `CommandGateway` through
+focused security fixtures or an authorized host adapter.
 
-### R3 — One handle, one `ActorCtx`
+Trusted deferred submissions persist an explicit local origin. They do not
+record a fictional authorization decision.
 
-Every world handle is bound to exactly one `ActorCtx`. Operations on the handle forward that ctx to `CommandService` automatically — users never pass `ActorCtx` per call.
-
-A handle MAY be re-bound to a different `ActorCtx` to produce a sibling handle that shares the underlying world (`world.as_actor(ctx)`).
-
-### R4 — Default `ActorCtx` is `{admin}`
-
-Construction of the runtime without an explicit `ActorCtx` succeeds and uses `ActorCtx(id=uuid7(), roles={"admin"})`. The runtime is the script boundary; in single-tenant context, that boundary IS the platform admin.
-
-Users testing under a constrained role do so explicitly via `as_actor`. See `command-gate.md` § 3.
-
-### R5 — Async context manager is the canonical lifecycle
+### R4 — Async context manager is canonical
 
 ```python
-async with ArchetypeRuntime() as runtime: ...
+async with ArchetypeRuntime() as runtime:
+    ...
 ```
 
-`__aexit__` MUST:
+Shutdown must:
 
-1. Stop admitting new runtime and handle operations.
-2. Await the operation lock for every live shared world state. A lock-protected
-   call already in progress — including `run()`, `step()`, or `query()` —
-   finishes before that state and all of its aliases close.
-3. Call `container.shutdown()` only after admitted world work has drained.
-4. Be idempotent. Errors during shutdown are aggregated and re-raised after
-   best-effort completion.
+1. stop admitting new runtime and handle operations;
+2. wait for every already-admitted world operation;
+3. close handles without destroying attached or runtime-owned durable worlds;
+4. call `container.shutdown()` only after admitted work drains;
+5. attempt every cleanup step and aggregate failures; and
+6. be idempotent.
 
-### R6 — Sync parity is part of the contract
+### R5 — Sync parity
 
-`SyncArchetypeRuntime` exposes the same world-operation surface as the async
-runtime, implemented via `asyncio.Runner`. Every public method on
-`RuntimeWorld` has a matching method on `SyncRuntimeWorld`. Runtime lifecycle
-syntax remains idiomatic to each mode: `async with` / `await shutdown()` for
-async, `with` for sync.
+`SyncArchetypeRuntime` and `SyncRuntimeWorld` expose the same product semantics
+as the async classes without `await`. The sync facade owns an `asyncio.Runner`
+and does not reuse an outer event loop.
 
-The sync facade owns its own `asyncio.Runner` and does NOT share with any outer event loop.
-
-### R7 — World handles are declarative
+### R6 — World handles are declarative and lazy
 
 ```python
 world = runtime.world(
     "demo",
     storage="./data",
     cache=CacheConfig(...),
-    processors=[Movement(), AI()],
-    resources=[some_shared_state],
-    hooks=[(PreTick, on_tick), (OnSpawn, on_spawn)],
+    processors=[Movement()],
+    resources=[shared_state],
+    hooks=[(PreTick, on_tick)],
 )
 ```
 
-The factory call constructs a handle and captures configuration. The world is created on first operation that needs it (lazy single-flight init).
+The call captures configuration but does not create a world. The first
+operation single-flights activation through `iRuntimeApplication`. Processors,
+resources, and hooks are installed in declared order. A failed activation must
+clean up any partially created live world and remain retryable when the failure
+is transient.
 
-All initial configuration — processors, resources, hooks — is supplied at handle creation. Post-init reconfiguration uses methods (`world.add_processor(...)`, etc.). Pre-activation `add_hook` calls raise.
+### R7 — Per-world operation serialization
 
-### R8 — Lazy single-flight activation
+All application operations that target the same live world are serialized by
+the application layer, regardless of which runtime handle or API request
+originated them. A handle-local lock may improve ergonomics but is not the
+concurrency authority. Different worlds may proceed concurrently.
 
-The first ergonomic call on a `RuntimeWorld` triggers world creation. Concurrent first-uses single-flight via an init lock; only one `CommandService.create_world` call is made per handle.
+### R8 — Runtime and world lifetimes are distinct
 
-Activation flow at the runtime layer:
+One runtime may own many handles. Closing a handle waits for work admitted
+through that handle and invalidates the local view; it does not tear down shared
+process services. Runtime shutdown owns shared services.
 
-```text
-1. Build WorldConfig (serializable identity only).
-2. command_service.create_world(ctx, config, storage, cache) -> WorldInfo
-3. For each init_processor: command_service.add_processor(ctx, world_id, proc)
-4. For each init_resource:  command_service.add_resource(ctx, world_id, resource)
-5. For each init_hook:      command_service.add_hook(ctx, world_id, event, fn)
-6. Cache world_id in handle state; mark initialized.
-```
+`runtime.attach(world_id)` returns a non-owning handle. Closing it never
+destroys the world. Destruction is an explicit application operation and does
+not delete append-only durable rows.
 
-WorldConfig stays serializable. Resources, processors, hooks are arbitrary Python objects and flow through dedicated gated paths — never through WorldConfig.
+### R9 — Boundary-safe results
 
-### R9 — Multi-runtime per process
+The runtime receives immutable information snapshots, identifiers, typed
+receipts, supported result/configuration models, and explicitly specified
+DataFrames. It never receives a live world, service, registry, container,
+credential, or backend client.
 
-A Python process MAY hold multiple `ArchetypeRuntime` instances. Each owns its own `ServiceContainer`. Forks happen within one runtime; cross-runtime handle transfer is out of scope.
+### R10 — Storage and cache coercion
 
-### R10 — Audit-backed history
+`storage: str | Path | StorageConfig | None` and `cache: CacheConfig | None` are
+accepted at the scripting boundary. A string or path becomes
+`StorageConfig(uri=str(value))`; richer backend policy remains below runtime.
 
-`world.history(...)` reads from `iAuditLog` via `iCommandService.get_audit_history`. The runtime does not maintain a separate history.
+### R11 — Evaluation and research
 
-### R11 — Info-class downgrade at the gate
+`world.grade(...)` delegates to the application evaluation workflow. The
+workflow owns snapshot pinning, grader execution, outcome validation, and
+durable receipts where requested. The runtime does not compose QueryService and
+EvaluationService itself.
 
-The runtime returns immutable info-class snapshots in place of live objects:
+`world.autoresearch(...)` delegates to the research-family workflow. Callback
+execution must not hold a runtime handle lock that would deadlock reentrant
+runtime operations.
 
-- `iCommandService.create_world` / `fork_world` / `get_world_info` → `WorldInfo`
-- `iCommandService.list_processors` → `list[ProcessorInfo]`
-- `iCommandService.list_hooks` → `list[HookInfo]`
-- `iCommandService.list_resources` → `list[ResourceInfo]`
+### R12 — Artifacts, not generic artifacts
 
-Field access on info objects is sync; the fetch is async (gated). See `world-lifecycle.md` § 5.
+The supported target vocabulary is artifact/evidence publication. Runtime
+methods may ingest files, structured rows, or content and return typed artifact
+receipts. The runtime does not inspect storage catalogs, implement content
+identity, complete publication claims, or expose generic domain "artifacts."
 
-### R12 — Storage and cache configs accept friendly types
+Legacy `ingest`, `write_artifacts`, `artifacts`, and `ArtifactReceipt` names are migration
+surfaces to remove after the artifact-family cutover.
 
-`storage: str | Path | StorageConfig | None` and `cache: CacheConfig | None`. String / Path becomes `StorageConfig(uri=str(value))`. None → defaults. This is the only configuration coercion the runtime is allowed; richer transformations live in `core.config`.
+### R13 — Observability is host-configured and quiet by default
 
-### R13 — Forks and destruction are first-class handles
+Scripts own stdout. `ARCHETYPE_LOG=debug|info|warning|error` or
+`ArchetypeRuntime(log=...)` configures the `archetype` logger at the runtime
+boundary. Core and app layers emit records but configure no handlers.
 
-- `world.fork(name?)` returns a new world handle bound to the same `ActorCtx`. Fork goes through `iCommandService.fork_world`. The new handle is registered for shutdown.
-- `world.destroy()` calls `iCommandService.destroy_world`. The handle becomes invalid; subsequent operations raise. Storage and audit rows are NEVER deleted.
+Tracing uses the OpenTelemetry API. A host-registered provider is respected;
+optional Logfire or OTLP backends are selected only at the host/runtime
+boundary. With no configured backend the API remains a no-op.
 
-### R14 — Attached handles do not own their world
+### R14 — Public callables do not accept raw services
 
-`runtime.attach(world_id)` returns a handle for a world that already exists in this runtime — an episode world left behind by a rollout, an autoresearch lab world, or any world created elsewhere in the process. The id is validated on first operation. Shutting the handle down never destroys the world; only an explicit, gated `destroy()` can. Reads resolve the world's recorded storage through the gate, so an attached handle finds rows wherever the world actually wrote them.
+Supported callables may accept `ArchetypeRuntime`, handles, configuration,
+components, callbacks, and safe models. They may not require callers to pass a
+concrete service or `ServiceContainer`. Repository checks enforce this rule.
 
-### R15 — AutoResearch and grading route through the gate
+### R15 — Multiple runtimes
 
-- `world.autoresearch(config, evaluator, ...)` is gated as `CommandType.AUTORESEARCH` (operator+) and emits one loop-level audit row; per-attempt provenance lives on the experiment's lab world. The base world is never mutated. The handle's op lock is held only for activation, so `evaluator`, `prepare_candidate`, and `on_iteration` may call back into runtime handles (`query`, `attach`, `grade`) without deadlocking.
-- `world.grade(*components, graders=[...])` composes the gated, lineage-resolved `query` with `EvalService.run_graders`. Graders receive one lazy Daft DataFrame of the full append-only history and decide what to compute; the runtime materializes nothing. Empty grader lists and empty grader outputs are rejected, never vacuous successes.
+A process may hold multiple runtimes. Each owns its container unless an
+explicit internal host composition injects one. Cross-runtime live-handle
+transfer is out of scope; durable identity and storage coordinates are the
+interchange boundary.
 
-### R16 — Observability is quiet by default, one flag turns it up
+## 3. Canonical surface
 
-Scripts own their stdout: no span or log output unless asked. `ARCHETYPE_LOG=debug|info|warning|error` (or `ArchetypeRuntime(log=...)`) wires the stdlib `archetype` logger hierarchy at the runtime boundary; at `debug` it also enables console span output. Every layer *emits* on module loggers — core included, since processor failures and store writes are exactly what debugging needs — but only the runtime *configures* handlers, levels, and sinks. `RunConfig(debug=True)` remains separate: it is per-run dataframe inspection (it materializes frames) and is never switched by an environment variable.
-
-### R17 — Tracing is vendor-neutral OpenTelemetry
-
-Archetype emits spans through the OpenTelemetry *API* only (`archetype._obs`); installing archetype pulls no telemetry vendor. Backend selection happens once, at the runtime boundary, in this order: a provider the host application already registered is respected untouched; `LOGFIRE_TOKEN`/`LOGFIRE_API_KEY`/`LOGFIRE_SEND_TO_LOGFIRE` select Logfire when the `archetype-ecs[logfire]` extra is installed (Logfire is itself an OTel SDK); `OTEL_EXPORTER_OTLP_ENDPOINT` selects the standard OTLP exporter (`archetype-ecs[otlp]`) and works with any collector; `ARCHETYPE_LOG=debug` gets a terse one-line console exporter on stderr with no extras at all; otherwise the no-op OTel API stays and tracing costs nothing. Nothing under `src/` may import `logfire` except the guarded backend selection and `contrib/logfire_observer`.
-
-### R18 — Typed facts are explicit Iceberg surfaces
-
-`world.ingest_files(paths, processor)` and `world.write_facts(table_name, df)`
-delegate to `iFactService` through the gate. `world.facts(table_name)` is the
-corresponding gated read. The runtime does not inspect files, compute content
-identity, translate credentials, or touch a catalog directly. Async and sync
-handles expose identical fact surfaces. The older
-`world.ingest(..., external_id=...)` remains the claim-backed compatibility
-path described in [Durable Facts](durable-facts.md). Typed facts are scoped to
-the handle's current world and run; fork handles do not inherit ancestor fact
-rows.
-
-### R19 — Public API is gate-addressable, and the machine checks
-
-`@public_api` (top-level export) marks archetype's supported callable surface
-and carries an enforced contract: **a public callable may not accept raw
-services**. Public capability must be expressible through `ArchetypeRuntime`
-and its gated handles, so every mutation carries command-audit provenance —
-a function taking `world_service=`/`simulation_service=` forces callers to
-hand-roll a `ServiceContainer` and bypass the gate (observed twice before
-this rule existed). `scripts/check_api_import_boundaries.py` enforces the
-signature rule and the import scopes (`experiments` may import app *models*
-only; the runtime is the sole public consumer of app). Deprecated
-service-shaped bridge parameters live in the checker's allowlist with a
-removal deadline.
-
-`@archetype.entrypoint()` is the script boundary as a decorator — an
-evolution of the runtime, not a surface beside it: it constructs the runtime
-(env-driven configuration per R16/R17), bridges sync/async, injects the
-runtime as the first argument, and guarantees teardown. Eval helpers
-(`archetype.experiments.eval_rollouts.run_task_eval`,
-`archetype.experiments.instruction_sweep.run_instruction_sweep`) are
-runtime-first: pass `runtime=`; their raw-service keyword forms are
-deprecated bridges removed in v0.6.
-
-## 3. Ergonomic surface
-
-The full canonical surface, async and sync:
+The async surface below has sync parity:
 
 ```python
-# Construction (factory on runtime)
-world = runtime.world(name, storage=..., cache=..., processors=..., resources=..., hooks=...)
-world = runtime.attach(world_id)   # handle for an existing world (episode/lab worlds)
+world = runtime.world(
+    name,
+    storage=...,
+    cache=...,
+    processors=...,
+    resources=...,
+    hooks=...,
+)
+world = runtime.attach(world_id, storage=...)
 
-# Mutations
 eid = await world.spawn(Position(x=0), Velocity(dx=1))
-ids = await world.spawn_batch(Position(x=0), 10_000)
+ids = await world.spawn_batch(Position(x=0), count=10_000)
 ids = await world.spawn_many([[Position(x=float(i))] for i in range(100)])
 await world.despawn(eid)
-await world.update(eid, Position(x=10))                  # OVERLAY values
-await world.add_components(eid, Health(hp=100))          # EXTEND schema
-await world.remove_components(eid, Position, Velocity)
+await world.update(eid, Position(x=10))
+await world.add_components(eid, Health(hp=100))
+await world.remove_components(eid, Velocity)
 
-# External facts (Iceberg)
-receipt = await world.ingest_files("inputs/**/*.json", JsonFacts())
-receipt = await world.write_facts("measurements", existing_daft_pipeline)
+artifact = await world.ingest_artifact(...)
 
-# Processors
 await world.add_processor(MyProcessor())
 await world.remove_processor(MyProcessor)
 
-# Simulation
 await world.step()
-await world.run()                                        # 1 step
-await world.run(steps=10)
-await world.run(config=RunConfig(...))
-await world.run_episode(EpisodeConfig(...))
-await world.run_rollout(RolloutConfig(...))
-await world.autoresearch(AutoResearchConfig(...), evaluator)  # optimization loop
+result = await world.run(steps=10)
+episode = await world.run_episode(EpisodeConfig(...))
+rollout = await world.run_rollout(RolloutConfig(...))
+research = await world.autoresearch(AutoResearchConfig(...), evaluator)
 
-# Lifecycle
-await world.fork(name="branch_a")                        # → new handle
-await world.destroy()                                    # in-memory only
+branch = await world.fork(name="branch-a")
+await world.destroy()
 
-# Reads
 df = await world.query(Position, Velocity)
-outs = await world.grade(Position, graders=[my_grader])  # query + graders
-info = await world.info()                                # WorldInfo snapshot
-df = await world.history(limit=100)
-df = await world.facts("measurements")
-procs = await world.list_processors()
+outcomes = await world.grade(Position, graders=[grader])
+info = await world.info()
+history = await world.history(limit=100)
+processors = await world.list_processors()
 hooks = await world.list_hooks()
-res = await world.list_resources()
+resources = await world.list_resources()
 
-# Hooks (post-activation only; pre-activation goes via runtime.world(..., hooks=[...]))
-handle = await world.add_hook(PreTick, my_handler)
-await world.remove_hook(handle)
-
-# Identity rebinding
-sibling = world.as_actor(other_actor_ctx)
-
-# Sync-readable (no round-trip)
-world.world_id, world.name
-
-# Lifecycle (rare)
+hook = await world.add_hook(PreTick, on_tick)
+await world.remove_hook(hook)
 await world.shutdown()
 ```
 
-`SyncRuntimeWorld` matches identically without `await`.
-
-### 3.1 — Variadic component args
-
-Component instances and types are passed as `*args`:
-
-```python
-world.spawn(Position(), Velocity())                  # instances
-world.remove_components(eid, Position, Velocity)     # types
-world.query(Position, Velocity)                      # types
-```
-
-The verbose service-layer signatures (`components: list[Component]`, `component_types: list[type[Component]]`) end at the gate.
-
-`spawn_batch(template, count)` repeats one archetype template:
-
-```python
-ids = await world.spawn_batch(Position(x=0), 10_000)
-ids = await world.spawn_batch(Position(x=0), Velocity(dx=1), count=10_000)
-```
-
-Use `spawn_many(...)` when each entity has distinct initial values:
-
-```python
-ids = await world.spawn_many([[Position(x=float(i))] for i in range(10_000)])
-```
-
-### 3.2 — `update` vs. `add_components` are distinct
-
-- `update(eid, *components)` — overlays values on existing components. Same archetype.
-- `add_components(eid, *components)` — extends the entity's archetype with new component types.
-
-Distinct user intents → distinct methods.
+Component instances and types remain variadic at the ergonomic boundary.
+`update` overlays existing component types; `add_components` changes the
+entity's archetype. These intents remain distinct.
 
 ## 4. Out of scope
 
-- HTTP / FastAPI integration. The API layer uses `CommandService` directly with `ActorCtx` from auth middleware.
-- Distributed multi-process runtime.
-- Cross-runtime fork or world-handle transfer.
-- Async-iterator surfaces over hook events.
-- Plugin / extension registration at the runtime layer.
-- Schema migration across handle reuses.
-- Direct broker access from the runtime.
+- HTTP/FastAPI and authentication;
+- authorization or role simulation;
+- direct command-ledger, scheduler, audit-store, or backend access;
+- cross-runtime live-object transfer;
+- distributed process coordination inside the runtime package; and
+- schema migration policy.
 
 ## 5. Module layout
 
 ```text
 src/archetype/runtime/
-├── __init__.py        public exports
-├── runtime.py         ArchetypeRuntime, SyncArchetypeRuntime, run_sync
-├── world.py           RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
-├── session.py         configure_session (Iceberg)
-└── _actor.py          default_actor_ctx() factory
+  __init__.py
+  runtime.py       ArchetypeRuntime and SyncArchetypeRuntime
+  world.py         RuntimeWorld and SyncRuntimeWorld
+  entrypoint.py    managed script decorator
+  _config.py       scripting-boundary coercion
 ```
+
+Storage session construction lives below runtime so the app layer never imports
+outward from this package.
 
 ## 6. Canonical example
-
-```python
-import asyncio
-from archetype import ArchetypeRuntime, AsyncProcessor, Component
-from archetype.core.hooks import PreTick
-from daft import DataFrame, col
-
-
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
-
-
-class Velocity(Component):
-    dx: float = 0.0
-    dy: float = 0.0
-
-
-class Movement(AsyncProcessor):
-    components = (Position, Velocity)
-    priority = 10
-
-    async def process(self, df: DataFrame, **_) -> DataFrame:
-        return df.with_columns({
-            "position__x": col("position__x") + col("velocity__dx"),
-            "position__y": col("position__y") + col("velocity__dy"),
-        })
-
-
-async def main():
-    async with ArchetypeRuntime() as runtime:
-        world = runtime.world(
-            "demo",
-            processors=[Movement()],
-            hooks=[(PreTick, lambda e: print(f"tick {e.tick}"))],
-        )
-        eid = await world.spawn(Position(), Velocity(dx=1, dy=2))
-        await world.run(steps=3)
-        df = await world.query(Position)
-        print(df.collect().to_pylist())
-
-
-asyncio.run(main())
-```
-
-Sync equivalent (component / processor definitions identical):
 
 ```python
 from archetype import ArchetypeRuntime
 
 with ArchetypeRuntime.sync() as runtime:
     world = runtime.world("demo", processors=[Movement()])
-    eid = world.spawn(Position(), Velocity(dx=1, dy=2))
+    entity_id = world.spawn(Position(), Velocity(dx=1, dy=2))
     world.run(steps=3)
     print(world.query(Position).collect().to_pylist())
 ```
 
-## 7. Companion specs
+## 7. Companion specifications
 
-- `command-gate.md` — Policy enforcement point, roles, audit emission.
-- `execution-hierarchy.md` — Step / Run / Episode / Rollout semantics.
-- `world-lifecycle.md` — Fork, destroy, info-class downgrade, append-only invariant.
-- `service-protocols.md` — `iCommandService` and the services it gates.
-- `audit-log.md` — Append-only audit row schema and query semantics.
+- [Application Architecture](application-architecture.md)
+- [Command Gate](command-gate.md)
+- [Execution Hierarchy](execution-hierarchy.md)
+- [World Lifecycle](world-lifecycle.md)
+- [Service Protocols](service-protocols.md)
+- [Audit Log](audit-log.md)

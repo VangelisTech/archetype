@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from archetype.app.world_service import WorldService
+from archetype.app.world.service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageConfig

@@ -22,10 +22,11 @@ os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
-from archetype.app.auth.permissions import COMMANDS_BY_ROLE
-from archetype.app.command_service import CommandService
+from archetype.app.application.service import RuntimeApplication
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
+from archetype.app.gateway.auth.permissions import COMMANDS_BY_ROLE
+from archetype.app.gateway.service import CommandGateway
 from archetype.app.models import (
     CommandType,
     HookInfo,
@@ -59,13 +60,13 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="runtime.R1",
         source="runtime.md",
-        anchors=("R1", "Single-gate enforcement", "imports from `archetype.app` ONLY"),
+        anchors=("R1", "`app.application` port", "internal container"),
         task_id="spec.runtime_gate_only_boundary",
     ),
     SpecCase(
         spec_id="runtime.R2",
         source="runtime.md",
-        anchors=("R2", "Handles hold `world_id`, never `iWorld`"),
+        anchors=("R2", "`world_id` after activation", "concrete app service"),
         task_id="spec.runtime_gate_only_boundary",
     ),
     SpecCase(
@@ -78,7 +79,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         spec_id="command-gate.1",
         source="command-gate.md",
         anchors=("guardrail_allow", "delegate", "audit.record"),
-        task_id="spec.command_service_gate_map",
+        task_id="spec.command_gateway_gate_map",
     ),
     SpecCase(
         spec_id="world-lifecycle.6",
@@ -87,8 +88,8 @@ SPEC_CASES: tuple[SpecCase, ...] = (
         task_id="spec.info_class_downgrades",
     ),
     SpecCase(
-        spec_id="durable-facts.7",
-        source="durable-facts.md",
+        spec_id="durable-artifacts.7",
+        source="artifacts.md",
         anchors=("evidence, never authority", "no authority"),
         task_id="spec.receipt_authority_firewall",
     ),
@@ -116,7 +117,7 @@ SPEC_CASES: tuple[SpecCase, ...] = (
     SpecCase(
         spec_id="dataset-eval-ontology.3",
         source="dataset-eval-ontology.md",
-        anchors=("FactService envelope is storage ownership", "does not replace dataset"),
+        anchors=("ArtifactTableService envelope is storage ownership", "does not replace dataset"),
         task_id="spec.dataset_eval_ontology",
     ),
 )
@@ -125,16 +126,17 @@ _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 
 _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
     {
-        "archetype.app.autoresearch_service",
-        "archetype.app.eval_service",
+        "archetype.app.evaluation.interfaces",
+        "archetype.app.evaluation.models",
+        "archetype.app.research.contracts",
     }
 )
 _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     {
-        "archetype.app.command_service",
+        "archetype.app.application.interfaces",
         "archetype.app.container",
         "archetype.app.models",
-        "archetype.app.auth.models",
+        "archetype.app.storage.session",
     }
 )
 
@@ -197,7 +199,7 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
             CommandType.AUTORESEARCH,
             CommandType.FORK_WORLD,
             CommandType.DESTROY_WORLD,
-            CommandType.INGEST_FACT,
+            CommandType.PUBLISH_ARTIFACT,
             CommandType.EVALUATE,
         }
     ),
@@ -206,6 +208,9 @@ _EXPECTED_ROLE_MATRIX: dict[str, frozenset[CommandType]] = {
 
 _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "create_entity": CommandType.SPAWN,
+    "create_entities": CommandType.SPAWN,
+    "reserve_entity_ids": CommandType.SPAWN,
+    "spawn_with_reserved_id": CommandType.SPAWN,
     "remove_entity": CommandType.DESPAWN,
     "update_entity": CommandType.UPDATE,
     "add_components": CommandType.ADD_COMPONENT,
@@ -220,7 +225,10 @@ _COMMAND_GATE_MAP: dict[str, CommandType] = {
     "discover_worlds": CommandType.LIST_WORLDS,
     "open_world_readonly": CommandType.GET_WORLD_INFO,
     "resume_world": CommandType.CREATE_WORLD,
-    "ingest_fact": CommandType.INGEST_FACT,
+    "ingest_artifact": CommandType.PUBLISH_ARTIFACT,
+    "ingest_files": CommandType.PUBLISH_ARTIFACT,
+    "write_artifacts": CommandType.PUBLISH_ARTIFACT,
+    "query_artifacts": CommandType.QUERY_WORLD,
     "evaluate": CommandType.EVALUATE,
     "step": CommandType.STEP,
     "run": CommandType.RUN,
@@ -244,6 +252,9 @@ _DYNAMIC_GATE_METHODS = {
     "submit": "_gate",
     "submit_batch": "_gate_batch",
 }
+
+_OUTBOX_AUDITED_METHODS = {"submit", "submit_batch", "submit_spawn"}
+_SYNCHRONOUS_GATE_METHODS = {"reserve_entity_ids"}
 
 
 def _python_files(path: Path) -> list[Path]:
@@ -321,7 +332,9 @@ def _command_type_from_command_call(command_call: ast.Call) -> str | None:
     return None
 
 
-def _assigned_command_type_names(node: ast.AsyncFunctionDef) -> dict[str, str]:
+def _assigned_command_type_names(
+    node: ast.AsyncFunctionDef | ast.FunctionDef,
+) -> dict[str, str]:
     names: dict[str, str] = {}
     for child in ast.walk(node):
         if isinstance(child, ast.Assign):
@@ -385,7 +398,7 @@ def task_role_permission_matrix() -> list[GraderResult]:
 
 
 def task_runtime_gate_only_boundary() -> list[GraderResult]:
-    """Runtime imports only allowed app modules and stores no live world refs."""
+    """Runtime depends on the application port and stores no live world refs."""
     runtime_dir = SRC / "runtime"
     import_checks: dict[str, bool] = {}
     world_ref_checks: dict[str, bool] = {}
@@ -429,12 +442,14 @@ def task_runtime_gate_only_boundary() -> list[GraderResult]:
     ]
 
 
-def task_command_service_gate_map() -> list[GraderResult]:
+def task_command_gateway_gate_map() -> list[GraderResult]:
     """Every public gate method has the expected command type and audit emit."""
-    path = SRC / "app" / "command_service.py"
+    path = SRC / "app" / "gateway" / "service.py"
     tree = ast.parse(path.read_text(), filename=str(path))
     functions = {
-        node.name: node for node in ast.walk(tree) if isinstance(node, ast.AsyncFunctionDef)
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
     }
 
     checks: dict[str, bool] = {}
@@ -456,7 +471,8 @@ def task_command_service_gate_map() -> list[GraderResult]:
                 if name := assigned_types.get(call.args[0].id):
                     gate_type_names.append(name)
         checks[f"{method}:gate_type"] = command_type.name in gate_type_names
-        checks[f"{method}:emits_audit"] = bool(emit_calls)
+        if method not in _OUTBOX_AUDITED_METHODS | _SYNCHRONOUS_GATE_METHODS:
+            checks[f"{method}:emits_audit"] = bool(emit_calls)
         if gate_calls and emit_calls:
             checks[f"{method}:gate_before_emit"] = min(c.lineno for c in gate_calls) < min(
                 c.lineno for c in emit_calls
@@ -471,14 +487,14 @@ def task_command_service_gate_map() -> list[GraderResult]:
         checks[f"{method}:has_dynamic_gate"] = any(
             _called_attr_name(call) == gate_method for call in calls
         )
-        checks[f"{method}:emits_audit"] = any(_called_attr_name(call) == "_emit" for call in calls)
+        checks[f"{method}:ledger_is_audit_authority"] = method in _OUTBOX_AUDITED_METHODS
 
-    return [state_check(checks, name="command_service_gate_shape")]
+    return [state_check(checks, name="command_gateway_gate_shape")]
 
 
 def task_append_only_protocols() -> list[GraderResult]:
     """Storage and audit protocols expose no destructive methods."""
-    from archetype.app.interfaces import iAuditLog
+    from archetype.app.audit.interfaces import iAuditLog
     from archetype.core.interfaces import iAsyncStore
 
     destructive = ("delete", "drop", "truncate")
@@ -506,14 +522,15 @@ async def _task_info_class_downgrades() -> list[GraderResult]:
     reset_tick_counters()
     reset_daily_tokens()
     ctx = ActorCtx(id=uuid7(), roles={"admin"})
-    service = CommandService(
+    application = RuntimeApplication(
         mutations=_UnusedService(),
         worlds=_FakeWorldService(),
         simulation=_UnusedService(),
         queries=_UnusedService(),
-        broker=_UnusedService(),
+        commands=_UnusedService(),
         audit=None,
     )
+    service = CommandGateway(application, audit=None)
 
     try:
         created = await service.create_world(ctx, WorldConfig(name="spec-info"))
@@ -635,14 +652,14 @@ def _registered_task_ids() -> list[str]:
 
 
 def task_receipt_authority_firewall() -> list[GraderResult]:
-    """Receipt and fact components carry evidence, never authority.
+    """Receipt and artifact components carry evidence, never authority.
 
     The non-negotiable boundary (issue #275): no field on a persisted
-    receipt/fact component may name an authority decision. A PASS means one
+    receipt/artifact component may name an authority decision. A PASS means one
     grader passed under one pinned contract — the layer above owns meaning.
     """
-    from archetype.app.facts import AssetRef, FactMeta
-    from archetype.experiments.receipts import EvalReceipt
+    from archetype.app.artifacts.models import ArtifactMeta, AssetRef
+    from archetype.app.evaluation.models import EvalReceipt
 
     forbidden = {
         "accepted",
@@ -657,7 +674,7 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
         "permitted",
     }
     checks = {}
-    for component in (EvalReceipt, FactMeta, AssetRef):
+    for component in (EvalReceipt, ArtifactMeta, AssetRef):
         fields = {name.lower() for name in component.model_fields}
         checks[f"{component.__name__}_carries_no_authority"] = not (fields & forbidden)
     return [state_check(checks, name="receipt_authority_firewall")]
@@ -735,13 +752,13 @@ def register(harness: EvalHarness) -> None:
         "spec.runtime_gate_only_boundary",
         suite=SUITE,
         fn=task_runtime_gate_only_boundary,
-        desc="Runtime imports only the gate-facing app modules and stores no live world refs.",
+        desc="Runtime depends on RuntimeApplication-facing ports and stores no live world refs.",
     )
     harness.add(
-        "spec.command_service_gate_map",
+        "spec.command_gateway_gate_map",
         suite=SUITE,
-        fn=task_command_service_gate_map,
-        desc="CommandService public methods use the documented gate and audit shape.",
+        fn=task_command_gateway_gate_map,
+        desc="CommandGateway public methods use the documented gate and audit shape.",
     )
     harness.add(
         "spec.append_only_protocols",
@@ -753,7 +770,7 @@ def register(harness: EvalHarness) -> None:
         "spec.receipt_authority_firewall",
         suite=SUITE,
         fn=task_receipt_authority_firewall,
-        desc="Receipt/fact components carry no authority fields (evidence only).",
+        desc="Receipt/artifact components carry no authority fields (evidence only).",
     )
     harness.add(
         "spec.dataset_eval_ontology",

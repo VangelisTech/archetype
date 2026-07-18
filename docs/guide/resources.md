@@ -33,7 +33,7 @@ Runtime users usually stage resources when creating a handle:
 world = runtime.world("sim", resources=[SimConfig(gravity=9.8)])
 ```
 
-Post-activation resource attachment is a gated operator/admin action through `iCommandService.add_resource(...)`.
+Post-activation resource attachment is a gated operator/admin action through `iCommandGateway.add_resource(...)`.
 
 ```text
 runtime.world(..., resources=[SimConfig(...)])
@@ -60,9 +60,9 @@ Calling `insert()` with a second instance of the same type replaces the first.
 Retrieve a resource by type, returning `None` if absent:
 
 ```python
-broker = resources.get(CommandBroker)
-if broker:
-    await broker.enqueue(world_id, cmd)
+client = resources.get(PhysicsClient)
+if client:
+    await client.sync()
 ```
 
 ### require
@@ -99,7 +99,7 @@ Resources are not entity data. They are the scaffolding around it:
 | Category | Examples |
 |----------|---------|
 | Environment parameters | `SimConfig(gravity=9.8)`, `PhysicsConfig(...)` |
-| Shared services | `CommandBroker`, `LabelingConfig` |
+| Shared clients | `PhysicsClient`, `LabelingConfig` |
 | Simulation context | `SamplingConfig`, budget trackers |
 
 In RL terms: MDP parameters, hyperparameters, shared infrastructure.
@@ -121,26 +121,14 @@ class PhysicsProcessor(AsyncProcessor):
         )
 ```
 
-### Submitting Commands from Processors
+### Workflow clients in processors
 
-Processors are trusted internal code once registered. If a processor needs delayed scheduling, it may use a sanctioned broker resource or another internal path. External user actions should still go through `iCommandService`.
-
-```python
-class SpawnerProcessor(AsyncProcessor):
-    components = (Agent,)
-    priority = 50
-
-    async def process(self, df, resources=None, tick=0, **kwargs):
-        broker = resources.get(CommandBroker) if resources else None
-        if broker:
-            cmd = Command(
-                type=CommandType.SPAWN,
-                tick=tick,
-                payload={"components": [Agent(name="child").to_payload()]},
-            )
-            await broker.enqueue("my_world", cmd)
-        return df
-```
+The framework does not inject `CommandScheduler`, `CommandGateway`, or
+`ServiceContainer` into world resources. Doing so would cross the application
+boundary from inside tick execution and can create re-entrant lifecycle locks.
+Processors transform their DataFrame and may use application-supplied,
+concurrency-safe domain clients. Schedule later work from the owning workflow
+outside the processor call.
 
 ## World Forking
 

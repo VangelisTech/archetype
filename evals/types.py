@@ -39,6 +39,7 @@ class TaskResult:
     suite: str
     trials: list[TrialResult] = field(default_factory=list)
     desc: str = ""
+    contract_ids: tuple[str, ...] = ()
 
     @property
     def trial_count(self) -> int:
@@ -66,6 +67,7 @@ class TaskResult:
         return {
             "task_id": self.task_id,
             "suite": self.suite,
+            "contract_ids": list(self.contract_ids),
             "desc": self.desc,
             "trial_count": self.trial_count,
             "pass_rate": round(self.pass_rate, 4),

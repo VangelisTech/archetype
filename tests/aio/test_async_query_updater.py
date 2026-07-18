@@ -2,15 +2,15 @@ import daft
 import pytest
 import pytest_asyncio
 
+from archetype.app.storage.session import configure_session
 from archetype.core.aio.async_cached_store import AsyncCachedStore
 from archetype.core.aio.async_lancedb_store import AsyncLancedbStore
-from archetype.core.aio.async_querier import AsyncQueryManager
+from archetype.core.aio.async_querier import AsyncQueryManager, UnknownSignatureError
 from archetype.core.aio.async_store import AsyncStore
 from archetype.core.aio.async_updater import AsyncUpdateManager
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, StorageBackend, StorageConfig
-from archetype.runtime.session import configure_session
 
 
 class Position(Component):
@@ -127,7 +127,12 @@ async def test_update_zero_rows_no_persist(store_backend):
     await updater.update(empty_df, sig, tick=1, world_id=world_id, run_id=run_id)
     # df_out may be empty-schema; rely on store read to validate no persistence
 
-    out = await querier.query_archetype(
-        sig, world_id=world_id, ticks=[1], entity_ids=None, components=None, run_id=run_id
-    )
-    assert out.collect().count_rows() == 0
+    # An empty append does not create durable signature identity. The public
+    # querier distinguishes "never written" from a committed signature whose
+    # selected tick happens to contain zero rows.
+    with pytest.raises(UnknownSignatureError):
+        await querier.query_archetype(
+            sig, world_id=world_id, ticks=[1], entity_ids=None, components=None, run_id=run_id
+        )
+    stored = await store.get_archetype_df(sig, world_id=world_id, run_id=run_id)
+    assert stored.collect().count_rows() == 0

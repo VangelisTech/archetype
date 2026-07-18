@@ -9,6 +9,23 @@ from archetype import ArchetypeRuntime, SyncArchetypeRuntime, entrypoint, public
 from archetype._api import is_public_api
 
 
+def test_top_level_excludes_internal_service_wiring():
+    import archetype
+
+    internal = {
+        "ServiceContainer",
+        "CommandGateway",
+        "WorldService",
+        "SimulationService",
+        "QueryService",
+        "ArtifactTableService",
+        "StorageService",
+    }
+    assert internal.isdisjoint(archetype.__all__)
+    for name in internal:
+        assert not hasattr(archetype, name)
+
+
 def test_entrypoint_injects_sync_runtime_and_tears_down():
     seen: dict = {}
 

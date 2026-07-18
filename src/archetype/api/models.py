@@ -117,7 +117,7 @@ class CommandsRequest(BaseModel):
 
 class StepRequest(BaseModel):
     run_config: RunConfig | None = None
-    num_steps: int = 1
+    num_steps: int = Field(default=1, ge=0)
     debug: bool = False
 
     model_config = dict(arbitrary_types_allowed=True)
@@ -128,7 +128,7 @@ class StepRequest(BaseModel):
 
 class RunRequest(BaseModel):
     run_config: RunConfig | None = None
-    num_steps: int = 1
+    num_steps: int = Field(default=1, ge=0)
     debug: bool = False
 
     model_config = dict(arbitrary_types_allowed=True)

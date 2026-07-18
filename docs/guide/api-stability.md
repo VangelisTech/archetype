@@ -11,26 +11,38 @@ without being the first interface shown to a new user.
 | Extension | Supported customization interface | Complete semantics and focused examples |
 | Integration | Supported host and service interface | Advanced reference without tutorial repetition |
 | Compatibility | Stable, frozen, or deprecated interface | Terse reference with migration direction |
-| Internal | No compatibility promise | Maintainer context in source only |
+| Internal | No compatibility promise | Maintainer context or explicit migration inventory only |
 
-The recommended interface is `ArchetypeRuntime` and its world handles. Components,
-processors, resources, and their configuration form the extension interface. The
-service layer is for hosts that need explicit authorization or custom wiring. The
-synchronous educational engine remains a compatibility interface.
+The recommended interface is `ArchetypeRuntime` and its world handles.
+Components, processors, resources, and the configuration and result types
+required by runtime signatures form the extension/signature interface. REST and
+CLI are supported adapters over the same gateway behavior. Concrete application
+services, app protocols, and `ServiceContainer` are internal. The synchronous
+educational engine remains a compatibility interface.
 
 ## What counts as public
 
-A name is public when it is exported from `archetype`. Types that appear in the
-arguments or return values of those names are public dependencies even when they
-live in a submodule. Exporting a name from a lower-level package does not promote
-it to the recommended interface.
+A supported name is one classified by the generated Python API manifest or a
+focused specification. Types that appear in the arguments or return values of
+supported names are public dependencies even when they live in a submodule.
+Exporting a name from a lower-level package does not promote it to a supported
+or recommended interface.
+
+`archetype.__all__` does not include concrete application services,
+`CommandGateway`, or `ServiceContainer`. Those objects are internal wiring and
+carry no compatibility promise. Repository composition code imports them from
+their owning family modules; applications use `ArchetypeRuntime`, REST, or CLI.
 
 Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
 
-Public exports are additive within a release line. Removing or changing their
-meaning requires a versioned migration. Every export change must update the Python
-reference manifest; the docs build rejects missing or stale entries.
+Supported exports are additive within a release line. Removing or changing
+their meaning requires a versioned migration. Every classification or export
+change must update the Python reference manifest; the docs build rejects
+missing or stale entries.
+
+The authoritative boundary and dependency rules are in
+[Application Architecture](application-architecture.md).
 
 ## Docstring standard
 

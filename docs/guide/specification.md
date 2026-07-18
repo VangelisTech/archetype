@@ -15,18 +15,19 @@ The current contract set is split across design docs and executable tests.
 | Contract source | Scope | Notes |
 |---|---|---|
 | `docs/guide/specification.md` | Umbrella contract overview | This page. Broad contracts plus links to focused specifications. |
-| [Runtime](runtime.md) | Script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, gate-only access. |
-| [Service Protocols](service-protocols.md) | Application service interfaces | `iCommandService` and the services it gates. |
+| [Runtime](runtime.md) | Trusted script boundary | `ArchetypeRuntime`, `RuntimeWorld`, sync parity, lifecycle, and actor-free application access. |
+| [Application Architecture](application-architecture.md) | Supported boundaries and dependency policy | Normative ownership, composition, encapsulation, and lint inputs. |
+| [Service Protocols](service-protocols.md) | Internal application ports | Active family interfaces behind `iRuntimeApplication` and `iCommandGateway`. |
 | [Command Gate](command-gate.md) | Authorization and roles | Four-role model, permissions matrix, audit emission shape. |
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
-| [Durable Facts](durable-facts.md) | External-fact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
-| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-fact ownership, and grader composition. |
+| [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
+| [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
-| [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
+| [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, the actor-free trust boundary, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
 | [`tests/integration/test_command_flow.py`](https://github.com/VangelisTech/archetype/blob/main/tests/integration/test_command_flow.py) | Reserved spawn chain | Verifies reserved `entity_id` survives submit -> drain -> apply -> materialize. |
@@ -45,9 +46,9 @@ The current specification set covers the following contract families:
   one world's shutdown must not invalidate sibling worlds, and runtime teardown
   must remain separate from per-world teardown.
 - Script ceremony contracts:
-  ergonomics may improve, but runtime boundaries, governance, and broker timing
+  ergonomics may improve, but trust boundaries, lifecycle, and scheduler timing
   must remain explicit.
-- Brokered spawn contracts:
+- Deferred spawn contracts:
   `spawn()` may return an `entity_id` only if that `entity_id` is reserved and
   preserved all the way through the command chain.
 - Sync engine contracts:
@@ -82,7 +83,7 @@ This specification covers:
 - top-level runtime API constraints
 - multi-world orchestration and world forking
 - idempotency expectations and non-idempotent boundaries
-- typed external facts and dataset/evaluation identity
+- typed external artifacts and dataset/evaluation identity
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future
@@ -99,21 +100,25 @@ implementation work must satisfy.
 | `Live snapshot` | The in-memory active DataFrame per signature for the latest completed tick |
 | `Mutation cache` | The staged spawn/despawn data applied at the next tick |
 | `World lifecycle command` | Create, destroy, or fork world operations |
-| `Runtime` | The process-scoped composition root that owns shared services |
+| `RuntimeApplication` | Actor-free application facade shared by trusted runtime and authorized gateway paths |
+| `Runtime` | Trusted scripting facade and process-lifetime owner |
 
 ## Layer Boundaries
 
-The stack is strictly layered:
+Core execution is composed from a store-backed querier and updater, a system,
+and a world. The application layer owns actor-free product semantics through
+`RuntimeApplication` and its world, storage, query, artifact, evaluation,
+commands, audit, and research families.
 
-1. `Store`: durable append-only persistence
-2. `Querier`: read facade over store-backed state
-3. `Updater`: write facade that stamps metadata and persists rows
-4. `System`: processor orchestration
-5. `World`: query -> mutate -> execute -> persist lifecycle
-6. `Application services`: command gate, audit, broker, multi-world orchestration
-7. `Runtime / API / CLI`: outer adapters over the service layer
+Trusted Python scripts use `ArchetypeRuntime -> RuntimeApplication`. Untrusted
+clients use `CLI/HTTP -> API authentication -> CommandGateway authorization ->
+RuntimeApplication`. The CLI is an HTTP client except for server startup.
+Lower packages never depend on their outer consumers.
 
-Each layer may depend downward. No lower layer may depend upward.
+The complete allowed service edges, composition rules, and public/internal
+classification are normative in
+[Application Architecture](application-architecture.md). Diagrams are
+explanatory views of those written rules.
 
 ## Data Model Contracts
 
@@ -340,7 +345,7 @@ One tick MUST follow this order:
 - The entity does not become part of the live active snapshot until the next
   materialization boundary.
 - When the app layer reserves an entity ID before enqueue, the same entity ID
-  MUST survive submit -> broker -> drain -> apply -> materialize.
+  MUST survive reserve -> durable admission -> lease -> apply -> materialize.
 
 ### Despawn
 
@@ -393,6 +398,12 @@ One tick MUST follow this order:
   mutation path that queues the corresponding mutation.
 
 ## Application Layer Contracts
+
+[Application Architecture](application-architecture.md) owns service placement
+and dependency direction. Concrete services and `ServiceContainer` are internal
+implementation machinery. The target policy boundary is `CommandGateway :
+iCommandGateway` for untrusted ingress and `RuntimeApplication :
+iRuntimeApplication` for actor-free application execution.
 
 ### Service error taxonomy
 
@@ -463,45 +474,51 @@ One tick MUST follow this order:
 - Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
   the next tick materializes in both worlds.
 
-### CommandBroker
+### Command ledger, scheduler, and dispatcher
 
-- The broker is a pure queue for tick-deferred commands.
-- Commands are ordered by `(tick, priority, seq)`.
-- Queues are partitioned by world key.
-- RBAC, quota validation, and audit emission happen at `iCommandService`.
-- The broker MAY preserve pending and history state for queue observability.
+- Deferred admission is durable before the caller receives `command_id`.
+- Commands are partitioned by world and ordered by a durable
+  `(scheduled_tick, priority, sequence)` key.
+- A command ID is an idempotency identity. Repeating admission with the same ID
+  and content returns the existing record; changed content conflicts. Distinct
+  IDs remain distinct logical commands.
+- Draining leases commands; it never destructively removes an unsettled
+  command. A crashed worker's lease expires and becomes retryable.
+- Permanent domain failures become `REJECTED`; transient failures become
+  `RETRYABLE`; exhausted attempts become `DEAD_LETTER`.
+- Same-tick commands apply sequentially in ledger order. A permanent rejection
+  may be skipped and later commands continue; a transient failure aborts the
+  unprocessed tail so dependent ordering is preserved.
+- A command becomes `APPLIED` only when the tick manifest that makes its effect
+  visible is published. Manifest and outcome settlement are one control-plane
+  transaction.
+- RBAC and quota admission happen only at `iCommandGateway`; trusted local
+  admission records an explicit local origin.
 
-Idempotency:
+### Command gateway
 
-- Enqueue is not deduplicating. Submitting the same logical command twice
-  yields two queued commands.
-- Dequeue is destructive. Once a command is removed from the queue, replay is
-  the caller's responsibility.
-
-### CommandService
-
-- `iCommandService` is the policy enforcement point for external operations.
-- Direct methods authorize, delegate, audit, and return a result immediately.
+- `iCommandGateway` is the policy enforcement point for untrusted operations.
+- Direct methods authorize, delegate to `iRuntimeApplication`, access-audit,
+  and return a result immediately.
 - `submit()` and `submit_batch()` are tick-deferred APIs. They return command IDs
-  and enqueue work for later application.
+  and durably admit work for later application.
 - Generic deferred submission MUST accept only commands with a tick-boundary
   dispatcher, plus the intentional `MESSAGE`, `CUSTOM`, and `QUERY_WORLD`
   application envelopes. All other command types MUST be rejected before quota
-  debit, audit emission, or broker enqueue.
+  debit, audit emission, or durable admission.
 - `submit_spawn()` is the special case that reserves a world-local entity ID
   before enqueue so `spawn()` can honestly return `entity_id`.
 - Reservation MUST be serialized per world.
 - `submit()`, `submit_batch()`, and `submit_spawn()` MUST reject submissions to
   an unknown `world_id` by raising `archetype.app.errors.WorldNotFoundError`
-  before any quota debit, broker enqueue, or audit emit.
-- `drain_and_apply()` is the command application boundary at tick time.
+  before any quota debit, durable admission, or audit emit.
+- Command-family dispatch is the application boundary at tick time; the
+  gateway has no drain method.
 - World lifecycle operations use direct gated methods such as `create_world`,
   `fork_world`, and `destroy_world`.
 
-CURRENT GAPS:
-
-- `drain_and_apply()` logs failed applies but does not retry or requeue them, so
-  failed commands are effectively dropped.
+Leasing is non-destructive. Applied outcomes settle with tick visibility;
+retryable failures remain recoverable and exhausted failures become terminal.
 
 ### SimulationService
 
@@ -517,7 +534,8 @@ CURRENT GAPS:
 ### QueryService
 
 - `QueryService` is the internal read facade below the gate.
-- External reads go through `iCommandService`.
+- Trusted runtime reads go through `iRuntimeApplication`; untrusted reads go
+  through `iCommandGateway` and then the same application operation.
 - Archetype and component reads MUST resolve storage per call and query durable
   rows by `world_id` and `run_id`; they do not require the world to be live in
   the process registry.
@@ -532,20 +550,21 @@ CURRENT GAPS:
   discovery. Exact process-local class identities take precedence over catalog
   reconstruction. Catalog outages degrade discovery to the process-local
   subset; mutable resume and commit-visibility checks remain strict.
-- Audit history is served by `iAuditLog` through `iCommandService`.
-  `QueryService.get_command_history()` remains a compatibility read over queued
-  audit rows, not an in-memory broker-history contract.
+- Audit history is served by the audit projection through the application or
+  authorized gateway boundary. `QueryService` has no audit dependency.
 
 ### ServiceContainer and runtime lifetime
 
-- `ServiceContainer` is the process-scoped composition root.
-- It owns one shared `CommandBroker`, one append-only audit log, and the world,
-  mutation, command, simulation, and query services built on top of them. It
-  owns a `StorageService` that it creates and borrows one supplied by a caller.
+- `ServiceContainer` is the internal process-scoped wiring root and the only
+  app module that imports concrete implementations across families.
+- It exposes actor-free `application` and authorized `gateway` ports, owns the
+  command/control and audit infrastructure, and owns a `StorageService` it
+  creates while borrowing one supplied by a caller.
 - Container shutdown MUST be explicit and distinct from per-world removal.
-- Container shutdown order MUST clear broker state, flush/shut down audit, and
-  then shut down storage the container owns. An injected `StorageService` MUST
-  remain open for its caller to manage.
+- Shutdown stops admission, drains admitted operations, stops command leasing,
+  reconciles audit projection, closes worlds, and then releases owned storage.
+  It attempts every phase and aggregates failures. Injected storage remains
+  caller-owned.
 
 ## Multi-World Contracts
 
@@ -556,8 +575,8 @@ CURRENT GAPS:
 - A fork shares runtime infrastructure, but not world identity.
 - Shutting down or destroying one world MUST NOT invalidate sibling worlds that
   share the same runtime.
-- The gated `CommandService.destroy_world()` path MUST clear the target world's
-  pending and historical broker state before delegating world removal.
+- Destroying a world cancels or terminally settles its pending command records
+  according to the commands contract before removing the live world.
 - World removal MUST preserve durable rows, lineage, audit history, shared
   storage backends, and sibling-world state. The durable catalog records the
   world as destroyed rather than deleting its identity.
@@ -581,8 +600,7 @@ These requirements apply to:
 
 - Any proposed top-level `World`, `Processor`, `Archetype`, `Runtime`, or
   `run_sync` runtime API
-- Any wrapper that hides `ServiceContainer`, `WorldService`,
-  `SimulationService`, or `CommandService`
+- Any wrapper over the internal application gateway and service graph
 - Any re-export change that alters the default public API surface
 
 These requirements do not authorize changes to `src/archetype/core/`, which
@@ -659,19 +677,19 @@ can provide.
 Required behavior:
 
 - `spawn()` must not claim to return an entity ID unless the architecture can
-  reserve that entity ID before broker enqueue
-- If entity identity is only known after broker drain and apply, `spawn()` must
+  reserve that entity ID before durable admission
+- If entity identity is only known after scheduler drain and apply, `spawn()` must
   return a command ID, a handle with explicit semantics, or no value
 - Return types and docstrings must match actual runtime behavior
 
-#### C6. Broker semantics remain intact
+#### C6. Durable scheduler semantics remain intact
 
 Command ordering and tick-boundary application must remain true under runtime.
 
 Required behavior:
 
-- Enqueued commands must still be subject to broker ordering
-- Enqueued commands must still be applied at the documented tick boundary
+- Admitted commands must still be subject to durable scheduler ordering
+- Admitted commands must still be applied at the documented tick boundary
 - Runtime must not directly mutate worlds in ways that contradict the public
   gated mutation contract unless that method is explicitly documented as a
   lower-level escape hatch
@@ -719,7 +737,7 @@ Required behavior:
 Required behavior:
 
 - It must detach, destroy, or close only that world's handle and registrations
-- It must not tear down shared storage pools, the broker, or sibling worlds
+- It must not tear down shared storage pools, the command scheduler, or sibling worlds
 - If full runtime teardown is needed, it must occur through an explicit
   runtime-level API
 
@@ -748,7 +766,7 @@ lifecycles.
 Required behavior:
 
 - A fork must receive its own world identity
-- A fork may share storage pools and broker infrastructure through the runtime
+- A fork may share storage pools and command infrastructure through the runtime
 - Shutting down a source world must not invalidate the fork
 - Shutting down a fork must not invalidate the source world
 
@@ -763,23 +781,6 @@ Required behavior:
 - Global singletons, if used at all, must have an explicit reset or opt-out
   path for tests
 - Test suites must be able to exercise multiple runtimes in one process
-
-#### L6. Actor-bound aliases share one world lifecycle
-
-Runtime may expose multiple actor-bound handles to one logical world, but those
-handles must not become independent world lifecycles by accident.
-
-Required behavior:
-
-- `world.as_actor(ctx)` MUST be pure before activation
-- Actor-bound aliases MUST resolve to the same backing world identity after
-  activation
-- First activation MUST remain single-flight across all aliases of the same
-  logical world
-- Shutting down one alias MUST invalidate all aliases of that world, but MUST
-  NOT invalidate sibling worlds in the same runtime
-- `fork()` from an actor-bound alias SHOULD preserve the caller's actor binding
-  on the returned fork handle
 
 ### Script Ceremony Contract
 
@@ -841,11 +842,11 @@ Script ergonomics must not come from removing safety mechanisms.
 
 Required behavior:
 
-- If runtime claims to preserve RBAC, audit history, or command semantics, those
-  paths must actually flow through the governing services
-- If a method intentionally bypasses governance, that bypass must be explicit in
-  naming and documentation
-- Direct resource mutation must not be described as governed by the broker
+- Trusted runtime calls are actor-free and do not claim RBAC enforcement;
+  untrusted API calls must flow through `iCommandGateway`
+- Access audit and domain outcome evidence must be attributed to their actual
+  owning boundaries
+- Direct resource mutation must not be described as governed by the gateway or scheduler
 
 #### S6. Recommended runtime APIs should be mutation-complete
 
@@ -855,10 +856,10 @@ the service layer.
 
 Required behavior:
 
-- The recommended runtime world handle SHOULD expose gated entity mutation
+- The recommended runtime world handle SHOULD expose actor-free entity mutation
   verbs for `spawn`, `despawn`, `update`, `add_components`, and
   `remove_components`
-- The recommended runtime world handle SHOULD expose gated processor
+- The recommended runtime world handle SHOULD expose actor-free processor
   mutation verbs for `add_processor` and `remove_processor`
 - Runtime audit access such as audit history SHOULD remain available without
   requiring direct container access
@@ -870,11 +871,11 @@ governed simulation mutations. That distinction must be explicit.
 
 Required behavior:
 
-- World-handle construction and actor rebinding may be immediate runtime
-  operations rather than gated commands
+- World-handle construction is an immediate trusted runtime operation.
 - Activation, hook registration, resource attachment, mutation, simulation,
-  read, fork, and destroy operations MUST flow through `iCommandService`
-- Documentation MUST distinguish handle construction from gated operations
+  read, fork, and destroy operations flow through `iRuntimeApplication`.
+- Untrusted ingress performs the corresponding operation through
+  `iCommandGateway` first.
 
 ### Runtime Acceptance Criteria
 
@@ -883,13 +884,13 @@ show how it satisfies all of the following:
 
 - Concurrent first-use of the same wrapper creates exactly one world
 - `spawn()` return semantics are correct and tested
-- Actor-bound aliases are pure before activation and share one world identity
+- Runtime handles are actor-free and share one application-level world lock
 - One world's shutdown does not break a sibling world in the same runtime
 - Runtime teardown is explicit and distinct from world teardown
 - Forked worlds remain valid after the source world is shut down
 - Recommended runtime mutation verbs cover entity, component, and processor
   mutations without dropping to the service layer
-- Gate-preserving scaffolding boundaries are documented and tested
+- Trust-boundary-preserving scaffolding is documented and tested
 - Same-entity same-tick mutation composition is either guaranteed and tested or
   explicitly documented as weaker
 - Async and sync script entry points have a clear resource ownership model
@@ -909,15 +910,15 @@ the constraints that any acceptable design must satisfy.
 | `WorldService.create_world(world_id=X)` | Idempotent by explicit `world_id` |
 | `WorldService.destroy_world(missing)` | Safe no-op |
 | `AsyncCachedStore.shutdown()` | Idempotent |
-| `CommandBroker.enqueue()` | Not idempotent; duplicate logical commands remain distinct |
-| `CommandService.submit()` | Not idempotent; duplicate submits create duplicate commands |
-| `CommandService.submit_spawn()` | Returns one reserved `entity_id` per successful call; repeated calls create new entities unless the caller reuses an explicit reservation |
+| Command admission with the same `command_id` and content | Idempotent; returns the existing durable record |
+| Command admission with the same `command_id` and changed content | Conflicts |
+| Command admission with a new `command_id` | Creates a distinct logical command |
+| Deferred spawn | Returns one reserved `entity_id` per successful admission; replay of the same command converges on that reservation |
 | `AsyncWorld.create_entity()` | Not idempotent; each call allocates a new world-local entity ID |
 | `AsyncWorld.remove_entity(missing)` | Safe no-op with observability |
-| `RuntimeWorld.as_actor(ctx)` | Idempotent as handle binding only; creates another alias, not another world |
 | Duplicate despawn in one tick | Idempotent collapse by entity ID |
 | Duplicate staged spawn rows for the same entity in one tick | Deterministic last-write-wins at materialization |
-| Replay of an already-registered reserved spawn through `CommandService` | First spawn applies; replay is rejected |
+| Replay of an already-settled reserved spawn command | Returns or observes the existing terminal outcome; never materializes twice |
 | `RuntimeWorld.history()` | Idempotent for fixed audit history |
 | `add_components()` with no signature change | Idempotent no-op |
 | `remove_components()` with no signature change | Idempotent no-op |
@@ -932,18 +933,18 @@ the constraints that any acceptable design must satisfy.
 | Coordinated tick retry after failed publish | Unpublished attempts stay invisible; retry produces exactly one visible attempt |
 | Cold discovery and reads | Repeated cold discovery and reads return stable durable state |
 | Fenced mutable resume | Resume continues from the last visible tick and stale-writer retries stay invisible |
-| `ingest_fact()` replay | Identical external identity and payload converges on one visible fact; changed payload conflicts |
-| `ingest_fact()` crash recovery | Lease takeover completes an appended orphan without creating a second visible fact |
+| Artifact publication replay | Identical producer identity and payload converges on one visible artifact/link; changed payload conflicts |
+| Artifact publication crash recovery | Lease takeover completes an appended orphan without creating a second visible publication |
 | `evaluate()` replay | Same evaluation identity, subject, and contract returns one receipt without re-grading |
 | Hard process crash and cold resume | Unpublished physical rows do not advance a fresh process beyond the last visible tick |
 | Independent writer-process race | Exactly one fenced writer publishes the contested tick |
-| Independent process `ingest_fact()` replay | Concurrent processes converge on one visible external fact |
+| Independent process `publish()` replay | Concurrent processes converge on one visible external artifact |
 | Independent process `evaluate()` replay | Concurrent processes grade once, and changed subjects conflict before grading |
 
 The durable rows above summarize the normative amendments in
 [Durable Discovery](durable-discovery.md),
 [Atomic Visibility](atomic-visibility.md),
-[World Lifecycle](world-lifecycle.md), and [Durable Facts](durable-facts.md).
+[World Lifecycle](world-lifecycle.md), and [Artifacts](artifacts.md).
 The idempotency eval manifest must match this table exactly; `make
 idempotency-audit` is the fast static drift check, while `make eval-idem`
 executes the behavioral scenarios.
@@ -962,7 +963,7 @@ back to at least one matrix row.
 
 Four tasks cross real OS-process boundaries over shared LanceDB and SQLite
 files: hard process death followed by cold resume, a two-writer fence race,
-eight-process fact replay, and eight-process evaluation replay with an
+eight-process artifact replay, and eight-process evaluation replay with an
 external grader-call ledger. The `infrastructure-idempotency` GitHub Actions
 job creates a disposable Iceberg table under a unique Cloudflare R2 object
 storage prefix and runs the integration under `tests/infrastructure/`; local
@@ -979,13 +980,13 @@ behavior and an executable oracle.
 | Item | Status | Contract or remaining work | Oracle or tracking |
 |---|---|---|---|
 | 1 | Resolved | Async and sync updater/store failures raise instead of returning a stamped-but-uncommitted frame. | `tests/core/test_async_store_updater_failures.py`; `tests/sync/test_sync_stack_contracts.py` |
-| 2 | Resolved | Tick-deferred submission is allowlisted to dispatched commands and intentional application envelopes; all direct operations fail before quota, audit, or enqueue. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_broker`; Issues #368, #415, #418 |
-| 3 | Resolved | `CommandService.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
+| 2 | Resolved | Tick-deferred submission is allowlisted to dispatched commands and intentional application envelopes; all direct operations fail before quota, audit, or admission. | `tests/integration/test_command_flow.py::test_direct_only_commands_cannot_enter_tick_deferred_scheduler`; Issues #368, #415, #418 |
+| 3 | Resolved | `CommandGateway.submit*` reject an unknown world with `WorldNotFoundError` before quota, enqueue, or audit side effects. | `tests/integration/test_command_flow.py::test_submit_to_unknown_world_rejected` |
 | 4 | Resolved | Duplicate-name and catalog-registration failures leave no hidden live world. | `tests/core/test_orchestrator_errors_and_instrumentation.py`; `tests/app/test_durable_discovery.py::test_failed_catalog_registration_leaves_no_live_world` |
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
 | 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/app/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
-| 7 | Resolved | Gated destroy clears only the target world's broker state and preserves shared runtime and durable state. | `tests/integration/test_fork_destroy_contracts.py` |
-| 8 | Resolved | Same-entity, same-tick mutations compose in broker order. | `tests/core/test_same_tick_mutation_composition.py`; Issue #193 |
+| 7 | Resolved | Gated destroy cancels only the target world's unsettled command state and preserves shared runtime and durable history. | `tests/integration/test_fork_destroy_contracts.py` |
+| 8 | Resolved | Same-entity, same-tick mutations compose in durable scheduler order. | `tests/core/test_same_tick_mutation_composition.py`; `evals/suites/idempotency.py::task_same_tick_duplicate_mutations`; Issue #193 |
 
 ## Durability Posture (v0.3, issue #276)
 
@@ -996,13 +997,16 @@ undocumented gap.
 
 | Subsystem | Contract |
 |---|---|
-| CommandBroker | **Advisory by contract**: tick-boundary batching for live worlds; in-memory, non-deduplicating, drain failures log. Durable external data belongs in typed fact tables; callers needing claim-backed cross-process deduplication retain legacy `ingest_fact` ([Durable Facts](durable-facts.md)). Routing either requirement through the broker is a misuse, not a gap. |
-| AuditLog | **Advisory durability class** in v0.3: bounded batches append to a dedicated Iceberg `audit_rows` table, and `_emit` never raises (an audit failure must not fail the gated operation). A full batch that cannot flush rejects new rows with observable backpressure instead of growing memory without bound; lossless audit during an outage requires deployment-level admission control. Typed facts and claim-backed receipts remain the durable evidence boundaries. Compaction is a separate storage-maintenance feature. |
-| Mutation idempotency | **Simulation mutations stay non-idempotent by design** — `create_entity` twice is two entities, because spawns are simulation events, not external ones. Typed fact writes deduplicate logical keys within their serialized writer; legacy `ingest_fact` supplies claim-backed cross-process deduplication. Deterministic replays use reserved entity ids. |
-| API auth | **Development-grade by contract**: the default admin `ActorCtx` is for the reference deployment. A production front must inject authenticated `ActorCtx` (roles resolved by the deployment's identity layer) and never expose the default. |
+| Command ledger | **Durable**: admission, order, leases, retries, terminal outcomes, and dead letters survive process loss. Applied outcomes settle atomically with tick publication. |
+| Audit journal | **Durable journal, eventually consistent projection**: authoritative transitions append transactional outbox events. Iceberg is a deduplicated analytical projection with an observable watermark. |
+| Mutation idempotency | **Commands are replay-safe by command identity** while direct simulation mutations remain distinct events. Replaying a staged command cannot materialize its effect twice. |
+| API auth | **Trust-boundary contract**: production ingress authenticates a stable principal and fails closed. Any anonymous-admin development mode is explicit and uses a stable process principal. The trusted runtime is actor-free. |
 | RBAC quota state | **Process-local and advisory** in v0.3 (daily token budgets reset on restart). Durable quota accounting is a control-catalog follow-up; deployments needing hard budgets enforce them at the identity layer above. |
 
-Receipts and facts carry no authority (enforced by `spec.receipt_authority_firewall`); the audit log records who asked, the ledger records what happened, and every durable guarantee in this table traces to the visibility contract in [Atomic Visibility](atomic-visibility.md).
+Receipts report a committed authority decision but do not create authority by
+themselves. The control authority records visibility and command/publication
+state; the audit projection reports those events. Durable guarantees trace to
+the visibility contract in [Atomic Visibility](atomic-visibility.md).
 
 ## Acceptance Criteria
 
@@ -1017,7 +1021,7 @@ all of the following:
 - advisory hook isolation, whole-tick processor failure atomicity, and
   signature-aware matching across explicit component migrations
   (`processor_adversarial` repository check)
-- stable reserved-entity spawn semantics through the broker
+- stable reserved-entity spawn semantics through durable admission
 - explicit multi-world isolation and fork divergence (`fork_divergence` repository check)
 - exact actor-local quota boundaries and UTC rollover (`quota_boundaries` repository check)
 - live/cold historical-read parity and resumed run continuity
@@ -1091,9 +1095,9 @@ boundary.
 
 The recommended public API now lives at the runtime layer, so beginner docs
 and quickstarts must teach `ArchetypeRuntime`, not the lower-level service
-container. Low-level docs can still document `ServiceContainer`,
-`CommandService`, broker semantics, audit semantics, and raw ECS flows, but they should be
-explicit that they are lower-level interfaces.
+container. Maintainer docs can still explain `ServiceContainer`,
+`CommandGateway`, durable scheduler semantics, audit semantics, and raw ECS flows,
+but they MUST label concrete services and the container as internal.
 
 Examples also need to be executed in CI. An example that "looks right" but is
 never run is not documentation; it is an unverified claim.

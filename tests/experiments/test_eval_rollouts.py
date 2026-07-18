@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
 from archetype.core.config import StorageConfig
 from archetype.experiments.eval_rollouts import run_task_eval
 from archetype.experiments.manipulation import ManipStatus, ManipTask, ScriptedReachEnv
@@ -84,7 +84,7 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         report = await run_task_eval(
             world_service=container.world_service,
             simulation_service=container.simulation_service,
-            eval_service=container.eval_service,
+            evaluation_service=container.evaluation_service,
             env_client=env,
             policy_client=policy,
             suite="scripted",
@@ -110,7 +110,7 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
         assert report.world_id and report.run_id
 
         # A2: every trial's trajectory is addressable by the one (world_id, run_id).
-        df = await container.eval_service.query_components(
+        df = await container.evaluation_service.query_components(
             [ManipStatus, ManipTask],
             world_id=report.world_id,
             run_id=report.run_id,
@@ -123,10 +123,8 @@ async def test_batched_control_plane_eval_is_addressable_and_graded(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runtime_path_matches_replay_and_leaves_command_audit_rows(tmp_path):
-    """The gated path: identical numbers to the service bridge, PLUS command
-    provenance — spawn/run_episode audit rows exist (the gateway-bypass
-    regression this module shipped with, fixed)."""
+async def test_runtime_path_matches_replay_without_gateway_access_audit(tmp_path):
+    """Trusted runtime evaluation matches replay without fabricating an actor."""
     from archetype import ArchetypeRuntime
 
     storage = StorageConfig(uri=str(tmp_path / "store"), namespace="evalrt")
@@ -154,12 +152,12 @@ async def test_runtime_path_matches_replay_and_leaves_command_audit_rows(tmp_pat
                 assert got[ek][1] == exp_len
         assert report.success_rate == 3 / 4
 
-        # THE contract: every mutation and the episode itself are commands.
+        # Trusted scripting never fabricates gateway authorization/access
+        # events. Product evaluation evidence is carried by the report and
+        # evaluation receipts, not an actor-shaped access audit.
         audit = runtime.attach(report.world_id, storage=storage)
         rows = (await audit.history(limit=200)).collect().to_pylist()
-        commands = " ".join(str(r) for r in rows)
-        assert "run_episode" in commands, "run_episode must leave a command-audit row"
-        assert "spawn" in commands, "trial spawns must leave command-audit rows"
+        assert rows == []
 
 
 @pytest.mark.asyncio
@@ -169,11 +167,11 @@ async def test_service_bridge_is_deprecated(tmp_path):
     try:
         env = ScriptedReachEnv(targets={0: TARGETS[0]}, tolerance=TOL)
         policy = ScriptedReachPolicy(targets={0: TARGETS[0]}, gain=GAIN, max_step=MAX_STEP)
-        with pytest.warns(DeprecationWarning, match="bypasses the command gateway"):
+        with pytest.warns(DeprecationWarning, match="bypasses the RuntimeApplication facade"):
             await run_task_eval(
                 world_service=container.world_service,
                 simulation_service=container.simulation_service,
-                eval_service=container.eval_service,
+                evaluation_service=container.evaluation_service,
                 env_client=env,
                 policy_client=policy,
                 suite="scripted",

@@ -22,23 +22,19 @@ async with ArchetypeRuntime() as runtime:
 `ArchetypeRuntime.world(...)` returns `RuntimeWorld`, not a raw `AsyncWorld`.
 That distinction is intentional:
 
-- `RuntimeWorld` is the public script surface. Its entity and processor
+- `RuntimeWorld` is the trusted public script surface. Its entity and processor
   mutations (`spawn`, `despawn`, `update`, `add_components`,
-  `remove_components`, `add_processor`, `remove_processor`) route through
-  `iCommandService`, so they honor RBAC and emit audit rows. `RuntimeWorld.history()`
-  reads that audit trail back through the gate.
-- `RuntimeWorld.as_actor(ctx)` returns another handle to the same logical
-  world, bound to a different `ActorCtx`, without creating a new world or
-  storage backend.
+  `remove_components`, `add_processor`, `remove_processor`) route through the
+  actor-free `iRuntimeApplication` facade.
+- Runtime handles never accept or retain `ActorCtx`. RBAC belongs to
+  `CommandGateway` for untrusted adapters.
 - `AsyncWorld` remains the direct engine API. Calling it directly may bypass
   command-gate semantics, which is appropriate for engine and service-layer code.
 
-The runtime keeps handle construction and actor rebinding declarative:
-
-- `runtime.world(...)` / `world.as_actor(...)`
-
+The runtime keeps handle construction declarative through
+`runtime.world(...)`, `runtime.attach(...)`, and `runtime.resume(...)`.
 World activation, resource attachment, hook registration, mutations, reads,
-simulation, fork, and destroy all go through gated service methods.
+simulation, fork, and destroy all go through `iRuntimeApplication`.
 
 The rest of this page describes the engine-level `AsyncWorld` behavior that
 those runtime calls ultimately drive.
@@ -289,8 +285,8 @@ See [Processors](processors.md) and [Systems](system-execution.md) for how proce
 `WorldService.fork_world()` creates a new world from a snapshot of an existing one.
 
 The runtime surface is `await world.fork(name="branch-A")`, which calls the
-gated `iCommandService.fork_world(...)` and returns a new handle bound to the
-same `ActorCtx`.
+actor-free application facade and returns a new handle owned by the same
+runtime.
 
 ### What's Cloned
 
@@ -313,7 +309,9 @@ Pending mutation transfer is intentional. If a user spawns an entity and forks b
 
 ### Persistence
 
-The fork writes to the same physical store by default, partitioned by its new `world_id`. A fork may be created with a different storage config through the gated service/runtime call.
+The fork writes to the same physical store by default, partitioned by its new
+`world_id`. A fork may be created with a different storage config through the
+runtime or, for untrusted ingress, the gated adapter call.
 
 Destroying a fork later removes only the live world object. Storage and audit rows remain queryable.
 
@@ -331,4 +329,4 @@ For normative lifecycle semantics, see [World Lifecycle](world-lifecycle.md).
 ## Source Reference
 
 - World: `src/archetype/core/aio/async_world.py`
-- World service: `src/archetype/app/world_service.py`
+- World service: `src/archetype/app/world/service.py`

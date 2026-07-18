@@ -61,7 +61,7 @@ _TRUNCATION_MARK = "…[truncated]"
 
 @dataclass
 class LoadedSession:
-    """One transcribed session: the header, its turns, and session facts."""
+    """One transcribed session: the header, its turns, and session observations."""
 
     trajectory: Trajectory
     turns: list[Turn]

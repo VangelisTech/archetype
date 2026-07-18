@@ -9,10 +9,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.models import ActorCtx
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService, _parse_entity_id
+from archetype.app.commands.service import CommandScheduler, _parse_entity_id
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -42,7 +41,7 @@ def test_parse_entity_id_accepts_only_exact_integer_forms(value, expected):
 
 def test_update_has_one_authoritative_dispatch_arm():
     """Each command type has one reachable implementation in the drain dispatcher."""
-    source = inspect.getsource(CommandService._apply)
+    source = inspect.getsource(CommandScheduler._apply)
 
     assert source.count("case CommandType.UPDATE:") == 1
 
@@ -213,7 +212,7 @@ async def test_entity_commands_coerce_string_entity_ids(tmp_path):
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         world = await container.world_service.create_world(WorldConfig(name="w"), storage)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        cs = container.command_service
+        cs = container.command_gateway
 
         eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
@@ -271,28 +270,18 @@ async def test_entity_commands_reject_fractional_ids(command_type, payload, muta
     mutations = MagicMock()
     mutation = AsyncMock()
     setattr(mutations, mutation_method, mutation)
-    broker = CommandBroker()
-    service = CommandService(
-        mutations,
-        MagicMock(),
-        MagicMock(),
-        MagicMock(),
-        broker,
-    )
+    scheduler = CommandScheduler(MagicMock(), mutations)
     command = Command(
         type=command_type,
         payload={"entity_id": 1.9, **payload},
     )
-    await broker.enqueue("world", command)
-
-    applied = await service.drain_and_apply("world", tick=0)
-
-    assert applied == []
+    with pytest.raises(TypeError, match="entity_id must be an integer"):
+        await scheduler._apply("world", command)
     mutation.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_brokered_update_is_applied(tmp_path):
+async def test_scheduled_update_is_applied(tmp_path):
     """A submitted UPDATE command changes component state after step (#193).
 
     UPDATE had no case in the drain dispatcher: submit() gated it, queued it,
@@ -306,7 +295,7 @@ async def test_brokered_update_is_applied(tmp_path):
         eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 
-        await container.command_service.submit(
+        await container.command_gateway.submit(
             ctx,
             world.world_id,
             Command(
@@ -336,7 +325,7 @@ async def test_same_drain_update_then_add_component_keeps_updated_state(tmp_path
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
         world = await container.world_service.create_world(WorldConfig(name="w"), storage)
         ctx = ActorCtx(id=uuid7(), roles={"admin"})
-        cs = container.command_service
+        cs = container.command_gateway
         eid = await container.mutation_service.create_entity(world.world_id, [Position(x=1.0)])
         await container.simulation_service.step(world.world_id, RunConfig(num_steps=1))
 

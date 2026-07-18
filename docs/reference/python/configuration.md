@@ -32,7 +32,7 @@
 | --- | --- | --- | --- |
 | `flush_rows` | `int` | `1000000` | Flush a table after it accumulates this many rows. |
 | `flush_mb` | `int` | `512` | Flush a table after it reaches this size in megabytes. |
-| `global_mb` | `int` | `1073741824` | Maximum memory budget across cached tables. |
+| `global_mb` | `int` | `1024` | Maximum memory budget across cached tables. |
 | `idle_sec` | `float` | `30.0` | Flush a table after this many idle seconds. |
 
 ::: archetype.core.RunConfig

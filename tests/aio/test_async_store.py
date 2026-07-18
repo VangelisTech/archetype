@@ -5,10 +5,10 @@ import uuid_utils as uuid
 from daft import DataFrame
 
 from archetype import StorageConfig
+from archetype.app.storage.session import configure_session
 from archetype.core import Archetype, Component
 from archetype.core.aio import AsyncCachedStore, AsyncStore
 from archetype.core.config import StorageBackend
-from archetype.runtime.session import configure_session
 
 
 class Position(Component):

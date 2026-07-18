@@ -162,7 +162,7 @@ async def test_unknown_signature_raises_distinctly_from_empty_tick(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_read_created_signature_does_not_become_known_after_real_spawn(tmp_path):
+async def test_unknown_signature_read_never_creates_a_table(tmp_path):
     ws = make_world_service()
     try:
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
@@ -171,9 +171,9 @@ async def test_read_created_signature_does_not_become_known_after_real_spawn(tmp
         )
         probed_sig = (Gamma, Delta)
 
-        probe = await world.query_archetype(probed_sig, run_id="probe", ticks=[0])
-        assert probe.count_rows() == 0
-        assert _canonicalize(probed_sig) in await world.querier.list_signatures()
+        with pytest.raises(UnknownSignatureError, match="never been written or spawned"):
+            await world.query_archetype(probed_sig, run_id="probe", ticks=[0])
+        assert _canonicalize(probed_sig) not in await world.querier.list_signatures()
         assert _canonicalize(probed_sig) not in await world.querier.list_committed_signatures()
 
         await world.create_entity([Alpha(a=1.0), Beta(b=2.0)])

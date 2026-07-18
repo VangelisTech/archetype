@@ -109,7 +109,7 @@
 | `num_episodes` | `int` | `0` | Number of completed episodes. |
 | `total_duration_steps` | `int` | `0` | Total ticks executed across all episodes. |
 
-::: archetype.app.facts.FactReceipt
+::: archetype.app.artifacts.models.ArtifactReceipt
     options:
       members: false
 
@@ -121,12 +121,12 @@
 | `external_id` | `str` | `required` |
 | `payload_digest` | `str` | `required` |
 | `commit_token` | `str` | `required` |
-| `fact_entity_id` | `int` | `required` |
+| `artifact_entity_id` | `int` | `required` |
 | `tick` | `int` | `required` |
 | `table_id` | `str` | `required` |
 | `duplicate` | `bool` | `required` |
 
-::: archetype.app.facts.FactWriteReceipt
+::: archetype.app.artifacts.models.ArtifactWriteReceipt
     options:
       members:
         - duplicate

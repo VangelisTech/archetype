@@ -2,8 +2,8 @@
 
 Every example on this page runs end-to-end with a single command. The
 recommended pattern is `ArchetypeRuntime` for scripts. A small number of
-examples intentionally call the service layer when they need lower-level
-storage or queue control.
+examples intentionally exercise internal services as focused implementation
+fixtures; application examples stay on the runtime.
 
 ## 0. Quickstart
 
@@ -24,7 +24,8 @@ processor increments the counter on three subsequent ticks.
 
 ## 1. World Mutations
 
-Demonstrates every mutation type: spawn entities with components, inject processors at runtime, RBAC permission checks, fork a world, and query the full command audit trail.
+Demonstrates the trusted mutation surface: spawn entities with components,
+inject processors at runtime, fork a world, and query state/history.
 
 ```bash
 uv run python examples/01_world_mutations.py
@@ -32,56 +33,45 @@ uv run python examples/01_world_mutations.py
 
 Source: [`examples/01_world_mutations.py`](https://github.com/VangelisTech/archetype/blob/main/examples/01_world_mutations.py)
 
-This example uses `ArchetypeRuntime` plus `world.as_actor(...)` to show
-multiple `ActorCtx` roles on one logical world without dropping to the
-service layer.
+This example uses actor-free `ArchetypeRuntime`. RBAC is intentionally absent
+from trusted scripting; the command-gateway and API tests cover role policy.
 
 **What it demonstrates:**
 
-- **SPAWN / DESPAWN / UPDATE** through the gated runtime surface
+- **SPAWN / DESPAWN / UPDATE** through the runtime application surface
 - **ADD_COMPONENT / REMOVE_COMPONENT** with archetype migration at tick boundaries
 - **ADD_PROCESSOR** to inject a `MovementProcessor` at runtime
-- **RBAC** checks through actor-bound handles: viewer denied spawn, player denied add_processor
-- **FORK** from an actor-bound handle while keeping the same actor binding on the branch
-- **Audit history** through `world.history()`
+- **FORK** while preserving runtime ownership and independent world identity
+- **History reads** through `world.history()` without fabricating access events
 
 Output:
 
 ```text
-1. SPAWN + RBAC
-   viewer: SPAWN denied (correct)
-   player: spawned scout=1, dummy=2
+1. SPAWN
+   runtime spawned: scout=1, dummy=2
 
 2. UPDATE + COMPONENT MUTATIONS
    scout after update/add_components: pos=(2.0, 1.0), vel=(1.5, 0.5), hp=80
 
 3. PROCESSOR MUTATIONS
-   player: ADD_PROCESSOR denied (correct)
+   MovementProcessor installed and removed
 ```
 
-**Gated operations in this example (curated, not exhaustive):**
+**Runtime operations in this example (curated, not exhaustive):**
 
-| Runtime call | Gate command | Allowed roles |
-|---|---|---|
-| `world.step()` | `step` | operator, admin |
-| `world.spawn()` | `spawn` | player, operator, admin |
-| `world.despawn()` | `despawn` | player, operator, admin |
-| `world.update()` | `update` | player, operator, admin |
-| `world.add_components()` | `add_component` | operator, admin |
-| `world.remove_components()` | `remove_component` | operator, admin |
-| `world.add_processor()` | `add_processor` | operator, admin |
-| `world.remove_processor()` | `remove_processor` | operator, admin |
-| `world.fork()` | `fork_world` | operator, admin |
-| `world.info()` | `get_world_info` | viewer, player, operator, admin |
-| `world.query()` | `query_world` | viewer, player, operator, admin |
-| `world.history()` | `get_audit_history` | viewer, player, operator, admin |
+| Runtime call | Owning application family |
+|---|---|
+| `world.step()` / `world.run()` | simulation |
+| entity/component mutations | mutation |
+| processor mutations | mutation |
+| `world.fork()` / `world.info()` | world lifecycle |
+| `world.query()` | query |
+| `world.history()` | audit projection |
 
-The runtime constructs the command payloads for these methods; this is not a
-raw broker-payload schema. The complete command inventory lives in
-`archetype.app.models.CommandType`. See the normative
-[Command Gate](command-gate.md#3-the-permissions-matrix) for the current
-permission matrix, including `run_episode`, `run_rollout`, fact operations,
-hooks, resources, and introspection.
+The runtime delegates directly to `iRuntimeApplication`; it does not construct
+an `ActorCtx` or pass through `CommandGateway`. See the normative
+[Command Gate](command-gate.md#3-the-permissions-matrix) for the separate
+untrusted-adapter permission matrix.
 
 ---
 
@@ -130,7 +120,8 @@ high: tick=11
 ```
 
 All three branches start from the same base state and diverge independently.
-Forks share resource instances by default; attach replacement resources through the gated resource-management path when per-branch resource isolation is required.
+Forks share resource instances by default; trusted scripts attach replacement
+resources through the runtime when per-branch resource isolation is required.
 
 ---
 

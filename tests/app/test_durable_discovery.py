@@ -21,7 +21,8 @@ import textwrap
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app._catalog import (
+from archetype.app.container import ServiceContainer
+from archetype.app.storage.catalog import (
     CatalogConflictError,
     SignatureRecord,
     SqliteControlCatalog,
@@ -31,8 +32,7 @@ from archetype.app._catalog import (
     schema_fingerprint,
     storage_fingerprint,
 )
-from archetype.app._signature_resolution import match_signature_records
-from archetype.app.container import ServiceContainer
+from archetype.app.storage.signatures import match_signature_records
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -145,7 +145,7 @@ async def test_register_world_is_idempotent_and_conflicts_loudly(tmp_path):
 def _register_world_proc(path: str, result_queue) -> None:
     import asyncio
 
-    from archetype.app._catalog import SqliteControlCatalog, WorldRecord
+    from archetype.app.storage.catalog import SqliteControlCatalog, WorldRecord
 
     async def go():
         catalog = SqliteControlCatalog.__new__(SqliteControlCatalog)
@@ -373,7 +373,7 @@ async def test_cold_signature_listing_skips_unresolvable_history(tmp_path, caplo
 
     reader = ServiceContainer()
     try:
-        with caplog.at_level(logging.WARNING, logger="archetype.app.query_service"):
+        with caplog.at_level(logging.WARNING, logger="archetype.app.query.service"):
             signatures = await reader.query_service.list_signatures(storage)
 
         names = {tuple(component.__name__ for component in sig) for sig in signatures}
@@ -432,7 +432,7 @@ async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeyp
             raise RuntimeError("injected catalog outage")
 
         monkeypatch.setattr(container.storage_service, "get_control_catalog", _unavailable)
-        with caplog.at_level(logging.ERROR, logger="archetype.app.query_service"):
+        with caplog.at_level(logging.ERROR, logger="archetype.app.query.service"):
             signatures = await container.query_service.list_signatures(storage)
 
         assert (Score,) in signatures
@@ -445,7 +445,7 @@ async def test_warm_signature_listing_survives_catalog_failure(tmp_path, monkeyp
 async def test_p0_stale_descriptor_fails_closed(tmp_path):
     """A catalog descriptor whose fingerprint disagrees with the physical
     table must refuse to read — never an empty frame, never a created table."""
-    from archetype.app._catalog import CatalogSchemaMismatchError
+    from archetype.app.storage.catalog import CatalogSchemaMismatchError
 
     storage = _storage(tmp_path)
     result = subprocess.run(
@@ -519,7 +519,7 @@ def test_schema_fingerprint_is_order_and_content_sensitive():
 async def test_signature_record_roundtrip(tmp_path):
     import pyarrow as pa
 
-    from archetype.app._catalog import arrow_schema_descriptor
+    from archetype.app.storage.catalog import arrow_schema_descriptor
 
     catalog = SqliteControlCatalog(tmp_path / "cat.db")
     schema = pa.schema([("score__points", pa.float64())])
@@ -574,10 +574,10 @@ async def test_iceberg_seam_reads_existing_tables_only(tmp_path):
     import daft
     import pyarrow as pa
 
+    from archetype.app.storage.session import configure_session
     from archetype.core.aio import AsyncStore
     from archetype.core.archetype import Archetype
     from archetype.core.config import StorageBackend
-    from archetype.runtime.session import configure_session
 
     storage = StorageConfig(uri=str(tmp_path), namespace="ns", backend=StorageBackend.ICEBERG)
     sig = (Score,)

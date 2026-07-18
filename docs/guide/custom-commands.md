@@ -3,7 +3,10 @@ title: Custom Commands
 description: How to route domain-specific commands through Archetype
 ---
 
-`CommandType.CUSTOM` is the escape hatch for domain-specific command payloads. Custom commands still pass through the command gate, so role permissions, quotas, queue ordering, and audit semantics are the same as built-in commands.
+`CommandType.CUSTOM` is a portable domain-envelope reservation. Custom
+commands still pass through the command gate, so role permissions, quotas,
+durable ordering, and audit projection match other deferred commands. The
+built-in dispatcher deliberately performs no domain mutation for them.
 
 ## Submitting a Custom Command
 
@@ -19,7 +22,7 @@ cmd = Command(
     },
 )
 
-await container.command_service.submit(ctx, world_id, cmd)
+await container.command_gateway.submit(ctx, world_id, cmd)
 ```
 
 Via REST:
@@ -44,15 +47,17 @@ The default deferred dispatcher does not mutate world state for unknown custom p
 
 ## Extension Pattern
 
-The stable extension point is the app service layer:
+Adding domain behavior is an internal host extension, not a public runtime
+plug-in point:
 
 1. Add or reuse a `CommandType`.
 2. Decide role permissions in `COMMANDS_BY_ROLE`.
-3. Add a gated method to `iCommandService` when the operation is user-visible and should be direct.
-4. For tick-deferred custom payloads, add dispatch logic in the command application path used by `drain_and_apply`.
+3. Add a gated method to `iCommandGateway` when the operation is user-visible and should be direct.
+4. For tick-deferred custom payloads, add versioned portable dispatch logic in
+   the commands-family path used by `drain_and_apply`.
 5. Emit one audit row per gated call.
 
-Avoid bypassing the gate from runtime/API code. If the operation is external, route it through `iCommandService`.
+Avoid bypassing the gate from runtime/API code. If the operation is external, route it through `iCommandGateway`.
 
 ## RBAC and Quotas
 
@@ -65,19 +70,19 @@ See [Command Gate](command-gate.md) and [Token Costs and Quotas](token-quotas.md
 ```text
 Client submits Command(type=CUSTOM, payload={...})
     |
-iCommandService.submit(ctx, world_id, cmd)
+iCommandGateway.submit(ctx, world_id, cmd)
     |
 guardrail_allow
     |
-iCommandBroker.enqueue
+RuntimeApplication.submit
     |
-SimulationService.step
+CommandScheduler.admit (durable)
     |
-iCommandService.drain_and_apply
+SimulationService tick callback
     |
-custom dispatch path
+CommandScheduler.drain_and_apply
     |
-iAuditLog.record
+tick manifest + command settlement + outbox
 ```
 
 ## Example: Domain Action Payload
@@ -96,9 +101,10 @@ spell_cmd = Command(
     priority=-10,
 )
 
-await container.command_service.submit(ctx, world_id, spell_cmd)
+await container.command_gateway.submit(ctx, world_id, spell_cmd)
 ```
 
 Use `payload["action"]` as a sub-type discriminator when one `CUSTOM` command type supports many domain actions.
 
-User-facing history comes from `iCommandService.get_audit_history(...)`, not from broker internals.
+User-facing history comes from `iCommandGateway.get_audit_history(...)`, not
+from command-ledger internals.

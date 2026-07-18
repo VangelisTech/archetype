@@ -12,41 +12,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Service Container
-
-Wires all services together. Single point of construction.
-"""
+"""Internal composition root for the application service graph."""
 
 from __future__ import annotations
 
-from archetype.app.audit_log import AuditLog
-from archetype.app.auth import reset_tick_counters
-from archetype.app.autoresearch_service import AutoResearchService
-from archetype.app.broker import CommandBroker
-from archetype.app.command_service import CommandService
-from archetype.app.eval_service import EvalService
-from archetype.app.fact_service import FactService
-from archetype.app.ingestion_service import IngestionService
-from archetype.app.mutation_service import MutationService
-from archetype.app.query_service import QueryService
-from archetype.app.simulation_service import SimulationService
-from archetype.app.storage_service import StorageService
-from archetype.app.world_service import WorldService
+from archetype.app.application.service import RuntimeApplication
+from archetype.app.artifacts.service import ArtifactService
+from archetype.app.artifacts.table_service import ArtifactTableService
+from archetype.app.audit.service import AuditLog
+from archetype.app.commands.service import CommandScheduler
+from archetype.app.evaluation.service import EvaluationService
+from archetype.app.gateway.auth import reset_tick_counters
+from archetype.app.gateway.service import CommandGateway
+from archetype.app.query.service import QueryService
+from archetype.app.research.service import AutoResearchService
+from archetype.app.storage.service import StorageService
+from archetype.app.world.mutation import MutationService
+from archetype.app.world.service import WorldService
+from archetype.app.world.simulation import SimulationService
 from archetype.core.config import StorageConfig
 
 
 class ServiceContainer:
-    """
-    Wires services together with correct dependency ordering.
+    """Construct and own the internal service graph.
 
     Each service owns its internal composition.
-    The container only handles service-to-service wiring.
-
-    Usage:
-        container = ServiceContainer()
-        world = await container.world_service.create_world(config, storage_config)
-        await container.simulation_service.step(world.world_id, run_config)
+    The container handles concrete construction and callback wiring. Application
+    code uses ``ArchetypeRuntime`` or the REST/CLI adapters rather than calling
+    these delegates directly.
     """
 
     def __init__(
@@ -62,9 +55,6 @@ class ServiceContainer:
                 )
             storage_service.require_iceberg_identity(audit_storage_config)
 
-        # Infrastructure
-        self.broker = CommandBroker()
-
         # Leaf services
         self._owns_storage_service = storage_service is None
         self.storage_service = storage_service if storage_service is not None else StorageService()
@@ -73,39 +63,42 @@ class ServiceContainer:
         self.world_service = WorldService(self.storage_service)
         self.audit_log = AuditLog(self.storage_service, audit_storage_config)
         self.query_service = QueryService(self.storage_service, self.audit_log)
-        self.eval_service = EvalService(self.query_service)
-        self.fact_service = FactService(self.storage_service, self.world_service)
+        self.artifact_table_service = ArtifactTableService(self.storage_service, self.world_service)
+        self.artifact_service = ArtifactService(self.storage_service, self.world_service)
+        self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
 
         # Services that depend on WorldService
         self.mutation_service = MutationService(self.world_service)
         self.simulation_service = SimulationService(self.world_service)
+        self.command_scheduler = CommandScheduler(self.world_service, self.mutation_service)
+        self.audit_log.set_outbox_source(
+            self.command_scheduler.read_outbox,
+            self.command_scheduler.mark_outbox_projected,
+        )
 
         # AutoResearch — depends on WorldService + SimulationService
         self.autoresearch_service = AutoResearchService(self.world_service, self.simulation_service)
 
-        # Claim-backed component ingestion remains the evaluation-receipt path.
-        self.ingestion_service = IngestionService(self.storage_service, self.world_service)
-
-        # The gate — depends on everything
-        self.command_service = CommandService(
+        self.application = RuntimeApplication(
             mutations=self.mutation_service,
             worlds=self.world_service,
             simulation=self.simulation_service,
             queries=self.query_service,
-            broker=self.broker,
+            commands=self.command_scheduler,
             audit=self.audit_log,
-            facts=self.fact_service,
-            ingestion=self.ingestion_service,
-            evals=self.eval_service,
-            autoresearch=self.autoresearch_service,
+            artifact_tables=self.artifact_table_service,
+            artifacts=self.artifact_service,
+            evaluations=self.evaluation_service,
+            research=self.autoresearch_service,
         )
-        self.simulation_service.set_command_drain(self.command_service.drain_and_apply)
+        self.command_gateway = CommandGateway(self.application, self.audit_log)
+        self.simulation_service.set_command_drain(self.application.drain_and_apply)
         # Per-tick RBAC quota resets at each tick boundary (bug B1).
         self.simulation_service.set_quota_reset(reset_tick_counters)
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""
+        await self.application.stop_admission()
         await self.audit_log.shutdown()
-        await self.broker.clear()
         if self._owns_storage_service:
             await self.world_service.shutdown()

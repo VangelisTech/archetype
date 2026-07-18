@@ -18,7 +18,6 @@ import asyncio
 import os
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 import numpy as np
 
 # Run the simulation
@@ -110,9 +109,7 @@ def fig_pool_depletion(results: list[dict], out_dir: str):
     ax.set_xlim(0, 51)
     ax.set_ylim(-20, 1050)
     ax.legend(loc="center right")
-    ax.fill_between(
-        range(0, 52), 0, 100, color="#e74c3c", alpha=0.05, label="_collapse zone"
-    )
+    ax.fill_between(range(0, 52), 0, 100, color="#e74c3c", alpha=0.05, label="_collapse zone")
 
     fig.tight_layout()
     fig.savefig(os.path.join(out_dir, "fig1_pool_depletion.png"))
@@ -134,7 +131,12 @@ def fig_harvest_accumulation(results: list[dict], out_dir: str):
     for entry in metrics:
         name = entry["name"]
         if name not in agents:
-            agents[name] = {"ticks": [], "cumulative": [], "strategy": entry["strategy"], "cum": 0.0}
+            agents[name] = {
+                "ticks": [],
+                "cumulative": [],
+                "strategy": entry["strategy"],
+                "cum": 0.0,
+            }
         agents[name]["cum"] += entry["harvested"]
         agents[name]["ticks"].append(entry["tick"])
         agents[name]["cumulative"].append(agents[name]["cum"])
@@ -274,7 +276,7 @@ def fig_free_rider(results: list[dict], out_dir: str):
     )
 
     # Annotate the bars
-    for bar, val in zip(bars1, mixed_harvests):
+    for bar, val in zip(bars1, mixed_harvests, strict=True):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             val + 60,
@@ -296,7 +298,7 @@ def fig_free_rider(results: list[dict], out_dir: str):
     # Arrow showing free-rider advantage
     greedy_x = x[0] - width / 2
     ax.annotate(
-        f"6.0x advantage",
+        "6.0x advantage",
         xy=(greedy_x, mixed_harvests[0]),
         xytext=(greedy_x + 0.8, mixed_harvests[0] + 300),
         fontsize=9,

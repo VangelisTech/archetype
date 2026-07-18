@@ -1,4 +1,4 @@
-name: Tests
+name: Quality
 
 on:
   workflow_dispatch:
@@ -6,44 +6,45 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Merge queue: required contexts must report on the queue's merge groups.
+  # Every required context must also report on merge-queue commits.
   merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: quality-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
+  # Keep this job id stable. The active ruleset requires the matrix contexts
+  # `ci (3.12)` and `ci (3.13)` by name.
   ci:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --group dev
-
-      - name: Run CI gate (lint + lock-check + tests with coverage)
-        run: make ci
+      - run: uv sync --group dev
+      - name: Full tests with coverage
+        if: matrix.python-version == '3.12'
+        run: make test-cov
+      - name: Full compatibility tests
+        if: matrix.python-version != '3.12'
+        run: make test
 
       # fail_ci_if_error must stay true: with it false, this step spent its
       # whole life green while uploading nothing (no CODECOV_TOKEN secret
@@ -64,45 +65,47 @@ jobs:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  evals:
+  # Keep this job id stable. It owns formatting plus the version-independent
+  # structural audits required by the active `format` context.
+  format:
     runs-on: ubuntu-latest
-    env:
-      # Real workload jobs report to Logfire when the org token is set;
-      # absent secret -> empty var -> archetype._obs stays vendor-free.
-      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make format-check
+      - run: make lint
+      - run: make lock-check
+      - run: make contract-audit
+      - run: make benchmark-audit
 
-      - name: Install dependencies
-        run: uv sync --group dev
-
-      - name: Run regression evals
-        run: make eval-reg
-
-      - name: Run idempotency evals
-        run: make eval-idem
-
-      # Capability scenarios are deterministic and credential-free; failed
-      # graders are blocking because these tasks assert architectural outcomes.
-      - name: Run capability evals
-        run: make eval-cap
+  # Keep this job id stable for the required `typecheck` context.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make typecheck
 
   # Real object-store gate using a disposable prefix and R2's S3 credentials;
   # no local or runner-side Docker service is involved.
   infrastructure-idempotency:
+    name: Cloudflare R2 integration
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -114,25 +117,17 @@ jobs:
       R2_API_ENDPOINT: ${{ vars.R2_API_ENDPOINT }}
       R2_BUCKET: ${{ vars.R2_BUCKET }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --group dev
-
-      - name: Verify R2 integration credentials
+      - run: uv sync --group dev
+      - name: Verify credentials
         run: |
           test -n "$R2_ACCESS_KEY_ID"
           test -n "$R2_SECRET_ACCESS_KEY"
@@ -141,90 +136,114 @@ jobs:
           case "$R2_BUCKET" in
             */*) echo "R2_BUCKET must be a bucket name, not a path" >&2; exit 1 ;;
           esac
+      - run: make test-infra
 
-      - name: Run R2 Iceberg idempotency integration
-        run: make test-infra
-
-  format:
+  # Keep this job id stable for the required `evals` context. Repository
+  # scenarios run once on 3.12, not once per compatibility interpreter.
+  # The explicit always() dependency makes an infrastructure failure fail
+  # this required context rather than skip-satisfying it.
+  evals:
+    if: always()
+    needs: infrastructure-idempotency
     runs-on: ubuntu-latest
+    env:
+      LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Require applicable infrastructure evidence
+        env:
+          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
+        run: |
+          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --group dev
-
-      - name: Check formatting
-        run: make format-check
-
-  typecheck:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - run: uv sync --group dev
+      - run: make eval-conformance
+      - run: make eval-reliability EVAL_TRIALS=1
+      - run: make eval-capability
+      - run: make package-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          python-version: "3.12"
+          name: pull-request-evidence
+          path: |
+            eval-conformance-results.json
+            eval-reliability-results.json
+            eval-capability-results.json
+            dist/
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Install dependencies
-        run: uv sync --group dev
-
-      # ty is the type gate (config in [tool.ty]); pinned to match the
-      # astral-sh/ty-pre-commit rev in .pre-commit-config.yaml. Blocking.
-      - name: Run ty
-        run: uvx ty@0.0.48 check --python .venv
-
-  # Every numbered example must run credential-free (the CLAUDE.md contract:
-  # LLM-backed examples degrade gracefully when keys are missing). Blocking.
+  # Keep this job id stable for the required `examples` context.
   examples:
     runs-on: ubuntu-latest
     env:
-      DO_NOT_TRACK: "1"
       LOGFIRE_TOKEN: ${{ secrets.LOGFIRE_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make examples-smoke
 
-      - name: Install dependencies
-        run: uv sync --group dev
+  process-reliability:
+    name: Main process evidence
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --group dev
+      - run: make test-process
 
-      - name: Run all numbered examples
+  # This aggregate is additive today: the existing required contexts above
+  # remain stable while repository policy can promote `Quality gate` later.
+  quality-gate:
+    name: Quality gate
+    if: always()
+    needs:
+      - ci
+      - format
+      - typecheck
+      - infrastructure-idempotency
+      - evals
+      - examples
+      - process-reliability
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every applicable evidence job
+        env:
+          CI: ${{ needs.ci.result }}
+          FORMAT: ${{ needs.format.result }}
+          TYPECHECK: ${{ needs.typecheck.result }}
+          INFRASTRUCTURE: ${{ needs.infrastructure-idempotency.result }}
+          EVALS: ${{ needs.evals.result }}
+          EXAMPLES: ${{ needs.examples.result }}
+          PROCESS: ${{ needs.process-reliability.result }}
         run: |
-          for f in examples/[0-9][0-9]_*.py; do
-            echo "::group::$f"
-            uv run python "$f"
-            echo "::endgroup::"
-          done
+          test "$CI" = success
+          test "$FORMAT" = success
+          test "$TYPECHECK" = success
+          case "$INFRASTRUCTURE" in success|skipped) ;; *) exit 1 ;; esac
+          test "$EVALS" = success
+          test "$EXAMPLES" = success
+          case "$PROCESS" in success|skipped) ;; *) exit 1 ;; esac

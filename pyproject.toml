@@ -79,6 +79,16 @@ pythonpath = [
     ".",
 ]
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: focused evidence at one local seam",
+    "contract(id): approved normative behavior identified in quality/contracts.toml",
+    "integration: multiple real repository layers",
+    "race: deterministically coordinated concurrency schedule",
+    "process: subprocess, crash, or independent-writer behavior",
+    "smoke: shallow public-path or built-artifact evidence",
+    "external: credentials or external infrastructure required",
+    "slow: unsuitable for the quick local profile",
+]
 
 [tool.coverage.run]
 branch = true

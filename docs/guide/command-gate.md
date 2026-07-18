@@ -1,29 +1,41 @@
 # Command Gate
 
 **Document type:** Normative.
-**Scope:** `iCommandService`, `app/auth/`, role-based authorization.
+**Scope:** `iCommandGateway`, `app/gateway/auth/`, role-based authorization.
+
+The concrete class and protocol are `CommandGateway` and `iCommandGateway`.
 
 ## 1. The gate model
 
-`iCommandService` is the **policy enforcement point** (PEP). Every external mutation, lifecycle operation, and read flows through it. The gate is a thin reverse proxy: it does not orchestrate, it does not implement; it gates.
+`iCommandGateway` is the **policy enforcement point** (PEP) for untrusted
+ingress. External mutations, lifecycle operations, reads, and deferred-command
+admission flow through it. The gateway owns authorization, safe result
+downgrade, and access-audit notification. It delegates actor-free execution to
+`iRuntimeApplication`.
 
-Each method on `iCommandService` follows the same three-step shape:
+Each direct method on `iCommandGateway` follows the same three-step shape:
 
 ```python
 async def <method>(self, ctx: ActorCtx, *args, **kwargs):
     guardrail_allow(<Command(type=..., payload=...)>, ctx)
-    result = await self._<underlying_service>.<method>(*args, **kwargs)
-    await self._audit.record(audit_row_from(ctx, ..., result))
+    admission = principal_snapshot(ctx)
+    result = await self._application.<method>(*args, admission=admission, **kwargs)
+    await self._audit.record_access(access_event_from(ctx, ..., result))
     return result
 ```
 
 The gate's contract:
 
 - `ctx` is checked against `COMMANDS_BY_ROLE` before any work happens. Empty intersection raises `GuardrailError`.
-- The work is delegated to a single underlying service (`iWorldService`, `iSimulationService`, `iQueryService`, `iMutationService`, or `iAuditLog`).
-- One audit row is emitted per gated call. Multi-step gate methods (e.g. `destroy_world`, which orchestrates broker.clear + audit.flush + world_service.destroy_world) still emit ONE audit row at the end.
+- Work is delegated to the actor-free application port; the gateway does not
+  compose domain services or own command/audit storage.
+- One access event is emitted per admitted or rejected external call. Domain
+  receipts and transactional outbox events remain the authority for operation
+  outcomes.
 
-Nothing below the gate knows about `ActorCtx`. `iWorldService.create_world(config, ...)` takes no ctx. Authorization is the gate's job alone.
+Nothing below the gateway knows about `ActorCtx`.
+`iWorldService.create_world(config, ...)` takes no ctx. Authorization is the
+gateway's job alone.
 
 ## 2. The four-role model
 
@@ -50,7 +62,7 @@ Roles are flat. A user with `{operator}` is NOT also `viewer` — they get whate
 | `list_signatures` | ✓ | ✓ | ✓ | ✓ |
 | `get_world_info` | ✓ | ✓ | ✓ | ✓ |
 | `get_audit_history` | ✓ | ✓ | ✓ | ✓ |
-| `query_facts` | ✓ | ✓ | ✓ | ✓ |
+| `query_artifacts` | ✓ | ✓ | ✓ | ✓ |
 | `list_worlds` | ✓ | ✓ | ✓ | ✓ |
 | `list_processors` | ✓ | ✓ | ✓ | ✓ |
 | `list_hooks` | ✓ | ✓ | ✓ | ✓ |
@@ -99,9 +111,9 @@ A `player` does not advance the world — they participate in the world that som
 | `create_world` | — | — | — | ✓ |
 | `fork_world` | — | — | ✓ | ✓ |
 | `destroy_world` | — | — | ✓ | ✓ |
-| `ingest_fact` | — | — | ✓ | ✓ |
+| `publish` | — | — | ✓ | ✓ |
 | `ingest_files` | — | — | ✓ | ✓ |
-| `write_facts` | — | — | ✓ | ✓ |
+| `write_artifacts` | — | — | ✓ | ✓ |
 | `evaluate` | — | — | ✓ | ✓ |
 
 The asymmetry is intentional. `create_world` establishes new platform-level identity → admin-only. `fork_world` and `destroy_world` are operator-territory because operators routinely fork (rollouts) and destroy (cleanup). Forks and destroys never delete persistent data (append-only invariant), so this is safe.
@@ -222,43 +234,36 @@ def test_role_command_matrix(role, cmd_type, allowed):
             guardrail_allow(cmd, ctx)
 ```
 
-## 5. Default `ActorCtx` for the runtime
+## 5. Trust boundary and `ActorCtx`
 
-The runtime's default `ActorCtx` is `ActorCtx(id=uuid7(), roles={"admin"})`.
+`ActorCtx` is constructed only by an authenticated ingress adapter or a focused
+gateway/security test. The trusted scripting runtime is actor-free and does not
+call the gateway.
 
-Rationale: the script boundary IS the platform admin in single-tenant context. `runtime.world(...)` calls `create_world`, which is admin-only — without admin in the default, the very first ergonomic call fails.
+The CLI sends credentials; it does not construct a trusted role locally.
+FastAPI or another host authenticates the credential into a stable principal,
+constructs `ActorCtx`, and invokes the gateway. Production hosts must fail
+closed when authentication is absent. A development-only anonymous-admin mode,
+if retained, is an explicit host configuration and uses a stable process
+principal rather than a new identity per request.
 
-Users testing under constrained roles do so explicitly:
+An embedded host that exposes runtime capabilities to sandboxed or untrusted
+agents must also use the gateway even when no HTTP transport is involved.
 
-```python
-async with ArchetypeRuntime() as runtime:
-    world = runtime.world("demo")              # default {admin}
+## 6. Access audit
 
-    viewer_ctx = ActorCtx(id=uuid7(), roles={"viewer"})
-    viewer_world = world.as_actor(viewer_ctx)
-
-    await viewer_world.query(Position)         # OK
-    await viewer_world.spawn(Position())       # raises GuardrailError
-```
-
-This is also how multi-tenant API servers map authenticated principals to ActorCtx.
-
-## 6. Audit emission
-
-Every gated call emits one audit row. The audit row schema is defined in [Audit Log](audit-log.md); fields include:
+Every gated call emits one access event. The event schema is defined in [Audit
+Log](audit-log.md); fields include:
 
 - `command_id`, `world_id`, `actor_id`
 - `command_type`, `payload_json`, `idempotency_key`
 - `accepted_at`, `applied_at`, `status`
 
-(`tick` and per-row `actor_roles` are not yet recorded; adding them is
-tracked as audit-log hardening.)
-
-Multi-step gate methods (e.g. `destroy_world` orchestrating broker.clear + audit.flush + world_service.destroy_world) emit ONE audit row, not one per step. The row's `payload_json` captures sub-operation outcomes.
-
-`run_rollout` emits ONE row, not one per fork. The row's payload captures the fork world_ids and aggregate stats.
-
-`autoresearch` emits ONE row for the whole loop. The experiment's lab world is the fine-grained record: every attempt appends `RUNNING` and terminal lifecycle ticks there, so per-iteration provenance is queryable simulation state rather than audit noise.
+Access evidence records the authorization decision and request identity. It is
+not proof that asynchronous or multi-step domain work committed. Command
+outcomes, tick manifests, artifact receipts, evaluation receipts, and research
+ledgers are authoritative for their own workflows. Their transactional outbox
+events are projected into the analytical audit history independently.
 
 ## 7. Migration from earlier role sets
 

@@ -16,9 +16,9 @@ import tempfile
 
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -69,36 +69,36 @@ async def _task_poison_in_batch() -> list[GraderResult]:
             rc = RunConfig()
 
             # Valid SPAWN
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
                 ),
-                ctx,
             )
 
             # Poison SPAWN — bare model_dump() without "type" key
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=2, y=2).model_dump()]},
                 ),
-                ctx,
             )
 
             # Valid SPAWN
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=3, y=3).to_payload()]},
                 ),
-                ctx,
             )
 
             await container.simulation_service.step(world.world_id, rc)
@@ -146,28 +146,28 @@ async def _task_missing_payload_keys() -> list[GraderResult]:
             rc = RunConfig()
 
             # DESPAWN with no entity_id
-            await container.command_service.submit(
-                wid, Command(type=CommandType.DESPAWN, tick=0, payload={}), ctx
+            await container.command_gateway.submit(
+                ctx, wid, Command(type=CommandType.DESPAWN, tick=0, payload={})
             )
             # REMOVE_COMPONENT with no entity_id
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.REMOVE_COMPONENT,
                     tick=0,
                     payload={"component_types": ["_PoisonPos"]},
                 ),
-                ctx,
             )
             # UPDATE with no entity_id
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.UPDATE,
                     tick=0,
                     payload={"components": [_PoisonPos(x=9, y=9).to_payload()]},
                 ),
-                ctx,
             )
 
             await container.simulation_service.step(world.world_id, rc)
@@ -211,7 +211,8 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             rc = RunConfig()
 
             # Spawn an entity with two components
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.SPAWN,
@@ -223,7 +224,6 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                         ]
                     },
                 ),
-                ctx,
             )
             await container.simulation_service.step(world.world_id, rc)
 
@@ -233,7 +233,8 @@ async def _task_unknown_component_type() -> list[GraderResult]:
             # Try to remove a nonexistent component type
             reset_tick_counters()
             reset_daily_tokens()
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.REMOVE_COMPONENT,
@@ -243,7 +244,6 @@ async def _task_unknown_component_type() -> list[GraderResult]:
                         "component_types": ["TotallyFakeComponent"],
                     },
                 ),
-                ctx,
             )
             await container.simulation_service.step(world.world_id, rc)
 
@@ -288,14 +288,14 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             rc = RunConfig()
 
             # Spawn a real entity
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.SPAWN,
                     tick=0,
                     payload={"components": [_PoisonPos(x=1, y=1).to_payload()]},
                 ),
-                ctx,
             )
             await container.simulation_service.step(world.world_id, rc)
 
@@ -304,14 +304,14 @@ async def _task_despawn_nonexistent_entity() -> list[GraderResult]:
             # Despawn a nonexistent entity
             reset_tick_counters()
             reset_daily_tokens()
-            await container.command_service.submit(
+            await container.command_gateway.submit(
+                ctx,
                 wid,
                 Command(
                     type=CommandType.DESPAWN,
                     tick=1,
                     payload={"entity_id": 99999},
                 ),
-                ctx,
             )
             await container.simulation_service.step(world.world_id, rc)
 
@@ -356,15 +356,15 @@ async def _task_unhandled_command_noop() -> list[GraderResult]:
             rc = RunConfig()
 
             for cmd_type in (CommandType.MESSAGE, CommandType.QUERY_WORLD, CommandType.CUSTOM):
-                await container.command_service.submit(
+                await container.command_gateway.submit(
+                    ctx,
                     wid,
                     Command(type=cmd_type, tick=0, payload={"data": "test"}),
-                    ctx,
                 )
 
             await container.simulation_service.step(world.world_id, rc)
 
-            pending = await container.broker.get_pending_count(wid)
+            pending = await container.command_scheduler.pending_count(wid)
 
             return [
                 state_check(

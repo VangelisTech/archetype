@@ -3,12 +3,11 @@
 # Licensed under the Apache License, Version 2.0 (the "License");
 # ...
 """
-Tests for Resources, Hooks, and MESSAGE command flow.
+Tests for Resources and lifecycle hooks.
 
 These tests validate the new features added to support agent communication:
 1. Resources - Type-safe dependency injection
 2. Hooks - Lifecycle callbacks
-3. MESSAGE CommandType - Agent-to-agent communication via broker
 """
 
 from dataclasses import dataclass
@@ -18,8 +17,6 @@ import pytest
 import pytest_asyncio
 from daft import DataFrame, col
 
-from archetype.app.broker import CommandBroker
-from archetype.app.models import Command, CommandType
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.aio.async_system import AsyncSystem
 from archetype.core.aio.async_world import AsyncWorld
@@ -513,169 +510,3 @@ class TestResourcesInProcessor:
             rows = df.collect().to_pylist()
             assert len(rows) == 1
             assert rows[0]["position__x"] == 5
-
-
-# =============================================================================
-# MESSAGE Command Tests
-# =============================================================================
-
-
-class TestMessageCommand:
-    """Tests for MESSAGE CommandType."""
-
-    @pytest.mark.asyncio
-    async def test_message_command_enqueue_dequeue(self):
-        """MESSAGE commands can be enqueued and dequeued."""
-        broker = CommandBroker()
-
-        cmd = Command(
-            type=CommandType.MESSAGE,
-            payload={
-                "sender_id": 1,
-                "receiver_id": 2,
-                "content": "Hello!",
-            },
-        )
-        await broker.enqueue("world1", cmd)
-
-        pending = await broker.get_pending_count("world1")
-        assert pending == 1
-
-        dequeued = await broker.dequeue("world1")
-        assert len(dequeued) == 1
-        assert dequeued[0].type == CommandType.MESSAGE
-        assert dequeued[0].payload["content"] == "Hello!"
-
-    @pytest.mark.asyncio
-    async def test_message_ordering_by_tick(self):
-        """Messages are ordered by tick, then priority."""
-        broker = CommandBroker()
-
-        # Enqueue in reverse tick order
-        for tick in [2, 0, 1]:
-            cmd = Command(
-                type=CommandType.MESSAGE,
-                tick=tick,
-                payload={"tick": tick},
-            )
-            await broker.enqueue("world1", cmd)
-
-        dequeued = await broker.dequeue("world1", max_items=3)
-
-        # Should come out in tick order: 0, 1, 2
-        assert [c.payload["tick"] for c in dequeued] == [0, 1, 2]
-
-    @pytest.mark.asyncio
-    async def test_broker_debug_logging(self, caplog):
-        """Broker debug mode logs operations."""
-        import logging
-
-        caplog.set_level(logging.DEBUG)
-        broker = CommandBroker(debug=True)
-
-        cmd = Command(type=CommandType.MESSAGE, payload={"test": True})
-        await broker.enqueue("world1", cmd)
-        await broker.dequeue("world1")
-
-        # Check logs contain broker events
-        log_text = caplog.text
-        assert "[broker] enqueue" in log_text
-        assert "[broker] dequeue" in log_text
-
-    @pytest.mark.asyncio
-    async def test_broker_history_tracks_messages(self):
-        """Broker maintains history of enqueued commands."""
-        broker = CommandBroker()
-
-        for i in range(3):
-            cmd = Command(
-                type=CommandType.MESSAGE,
-                payload={"index": i},
-            )
-            await broker.enqueue("world1", cmd)
-
-        history = await broker.get_history("world1")
-        assert len(history) == 3
-        assert [h.payload["index"] for h in history] == [0, 1, 2]
-
-
-# =============================================================================
-# Integration Test: Resources + Hooks + Messaging
-# =============================================================================
-
-
-class MessageSenderProcessor(AsyncProcessor):
-    """Sends a message via broker on each tick."""
-
-    components = (Position,)
-    priority = 10
-
-    async def process(
-        self, df: DataFrame, resources: Resources = None, tick: int = 0, **kwargs
-    ) -> DataFrame:
-        if resources is None:
-            return df
-
-        broker = resources.get(CommandBroker)
-        if broker:
-            cmd = Command(
-                type=CommandType.MESSAGE,
-                tick=tick,
-                payload={"sender": "processor", "tick": tick},
-            )
-            await broker.enqueue("integration_world", cmd)
-
-        return df
-
-
-class TestIntegration:
-    """Integration tests combining Resources, Hooks, and Messaging."""
-
-    @pytest.mark.asyncio
-    async def test_full_message_flow(self):
-        """Complete flow: processor sends message via broker, hook observes."""
-        # Setup
-        querier = InMemoryQuerier()
-        updater = InMemoryUpdater(querier)
-        system = AsyncSystem()
-        world = AsyncWorld(
-            world_id="test",
-            name="integration_world",
-            querier=querier,
-            updater=updater,
-            system=system,
-            resources=Resources(),
-            hooks=HookRegistry(),
-        )
-
-        broker = CommandBroker()
-        world.resources.insert(broker)
-
-        # Track hook invocations
-        hook_data = []
-
-        async def track_post_tick(event: PostTick) -> None:
-            pending = await broker.get_pending_count("integration_world")
-            hook_data.append({"tick": event.tick, "pending": pending})
-
-        world.add_hook(PostTick, track_post_tick)
-        await system.add_processor(MessageSenderProcessor())
-        await world.create_entity([Position(x=0, y=0)])
-
-        # Run 3 ticks
-        rc = RunConfig(num_steps=3)
-        await world.run(rc)
-
-        # Verify messages were enqueued each tick
-        assert len(hook_data) == 3
-
-        # Messages accumulate since nothing dequeues them
-        # After tick 1: 1 pending, after tick 2: 2 pending, after tick 3: 3 pending
-        assert hook_data[0]["pending"] == 1
-        assert hook_data[1]["pending"] == 2
-        assert hook_data[2]["pending"] == 3
-
-        # Verify broker history
-        history = await broker.get_history("integration_world")
-        assert len(history) == 3
-        assert [h.payload["tick"] for h in history] == [0, 1, 2]

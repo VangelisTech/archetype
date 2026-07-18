@@ -7,7 +7,8 @@ Every gated command has a token-cost estimate. `guardrail_allow()` enforces role
 permissions, per-tick command limits, and daily token budgets before the
 operation is accepted.
 
-The command gate is `iCommandService`; the broker is only used for tick-deferred queueing.
+The command gate is `iCommandGateway`; `iCommandScheduler` owns durable
+tick-deferred admission after authorization.
 
 ## Token Costs
 
@@ -31,7 +32,7 @@ iteration count because its internal rollouts are not gated separately:
 | `remove_hook` | 5 | Remove a hook |
 | `update` | 8 | Overlay existing component values |
 | `add_component` | 8 | Extend an entity archetype |
-| `ingest_fact` | 10 | Append a durable external fact |
+| `publish` | 10 | Append a durable external artifact |
 | `evaluate` | 10 | Claim and grade one evaluation |
 | `spawn` | 10 | Create a new entity |
 | `custom` | 10 | Submit an application-defined command |
@@ -67,7 +68,7 @@ posture in the [Specification](specification.md#durability-posture-v03-issue-276
 ## Enforcement Flow
 
 ```text
-iCommandService.<method>(ctx, ...)
+iCommandGateway.<method>(ctx, ...)
     |
 guardrail_allow(command, ctx)
   1. Role permission
@@ -77,7 +78,7 @@ guardrail_allow(command, ctx)
 delegate or reject
 ```
 
-Rejected commands are not delegated and are not enqueued.
+Rejected commands are not delegated or admitted.
 
 ## Roles and Permissions
 
@@ -108,7 +109,7 @@ At these rates, the daily budget supports substantial workloads. The per-tick li
 
 ## Source Reference
 
-The quota system is defined in `src/archetype/app/auth/guard.py` and `src/archetype/app/auth/permissions.py`:
+The quota system is defined in `src/archetype/app/gateway/auth/guard.py` and `src/archetype/app/gateway/auth/permissions.py`:
 
 - `COMMANDS_BY_ROLE`
 - command token costs

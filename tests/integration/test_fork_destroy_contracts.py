@@ -16,9 +16,9 @@ Verifies:
 import pytest
 from uuid_utils import uuid7
 
-from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import Command, CommandType
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
@@ -196,9 +196,9 @@ async def test_destroy_audit_row_preservation(tmp_path):
     storage = _storage(tmp_path)
     ctx = _admin_ctx()
     try:
-        info = await c.command_service.create_world(ctx, WorldConfig(name="aw"), storage)
-        await c.command_service.create_entity(ctx, info.world_id, [Tag(label="audited")])
-        await c.command_service.step(ctx, info.world_id, RunConfig())
+        info = await c.command_gateway.create_world(ctx, WorldConfig(name="aw"), storage)
+        await c.command_gateway.create_entity(ctx, info.world_id, [Tag(label="audited")])
+        await c.command_gateway.step(ctx, info.world_id, RunConfig())
 
         # Audit rows should exist
         audit_df_before = await c.audit_log.query(world_id=info.world_id)
@@ -206,7 +206,7 @@ async def test_destroy_audit_row_preservation(tmp_path):
         assert rows_before >= 1
 
         # Destroy
-        await c.command_service.destroy_world(ctx, info.world_id)
+        await c.command_gateway.destroy_world(ctx, info.world_id)
 
         # Audit rows must survive (append-only). The destroy itself adds a row too.
         audit_df_after = await c.audit_log.query(world_id=info.world_id)
@@ -217,34 +217,35 @@ async def test_destroy_audit_row_preservation(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 5. Destroy clears only the target world's broker state
+# 5. Destroy terminally settles only the target world's pending commands
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_gated_destroy_clears_only_target_world_broker_state(tmp_path):
-    """Gated destroy removes the target queue/history without touching a sibling."""
+async def test_gated_destroy_rejects_only_target_world_pending_commands(tmp_path):
+    """Destroy preserves durable history and leaves sibling commands untouched."""
     c = ServiceContainer()
     storage = _storage(tmp_path)
     ctx = _admin_ctx()
     try:
-        target = await c.command_service.create_world(ctx, WorldConfig(name="target"), storage)
-        sibling = await c.command_service.create_world(ctx, WorldConfig(name="sibling"), storage)
+        target = await c.command_gateway.create_world(ctx, WorldConfig(name="target"), storage)
+        sibling = await c.command_gateway.create_world(ctx, WorldConfig(name="sibling"), storage)
 
         target_command = Command(type=CommandType.CUSTOM)
         sibling_command = Command(type=CommandType.CUSTOM)
-        await c.command_service.submit(ctx, target.world_id, target_command)
-        await c.command_service.submit(ctx, sibling.world_id, sibling_command)
+        await c.command_gateway.submit(ctx, target.world_id, target_command)
+        await c.command_gateway.submit(ctx, sibling.world_id, sibling_command)
 
-        assert await c.broker.get_pending_count(target.world_id) == 1
-        assert await c.broker.get_pending_count(sibling.world_id) == 1
+        assert await c.command_scheduler.pending_count(target.world_id) == 1
+        assert await c.command_scheduler.pending_count(sibling.world_id) == 1
 
-        await c.command_service.destroy_world(ctx, target.world_id)
+        await c.command_gateway.destroy_world(ctx, target.world_id)
 
-        assert await c.broker.get_pending_count(target.world_id) == 0
-        assert await c.broker.get_history(target.world_id) == []
-        assert await c.broker.get_pending_count(sibling.world_id) == 1
-        assert [command.id for command in await c.broker.get_history(sibling.world_id)] == [
+        assert await c.command_scheduler.pending_count(target.world_id) == 0
+        target_records = await c.command_scheduler.records(target.world_id)
+        assert [record.status for record in target_records] == ["REJECTED"]
+        assert await c.command_scheduler.pending_count(sibling.world_id) == 1
+        assert [command.id for command in await c.command_scheduler.history(sibling.world_id)] == [
             sibling_command.id
         ]
         assert c.world_service.get_world(sibling.world_id).world_id == sibling.world_id
@@ -316,9 +317,9 @@ async def test_audit_row_monotonicity(tmp_path):
         high_water = 0
 
         for i in range(3):
-            info = await c.command_service.create_world(ctx, WorldConfig(name=f"mono-{i}"), storage)
-            await c.command_service.create_entity(ctx, info.world_id, [Tag(label=f"m{i}")])
-            await c.command_service.step(ctx, info.world_id, RunConfig())
+            info = await c.command_gateway.create_world(ctx, WorldConfig(name=f"mono-{i}"), storage)
+            await c.command_gateway.create_entity(ctx, info.world_id, [Tag(label=f"m{i}")])
+            await c.command_gateway.step(ctx, info.world_id, RunConfig())
 
             # Check monotonicity after operations
             current = (await c.audit_log.query()).count_rows()
@@ -326,7 +327,7 @@ async def test_audit_row_monotonicity(tmp_path):
             high_water = current
 
             # Destroy
-            await c.command_service.destroy_world(ctx, info.world_id)
+            await c.command_gateway.destroy_world(ctx, info.world_id)
 
             # Check monotonicity after destroy
             current = (await c.audit_log.query()).count_rows()
@@ -631,7 +632,7 @@ async def test_destroyed_fork_ancestry_remains_resolvable(tmp_path):
         fork_world_id, fork_run_id = str(fork.world_id), str(fork.run_id)
         expected_lineage = list(fork.lineage)
 
-        await c.command_service.destroy_world(ctx, fork.world_id)
+        await c.command_gateway.destroy_world(ctx, fork.world_id)
 
         # Persisted lineage is recoverable without the live world object
         recovered = await c.query_service.get_lineage(
@@ -640,7 +641,7 @@ async def test_destroyed_fork_ancestry_remains_resolvable(tmp_path):
         assert recovered == expected_lineage
 
         # Gated read on the dead fork still includes the pre-fork tick
-        df = await c.command_service.query_components(
+        df = await c.command_gateway.query_components(
             ctx,
             [Score],
             fork_world_id,

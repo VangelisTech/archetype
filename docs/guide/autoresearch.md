@@ -85,7 +85,7 @@ storage:
   before resume
 
 ```python
-from archetype.app.autoresearch_service import AutoResearchConfig, EvaluationResult
+from archetype.app.research.contracts import AutoResearchConfig, EvaluationResult
 
 
 async def prepare_candidate(context):

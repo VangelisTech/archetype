@@ -61,7 +61,7 @@ nav:
       - Storage: guide/stores.md
       - Configuration: guide/run-config.md
   - ADVANCED GUIDES:
-      - Service Hosting: guide/app-overview.md
+      - Application Internals: guide/app-overview.md
       - Custom Commands: guide/custom-commands.md
       - Access Control and Audit: guide/command-gate.md
       - Token Quotas: guide/token-quotas.md
@@ -80,7 +80,7 @@ nav:
           - Hooks and Identity: reference/python/hooks.md
           - Configuration: reference/python/configuration.md
           - AutoResearch and Evaluation: reference/python/autoresearch.md
-          - Service Integration: reference/python/services.md
+          - Command Models: reference/python/commands.md
           - Core Engine: reference/python/core.md
           - Storage Backends: reference/python/storage.md
           - Compatibility: reference/python/compatibility.md
@@ -89,7 +89,9 @@ nav:
   - DEVELOPMENT:
       - Contributing: guide/contributing.md
       - API Stability and Docstrings: guide/api-stability.md
+      - Contract Traceability: reference/contract-traceability.md
       - Architecture Overview: guide/architecture.md
+      - Application Architecture: guide/application-architecture.md
       - Runtime Contract: guide/runtime.md
       - Specifications: guide/specification.md
       - Service Protocols: guide/service-protocols.md
@@ -97,7 +99,7 @@ nav:
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
       - Atomic Visibility: guide/atomic-visibility.md
-      - Durable Facts: guide/durable-facts.md
+      - Artifacts: guide/artifacts.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Repository Harness: guide/repository-harness.md
@@ -111,7 +113,7 @@ nav:
           - Queries: guide/querier.md
           - Updates: guide/updater.md
           - Data Flow: guide/data-flow.md
-          - Command Broker: guide/broker.md
+          - Durable Commands: guide/durable-commands.md
           - Services: guide/services.md
       - Rust Core Plan: guide/rust-core-plan.md
 

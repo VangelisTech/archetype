@@ -15,7 +15,7 @@ This invariant is load-bearing for time-travel queries, audit integrity, fork pe
 
 ## 2. World lifecycle operations
 
-Three operations on `iWorldService`, plus their gated proxies on `iCommandService`:
+Three operations on `iWorldService`, plus their gated proxies on `iCommandGateway`:
 
 | Operation | What it does |
 |---|---|
@@ -34,7 +34,7 @@ async def create_world(
     system: iAsyncSystem | None = None,
 ) -> iWorld: ...
 
-# iCommandService (returns WorldInfo; downgrade at gate boundary)
+# iCommandGateway (returns WorldInfo; downgrade at gate boundary)
 async def create_world(
     ctx: ActorCtx,
     config: WorldConfig,
@@ -45,13 +45,16 @@ async def create_world(
 
 `WorldConfig` is serializable: `world_id`, `run_id`, `name`, `tick`, `next_entity_id`, dictionaries for `entity2sig`, `spawn_cache`, `despawn_cache`, plus `lineage` (fork ancestry read segments, see §4.6). NOTHING ELSE.
 
-Processors, resources, and hooks are arbitrary Python objects; they do NOT go in `WorldConfig`. The runtime wires them at activation through dedicated gated paths:
+Processors, resources, and hooks are arbitrary Python objects; they do NOT go
+in `WorldConfig`. Trusted scripts wire them through dedicated `RuntimeWorld`
+methods; untrusted adapters use the corresponding gateway methods:
 
-- `iCommandService.add_processor(ctx, world_id, processor)`
-- `iCommandService.add_resource(ctx, world_id, resource)`
-- `iCommandService.add_hook(ctx, world_id, event_type, fn)`
+- `world.add_processor(processor)` / `iCommandGateway.add_processor(...)`
+- `world.add_resource(resource)` / `iCommandGateway.add_resource(...)`
+- `world.add_hook(event_type, fn)` / `iCommandGateway.add_hook(...)`
 
-Each is one gated call, one audit row.
+Each untrusted gateway call has one authorization decision and one access-audit
+attempt. Trusted runtime calls do not fabricate either.
 
 ## 4. `fork_world`
 
@@ -129,7 +132,7 @@ Contract tests: `tests/integration/test_fork_destroy_contracts.py` (§8 fork lin
 
 ### 4.7 — Audit emission
 
-`iCommandService.fork_world` emits one audit row with:
+`iCommandGateway.fork_world` emits one audit row with:
 
 - `command_type = "fork_world"`
 - `payload_json = {"source_world_id": ..., "fork_world_id": ..., "name": ..., "tick_at_fork": ...}`
@@ -144,18 +147,20 @@ In-memory cleanup. Drops the live `iWorld` instance from the registry. Persisted
 # iWorldService
 async def destroy_world(world_id: str | UUID) -> None: ...
 
-# iCommandService (orchestrates cross-service cleanup)
+# iCommandGateway (orchestrates cross-service cleanup)
 async def destroy_world(ctx: ActorCtx, world_id: str | UUID) -> None: ...
 ```
 
-### 5.1 — `iCommandService.destroy_world` steps, in order
+### 5.1 — Authorized application destroy, in order
 
-1. Fire `OnDestroy` hook on the world (typed event in `core/hooks.py`). Handlers may read final state but MUST NOT submit commands; the world is closing.
-2. Flush any buffered audit rows for this world via `iAuditLog.flush()`. (Flush ≠ delete — rows are written to permanent storage; nothing is dropped.)
-3. Cancel pending in-memory broker commands for this world via `iCommandBroker.clear(world_id)`.
-4. Take the world's `op_lock`; await any in-flight `step()` to complete (wait-then-destroy).
-5. Call `iWorldService.destroy_world(world_id)` — removes from registry.
-6. Emit ONE audit row recording the destroy.
+1. `CommandGateway` authorizes the call, then delegates.
+2. `RuntimeApplication` takes the per-world operation lock, waiting for an
+   in-flight step or mutation to finish.
+3. `iCommandScheduler.cancel_world(world_id)` terminally rejects unsettled
+   durable commands and appends their outbox events.
+4. `iWorldService.destroy_world(world_id)` fires `OnDestroy`, removes the live
+   world, and marks its durable catalog record destroyed.
+5. `CommandGateway` attempts one access-audit row for the destroy call.
 
 ### 5.2 — `iWorldService.destroy_world` steps
 
@@ -163,7 +168,9 @@ async def destroy_world(ctx: ActorCtx, world_id: str | UUID) -> None: ...
 2. Fire `OnDestroy` via the world's hook bus.
 3. Remove from `WorldRegistry`.
 
-`iWorldService.destroy_world` is the registry-level primitive. The cross-service cleanup (broker.clear, audit.flush) is `iCommandService`'s concern; `iWorldService` doesn't have references to the broker or audit log.
+`iWorldService.destroy_world` is the lifecycle primitive. Cross-family command
+cancellation and operation serialization belong to `RuntimeApplication`; the
+gateway only authorizes and delegates.
 
 ### 5.3 — What destroy_world is NOT
 
@@ -201,7 +208,7 @@ async def open_world_mutable(
     world_id: str | UUID,
 ) -> AsyncWorld: ...
 
-# iCommandService (returns WorldInfo; downgrade at gate boundary)
+# iCommandGateway (returns WorldInfo; downgrade at gate boundary)
 async def resume_world(
     ctx: ActorCtx,
     storage_config: StorageConfig,
@@ -215,8 +222,8 @@ world = await runtime.resume(world_id, storage=...)
 Resume reconstructs a live, writable world from durable state in a process
 that shares nothing with the previous writer but the storage config:
 
-- **Tick** — the last manifest tick + 1, never from fact claims or rows:
-  neither a visible fact nor a crashed attempt's unpublished rows may
+- **Tick** — the last manifest tick + 1, never from artifact claims or rows:
+  neither a visible artifact nor a crashed attempt's unpublished rows may
   advance the simulation head.
 - **Entity directory** — the latest visible row per entity across every
   catalog table decides its archetype and liveness; `next_entity_id`
@@ -298,11 +305,11 @@ class ResourceInfo(BaseModel):
 
 | Internal return | Gate return |
 |---|---|
-| `iWorldService.create_world → iWorld` | `iCommandService.create_world → WorldInfo` |
-| `iWorldService.fork_world → iWorld` | `iCommandService.fork_world → WorldInfo` |
-| `iWorldService.list_processors → list[iAsyncProcessor]` | `iCommandService.list_processors → list[ProcessorInfo]` |
-| `iWorldService.list_hooks → list[HookHandle]` | `iCommandService.list_hooks → list[HookInfo]` |
-| `iWorldService.list_resources → list[object]` | `iCommandService.list_resources → list[ResourceInfo]` |
+| `iWorldService.create_world → iWorld` | `iCommandGateway.create_world → WorldInfo` |
+| `iWorldService.fork_world → iWorld` | `iCommandGateway.fork_world → WorldInfo` |
+| `iWorldService.list_processors → list[iAsyncProcessor]` | `iCommandGateway.list_processors → list[ProcessorInfo]` |
+| `iWorldService.list_hooks → list[HookHandle]` | `iCommandGateway.list_hooks → list[HookInfo]` |
+| `iWorldService.list_resources → list[object]` | `iCommandGateway.list_resources → list[ResourceInfo]` |
 
 The downgrade happens at the gate's return statement. Live objects (iWorld, iAsyncProcessor instances, callables, user resources) never escape past the gate.
 

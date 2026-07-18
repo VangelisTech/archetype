@@ -4,7 +4,7 @@
 """Immutable vocabulary for dataset identity and evaluation composition.
 
 These types describe identity and cardinality. They are not ECS components,
-typed-fact row schemas, or the trial execution lifecycle tracked by issue
+typed artifact row schemas, or the trial execution lifecycle tracked by issue
 #322. Adapters keep dataset coordinates and runtime provenance side by side
 instead of substituting one for the other.
 """

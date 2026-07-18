@@ -18,8 +18,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from uuid_utils import uuid7
 
 from archetype import _obs
-from archetype.app.auth.models import ActorCtx
 from archetype.app.container import ServiceContainer
+from archetype.app.gateway.auth.models import ActorCtx
 from archetype.core.config import WorldConfig
 
 
@@ -69,8 +69,8 @@ def test_gate_operations_emit_otel_spans(monkeypatch):
     async def drive() -> None:
         c = ServiceContainer()
         try:
-            info = await c.command_service.create_world(ctx, WorldConfig(name="obs"), None, None)
-            await c.command_service.get_world_info(ctx, info.world_id)
+            info = await c.command_gateway.create_world(ctx, WorldConfig(name="obs"), None, None)
+            await c.command_gateway.get_world_info(ctx, info.world_id)
         finally:
             await c.shutdown()
 
