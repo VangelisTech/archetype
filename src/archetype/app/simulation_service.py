@@ -76,6 +76,16 @@ class SimulationService:
         **input_kwargs,
     ) -> int:
         """Advance a world by one tick."""
+        async with self._world_service.operation(world_id):
+            return await self._step(world_id, run_config, **input_kwargs)
+
+    async def _step(
+        self,
+        world_id: str | UUID,
+        run_config: RunConfig,
+        **input_kwargs,
+    ) -> int:
+        """Advance one tick while the caller owns the world operation lock."""
         # A new tick begins: clear the per-actor per-tick command quota so the
         # gate's budget is per-tick, not per-process. The gate debits the
         # counter at submit time and nothing else clears it (bug B1) — the
@@ -112,23 +122,24 @@ class SimulationService:
         (per the "first run pins" semantics that keep cross-run state
         continuity intact).
         """
-        world = self._world_service.get_world(UUID(str(world_id)))
+        async with self._world_service.operation(world_id):
+            world = self._world_service.get_world(UUID(str(world_id)))
 
-        if isinstance(world, AsyncWorld) and not world.run_id:
-            world.run_id = str(run_config.run_id)
+            if isinstance(world, AsyncWorld) and not world.run_id:
+                world.run_id = str(run_config.run_id)
 
-        commands_applied = 0
-        for _ in range(run_config.num_steps):
-            commands_applied += await self.step(world_id, run_config, **input_kwargs)
+            commands_applied = 0
+            for _ in range(run_config.num_steps):
+                commands_applied += await self._step(world_id, run_config, **input_kwargs)
 
-        active_run_id = getattr(world, "run_id", None) or run_config.run_id
-        return RunResult(
-            run_id=active_run_id,
-            world_id=world_id,
-            ticks_completed=run_config.num_steps,
-            commands_applied=commands_applied,
-            final_tick=getattr(world, "tick", 0),
-        )
+            active_run_id = getattr(world, "run_id", None) or run_config.run_id
+            return RunResult(
+                run_id=active_run_id,
+                world_id=world_id,
+                ticks_completed=run_config.num_steps,
+                commands_applied=commands_applied,
+                final_tick=getattr(world, "tick", 0),
+            )
 
     async def run_episode(
         self,
@@ -144,6 +155,16 @@ class SimulationService:
         the value-based "all done" contract is checked after each step against
         persisted rows.
         """
+        async with self._world_service.operation(world_id):
+            return await self._run_episode(world_id, config, **input_kwargs)
+
+    async def _run_episode(
+        self,
+        world_id: str | UUID,
+        config: EpisodeConfig,
+        **input_kwargs,
+    ) -> EpisodeResult:
+        """Run an episode while the caller owns the world operation lock."""
         world = self._world_service.get_world(UUID(str(world_id)))
         if not isinstance(world, AsyncWorld):
             raise TypeError("run_episode requires AsyncWorld")
@@ -170,7 +191,7 @@ class SimulationService:
                 terminated = True
                 break
 
-            await self.step(world_id, config.run_config, **input_kwargs)
+            await self._step(world_id, config.run_config, **input_kwargs)
             step_count += 1
 
             # Post-step value-based check: terminate once entities carrying
@@ -238,6 +259,16 @@ class SimulationService:
         Forks go through WorldService directly — not gated.
         The rollout is the audit unit, not each fork.
         """
+        async with self._world_service.operation(world_id):
+            return await self._run_rollout(world_id, config, **input_kwargs)
+
+    async def _run_rollout(
+        self,
+        world_id: str | UUID,
+        config: RolloutConfig,
+        **input_kwargs,
+    ) -> RolloutResult:
+        """Run a rollout while the caller owns the base-world operation lock."""
         base = self._world_service.get_world(UUID(str(world_id)))
 
         async def _run_one(i: int) -> EpisodeResult:

@@ -86,7 +86,7 @@ reason = "Bounded control-plane history extract: deterministic Run ids and termi
 
 [[entries]]
 path = "src/archetype/app/simulation_service.py"
-line = 221
+line = 242
 method = "to_pylist"
 reason = "Episode-termination boundary: the value-based 'all entities done' check is reduced in Daft to a single (n_done, n_total) row, then materialized so the all/any decision can enter Python control flow and break the run_episode loop; a Python bool cannot remain a lazy Daft expression."
 
@@ -146,7 +146,7 @@ reason = "Bundle index idempotency boundary: rows are already filtered lazily to
 
 [[entries]]
 path = "src/archetype/app/world_service.py"
-line = 703
+line = 731
 method = "to_pylist"
 reason = "Resume-time entity-directory extract (issue #273 A1-resume): the latest visible row per entity — already reduced in Daft to one (entity_id, tick, is_active) row per entity via groupby-max + join — must enter Python control flow to become the entity2sig registry and next_entity_id counter that route all subsequent mutations; imperative world reconstruction at the cold-resume boundary, bounded by live entity count, not a downstream dataframe computation."
 

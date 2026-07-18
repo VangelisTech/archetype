@@ -150,18 +150,25 @@ async def destroy_world(ctx: ActorCtx, world_id: str | UUID) -> None: ...
 
 ### 5.1 — `iCommandService.destroy_world` steps, in order
 
-1. Fire `OnDestroy` hook on the world (typed event in `core/hooks.py`). Handlers may read final state but MUST NOT submit commands; the world is closing.
+1. Mark the world closing. No new `step()`, `run()`, episode, or rollout may be
+   admitted after this point.
 2. Flush any buffered audit rows for this world via `iAuditLog.flush()`. (Flush ≠ delete — rows are written to permanent storage; nothing is dropped.)
 3. Cancel pending in-memory broker commands for this world via `iCommandBroker.clear(world_id)`.
-4. Take the world's `op_lock`; await any in-flight `step()` to complete (wait-then-destroy).
-5. Call `iWorldService.destroy_world(world_id)` — removes from registry.
+4. Take the app-owned per-world operation lock and await any operation admitted
+   before step 1 (wait-then-destroy). The same lock guards direct service and API
+   traffic; runtime-handle locking is not the serialization boundary.
+5. Call `iWorldService.destroy_world(world_id)`. While holding the operation
+   lock it fires `OnDestroy` and removes the world from the registry. Hook
+   handlers may read final state but MUST NOT submit commands; the world is
+   closing.
 6. Emit ONE audit row recording the destroy.
 
 ### 5.2 — `iWorldService.destroy_world` steps
 
 1. Resolve world from registry; return early if absent (idempotent).
-2. Fire `OnDestroy` via the world's hook bus.
-3. Remove from `WorldRegistry`.
+2. Mark the world closing and acquire its app-owned operation lock.
+3. Fire `OnDestroy` via the world's hook bus.
+4. Remove from `WorldRegistry` and mark its durable catalog row destroyed.
 
 `iWorldService.destroy_world` is the registry-level primitive. The cross-service cleanup (broker.clear, audit.flush) is `iCommandService`'s concern; `iWorldService` doesn't have references to the broker or audit log.
 

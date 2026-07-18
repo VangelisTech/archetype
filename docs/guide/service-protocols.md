@@ -98,6 +98,14 @@ async def run_rollout(world_id, config: RolloutConfig, **kw) -> RolloutResult
 
 Episode and rollout semantics: `execution-hierarchy.md`. `run_rollout` calls `iWorldService.fork_world` directly for each fork; those fork operations are not gated individually.
 
+The concrete app service owns one operation lock per live world. Each public
+`step`, `run`, `run_episode`, or `run_rollout` holds that world's lock for the
+entire call; private tick helpers do not reacquire it. This makes direct service
+and FastAPI calls share the same serialization boundary, while operations on
+different world IDs remain independent. Destroy closes admission before waiting
+on the same lock, so admitted execution completes and later execution is
+rejected.
+
 ### `iQueryService`
 
 Direct read path to storage. Independent of `iWorldService`.

@@ -397,6 +397,7 @@ class CommandService:
         world_id: str | UUID,
     ) -> None:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
+        self._worlds.start_destroy(world_id)
         if self._audit:
             await self._audit.flush()
         await self._broker.clear(world_id)

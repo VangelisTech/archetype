@@ -27,6 +27,7 @@ import asyncio
 import logging
 import os
 import socket
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -310,6 +311,27 @@ class WorldService:
         # can default to "same store as source" per world-lifecycle.md § 4.5.
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
         self._create_locks: dict[str, asyncio.Lock] = {}
+        self._operation_locks: dict[str, asyncio.Lock] = {}
+        self._closing_worlds: set[str] = set()
+
+    @asynccontextmanager
+    async def operation(self, world_id: str | UUID):
+        """Serialize one admitted operation against a live world."""
+        from archetype.app.errors import WorldNotFoundError
+
+        key = str(world_id)
+        if key in self._closing_worlds:
+            raise WorldNotFoundError(world_id)
+        lock = self._operation_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key in self._closing_worlds or not self.has_world(world_id):
+                raise WorldNotFoundError(world_id)
+            yield
+
+    def start_destroy(self, world_id: str | UUID) -> None:
+        """Stop admitting new operations while destroy waits for admitted work."""
+        if self.has_world(world_id):
+            self._closing_worlds.add(str(world_id))
 
     async def create_world(
         self,
@@ -459,11 +481,17 @@ class WorldService:
         storage_record(). The catalog marks status — append-only holds in
         the control plane too; nothing is deleted.
         """
-        await self._orchestrator.destroy_world(world_id)
-        record = self._storage_configs.get(str(world_id))
-        if record is not None:
-            catalog = self._storage_service.get_control_catalog(record[0])
-            await catalog.set_world_status(str(world_id), "destroyed")
+        key = str(world_id)
+        if not self.has_world(world_id):
+            return
+        self.start_destroy(world_id)
+        lock = self._operation_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            await self._orchestrator.destroy_world(world_id)
+            record = self._storage_configs.get(key)
+            if record is not None:
+                catalog = self._storage_service.get_control_catalog(record[0])
+                await catalog.set_world_status(key, "destroyed")
 
     # ── Durable discovery (issue #272) ───────────────────────────────────────
 

@@ -6,17 +6,22 @@
 import asyncio
 
 import pytest
+from daft import DataFrame, col
 from uuid_utils import uuid7
 
 from archetype.app.artifact_service import ArtifactService
 from archetype.app.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.app.auth.models import ActorCtx
 from archetype.app.broker import CommandBroker
 from archetype.app.command_service import CommandService
 from archetype.app.container import ServiceContainer
+from archetype.app.errors import WorldNotFoundError
+from archetype.app.models import EpisodeConfig, RolloutConfig
 from archetype.app.query_service import QueryService
 from archetype.app.simulation_service import SimulationService
 from archetype.app.storage_service import StorageService
 from archetype.app.world_service import WorldService
+from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from tests.conftest import make_world_service
@@ -24,6 +29,23 @@ from tests.conftest import make_world_service
 
 class _ListWorldsPos(Component):
     x: int = 0
+
+
+class _SerializedCounter(Component):
+    value: int = 0
+
+
+class _BlockingIncrement(AsyncProcessor):
+    components = (_SerializedCounter,)
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def process(self, df: DataFrame, **kwargs) -> DataFrame:
+        self.entered.set()
+        await self.release.wait()
+        return df.with_column("_serializedcounter__value", col("_serializedcounter__value") + 1)
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +109,216 @@ class TestSimulationService:
 
             result = await container.simulation_service.step(world.world_id, RunConfig())
             assert result == 0
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_same_world_steps_publish_distinct_ticks(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="serialized_steps")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            first = asyncio.create_task(
+                container.simulation_service.step(world.world_id, RunConfig())
+            )
+            await processor.entered.wait()
+            second = asyncio.create_task(
+                container.simulation_service.step(world.world_id, RunConfig())
+            )
+            processor.release.set()
+            await asyncio.gather(first, second)
+
+            catalog = container.storage_service.get_control_catalog(storage)
+            manifest_tick = await catalog.max_manifest_tick(str(world.world_id), str(world.run_id))
+            rows = (
+                await container.query_service.query_components(
+                    [_SerializedCounter],
+                    str(world.world_id),
+                    str(world.run_id),
+                    storage,
+                    ticks=[0, 1, 2],
+                )
+            ).to_pylist()
+
+            assert world.tick == manifest_tick + 1 == 3
+            assert sorted((row["tick"], row["_serializedcounter__value"]) for row in rows) == [
+                (0, 0),
+                (1, 1),
+                (2, 2),
+            ]
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_waits_for_admitted_step_and_closes_admission(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="destroy_waits")
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        try:
+            info = await container.command_service.create_world(
+                ctx, WorldConfig(name="test"), storage
+            )
+            await container.command_service.create_entity(
+                ctx, info.world_id, [_SerializedCounter()]
+            )
+            await container.command_service.step(ctx, info.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.command_service.add_processor(ctx, info.world_id, processor)
+
+            step = asyncio.create_task(
+                container.command_service.step(ctx, info.world_id, RunConfig())
+            )
+            await processor.entered.wait()
+            destroy = asyncio.create_task(
+                container.command_service.destroy_world(ctx, info.world_id)
+            )
+            await asyncio.sleep(0)
+            assert not destroy.done()
+
+            processor.release.set()
+            await asyncio.gather(step, destroy)
+
+            with pytest.raises(WorldNotFoundError):
+                await container.command_service.step(ctx, info.world_id, RunConfig())
+            record = await container.storage_service.get_control_catalog(storage).get_world(
+                str(info.world_id)
+            )
+            assert record is not None
+            assert record.status == "destroyed"
+            assert record.tick_head == 1
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_run_holds_serial_order_for_its_full_tick_sequence(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="serialized_run")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            run = asyncio.create_task(
+                container.simulation_service.run(world.world_id, RunConfig(num_steps=2))
+            )
+            await processor.entered.wait()
+            step = asyncio.create_task(
+                container.simulation_service.step(world.world_id, RunConfig())
+            )
+            await asyncio.sleep(0)
+            assert not step.done()
+
+            processor.release.set()
+            run_result, _commands_applied = await asyncio.gather(run, step)
+
+            assert run_result.final_tick == 3
+            assert world.tick == 4
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_waits_for_admitted_episode(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="serialized_episode")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            episode = asyncio.create_task(
+                container.simulation_service.run_episode(
+                    world.world_id,
+                    EpisodeConfig(max_steps=2),
+                )
+            )
+            await processor.entered.wait()
+            destroy = asyncio.create_task(container.world_service.destroy_world(world.world_id))
+            await asyncio.sleep(0)
+            assert not destroy.done()
+
+            processor.release.set()
+            result, _destroyed = await asyncio.gather(episode, destroy)
+
+            assert result.duration_steps == 2
+            assert not container.world_service.has_world(world.world_id)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_waits_for_admitted_rollout(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="serialized_rollout")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            rollout = asyncio.create_task(
+                container.simulation_service.run_rollout(
+                    world.world_id,
+                    RolloutConfig(
+                        num_episodes=1,
+                        episode_config=EpisodeConfig(max_steps=1),
+                        destroy_forks_on_complete=True,
+                    ),
+                )
+            )
+            await processor.entered.wait()
+            destroy = asyncio.create_task(container.world_service.destroy_world(world.world_id))
+            await asyncio.sleep(0)
+            assert not destroy.done()
+
+            processor.release.set()
+            result, _destroyed = await asyncio.gather(rollout, destroy)
+
+            assert result.num_episodes == 1
+            assert not container.world_service.has_world(world.world_id)
+            assert all(
+                not container.world_service.has_world(episode.world_id)
+                for episode in result.episodes
+            )
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_steps_on_different_worlds_remain_concurrent(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="independent_worlds")
+        try:
+            worlds = [
+                await container.world_service.create_world(WorldConfig(name=f"world-{i}"), storage)
+                for i in range(2)
+            ]
+            processors = [_BlockingIncrement(), _BlockingIncrement()]
+            for world, processor in zip(worlds, processors, strict=True):
+                await container.mutation_service.create_entity(
+                    world.world_id, [_SerializedCounter()]
+                )
+                await container.simulation_service.step(world.world_id, RunConfig())
+                await container.mutation_service.add_processor(world.world_id, processor)
+
+            steps = [
+                asyncio.create_task(container.simulation_service.step(world.world_id, RunConfig()))
+                for world in worlds
+            ]
+            async with asyncio.timeout(1):
+                await asyncio.gather(*(processor.entered.wait() for processor in processors))
+            for processor in processors:
+                processor.release.set()
+            await asyncio.gather(*steps)
+
+            assert [world.tick for world in worlds] == [2, 2]
         finally:
             await container.shutdown()
 
