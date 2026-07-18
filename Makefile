@@ -8,6 +8,7 @@ SHELL := /bin/bash
 
 PYTHONPATH ?= src
 VERSION := $(shell grep -m1 'version = ' pyproject.toml | cut -d'"' -f2)
+RUFF_PATHS := src tests evals bench scripts/check_*.py
 
 .PHONY: help
 help:
@@ -34,14 +35,14 @@ help:
 	@echo "  make mutmut-browse  Interactive TUI to inspect surviving mutants"
 	@echo "  make mutmut-clean   Remove mutmut cache and generated mutants"
 	@echo ""
-	@echo "Benchmarks & Evals:"
+	@echo "Repository Harness:"
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make bench-query    Run QueryService latency benchmarks"
-	@echo "  make eval           Run all eval suites"
-	@echo "  make eval-reg       Run regression suite only"
-	@echo "  make eval-idem      Run idempotency suite only"
-	@echo "  make eval-cap       Run capability suite only"
+	@echo "  make eval           Run all repository-check groups"
+	@echo "  make eval-reg       Run regression checks only"
+	@echo "  make eval-idem      Run idempotency checks only"
+	@echo "  make eval-cap       Run broad capability scenarios only"
 	@echo "  make test-infra     Run external-infrastructure tests (requires configured service)"
 	@echo ""
 	@echo "Build & Release:"
@@ -78,25 +79,19 @@ sync-dev:
 
 .PHONY: format
 format:
-	@uv run ruff format src tests evals/suites/idempotency.py \
-		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
-		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
+	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
 lint: lazy-audit api-boundary-audit idempotency-audit gate-coverage-audit
-	@uv run ruff check src tests evals/suites/idempotency.py \
-		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
-		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
+	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
 lint-fix:
-	@uv run ruff check src tests --fix
+	@uv run ruff check $(RUFF_PATHS) --fix
 
 .PHONY: format-check
 format-check:
-	@uv run ruff format --check src tests evals/suites/idempotency.py \
-		evals/suites/idempotency_durable.py evals/suites/idempotency_process.py \
-		evals/infra/idempotency_worker.py scripts/check_idempotency_contracts.py
+	@uv run ruff format --check $(RUFF_PATHS)
 
 .PHONY: check
 check: format lint
@@ -174,7 +169,7 @@ test-all:
 	@PYTHONPATH=$(PYTHONPATH) uv run pytest -v --tb=short
 
 .PHONY: ci
-ci: format-check lint lock-check test-cov eval-reg eval-idem
+ci: format-check lint lock-check test-cov
 	@echo "CI gate passed"
 
 # Mutation testing (mutmut). Not part of `make ci` — each mutation runs the
@@ -198,7 +193,7 @@ mutmut-clean:
 	@rm -rf mutants/ .mutmut-cache
 
 # ------------------------------------------------------------------------------
-# Benchmarks & Evals
+# Repository harness
 # ------------------------------------------------------------------------------
 
 .PHONY: bench

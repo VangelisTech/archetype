@@ -25,6 +25,7 @@ The current contract set is split across design docs and executable tests.
 | [Durable Facts](durable-facts.md) | External-fact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-fact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
+| [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
 | [`tests/app/test_runtime_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_contracts.py) | Executable runtime contracts | Enforces activation single-flight, runtime-vs-world lifetime, fork isolation, spawn visibility, governance, and smoke paths. |
 | [`tests/app/test_runtime_fork_storage.py`](https://github.com/VangelisTech/archetype/blob/main/tests/app/test_runtime_fork_storage.py) | Runtime fork storage contracts | Enforces fork storage inheritance through the runtime layer, lineage reads on fork handles, fork run_id minting, and gate-side storage resolution. |
 | [`tests/sync/test_sync_stack_contracts.py`](https://github.com/VangelisTech/archetype/blob/main/tests/sync/test_sync_stack_contracts.py) | Executable sync engine contracts | Enforces store/querier/updater/world behavior, mutation materialization, component migration, and despawn semantics. |
@@ -984,7 +985,7 @@ behavior and an executable oracle.
 | 5 | Resolved | Spawn, despawn, and component migration hooks fire from their public mutation paths with the documented queue-time semantics. | `tests/core/test_resources_hooks_messaging.py`; `tests/core/test_batch_spawn_contract.py`; `tests/sync/test_sync_world.py` |
 | 6 | Resolved | `QueryService` performs durable archetype, component, lineage, signature, and audit-backed history reads. | `tests/app/test_atomic_visibility.py`; `tests/app/test_runtime_fork_storage.py`; `tests/app/test_audit_contracts.py` |
 | 7 | Resolved | Gated destroy clears only the target world's broker state and preserves shared runtime and durable state. | `tests/integration/test_fork_destroy_contracts.py` |
-| 8 | Open | Make same-entity, same-tick mutations compose in broker order or explicitly codify weaker behavior. | Issue #193 |
+| 8 | Resolved | Same-entity, same-tick mutations compose in broker order. | `tests/core/test_same_tick_mutation_composition.py`; Issue #193 |
 
 ## Durability Posture (v0.3, issue #276)
 

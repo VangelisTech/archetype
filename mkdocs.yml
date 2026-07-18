@@ -100,8 +100,10 @@ nav:
       - Durable Facts: guide/durable-facts.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
-      - Evaluation Harness: guide/evals.md
+      - Repository Harness: guide/repository-harness.md
+      - Repository Checks: guide/evals.md
       - Performance Benchmarking: guide/benchmarking.md
+      - Mutation Testing: guide/mutation-testing.md
       - CORE INTERNALS:
           - Archetypes: guide/archetype.md
           - Systems: guide/system-execution.md
@@ -111,7 +113,6 @@ nav:
           - Data Flow: guide/data-flow.md
           - Command Broker: guide/broker.md
           - Services: guide/services.md
-      - Testing: guide/mutation-testing.md
       - Rust Core Plan: guide/rust-core-plan.md
 
 markdown_extensions:

@@ -142,7 +142,7 @@ def _collect_batch_udf_param_lines(source: str) -> dict[int, frozenset[str]]:
     line_to_params: dict[int, frozenset[str]] = {}
 
     for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if not any(_is_batch_decorator(d) for d in node.decorator_list):
             continue

@@ -4,6 +4,12 @@ The `evals/` package runs end-to-end checks against Archetype. It complements
 pytest by assembling realistic public or service boundaries and grading the
 observable result independently of the focused test that motivated a change.
 
+This package is one part of the [Repository Harness](repository-harness.md),
+not Archetype's product evaluation service. New bugs still require a focused,
+deterministic pytest regression. Add a repository scenario only when a broader
+composition across entry points, backends, lifecycle states, or concurrency
+schedules provides additional evidence.
+
 Its `suite`, `task`, and `trial` labels are runner implementation terms. They
 do not define the public evaluation model, dataset identity, or physical-AI
 trial lifecycle described in the
@@ -56,15 +62,16 @@ not a product taxonomy.
 | `regression` | Established behavior | Any missed grader or task error |
 | `spec` | Structural checks derived from normative guides | Any missed grader or task error |
 | `idempotency` | Repetition, replay, race, and crash-recovery boundaries | Any missed grader or task error |
-| `capability` | Broader end-to-end scenarios | A scenario error; missed graders remain visible but advisory |
+| `capability` | Broader end-to-end scenarios | Any missed grader or task error |
 
 An explicitly requested empty group fails instead of succeeding vacuously. A
-full run also requires the regression, spec, and idempotency groups to exist.
+full run also requires all four groups to exist.
 
-`make ci` runs regression and idempotency checks. Pytest executes the spec
-group and its CLI smoke contract. GitHub's eval job runs regression and
-capability separately. `make idempotency-audit` is the fast static check that
-the normative matrix and its registered scenarios still correspond.
+Pytest executes the spec group and its CLI smoke contract. GitHub's repository
+check job runs regression, idempotency, and capability once on Python 3.12;
+the ordinary Python matrix owns `make ci`. `make idempotency-audit` is the fast
+static check that the normative matrix and its registered scenarios still
+correspond.
 
 ## Grader and logging behavior
 
@@ -80,7 +87,14 @@ change library logging or `RunConfig(debug=True)`.
 
 ## Add or change a check
 
-1. Put the scenario in the group whose exit behavior matches its purpose.
+First ask whether a focused or parameterized pytest contract proves the whole
+behavior. The `regression` and `spec` groups contain valuable historical
+coverage, but they are migration surfaces rather than the default destination
+for new exact bugs or static rules.
+
+When a repository scenario is warranted:
+
+1. Put it in the group whose purpose matches the scenario.
 2. Exercise the highest stable boundary that proves the behavior.
 3. Grade externally visible outcomes rather than duplicating implementation
    logic in the assertion.
@@ -94,9 +108,10 @@ executable evidence together.
 
 ## Relationship to other evidence
 
-- Pytest provides focused diagnosis for units, integrations, races, and local
-  contracts.
-- Repository checks compose those boundaries into independent outcomes.
+- Pytest provides focused diagnosis for units, integrations, races, and
+  contract matrices.
+- Repository scenarios compose those boundaries into independent architectural
+  outcomes.
 - [Mutation testing](mutation-testing.md) probes whether focused assertions
   detect controlled implementation changes.
 - [Benchmarks](benchmarking.md) measure cost and trends, not correctness.

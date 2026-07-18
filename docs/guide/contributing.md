@@ -60,6 +60,7 @@ These documents are the current orientation pack for contributors:
 | [`LEARNINGS.md`](https://github.com/VangelisTech/archetype/blob/main/LEARNINGS.md) | Hard-won architecture and Daft/runtime patterns. Read this before proposing structural changes. |
 | [`AGENTS.md`](https://github.com/VangelisTech/archetype/blob/main/AGENTS.md) | Repository conventions, architecture boundaries, testing expectations, and contribution norms |
 | [`CLAUDE.md`](https://github.com/VangelisTech/archetype/blob/main/CLAUDE.md) | Local development workflow and repo-specific guardrails for coding agents |
+| [Repository Harness](repository-harness.md) | Evidence types, dependency boundary, and how to choose the smallest executable oracle |
 | [Specification Overview](specification.md) | Umbrella contract and historical context |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |

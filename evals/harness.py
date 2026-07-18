@@ -25,7 +25,7 @@ TaskFn = Callable[[], list[GraderResult]]
 
 
 class EvalHarness:
-    """Evaluation harness that runs tasks across multiple trials."""
+    """Repository harness that runs tasks across repeated executions."""
 
     def __init__(self, trials: int = 1):
         if trials < 1:

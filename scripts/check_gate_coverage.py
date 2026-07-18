@@ -51,9 +51,7 @@ APPLIED_IN_DRAIN = {
 }
 
 # Direct-gated operations (CommandService exposes an explicit method; the
-# broker is not their application path). KNOWN GAP (issue #368): submit()
-# currently accepts these and drain drops them with a warning — when #368
-# lands, this audit should additionally assert submit-time rejection.
+# broker is not their application path).
 DIRECT_ONLY = {
     "INGEST_FACT",
     "EVALUATE",
@@ -65,7 +63,6 @@ DIRECT_ONLY = {
     "RUN_ROLLOUT",
     "RUN_EPISODE",
     "AUTORESEARCH",
-    "QUERY_WORLD",
     "GET_WORLD_INFO",
     "GET_AUDIT_HISTORY",
     "LIST_SIGNATURES",
@@ -79,8 +76,9 @@ DIRECT_ONLY = {
 }
 
 # Application-defined envelopes: the broker supplies queueing only; consumers
-# (message-delivery processors, custom handlers) dequeue and interpret them.
-BROKER_DATA = {"MESSAGE", "CUSTOM"}
+# dequeue and interpret them. QUERY_WORLD remains a compatibility envelope;
+# gated reads use CommandService's direct query methods.
+BROKER_DATA = {"MESSAGE", "CUSTOM", "QUERY_WORLD"}
 
 
 def _drain_case_arms(path: Path) -> set[str]:
