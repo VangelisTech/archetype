@@ -51,7 +51,10 @@ jobs:
       - name: Checkout trusted base
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 1
+          # Full trusted-base history lets git find the PR merge base after
+          # fetching the candidate head as inert objects. The candidate is
+          # never checked out or executed.
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
 
@@ -66,12 +69,22 @@ jobs:
         run: |
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
             > "${RUNNER_TEMP}/pr-before.json"
+
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then
+            echo "Fetched PR head does not match the event head."
+            exit 1
+          fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" \
+            --diff "${DIFF_FILE}"
+
           gh api --paginate --slurp \
             "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
             > "${RUNNER_TEMP}/pr-files.json"
-          gh api -H "Accept: application/vnd.github.diff" \
-            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
-            > "${DIFF_FILE}"
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
             > "${RUNNER_TEMP}/pr-after.json"
 
@@ -85,6 +98,10 @@ jobs:
             --files "${RUNNER_TEMP}/pr-files.json" \
             --diff "${DIFF_FILE}" \
             --scope "${SCOPE_FILE}"
+          if ! cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"; then
+            echo "Git and GitHub API review scopes do not match."
+            exit 1
+          fi
           echo "schema=$(python3 scripts/footgun_review_gate.py schema)" >> "${GITHUB_OUTPUT}"
 
       - name: Compute turn budget from scope
@@ -256,7 +273,8 @@ jobs:
       - name: Checkout trusted base
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 1
+          # Rebuild the same inert diff independently before publication.
+          fetch-depth: 0
           persist-credentials: false
           ref: ${{ github.event.pull_request.base.sha }}
 
@@ -270,12 +288,22 @@ jobs:
         run: |
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
             > "${RUNNER_TEMP}/pr-before.json"
+
+          git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+          FETCHED_HEAD="$(git rev-parse FETCH_HEAD)"
+          if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]; then
+            echo "Fetched PR head does not match the event head."
+            exit 1
+          fi
+          python3 scripts/footgun_review_gate.py scope \
+            --base "${BASE_SHA}" \
+            --head "${HEAD_SHA}" \
+            --scope "${RUNNER_TEMP}/git-scope.json" \
+            --diff "${DIFF_FILE}"
+
           gh api --paginate --slurp \
             "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
             > "${RUNNER_TEMP}/pr-files.json"
-          gh api -H "Accept: application/vnd.github.diff" \
-            "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
-            > "${DIFF_FILE}"
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
             > "${RUNNER_TEMP}/pr-after.json"
 
@@ -289,6 +317,10 @@ jobs:
             --files "${RUNNER_TEMP}/pr-files.json" \
             --diff "${DIFF_FILE}" \
             --scope "${SCOPE_FILE}"
+          if ! cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"; then
+            echo "Git and GitHub API review scopes do not match."
+            exit 1
+          fi
 
       - name: Download detector result
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

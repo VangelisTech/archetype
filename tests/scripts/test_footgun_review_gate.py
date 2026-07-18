@@ -474,6 +474,19 @@ def test_workflow_has_one_bounded_validator_feedback_retry():
     assert "Require detector completion" not in workflow
 
 
+def test_workflow_materializes_large_diffs_from_inert_git_objects():
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github" / "workflows" / "deterministic-review.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "application/vnd.github.diff" not in workflow
+    assert workflow.count("fetch-depth: 0") == 2
+    assert workflow.count('git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"') == 2
+    assert workflow.count('if [[ "${FETCHED_HEAD}" != "${HEAD_SHA}" ]]') == 2
+    assert workflow.count("python3 scripts/footgun_review_gate.py scope") == 2
+    assert workflow.count('cmp --silent "${RUNNER_TEMP}/git-scope.json" "${SCOPE_FILE}"') == 2
+
+
 def test_review_payload_batches_each_finding_as_an_inline_thread():
     normalized = validate_result(_result(findings=[_finding()]), _scope(), DIFF)
     digest = artifact_digest(normalized)
