@@ -1,4 +1,7 @@
-# robot-evals extraction runbook
+# robot-evals extraction record
+
+Status: **Completed 2026-07-16.** The commands below are retained as historical
+provenance, not as an active repository plan or user guide.
 
 Target repo (created 2026-07-16, private — deliberately not hyperlinked: the
 link checker 404s on private repos): `everettVT/robot-evals` on GitHub.

@@ -22,11 +22,19 @@ async with ArchetypeRuntime() as runtime:
     outputs = await episode.grade(MyComponent, graders=[my_grader])
 ```
 
-`examples/10_autoresearch.py` is the full runnable version. `ServiceContainer.autoresearch_service` remains the lower-level interface; the runtime path routes through the command gate (`CommandType.AUTORESEARCH`, operator+) and emits one audit row per loop.
+`examples/10_autoresearch.py` is the full runnable version. The runtime path is
+the supported interface; `ServiceContainer.autoresearch_service` is an internal
+implementation seam used by focused repository tests. Authorized API ingress
+routes through the command gate (`CommandType.AUTORESEARCH`, operator+) and
+emits one audit row per loop.
 
 ## What's Implemented
 
-`archetype.experiments` models the lifecycle state as ordinary Components, so runs become entities in an archetype world — forkable, time-travelable, and queryable with the same tools as any other simulation state.
+The provisional `archetype.experiments` package currently models lifecycle
+state as ordinary Components, so runs become entities in an archetype world —
+forkable, time-travelable, and queryable with the same tools as any other
+simulation state. These module paths may move into a coding-mission family;
+the runtime behavior described above is the supported contract.
 
 | Component | Role |
 |---|---|
@@ -182,8 +190,8 @@ packaged experiment services:
   top, and `src/robot_evals/in_process_policy.py` colocates a VLA policy with
   the env.
 
-`docs/guide/libero-recipe.md` records the extraction boundary and retained
-Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
+The [robot-evals extraction record](../reports/2026-07-16-robot-evals-extraction.md)
+preserves the historical boundary and retained Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
 (GPU cost); never run them in CI.
 
 ## References
@@ -193,4 +201,4 @@ Archetype interfaces. The large benchmark sweeps are **user-triggered actions**
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
 - `src/archetype/experiments/eval_rollouts.py` — packaged batched rollout orchestration
 - `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers
-- `docs/guide/libero-recipe.md` — extraction pointer and retained Archetype boundary
+- `docs/reports/2026-07-16-robot-evals-extraction.md` — historical extraction boundary

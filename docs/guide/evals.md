@@ -44,20 +44,45 @@ objects. The runner executes it once by default or `--trials N` times when a
 scenario needs repeated scheduling evidence. Empty grader output and uncaught
 exceptions are explicit failed trials.
 
+`--trials n` must be a positive integer. Each task runs `n` times, counts the
+successful trials `c`, and reports three deliberately different success
+quantities.
+
 Reports use literal measurements:
 
 | Field | Meaning |
 |---|---|
 | `trial_count` | Number of executions recorded for the task |
-| `pass_rate` | Fraction of those executions whose graders all passed |
+| `pass_rate` | Raw empirical success fraction `c / n` for one task |
+| `pass@k` | Expected probability that at least one sample passes in a size-`k` subset of the `n` observations |
+| `pass^n` | `1.0` only when every observed trial passed |
 | `avg_score` | Mean grader score across executions |
-| `all_passed` | Whether every recorded execution passed |
+| `all_passed` | Whether every grader passed in every recorded execution |
 
-These are repository results, not statistical estimates of model capability.
-Every retained JSON result uses the provenance envelope from
-`quality/results.py`: schema and result kind, selected profile and suites,
-declared failure policy, outcome and timing, Git revision, Python/platform
-environment, trial configuration, and per-task contract IDs.
+Pass@k uses the unbiased closed-form estimator from Chen et al.,
+[*Evaluating Large Language Models Trained on Code*](https://arxiv.org/abs/2107.03374):
+
+```text
+1 - C(n - c, k) / C(n, k), for n >= k
+```
+
+The harness computes the exact expectation over subsets for each task, then
+averages those task estimates into the suite curve. This is not the biased
+shortcut `1 - (1 - c/n)^k`, and it is not another name for `c/n`. Confidence
+intervals require bootstrapping across tasks/questions; resampling trials
+inside one task answers a different question and is intentionally not done by
+the current runner.
+
+The default is one observed trial. Repeated trials are useful when a boundary
+involves process scheduling or another source of nondeterminism; they do not
+turn a deterministic failure into an acceptable result. Gate status continues
+to use `all_passed`, independently of the reporting metrics.
+
+Every JSON result uses the common provenance envelope from `quality/results.py`:
+schema and result kind, selected profile and suites, declared failure policy,
+outcome and timing, Git revision, Python/platform environment, trial
+configuration, and per-task contract IDs. Evals and benchmarks therefore
+retain comparable execution context without sharing a runner.
 
 ## What passes the gate
 
@@ -73,12 +98,24 @@ diagnostic groupings:
 An empty requested profile or suite is a failure, never a vacuous success. A
 full unprofiled run requires all four suites to be present and passing.
 
-The required PR `evals` context runs conformance, reliability, and capability
-once on Python 3.12, then verifies the installed wheel. The ordinary Python
-matrix owns compatibility tests; examples and documentation have their own
-required contexts. Main additionally runs process tests. Release verification
-runs the blocking static, test, process, conformance, reliability, capability,
-package, and documentation gates.
+The local PR verification profile runs static validation, pytest with coverage,
+conformance and capability evals, installed-wheel smoke checks, executable
+examples, and documentation validation. The required GitHub `evals` context
+also runs reliability once on Python 3.12 before verifying the installed wheel;
+the ordinary Python matrix owns compatibility tests, while examples and docs
+retain their own required contexts. Credentialed infrastructure remains a
+separate conditional job. Main additionally runs process tests. Local release
+verification extends the PR profile with process and reliability evidence, so
+capability, examples, and documentation cannot silently disappear from a
+release.
+
+## Suite package layout
+
+Each suite owns a package under `evals/suites/`. Package entry points expose
+`register(harness)` while implementation modules group related scenarios. The
+runner uses `evals.suites.catalog.register_all()` so adding a module does not
+grow another import list in the CLI. Task IDs, not module paths, are the stable
+traceability keys; modules may split as a suite grows.
 
 `make idempotency-audit` is the fast static check that the normative matrix and
 its registered scenarios still correspond. `quality/contracts.toml` maps

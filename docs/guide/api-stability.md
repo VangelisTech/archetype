@@ -36,6 +36,20 @@ their owning family modules; applications use `ArchetypeRuntime`, REST, or CLI.
 Names beginning with an underscore are internal. Modules explicitly labeled
 experimental may change without the compatibility guarantees of the main API.
 
+### Provisional capability packages
+
+`archetype.experiments`, `archetype.htn`, and `archetype.datasets` are not
+supported application surfaces merely because their modules are importable.
+They contain working prototypes and, in the dataset case, a normatively defined
+vocabulary, but their package boundaries may change before v1 as coding-mission
+and physical-AI capabilities settle. The import-boundary checker constrains
+what these packages may depend on; it does not promote them to public API.
+
+Do not build a compatibility promise around those module paths yet. New
+applications use `ArchetypeRuntime` and supported extension types. A future
+graduation must name an owning domain family, add it to the API manifest, and
+provide a migration from the provisional path.
+
 Supported exports are additive within a release line. Removing or changing
 their meaning requires a versioned migration. Every classification or export
 change must update the Python reference manifest; the docs build rejects

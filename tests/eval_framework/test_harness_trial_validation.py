@@ -1,8 +1,7 @@
 # Copyright 2025 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for evals.harness / evals.run trial count validation
-and pass-rate reporting semantics (issue #144)."""
+"""Regression tests for trial validation and pass@k reporting semantics."""
 
 from __future__ import annotations
 
@@ -14,9 +13,20 @@ import pytest
 
 from evals.graders import state_check
 from evals.harness import EvalHarness
-from evals.run import _configure_eval_logging, _ExpectedEvalNoiseFilter, build_harness
+from evals.run import (
+    _configure_eval_logging,
+    _ExpectedEvalNoiseFilter,
+    _suite_metrics,
+    build_harness,
+)
 from evals.run import main as run_main
-from evals.types import GraderResult, TaskResult, TrialResult
+from evals.types import (
+    GraderResult,
+    TaskResult,
+    TrialResult,
+    aggregate_pass_at_k,
+    codex_pass_at_k,
+)
 
 
 def _trial(passed: bool, idx: int = 0) -> TrialResult:
@@ -38,10 +48,14 @@ def test_harness_init_accepts_one_trial() -> None:
     assert harness.trials == 1
 
 
-def test_pass_rate_reports_fraction_for_mixed_trials() -> None:
+def test_pass_rate_and_pass_at_k_are_distinct_for_mixed_trials() -> None:
     result = TaskResult(task_id="mixed", suite="regression")
     result.trials = [_trial(True, 0), _trial(False, 1), _trial(False, 2)]
     assert result.pass_rate == pytest.approx(1 / 3)
+    assert result.pass_at(1) == pytest.approx(1 / 3)
+    assert result.pass_at(2) == pytest.approx(2 / 3)
+    assert result.pass_at_k == 1.0
+    assert result.pass_pow_k == 0.0
     assert result.all_passed is False
 
 
@@ -49,6 +63,8 @@ def test_pass_rate_is_one_when_every_trial_passes() -> None:
     result = TaskResult(task_id="all_pass", suite="regression")
     result.trials = [_trial(True, 0), _trial(True, 1)]
     assert result.pass_rate == 1.0
+    assert result.pass_at_k == 1.0
+    assert result.pass_pow_k == 1.0
     assert result.all_passed is True
 
 
@@ -56,18 +72,74 @@ def test_pass_rate_is_zero_when_no_trials_pass() -> None:
     result = TaskResult(task_id="all_fail", suite="regression")
     result.trials = [_trial(False, 0), _trial(False, 1)]
     assert result.pass_rate == 0.0
+    assert result.pass_at_k == 0.0
+    assert result.pass_pow_k == 0.0
 
 
-def test_to_dict_uses_literal_trial_metric_names() -> None:
+def test_pass_pow_k_is_zero_when_any_trial_fails() -> None:
+    result = TaskResult(task_id="flaky", suite="regression")
+    result.trials = [_trial(True, 0), _trial(True, 1), _trial(False, 2)]
+    assert result.pass_pow_k == 0.0
+
+
+def test_to_dict_keeps_pass_rate_and_pass_at_k_separate() -> None:
     result = TaskResult(task_id="mixed_dict", suite="regression")
     result.trials = [_trial(True, 0), _trial(False, 1), _trial(False, 2), _trial(True, 3)]
     payload = result.to_dict()
     assert payload["trial_count"] == 4
+    assert payload["correct_samples"] == 2
     assert payload["pass_rate"] == pytest.approx(0.5)
+    assert payload["pass_at_k"] == 1.0
+    assert payload["pass_at_k_curve"] == {
+        "1": 0.5,
+        "2": 0.8333,
+        "3": 1.0,
+        "4": 1.0,
+    }
+    assert payload["pass_pow_k"] == 0.0
     assert payload["all_passed"] is False
     assert "k" not in payload
-    assert "pass_at_k" not in payload
-    assert "pass_pow_k" not in payload
+
+
+@pytest.mark.parametrize(
+    ("n", "c", "k", "expected"),
+    [
+        (10, 0, 1, 0.0),
+        (10, 1, 1, 0.1),
+        (10, 1, 2, 0.2),
+        (10, 2, 2, 17 / 45),
+        (10, 1, 10, 1.0),
+        (10, 10, 1, 1.0),
+    ],
+)
+def test_codex_pass_at_k_matches_closed_form(n: int, c: int, k: int, expected: float) -> None:
+    assert codex_pass_at_k(n, c, k) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("n", "c", "k"),
+    [(0, 0, 1), (3, -1, 1), (3, 4, 1), (3, 1, 0), (3, 1, 4)],
+)
+def test_codex_pass_at_k_rejects_invalid_counts(n: int, c: int, k: int) -> None:
+    with pytest.raises(ValueError):
+        codex_pass_at_k(n, c, k)
+
+
+def test_suite_pass_at_k_averages_over_tasks() -> None:
+    first = TaskResult(task_id="first", suite="regression")
+    first.trials = [_trial(True, 0), _trial(False, 1), _trial(False, 2)]
+    second = TaskResult(task_id="second", suite="regression")
+    second.trials = [_trial(False, 0), _trial(False, 1), _trial(False, 2)]
+
+    assert aggregate_pass_at_k([first, second]) == pytest.approx({1: 1 / 6, 2: 1 / 3, 3: 1 / 2})
+    assert _suite_metrics([first, second])["regression"] == {
+        "tasks": 2,
+        "fully_passing_tasks": 0,
+        "trials_per_task": [3],
+        "pass_at_k": {"1": 0.1667, "2": 0.3333, "3": 0.5},
+        "mean_pass_rate": 0.1667,
+        "mean_score": 0.1667,
+    }
 
 
 def test_harness_run_records_grader_outcomes_across_trials() -> None:
@@ -83,6 +155,8 @@ def test_harness_run_records_grader_outcomes_across_trials() -> None:
     [result] = harness.run()
     assert result.trial_count == 2
     assert result.pass_rate == pytest.approx(0.5)
+    assert result.pass_at_k == 1.0
+    assert result.pass_pow_k == 0.0
     assert result.all_passed is False
 
 
@@ -98,6 +172,8 @@ def test_harness_run_fails_trial_without_grader_evidence() -> None:
     assert trial.grader_results == []
     assert trial.error == "task 'empty_task' produced no grader evidence"
     assert result.pass_rate == 0.0
+    assert result.pass_at_k == 0.0
+    assert result.pass_pow_k == 0.0
     assert result.all_passed is False
 
 

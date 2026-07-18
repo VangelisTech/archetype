@@ -42,7 +42,7 @@ from archetype.core.hooks import OnComponentAdded, OnComponentRemoved
 from archetype.core.sync import QueryManager, SyncStore, UpdateManager
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
-from evals.suites.idempotency_durable import (
+from evals.suites.idempotency.durable import (
     task_atomic_publish_retry,
     task_durable_artifact_crash_recovery,
     task_durable_artifact_replay,
@@ -50,7 +50,7 @@ from evals.suites.idempotency_durable import (
     task_evaluation_receipt_replay,
     task_resume_and_writer_fencing,
 )
-from evals.suites.idempotency_process import (
+from evals.suites.idempotency.process import (
     task_process_artifact_replay,
     task_process_crash_cold_resume,
     task_process_evaluation_replay,
@@ -59,7 +59,7 @@ from evals.suites.idempotency_process import (
 from evals.types import GraderResult
 
 SUITE = "idempotency"
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SPECIFICATION = ROOT / "docs" / "guide" / "specification.md"
 
 

@@ -1,4 +1,4 @@
-# Contract-centered quality system plan
+# Contract-centered quality system implementation record
 
 Status: **Implemented foundation; non-normative implementation record.** The
 contract registry, architecture policy, evidence taxonomy, named eval
@@ -27,7 +27,7 @@ still lives in the focused guides indexed by `quality/contracts.toml`; this
 planning record explains the system and preserves the rationale without
 becoming a competing specification.
 
-The plan proceeds contract slice by contract slice. A slice may be implemented
+The implementation proceeded contract slice by contract slice. A slice may be implemented
 once its normative behavior, ownership, and oracle are clear, even while other
 contract families remain under audit. Existing checks continue to protect
 current behavior, but their existence is not by itself evidence that the

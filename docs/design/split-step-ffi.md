@@ -40,7 +40,7 @@ The table ABI is:
 `world` is an opaque native world handle. `table` is a borrowed, null-terminated
 UTF-8 table-name string for the duration of the call. The table name maps to an
 `ArchetypeTable` already registered with the world. This preserves the current
-plan in `docs/guide/rust-core-plan.md`: Python owns component classes and table
+plan in `docs/planning/rust-core-plan.md`: Python owns component classes and table
 name hashing; Rust owns table descriptors after Python supplies names and Arrow
 schemas.
 
@@ -490,7 +490,7 @@ Use `ctypes` for dynamic library loading and function dispatch, plus
 Rationale:
 
 - It matches the current native adapter prototype in the Rust-core working tree.
-- It preserves the `docs/guide/rust-core-plan.md` non-goal: no PyO3 requirement
+- It preserves the `docs/planning/rust-core-plan.md` non-goal: no PyO3 requirement
   for this migration.
 - It keeps Arrow buffers on the Arrow C Data Interface rather than serializing
   through Python objects.
@@ -629,10 +629,9 @@ Existing tests to mirror or extend include:
 - `tests/integration/test_command_flow.py`
 - `tests/sync/test_sync_stack_contracts.py`
 
-The C3 migration-gate suite described in
-`/Users/everettkleven/conductor/workspaces/archetype/taipei/.context/htn-execution-plan.md`
-should become the Phase 6 entry criterion before this adapter is enabled beyond
-`auto` mode.
+A C3 migration-gate suite covering those mirrored lifecycle, mutation, and
+failure cases should become the Phase 6 entry criterion before this adapter is
+enabled beyond `auto` mode.
 
 ### Benchmark Comparison
 

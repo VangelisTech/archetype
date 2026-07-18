@@ -9,9 +9,10 @@ Usage:
         [--suite regression|spec|idempotency|capability] [--trials 3]
     python -m evals.run --list [--suite SUITE]
 
-Reports the trial count, pass rate, average grader score, and whether every
-trial passed. Named profiles load membership and failure policy from
-``quality/eval_profiles.toml``; every current profile is blocking.
+Reports the trial count, empirical pass rate, unbiased Codex pass@k estimate,
+strict pass^n repeatability, and average grader score per task. Named profiles
+load membership and failure policy from ``quality/eval_profiles.toml``; every
+current profile is blocking.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ import tomllib
 from pathlib import Path
 
 from evals.harness import EvalHarness
-from evals.suites import capability, idempotency, poison_command, regression, spec_contracts
-from evals.types import TaskResult
+from evals.suites.catalog import register_all
+from evals.types import TaskResult, aggregate_pass_at_k
 from quality.results import build_result_envelope, utc_now
 from scripts.validate_contracts import contract_eval_map
 
@@ -121,11 +122,7 @@ def load_profiles(path: Path = PROFILE_REGISTRY) -> dict[str, dict]:
 
 def build_harness(trials: int = 1) -> EvalHarness:
     harness = EvalHarness(trials=trials, contract_map=contract_eval_map())
-    regression.register(harness)
-    poison_command.register(harness)
-    spec_contracts.register(harness)
-    idempotency.register(harness)
-    capability.register(harness)
+    register_all(harness)
     return harness
 
 
@@ -147,7 +144,15 @@ def print_report(results: list[TaskResult]) -> None:
         passed = sum(1 for t in tasks if t.all_passed)
         total = len(tasks)
 
-        print(f"\n  [{suite_name.upper()}] {passed}/{total} tasks fully passing")
+        curve = aggregate_pass_at_k(tasks)
+        metric_summary = ""
+        if curve:
+            last_k = max(curve)
+            metric_summary = f"; pass@1={curve[1]:.0%}"
+            if last_k > 1:
+                metric_summary += f", pass@{last_k}={curve[last_k]:.0%}"
+
+        print(f"\n  [{suite_name.upper()}] {passed}/{total} tasks fully passing{metric_summary}")
         print(f"  {'-' * 64}")
 
         for t in tasks:
@@ -156,7 +161,8 @@ def print_report(results: list[TaskResult]) -> None:
             if t.trial_count > 1:
                 line += (
                     f"  (trials={t.trial_count}, pass_rate={t.pass_rate:.0%}, "
-                    f"all_passed={str(t.all_passed).lower()})"
+                    f"pass@{t.trial_count}={t.pass_at_k:.0%}, "
+                    f"pass^{t.trial_count}={t.pass_pow_k:.0%})"
                 )
             line += f"  score={t.avg_score:.2f}"
 
@@ -265,10 +271,31 @@ def main() -> int:
             configuration={"trials": args.trials, "seed": None},
             results=[result.to_dict() for result in results],
         )
+        envelope["metrics"] = _suite_metrics(results)
         output.write_text(json.dumps(envelope, indent=2) + "\n", encoding="utf-8")
         print(f"\nResults written to {args.out}")
 
     return 0 if passed else 1
+
+
+def _suite_metrics(results: list[TaskResult]) -> dict[str, dict]:
+    """Build suite-level statistics without conflating their semantics."""
+    metrics: dict[str, dict] = {}
+    for suite_name in KNOWN_SUITES:
+        tasks = [task for task in results if task.suite == suite_name]
+        if not tasks:
+            continue
+        metrics[suite_name] = {
+            "tasks": len(tasks),
+            "fully_passing_tasks": sum(task.all_passed for task in tasks),
+            "trials_per_task": sorted({task.trial_count for task in tasks}),
+            "pass_at_k": {
+                str(k): round(estimate, 4) for k, estimate in aggregate_pass_at_k(tasks).items()
+            },
+            "mean_pass_rate": round(sum(task.pass_rate for task in tasks) / len(tasks), 4),
+            "mean_score": round(sum(task.avg_score for task in tasks) / len(tasks), 4),
+        }
+    return metrics
 
 
 def _passes_policy(

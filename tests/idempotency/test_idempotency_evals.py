@@ -13,7 +13,7 @@ import pytest
 from archetype.core.aio.async_world import AsyncWorld
 from evals.run import build_harness
 from evals.suites import idempotency
-from evals.suites.idempotency_process import _wait_for_markers
+from evals.suites.idempotency.process import _wait_for_markers
 
 pytestmark = [pytest.mark.process, pytest.mark.slow]
 
@@ -43,13 +43,13 @@ def test_idempotency_contract_audit_cli() -> None:
 
 def test_idempotency_contract_audit_detects_unmapped_spec_row(tmp_path, monkeypatch) -> None:
     drifted = tmp_path / "specification.md"
-    text = idempotency.SPECIFICATION.read_text()
+    text = idempotency.tasks.SPECIFICATION.read_text()
     text = text.replace(
         "\n## Required Hardening Work",
         "\n| Newly normative retry | Must have an independent eval |\n\n## Required Hardening Work",
     )
     drifted.write_text(text)
-    monkeypatch.setattr(idempotency, "SPECIFICATION", drifted)
+    monkeypatch.setattr(idempotency.tasks, "SPECIFICATION", drifted)
 
     checks = idempotency.traceability_checks()
 

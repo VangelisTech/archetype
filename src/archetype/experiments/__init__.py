@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Experiment tracking — ECS-native.
+"""Provisional ECS-native experiment and trajectory helpers.
+
+This package is not a supported application API. Its current contents are
+candidate domain capabilities whose final homes depend on the coding-mission
+and physical-AI service boundaries. Import paths and groupings may change
+before v1; supported applications enter through :class:`ArchetypeRuntime`.
 
 Experiments, runs, results, and branch heads as first-class archetype
 Components. Runs become entities in an archetype world, which means

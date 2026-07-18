@@ -111,5 +111,5 @@ not from an in-memory broker history.
 
 - `tests/app/test_durable_commands.py`
 - `tests/integration/test_command_flow.py`
-- `evals/suites/idempotency.py`
-- `evals/suites/idempotency_process.py`
+- `evals/suites/idempotency/tasks.py`
+- `evals/suites/idempotency/process.py`
