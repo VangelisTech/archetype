@@ -150,6 +150,7 @@ class MissionService:
 
         provider_status = self._provider_status(outcome)
         checkpoint_status = self._checkpoint_status(outcome)
+        checkpoint_expires_at_ms = self._checkpoint_expiry(outcome)
         required_phase = self._phase(row["taskgate__required_finalization_phase"], "required")
         actual_phase = self._phase(outcome["finalization_phase"], "outcome")
         gate_passed = (
@@ -197,7 +198,7 @@ class MissionService:
                 "checkpoint__state_ref": str(outcome["sandbox_state_ref"]),
                 "checkpoint__restorable": bool(outcome["checkpoint_restorable"]),
                 "checkpoint__created_at_ms": int(outcome["checkpoint_created_at_ms"]),
-                "checkpoint__expires_at_ms": int(outcome["checkpoint_expires_at_ms"]),
+                "checkpoint__expires_at_ms": checkpoint_expires_at_ms,
                 "finalization__phase": actual_phase.value,
                 "finalization__idempotency_key": request.idempotency_key,
                 "finalization__manifest_ref": str(outcome["finalization_manifest_ref"]),
@@ -293,6 +294,17 @@ class MissionService:
         if not restorable and status is CheckpointStatus.CREATED:
             raise ValueError("created checkpoint must be restorable")
         return status
+
+    @staticmethod
+    def _checkpoint_expiry(outcome: Mapping[str, Any]) -> int | None:
+        created_at_ms = int(outcome["checkpoint_created_at_ms"])
+        value = outcome["checkpoint_expires_at_ms"]
+        if value is None or value == 0:
+            return None
+        expires_at_ms = int(value)
+        if expires_at_ms <= created_at_ms:
+            raise ValueError("checkpoint expiration must be after creation")
+        return expires_at_ms
 
     @staticmethod
     def _attempt_status(provider: AttemptStatus, *, gate_passed: bool) -> AttemptStatus:

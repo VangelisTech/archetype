@@ -29,7 +29,9 @@ The container owns shutdown of retained handles. Closing one handle is
 idempotent. Shutdown stops new admission, attempts every close, and reports all
 close failures after the drain. A sandbox close failure does not prevent audit
 or owned world/storage shutdown; the composition root drains every later step
-and raises one aggregate failure afterward.
+and raises one aggregate failure afterward. Cancellation and other
+`BaseException` failures are included in that aggregate only after every later
+shutdown step has been attempted.
 
 ## 3. Six-phase attempt protocol
 
@@ -53,6 +55,8 @@ After validating the request and reading the repository baseline,
    non-durable until the redaction gate accepts them.
 5. **Checkpoint** — after evidence exists, request a provider checkpoint. A
    checkpoint failure is returned as evidence and does not erase the attempt.
+   `expires_at_ms=None` means a captured checkpoint has no configured expiry;
+   epoch zero is never used for that meaning.
 6. **Artifact handoff** — declare checkpoint-qualified or live source
    references and store the sandbox-local replay receipt. This phase does not
    upload or index artifacts; authoritative mission finalization owns that

@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol
 AgentHarness = Literal["codex", "claude-code", "opencode"]
 AgentAuthMode = Literal["api-key", "oauth"]
 OpenCodeWireAPI = Literal["chat-completions", "responses"]
+GIT_TREE_CHANGE_GATE_NAME = "git_tree_change"
 
 
 class AttemptPhase(StrEnum):
@@ -36,8 +37,11 @@ class ValidatorSpec:
     timeout_seconds: int = 900
 
     def __post_init__(self) -> None:
-        if not self.name.strip():
+        name = self.name.strip()
+        if not name:
             raise ValueError("validator name must not be empty")
+        if name == GIT_TREE_CHANGE_GATE_NAME:
+            raise ValueError(f"validator name {GIT_TREE_CHANGE_GATE_NAME!r} is reserved")
         if not self.command:
             raise ValueError("validator command must not be empty")
         if self.timeout_seconds < 1:
@@ -183,7 +187,7 @@ class CheckpointCapture:
     restorable: bool
     error: str
     created_at_ms: int
-    expires_at_ms: int
+    expires_at_ms: int | None
     friction: tuple[dict[str, Any], ...] = ()
 
 

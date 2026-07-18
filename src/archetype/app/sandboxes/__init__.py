@@ -6,6 +6,7 @@
 from archetype.app.sandboxes.common import CodingAgentSandboxClient
 from archetype.app.sandboxes.interfaces import iSandboxBackend, iSandboxService, iSandboxSession
 from archetype.app.sandboxes.models import (
+    GIT_TREE_CHANGE_GATE_NAME,
     AgentAuthMode,
     AgentHarness,
     ArtifactHandoff,
@@ -30,6 +31,7 @@ __all__ = [
     "CodingAgentSandboxSpec",
     "CommandResult",
     "EvidenceCapture",
+    "GIT_TREE_CHANGE_GATE_NAME",
     "OpenCodeWireAPI",
     "RepositoryPhaseReceipt",
     "SandboxService",

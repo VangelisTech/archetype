@@ -22,6 +22,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from archetype.app.sandboxes.models import (
+    GIT_TREE_CHANGE_GATE_NAME,
     AgentExecution,
     ArtifactHandoff,
     AttemptPhase,
@@ -218,6 +219,9 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         )
         if not normalized:
             raise ValueError("at least one validator is required")
+        validator_names = [validator.name for validator in normalized]
+        if len(set(validator_names)) != len(validator_names):
+            raise ValueError("validator names must be unique")
         request_fingerprint = self._request_fingerprint(
             prompt=prompt,
             validators=normalized,
@@ -433,7 +437,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             except ValueError as exc:
                 details.append(
                     {
-                        "name": "git_tree_change",
+                        "name": GIT_TREE_CHANGE_GATE_NAME,
                         "passed": False,
                         "returncode": 1,
                         "stdout": "",
@@ -558,7 +562,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             error = f"{type(exc).__name__}: {self._tail(str(exc), 2000)}"
         if ref:
             self._latest_checkpoint_ref = ref
-        expires_at_ms = 0
+        expires_at_ms: int | None = None
         if ref and self.spec.snapshot_ttl_seconds is not None:
             expires_at_ms = created_at_ms + self.spec.snapshot_ttl_seconds * 1000
         restorable = bool(ref)

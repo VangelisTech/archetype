@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from archetype.app.sandboxes import (
+    GIT_TREE_CHANGE_GATE_NAME,
     AttemptPhase,
     CodingAgentSandboxClient,
     CommandResult,
@@ -262,6 +263,7 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
     assert outcome["status"] == "accepted"
     assert outcome["sha"] == "committed"
     assert outcome["checkpoint_status"] == "ready"
+    assert outcome["checkpoint_expires_at_ms"] > outcome["checkpoint_created_at_ms"]
     assert outcome["finalization_phase"] == "checkpointed"
     assert client._latest_checkpoint_ref == "fake-checkpoint://checkpoint-1"
     assert outcome["agent_session_id"] == "thread-1"
@@ -402,6 +404,17 @@ async def test_checkpoint_failure_is_evidence_not_lost_attempt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_checkpoint_without_ttl_has_no_expiration_sentinel() -> None:
+    client = _FakeClient(replace(_Spec(), snapshot_ttl_seconds=None))
+
+    outcome = await client.run_attempt(**_attempt_kwargs())
+
+    assert outcome["checkpoint_status"] == "ready"
+    assert outcome["checkpoint_restorable"] is True
+    assert outcome["checkpoint_expires_at_ms"] is None
+
+
+@pytest.mark.asyncio
 async def test_transport_failure_stops_before_authoritative_side_effects() -> None:
     client = _FakeClient(_Spec(), agent_error=TimeoutError("transport timed out"))
 
@@ -426,6 +439,7 @@ async def test_closed_sandbox_and_missing_context_fail_closed_or_declare_no_ref(
     )
     outcome = await no_context.run_attempt(**_attempt_kwargs())
     assert outcome["checkpoint_status"] == "disabled"
+    assert outcome["checkpoint_expires_at_ms"] is None
     assert outcome["context_ref"] == ""
     assert outcome["finalization_phase"] == "captured"
 
@@ -438,6 +452,15 @@ async def test_closed_sandbox_and_missing_context_fail_closed_or_declare_no_ref(
         ({"prompt": ""}, "prompt"),
         ({"step_name": ""}, "step_name"),
         ({"validators": []}, "at least one validator"),
+        (
+            {
+                "validators": [
+                    ValidatorSpec("tests", ("verify",)),
+                    ValidatorSpec("tests", ("verify",)),
+                ]
+            },
+            "unique",
+        ),
         ({"correlation": {"bad": object()}}, "JSON serializable"),
     ],
 )
@@ -465,6 +488,8 @@ def test_validator_spec_validates_its_boundary() -> None:
         ValidatorSpec("tests", ())
     with pytest.raises(ValueError, match="timeout"):
         ValidatorSpec("tests", ("pytest",), timeout_seconds=0)
+    with pytest.raises(ValueError, match="reserved"):
+        ValidatorSpec(GIT_TREE_CHANGE_GATE_NAME, ("pytest",))
 
 
 @pytest.mark.asyncio

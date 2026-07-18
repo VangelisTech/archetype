@@ -133,15 +133,15 @@ class ServiceContainer:
         if self._owns_storage_service:
             steps.append(("world and storage services", self.world_service.shutdown))
 
-        failures: list[Exception] = []
+        failures: list[BaseException] = []
         for label, shutdown in steps:
             try:
                 await shutdown()
-            except Exception as exc:
+            except BaseException as exc:
                 exc.add_note(f"ServiceContainer shutdown step failed: {label}")
                 failures.append(exc)
         if failures:
-            raise ExceptionGroup(
+            raise BaseExceptionGroup(
                 f"ServiceContainer shutdown failed for {len(failures)} step(s)",
                 failures,
             )
