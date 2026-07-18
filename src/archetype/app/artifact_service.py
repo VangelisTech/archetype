@@ -385,9 +385,9 @@ class ArtifactService:
         bundle_ids: list[str] = []
         for stale in due:
             bundle_ids.append(stale.publication_key)
-            request = ArtifactBundleRequest.model_validate_json(stale.request_json)
             claimant = f"artifact-reconciler-{uuid7()}"
             try:
+                request = ArtifactBundleRequest.model_validate_json(stale.request_json)
                 outcome, publication = await catalog.acquire_artifact_publication(
                     world_id=request.world_id,
                     run_id=request.run_id,
@@ -422,7 +422,7 @@ class ArtifactService:
                 failed += 1
                 try:
                     await catalog.fail_artifact_publication(
-                        request.world_id,
+                        stale.world_id,
                         stale.publication_key,
                         claimant,
                         f"{type(exc).__name__}: {exc}",

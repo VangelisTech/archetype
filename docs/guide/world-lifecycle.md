@@ -118,6 +118,13 @@ A fork does not copy the source's materialized rows. Instead it carries a `linea
 
 Reads resolve per tick: a tick at or below a segment's `up_to_tick` reads from that ancestor's run; later ticks read from the fork's own run. Because the store is append-only, ancestor rows are immutable history — a parent that keeps running (or is destroyed) after the fork never affects the fork's view, and rows the parent writes after the fork point are excluded from the fork's history.
 
+The complete fork transaction — source snapshot, registry insertion, durable
+catalog registration, fence acquisition, and lineage persistence — holds the
+source world's app-owned operation lock. It therefore observes either the
+state before or after a concurrent execution operation, never a partial tick.
+Rollout already holds that lock for its full call and uses the corresponding
+already-admitted fork helper to avoid re-entrant acquisition.
+
 Consequences:
 
 - Forking stays O(metadata) regardless of world size.
@@ -162,6 +169,12 @@ async def destroy_world(ctx: ActorCtx, world_id: str | UUID) -> None: ...
    handlers may read final state but MUST NOT submit commands; the world is
    closing.
 6. Emit ONE audit row recording the destroy.
+
+The closing marker is attempt-scoped and released in `finally` paths. If audit
+flush, broker cleanup, lock waiting, hooks, or destruction fails or is
+cancelled before removal, the still-live world becomes admissible again.
+Overlapping destroy attempts retain independent markers, so one failed attempt
+cannot reopen admission while another remains active.
 
 ### 5.2 — `iWorldService.destroy_world` steps
 

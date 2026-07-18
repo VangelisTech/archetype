@@ -461,6 +461,9 @@ One tick MUST follow this order:
 - `destroy_world()` SHOULD be safe to call on a missing world.
 - `fork_world()` MUST create a new `world_id`, clone the source world's visible
   state, and let source and fork diverge independently.
+- `fork_world()` MUST hold the source world's app-owned operation lock across
+  its snapshot and durable registration so it cannot race an execution tick or
+  destroy.
 - Forking MUST transfer pending spawn/despawn caches so spawn-then-fork before
   the next tick materializes in both worlds.
 
@@ -559,6 +562,9 @@ CURRENT GAPS:
   share the same runtime.
 - The gated `CommandService.destroy_world()` path MUST clear the target world's
   pending and historical broker state before delegating world removal.
+- A failed or cancelled destroy attempt MUST release its own closing marker;
+  if the world remains live, later operations must be admissible. Concurrent
+  destroy attempts retain independent markers until each attempt finishes.
 - World removal MUST preserve durable rows, lineage, audit history, shared
   storage backends, and sibling-world state. The durable catalog records the
   world as destroyed rather than deleting its identity.

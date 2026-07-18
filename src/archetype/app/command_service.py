@@ -397,11 +397,17 @@ class CommandService:
         world_id: str | UUID,
     ) -> None:
         self._gate(Command(type=CommandType.DESTROY_WORLD), ctx)
-        self._worlds.start_destroy(world_id)
-        if self._audit:
-            await self._audit.flush()
-        await self._broker.clear(world_id)
-        await self._worlds.destroy_world(world_id)
+        closing = self._worlds.start_destroy(world_id)
+        try:
+            if self._audit:
+                await self._audit.flush()
+            await self._broker.clear(world_id)
+            await self._worlds.destroy_world(world_id)
+        finally:
+            # Flush/clear/destroy may fail or be cancelled. Release only this
+            # attempt's marker so a live world never becomes a zombie.
+            if closing:
+                self._worlds.finish_destroy(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
     @instrument("gate.get_world_info")

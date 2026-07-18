@@ -96,15 +96,20 @@ async def run_episode(world_id, config: EpisodeConfig, **kw) -> EpisodeResult
 async def run_rollout(world_id, config: RolloutConfig, **kw) -> RolloutResult
 ```
 
-Episode and rollout semantics: `execution-hierarchy.md`. `run_rollout` calls `iWorldService.fork_world` directly for each fork; those fork operations are not gated individually.
+Episode and rollout semantics: `execution-hierarchy.md`. `run_rollout` creates
+each fork directly through `iWorldService`; those internal forks are not gated
+individually, but they reuse the rollout's already-held base-world operation
+lock rather than reacquiring it.
 
 The concrete app service owns one operation lock per live world. Each public
-`step`, `run`, `run_episode`, or `run_rollout` holds that world's lock for the
-entire call; private tick helpers do not reacquire it. This makes direct service
-and FastAPI calls share the same serialization boundary, while operations on
-different world IDs remain independent. Destroy closes admission before waiting
-on the same lock, so admitted execution completes and later execution is
-rejected.
+`step`, `run`, `run_episode`, `run_rollout`, or `fork_world` holds the source
+world's lock for the entire call; private helpers do not reacquire it. This
+makes direct service and FastAPI calls share the same serialization boundary,
+while operations on different world IDs remain independent. Destroy closes
+admission before waiting on the same lock, so admitted execution completes and
+later execution is rejected. Every destroy attempt releases its admission
+marker in a `finally` path; a failed or cancelled attempt cannot strand a live
+world in a permanently closing state.
 
 ### `iQueryService`
 

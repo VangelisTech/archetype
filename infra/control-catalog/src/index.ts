@@ -567,7 +567,25 @@ export class WorldCommitDO implements DurableObject {
       const rows = this.sql
         .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", key)
         .toArray();
-      if (!rows.length) return json({ error: "not_found" }, 404);
+      if (!rows.length) {
+        // Match SqliteControlCatalog's per-operation missing-row contracts.
+        // Failure release is deliberately idempotent; every other lifecycle
+        // mutation requires a publication to exist.
+        if (route.length === 3 && method === "POST" && route[2] === "fail") {
+          return json({ ok: true });
+        }
+        if (
+          route.length === 3 &&
+          method === "POST" &&
+          ["renew", "uploads", "complete", "expire"].includes(route[2])
+        ) {
+          return conflict(
+            "artifact_publication_conflict",
+            `no artifact publication recorded for ${key}`,
+          );
+        }
+        return json({ error: "not_found" }, 404);
+      }
       const row = rows[0] as Record<string, unknown>;
 
       if (route.length === 2 && method === "GET") return json(row);

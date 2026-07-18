@@ -195,6 +195,93 @@ class TestSimulationService:
             await container.shutdown()
 
     @pytest.mark.asyncio
+    async def test_fork_waits_for_admitted_step_snapshot(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="fork_waits")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            step = asyncio.create_task(
+                container.simulation_service.step(world.world_id, RunConfig())
+            )
+            await processor.entered.wait()
+            fork_task = asyncio.create_task(
+                container.world_service.fork_world(world.world_id, name="after-step")
+            )
+            await asyncio.sleep(0)
+            assert not fork_task.done()
+
+            processor.release.set()
+            async with asyncio.timeout(5):
+                _commands_applied, fork = await asyncio.gather(step, fork_task)
+
+            assert world.tick == fork.tick == 2
+            assert fork.lineage[-1] == (str(world.world_id), str(world.run_id), 1)
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_destroy_reopens_live_world_admission(self, tmp_path):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="cancel_destroy")
+        try:
+            world = await container.world_service.create_world(WorldConfig(name="test"), storage)
+            await container.mutation_service.create_entity(world.world_id, [_SerializedCounter()])
+            await container.simulation_service.step(world.world_id, RunConfig())
+            processor = _BlockingIncrement()
+            await container.mutation_service.add_processor(world.world_id, processor)
+
+            step = asyncio.create_task(
+                container.simulation_service.step(world.world_id, RunConfig())
+            )
+            await processor.entered.wait()
+            destroy = asyncio.create_task(container.world_service.destroy_world(world.world_id))
+            await asyncio.sleep(0)
+            assert not destroy.done()
+
+            destroy.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await destroy
+            processor.release.set()
+            await step
+
+            assert container.world_service.has_world(world.world_id)
+            await container.simulation_service.step(world.world_id, RunConfig())
+            assert world.tick == 3
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_destroy_prelude_failure_reopens_live_world_admission(
+        self, tmp_path, monkeypatch
+    ):
+        container = ServiceContainer()
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="failed_destroy")
+        ctx = ActorCtx(id=uuid7(), roles={"admin"})
+        try:
+            info = await container.command_service.create_world(
+                ctx, WorldConfig(name="test"), storage
+            )
+
+            async def fail_flush():
+                raise RuntimeError("audit storage unavailable")
+
+            real_flush = container.audit_log.flush
+            monkeypatch.setattr(container.audit_log, "flush", fail_flush)
+            with pytest.raises(RuntimeError, match="audit storage unavailable"):
+                await container.command_service.destroy_world(ctx, info.world_id)
+            monkeypatch.setattr(container.audit_log, "flush", real_flush)
+
+            assert container.world_service.has_world(info.world_id)
+            await container.simulation_service.step(info.world_id, RunConfig())
+        finally:
+            await container.shutdown()
+
+    @pytest.mark.asyncio
     async def test_run_holds_serial_order_for_its_full_tick_sequence(self, tmp_path):
         container = ServiceContainer()
         storage = StorageConfig(uri=str(tmp_path / "store"), namespace="serialized_run")

@@ -312,7 +312,9 @@ class WorldService:
         self._storage_configs: dict[str, tuple[StorageConfig, CacheConfig | None]] = {}
         self._create_locks: dict[str, asyncio.Lock] = {}
         self._operation_locks: dict[str, asyncio.Lock] = {}
-        self._closing_worlds: set[str] = set()
+        # A count, rather than a set, keeps overlapping destroy attempts from
+        # reopening admission when only one of them unwinds.
+        self._closing_worlds: dict[str, int] = {}
 
     @asynccontextmanager
     async def operation(self, world_id: str | UUID):
@@ -328,10 +330,22 @@ class WorldService:
                 raise WorldNotFoundError(world_id)
             yield
 
-    def start_destroy(self, world_id: str | UUID) -> None:
-        """Stop admitting new operations while destroy waits for admitted work."""
-        if self.has_world(world_id):
-            self._closing_worlds.add(str(world_id))
+    def start_destroy(self, world_id: str | UUID) -> bool:
+        """Stop admitting operations until this destroy attempt is released."""
+        if not self.has_world(world_id):
+            return False
+        key = str(world_id)
+        self._closing_worlds[key] = self._closing_worlds.get(key, 0) + 1
+        return True
+
+    def finish_destroy(self, world_id: str | UUID) -> None:
+        """Release one destroy attempt's admission marker."""
+        key = str(world_id)
+        attempts = self._closing_worlds.get(key, 0)
+        if attempts <= 1:
+            self._closing_worlds.pop(key, None)
+        else:
+            self._closing_worlds[key] = attempts - 1
 
     async def create_world(
         self,
@@ -419,6 +433,22 @@ class WorldService:
         same physical store as the source by default; an explicit
         ``storage_config`` argument routes the fork to a different store.
         """
+        async with self.operation(source_world_id):
+            return await self._fork_world_admitted(
+                source_world_id,
+                name,
+                storage_config,
+                cache_config,
+            )
+
+    async def _fork_world_admitted(
+        self,
+        source_world_id: UUID | str,
+        name: str | None = None,
+        storage_config: StorageConfig | None = None,
+        cache_config: CacheConfig | None = None,
+    ) -> AsyncWorld:
+        """Fork while the caller owns the source-world operation lock."""
         source_record = self._storage_configs.get(str(source_world_id))
         if storage_config is None:
             if source_record is not None:
@@ -484,14 +514,24 @@ class WorldService:
         key = str(world_id)
         if not self.has_world(world_id):
             return
-        self.start_destroy(world_id)
-        lock = self._operation_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            await self._orchestrator.destroy_world(world_id)
-            record = self._storage_configs.get(key)
-            if record is not None:
-                catalog = self._storage_service.get_control_catalog(record[0])
-                await catalog.set_world_status(key, "destroyed")
+        closing = self.start_destroy(world_id)
+        try:
+            lock = self._operation_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                # Another overlapping destroy may have removed the world while
+                # this attempt waited for the operation lock.
+                if not self.has_world(world_id):
+                    return
+                await self._orchestrator.destroy_world(world_id)
+                record = self._storage_configs.get(key)
+                if record is not None:
+                    catalog = self._storage_service.get_control_catalog(record[0])
+                    await catalog.set_world_status(key, "destroyed")
+        finally:
+            # Cancellation, hook failure, and catalog failure must not leave a
+            # surviving world permanently closed to future operations.
+            if closing:
+                self.finish_destroy(world_id)
 
     # ── Durable discovery (issue #272) ───────────────────────────────────────
 

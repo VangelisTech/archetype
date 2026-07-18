@@ -334,6 +334,23 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
     request_json = '{"world_id":"w1","run_id":"r1"}'
     retry_until_ms = int(time.time() * 1000) + 60_000
     for catalog in await _both(tmp_path, worker_url):
+        missing = "missing-publication"
+        with pytest.raises(ArtifactPublicationConflictError):
+            await catalog.renew_artifact_publication("w1", missing, "nobody", lease_seconds=30.0)
+        with pytest.raises(ArtifactPublicationConflictError):
+            await catalog.record_artifact_uploads(
+                "w1", missing, "nobody", "[]", "s3://bucket/missing"
+            )
+        with pytest.raises(ArtifactPublicationConflictError):
+            await catalog.complete_artifact_publication("w1", missing, "nobody", 1)
+        with pytest.raises(ArtifactPublicationConflictError):
+            await catalog.expire_artifact_publication("w1", missing, "nobody", "expired")
+        # Failure release is the one deliberately idempotent missing-row
+        # transition in both implementations.
+        await catalog.fail_artifact_publication(
+            "w1", missing, "nobody", "nothing to release", retry_at=0.0
+        )
+
         outcome, publication = await catalog.acquire_artifact_publication(
             world_id="w1",
             run_id="r1",

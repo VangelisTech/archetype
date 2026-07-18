@@ -5,6 +5,7 @@
 
 import hashlib
 import tarfile
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -195,11 +196,33 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
         assert publication is not None and publication.status == "UPLOADED"
         assert publication.records_json != "[]"
 
+        # One corrupt durable request must be reported without preventing the
+        # next due publication from recovering in the same bounded pass.
+        real_list_due = catalog.list_due_artifact_publications
+
+        async def list_with_corrupt_request(*args, **kwargs):
+            rows = await real_list_due(*args, **kwargs)
+            assert rows
+            corrupt = replace(
+                rows[0],
+                publication_key="corrupt-publication",
+                request_json="{not-json",
+            )
+            return [corrupt, *rows]
+
+        monkeypatch.setattr(
+            catalog,
+            "list_due_artifact_publications",
+            list_with_corrupt_request,
+        )
+
         monkeypatch.setattr(container.artifact_service, "_index_records", real_index)
         result = await container.artifact_service.reconcile(
             request.world_id, storage_config=storage
         )
+        assert result.examined == 2
         assert result.indexed == 1
+        assert result.failed == 1
         files_after = sorted(
             path for path in Path(artifact_config.object_uri).rglob("*") if path.is_file()
         )

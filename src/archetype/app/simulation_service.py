@@ -272,7 +272,9 @@ class SimulationService:
         base = self._world_service.get_world(UUID(str(world_id)))
 
         async def _run_one(i: int) -> EpisodeResult:
-            fork = await self._world_service.fork_world(
+            # run_rollout already owns the base-world operation lock for its
+            # full duration, so use the non-reentrant admitted helper.
+            fork = await self._world_service._fork_world_admitted(
                 world_id,
                 name=f"{base.name}:{config.name_prefix}:{i}",
             )
