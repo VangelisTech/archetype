@@ -34,6 +34,8 @@ from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.interfaces import iResearchService
 from archetype.app.research.service import AutoResearchService
+from archetype.app.sandboxes.interfaces import iSandboxService
+from archetype.app.sandboxes.service import SandboxService
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.storage.service import StorageService
 from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
@@ -58,6 +60,7 @@ SERVICE_PROTOCOLS = (
     (AutoResearchService, iResearchService),
     (AuditLog, iAuditLog),
     (CommandScheduler, iCommandScheduler),
+    (SandboxService, iSandboxService),
     (RuntimeApplication, iRuntimeApplication),
     (CommandGateway, iCommandGateway),
 )
@@ -95,6 +98,7 @@ async def test_container_wiring_conforms_to_every_family_protocol() -> None:
             (container.autoresearch_service, iResearchService),
             (container.audit_log, iAuditLog),
             (container.command_scheduler, iCommandScheduler),
+            (container.sandbox_service, iSandboxService),
             (container.application, iRuntimeApplication),
             (container.command_gateway, iCommandGateway),
         )

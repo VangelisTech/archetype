@@ -48,6 +48,7 @@ class CheckpointStatus(StrEnum):
     PENDING = "pending"
     CREATED = "created"
     FAILED = "failed"
+    DISABLED = "disabled"
 
 
 class FinalizationPhase(StrEnum):

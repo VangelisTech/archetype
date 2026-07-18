@@ -150,6 +150,7 @@ class MissionService:
 
         provider_status = self._provider_status(outcome)
         checkpoint_status = self._checkpoint_status(outcome)
+        checkpoint_expires_at_ms = self._checkpoint_expiry(outcome)
         required_phase = self._phase(row["taskgate__required_finalization_phase"], "required")
         actual_phase = self._phase(outcome["finalization_phase"], "outcome")
         gate_passed = (
@@ -197,7 +198,7 @@ class MissionService:
                 "checkpoint__state_ref": str(outcome["sandbox_state_ref"]),
                 "checkpoint__restorable": bool(outcome["checkpoint_restorable"]),
                 "checkpoint__created_at_ms": int(outcome["checkpoint_created_at_ms"]),
-                "checkpoint__expires_at_ms": int(outcome["checkpoint_expires_at_ms"]),
+                "checkpoint__expires_at_ms": checkpoint_expires_at_ms,
                 "finalization__phase": actual_phase.value,
                 "finalization__idempotency_key": request.idempotency_key,
                 "finalization__manifest_ref": str(outcome["finalization_manifest_ref"]),
@@ -280,8 +281,12 @@ class MissionService:
 
     @staticmethod
     def _checkpoint_status(outcome: Mapping[str, Any]) -> CheckpointStatus:
+        raw_status = str(outcome["checkpoint_status"])
+        # Sandbox capture state is transport vocabulary. Mission state records
+        # the authoritative durable meaning without importing another family.
+        mission_status = "created" if raw_status == "ready" else raw_status
         try:
-            status = CheckpointStatus(str(outcome["checkpoint_status"]))
+            status = CheckpointStatus(mission_status)
         except ValueError as exc:
             raise ValueError(
                 f"unknown checkpoint status: {outcome['checkpoint_status']!r}"
@@ -292,7 +297,20 @@ class MissionService:
             raise ValueError("restorable checkpoint requires created status and state reference")
         if not restorable and status is CheckpointStatus.CREATED:
             raise ValueError("created checkpoint must be restorable")
+        if status is CheckpointStatus.DISABLED and state_ref:
+            raise ValueError("disabled checkpoint cannot have a state reference")
         return status
+
+    @staticmethod
+    def _checkpoint_expiry(outcome: Mapping[str, Any]) -> int | None:
+        created_at_ms = int(outcome["checkpoint_created_at_ms"])
+        value = outcome["checkpoint_expires_at_ms"]
+        if value is None or value == 0:
+            return None
+        expires_at_ms = int(value)
+        if expires_at_ms <= created_at_ms:
+            raise ValueError("checkpoint expiration must be after creation")
+        return expires_at_ms
 
     @staticmethod
     def _attempt_status(provider: AttemptStatus, *, gate_passed: bool) -> AttemptStatus:

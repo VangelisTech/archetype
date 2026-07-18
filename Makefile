@@ -97,7 +97,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit sandbox-phase-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -142,6 +142,10 @@ api-boundary-audit:
 .PHONY: architecture-audit
 architecture-audit:
 	@uv run python scripts/check_architecture.py
+
+.PHONY: sandbox-phase-audit
+sandbox-phase-audit:
+	@uv run python scripts/check_sandbox_phase_order.py
 
 # Keep every normative idempotency-matrix row mapped to a registered eval.
 # This is static and fast; make eval-idem executes the behavioral scenarios.

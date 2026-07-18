@@ -68,6 +68,7 @@ def _outcome(
     checkpoint: bool = True,
     status: str | None = None,
     phase: str = "checkpointed",
+    checkpoint_expires_at_ms: int | None = 2,
 ) -> dict[str, Any]:
     provider_status = status or ("accepted" if accepted else "rejected")
     return {
@@ -83,7 +84,7 @@ def _outcome(
         "checkpoint_status": "created" if checkpoint else "failed",
         "checkpoint_restorable": checkpoint,
         "checkpoint_created_at_ms": 1,
-        "checkpoint_expires_at_ms": 2,
+        "checkpoint_expires_at_ms": checkpoint_expires_at_ms,
         "sandbox_state_ref": "fake://checkpoint" if checkpoint else "",
         "finalization_phase": phase,
         "finalization_manifest_ref": "fake://manifest",
@@ -143,8 +144,46 @@ def test_component_state_strings_are_enum_validated_without_breaking_arrow() -> 
         Attempt(status="invented")
     with pytest.raises(ValidationError):
         Checkpoint(status="invented")
+    assert Checkpoint(status="disabled").status == "disabled"
     with pytest.raises(ValidationError):
         Finalization(phase="invented")
+
+
+def test_mission_projection_preserves_a_non_expiring_checkpoint() -> None:
+    service = MissionService()
+    row = _row()
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+
+    updated = service.apply_attempt(
+        row,
+        request,
+        _outcome(request, accepted=True, checkpoint_expires_at_ms=None),
+    )
+
+    assert updated["checkpoint__expires_at_ms"] is None
+    assert Checkpoint(expires_at_ms=None).expires_at_ms is None
+
+
+def test_mission_projection_canonicalizes_legacy_zero_and_rejects_invalid_expiry() -> None:
+    service = MissionService()
+    row = _row()
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+
+    legacy = service.apply_attempt(
+        row,
+        request,
+        _outcome(request, accepted=True, checkpoint_expires_at_ms=0),
+    )
+    assert legacy["checkpoint__expires_at_ms"] is None
+
+    with pytest.raises(ValueError, match="expiration must be after creation"):
+        service.apply_attempt(
+            row,
+            request,
+            _outcome(request, accepted=True, checkpoint_expires_at_ms=1),
+        )
 
 
 def test_rejection_and_incomplete_evidence_commit_edges_before_success() -> None:

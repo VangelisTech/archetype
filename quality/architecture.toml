@@ -16,6 +16,7 @@ types = [
   "QueryService",
   "RedactionService",
   "RuntimeApplication",
+  "SandboxService",
   "ServiceContainer",
   "SimulationService",
   "StorageService",
@@ -131,6 +132,13 @@ allowed_app = [
   "archetype.app.research",
   "archetype.app.world.interfaces",
   "archetype.app.models",
+]
+
+[[family_rule]]
+name = "sandbox-family"
+consumer = "archetype.app.sandboxes"
+allowed_app = [
+  "archetype.app.sandboxes",
 ]
 
 [[family_rule]]
@@ -280,6 +288,14 @@ allowed_app = [
   "archetype.app.missions.models",
   "archetype.app.missions.transitions",
 ]
+
+[[module_rule]]
+module = "archetype.app.sandboxes.service"
+allowed_interfaces = [
+  "archetype.app.sandboxes.interfaces.iSandboxBackend",
+  "archetype.app.sandboxes.interfaces.iSandboxSession",
+]
+allowed_app = []
 
 [[module_rule]]
 module = "archetype.app.research.service"

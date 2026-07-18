@@ -137,7 +137,7 @@ class Checkpoint(Component):
     state_ref: str = ""
     restorable: bool = False
     created_at_ms: int = 0
-    expires_at_ms: int = 0
+    expires_at_ms: int | None = None
 
     @field_validator("status")
     @classmethod

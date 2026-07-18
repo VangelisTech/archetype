@@ -32,6 +32,12 @@ states free-form: `MissionStatus`, `TaskStatus`, `AttemptStatus`,
 only accepted values. Component validators reject invalid construction, and
 `MissionTransitionGraph` parses every persisted value again before use.
 
+Completed checkpoint state is `created`, `failed`, or `disabled`; `pending` is
+the component's pre-attempt default. The sandbox family's transport-level
+`ready` outcome is translated explicitly to durable `created` at
+`MissionService.apply_attempt`. This boundary translation keeps the two
+families independent while preserving one persisted vocabulary.
+
 ## 2. Typed mission/task/attempt transition graph
 
 One immutable graph owns the state of all three scopes. Its source is the

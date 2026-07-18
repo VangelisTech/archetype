@@ -145,7 +145,7 @@ class ArchetypeRuntime:
             return
         self._closed = True
 
-        errors: list[Exception] = []
+        errors: list[BaseException] = []
         for handle in list(self._handles):
             try:
                 await handle._shutdown_internal(from_runtime=True)
@@ -154,7 +154,7 @@ class ArchetypeRuntime:
 
         try:
             await self._container.shutdown()
-        except Exception as e:
+        except (Exception, BaseExceptionGroup) as e:
             errors.append(e)
 
         if errors:

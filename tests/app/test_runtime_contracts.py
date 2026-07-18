@@ -237,6 +237,24 @@ class TestShutdownIdempotency:
         with pytest.raises(RuntimeError):
             await world.spawn(Pos())
 
+    @pytest.mark.asyncio
+    async def test_container_cancellation_group_uses_runtime_error_contract(self, monkeypatch):
+        runtime = ArchetypeRuntime()
+
+        async def fail_container_shutdown():
+            raise BaseExceptionGroup(
+                "container shutdown failed",
+                [asyncio.CancelledError("sandbox close cancelled")],
+            )
+
+        monkeypatch.setattr(runtime._container, "shutdown", fail_container_shutdown)
+
+        with pytest.raises(RuntimeError, match="encountered 1 error") as captured:
+            await runtime.shutdown()
+
+        assert isinstance(captured.value.__cause__, BaseExceptionGroup)
+        assert isinstance(captured.value.__cause__.exceptions[0], asyncio.CancelledError)
+
 
 # ── 5. Fork handles ─────────────────────────────────────────────────────
 
