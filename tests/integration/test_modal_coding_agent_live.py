@@ -16,6 +16,10 @@ Run the paid, API-backed agent edit proof with::
 
     make test-modal-agent
 
+Run the paid cross-sandbox session continuation proof with::
+
+    make test-modal-resume
+
 The default Modal Secret names are ``archetype-codex`` (``CODEX_API_KEY``),
 ``archetype-claude-code`` (``ANTHROPIC_API_KEY``), and
 ``archetype-modal-endpoint`` (``MODAL_ENDPOINT_TOKEN_ID`` plus
@@ -46,6 +50,59 @@ from archetype.experiments.modal_coding_agent import (
 )
 
 pytestmark = pytest.mark.modal
+
+
+def _live_agent_spec(harness: AgentHarness, token: str, *, workspace: str) -> ModalSandboxSpec:
+    secret_name = {
+        "codex": os.environ.get("ARCHETYPE_CODEX_MODAL_SECRET", "archetype-codex"),
+        "claude-code": os.environ.get("ARCHETYPE_CLAUDE_MODAL_SECRET", "archetype-claude-code"),
+        "opencode": os.environ.get("ARCHETYPE_OPENCODE_MODAL_SECRET", "archetype-modal-endpoint")
+        or "archetype-modal-endpoint",
+    }[harness]
+    model_env = {
+        "codex": "ARCHETYPE_CODEX_INTEGRATION_MODEL",
+        "claude-code": "ARCHETYPE_CLAUDE_INTEGRATION_MODEL",
+        "opencode": "ARCHETYPE_OPENCODE_INTEGRATION_MODEL",
+    }[harness]
+    auth_mode = (
+        "api-key"
+        if harness == "opencode"
+        else os.environ.get("ARCHETYPE_MODAL_AGENT_AUTH_MODE", "api-key")
+    )
+    opencode_base_url = os.environ.get("ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL", "")
+    if harness == "opencode" and not opencode_base_url:
+        pytest.skip("set ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL for the paid OpenCode proof")
+    model = os.environ.get(model_env, "") or (
+        "Qwen/Qwen3.6-35B-A3B-FP8" if harness == "opencode" else ""
+    )
+    return ModalSandboxSpec(
+        repo_url="https://github.com/octocat/Hello-World.git",
+        base_ref="master",
+        branch=f"agent/modal-{harness}-{token[:12]}",
+        harness=harness,
+        auth_mode=cast(AgentAuthMode, auth_mode),
+        model=model,
+        codex_secret_name=(secret_name if harness == "codex" else "archetype-codex"),
+        claude_secret_name=(secret_name if harness == "claude-code" else "archetype-claude-code"),
+        opencode_secret_name=(secret_name if harness == "opencode" else "archetype-modal-endpoint"),
+        opencode_base_url=opencode_base_url,
+        opencode_wire_api=cast(
+            OpenCodeWireAPI,
+            os.environ.get("ARCHETYPE_OPENCODE_WIRE_API", "") or "chat-completions",
+        ),
+        codex_auth_volume_name=os.environ.get(
+            "ARCHETYPE_CODEX_MODAL_AUTH_VOLUME", "archetype-codex-auth"
+        ),
+        claude_auth_volume_name=os.environ.get(
+            "ARCHETYPE_CLAUDE_MODAL_AUTH_VOLUME", "archetype-claude-code-auth"
+        ),
+        workspace=workspace,
+        timeout_seconds=30 * 60,
+        idle_timeout_seconds=10 * 60,
+        agent_timeout_seconds=10 * 60,
+        snapshot_ttl_seconds=24 * 60 * 60,
+        snapshot_after_attempt=True,
+    )
 
 
 @pytest.mark.skipif(
@@ -171,57 +228,7 @@ async def test_live_modal_agent_edits_validates_commits_and_snapshots(
 ) -> None:
     token = uuid4().hex
     expected = f"{harness} completed Modal integration {token}\n"
-    secret_name = {
-        "codex": os.environ.get("ARCHETYPE_CODEX_MODAL_SECRET", "archetype-codex"),
-        "claude-code": os.environ.get("ARCHETYPE_CLAUDE_MODAL_SECRET", "archetype-claude-code"),
-        "opencode": os.environ.get("ARCHETYPE_OPENCODE_MODAL_SECRET", "archetype-modal-endpoint")
-        or "archetype-modal-endpoint",
-    }[harness]
-    model_env = {
-        "codex": "ARCHETYPE_CODEX_INTEGRATION_MODEL",
-        "claude-code": "ARCHETYPE_CLAUDE_INTEGRATION_MODEL",
-        "opencode": "ARCHETYPE_OPENCODE_INTEGRATION_MODEL",
-    }[harness]
-    auth_mode = (
-        "api-key"
-        if harness == "opencode"
-        else os.environ.get("ARCHETYPE_MODAL_AGENT_AUTH_MODE", "api-key")
-    )
-    opencode_base_url = os.environ.get("ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL", "")
-    if harness == "opencode" and not opencode_base_url:
-        pytest.skip("set ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL for the paid OpenCode proof")
-    model = os.environ.get(model_env, "") or (
-        "Qwen/Qwen3.6-35B-A3B-FP8" if harness == "opencode" else ""
-    )
-
-    spec = ModalSandboxSpec(
-        repo_url="https://github.com/octocat/Hello-World.git",
-        base_ref="master",
-        branch=f"agent/modal-{harness}-{token[:12]}",
-        harness=harness,
-        auth_mode=cast(AgentAuthMode, auth_mode),
-        model=model,
-        codex_secret_name=(secret_name if harness == "codex" else "archetype-codex"),
-        claude_secret_name=(secret_name if harness == "claude-code" else "archetype-claude-code"),
-        opencode_secret_name=(secret_name if harness == "opencode" else "archetype-modal-endpoint"),
-        opencode_base_url=opencode_base_url,
-        opencode_wire_api=cast(
-            OpenCodeWireAPI,
-            os.environ.get("ARCHETYPE_OPENCODE_WIRE_API", "") or "chat-completions",
-        ),
-        codex_auth_volume_name=os.environ.get(
-            "ARCHETYPE_CODEX_MODAL_AUTH_VOLUME", "archetype-codex-auth"
-        ),
-        claude_auth_volume_name=os.environ.get(
-            "ARCHETYPE_CLAUDE_MODAL_AUTH_VOLUME", "archetype-claude-code-auth"
-        ),
-        workspace=f"/workspace/{harness}",
-        timeout_seconds=30 * 60,
-        idle_timeout_seconds=10 * 60,
-        agent_timeout_seconds=10 * 60,
-        snapshot_ttl_seconds=24 * 60 * 60,
-        snapshot_after_attempt=True,
-    )
+    spec = _live_agent_spec(harness, token, workspace=f"/workspace/{harness}")
 
     client = await ModalSandboxClient.create(spec)
     try:
@@ -282,7 +289,7 @@ async def test_live_modal_agent_edits_validates_commits_and_snapshots(
         assert any(event["type"] == "agent_started" for event in live_events)
         assert any(event["type"] == "checkpoint_finished" for event in live_events)
         assert any(event["type"] == "attempt_completed" for event in live_events)
-        if auth_mode == "oauth":
+        if spec.auth_mode == "oauth":
             absent = await client._exec(
                 "test", "!", "-e", client.spec.mission_auth_path, timeout=30
             )
@@ -298,3 +305,102 @@ async def test_live_modal_agent_edits_validates_commits_and_snapshots(
                 await restored.close()
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize("harness", ["codex", "claude-code", "opencode"])
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION") != "1",
+    reason="set ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION=1 to spend Modal/model credits",
+)
+async def test_live_modal_agent_resumes_session_in_new_sandbox(
+    harness: AgentHarness,
+) -> None:
+    token = uuid4().hex
+    spec = _live_agent_spec(harness, token, workspace=f"/workspace/resume-{harness}")
+    first: ModalSandboxClient | None = await ModalSandboxClient.create(spec)
+    resumed: ModalSandboxClient | None = None
+    recovery: ModalSandboxClient | None = None
+    try:
+        phase_a_path = "archetype_modal_resume_a.txt"
+        phase_a_value = f"phase-a:{harness}:{token}\n"
+        phase_a = await first.run_attempt(
+            prompt=(
+                f"Create {phase_a_path} with exactly {phase_a_value!r}, including the newline. "
+                "Do not modify any other tracked file."
+            ),
+            validators=(
+                ValidatorSpec(
+                    name="phase_a_exact",
+                    command=(
+                        "python3",
+                        "-c",
+                        (
+                            "from pathlib import Path; "
+                            f"assert Path({phase_a_path!r}).read_text() == {phase_a_value!r}"
+                        ),
+                    ),
+                    timeout_seconds=30,
+                ),
+            ),
+            step_name=f"modal-{harness}-resume-a",
+            attempt_index=1,
+            idempotency_key=f"modal-resume:{harness}:{token}:a",
+        )
+        assert phase_a["accepted"] is True
+        assert phase_a["checkpoint_restorable"] is True
+        assert phase_a["agent_session_id"]
+        source_sandbox_id = first.sandbox_id
+        session_id = str(phase_a["agent_session_id"])
+        checkpoint_ref = str(phase_a["sandbox_state_ref"])
+
+        await first.close()
+        first = None
+        resumed = await ModalSandboxClient.resume(spec, checkpoint_ref)
+        assert resumed.sandbox_id != source_sandbox_id
+
+        phase_b_path = "archetype_modal_resume_b.txt"
+        phase_b_value = f"phase-b:{harness}:{token}\n"
+        validator_source = (
+            "from pathlib import Path; "
+            f"assert Path({phase_a_path!r}).read_text() == {phase_a_value!r}; "
+            f"assert Path({phase_b_path!r}).read_text() == {phase_b_value!r}"
+        )
+        phase_b = await resumed.run_attempt(
+            prompt=(
+                f"Continue by creating {phase_b_path} with exactly {phase_b_value!r}, "
+                "including the newline. Preserve the phase A file and do not modify any "
+                "other tracked file."
+            ),
+            validators=(
+                ValidatorSpec(
+                    name="phase_a_and_b_exact",
+                    command=("python3", "-c", validator_source),
+                    timeout_seconds=30,
+                ),
+            ),
+            step_name=f"modal-{harness}-resume-b",
+            attempt_index=2,
+            idempotency_key=f"modal-resume:{harness}:{token}:b",
+            previous_session_id=session_id,
+        )
+        assert phase_b["accepted"] is True
+        assert phase_b["agent_session_id"] == session_id
+        assert phase_b["checkpoint_restorable"] is True
+
+        recovery = await ModalSandboxClient.restore(spec, phase_b["sandbox_state_ref"])
+        recovered = await recovery._exec(
+            "python3",
+            "-c",
+            validator_source,
+            workdir=spec.workspace,
+            timeout=30,
+        )
+        assert recovered.returncode == 0, recovered.stderr
+        if spec.auth_mode == "oauth":
+            absent = await recovery._exec("test", "!", "-e", spec.mission_auth_path, timeout=30)
+            assert absent.returncode == 0
+    finally:
+        for client in (recovery, resumed, first):
+            if client is not None:
+                await client.close()

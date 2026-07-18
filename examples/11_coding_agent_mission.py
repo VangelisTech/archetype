@@ -107,6 +107,24 @@ Publication is idempotent and leaves a durable reconciliation record across the
 ``pending → uploaded → indexed`` phases. Host-side publication spans carry the
 world, run, entity, tick, and attempt correlation keys.
 
+The paid Modal integrations are manual and path-gated. ``make test-modal-resume``
+proves that Codex, Claude Code, and OpenCode can terminate, start a new sandbox
+from the checkpoint, and continue the same CLI session through another
+authoritatively validated edit. Credential-free ``restore()`` remains the
+artifact-recovery path; authenticated continuation uses ``resume()`` and
+re-resolves the named Secret or OAuth broker Volume.
+
+For repeatable Qwen capacity work, use the separate benchmarks instead of
+turning this example into a load test:
+
+    make bench-opencode-endpoint CONFIRM_PAID_BENCH=1
+    make bench-opencode-agents CONFIRM_PAID_BENCH=1
+
+They are never part of normal CI. Before interpreting the default
+``1,4,8,16,24,32`` curve as single-H200 saturation, temporarily set the
+endpoint maximum containers to one and avoid deploying during the run. See
+``docs/guide/benchmarking.md`` for workload and report contracts.
+
 Usage:
     uv run python examples/11_coding_agent_mission.py
 """

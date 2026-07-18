@@ -32,6 +32,7 @@ help:
 	@echo "  make test-modal     Run all live Modal coding-agent integrations"
 	@echo "  make test-modal-sandbox Run live Modal CLI/filesystem/snapshot integration"
 	@echo "  make test-modal-agent Run paid Codex + Claude Code + optional OpenCode integration"
+	@echo "  make test-modal-resume Run paid cross-sandbox agent continuation integration"
 	@echo "  make ci             CI gate (format-check + lint + lock-check + test-cov)"
 	@echo "  make mutmut         Run mutation tests (pilot scope; slow, on-demand)"
 	@echo "  make mutmut-results Show mutmut survivors from the last run"
@@ -42,6 +43,8 @@ help:
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make bench-query    Run QueryService latency benchmarks"
+	@echo "  make bench-opencode-endpoint Run paid Modal endpoint saturation sweep"
+	@echo "  make bench-opencode-agents Run paid one-sandbox-per-OpenCode-agent sweep"
 	@echo "  make eval           Run all eval suites"
 	@echo "  make eval-reg       Run regression suite only"
 	@echo "  make eval-idem      Run idempotency suite only"
@@ -190,6 +193,7 @@ test-apple-container:
 test-modal:
 	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 \
 		ARCHETYPE_RUN_MODAL_AGENT_INTEGRATION=1 \
+		ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION=1 \
 		PYTHONPATH=$(PYTHONPATH) \
 		uv run --extra coding-agent pytest -q -m modal \
 		tests/integration/test_modal_coding_agent_live.py
@@ -203,6 +207,12 @@ test-modal-agent:
 .PHONY: test-modal-sandbox
 test-modal-sandbox:
 	@ARCHETYPE_RUN_MODAL_SANDBOX_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
+		uv run --extra coding-agent pytest -q -m modal \
+		tests/integration/test_modal_coding_agent_live.py
+
+.PHONY: test-modal-resume
+test-modal-resume:
+	@ARCHETYPE_RUN_MODAL_RESUME_INTEGRATION=1 PYTHONPATH=$(PYTHONPATH) \
 		uv run --extra coding-agent pytest -q -m modal \
 		tests/integration/test_modal_coding_agent_live.py
 
@@ -248,6 +258,23 @@ bench-full:
 bench-query:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json
 	@echo "Query benchmark results written to query-bench-results.json"
+
+.PHONY: bench-opencode-endpoint
+bench-opencode-endpoint:
+	@test "$(CONFIRM_PAID_BENCH)" = "1" || \
+		(echo "Set CONFIRM_PAID_BENCH=1 to run the paid endpoint sweep" && exit 1)
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.agents.modal_opencode endpoint \
+		--confirm-paid-run --out opencode-endpoint-bench-results.json $(BENCH_ARGS)
+	@echo "Endpoint benchmark results written to opencode-endpoint-bench-results.json"
+
+.PHONY: bench-opencode-agents
+bench-opencode-agents:
+	@test "$(CONFIRM_PAID_BENCH)" = "1" || \
+		(echo "Set CONFIRM_PAID_BENCH=1 to run the paid agent sweep" && exit 1)
+	@PYTHONPATH=$(PYTHONPATH) uv run --extra coding-agent \
+		python -m bench.agents.modal_opencode agents \
+		--confirm-paid-run --out opencode-agent-bench-results.json $(BENCH_ARGS)
+	@echo "Agent benchmark results written to opencode-agent-bench-results.json"
 
 .PHONY: eval
 eval:

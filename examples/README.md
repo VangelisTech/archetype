@@ -155,10 +155,30 @@ OpenCode when `ARCHETYPE_OPENCODE_ENDPOINT_BASE_URL` is set (with optional
 `ARCHETYPE_OPENCODE_INTEGRATION_MODEL`, `ARCHETYPE_OPENCODE_MODAL_SECRET`, and
 `ARCHETYPE_OPENCODE_WIRE_API` overrides). Set
 `ARCHETYPE_MODAL_AGENT_AUTH_MODE=oauth` to use initialized Codex/Claude
-subscription Volumes instead. `make test-modal` runs both tiers.
+subscription Volumes instead. `make test-modal-resume` terminates the first
+sandbox, securely reattaches the named API Secret or OAuth broker Volume to a
+new sandbox created from its checkpoint, and requires the same Codex, Claude
+Code, or OpenCode session to complete a second validated edit. Credential-free
+`restore()` remains the artifact-recovery path; authenticated continuation uses
+`resume()`. `make test-modal` runs all three tiers.
 The live suite is excluded
 from normal `make test`, `make test-all`, and `make ci` runs; CI invokes it only
 when `examples/11_coding_agent_mission.py` changes.
+
+For repeatable Qwen endpoint capacity work, use the separate paid benchmark.
+It measures both direct streaming endpoint throughput and real
+one-sandbox-per-OpenCode-agent fanout on a configurable curve, with a
+cross-sandbox resume preflight:
+
+```bash
+make bench-opencode-endpoint CONFIRM_PAID_BENCH=1
+make bench-opencode-agents CONFIRM_PAID_BENCH=1
+```
+
+These targets never run in CI. Before treating the default
+`1,4,8,16,24,32` curve as single-H200 saturation, temporarily set maximum
+containers to one and avoid deployments. See `docs/guide/benchmarking.md` for
+the complete workload and report contracts.
 
 `make test-apple-container` runs the opt-in local infrastructure proof for both
 CLIs without invoking either model API. It is also excluded from normal tests.

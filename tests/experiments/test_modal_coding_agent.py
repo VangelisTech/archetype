@@ -1624,6 +1624,83 @@ async def test_restore_uses_snapshot_image_and_verifies_repository(
 
 
 @pytest.mark.asyncio
+async def test_resume_rehydrates_credentials_repository_and_live_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_ids: list[str] = []
+    dependency_specs: list[ModalSandboxSpec] = []
+    start_kwargs: list[dict[str, Any]] = []
+
+    class _Image:
+        @staticmethod
+        def from_id(image_id: str) -> object:
+            image_ids.append(image_id)
+            return object()
+
+    modal = type("Modal", (), {"Image": _Image})()
+    sandbox = _FakeSandbox()
+    spec = _spec(harness="codex", auth_mode="oauth", stream_agent_output=False)
+    _status_path, events_path = ModalSandboxClient.live_artifact_paths(spec.workspace)
+    sandbox.filesystem.files[events_path] = (
+        '{"sequence":2,"type":"attempt_started"}\n'
+        "not-json\n"
+        '{"sequence":7,"type":"checkpoint_started"}\n'
+    )
+    broker = _FakeSandbox()
+
+    async def dependencies(
+        dependency_spec: ModalSandboxSpec,
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        dependency_specs.append(dependency_spec)
+        return modal, "app", "agent-secret", "github-secret", "auth-volume"
+
+    async def start(start_spec: ModalSandboxSpec, **kwargs: Any) -> ModalSandboxClient:
+        start_kwargs.append(kwargs)
+        client = ModalSandboxClient(
+            start_spec,
+            sandbox,
+            kwargs["agent_secret"],
+            kwargs["github_secret"],
+            _auth_sandbox=broker,
+        )
+
+        async def git(*args: str) -> CommandResult:
+            stdout = f"{start_spec.branch}\n" if args == ("branch", "--show-current") else "true\n"
+            return CommandResult(("git", *args), 0, stdout, "")
+
+        async def check_oauth() -> None:
+            return None
+
+        monkeypatch.setattr(client, "_git", git)
+        monkeypatch.setattr(client, "_check_oauth", check_oauth)
+        return client
+
+    monkeypatch.setattr(ModalSandboxClient, "_modal_dependencies", staticmethod(dependencies))
+    monkeypatch.setattr(ModalSandboxClient, "_start", staticmethod(start))
+
+    client = await ModalSandboxClient.resume(spec, "modal-image://im-resume")
+
+    assert dependency_specs == [spec]
+    assert image_ids == ["im-resume"]
+    assert start_kwargs[0]["agent_secret"] == "agent-secret"
+    assert start_kwargs[0]["github_secret"] == "github-secret"
+    assert start_kwargs[0]["auth_volume"] == "auth-volume"
+    assert client._latest_checkpoint_ref == "modal-image://im-resume"
+    assert client._live_sequence == 8
+    events = [
+        json.loads(line)
+        for line in sandbox.filesystem.files[events_path].splitlines()
+        if line.startswith("{")
+    ]
+    assert events[-1]["sequence"] == 8
+    assert events[-1]["type"] == "sandbox_resumed"
+    assert events[-1]["checkpoint_ref"] == "modal-image://im-resume"
+    await client.close()
+    assert sandbox.terminated == 1
+    assert broker.terminated == 1
+
+
+@pytest.mark.asyncio
 async def test_modal_artifact_resolver_reads_live_checkpoint_files(tmp_path: Path) -> None:
     sandbox = _FakeSandbox()
     sandbox.filesystem.files.update(

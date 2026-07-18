@@ -74,6 +74,74 @@ Without those pieces, a local history directory and statistical threshold add
 machinery without producing a trustworthy decision. The snapshots preserve
 the context needed to revisit comparison once those prerequisites exist.
 
+## Modal endpoint and coding-agent capacity
+
+The paid Modal/OpenCode benchmark is intentionally separate from `make ci` and
+from the path-gated live example integration. It has two suites because raw
+inference saturation and useful coding-agent concurrency are different
+questions:
+
+- `endpoint` sends streaming OpenAI Chat Completions requests with a stable,
+  repeated repository prefix. It records time to first token, total latency,
+  request rate, token throughput, success rate, and raw request samples for
+  each concurrency level. A bounded warmup retries transient zero-to-one 503s;
+  its attempts and elapsed time are reported but excluded from measured load.
+- `agents` creates one Modal Sandbox and one OpenCode session per concurrent
+  unit. It times the authoritative edit/validate/commit attempt after sandbox
+  setup, and records setup and teardown separately. Before load, it terminates
+  one sandbox, starts another from the checkpoint, and requires the same
+  OpenCode session to complete a second validated task.
+
+The default step curve is `1,4,8,16,24,32`. Override it with
+`BENCH_ARGS="--levels 1,8,16"`. Both make targets require an additional paid-run
+acknowledgement:
+
+```bash
+# Direct endpoint calls need these two values in the local process. The
+# MODAL_PROXY_* aliases shown by Modal's endpoint docs are also accepted.
+export MODAL_ENDPOINT_TOKEN_ID=...
+export MODAL_ENDPOINT_TOKEN_SECRET=...
+make bench-opencode-endpoint CONFIRM_PAID_BENCH=1
+
+# Real agents resolve credentials inside Modal from this named Secret.
+make bench-opencode-agents CONFIRM_PAID_BENCH=1
+```
+
+The defaults target `Qwen/Qwen3.6-35B-A3B-FP8` at the configured endpoint and
+use the Modal Secret `archetype-modal-endpoint`. Use `BENCH_ARGS` to change the
+endpoint, model, Secret, workload levels, or output dimensions. A cheap
+continuation-plus-one-agent preflight is:
+
+```bash
+make bench-opencode-agents CONFIRM_PAID_BENCH=1 \
+  BENCH_ARGS="--levels 1"
+```
+
+For a single-H200 saturation experiment, first set the endpoint's maximum
+containers to one and confirm the deployed revision is healthy. Keep target
+concurrency at 32. Modal documents target concurrency as a soft autoscaler
+input, while maximum containers is the hard replica bound. A maximum of one
+also prevents overlapping old and new containers during rolling deployment,
+so use it only for a controlled benchmark window and do not deploy while the
+sweep runs. Restore the production scaling policy afterward.
+
+Deployment metadata is operator-declared because the protected endpoint does
+not expose its autoscaler configuration through the OpenAI API. Record the
+verified hard bound in both reports with
+`BENCH_ARGS="--declared-max-containers 1"`. An omitted value is serialized as
+`null`; it must not be interpreted as a single-replica result. GPU and target
+concurrency declarations default to `H200` and `32` and can also be overridden.
+
+The endpoint snapshot is written to `opencode-endpoint-bench-results.json`;
+the agent snapshot is written to `opencode-agent-bench-results.json`. Both are
+gitignored. Reports include the Git revision, runner identity, complete
+non-secret workload configuration, aggregate metrics, and raw samples. They do
+not contain endpoint credential values. See Modal's
+[endpoint benchmark guidance](https://modal.com/docs/guide/endpoint-benchmarks),
+[server scaling semantics](https://modal.com/docs/guide/servers), and
+[Sandbox snapshot contract](https://modal.com/docs/guide/sandbox-snapshots)
+when interpreting results.
+
 Remaining workload coverage and the runner/retention decision stay tracked in
 [issue #141](https://github.com/VangelisTech/archetype/issues/141).
 

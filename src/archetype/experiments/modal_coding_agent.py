@@ -2000,20 +2000,20 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
 
     @classmethod
     async def restore(cls, spec: ModalSandboxSpec, checkpoint_ref: str) -> ModalSandboxClient:
-        """Create a new sandbox from a previously recorded filesystem snapshot."""
+        """Create a credential-free sandbox for artifact recovery.
 
-        prefix = "modal-image://"
-        image_id = checkpoint_ref.removeprefix(prefix)
-        if not checkpoint_ref.startswith(prefix) or not image_id or "#" in image_id:
-            raise ValueError("Modal checkpoint must be a non-empty modal-image:// reference")
+        Use :meth:`resume` when a coding agent must make another model call.
+        Recovery sandboxes deliberately receive no model, GitHub, or OAuth
+        credential, even when ``spec`` names them.
+        """
+
+        image_id = cls._checkpoint_image_id(checkpoint_ref)
         modal, app = await cls._modal_base(spec)
         image = modal.Image.from_id(image_id)
         client = await cls._start(
             spec,
             image=image,
             app=app,
-            # Artifact recovery needs only the provider credential. Model and
-            # GitHub secrets are deliberately absent from restored sandboxes.
             agent_secret=None,
             github_secret=None,
             auth_volume=None,
@@ -2025,6 +2025,90 @@ class ModalSandboxClient(CodingAgentSandboxClient[ModalSandboxSpec]):
             raise
         client._latest_checkpoint_ref = checkpoint_ref
         return client
+
+    @classmethod
+    async def resume(cls, spec: ModalSandboxSpec, checkpoint_ref: str) -> ModalSandboxClient:
+        """Resume authenticated agent execution from a filesystem checkpoint.
+
+        This is the secure continuation path. Provider credentials are
+        resolved again from the names in ``spec`` and retain the same
+        process-only or broker-only isolation used by :meth:`create`.
+        """
+
+        image_id = cls._checkpoint_image_id(checkpoint_ref)
+        modal, app, agent_secret, github_secret, auth_volume = await cls._modal_dependencies(spec)
+        image = modal.Image.from_id(image_id)
+        client = await cls._start(
+            spec,
+            image=image,
+            app=app,
+            agent_secret=agent_secret,
+            github_secret=github_secret,
+            auth_volume=auth_volume,
+        )
+        try:
+            if spec.auth_mode == "oauth":
+                await client._check_oauth()
+            await client._git("rev-parse", "--is-inside-work-tree")
+            branch = (await client._git("branch", "--show-current")).stdout.strip()
+            if branch != spec.branch:
+                raise RuntimeError(
+                    f"Modal checkpoint branch mismatch: expected {spec.branch!r}, got {branch!r}"
+                )
+            await client._rehydrate_live_events()
+            await client._emit_live_event(
+                "sandbox_resumed",
+                phase="ready",
+                checkpoint_ref=checkpoint_ref,
+            )
+        except BaseException:
+            await client.close()
+            raise
+        client._latest_checkpoint_ref = checkpoint_ref
+        if spec.stream_agent_output:
+            print(
+                json.dumps(
+                    {
+                        "type": "sandbox_resumed",
+                        "sandbox_id": client.sandbox_id,
+                        "harness": spec.harness,
+                        "branch": spec.branch,
+                        "checkpoint_ref": checkpoint_ref,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+        return client
+
+    async def _rehydrate_live_events(self) -> None:
+        """Continue the checkpoint's append-only event sequence."""
+
+        _status_path, events_path = self._live_artifact_paths()
+        try:
+            value = str(await self._sandbox.filesystem.read_text.aio(events_path))
+        except Exception as exc:
+            if self._is_missing_sandbox_path(exc):
+                return
+            raise
+        sequences = []
+        for line in value.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            sequence = event.get("sequence")
+            if isinstance(sequence, int) and sequence >= 0:
+                sequences.append(sequence)
+        self._live_sequence = max(sequences, default=0)
+
+    @staticmethod
+    def _checkpoint_image_id(checkpoint_ref: str) -> str:
+        prefix = "modal-image://"
+        image_id = checkpoint_ref.removeprefix(prefix)
+        if not checkpoint_ref.startswith(prefix) or not image_id or "#" in image_id:
+            raise ValueError("Modal checkpoint must be a non-empty modal-image:// reference")
+        return image_id
 
 
 @dataclass(frozen=True)
