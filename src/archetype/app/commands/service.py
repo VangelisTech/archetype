@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 from uuid_utils import UUID, uuid7
 
-from archetype.app.errors import AvailabilityError, WorldNotFoundError
+from archetype.app.errors import WorldNotFoundError
 from archetype.app.models import Command, CommandType
 from archetype.app.storage.catalog import (
     CommandAdmission,
@@ -499,8 +499,3 @@ class CommandScheduler:
             world_id: await catalog.outbox_progress(world_id)
             for world_id, catalog in sorted(self._catalogs.items())
         }
-
-
-def is_transient_command_error(exc: Exception) -> bool:
-    """Public classifier used by fault-injection tests and host adapters."""
-    return isinstance(exc, (AvailabilityError, TimeoutError, ConnectionError, OSError))
