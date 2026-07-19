@@ -31,6 +31,7 @@ from uuid_utils import uuid7
 
 from archetype import _obs
 from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
+from archetype.app.artifacts.worktree_archive import sanitize_worktree_archive
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import RedactionReceipt
@@ -57,17 +58,6 @@ from archetype.artifacts.bundles import (
     MaterializedArtifact,
     _canonical_json,
 )
-from archetype.app.artifacts.worktree_archive import sanitize_worktree_archive
-from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
-from archetype.app.redaction.interfaces import iRedactionService
-from archetype.app.redaction.models import RedactionReceipt
-from archetype.app.storage.catalog import (
-    ArtifactPublicationExpiredError,
-    ArtifactPublicationRecord,
-    artifact_publication_key,
-)
-from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iWorldService
 from archetype.core.config import StorageConfig
 
 if TYPE_CHECKING:
