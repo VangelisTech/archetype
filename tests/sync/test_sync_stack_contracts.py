@@ -16,6 +16,7 @@ from archetype.app.storage.session import configure_session
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig
+from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import SyncHookRegistry
 from archetype.core.resources import Resources
 from archetype.core.sync import (
@@ -635,12 +636,14 @@ def test_sync_world_execute_passes_resources_and_kwargs(tmp_path):
 
 
 def test_sync_world_processor_error_fails_step_without_commit(tmp_path, caplog):
+    processor_error = RuntimeError("private processor detail")
+
     class BadProc(SyncProcessor):
         components = (Position,)
         priority = 1
 
         def process(self, df: DataFrame, **kwargs) -> DataFrame:
-            raise RuntimeError("boom")
+            raise processor_error
 
     _store, _querier, _updater, system, world = _make_sync_stack(tmp_path, "world_proc_error")
     system.add_processor(BadProc())
@@ -648,13 +651,49 @@ def test_sync_world_processor_error_fails_step_without_commit(tmp_path, caplog):
     entity_id = world.create_entity([Position(x=1, y=2)])
 
     with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(TickExecutionError) as raised:
             world.step(RunConfig(num_steps=1))
 
+    # Sync parity for #444: same public type as the async stack, one
+    # fail-fast failure, the single original chained directly as __cause__.
+    assert isinstance(raised.value, RuntimeError)
+    assert raised.value.phase == "compute"
+    assert len(raised.value.failures) == 1
+    assert raised.value.failures[0].table_id == Archetype.get_name(sig)
+    assert raised.value.failures[0].error is processor_error
+    assert raised.value.__cause__ is processor_error
+    assert "private processor detail" not in str(raised.value)
     assert any("Error processing archetype" in rec.message for rec in caplog.records)
     assert world.tick == 0
     assert any(row["entity_id"] == entity_id for row in world.spawn_cache.get(sig, []))
     assert world.query_archetype(sig=sig, ticks=[0]).count_rows() == 0
+
+
+def test_sync_world_commit_error_preserves_structured_failure(tmp_path):
+    """A commit-phase store failure carries the same structured contract
+    (phase="commit") and leaves the staged mutation retryable (#444)."""
+    commit_error = RuntimeError("private append detail")
+
+    _store, _querier, _updater, _system, world = _make_sync_stack(tmp_path, "world_commit_error")
+    sig = Archetype.sig_from_components([Position(x=0, y=0)])
+    entity_id = world.create_entity([Position(x=1, y=2)])
+
+    def failing_update(df, sig, run_config, tick):
+        raise commit_error
+
+    world.update = failing_update
+
+    with pytest.raises(TickExecutionError) as raised:
+        world.step(RunConfig(num_steps=1))
+
+    assert raised.value.phase == "commit"
+    assert len(raised.value.failures) == 1
+    assert raised.value.failures[0].table_id == Archetype.get_name(sig)
+    assert raised.value.failures[0].error is commit_error
+    assert raised.value.__cause__ is commit_error
+    assert "private append detail" not in str(raised.value)
+    assert world.tick == 0
+    assert any(row["entity_id"] == entity_id for row in world.spawn_cache.get(sig, []))
 
 
 def test_sync_world_query_archetype_uses_world_tick_and_world_id():

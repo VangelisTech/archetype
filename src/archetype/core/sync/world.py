@@ -24,6 +24,7 @@ from uuid_utils import uuid7
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
+from archetype.core.errors import TickExecutionError, TickFailure
 from archetype.core.hooks import (
     HookEvent,
     HookHandle,
@@ -116,16 +117,31 @@ class SyncWorld(iWorld):
 
         # Phase 1 — compute. No store writes, no cache consumption: a
         # processor failure leaves the world untouched and the tick retryable.
+        # Sequential execution fails fast, so the public TickExecutionError
+        # carries exactly one failure — same contract as the async stack, with
+        # the single original chained directly as __cause__ (#444).
         computed: dict[ArchetypeSignature, DataFrame] = {}
         for sig in sigs:
-            computed[sig] = self._compute_archetype(sig, run_config, **input_kwargs)
+            try:
+                computed[sig] = self._compute_archetype(sig, run_config, **input_kwargs)
+            except Exception as e:
+                raise TickExecutionError(
+                    phase="compute",
+                    failures=[TickFailure(table_id=Archetype.get_name(sig), error=e)],
+                ) from e
 
         # Phase 2 — commit. Each archetype's caches are consumed only after
         # its rows are appended; a store failure preserves exactly the
         # uncommitted mutations.
         results: dict[ArchetypeSignature, DataFrame] = {}
         for sig, df in computed.items():
-            results[sig] = self.update(df, sig, run_config, self.tick)
+            try:
+                results[sig] = self.update(df, sig, run_config, self.tick)
+            except Exception as e:
+                raise TickExecutionError(
+                    phase="commit",
+                    failures=[TickFailure(table_id=Archetype.get_name(sig), error=e)],
+                ) from e
             self.spawn_cache.pop(sig, None)
             self.despawn_cache.pop(sig, None)
 

@@ -1,8 +1,13 @@
+import asyncio
+import pickle
+
 import pytest
 
 from archetype.core.aio import AsyncProcessor, AsyncSystem
+from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.errors import TickExecutionError, TickFailure
 from tests.conftest import make_world_service
 
 
@@ -45,8 +50,14 @@ async def test_async_world_processor_error_fails_the_step(tmp_path, caplog):
         await world.create_entity([Foo(x=1)])
 
         with caplog.at_level("ERROR"):
-            with pytest.raises(RuntimeError, match="boom"):
+            # `except RuntimeError` remains a valid caller contract (#444):
+            # the structured TickExecutionError subclasses it. Its message
+            # names the failed table, not the processor's exception text.
+            with pytest.raises(RuntimeError) as raised:
                 await world.run(RunConfig(num_steps=1))
+        assert isinstance(raised.value, TickExecutionError)
+        assert Archetype.get_name((Foo,)) in str(raised.value)
+        assert "boom" not in str(raised.value)
         assert any("Error processing archetype" in rec.message for rec in caplog.records)
         # The failed tick did not happen: the counter never advanced.
         assert world.tick == 0
@@ -72,7 +83,7 @@ async def test_failed_tick_commits_nothing_and_is_retryable(tmp_path):
         eid = await world.create_entity([Foo(x=1)])
         sig = (Foo,)
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(TickExecutionError):
             await world.run(RunConfig(num_steps=1))
 
         # Nothing committed; the pending spawn survived the failure.
@@ -107,7 +118,7 @@ async def test_one_failing_archetype_blocks_all_appends(tmp_path):
         await world.create_entity([Foo(x=1)])
         bar_eid = await world.create_entity([Bar(y=2)])
 
-        with pytest.raises(RuntimeError, match="boom"):
+        with pytest.raises(TickExecutionError):
             await world.run(RunConfig(num_steps=1))
 
         # The healthy archetype appended nothing either, and keeps its spawn.
@@ -117,3 +128,167 @@ async def test_one_failing_archetype_blocks_all_appends(tmp_path):
         assert world.tick == 0
     finally:
         await ws.shutdown()
+
+
+class RateLimitError(RuntimeError):
+    """Provider-shaped test error without importing a vendor client."""
+
+
+class FailFooWith(AsyncProcessor):
+    components = (Foo,)
+    priority = 1
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def process(self, df, **kwargs):
+        raise self.error
+
+
+class FailBarWith(AsyncProcessor):
+    components = (Bar,)
+    priority = 1
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def process(self, df, **kwargs):
+        raise self.error
+
+
+@pytest.mark.asyncio
+async def test_step_preserves_ordered_structured_compute_failures(tmp_path):
+    """#444: the aggregate step error preserves every failed table identity
+    and the ORIGINAL exception objects in ascending table-id order, chained
+    as an ExceptionGroup cause — and its own message never leaks the
+    originals' text."""
+    timeout = TimeoutError("private provider timeout detail")
+    rate_limit = RateLimitError("private provider quota detail")
+    errors_by_table = {
+        Archetype.get_name((Foo,)): timeout,
+        Archetype.get_name((Bar,)): rate_limit,
+    }
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        system = AsyncSystem()
+        await system.add_processor(FailFooWith(timeout))
+        await system.add_processor(FailBarWith(rate_limit))
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        await world.create_entity([Foo(x=1)])
+        await world.create_entity([Bar(y=2)])
+
+        with pytest.raises(TickExecutionError) as raised:
+            await world.step(RunConfig(num_steps=1))
+
+        error = raised.value
+        expected_tables = tuple(sorted(errors_by_table))
+        assert isinstance(error, RuntimeError)
+        assert error.phase == "compute"
+        assert tuple(failure.table_id for failure in error.failures) == expected_tables
+        assert tuple(failure.error for failure in error.failures) == tuple(
+            errors_by_table[table_id] for table_id in expected_tables
+        )
+        assert isinstance(error.__cause__, ExceptionGroup)
+        assert error.__cause__.exceptions == tuple(
+            errors_by_table[table_id] for table_id in expected_tables
+        )
+        assert "private provider" not in str(error)
+        assert world.tick == 0
+        assert set(world.spawn_cache) == {(Foo,), (Bar,)}
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_step_preserves_ordered_structured_commit_failures(tmp_path, monkeypatch):
+    """#444: commit-phase aggregation carries the same structured contract,
+    with phase="commit" and every staged mutation preserved for retry."""
+    foo_error = OSError("private foo commit detail")
+    bar_error = RuntimeError("private bar execution detail")
+    errors_by_table = {
+        Archetype.get_name((Foo,)): foo_error,
+        Archetype.get_name((Bar,)): bar_error,
+    }
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage)
+        await world.create_entity([Foo(x=1)])
+        await world.create_entity([Bar(y=2)])
+        world.commit_coordinator = None
+
+        async def fail_commit(sig, df, run_config):
+            raise errors_by_table[Archetype.get_name(sig)]
+
+        monkeypatch.setattr(world, "_commit_archetype", fail_commit)
+
+        with pytest.raises(TickExecutionError) as raised:
+            await world.step(RunConfig(num_steps=1))
+
+        error = raised.value
+        expected_tables = tuple(sorted(errors_by_table))
+        assert error.phase == "commit"
+        assert tuple(failure.table_id for failure in error.failures) == expected_tables
+        assert tuple(failure.error for failure in error.failures) == tuple(
+            errors_by_table[table_id] for table_id in expected_tables
+        )
+        assert isinstance(error.__cause__, ExceptionGroup)
+        assert error.__cause__.exceptions == tuple(
+            errors_by_table[table_id] for table_id in expected_tables
+        )
+        assert "private" not in str(error)
+        assert world.tick == 0
+        assert set(world.spawn_cache) == {(Foo,), (Bar,)}
+    finally:
+        await ws.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_step_does_not_wrap_task_cancellation(tmp_path):
+    """Cancellation is not a table failure: it propagates raw so task
+    teardown is never masked behind the aggregate (#444 keeps the existing
+    cancellation semantics)."""
+
+    class CancelFoo(AsyncProcessor):
+        components = (Foo,)
+        priority = 1
+
+        async def process(self, df, **kwargs):
+            raise asyncio.CancelledError("cancel step")
+
+    ws = make_world_service()
+    try:
+        storage = StorageConfig(uri=str(tmp_path / "store"), namespace="ns")
+        system = AsyncSystem()
+        await system.add_processor(CancelFoo())
+        world = await ws.create_world(WorldConfig(name="w"), storage_config=storage, system=system)
+        await world.create_entity([Foo(x=1)])
+
+        # asyncio surfaces a task's cancellation as a fresh CancelledError
+        # (the original message does not survive gather); the contract under
+        # test is the TYPE: cancellation is never wrapped in the aggregate.
+        with pytest.raises(asyncio.CancelledError):
+            await world.step(RunConfig(num_steps=1))
+
+        assert world.tick == 0
+        assert (Foo,) in world.spawn_cache
+    finally:
+        await ws.shutdown()
+
+
+def test_tick_execution_error_survives_pickle_round_trip():
+    """The keyword-only constructor needs an explicit __reduce__; without it
+    any process boundary (logging queues, worker pools) drops the error."""
+    error = TickExecutionError(
+        phase="compute",
+        failures=(TickFailure(table_id="a_1c_table", error=ValueError("original detail")),),
+    )
+
+    clone = pickle.loads(pickle.dumps(error))
+
+    assert isinstance(clone, TickExecutionError)
+    assert clone.phase == "compute"
+    assert clone.failures[0].table_id == "a_1c_table"
+    assert isinstance(clone.failures[0].error, ValueError)
+    assert str(clone) == str(error)

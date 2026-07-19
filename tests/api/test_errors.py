@@ -22,6 +22,7 @@ from archetype.app.storage.catalog import (
     ClaimPendingError,
     SqliteControlCatalog,
 )
+from archetype.core.errors import TickExecutionError, TickFailure
 
 
 @pytest.mark.parametrize(
@@ -103,6 +104,28 @@ def test_catalog_schema_mismatch_remains_an_internal_error() -> None:
 
     assert raised.value.status_code == 500
     assert raised.value.detail == "Internal server error"
+
+
+def test_tick_execution_error_remains_a_redacted_internal_error() -> None:
+    """#444: the structured step failure is a Python-boundary contract; the
+    REST adapter fails closed without leaking table errors or payloads."""
+    secret = "sk-proj-" + "example-secret-never-expose"
+    error = TickExecutionError(
+        phase="commit",
+        failures=(
+            TickFailure(
+                table_id="a_1c_safe_table_id",
+                error=TimeoutError(f"provider failed with {secret}"),
+            ),
+        ),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        raise_api_error(error)
+
+    assert raised.value.status_code == 500
+    assert raised.value.detail == "Internal server error"
+    assert secret not in raised.value.detail
 
 
 @pytest.mark.asyncio
