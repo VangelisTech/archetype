@@ -1,0 +1,28 @@
+version = 1
+owner = "recovery"
+family = "recovery"
+
+[[disposition]]
+operations = [
+  "artifacts._ArtifactPublicationRecoveryPort.list_due_publications",
+  "artifacts._ArtifactPublicationRecoveryPort.reconcile_publication",
+  "interfaces.iFleetRecoveryService.list_exceptions",
+  "interfaces.iFleetRecoveryService.list_sweeps",
+  "interfaces.iFleetRecoveryService.run_once",
+  "interfaces.iMaintenanceRecoveryHandler.recover",
+  "interfaces.iMaintenanceRecoveryHandler.kind",
+  "interfaces.iModelRecoveryHandler.recover_model",
+  "interfaces.iModelRecoveryHandler.kind",
+  "interfaces.iRecoverySource.discover",
+  "interfaces.iRecoverySource.kind",
+  "interfaces.iRecoverySource.resolve",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "Recovery sweep fences, domain-native source claims, sparse exception rows, and typed run receipts remain authoritative."
+evidence = [
+  "docs/guide/fleet-recovery.md",
+  "tests/app/test_fleet_recovery_service.py",
+  "tests/app/test_recovery_catalog.py",
+]
+rationale = "Fleet recovery coordinates durable authorities without approving a new direct signal; catalog records and handler receipts own truth."
