@@ -67,6 +67,7 @@ These documents are the current orientation pack for contributors:
 | [Specification Overview](specification.md) | Umbrella contract and historical context |
 | [Application Architecture](application-architecture.md) | Normative supported boundaries, service ownership, dependency order, and lint inputs |
 | [Observability](observability.md) | Safe signal vocabulary, family dispositions, process-host ownership, and telemetry authority boundaries |
+| [Fleet Recovery](fleet-recovery.md) | Storage-scoped recovery authority, bounded/fenced work, retention, and sandbox-supervisor boundaries |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |
 | [Runtime](runtime.md) | Script-boundary runtime contract |

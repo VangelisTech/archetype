@@ -104,6 +104,7 @@ nav:
       - Artifacts: guide/artifacts.md
       - Artifact Finalization: guide/artifact-finalization.md
       - Agent Mission Transitions: guide/agent-missions.md
+      - Fleet Recovery: guide/fleet-recovery.md
       - Dataset and Evaluation Ontology: guide/dataset-eval-ontology.md
       - Audit Log: guide/audit-log.md
       - Repository Harness: guide/repository-harness.md

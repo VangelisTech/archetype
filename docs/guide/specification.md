@@ -27,6 +27,7 @@ The current contract set is split across design docs and executable tests.
 | [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
 | [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
 | [Agent Mission Transitions](agent-missions.md) | Mission/task/attempt authority | Typed completed-attempt graph, evidence gate, retry, exhaustion, and task advancement. |
+| [Fleet Recovery](fleet-recovery.md) | Storage-scoped recovery and retention | Bounded recurring discovery, fenced maintenance, sparse retry state, safe inspection, and model-capability separation. |
 | [Dataset and Evaluation Ontology](dataset-eval-ontology.md) | Dataset/eval identity and vocabulary | Dataset-vs-runtime coordinates, trial/episode cardinality, typed-artifact ownership, and grader composition. |
 | [Audit Log](audit-log.md) | Audit rows | Append-only audit history and query contract. |
 | [Repository Harness](repository-harness.md) | Executable evidence | Focused tests, contract matrices, repository scenarios, benchmarks, static audits, and mutation probes. |
@@ -88,6 +89,7 @@ This specification covers:
 - idempotency expectations and non-idempotent boundaries
 - typed external artifacts and dataset/evaluation identity
 - typed coding-agent mission transitions and completed-attempt evidence gates
+- storage-scoped fleet recovery, maintenance fencing, and retention safety
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future

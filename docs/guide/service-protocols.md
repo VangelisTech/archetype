@@ -61,6 +61,9 @@ iMissionAttemptExecutionService
   -> iMissionArtifactFinalizer + FencedAttemptRunner
 iMissionArtifactFinalizer -> iArtifactBundleService
 iSandboxService    -> registered iSandboxBackend providers
+iFleetRecoveryService
+  -> ControlCatalog + registered iRecoverySource
+  -> registered iMaintenanceRecoveryHandler (never iModelRecoveryHandler)
 ```
 
 `ServiceContainer` selects concrete implementations across families. The
@@ -81,7 +84,7 @@ attempt; it is orchestration, not another composition root.
 | `iQueryService` | `QueryService` | application, evaluation | Persisted ECS reads, signature/lineage discovery and compatibility history |
 | `iArtifactService` | `ArtifactService` | application, evaluation | Claim-backed component publication and immutable snapshot pinning |
 | `iArtifactTableService` | `ArtifactTableService` | application | Typed file/row ingestion and contextual reads |
-| `iArtifactBundleService` | `ArtifactBundleService` | application | Portable evidence publication, indexing, and reconciliation |
+| `iArtifactBundleService` | `ArtifactBundleService` | application, artifact recovery | Portable evidence publication, indexing, digest-only due discovery, and exact item reconciliation |
 | `iRedactionService` | `RedactionService` | artifact bundles, mission attempt claims; future telemetry/proxy adapters | Provider-neutral pre-durability scanning, deterministic text redaction, safe receipts, and quarantine |
 | `iEvaluationService` | `EvaluationService` | application | Query, grade, validate and publish evaluation evidence |
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
@@ -93,6 +96,10 @@ attempt; it is orchestration, not another composition root.
 | `iMissionAttemptExecutionService` | `MissionAttemptExecutionService` | coding-agent processors and supervisors | Claim/arm, atomic provider-call admission, runner-lifetime lease heartbeat, acknowledgement, indexed artifact finalization, claim-bound settlement, durable-winner authentication, private settled-row application, and terminal replay |
 | `iSandboxService` | `SandboxService` | container, mission orchestration | Provider selection and process-local create/restore/resume/close lifetime |
 | `iSandboxBackend` | host-selected provider adapters | sandbox service | Provider-specific isolated execution and checkpoint recovery |
+| `iRecoverySource` | source-family adapters | `FleetRecoveryService` | Bounded due discovery and reconstruction of exact crash-local authority digests |
+| `iMaintenanceRecoveryHandler` | capability-limited source-family adapters | `FleetRecoveryService` | One exact idempotent maintenance effect under the source family's authority |
+| `iModelRecoveryHandler` | future #504 supervisor adapter | checkpoint-aware sandbox supervisor only | Explicit provider-aware reconciliation; structurally absent from the maintenance fleet |
+| `iFleetRecoveryService` | `FleetRecoveryService` | recurring process host and operator inspector | Storage-scoped world discovery, recurring sweep leasing, sparse retry/DLQ coordination, bounded passes, and safe durable projections |
 
 ## 4. Boundary rules
 
@@ -232,6 +239,39 @@ uses the injected admission callback rather than importing the claim service.
 It emits typed phase evidence without importing Modal, Apple Container, or
 another provider SDK. See [Sandbox Execution](sandbox-execution.md).
 
+### Recovery ports
+
+`iFleetRecoveryService` is bound to one copied `StorageConfig` by the
+composition root. `run_once` is a bounded invocation: the process host owns
+recurrence and carries its advisory world cursor. The service persists one
+recurring fenced sweep per world and maintenance kind plus sparse exception
+rows only for retry, dead-letter, and resolved operator evidence. Those rows
+schedule work but never replace the artifact, mission, outbox, or retention
+source record.
+
+Every registered `iRecoverySource` has exactly one matching
+`iMaintenanceRecoveryHandler`. Before a handler call, the service checkpoints
+the source authority digest as its crash-local active subject; the handler
+then rereads and acquires its own family's authority. Item failure records a
+bounded error category with deterministic integer-millisecond backoff and does
+not abort the page. Operator projections hash claimants and omit raw error
+detail, requests, paths, URLs, outcomes, and credentials.
+
+`iModelRecoveryHandler` is a separate protocol with a different method name.
+`FleetRecoveryService` rejects its kind at construction and invocation and
+does not possess a sandbox runner. `possibly_submitted` resolution and agent
+resume remain #504 work. The first registered maintenance adapter is
+`ArtifactPublicationRecovery`; it lists digest-only due rows and invokes the
+artifact family's exact reconciliation method. See
+[Fleet Recovery](fleet-recovery.md).
+
+These protocols remove model submission from the maintenance object graph's
+public surface; Python structural typing is not a secret boundary. A
+production recurring worker must be composed in a dedicated process without
+model, sandbox, subscription, or Git-push credentials. The general application
+container is a contract/test composition root, not proof of that deployment
+isolation.
+
 ## 5. Models crossing families
 
 Cross-family models are immutable or frozen where identity matters. The root
@@ -249,6 +289,8 @@ owners:
 - public cross-family errors: `app/errors.py`.
 - sandbox validator, phase, command, checkpoint, and handoff values:
   `app/sandboxes/models.py`.
+- recovery subjects, cursors, policies, pass summaries, and safe inspector
+  projections: `app/recovery/models.py`.
 
 No app model is owned by the outward `experiments` package.
 
@@ -263,6 +305,8 @@ command_gateway:  iCommandGateway
 mission_attempt_workflow(storage_config):
   iMissionService + iMissionAttemptClaimService
   + iMissionArtifactFinalizer + iMissionAttemptExecutionService
+fleet_recovery_workflow(storage_config):
+  iFleetRecoveryService + registered maintenance-only adapters
 ```
 
 Runtime consumes `application`; API dependency injection consumes
@@ -272,6 +316,12 @@ finalizer to the same copied `StorageConfig`, including during cold recovery
 before a world has been opened in that process. There is no advertised
 unbound/default-catalog mission finalizer. Focused implementation tests may
 inspect internal members without creating compatibility.
+
+The recovery factory binds the control catalog, storage fingerprint, and
+artifact adapter to that same copied identity. If portable artifact storage is
+disabled, it exposes an inspection-capable workflow with no runnable handler;
+`run_once` fails closed instead of inventing work or a default store. The
+factory never registers or accepts a model handler.
 
 Shutdown stops new application admission, closes retained sandbox handles,
 flushes the audit projection, then closes container-owned world/storage
@@ -296,3 +346,4 @@ resources.
 - [Artifact Finalization](artifact-finalization.md)
 - [Agent Mission Transitions](agent-missions.md)
 - [Sandbox Execution](sandbox-execution.md)
+- [Fleet Recovery](fleet-recovery.md)

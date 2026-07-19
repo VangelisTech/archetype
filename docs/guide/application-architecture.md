@@ -96,6 +96,7 @@ src/archetype/app/
   research/          autoresearch and multi-run research workflows
   missions/          transitions, redaction-gated attempt claims, fenced orchestration
   sandboxes/         provider-neutral isolated execution and live-handle lifetime
+  recovery/          storage-scoped discovery, fenced maintenance, retry and retention
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
 ```
@@ -176,6 +177,7 @@ gateway, runtime, API, or CLI boundary.
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
 | Missions | Validator normalization, redaction-gated policy-bound attempt identity, typed task transitions, provider-submission claims, single-use provider-call grants, runner-lifetime lease supervision, fencing, structural attempt orchestration, retry/exhaustion and evidence gates | Redaction port, storage control catalog, injected structural sandbox runner and mission-owned artifact-finalizer port |
 | Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | Mission-owned immutable execution authorization, admission callback, and recovery action; provider adapters point inward |
+| Recovery | Storage-identity fleet discovery, bounded per-world/kind passes, sparse scheduling exceptions, operator inspection, and retention coordination | Storage control catalog and narrow source-family maintenance ports; no model-execution capability |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -262,6 +264,8 @@ container.application -> RuntimeApplication
 container.command_gateway -> CommandGateway
 container.mission_attempt_workflow(storage_config)
   -> storage-bound claim + artifact finalizer + execution services
+container.fleet_recovery_workflow(storage_config)
+  -> storage-bound recovery coordinator + narrow maintenance handlers
 ```
 
 Runtime and API lifespan code may construct or receive the internal container,
@@ -280,6 +284,22 @@ cross-family composition root. Its mission workflow factory requires an
 explicit `StorageConfig` and binds both the claim catalog and artifact adapter
 to that same identity; cold recovery never discovers or defaults storage from
 live world state.
+
+The recovery workflow is likewise bound to one explicit storage identity.
+Its coordinator owns only bounded scheduling, fencing, sparse exception state,
+and inspection; source-family rows remain authoritative for every transition.
+Maintenance handlers receive narrow artifact, outbox, or retention
+capabilities and never a model runner or agent credential. Provider-aware
+sandbox restoration and uncertain model submission are composed separately by
+the supervisor defined in Issue #504. See [Fleet Recovery](fleet-recovery.md)
+for the normative pass, lease, capability, and retention contract.
+
+The current `ServiceContainer.fleet_recovery_workflow()` proves that narrow
+Python surface and defaults to a container with no sandbox adapter. It is not
+process-level capability isolation: a trusted host can construct the same
+container with unrelated sandbox adapters. Production maintenance deployment
+therefore requires a dedicated secretless composition/host that never receives
+model, agent-subscription, or repository-push credentials.
 
 `MissionAttemptClaimService` is a reviewed missions-to-redaction dependency and
 has no optional scanner path. Any composition site constructing it must inject
