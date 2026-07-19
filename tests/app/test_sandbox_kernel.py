@@ -1061,7 +1061,9 @@ async def test_execution_heartbeat_prevents_live_attempt_takeover(tmp_path, monk
     contender = _claim_service(contender_catalog)
     client = _FakeClient(_Spec())
     original_run_agent = client._run_agent
+    original_renew = claims.renew
     provider_started = asyncio.Event()
+    heartbeat_renewed = asyncio.Event()
     release_provider = asyncio.Event()
 
     async def slow_run_agent(prompt: str, *, session_id: str) -> CommandResult:
@@ -1069,18 +1071,25 @@ async def test_execution_heartbeat_prevents_live_attempt_takeover(tmp_path, monk
         await release_provider.wait()
         return await original_run_agent(prompt, session_id=session_id)
 
+    async def observed_renew(*args: Any, **kwargs: Any):
+        renewed = await original_renew(*args, **kwargs)
+        if provider_started.is_set():
+            heartbeat_renewed.set()
+        return renewed
+
     monkeypatch.setattr(client, "_run_agent", slow_run_agent)
+    monkeypatch.setattr(claims, "renew", observed_renew)
     execution = asyncio.create_task(
         MissionAttemptExecutionService(claims, MissionService()).run(
             _mission_row(),
             tick=1,
             claimant="live-worker",
             runner=client,
-            lease_seconds=0.09,
+            lease_seconds=3.0,
         )
     )
     await provider_started.wait()
-    await asyncio.sleep(0.15)
+    await heartbeat_renewed.wait()
     request = MissionService().prepare_attempt(_mission_row(), tick=1)
     assert request is not None
 
