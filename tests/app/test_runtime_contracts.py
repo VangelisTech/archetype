@@ -16,7 +16,9 @@ import pytest
 
 from archetype import ArchetypeRuntime, Component
 from archetype.app.gateway.auth.guard import reset_daily_tokens, reset_tick_counters
+from archetype.core.aio import AsyncProcessor
 from archetype.core.config import StorageConfig
+from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PreTick
 
 
@@ -28,6 +30,17 @@ class Pos(Component):
 class Vel(Component):
     dx: float = 0.0
     dy: float = 0.0
+
+
+class FailPosWith(AsyncProcessor):
+    components = (Pos,)
+    priority = 1
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def process(self, df, **kwargs):
+        raise self.error
 
 
 @pytest.fixture(autouse=True)
@@ -254,6 +267,46 @@ class TestShutdownIdempotency:
 
         assert isinstance(captured.value.__cause__, BaseExceptionGroup)
         assert isinstance(captured.value.__cause__.exceptions[0], asyncio.CancelledError)
+
+
+class TestStructuredStepFailures:
+    """#444: TickExecutionError crosses the runtime boundary unchanged, so
+    scripts classify provider failures by isinstance on failure.error."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_propagates_structured_failure_unchanged(self, tmp_path):
+        processor_error = TimeoutError("private provider detail")
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world(
+                "structured-failure",
+                storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+                processors=[FailPosWith(processor_error)],
+            )
+            await world.spawn(Pos())
+
+            with pytest.raises(TickExecutionError) as raised:
+                await world.step()
+
+            assert raised.value.phase == "compute"
+            assert len(raised.value.failures) == 1
+            assert raised.value.failures[0].error is processor_error
+
+    def test_sync_runtime_preserves_the_same_failure_contract(self, tmp_path):
+        processor_error = TimeoutError("private provider detail")
+        with ArchetypeRuntime.sync() as runtime:
+            world = runtime.world(
+                "sync-structured-failure",
+                storage=StorageConfig(uri=str(tmp_path / "store"), namespace="ns"),
+                processors=[FailPosWith(processor_error)],
+            )
+            world.spawn(Pos())
+
+            with pytest.raises(TickExecutionError) as raised:
+                world.step()
+
+            assert raised.value.phase == "compute"
+            assert len(raised.value.failures) == 1
+            assert raised.value.failures[0].error is processor_error
 
 
 # ── 5. Fork handles ─────────────────────────────────────────────────────

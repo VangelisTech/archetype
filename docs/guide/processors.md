@@ -53,6 +53,29 @@ processor raised. Archetype computes every table before it appends any of
 them. On failure, `step()` raises, the tick does not advance, no table appends,
 and staged mutations remain available for retry.
 
+The raised error is `TickExecutionError`, a `RuntimeError` subclass whose
+`failures` tuple preserves each failed table id and the original exception
+object. Classify failures by type — never by message text, which names the
+failed tables but not the underlying errors:
+
+```python
+from archetype import TickExecutionError
+from openai import APITimeoutError  # or whichever types your processors raise
+
+try:
+    await world.step()
+except TickExecutionError as exc:
+    if all(isinstance(f.error, APITimeoutError) for f in exc.failures):
+        world.add_processor(FallbackProcessor())  # then retry the same tick
+    else:
+        raise  # an unrelated processor bug: do not mask it
+```
+
+`exc.phase` is `"compute"` when a processor raised (nothing was written) and
+`"commit"` when persistence failed (the failed tables keep their staged
+mutations). The original tracebacks stay attached to each `failure.error` and
+render through `exc.__cause__`.
+
 A processor's `components` tuple is a matching predicate, not a request to
 change an entity's component set. Return a DataFrame compatible with the
 current archetype. Widen or narrow an entity explicitly between steps:
