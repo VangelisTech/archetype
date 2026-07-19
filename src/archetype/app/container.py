@@ -34,11 +34,15 @@ from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.service import MissionService
 from archetype.app.query.service import QueryService
+from archetype.app.recovery.artifacts import ArtifactPublicationRecovery
+from archetype.app.recovery.models import RecoveryPolicy
+from archetype.app.recovery.service import FleetRecoveryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
 from archetype.app.research.service import AutoResearchService
 from archetype.app.sandboxes.interfaces import iSandboxBackend
 from archetype.app.sandboxes.service import SandboxService
+from archetype.app.storage.catalog import storage_fingerprint
 from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
@@ -54,6 +58,14 @@ class MissionAttemptWorkflow:
     claim_service: MissionAttemptClaimService
     artifact_finalizer: MissionArtifactFinalizer
     execution_service: MissionAttemptExecutionService
+
+
+@dataclass(frozen=True)
+class FleetRecoveryWorkflow:
+    """One storage-bound maintenance fleet with no model capability."""
+
+    service: FleetRecoveryService
+    artifact_publication: ArtifactPublicationRecovery | None
 
 
 class ServiceContainer:
@@ -164,6 +176,36 @@ class ServiceContainer:
             claim_service=claim_service,
             artifact_finalizer=artifact_finalizer,
             execution_service=execution_service,
+        )
+
+    def fleet_recovery_workflow(
+        self,
+        storage_config: StorageConfig,
+        *,
+        policy: RecoveryPolicy | None = None,
+    ) -> FleetRecoveryWorkflow:
+        """Bind bounded maintenance recovery to one explicit storage identity."""
+
+        bound_storage = storage_config.model_copy(deep=True)
+        artifact_publication = (
+            ArtifactPublicationRecovery(
+                self.artifact_bundle_service,
+                storage_config=bound_storage,
+            )
+            if self.artifact_bundle_service.enabled
+            else None
+        )
+        adapters = (artifact_publication,) if artifact_publication is not None else ()
+        service = FleetRecoveryService(
+            self.storage_service.get_control_catalog(bound_storage),
+            storage_fingerprint=storage_fingerprint(bound_storage),
+            sources=adapters,
+            handlers=adapters,
+            policy=policy,
+        )
+        return FleetRecoveryWorkflow(
+            service=service,
+            artifact_publication=artifact_publication,
         )
 
     async def shutdown(self) -> None:

@@ -29,14 +29,76 @@ const ATTEMPT_FINALIZATION_CAPABILITY = "attempt_claim_finalization_v2";
 const ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2";
 const ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1";
 const ARTIFACT_SERVER_CLOCK_CAPABILITY = "artifact_publication_server_clock_v1";
+const FLEET_RECOVERY_CAPABILITY = "fleet_recovery_v1";
 const MAX_SIGNED_64_BIT = 9223372036854775807n;
 const LEGACY_UNBOUND_MIGRATION = "mission_attempt_legacy_unbound_v8";
+const FLEET_RECOVERY_MIGRATION = "fleet_recovery_schema_v1";
+const RECOVERY_SWEEP_DOMAIN = "archetype.fleet-recovery-sweep.v1";
+const RECOVERY_EXCEPTION_DOMAIN = "archetype.fleet-recovery-exception.v1";
+const MAX_RECOVERY_LEASE_MS = 24 * 60 * 60 * 1000;
+const MAX_RECOVERY_DELAY_MS = 365 * 24 * 60 * 60 * 1000;
+const MAX_RECOVERY_ERROR_CODE_CHARS = 128;
+const MAX_RECOVERY_ERROR_DETAIL_CHARS = 4096;
 const MAX_ARTIFACT_LEASE_MS = 24 * 60 * 60 * 1000;
 const MAX_ARTIFACT_RETRY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 const MAX_ARTIFACT_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000;
 const ARTIFACT_RETRY_EXPIRED_DETAIL =
   "artifact publication retry window elapsed before upload";
 const CATALOG_DIGEST_DOMAIN = "archetype.catalog.v1";
+const RECOVERY_SWEEP_STATUSES = new Set(["idle", "leased", "retry_wait", "paused"]);
+const RECOVERY_EXCEPTION_STATUSES = new Set(["retry_wait", "dead_letter", "resolved"]);
+type RecoverySweepStatus = "idle" | "leased" | "retry_wait" | "paused";
+type RecoveryExceptionStatus = "retry_wait" | "dead_letter" | "resolved";
+type RecoverySweepEvent =
+  | "create"
+  | "lease"
+  | "take_over"
+  | "renew"
+  | "checkpoint"
+  | "yield"
+  | "fail"
+  | "exhaust"
+  | "pause"
+  | "redrive";
+type RecoveryExceptionEvent = "retry" | "dead_letter" | "resolve" | "redrive";
+const RECOVERY_SWEEP_TRANSITIONS: ReadonlyMap<string, RecoverySweepStatus> = new Map([
+  ["<absent>|create", "idle"],
+  ["idle|lease", "leased"],
+  ["retry_wait|lease", "leased"],
+  ["leased|take_over", "leased"],
+  ["leased|renew", "leased"],
+  ["leased|checkpoint", "leased"],
+  ["leased|yield", "idle"],
+  ["leased|fail", "retry_wait"],
+  ["leased|exhaust", "paused"],
+  ["leased|pause", "paused"],
+  ["paused|redrive", "idle"],
+]);
+const RECOVERY_EXCEPTION_TRANSITIONS: ReadonlyMap<string, RecoveryExceptionStatus> = new Map([
+  ["<absent>|retry", "retry_wait"],
+  ["<absent>|dead_letter", "dead_letter"],
+  ["retry_wait|retry", "retry_wait"],
+  ["retry_wait|dead_letter", "dead_letter"],
+  ["retry_wait|resolve", "resolved"],
+  ["dead_letter|resolve", "resolved"],
+  ["dead_letter|redrive", "retry_wait"],
+]);
+const RECOVERY_ERROR_CODES = new Set([
+  "discovery_failed",
+  "handler_failed",
+  "source_corrupt",
+  "policy_rejected",
+  "capability_unavailable",
+]);
+const RECOVERY_KINDS = new Set([
+  "mission_model_recovery",
+  "mission_finalization",
+  "artifact_publication",
+  "event_projection",
+  "artifact_retention",
+  "checkpoint_retention",
+  "local_staging_retention",
+]);
 const ATTEMPT_CLAIM_EDGES = new Set([
   "claimed->possibly_submitted",
   "possibly_submitted->provider_acknowledged",
@@ -55,7 +117,55 @@ function conflict(kind: string, message: string): Response {
   return json({ error: kind, message }, 409);
 }
 
+function recoveryPending(message: string): Response {
+  return json({ error: "recovery_sweep_pending", message }, 423);
+}
+
+function recoveryStale(message: string): Response {
+  return json({ error: "recovery_sweep_stale", message }, 412);
+}
+
 class RecoveryInputError extends Error {}
+
+function recoverySweepTransition(
+  source: unknown,
+  event: RecoverySweepEvent,
+): RecoverySweepStatus {
+  if (
+    source !== null &&
+    (typeof source !== "string" || !RECOVERY_SWEEP_STATUSES.has(source))
+  ) {
+    throw new Error(`unknown recovery sweep state: ${String(source)}`);
+  }
+  const sourceLabel = source === null ? "<absent>" : source;
+  const target = RECOVERY_SWEEP_TRANSITIONS.get(`${sourceLabel}|${event}`);
+  if (!target) {
+    throw new Error(
+      `illegal recovery sweep transition: ${String(sourceLabel)} via ${event}`,
+    );
+  }
+  return target;
+}
+
+function recoveryExceptionTransition(
+  source: unknown,
+  event: RecoveryExceptionEvent,
+): RecoveryExceptionStatus {
+  if (
+    source !== null &&
+    (typeof source !== "string" || !RECOVERY_EXCEPTION_STATUSES.has(source))
+  ) {
+    throw new Error(`unknown recovery exception state: ${String(source)}`);
+  }
+  const sourceLabel = source === null ? "<absent>" : source;
+  const target = RECOVERY_EXCEPTION_TRANSITIONS.get(`${sourceLabel}|${event}`);
+  if (!target) {
+    throw new Error(
+      `illegal recovery exception transition: ${String(sourceLabel)} via ${event}`,
+    );
+  }
+  return target;
+}
 
 function recoveryInteger(
   value: unknown,
@@ -99,6 +209,43 @@ function recoverySha256(value: unknown, field: string): string {
     throw new RecoveryInputError(`${field} must be a lowercase SHA-256 digest`);
   }
   return digest;
+}
+
+function recoveryKind(value: unknown): string {
+  const kind = recoveryText(value, "recovery kind", 128);
+  if (!RECOVERY_KINDS.has(kind)) {
+    throw new RecoveryInputError(`unsupported recovery kind ${kind}`);
+  }
+  return kind;
+}
+
+function recoveryError(
+  code: unknown,
+  detail: unknown,
+): { errorCode: string; errorDetail: string } {
+  const errorCode = recoveryText(
+    code,
+    "error_code",
+    MAX_RECOVERY_ERROR_CODE_CHARS,
+  );
+  if (!RECOVERY_ERROR_CODES.has(errorCode)) {
+    throw new RecoveryInputError(`unsupported recovery error_code ${errorCode}`);
+  }
+  const errorDetail = recoveryText(
+    detail,
+    "error_detail",
+    MAX_RECOVERY_ERROR_DETAIL_CHARS,
+    true,
+  );
+  return { errorCode, errorDetail };
+}
+
+async function recoveryKey(domain: string, ...parts: string[]): Promise<string> {
+  const encoded = new TextEncoder().encode(`${domain}\0${parts.join("\0")}`);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function recoveryObject(value: unknown, field: string): Record<string, unknown> {
@@ -686,6 +833,57 @@ export class WorldCommitDO implements DurableObject {
       );
       CREATE INDEX IF NOT EXISTS artifact_publications_due
       ON artifact_publications (status, lease_expires_at);
+      CREATE TABLE IF NOT EXISTS fleet_recovery_sweeps (
+        sweep_key TEXT PRIMARY KEY,
+        storage_fingerprint TEXT NOT NULL,
+        world_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        cursor TEXT NOT NULL DEFAULT '',
+        cycle INTEGER NOT NULL DEFAULT 0,
+        claimant TEXT NOT NULL DEFAULT '',
+        lease_expires_at_ms INTEGER NOT NULL DEFAULT 0,
+        fence_epoch INTEGER NOT NULL DEFAULT 0,
+        active_subject_key TEXT NOT NULL DEFAULT '',
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        max_consecutive_failures INTEGER NOT NULL,
+        next_due_at_ms INTEGER NOT NULL,
+        last_error_code TEXT NOT NULL DEFAULT '',
+        last_error_detail TEXT NOT NULL DEFAULT '',
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        paused_at_ms INTEGER,
+        UNIQUE (world_id, kind)
+      );
+      CREATE INDEX IF NOT EXISTS fleet_recovery_sweeps_due
+      ON fleet_recovery_sweeps (
+        world_id, status, next_due_at_ms, lease_expires_at_ms, kind, sweep_key
+      );
+      CREATE TABLE IF NOT EXISTS fleet_recovery_exceptions (
+        exception_key TEXT PRIMARY KEY,
+        sweep_key TEXT NOT NULL,
+        storage_fingerprint TEXT NOT NULL,
+        world_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        subject_key TEXT NOT NULL,
+        authority_key TEXT NOT NULL,
+        status TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL,
+        retry_at_ms INTEGER NOT NULL,
+        last_error_code TEXT NOT NULL DEFAULT '',
+        last_error_detail TEXT NOT NULL DEFAULT '',
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        resolved_at_ms INTEGER,
+        dead_lettered_at_ms INTEGER,
+        UNIQUE (sweep_key, subject_key),
+        FOREIGN KEY (sweep_key) REFERENCES fleet_recovery_sweeps (sweep_key)
+      );
+      CREATE INDEX IF NOT EXISTS fleet_recovery_exceptions_due
+      ON fleet_recovery_exceptions (
+        world_id, kind, status, retry_at_ms, exception_key
+      );
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key TEXT PRIMARY KEY, value TEXT NOT NULL
       );
@@ -835,7 +1033,56 @@ export class WorldCommitDO implements DurableObject {
           "WHERE index_snapshot_id_text = '0' " +
           "AND index_snapshot_id BETWEEN 1 AND 9007199254740991",
       );
+      this.sql.exec(
+        "INSERT OR IGNORE INTO catalog_meta (key, value) VALUES (?, 'complete')",
+        FLEET_RECOVERY_MIGRATION,
+      );
     });
+  }
+
+  private recoverySweep(
+    worldId: string,
+    kind: string,
+  ): Record<string, unknown> | null {
+    const rows = this.sql
+      .exec(
+        "SELECT * FROM fleet_recovery_sweeps WHERE world_id = ? AND kind = ?",
+        worldId,
+        kind,
+      )
+      .toArray();
+    return rows.length ? (rows[0] as Record<string, unknown>) : null;
+  }
+
+  private liveRecoverySweep(
+    worldId: string,
+    kind: string,
+    claimant: string,
+    fenceEpoch: number,
+    nowMs: number,
+  ): { row?: Record<string, unknown>; error?: Response } {
+    const row = this.recoverySweep(worldId, kind);
+    if (!row) {
+      return {
+        error: conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} is not registered`,
+        ),
+      };
+    }
+    if (
+      row.status !== "leased" ||
+      row.claimant !== claimant ||
+      Number(row.fence_epoch) !== fenceEpoch ||
+      Number(row.lease_expires_at_ms) <= nowMs
+    ) {
+      return {
+        error: recoveryStale(
+          `recovery sweep ${worldId}/${kind} is not live at fence ${fenceEpoch}`,
+        ),
+      };
+    }
+    return { row };
   }
 
   private recoverArtifactPublication(
@@ -1224,6 +1471,947 @@ export class WorldCommitDO implements DurableObject {
     return json({ error: "bad_route" }, 404);
   }
 
+  private async handleRecovery(
+    request: Request,
+    url: URL,
+    route: string[],
+    worldId: string,
+  ): Promise<Response> {
+    if (route[1] === "sweeps") {
+      return this.handleRecoverySweeps(request, url, route, worldId);
+    }
+    if (route[1] === "exceptions") {
+      return this.handleRecoveryExceptions(request, url, route, worldId);
+    }
+    return json({ error: "bad_route" }, 404);
+  }
+
+  private async handleRecoverySweeps(
+    request: Request,
+    url: URL,
+    route: string[],
+    worldId: string,
+  ): Promise<Response> {
+    const method = request.method;
+
+    if (route.length === 2 && method === "GET") {
+      const status = url.searchParams.get("status");
+      if (status !== null && !RECOVERY_SWEEP_STATUSES.has(status)) {
+        throw new RecoveryInputError(`unsupported recovery sweep status ${status}`);
+      }
+      const rows = status === null
+        ? this.sql
+            .exec(
+              "SELECT * FROM fleet_recovery_sweeps WHERE world_id = ? " +
+                "ORDER BY kind, sweep_key",
+              worldId,
+            )
+            .toArray()
+        : this.sql
+            .exec(
+              "SELECT * FROM fleet_recovery_sweeps WHERE world_id = ? AND status = ? " +
+                "ORDER BY kind, sweep_key",
+              worldId,
+              status,
+            )
+            .toArray();
+      if (rows.length > RECOVERY_KINDS.size) {
+        throw new Error("recovery sweep list exceeds the closed kind set");
+      }
+      return json(rows);
+    }
+
+    if (route.length !== 3 || method !== "POST") {
+      return json({ error: "bad_route" }, 404);
+    }
+
+    const operation = route[2];
+    const p = (await request.json()) as Record<string, unknown>;
+
+    if (operation === "ensure-v1") {
+      const storageFingerprint = recoverySha256(
+        p.storage_fingerprint,
+        "storage_fingerprint",
+      );
+      const kind = recoveryKind(p.kind);
+      const maxFailures = recoveryInteger(
+        p.max_consecutive_failures,
+        "max_consecutive_failures",
+        1,
+        1_000_000,
+      );
+      const initialDelay = recoveryInteger(
+        p.initial_delay_ms ?? 0,
+        "initial_delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      const sweepKey = await recoveryKey(
+        RECOVERY_SWEEP_DOMAIN,
+        storageFingerprint,
+        worldId,
+        kind,
+      );
+      const world = this.sql
+        .exec("SELECT 1 FROM world_state WHERE singleton = 1")
+        .toArray();
+      if (!world.length) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `world ${worldId} is not registered in this catalog`,
+        );
+      }
+      const existing = this.recoverySweep(worldId, kind);
+      if (existing) {
+        if (
+          existing.sweep_key !== sweepKey ||
+          existing.storage_fingerprint !== storageFingerprint ||
+          Number(existing.max_consecutive_failures) !== maxFailures
+        ) {
+          return conflict(
+            "recovery_sweep_conflict",
+            `recovery sweep ${worldId}/${kind} has different immutable policy`,
+          );
+        }
+        return json(existing);
+      }
+      const nowMs = Date.now();
+      const initialStatus = recoverySweepTransition(null, "create");
+      try {
+        this.sql.exec(
+          "INSERT INTO fleet_recovery_sweeps " +
+            "(sweep_key, storage_fingerprint, world_id, kind, status, " +
+            "max_consecutive_failures, next_due_at_ms, created_at_ms, updated_at_ms) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          sweepKey,
+          storageFingerprint,
+          worldId,
+          kind,
+          initialStatus,
+          maxFailures,
+          nowMs + initialDelay,
+          nowMs,
+          nowMs,
+        );
+      } catch (error) {
+        const collision = this.recoverySweep(worldId, kind);
+        if (collision) {
+          return conflict(
+            "recovery_sweep_conflict",
+            `recovery sweep ${worldId}/${kind} has different immutable policy`,
+          );
+        }
+        throw error;
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "lease-v1") {
+      const kind = recoveryKind(p.kind);
+      const claimant = recoveryText(p.claimant, "recovery claimant", 1024);
+      const leaseMs = recoveryInteger(
+        p.lease_ms,
+        "recovery lease_ms",
+        1,
+        MAX_RECOVERY_LEASE_MS,
+      );
+      const existing = this.recoverySweep(worldId, kind);
+      if (!existing) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} is not registered`,
+        );
+      }
+      const nowMs = Date.now();
+      if (existing.status === "paused") {
+        return json({ outcome: "paused", sweep: existing });
+      }
+      if (
+        existing.status === "leased" &&
+        Number(existing.lease_expires_at_ms) > nowMs
+      ) {
+        if (existing.claimant === claimant) {
+          return json({ outcome: "owned", sweep: existing });
+        }
+        return recoveryPending(
+          `recovery sweep ${worldId}/${kind} is leased by another worker`,
+        );
+      }
+      if (
+        (existing.status === "idle" || existing.status === "retry_wait") &&
+        Number(existing.next_due_at_ms) > nowMs
+      ) {
+        return json({ outcome: "not_due", sweep: existing });
+      }
+      if (!["idle", "retry_wait", "leased"].includes(String(existing.status))) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} has invalid status ${existing.status}`,
+        );
+      }
+      const currentFence = Number(existing.fence_epoch);
+      const currentCycle = Number(existing.cycle);
+      if (
+        !Number.isSafeInteger(currentFence) ||
+        !Number.isSafeInteger(currentCycle) ||
+        currentFence < 0 ||
+        currentCycle < 0 ||
+        currentFence >= Number.MAX_SAFE_INTEGER ||
+        currentCycle >= Number.MAX_SAFE_INTEGER
+      ) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} exhausted its portable counter`,
+        );
+      }
+      const outcome = existing.status === "leased" ? "recovered" : "acquired";
+      const event: RecoverySweepEvent =
+        existing.status === "leased" ? "take_over" : "lease";
+      const targetStatus = recoverySweepTransition(existing.status, event);
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, claimant = ?, " +
+          "lease_expires_at_ms = ?, fence_epoch = fence_epoch + 1, cycle = cycle + 1, " +
+          "active_subject_key = ?, updated_at_ms = ?, paused_at_ms = NULL " +
+          "WHERE sweep_key = ? AND fence_epoch = ? AND status = ?",
+        targetStatus,
+        claimant,
+        nowMs + leaseMs,
+        existing.active_subject_key,
+        nowMs,
+        existing.sweep_key,
+        existing.fence_epoch,
+        existing.status,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before lease acquisition`,
+        );
+      }
+      return json({ outcome, sweep: this.recoverySweep(worldId, kind) });
+    }
+
+    const kind = recoveryKind(p.kind);
+    const claimant = operation === "redrive-v1"
+      ? ""
+      : recoveryText(p.claimant, "recovery claimant", 1024);
+
+    if (operation === "renew-v1") {
+      const fenceEpoch = recoveryInteger(
+        p.fence_epoch,
+        "fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const leaseMs = recoveryInteger(
+        p.lease_ms,
+        "recovery lease_ms",
+        1,
+        MAX_RECOVERY_LEASE_MS,
+      );
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const sourceStatus = live.row!.status;
+      const targetStatus = recoverySweepTransition(sourceStatus, "renew");
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, lease_expires_at_ms = ?, " +
+          "updated_at_ms = ? WHERE sweep_key = ? AND status = ? AND claimant = ? " +
+          "AND fence_epoch = ? " +
+          "AND lease_expires_at_ms > ?",
+        targetStatus,
+        nowMs + leaseMs,
+        nowMs,
+        live.row!.sweep_key,
+        sourceStatus,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before renewal`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "checkpoint-v1") {
+      const fenceEpoch = recoveryInteger(
+        p.fence_epoch,
+        "fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const cursor = p.cursor === undefined || p.cursor === ""
+        ? ""
+        : recoverySha256(p.cursor, "recovery cursor");
+      const activeSubject = p.active_subject_key === undefined || p.active_subject_key === ""
+        ? ""
+        : recoverySha256(p.active_subject_key, "active_subject_key");
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const sourceStatus = live.row!.status;
+      const targetStatus = recoverySweepTransition(sourceStatus, "checkpoint");
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, cursor = ?, active_subject_key = ?, " +
+          "updated_at_ms = ? WHERE sweep_key = ? AND status = ? AND claimant = ? " +
+          "AND fence_epoch = ? AND lease_expires_at_ms > ?",
+        targetStatus,
+        cursor,
+        activeSubject,
+        nowMs,
+        live.row!.sweep_key,
+        sourceStatus,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before checkpoint`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "yield-v1") {
+      const fenceEpoch = recoveryInteger(
+        p.fence_epoch,
+        "fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const nextDelay = recoveryInteger(
+        p.next_delay_ms,
+        "next_delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      const existing = this.recoverySweep(worldId, kind);
+      if (
+        existing?.status === "idle" &&
+        existing.claimant === claimant &&
+        Number(existing.fence_epoch) === fenceEpoch
+      ) {
+        return json(existing);
+      }
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const sourceStatus = live.row!.status;
+      const targetStatus = recoverySweepTransition(sourceStatus, "yield");
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, lease_expires_at_ms = 0, " +
+          "active_subject_key = '', consecutive_failures = 0, next_due_at_ms = ?, " +
+          "last_error_code = '', last_error_detail = '', updated_at_ms = ?, " +
+          "paused_at_ms = NULL WHERE sweep_key = ? AND status = ? " +
+          "AND claimant = ? AND fence_epoch = ? AND lease_expires_at_ms > ?",
+        targetStatus,
+        nowMs + nextDelay,
+        nowMs,
+        live.row!.sweep_key,
+        sourceStatus,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before yield`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "fail-v1") {
+      const fenceEpoch = recoveryInteger(
+        p.fence_epoch,
+        "fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const { errorCode, errorDetail } = recoveryError(
+        p.error_code,
+        p.error_detail,
+      );
+      const retryDelay = recoveryInteger(
+        p.retry_delay_ms,
+        "retry_delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      const existing = this.recoverySweep(worldId, kind);
+      if (
+        existing &&
+        (existing.status === "retry_wait" || existing.status === "paused") &&
+        existing.claimant === claimant &&
+        Number(existing.fence_epoch) === fenceEpoch &&
+        existing.last_error_code === errorCode &&
+        existing.last_error_detail === errorDetail
+      ) {
+        return json(existing);
+      }
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const failures = Number(live.row!.consecutive_failures) + 1;
+      const paused = failures >= Number(live.row!.max_consecutive_failures);
+      const sourceStatus = live.row!.status;
+      const event: RecoverySweepEvent = paused ? "exhaust" : "fail";
+      const targetStatus = recoverySweepTransition(sourceStatus, event);
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, lease_expires_at_ms = 0, " +
+          "consecutive_failures = ?, next_due_at_ms = ?, last_error_code = ?, " +
+          "last_error_detail = ?, updated_at_ms = ?, paused_at_ms = ? " +
+          "WHERE sweep_key = ? AND status = ? AND claimant = ? AND fence_epoch = ? " +
+          "AND lease_expires_at_ms > ?",
+        targetStatus,
+        failures,
+        nowMs + retryDelay,
+        errorCode,
+        errorDetail,
+        nowMs,
+        paused ? nowMs : null,
+        live.row!.sweep_key,
+        sourceStatus,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before failure recording`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "pause-v1") {
+      const fenceEpoch = recoveryInteger(
+        p.fence_epoch,
+        "fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const { errorCode, errorDetail } = recoveryError(
+        p.error_code,
+        p.error_detail,
+      );
+      const existing = this.recoverySweep(worldId, kind);
+      if (
+        existing?.status === "paused" &&
+        existing.claimant === claimant &&
+        Number(existing.fence_epoch) === fenceEpoch &&
+        existing.last_error_code === errorCode &&
+        existing.last_error_detail === errorDetail
+      ) {
+        return json(existing);
+      }
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const sourceStatus = live.row!.status;
+      const targetStatus = recoverySweepTransition(sourceStatus, "pause");
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, lease_expires_at_ms = 0, " +
+          "last_error_code = ?, last_error_detail = ?, updated_at_ms = ?, " +
+          "paused_at_ms = ? WHERE sweep_key = ? AND status = ? " +
+          "AND claimant = ? AND fence_epoch = ? AND lease_expires_at_ms > ?",
+        targetStatus,
+        errorCode,
+        errorDetail,
+        nowMs,
+        nowMs,
+        live.row!.sweep_key,
+        sourceStatus,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before pause`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    if (operation === "redrive-v1") {
+      const expectedFence = recoveryInteger(
+        p.expected_fence_epoch,
+        "expected_fence_epoch",
+        0,
+        Number.MAX_SAFE_INTEGER - 1,
+      );
+      const delay = recoveryInteger(
+        p.delay_ms ?? 0,
+        "delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      const row = this.recoverySweep(worldId, kind);
+      if (!row) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} is not registered`,
+        );
+      }
+      if (
+        row.status === "idle" &&
+        Number(row.fence_epoch) === expectedFence + 1
+      ) {
+        return json(row);
+      }
+      if (
+        row.status !== "paused" ||
+        Number(row.fence_epoch) !== expectedFence
+      ) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} is not paused at the expected fence`,
+        );
+      }
+      const nowMs = Date.now();
+      const sourceStatus = row.status;
+      const targetStatus = recoverySweepTransition(sourceStatus, "redrive");
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_sweeps SET status = ?, claimant = '', " +
+          "lease_expires_at_ms = 0, fence_epoch = fence_epoch + 1, " +
+          "consecutive_failures = 0, next_due_at_ms = ?, " +
+          "last_error_code = '', last_error_detail = '', updated_at_ms = ?, " +
+          "paused_at_ms = NULL WHERE sweep_key = ? AND status = ? " +
+          "AND fence_epoch = ?",
+        targetStatus,
+        nowMs + delay,
+        nowMs,
+        row.sweep_key,
+        sourceStatus,
+        expectedFence,
+      );
+      if (updated.rowsWritten < 1) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before redrive`,
+        );
+      }
+      return json(this.recoverySweep(worldId, kind));
+    }
+
+    return json({ error: "bad_route" }, 404);
+  }
+
+  private async handleRecoveryExceptions(
+    request: Request,
+    url: URL,
+    route: string[],
+    worldId: string,
+  ): Promise<Response> {
+    const method = request.method;
+
+    if (method === "GET" && route.length === 3) {
+      const exceptionKey = recoverySha256(route[2], "exception_key");
+      const kind = recoveryKind(url.searchParams.get("kind"));
+      const rows = this.sql
+        .exec(
+          "SELECT * FROM fleet_recovery_exceptions " +
+            "WHERE world_id = ? AND kind = ? AND exception_key = ?",
+          worldId,
+          kind,
+          exceptionKey,
+        )
+        .toArray();
+      return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
+    }
+
+    if (method === "GET" && route.length === 2) {
+      const kind = url.searchParams.get("kind");
+      const validatedKind = kind === null ? null : recoveryKind(kind);
+      const status = url.searchParams.get("status");
+      if (status !== null && !RECOVERY_EXCEPTION_STATUSES.has(status)) {
+        throw new RecoveryInputError(
+          `unsupported recovery exception status ${status}`,
+        );
+      }
+      const dueRaw = url.searchParams.get("due_only");
+      const dueOnly = dueRaw === "1" || dueRaw === "true";
+      if (dueOnly && status !== null && status !== "retry_wait") {
+        throw new RecoveryInputError(
+          "due_only recovery exceptions must have retry_wait status",
+        );
+      }
+      const limit = recoveryInteger(
+        Number(url.searchParams.get("limit") ?? 100),
+        "recovery exception limit",
+        1,
+        10_000,
+      );
+      const where = ["world_id = ?"];
+      const values: unknown[] = [worldId];
+      if (validatedKind !== null) {
+        where.push("kind = ?");
+        values.push(validatedKind);
+      }
+      if (status !== null) {
+        where.push("status = ?");
+        values.push(status);
+      }
+      if (dueOnly) {
+        where.push("status = 'retry_wait'");
+        where.push("retry_at_ms <= ?");
+        values.push(Date.now());
+      }
+      values.push(limit);
+      return json(
+        this.sql
+          .exec(
+            "SELECT * FROM fleet_recovery_exceptions WHERE " +
+              where.join(" AND ") +
+              " ORDER BY retry_at_ms, exception_key LIMIT ?",
+            ...values,
+          )
+          .toArray(),
+      );
+    }
+
+    if (route.length !== 3 || method !== "POST") {
+      return json({ error: "bad_route" }, 404);
+    }
+
+    const operation = route[2];
+    const p = (await request.json()) as Record<string, unknown>;
+    const kind = recoveryKind(p.kind);
+    const claimant = recoveryText(p.claimant, "recovery claimant", 1024);
+    const fenceEpoch = recoveryInteger(
+      p.fence_epoch,
+      "fence_epoch",
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
+
+    if (operation === "retry-v1") {
+      const subjectKey = recoverySha256(p.subject_key, "subject_key");
+      const authorityKey = recoverySha256(p.authority_key, "authority_key");
+      const expectedAttempt = recoveryInteger(
+        p.expected_attempt_count,
+        "expected_attempt_count",
+        0,
+        Number.MAX_SAFE_INTEGER - 1,
+      );
+      const maxAttempts = recoveryInteger(
+        p.max_attempts,
+        "max_attempts",
+        1,
+        1_000_000,
+      );
+      const retryDelay = recoveryInteger(
+        p.retry_delay_ms,
+        "retry_delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      const { errorCode, errorDetail } = recoveryError(
+        p.error_code,
+        p.error_detail,
+      );
+      if (p.permanent !== undefined && typeof p.permanent !== "boolean") {
+        throw new RecoveryInputError("permanent must be a boolean");
+      }
+      const permanent = Boolean(p.permanent ?? false);
+      // Hashing yields to the event loop. Read only immutable identity before
+      // that await, then establish lease authority afterwards so takeover
+      // cannot leave a stale owner writing an exception.
+      const identity = this.recoverySweep(worldId, kind);
+      if (!identity) {
+        return conflict(
+          "recovery_sweep_conflict",
+          `recovery sweep ${worldId}/${kind} is not registered`,
+        );
+      }
+      const exceptionKey = await recoveryKey(
+        RECOVERY_EXCEPTION_DOMAIN,
+        String(identity.sweep_key),
+        subjectKey,
+      );
+      const nowMs = Date.now();
+      const live = this.liveRecoverySweep(
+        worldId,
+        kind,
+        claimant,
+        fenceEpoch,
+        nowMs,
+      );
+      if (live.error) return live.error;
+      const sweep = live.row!;
+      if (sweep.sweep_key !== identity.sweep_key) {
+        return recoveryStale(
+          `recovery sweep ${worldId}/${kind} changed before retry recording`,
+        );
+      }
+      const rows = this.sql
+        .exec(
+          "SELECT * FROM fleet_recovery_exceptions WHERE exception_key = ?",
+          exceptionKey,
+        )
+        .toArray();
+      const existing = rows.length
+        ? (rows[0] as Record<string, unknown>)
+        : null;
+      const nextAttempt = expectedAttempt + 1;
+      const event: RecoveryExceptionEvent =
+        permanent || nextAttempt >= maxAttempts ? "dead_letter" : "retry";
+      let targetStatus = recoveryExceptionTransition(null, event);
+      const retryAtMs = nowMs + retryDelay;
+      if (existing) {
+        if (
+          existing.sweep_key !== sweep.sweep_key ||
+          existing.storage_fingerprint !== sweep.storage_fingerprint ||
+          existing.world_id !== worldId ||
+          existing.kind !== kind ||
+          existing.subject_key !== subjectKey ||
+          existing.authority_key !== authorityKey ||
+          Number(existing.max_attempts) !== maxAttempts
+        ) {
+          return conflict(
+            "recovery_exception_conflict",
+            `recovery exception ${exceptionKey} has different immutable content`,
+          );
+        }
+        if (
+          Number(existing.attempt_count) === nextAttempt &&
+          existing.status === targetStatus &&
+          existing.last_error_code === errorCode &&
+          existing.last_error_detail === errorDetail
+        ) {
+          return json(existing);
+        }
+        const sourceStatus = existing.status;
+        try {
+          targetStatus = recoveryExceptionTransition(sourceStatus, event);
+        } catch {
+          return conflict(
+            "recovery_exception_conflict",
+            `recovery exception ${exceptionKey} must be redriven before retry`,
+          );
+        }
+        if (Number(existing.attempt_count) !== expectedAttempt) {
+          return conflict(
+            "recovery_exception_conflict",
+            `recovery exception ${exceptionKey} attempt count changed`,
+          );
+        }
+        const updated = this.sql.exec(
+          "UPDATE fleet_recovery_exceptions SET status = ?, attempt_count = ?, " +
+            "retry_at_ms = ?, last_error_code = ?, last_error_detail = ?, " +
+            "updated_at_ms = ?, resolved_at_ms = NULL, dead_lettered_at_ms = ? " +
+            "WHERE exception_key = ? AND status = ? AND attempt_count = ?",
+          targetStatus,
+          nextAttempt,
+          retryAtMs,
+          errorCode,
+          errorDetail,
+          nowMs,
+          targetStatus === "dead_letter" ? nowMs : null,
+          exceptionKey,
+          sourceStatus,
+          expectedAttempt,
+        );
+        if (updated.rowsWritten < 1) {
+          return conflict(
+            "recovery_exception_conflict",
+            `recovery exception ${exceptionKey} changed before retry recording`,
+          );
+        }
+      } else {
+        if (expectedAttempt !== 0) {
+          return conflict(
+            "recovery_exception_conflict",
+            `recovery exception ${exceptionKey} has not been recorded`,
+          );
+        }
+        this.sql.exec(
+          "INSERT INTO fleet_recovery_exceptions " +
+            "(exception_key, sweep_key, storage_fingerprint, world_id, kind, " +
+            "subject_key, authority_key, status, attempt_count, max_attempts, " +
+            "retry_at_ms, last_error_code, last_error_detail, created_at_ms, " +
+            "updated_at_ms, dead_lettered_at_ms) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          exceptionKey,
+          sweep.sweep_key,
+          sweep.storage_fingerprint,
+          worldId,
+          kind,
+          subjectKey,
+          authorityKey,
+          targetStatus,
+          nextAttempt,
+          maxAttempts,
+          retryAtMs,
+          errorCode,
+          errorDetail,
+          nowMs,
+          nowMs,
+          targetStatus === "dead_letter" ? nowMs : null,
+        );
+      }
+      const result = this.sql
+        .exec(
+          "SELECT * FROM fleet_recovery_exceptions WHERE exception_key = ?",
+          exceptionKey,
+        )
+        .toArray();
+      return json(result[0]);
+    }
+
+    const exceptionKey = recoverySha256(p.exception_key, "exception_key");
+    const nowMs = Date.now();
+    const live = this.liveRecoverySweep(
+      worldId,
+      kind,
+      claimant,
+      fenceEpoch,
+      nowMs,
+    );
+    if (live.error) return live.error;
+    const rows = this.sql
+      .exec(
+        "SELECT * FROM fleet_recovery_exceptions WHERE exception_key = ?",
+        exceptionKey,
+      )
+      .toArray();
+    const row = rows.length ? (rows[0] as Record<string, unknown>) : null;
+    if (!row || row.sweep_key !== live.row!.sweep_key) {
+      return conflict(
+        "recovery_exception_conflict",
+        `recovery exception ${exceptionKey} is not part of ${worldId}/${kind}`,
+      );
+    }
+
+    if (operation === "resolve-v1") {
+      if (row.status === "resolved") return json(row);
+      const sourceStatus = row.status;
+      let targetStatus: RecoveryExceptionStatus;
+      try {
+        targetStatus = recoveryExceptionTransition(sourceStatus, "resolve");
+      } catch {
+        return conflict(
+          "recovery_exception_conflict",
+          `recovery exception ${exceptionKey} has invalid status ${row.status}`,
+        );
+      }
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_exceptions SET status = ?, updated_at_ms = ?, " +
+          "resolved_at_ms = ? WHERE exception_key = ? AND status = ?",
+        targetStatus,
+        nowMs,
+        nowMs,
+        exceptionKey,
+        sourceStatus,
+      );
+      if (updated.rowsWritten < 1) {
+        return conflict(
+          "recovery_exception_conflict",
+          `recovery exception ${exceptionKey} changed before resolution`,
+        );
+      }
+      return json(
+        this.sql
+          .exec(
+            "SELECT * FROM fleet_recovery_exceptions WHERE exception_key = ?",
+            exceptionKey,
+          )
+          .toArray()[0],
+      );
+    }
+
+    if (operation === "redrive-v1") {
+      const expectedAttempt = recoveryInteger(
+        p.expected_attempt_count,
+        "expected_attempt_count",
+        0,
+        Number.MAX_SAFE_INTEGER,
+      );
+      const retryDelay = recoveryInteger(
+        p.retry_delay_ms ?? 0,
+        "retry_delay_ms",
+        0,
+        MAX_RECOVERY_DELAY_MS,
+      );
+      if (Number(row.attempt_count) !== expectedAttempt) {
+        return conflict(
+          "recovery_exception_conflict",
+          `recovery exception ${exceptionKey} attempt count changed`,
+        );
+      }
+      if (row.status === "retry_wait") return json(row);
+      const sourceStatus = row.status;
+      let targetStatus: RecoveryExceptionStatus;
+      try {
+        targetStatus = recoveryExceptionTransition(sourceStatus, "redrive");
+      } catch {
+        return conflict(
+          "recovery_exception_conflict",
+          `recovery exception ${exceptionKey} is not dead-lettered`,
+        );
+      }
+      const updated = this.sql.exec(
+        "UPDATE fleet_recovery_exceptions SET status = ?, retry_at_ms = ?, " +
+          "updated_at_ms = ?, resolved_at_ms = NULL, dead_lettered_at_ms = NULL " +
+          "WHERE exception_key = ? AND status = ? AND attempt_count = ?",
+        targetStatus,
+        nowMs + retryDelay,
+        nowMs,
+        exceptionKey,
+        sourceStatus,
+        expectedAttempt,
+      );
+      if (updated.rowsWritten < 1) {
+        return conflict(
+          "recovery_exception_conflict",
+          `recovery exception ${exceptionKey} changed before redrive`,
+        );
+      }
+      return json(
+        this.sql
+          .exec(
+            "SELECT * FROM fleet_recovery_exceptions WHERE exception_key = ?",
+            exceptionKey,
+          )
+          .toArray()[0],
+      );
+    }
+
+    return json({ error: "bad_route" }, 404);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean); // ns,:namespace,w,:world,...
@@ -1267,6 +2455,16 @@ export class WorldCommitDO implements DurableObject {
       );
     }
 
+    if (route[0] === "recovery") {
+      try {
+        return await this.handleRecovery(request, url, route, worldId);
+      } catch (error) {
+        if (error instanceof RecoveryInputError) {
+          return json({ error: "invalid", message: error.message }, 400);
+        }
+        throw error;
+      }
+    }
 
     if (
       route[0] === "attempt-claims" &&
@@ -2410,6 +3608,7 @@ export class WorldCommitDO implements DurableObject {
             ATTEMPT_CLAIM_CAPABILITY,
             ARTIFACT_SNAPSHOT_CAPABILITY,
             ARTIFACT_SERVER_CLOCK_CAPABILITY,
+            FLEET_RECOVERY_CAPABILITY,
           ],
         };
         return rows.length

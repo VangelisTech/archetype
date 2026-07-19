@@ -16,6 +16,7 @@ receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 """
 
 import asyncio
+import hashlib
 import shutil
 import socket
 import subprocess
@@ -38,11 +39,17 @@ from archetype.app.storage.catalog import (
     ClaimPendingError,
     CommandAdmission,
     CommandConflictError,
+    RecoveryExceptionConflictError,
+    RecoverySweepConflictError,
+    RecoverySweepPendingError,
+    RecoverySweepStaleError,
     SignatureRecord,
     SqliteControlCatalog,
     WorldRecord,
-    artifact_publication_key,
+    recovery_exception_key,
+    recovery_sweep_key,
 )
+from archetype.app.storage.catalog import artifact_publication_key
 from archetype.core.interfaces import StaleWriterError
 
 pytestmark = pytest.mark.asyncio
@@ -2361,6 +2368,198 @@ async def test_worker_rejects_open_or_lossy_artifact_mutation_bodies(worker_url)
         await catalog.close()
 
 
+async def test_worker_rejects_raw_durable_cursors(worker_url):
+    catalog = _remote(worker_url)
+    try:
+        await catalog.register_world(_world("w-cursor-validation"))
+        await catalog.ensure_recovery_sweep(
+            hashlib.sha256(b"cursor-validation-storage").hexdigest(),
+            "w-cursor-validation",
+            "artifact_publication",
+            max_consecutive_failures=2,
+        )
+        _, sweep = await catalog.lease_recovery_sweep(
+            "w-cursor-validation",
+            "artifact_publication",
+            "worker",
+            lease_ms=10_000,
+        )
+        invalid_fence_responses = [
+            await catalog._client.post(
+                f"{catalog._base}/w/w-cursor-validation/recovery/sweeps/checkpoint-v1",
+                json={
+                    "kind": "artifact_publication",
+                    "claimant": "worker",
+                    "fence_epoch": invalid_fence,
+                    "cursor": "",
+                    "active_subject_key": "",
+                },
+            )
+            for invalid_fence in (True, 1.5, "1", -1, 1 << 53, 1 << 63)
+        ]
+        checkpoint = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/recovery/sweeps/checkpoint-v1",
+            json={
+                "kind": "artifact_publication",
+                "claimant": "worker",
+                "fence_epoch": sweep.fence_epoch,
+                "cursor": "raw-page-token",
+                "active_subject_key": "",
+            },
+        )
+        invalid_identity_responses = [
+            await catalog._client.post(
+                f"{catalog._base}/w/w-cursor-validation/recovery/sweeps/checkpoint-v1",
+                json={
+                    "kind": invalid_kind,
+                    "claimant": invalid_claimant,
+                    "fence_epoch": sweep.fence_epoch,
+                    "cursor": "",
+                    "active_subject_key": "",
+                },
+            )
+            for invalid_kind, invalid_claimant in (
+                (1, "worker"),
+                ("eighth_recovery_kind", "worker"),
+                ("artifact_publication", 1),
+            )
+        ]
+        invalid_error_responses = [
+            await catalog._client.post(
+                f"{catalog._base}/w/w-cursor-validation/recovery/sweeps/fail-v1",
+                json={
+                    "kind": "artifact_publication",
+                    "claimant": "worker",
+                    "fence_epoch": sweep.fence_epoch,
+                    "error_code": error_code,
+                    "error_detail": error_detail,
+                    "retry_delay_ms": 0,
+                },
+            )
+            for error_code, error_detail in (
+                (1, ""),
+                ("handler_failed", 1),
+                ("handler_failed", None),
+                ("failed", ""),
+            )
+        ]
+        invalid_permanent = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/recovery/exceptions/retry-v1",
+            json={
+                "kind": "artifact_publication",
+                "claimant": "worker",
+                "fence_epoch": sweep.fence_epoch,
+                "subject_key": hashlib.sha256(b"invalid-permanent-subject").hexdigest(),
+                "authority_key": hashlib.sha256(b"invalid-permanent-authority").hexdigest(),
+                "expected_attempt_count": 0,
+                "error_code": "handler_failed",
+                "error_detail": "",
+                "retry_delay_ms": 0,
+                "max_attempts": 3,
+                "permanent": 1,
+            },
+        )
+        sensitive_claimant = "sensitive-worker-label"
+        stale = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/recovery/sweeps/checkpoint-v1",
+            json={
+                "kind": "artifact_publication",
+                "claimant": sensitive_claimant,
+                "fence_epoch": sweep.fence_epoch,
+                "cursor": "",
+                "active_subject_key": "",
+            },
+        )
+        publication_raw_cursor = await catalog._client.get(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/due-v1",
+            params={
+                "limit": 10,
+                "after_publication_key": "raw-publication-id",
+            },
+        )
+        publication_caller_clock = await catalog._client.get(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/due-v1",
+            params={"due": time.time(), "limit": 10},
+        )
+        publication_noncanonical_limit = await catalog._client.get(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/due-v1",
+            params={"limit": "1e2"},
+        )
+        raw_publication_key = artifact_publication_key(
+            "w-cursor-validation", "raw-run", "raw-idempotency"
+        )
+        acquisition_with_caller_clock = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/acquire-v3",
+            json={
+                "publication_key": raw_publication_key,
+                "run_id": "raw-run",
+                "attempt_id": "raw-attempt",
+                "idempotency_key": "raw-idempotency",
+                "request_digest": "raw-digest",
+                "request_json": "{}",
+                "claimant": "raw-worker",
+                "retry_window_ms": 1_000,
+                "lease_ms": 100,
+                "retry_until_ms": int(time.time() * 1000) + 1_000,
+            },
+        )
+        recovery_with_source_echo = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/{'f' * 64}/recover-v1",
+            json={"claimant": "raw-worker", "lease_ms": 100, "request_json": "{}"},
+        )
+        failure_with_caller_clock = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/{'f' * 64}/fail-v3",
+            json={
+                "claimant": "raw-worker",
+                "error": "failed",
+                "retry_delay_ms": 0,
+                "retry_at": time.time(),
+            },
+        )
+        zero_lease_recovery = await catalog._client.post(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications/{'f' * 64}/recover-v1",
+            json={"claimant": "raw-worker", "lease_ms": 0},
+        )
+        legacy_due = await catalog._client.get(
+            f"{catalog._base}/w/w-cursor-validation/artifact-publications",
+            params={"due": time.time()},
+        )
+        assert all(response.status_code == 400 for response in invalid_fence_responses)
+        assert all(response.status_code == 400 for response in invalid_identity_responses)
+        assert all(response.status_code == 400 for response in invalid_error_responses)
+        assert invalid_permanent.status_code == 400
+        assert checkpoint.status_code == 400
+        assert publication_raw_cursor.status_code == 400
+        assert publication_caller_clock.status_code == 400
+        assert publication_noncanonical_limit.status_code == 400
+        assert acquisition_with_caller_clock.status_code == 400
+        assert recovery_with_source_echo.status_code == 400
+        assert failure_with_caller_clock.status_code == 400
+        assert zero_lease_recovery.status_code == 400
+        assert legacy_due.status_code == 426
+        assert stale.status_code == 412
+        assert sensitive_claimant not in stale.text
+        assert "lowercase SHA-256" in checkpoint.json()["message"]
+        assert "lowercase SHA-256" in publication_raw_cursor.json()["message"]
+        assert "does not accept a caller clock" in publication_caller_clock.json()["message"]
+        assert "canonical decimal text" in publication_noncanonical_limit.json()["message"]
+    finally:
+        await catalog.close()
+
+
+async def test_worker_retry_hashes_before_lease_authority_and_never_yields_afterward():
+    source = (WORKER_DIR / "src" / "index.ts").read_text()
+    start = source.index('if (operation === "retry-v1")')
+    end = source.index("const exceptionKey = recoverySha256(p.exception_key", start)
+    retry_block = source[start:end]
+    hash_position = retry_block.index("const exceptionKey = await recoveryKey")
+    clock_position = retry_block.index("const nowMs = Date.now()")
+    authority_position = retry_block.index("const live = this.liveRecoverySweep")
+
+    assert hash_position < clock_position < authority_position
+    assert "await " not in retry_block[clock_position:]
+
+
 async def test_worker_artifact_key_hashes_before_clock_and_due_is_digest_only():
     source = (WORKER_DIR / "src" / "index.ts").read_text()
     start = source.index('route[1] === "acquire-v3"')
@@ -2374,6 +2573,18 @@ async def test_worker_artifact_key_hashes_before_clock_and_due_is_digest_only():
     assert "SELECT publication_key FROM artifact_publications" in source
     assert "function artifactPublicationAuthorityError(" in source
     assert source.count("artifactPublicationAuthorityError(row,") >= 3
+
+
+async def test_worker_guards_closed_recovery_kinds_and_portable_lease_counters():
+    source = (WORKER_DIR / "src" / "index.ts").read_text()
+    lease_start = source.index('if (operation === "lease-v1")')
+    lease_end = source.index("const updated = this.sql.exec(", lease_start)
+    lease_guard = source[lease_start:lease_end]
+
+    assert "const kind = recoveryKind(p.kind)" in lease_guard
+    assert "currentFence >= Number.MAX_SAFE_INTEGER" in lease_guard
+    assert "currentCycle >= Number.MAX_SAFE_INTEGER" in lease_guard
+    assert "const RECOVERY_KINDS = new Set([" in source
 
 
 async def test_worker_rejects_invalid_snapshot_before_indexed_replay(worker_url):
@@ -2741,3 +2952,214 @@ async def test_service_stack_runs_against_remote_catalog(tmp_path, worker_url, m
             await c.shutdown()
         except Exception:
             pass
+
+
+async def test_world_discovery_page_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            for world_id in ("world-3", "world-1", "world-4", "world-2"):
+                await catalog.register_world(_world(world_id))
+            await catalog.set_world_status("world-2", "destroyed")
+
+            first = await catalog.list_worlds_page(limit=2)
+            second = await catalog.list_worlds_page(
+                after_world_id=first[-1].world_id,
+                limit=2,
+            )
+            assert [record.world_id for record in first] == ["world-1", "world-2"]
+            assert first[1].status == "destroyed"
+            assert [record.world_id for record in second] == ["world-3", "world-4"]
+            assert await catalog.list_worlds_page(after_world_id="world-4", limit=2) == []
+        finally:
+            await catalog.close()
+
+
+async def test_fleet_recovery_state_machine_parity(tmp_path, worker_url):
+    fingerprint = hashlib.sha256(b"storage-config").hexdigest()
+    other_fingerprint = hashlib.sha256(b"other-storage-config").hexdigest()
+    subject_key = hashlib.sha256(b"attempt-1").hexdigest()
+    authority_key = hashlib.sha256(b"attempt-authority-1").hexdigest()
+    kind = "artifact_publication"
+
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            await catalog.register_world(_world("world-1"))
+            sweep = await catalog.ensure_recovery_sweep(
+                fingerprint,
+                "world-1",
+                kind,
+                max_consecutive_failures=2,
+            )
+            assert sweep.sweep_key == recovery_sweep_key(fingerprint, "world-1", kind)
+            assert (
+                await catalog.ensure_recovery_sweep(
+                    fingerprint,
+                    "world-1",
+                    kind,
+                    max_consecutive_failures=2,
+                )
+                == sweep
+            )
+            with pytest.raises(RecoverySweepConflictError):
+                await catalog.ensure_recovery_sweep(
+                    other_fingerprint,
+                    "world-1",
+                    kind,
+                    max_consecutive_failures=2,
+                )
+
+            outcome, leased = await catalog.lease_recovery_sweep(
+                "world-1", kind, "worker-1", lease_ms=1_000
+            )
+            assert outcome == "acquired"
+            assert leased.fence_epoch == 1
+            with pytest.raises(RecoverySweepPendingError):
+                await catalog.lease_recovery_sweep("world-1", kind, "worker-2", lease_ms=10_000)
+            checkpointed = await catalog.checkpoint_recovery_sweep(
+                "world-1",
+                kind,
+                "worker-1",
+                leased.fence_epoch,
+                cursor=hashlib.sha256(b"page-7").hexdigest(),
+                active_subject_key=subject_key,
+            )
+            assert checkpointed.active_subject_key == subject_key
+
+            await asyncio.sleep(1.05)
+            outcome, recovered = await catalog.lease_recovery_sweep(
+                "world-1", kind, "worker-2", lease_ms=10_000
+            )
+            assert outcome == "recovered"
+            assert recovered.fence_epoch == leased.fence_epoch + 1
+            assert recovered.cursor == checkpointed.cursor
+            assert recovered.active_subject_key == subject_key
+            with pytest.raises(RecoverySweepStaleError):
+                await catalog.checkpoint_recovery_sweep(
+                    "world-1",
+                    kind,
+                    "worker-1",
+                    leased.fence_epoch,
+                    cursor="",
+                )
+
+            exception = await catalog.retry_recovery_exception(
+                "world-1",
+                kind,
+                "worker-2",
+                recovered.fence_epoch,
+                subject_key=subject_key,
+                authority_key=authority_key,
+                expected_attempt_count=0,
+                error_code="handler_failed",
+                error_detail="TimeoutError",
+                retry_delay_ms=0,
+                max_attempts=2,
+            )
+            assert exception.exception_key == recovery_exception_key(sweep.sweep_key, subject_key)
+            assert exception.status == "retry_wait"
+            assert (
+                await catalog.get_recovery_exception("world-1", kind, exception.exception_key)
+                == exception
+            )
+            assert (
+                await catalog.retry_recovery_exception(
+                    "world-1",
+                    kind,
+                    "worker-2",
+                    recovered.fence_epoch,
+                    subject_key=subject_key,
+                    authority_key=authority_key,
+                    expected_attempt_count=0,
+                    error_code="handler_failed",
+                    error_detail="TimeoutError",
+                    retry_delay_ms=0,
+                    max_attempts=2,
+                )
+                == exception
+            )
+            with pytest.raises(RecoveryExceptionConflictError):
+                await catalog.retry_recovery_exception(
+                    "world-1",
+                    kind,
+                    "worker-2",
+                    recovered.fence_epoch,
+                    subject_key=subject_key,
+                    authority_key=hashlib.sha256(b"wrong-authority").hexdigest(),
+                    expected_attempt_count=1,
+                    error_code="handler_failed",
+                    error_detail="TimeoutError",
+                    retry_delay_ms=0,
+                    max_attempts=2,
+                )
+            dead = await catalog.retry_recovery_exception(
+                "world-1",
+                kind,
+                "worker-2",
+                recovered.fence_epoch,
+                subject_key=subject_key,
+                authority_key=authority_key,
+                expected_attempt_count=1,
+                error_code="handler_failed",
+                error_detail="TimeoutError",
+                retry_delay_ms=0,
+                max_attempts=2,
+            )
+            assert dead.status == "dead_letter"
+            redriven_exception = await catalog.redrive_recovery_exception(
+                "world-1",
+                kind,
+                "worker-2",
+                recovered.fence_epoch,
+                dead.exception_key,
+                expected_attempt_count=dead.attempt_count,
+            )
+            assert redriven_exception.status == "retry_wait"
+            resolved = await catalog.resolve_recovery_exception(
+                "world-1",
+                kind,
+                "worker-2",
+                recovered.fence_epoch,
+                dead.exception_key,
+            )
+            assert resolved.status == "resolved"
+            assert await catalog.list_recovery_exceptions(
+                "world-1", kind=kind, status="resolved"
+            ) == [resolved]
+
+            first_failure = await catalog.fail_recovery_sweep(
+                "world-1",
+                kind,
+                "worker-2",
+                recovered.fence_epoch,
+                error_code="discovery_failed",
+                error_detail="TimeoutError",
+                retry_delay_ms=0,
+            )
+            assert first_failure.status == "retry_wait"
+            _, retry_lease = await catalog.lease_recovery_sweep(
+                "world-1", kind, "worker-2", lease_ms=10_000
+            )
+            assert retry_lease.active_subject_key == subject_key
+            assert retry_lease.cursor == checkpointed.cursor
+            paused = await catalog.fail_recovery_sweep(
+                "world-1",
+                kind,
+                "worker-2",
+                retry_lease.fence_epoch,
+                error_code="discovery_failed",
+                error_detail="TimeoutError",
+                retry_delay_ms=0,
+            )
+            assert paused.status == "paused"
+            redriven = await catalog.redrive_recovery_sweep(
+                "world-1",
+                kind,
+                expected_fence_epoch=paused.fence_epoch,
+            )
+            assert redriven.status == "idle"
+            assert redriven.fence_epoch == paused.fence_epoch + 1
+            assert redriven.active_subject_key == subject_key
+            assert redriven.cursor == checkpointed.cursor
+            assert await catalog.list_recovery_sweeps("world-1", status="idle") == [redriven]
+        finally:
+            await catalog.close()

@@ -412,7 +412,7 @@ async def test_v4_catalog_renames_fact_claim_identity_without_data_loss(tmp_path
     ]
     conn.close()
     assert "artifact_entity_id" in columns and "fact_entity_id" not in columns
-    assert version == "8"
+    assert version == "9"
 
 
 async def test_v6_catalog_adds_attempt_claims_with_redaction_evidence(tmp_path):
@@ -445,7 +445,7 @@ async def test_v6_catalog_adds_attempt_claims_with_redaction_evidence(tmp_path):
         "redaction_acquisition_evidence_json",
         "redaction_evidence_json",
     } <= columns
-    assert version == "8"
+    assert version == "9"
 
 
 async def test_v7_catalog_preserves_settled_claim_while_adding_finalization_outbox(tmp_path):
@@ -535,7 +535,7 @@ async def test_v7_catalog_preserves_settled_claim_while_adding_finalization_outb
         "legacy_unbound_eligible",
         "finalizing_at",
     } <= columns
-    assert version == "8"
+    assert version == "9"
 
 
 async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch):
