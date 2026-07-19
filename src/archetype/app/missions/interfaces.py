@@ -21,8 +21,8 @@ from archetype.app.missions.models import (
     PreparedFinalizationSettlement,
     ProviderExecutionCapabilities,
 )
-from archetype.app.missions.transitions import AttemptStatus
 from archetype.app.redaction.models import RedactedRecord
+from archetype.missions.transitions import AttemptStatus
 
 
 @runtime_checkable

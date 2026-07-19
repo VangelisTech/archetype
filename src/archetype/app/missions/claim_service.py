@@ -43,11 +43,6 @@ from archetype.app.missions.transitions import (
     AttemptClaimStatus,
     AttemptClaimTransitionGraph,
     AttemptRecoveryAction,
-    AttemptStatus,
-    FinalizationPhase,
-    MissionStatus,
-    MissionTaskState,
-    TaskStatus,
 )
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import (
@@ -61,6 +56,13 @@ from archetype.app.storage.catalog import (
     AttemptClaimRecord,
     AttemptClaimStaleError,
     ControlCatalog,
+)
+from archetype.missions.transitions import (
+    AttemptStatus,
+    FinalizationPhase,
+    MissionStatus,
+    MissionTaskState,
+    TaskStatus,
 )
 
 _CLAIM_DOMAIN = "archetype.mission-attempt-claim.v1"

@@ -21,8 +21,8 @@ from archetype.app.missions.outcomes import (
     assess_attempt_outcome,
     assess_legacy_unbound_settled_outcome,
 )
-from archetype.app.missions.transitions import (
-    AttemptClaimStatus,
+from archetype.app.missions.transitions import AttemptClaimStatus
+from archetype.missions.transitions import (
     AttemptStatus,
     FinalizationPhase,
     MissionStatus,

@@ -225,6 +225,12 @@ mission-owned `FencedAttemptRunner` protocol includes the provider-capability
 property and prevents a static dependency on the sandbox family while allowing
 its common kernel to conform structurally.
 
+`iMissionService` remains an internal application port and `MissionService`
+remains its concrete implementation. Its row transforms consume
+`archetype.missions` Components and pure transition types; moving those
+reusable values does not promote the service, claim DTOs, execution
+authorization, or recovery contracts.
+
 ### Sandbox ports
 
 `iSandboxService` owns external resource lifetime and provider selection; it
@@ -256,7 +262,6 @@ ownership:
 
 - evaluation receipt Components and value contracts move under #557;
 - artifact Components and reusable bundle/value contracts move under #558;
-- mission Components and pure world-transition definitions move under #559;
 - research ledger Components and provisional experiment dependencies await the
   #561 design gate, which must replace its temporary architecture entries with
   concrete implementation issues before it closes; and
@@ -267,6 +272,13 @@ wildcard compatibility package is implied. Redaction, audit, sandbox,
 command, world, and other authority-specific models remain with their app
 owners unless a focused specification classifies an individual value as a
 reusable family contract.
+
+The mission split is the implemented example: persistent Components and pure
+world transitions live under `archetype.missions`, while durable claims,
+leases, fences, authorization values, recovery actions, settlement, redaction,
+provider coordination, app ports, and concrete orchestration remain under
+`archetype.app.missions`. No compatibility re-export or root-facade promotion
+bridges those owners.
 
 ## 6. Construction and shutdown
 

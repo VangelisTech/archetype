@@ -122,6 +122,14 @@ symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and `ServiceContainer`
 remain internal.
 
+The `archetype.missions` family is a leaf disposition with no allowed
+top-level family dependencies. It owns only persistent mission Components,
+component-local validation, world-state enums, and the pure completed-attempt
+transition graph. Its family-package exports are deliberate; none are added to
+the `archetype` root facade. Claims, recovery actions, execution
+authorization, redaction, storage integration, ports, errors, and concrete
+services remain under `archetype.app.missions`.
+
 The application-authority layout is:
 
 ```text
@@ -228,8 +236,8 @@ gateway, runtime, API, or CLI boundary.
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
-| Missions | Validator normalization, redaction-gated policy-bound attempt identity, typed task transitions, provider-submission claims, single-use provider-call grants, runner-lifetime lease supervision, fencing, structural attempt orchestration, retry/exhaustion and evidence gates | Redaction port, storage control catalog, injected structural sandbox runner and mission-owned artifact-finalizer port |
-| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | Mission-owned immutable execution authorization, admission callback, and recovery action; provider adapters point inward |
+| Missions | App-internal validator normalization, redaction-gated policy-bound attempt identity, provider-submission claims, single-use provider-call grants, runner-lifetime lease supervision, fencing, structural attempt orchestration, retry/exhaustion and evidence gates; consumes the top-level mission world domain | Redaction port, storage control catalog, injected structural sandbox runner and mission-owned artifact-finalizer port |
+| Sandboxes | Six-phase attempt execution, provider registry, checkpoints, and live handles | App-owned mission execution authorization, admission callback, and recovery action; provider adapters point inward |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
 | ServiceContainer | Concrete construction, ownership, and callback wiring | Every concrete implementation it constructs |
@@ -415,18 +423,19 @@ do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
 services and the container are not top-level exports.
 
 `quality/architecture.toml` contains both the application-family DAG and the
-registered top-level family dispositions for `datasets`, `experiments`, and
-`htn`. `scripts/check_architecture.py` enforces their package direction,
+registered top-level family dispositions for `datasets`, `experiments`, `htn`,
+and `missions`. `scripts/check_architecture.py` enforces their package direction,
 protocol imports, concrete construction, concrete inheritance, and persistent
 Component placement.
 
-The current reverse edges from provisional `archetype.experiments` and the
-current Components under app-family `models.py` are preserved only by exact
-migration entries. Evaluation, artifacts, and missions point to relocation
-issues #557, #558, and #559. Research and provisional experiment ownership
-point temporarily to design gate #561; every such expiry condition requires
-Issue #561 to replace itself with the concrete implementation issue it creates.
-These entries move no code and make no app symbol supported.
+The remaining reverse edges from provisional `archetype.experiments` and the
+remaining Components under app-family `models.py` are preserved only by exact
+migration entries. Evaluation and artifacts point to relocation issues #557
+and #558. Research and provisional experiment ownership point temporarily to
+design gate #561; every such expiry condition requires Issue #561 to replace
+itself with the concrete implementation issue it creates. Mission Components
+and pure world transitions have moved under #559, so no mission migration
+exception remains. These entries make no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
@@ -437,7 +446,9 @@ three existing gateway decorators remain children, and Issue #515 owns
 coherent ingress roots. The existing footgun reviewer complements this
 deterministic audit with semantic observability review.
 
-`MissionService` remains pure transition authority over persisted row values.
+`MissionService` remains app-internal pure transition authority over persisted
+row values and now consumes `archetype.missions`; the mechanical extraction
+does not rename or promote it.
 The same family now owns `MissionAttemptClaimService`, a control-catalog-backed
 pre-execution authority. It durably fences external provider submission and
 stores replayable terminal outcomes, but owns no provider client and cannot

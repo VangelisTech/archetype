@@ -38,6 +38,12 @@ application ports, and `service.py` for application authority. A top-level
 location does not make every symbol public; supported exports remain explicit
 under [API Stability](api-stability.md).
 
+For example, `archetype.missions` is a leaf family containing persistent
+mission Components and pure world transitions. Durable claims, recovery,
+execution authorization, app ports, and orchestration stay in
+`archetype.app.missions`; the family move adds no `archetype` root exports or
+legacy app re-exports.
+
 ## Source of Truth
 
 When repository sources disagree, use this order:

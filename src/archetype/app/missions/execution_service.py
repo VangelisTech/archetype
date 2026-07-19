@@ -29,6 +29,8 @@ from archetype.app.missions.outcomes import assess_attempt_outcome
 from archetype.app.missions.transitions import (
     AttemptClaimStatus,
     AttemptRecoveryAction,
+)
+from archetype.missions.transitions import (
     AttemptStatus,
     FinalizationPhase,
 )

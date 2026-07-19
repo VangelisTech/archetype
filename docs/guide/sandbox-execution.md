@@ -13,10 +13,13 @@ SDK calls, command transport, filesystem writes, checkpoint creation,
 provider URIs, and resource teardown.
 
 The common kernel imports no provider adapter or provider SDK. It consumes the
-mission family's immutable fenced-execution authorization and typed recovery
-action, not its claim service or storage authority. Modal, Apple Container, and
-future adapters point inward to the common kernel. Docker is not a dependency
-or fallback of this architecture.
+application mission family's immutable `FencedExecutionAuthorization` and
+typed `AttemptRecoveryAction`, not its claim service or storage authority.
+Those values remain app-internal control-plane contracts even though the
+sandbox consumes them through a mission-owned port; they are not part of the
+reusable `archetype.missions` world domain. Modal, Apple Container, and future
+adapters point inward to the common kernel. Docker is not a dependency or
+fallback of this architecture.
 
 The sandbox family does not own mission/task advancement, durable submission
 claims, artifact indexing, evaluation, PR policy, or fleet scheduling.
@@ -76,7 +79,8 @@ admission boundary for the execution phase, not a seventh attempt phase.
    `expires_at_ms=None` means a captured checkpoint has no configured expiry;
    epoch zero is never used for that meaning. Capture outcomes use
    `ready`/`failed`/`disabled`; the mission boundary explicitly projects those
-   into its durable checkpoint vocabulary instead of sharing family internals.
+   into the top-level mission domain's durable checkpoint vocabulary instead
+   of sharing sandbox internals.
 6. **Artifact handoff** — declare checkpoint-qualified or live source
    references and store the sandbox-local replay receipt. This phase does not
    upload or index artifacts; authoritative mission finalization owns that
@@ -152,9 +156,9 @@ OpenCode resume uses the prior session ID through `opencode run --session`.
 
 ## 6. Fenced execution, idempotency, and recovery
 
-Every call carries `FencedExecutionAuthorization` issued from a durable mission
-claim. The supported mission orchestrator derives the claim's provider identity
-and request fingerprint from this runner's
+Every call carries the app-owned `FencedExecutionAuthorization` issued from a
+durable mission claim. The supported mission orchestrator derives the claim's
+provider identity and request fingerprint from this runner's
 `provider_execution_capabilities`; callers cannot supply metadata for a
 different runner. Before reading a receipt or performing any sandbox mutation,
 including reconciliation, the kernel requires:

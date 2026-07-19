@@ -27,8 +27,6 @@ from archetype.app.missions import (
     AttemptClaimAcquireOutcome,
     AttemptClaimStatus,
     AttemptRecoveryAction,
-    AttemptStatus,
-    FinalizationPhase,
     ProviderExecutionCapabilities,
     attempt_invocation_fingerprint,
 )
@@ -38,6 +36,7 @@ from archetype.app.storage.catalog import (
     catalog_path_for,
 )
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.missions import AttemptStatus, FinalizationPhase
 
 pytestmark = [
     pytest.mark.asyncio,
