@@ -328,8 +328,12 @@ class MissionAttemptClaimService:
             else:
                 # A terminal record remains readable after a policy rollout,
                 # but no old-policy record may be mutated or reinterpreted.
+                # The stored error is evidence produced by the old policy, so
+                # a caller must not have to reproduce its redacted bytes with
+                # the new policy merely to prove an otherwise identical replay.
                 replay_value = outcome.value if isinstance(outcome, RedactedRecord) else outcome
                 outcome_json = self._json(replay_value)
+                last_error = current.last_error
             outcome_digest = hashlib.sha256(outcome_json.encode()).hexdigest()
             if not self._settlement_matches(
                 current,

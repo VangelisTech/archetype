@@ -344,11 +344,29 @@ async def test_policy_drift_fails_closed_for_live_claim_but_terminal_replay_is_r
         acquired.claim,
         attempt_status=AttemptStatus.REJECTED,
         outcome=outcome,
+        last_error=f"validator failed with {_SYNTHETIC_SECRET}",
     )
+    assert _SYNTHETIC_SECRET not in settled.last_error
     duplicate = await changed.acquire(request, _capabilities(), claimant="other-worker")
     assert duplicate.outcome is AttemptClaimAcquireOutcome.DUPLICATE
     assert duplicate.claim == settled
     assert changed.settled_outcome(duplicate.claim) == outcome
+    assert (
+        await changed.settle(
+            duplicate.claim,
+            attempt_status=AttemptStatus.REJECTED,
+            outcome=outcome,
+            last_error=f"validator failed with {_SYNTHETIC_SECRET}",
+        )
+        == settled
+    )
+    with pytest.raises(ValueError, match="settlement changed on replay"):
+        await changed.settle(
+            duplicate.claim,
+            attempt_status=AttemptStatus.REJECTED,
+            outcome=dict(outcome, message="different outcome"),
+            last_error=f"validator failed with {_SYNTHETIC_SECRET}",
+        )
     await catalog.close()
 
 
