@@ -35,13 +35,26 @@ handle sugar beside it. Because it sits beside core in the dependency DAG,
 everyone may import it: scripts, runtime consumers, and `app` (so `app.api`
 can serve a projection over REST without projections moving into app).
 
-Enforced, not conventional: stage 1 adds a `package_rule` to
-`quality/architecture.toml` forbidding family libraries from importing
-`archetype.app`, `archetype.runtime`, `archetype.api`, and `archetype.cli`.
+Enforced, not conventional: a `package_rule` in `quality/architecture.toml`
+forbids family libraries from importing `archetype.app`, `archetype.runtime`,
+`archetype.api`, and `archetype.cli`. There is exactly one such rule, shared
+with the broader app split below — whichever track lands first codifies it,
+and the other conforms.
 
-Compatibility note: `htn` and `datasets` are expected to move under a larger
-agent-missions module in a future reorganization. `graph` and `projections`
-are simulation-facing and stable under that move.
+Alignment (2026-07-19, architecture-agent direction): this decision is the
+special case of a repo-wide split of `app/` into application authority
+(stays: storage, world lifecycle, query coordination, commands, audit,
+redaction, gateway, container) and reusable ECS domain families that move
+top-level (`missions`, `evaluation`, `artifacts` — alongside `graph` and
+`projections`, which are top-level from birth). Family file idiom:
+`components.py`, `processors.py`, frame-pure modules, and `contracts.py` for
+public family value contracts. Family-specific projection logic lives inside
+its family (`missions/projections.py`); the top-level `projections/` package
+holds generic, cross-family read models. Sequencing per that direction: the
+family dependency rule is codified first, pure types move family-by-family,
+and `graph`/`projections` are introduced against the stabilized pattern.
+`htn`, `datasets`, and `experiments` consolidate only after the
+agent-missions boundary stabilizes.
 
 ### D2 — Edges are entities; EdgeTables are archetype tables
 
@@ -180,8 +193,8 @@ wrappers; REST exposure later via app importing the frame layer.
 
 | Stage | Ships | Depends on | Size |
 |---|---|---|---|
-| 0 | `projections/`: world-overview read model, frame-pure + handle sugar | — | ~250 lines |
-| 1 | `graph/`: `Relation`, `link`/`unlink`, `edges`, wildcard filters, architecture.toml family rule | — | ~300 lines |
+| 0 | `projections/`: world-overview read model, frame-pure + handle sugar (mission rollups arrive later via `missions/projections.py`, not via app) | family rule codified | ~250 lines |
+| 1 | `graph/`: `Relation`, `link`/`unlink`, `edges`, wildcard filters (adds the family rule only if the app-split track has not landed it) | family rule codified | ~300 lines |
 | 2 | Traversal: `neighborhood`, join helpers, `examples/11_graph_relationships.py` | 1 | ~300 lines |
 | 3 | FPS projection: `possession()` neighborhood read model | 2 | ~200 lines |
 | 4 | `GraphView` resource + `frame()` lookup | 1 | ~250 lines |
