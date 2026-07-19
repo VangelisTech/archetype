@@ -16,6 +16,7 @@ receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 """
 
 import asyncio
+import os
 import shutil
 import socket
 import subprocess
@@ -200,13 +201,24 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _isolated_npx_env(cache_path: Path) -> dict[str, str]:
+    """Keep concurrent xdist workers from racing in npx's install cache."""
+
+    cache_path.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.pop("NPM_CONFIG_CACHE", None)
+    env["npm_config_cache"] = str(cache_path)
+    return env
+
+
 @pytest.fixture(scope="module")
-def worker_url():
+def worker_url(tmp_path_factory):
     if shutil.which("npx") is None:
         pytest.skip("npx unavailable; wrangler dev harness skipped")
     port = _free_port()
     inspector_port = _free_port()
     worker_log = tempfile.TemporaryFile(mode="w+")
+    npx_env = _isolated_npx_env(tmp_path_factory.mktemp("wrangler-npm-cache"))
     proc = subprocess.Popen(
         [
             "npx",
@@ -225,6 +237,7 @@ def worker_url():
         stdout=worker_log,
         stderr=subprocess.STDOUT,
         text=True,
+        env=npx_env,
     )
     url = f"http://127.0.0.1:{port}"
     try:
@@ -307,6 +320,7 @@ async def test_worker_recovers_interrupted_legacy_eligibility_backfill(tmp_path)
     source_path = source_dir / "index.ts"
     source_path.write_text(_INTERRUPTED_LEGACY_WORKER_SOURCE)
     persistence = tmp_path / "wrangler-state"
+    npx_env = _isolated_npx_env(tmp_path / "npm-cache")
 
     def start_worker():
         port = _free_port()
@@ -332,6 +346,7 @@ async def test_worker_recovers_interrupted_legacy_eligibility_backfill(tmp_path)
             stdout=worker_log,
             stderr=subprocess.STDOUT,
             text=True,
+            env=npx_env,
         )
         url = f"http://127.0.0.1:{port}"
         deadline = time.time() + 120
