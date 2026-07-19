@@ -16,6 +16,10 @@ sys.modules["check_architecture"] = checker
 SPEC.loader.exec_module(checker)
 
 DEFAULT_RESERVED_INFRASTRUCTURE = (
+    "archetype._api",
+    "archetype._logging",
+    "archetype._obs",
+    "archetype._storage_uri",
     "archetype.api",
     "archetype.app",
     "archetype.cli",
@@ -332,6 +336,49 @@ allowed_families = []
             ]
 
 
+def test_unparsable_root_export_map_fails_closed(tmp_path: Path) -> None:
+    invalid_exports = (
+        "value = 1\n",
+        '_EXPORTS = dict(ArchetypeRuntime=("archetype.runtime", "ArchetypeRuntime"))\n',
+        "_EXPORTS = []\n",
+        '_EXPORTS = {"ArchetypeRuntime": ("archetype.runtime",)}\n',
+        '_EXPORTS = {"": ("archetype.runtime", "ArchetypeRuntime")}\n',
+    )
+    for index, source in enumerate(invalid_exports):
+        root = tmp_path / str(index)
+        _write_root_export_fixture(root)
+        package = root / "src" / "archetype"
+        (package / "__init__.py").write_text(source, encoding="utf-8")
+        alpha = package / "alpha" / "contracts.py"
+        core = package / "core" / "probe.py"
+        alpha.parent.mkdir(parents=True)
+        core.parent.mkdir(parents=True)
+        alpha.write_text("value = 1\n", encoding="utf-8")
+        core.write_text("from archetype import ArchetypeRuntime\n", encoding="utf-8")
+        rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+
+[[package_rule]]
+name = "core-outward"
+consumer = "archetype.core"
+forbidden = ["archetype.runtime"]
+"""
+
+        result = checker.audit_repository(
+            _write_family_policy(root, rules=rules),
+            repo_root=root,
+        )
+
+        assert result.policy_errors == [
+            "unable to statically parse archetype._EXPORTS; "
+            "root-facade import enforcement is degraded"
+        ]
+
+
 def test_core_rejects_every_registered_family_without_static_enumeration(
     tmp_path: Path,
 ) -> None:
@@ -452,10 +499,82 @@ allowed_families = []
 
         if expected_error:
             assert result.policy_errors == [
-                "unclassified first-party top-level packages: archetype.graph"
+                "unclassified first-party top-level scopes: archetype.graph"
             ]
         else:
             assert result.ok
+
+
+def test_unclassified_top_level_module_fails_and_reserved_module_passes(
+    tmp_path: Path,
+) -> None:
+    for name, reserved, expected_error in (
+        ("unclassified", DEFAULT_RESERVED_INFRASTRUCTURE, True),
+        (
+            "classified",
+            (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.helpers"),
+            False,
+        ),
+    ):
+        root = tmp_path / name
+        alpha = root / "src" / "archetype" / "alpha" / "contracts.py"
+        helpers = root / "src" / "archetype" / "helpers.py"
+        alpha.parent.mkdir(parents=True)
+        alpha.write_text("value = 1\n", encoding="utf-8")
+        helpers.write_text("from archetype import app\n", encoding="utf-8")
+        rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+        result = checker.audit_repository(
+            _write_family_policy(
+                root,
+                rules=rules,
+                reserved_infrastructure=reserved,
+            ),
+            repo_root=root,
+        )
+
+        if expected_error:
+            assert result.policy_errors == [
+                "unclassified first-party top-level scopes: archetype.helpers"
+            ]
+        else:
+            assert result.ok
+
+
+def test_registered_top_level_module_enforces_family_direction(tmp_path: Path) -> None:
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    helpers = tmp_path / "src" / "archetype" / "helpers.py"
+    alpha.parent.mkdir(parents=True)
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    helpers.write_text("from archetype import app\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "helpers"
+consumer = "archetype.helpers"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert [(violation.rule, violation.target) for violation in result.violations] == [
+        ("top_level_family_outward_dependency", "archetype.app")
+    ]
 
 
 def test_unclassified_internal_import_fails_and_declared_lower_family_passes(
@@ -505,7 +624,7 @@ allowed_families = []
             assert result.ok
         else:
             assert result.policy_errors == [
-                "unclassified first-party top-level packages: archetype.contrib"
+                "unclassified first-party top-level scopes: archetype.contrib"
             ]
             assert [(violation.rule, violation.target) for violation in result.violations] == [
                 ("top_level_family_dependency", "archetype.contrib")
@@ -664,7 +783,10 @@ def test_version_three_requires_registered_family_scope(tmp_path: Path) -> None:
         repo_root=tmp_path,
     )
 
-    assert result.policy_errors == ["architecture policy registers no top-level family scopes"]
+    assert result.policy_errors == [
+        "architecture policy registers no top-level family scopes",
+        "unclassified first-party top-level scopes: archetype.unrelated",
+    ]
 
 
 def test_registered_family_scopes_reject_missing_empty_stale_and_duplicate(

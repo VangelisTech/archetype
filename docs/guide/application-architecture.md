@@ -96,12 +96,14 @@ only reviewed lower top-level family contracts declared in
 configure providers, exporters, storage backends, process hosts, or the
 service container. The application layer may import a registered top-level
 family contract; the reverse edge is forbidden. Undeclared top-level
-family-to-family dependencies are denied. Every first-party package directly
-beneath `archetype` is classified as reserved infrastructure or registered as
-a domain family with one exact dependency disposition. Unclassified packages
-fail the architecture audit, and the complete registered family graph must be
-acyclic. Imports through the `archetype` root facade are resolved to the module
-that owns the exported package or symbol before these rules are applied.
+family-to-family dependencies are denied. Every first-party package or module
+directly beneath `archetype` is classified as reserved infrastructure or
+registered as a domain family with one exact dependency disposition.
+Unclassified scopes fail the architecture audit, and the complete registered
+family graph must be acyclic. Imports through the `archetype` root facade are
+resolved to the module that owns the exported package or symbol before these
+rules are applied. If its static export map cannot be parsed exactly, the audit
+fails rather than degrading root-facade enforcement.
 
 Naming states semantic ownership:
 
@@ -372,8 +374,8 @@ Together, the repository's architecture and observability checkers must:
 
 - cover every declared source scope and fail if a required scope is empty;
 - reject missing, stale, duplicate, or empty top-level family registrations;
-- reject any first-party top-level package that lacks an explicit reserved-
-  infrastructure or registered-family classification;
+- reject any first-party top-level package or module that lacks an explicit
+  reserved-infrastructure or registered-family classification;
 - require one exact cross-family dependency disposition for every registered
   top-level family;
 - reject cycles in the complete registered top-level family graph;
@@ -383,6 +385,8 @@ Together, the repository's architecture and observability checkers must:
   undeclared top-level family-to-family imports;
 - resolve root-facade package and symbol imports to their owning module before
   enforcing package direction;
+- fail closed when the root-facade export map is missing a valid static
+  disposition for any declared entry;
 - allow application authority to consume registered top-level family
   contracts without treating that path as public-API promotion;
 - reject direct `Component` subclasses anywhere under `archetype.app`;

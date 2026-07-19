@@ -38,6 +38,10 @@ forbidden_outward = [
   "archetype.cli",
 ]
 reserved_infrastructure = [
+  "archetype._api",
+  "archetype._logging",
+  "archetype._obs",
+  "archetype._storage_uri",
   "archetype.api",
   "archetype.app",
   "archetype.cli",
@@ -46,10 +50,10 @@ reserved_infrastructure = [
   "archetype.runtime",
 ]
 
-# Every first-party top-level package is classified above or registered as a
-# domain family below. Domain families may import core and themselves
-# implicitly. Every reviewed family-to-family edge must name the exact lower
-# family here, and the complete graph must remain acyclic.
+# Every first-party top-level package or module is classified above or
+# registered as a domain family below. Domain families may import core and
+# themselves implicitly. Every reviewed family-to-family edge must name the
+# exact lower family here, and the complete graph must remain acyclic.
 
 [[top_level_family_rule]]
 name = "datasets-domain-family"

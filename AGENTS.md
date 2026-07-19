@@ -19,9 +19,9 @@ libraries, and only lower top-level family contracts declared in
 `cli`; application families may consume their contracts in the other
 direction. Use `components.py`, `processors.py`, `contracts.py`,
 `transitions.py`, `interfaces.py`, and `service.py` according to those semantic
-roles. Every first-party top-level package must be classified as reserved
-infrastructure or a registered family, and the family graph must remain
-acyclic. Root-facade imports receive the disposition of their owning module.
+roles. Every first-party top-level package or module must be classified as
+reserved infrastructure or a registered family, and the family graph must
+remain acyclic. Root-facade imports receive the disposition of their owning module.
 Package placement never makes a symbol public by itself.
 
 ## Layout

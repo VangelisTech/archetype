@@ -25,6 +25,9 @@ TOP_LEVEL_FAMILY_OUTWARD_PACKAGES = frozenset(
     }
 )
 REQUIRED_TOP_LEVEL_INFRASTRUCTURE = TOP_LEVEL_FAMILY_OUTWARD_PACKAGES | {"archetype.core"}
+ROOT_EXPORT_POLICY_ERROR = (
+    "unable to statically parse archetype._EXPORTS; root-facade import enforcement is degraded"
+)
 COMPONENT_BASES = frozenset(
     {
         "archetype.Component",
@@ -211,24 +214,27 @@ def _source_files(source_root: Path) -> list[Path]:
     return sorted(path for path in source_root.rglob("*.py") if path.is_file())
 
 
-def _top_level_package_scopes(source_root: Path) -> frozenset[str]:
+def _top_level_first_party_scopes(source_root: Path) -> frozenset[str]:
     package_root = source_root / "archetype"
     if not package_root.is_dir():
         return frozenset()
-    return frozenset(
-        f"archetype.{path.name}"
-        for path in package_root.iterdir()
-        if path.is_dir()
-        and not path.name.startswith(".")
-        and any(candidate.is_file() for candidate in path.rglob("*.py"))
-    )
+    scopes: set[str] = set()
+    for path in package_root.iterdir():
+        if path.is_dir():
+            if not path.name.startswith(".") and any(
+                candidate.is_file() for candidate in path.rglob("*.py")
+            ):
+                scopes.add(f"archetype.{path.name}")
+        elif path.is_file() and path.suffix == ".py" and path.name != "__init__.py":
+            scopes.add(f"archetype.{path.stem}")
+    return frozenset(scopes)
 
 
-def _root_export_owners(tree: ast.AST | None) -> dict[str, str]:
+def _root_export_owners(tree: ast.AST | None) -> tuple[dict[str, str], str | None]:
     """Read the lazy root-facade export map without importing the package."""
 
     if tree is None:
-        return {}
+        return {}, None
     for node in getattr(tree, "body", []):
         value: ast.AST | None = None
         if (
@@ -246,20 +252,22 @@ def _root_export_owners(tree: ast.AST | None) -> dict[str, str]:
         try:
             exports = ast.literal_eval(value)
         except (TypeError, ValueError):
-            return {}
+            return {}, ROOT_EXPORT_POLICY_ERROR
         if not isinstance(exports, dict):
-            return {}
+            return {}, ROOT_EXPORT_POLICY_ERROR
         owners: dict[str, str] = {}
         for name, export in exports.items():
-            if (
+            if not (
                 isinstance(name, str)
+                and bool(name)
                 and isinstance(export, tuple)
                 and len(export) == 2
-                and isinstance(export[0], str)
+                and all(isinstance(value, str) and bool(value) for value in export)
             ):
-                owners[name] = export[0]
-        return owners
-    return {}
+                return {}, ROOT_EXPORT_POLICY_ERROR
+            owners[name] = export[0]
+        return owners, None
+    return {}, ROOT_EXPORT_POLICY_ERROR
 
 
 def _load_policy(policy_path: Path) -> dict[str, Any]:
@@ -358,10 +366,12 @@ def audit_repository(
             path.name == "__init__.py",
         )
 
-    actual_top_level_packages = _top_level_package_scopes(source_root)
+    actual_top_level_scopes = _top_level_first_party_scopes(source_root)
     root_tree = parsed.get("archetype", (None, None, False))[1]
-    root_export_owners = _root_export_owners(root_tree)
-    first_party_root_scopes = actual_top_level_packages | frozenset(
+    root_export_owners, root_export_error = _root_export_owners(root_tree)
+    if root_export_error is not None:
+        result.policy_errors.append(root_export_error)
+    first_party_root_scopes = actual_top_level_scopes | frozenset(
         module for module in parsed if module.startswith("archetype.") and module.count(".") == 1
     )
 
@@ -560,12 +570,12 @@ def audit_repository(
                 "top-level scopes classified as both family and reserved infrastructure: "
                 + ", ".join(overlapping_scopes)
             )
-        unclassified_packages = sorted(
-            actual_top_level_packages - registered_family_scopes - reserved_infrastructure
+        unclassified_scopes = sorted(
+            actual_top_level_scopes - registered_family_scopes - reserved_infrastructure
         )
-        if unclassified_packages:
+        if unclassified_scopes:
             result.policy_errors.append(
-                "unclassified first-party top-level packages: " + ", ".join(unclassified_packages)
+                "unclassified first-party top-level scopes: " + ", ".join(unclassified_scopes)
             )
 
         graph = {

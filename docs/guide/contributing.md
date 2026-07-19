@@ -26,10 +26,10 @@ libraries, and only reviewed lower top-level family contracts declared in
 `quality/architecture.toml`. It never imports `archetype.app`,
 `archetype.runtime`, `archetype.api`, or `archetype.cli`. The application layer
 may consume top-level family contracts; the reverse edge is forbidden.
-Every first-party top-level package must be classified as reserved
+Every first-party top-level package or module must be classified as reserved
 infrastructure or registered as a family with one exact dependency
 disposition. The complete family graph is acyclic, and root-facade imports are
-checked against the package that owns the exported name.
+checked against the module that owns the exported name.
 
 Use semantic module names: `components.py` for persistent ECS schema,
 `processors.py` for processors, `contracts.py` for supported value contracts,
