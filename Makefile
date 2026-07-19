@@ -48,6 +48,7 @@ help:
 	@echo "  make bench          Run ECS microbenchmarks (1 step)"
 	@echo "  make bench-full     Run ECS microbenchmarks (3 steps)"
 	@echo "  make bench-query    Run QueryService latency benchmarks"
+	@echo "  make bench-daft-attribution  Characterize lazy Daft execution attribution"
 	@echo "  make eval           Run all repository-check groups"
 	@echo "  make eval-reg       Run regression checks only"
 	@echo "  make eval-idem      Run idempotency checks only"
@@ -277,6 +278,11 @@ bench-full:
 bench-query:
 	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.core.query_latency --out query-bench-results.json
 	@echo "Query benchmark results written to query-bench-results.json"
+
+.PHONY: bench-daft-attribution
+bench-daft-attribution:
+	@PYTHONPATH=$(PYTHONPATH) uv run python -m bench.observability.daft_attribution --out daft-attribution-results.json
+	@echo "Daft attribution results written to daft-attribution-results.json"
 
 .PHONY: eval
 eval:

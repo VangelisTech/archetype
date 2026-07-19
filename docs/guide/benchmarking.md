@@ -15,12 +15,14 @@ Benchmarks are the measurement arm of the
 make bench        # five ECS microbenchmarks, one simulation step
 make bench-full   # the same workloads, three simulation steps
 make bench-query  # four materialized QueryService read shapes
+make bench-daft-attribution  # version-pinned lazy execution characterization
 ```
 
 The ECS commands write `bench-results.json`; the query command writes
-`query-bench-results.json`. Both files are gitignored local snapshots. Pass a
-different `--out` path to the corresponding Python module when retaining a
-named run.
+`query-bench-results.json`; and the Daft characterization writes
+`daft-attribution-results.json`. All three are gitignored local snapshots.
+Pass a different `--out` path to the corresponding Python module when
+retaining a named run.
 
 Set `ARCHETYPE_BENCH_RUNNER` to a stable machine name when snapshots may be
 compared manually:
@@ -68,6 +70,17 @@ Setup is outside the timed region. Lazy plan construction and terminal
 measured query must return the expected row count before the snapshot is
 written. The default workload uses 100 entities per signature, three history
 ticks, one warmup, and five measured repetitions.
+
+### Daft execution attribution
+
+`make bench-daft-attribution` retains the synthetic oracle from issue #518. It
+pins the Daft version, records the configured runner, proves that the synthetic
+delayed UDF remains deferred until `DataFrame.collect`, separates Python
+conversion time, and reduces experimental Subscriber events to bounded
+booleans and counts. It does
+not retain raw plans, operator names, query/node identifiers, trace identifiers,
+or temporary marker paths. The workload measures no persistence backend and
+does not make the Subscriber API a production dependency.
 
 ## Trend tracking is an operational decision
 
