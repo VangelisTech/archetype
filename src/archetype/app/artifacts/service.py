@@ -34,7 +34,6 @@ import daft
 import pyarrow as pa
 from uuid_utils import uuid7
 
-from archetype.app.artifacts.models import ArtifactMeta, ArtifactReceipt, artifact_payload_digest
 from archetype.app.storage.catalog import (
     CatalogSchemaMismatchError,
     ClaimPendingError,
@@ -46,6 +45,8 @@ from archetype.app.storage.catalog import (
 )
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
+from archetype.artifacts.components import ArtifactMeta
+from archetype.artifacts.contracts import ArtifactReceipt, artifact_payload_digest
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig

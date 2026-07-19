@@ -19,14 +19,6 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from archetype import ArchetypeRuntime, Component, _obs
-from archetype.app.artifacts.bundle_models import (
-    ArtifactBundleRequest,
-    ArtifactCandidate,
-    ArtifactPublicationStatus,
-    ArtifactReconcileDisposition,
-    ArtifactStoreConfig,
-    MaterializedArtifact,
-)
 from archetype.app.artifacts.bundle_service import (
     _ARTIFACT_INDEX_TABLE,
     ArtifactBundleService,
@@ -43,6 +35,14 @@ from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
     SqliteControlCatalog,
     artifact_publication_key,
+)
+from archetype.artifacts.bundles import (
+    ArtifactBundleRequest,
+    ArtifactCandidate,
+    ArtifactPublicationStatus,
+    ArtifactReconcileDisposition,
+    ArtifactStoreConfig,
+    MaterializedArtifact,
 )
 from archetype.core.config import StorageConfig, WorldConfig
 

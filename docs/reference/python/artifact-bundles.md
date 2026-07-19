@@ -4,7 +4,7 @@
 
 **Recommended API.** These top-level `archetype` exports are supported runtime contracts. Use them to configure durable sandbox-checkpoint evidence, publish portable artifacts, and query or reconcile their content-addressed index; the rendered implementation-module paths are internal.
 
-::: archetype.app.artifacts.bundle_models.ArtifactBundleRequest
+::: archetype.artifacts.bundles.ArtifactBundleRequest
     options:
       members:
         - canonical_json
@@ -29,7 +29,7 @@
 | `artifact_expires_at_ms` | `int` | `0` |
 | `artifacts` | `tuple[ArtifactCandidate, Ellipsis]` | `required` |
 
-::: archetype.app.artifacts.bundle_models.ArtifactCandidate
+::: archetype.artifacts.bundles.ArtifactCandidate
     options:
       members: false
 
@@ -41,7 +41,7 @@
 | `recursive` | `bool` | `False` | Expand a directory recursively. |
 | `required` | `bool` | `True` | Fail publication when the source is absent. |
 
-::: archetype.app.artifacts.bundle_models.ArtifactIndexRecord
+::: archetype.artifacts.bundles.ArtifactIndexRecord
     options:
       members: false
 
@@ -72,7 +72,7 @@
 | `created_at_ms` | `int` | `required` |
 | `expires_at_ms` | `int` | `required` |
 
-::: archetype.app.artifacts.bundle_models.ArtifactPublishReceipt
+::: archetype.artifacts.bundles.ArtifactPublishReceipt
     options:
       members: false
 
@@ -91,7 +91,7 @@
 | `redaction_policy_id` | `str` | `''` |
 | `records` | `tuple[ArtifactIndexRecord, Ellipsis]` | `()` |
 
-::: archetype.app.artifacts.bundle_models.ArtifactReconcileResult
+::: archetype.artifacts.bundles.ArtifactReconcileResult
     options:
       members: false
 
@@ -103,11 +103,11 @@
 | `failed` | `int` | `0` |
 | `bundle_ids` | `tuple[str, Ellipsis]` | `()` |
 
-::: archetype.app.artifacts.bundle_models.ArtifactSourceResolver
+::: archetype.artifacts.bundles.ArtifactSourceResolver
 
-::: archetype.app.artifacts.bundle_models.BoundedArtifactSourceResolver
+::: archetype.artifacts.bundles.BoundedArtifactSourceResolver
 
-::: archetype.app.artifacts.bundle_models.ArtifactStoreConfig
+::: archetype.artifacts.bundles.ArtifactStoreConfig
     options:
       members:
         - local
@@ -127,7 +127,7 @@
 | `max_artifact_bytes` | `int` | `1073741824` |
 | `max_bundle_bytes` | `int` | `4294967296` |
 
-::: archetype.app.artifacts.bundle_models.MaterializedArtifact
+::: archetype.artifacts.bundles.MaterializedArtifact
     options:
       members: false
 

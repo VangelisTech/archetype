@@ -15,16 +15,16 @@ from daft.catalog import Table
 from daft.functions import file_path
 from uuid_utils import uuid7
 
-from archetype.app.artifacts.models import (
+from archetype.app.storage.iceberg import IcebergCatalogContext
+from archetype.app.storage.interfaces import iStorageService
+from archetype.app.world.interfaces import iWorldService
+from archetype.artifacts.contracts import (
     ARTIFACT_ENVELOPE_COLUMNS,
     ARTIFACT_KEY_COLUMNS,
     ArtifactProcessor,
     ArtifactWriteReceipt,
     artifact_table_id,
 )
-from archetype.app.storage.iceberg import IcebergCatalogContext
-from archetype.app.storage.interfaces import iStorageService
-from archetype.app.world.interfaces import iWorldService
 from archetype.core.config import StorageBackend, StorageConfig
 
 _EXPECTED_COLUMN = "_archetype_artifact_expected"

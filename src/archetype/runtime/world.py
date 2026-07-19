@@ -25,15 +25,7 @@ from weakref import WeakSet
 
 from uuid_utils import UUID
 
-from archetype.app.artifacts.bundle_models import (
-    ArtifactBundleRequest,
-    ArtifactPublishReceipt,
-    ArtifactReconcileResult,
-)
 from archetype.app.models import (
-    ArtifactProcessor,
-    ArtifactReceipt,
-    ArtifactWriteReceipt,
     EpisodeConfig,
     EpisodeResult,
     HookInfo,
@@ -44,6 +36,12 @@ from archetype.app.models import (
     RunResult,
     WorldInfo,
 )
+from archetype.artifacts.bundles import (
+    ArtifactBundleRequest,
+    ArtifactPublishReceipt,
+    ArtifactReconcileResult,
+)
+from archetype.artifacts.contracts import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookEvent

@@ -1,7 +1,14 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed artifact-table contracts and claim-backed publication receipts."""
+"""Typed artifact-table contracts and claim-backed publication receipts.
+
+Pure artifact value contracts: the processor protocol, table-name and
+envelope constants, content/identity digest helpers, and publication receipt
+values. The persistent ECS schemas live in ``archetype.artifacts.components``;
+publication, indexing, and storage authority remain under
+``archetype.app.artifacts``.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +23,7 @@ from typing import Protocol
 from daft import DataFrame
 from pydantic_core import to_jsonable_python
 
+from archetype.artifacts.components import AssetRef
 from archetype.core.component import Component
 
 _ARTIFACT_DIGEST_DOMAIN = "archetype.artifact.v1"
@@ -46,30 +54,6 @@ def artifact_table_id(table_name: str) -> str:
             "only letters, digits, and underscores, and be at most 63 characters"
         )
     return f"artifacts__{table_name}"
-
-
-class ArtifactMeta(Component):
-    """Publication identity carried by claim-backed artifact rows."""
-
-    producer: str = ""
-    external_id: str = ""
-    payload_digest: str = ""
-    commit_id: str = ""
-
-
-class AssetRef(Component):
-    """Content-addressed reference to an external artifact.
-
-    The digest is the identity; the uri is a hint that may rot. Artifact
-    components embed these fields (or this component) to reference sidecar
-    artifacts durably.
-    """
-
-    digest: str = ""
-    uri: str = ""
-    media_type: str = ""
-    size_bytes: int = 0
-    created_at_ms: int = 0
 
 
 def digest_bytes(data: bytes) -> str:

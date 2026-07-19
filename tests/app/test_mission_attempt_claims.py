@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from archetype.app.artifacts.bundle_models import ArtifactBundleRequest, ArtifactStoreConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions import (
@@ -47,6 +46,7 @@ from archetype.app.storage.catalog import (
     SqliteControlCatalog,
     artifact_publication_key,
 )
+from archetype.artifacts.bundles import ArtifactBundleRequest, ArtifactStoreConfig
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.missions import AttemptStatus, FinalizationPhase
 

@@ -144,11 +144,10 @@ supported runtime contracts: `ArtifactBundleRequest`, `ArtifactCandidate`,
 `ArtifactIndexRecord`, `ArtifactPublishReceipt`, `ArtifactReconcileResult`,
 `ArtifactSourceResolver`, `BoundedArtifactSourceResolver`,
 `ArtifactStoreConfig`, and `MaterializedArtifact`.
-Their physical `app.artifacts.bundle_models` module is internal; application
-code imports the top-level names. The runtime's narrow import allowance for
-that module exists only to type its actor-free application-port methods and
-constructor configuration. It does not grant access to the concrete artifact
-service.
+Their physical home is the `archetype.artifacts.bundles` family module
+(#558); application code imports the top-level names. A top-level path does
+not make additional names supported, and nothing here grants access to the
+concrete artifact service.
 
 Legacy `ingest`, `write_artifacts`, `artifacts`, and `ArtifactReceipt` names are migration
 surfaces to remove after the artifact-family cutover.
