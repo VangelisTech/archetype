@@ -107,6 +107,7 @@ def _imports(
         if isinstance(node, ast.Import)
         for alias in node.names
         if alias.name == "archetype"
+        or (alias.name.startswith("archetype.") and alias.asname is None)
     }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

@@ -288,6 +288,8 @@ def test_root_package_and_facade_imports_match_explicit_forbidden_imports(
         "from archetype.runtime import ArchetypeRuntime\n",
         "import archetype\nvalue = archetype.ArchetypeRuntime\n",
         "import archetype as root\nvalue = root.ArchetypeRuntime\n",
+        "import archetype.core\nvalue = archetype.ArchetypeRuntime\n",
+        "import archetype.core\nvalue = archetype.runtime.ArchetypeRuntime\n",
     )
     consumers = {
         "core": "package_dependency",
