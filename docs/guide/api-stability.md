@@ -45,6 +45,15 @@ vocabulary, but their package boundaries may change before v1 as coding-mission
 and physical-AI capabilities settle. The import-boundary checker constrains
 what these packages may depend on; it does not promote them to public API.
 
+The target ownership is now decided in
+[Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map),
+but it is not yet implemented. `archetype.htn` remains an independent planner
+and is hardened by #591. Dataset identity remains under `datasets`, while
+evaluation values split under #590. The mixed `experiments` package is staged
+into `research` (#585), `trajectories` (#586/#587), and `physical_ai`
+(#588/#589), then removed by #592. Those future family paths also remain
+provisional until an implementation issue explicitly graduates a surface.
+
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future
 graduation must name an owning domain family, add it to the API manifest, and
