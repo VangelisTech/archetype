@@ -48,6 +48,7 @@ copyright: Copyright &copy; 2026 Vangelis Tech
 nav:
   - GETTING STARTED:
       - Overview: index.md
+      - Why Archetype: guide/why-archetype.md
       - Quickstart: guide/quickstart.md
       - Choose an Example: guide/examples.md
   - USER GUIDE:
