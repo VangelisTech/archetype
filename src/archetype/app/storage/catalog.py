@@ -45,7 +45,9 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -66,6 +68,82 @@ logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = 8
 _DIGEST_DOMAIN = "archetype.catalog.v1"
+_MAX_PORTABLE_COUNTER = (1 << 53) - 1
+_MAX_ARTIFACT_LEASE_MS = 24 * 60 * 60 * 1000
+_MAX_ARTIFACT_RETRY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000
+_MAX_ARTIFACT_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000
+_ARTIFACT_RETRY_EXPIRED_DETAIL = "artifact publication retry window elapsed before upload"
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _now_ms() -> int:
+    """Catalog-authoritative wall time for leases and durable scheduling."""
+
+    return time.time_ns() // 1_000_000
+
+
+def _require_sha256(value: str, *, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    if _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _require_bounded_text(value: str, *, field: str, max_chars: int) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    if not value.strip():
+        raise ValueError(f"{field} must not be empty")
+    if len(value) > max_chars:
+        raise ValueError(f"{field} exceeds {max_chars} characters")
+    return value
+
+
+def _require_portable_counter(value: int, *, field: str = "fence_epoch") -> int:
+    """Require an exact non-boolean fence portable through the Worker wire."""
+
+    if type(value) is not int:
+        raise TypeError(f"{field} must be an integer")
+    if value < 0 or value > _MAX_PORTABLE_COUNTER:
+        raise ValueError(f"{field} must be between 0 and {_MAX_PORTABLE_COUNTER}")
+    return value
+
+
+def _require_artifact_milliseconds(
+    value: int,
+    *,
+    field: str,
+    maximum: int,
+    allow_zero: bool = True,
+) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{field} must be an integer number of milliseconds")
+    minimum = 0 if allow_zero else 1
+    if value < minimum or value > maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum} milliseconds")
+    return value
+
+
+def _require_artifact_lease_ms(value: int) -> int:
+    return _require_artifact_milliseconds(
+        value,
+        field="artifact lease_ms",
+        maximum=_MAX_ARTIFACT_LEASE_MS,
+        allow_zero=False,
+    )
+
+
+def _require_artifact_lease_seconds(value: float) -> float:
+    if type(value) not in {int, float} or not math.isfinite(value):
+        raise TypeError("artifact lease_seconds must be a finite number")
+    if value <= 0 or value > _MAX_ARTIFACT_LEASE_MS / 1000:
+        raise ValueError(
+            "artifact lease_seconds must be greater than zero and no greater than "
+            f"{_MAX_ARTIFACT_LEASE_MS / 1000:g}"
+        )
+    return float(value)
 
 
 def _is_unbound_legacy_indexed_claim(row: sqlite3.Row) -> bool:
@@ -382,6 +460,13 @@ class ArtifactPublicationRecord:
 
 
 @dataclass(frozen=True)
+class ArtifactPublicationCandidate:
+    """Digest-only discovery reference; exact recovery returns replay authority."""
+
+    publication_key: str
+
+
+@dataclass(frozen=True)
 class SignatureRecord:
     """Compact durable pointer to one archetype table."""
 
@@ -545,9 +630,18 @@ class ControlCatalog(Protocol):
         request_digest: str,
         request_json: str,
         claimant: str,
-        retry_until_ms: int,
-        lease_seconds: float = 900.0,
+        retry_window_ms: int,
+        retry_not_after_ms: int | None = None,
+        lease_ms: int = 900_000,
     ) -> tuple[str, ArtifactPublicationRecord]: ...
+    async def recover_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, ArtifactPublicationRecord | None]: ...
     async def get_artifact_publication(
         self, world_id: str, publication_key: str
     ) -> ArtifactPublicationRecord | None: ...
@@ -581,7 +675,7 @@ class ControlCatalog(Protocol):
         claimant: str,
         error: str,
         *,
-        retry_at: float,
+        retry_delay_ms: int,
     ) -> None: ...
     async def expire_artifact_publication(
         self,
@@ -591,8 +685,12 @@ class ControlCatalog(Protocol):
         error: str,
     ) -> None: ...
     async def list_due_artifact_publications(
-        self, world_id: str, *, now: float, limit: int = 100
-    ) -> list[ArtifactPublicationRecord]: ...
+        self,
+        world_id: str,
+        *,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> list[ArtifactPublicationCandidate]: ...
     async def admit_commands(
         self, world_id: str, admissions: list[CommandAdmission]
     ) -> list[CommandRecord]: ...
@@ -1752,8 +1850,9 @@ class SqliteControlCatalog:
         request_digest: str,
         request_json: str,
         claimant: str,
-        retry_until_ms: int,
-        lease_seconds: float = 900.0,
+        retry_window_ms: int,
+        retry_not_after_ms: int | None = None,
+        lease_ms: int = 900_000,
     ) -> tuple[str, ArtifactPublicationRecord]:
         """Claim one bundle publication or recover its interrupted phase.
 
@@ -1761,6 +1860,19 @@ class SqliteControlCatalog:
         row contains all object metadata needed to finish indexing without
         reopening the provider checkpoint.
         """
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        retry_window_ms = _require_artifact_milliseconds(
+            retry_window_ms,
+            field="artifact retry_window_ms",
+            maximum=_MAX_ARTIFACT_RETRY_WINDOW_MS,
+        )
+        if retry_not_after_ms is not None:
+            retry_not_after_ms = _require_portable_counter(
+                retry_not_after_ms, field="artifact retry_not_after_ms"
+            )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
         publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
 
         def _acquire() -> tuple[str, ArtifactPublicationRecord]:
@@ -1771,7 +1883,7 @@ class SqliteControlCatalog:
                     "SELECT * FROM artifact_publications WHERE publication_key=?",
                     (publication_key,),
                 ).fetchone()
-                now = time.time()
+                now_ms = _now_ms()
                 now_text = _utcnow()
                 if row is not None:
                     existing = _artifact_publication_from_row(row)
@@ -1780,32 +1892,32 @@ class SqliteControlCatalog:
                             f"artifact idempotency key {idempotency_key!r} was reused "
                             "with a different publication request"
                         )
-                    if existing.status == "INDEXED":
-                        return ("duplicate", existing)
-                    if existing.status == "EXPIRED":
-                        return ("expired", existing)
-                    if existing.lease_expires_at > now:
-                        raise ArtifactPublicationPendingError(
-                            f"a live lease ({existing.claimant}) holds artifact "
-                            f"publication {publication_key}; retry after it expires"
-                        )
-                    conn.execute(
-                        "UPDATE artifact_publications SET claimant=?, lease_expires_at=?, "
-                        "attempt_count=attempt_count+1, updated_at=? WHERE publication_key=?",
-                        (claimant, now + lease_seconds, now_text, publication_key),
+                    outcome, recovered = _recover_artifact_publication_row(
+                        conn,
+                        existing,
+                        claimant=claimant,
+                        lease_ms=lease_ms,
+                        now_ms=now_ms,
+                        now_text=now_text,
                     )
-                    recovered = conn.execute(
-                        "SELECT * FROM artifact_publications WHERE publication_key=?",
-                        (publication_key,),
-                    ).fetchone()
-                    return ("recovered", _artifact_publication_from_row(recovered))
+                    assert recovered is not None
+                    return outcome, recovered
+
+                retry_until_ms = now_ms + retry_window_ms
+                if retry_not_after_ms is not None:
+                    retry_until_ms = min(retry_until_ms, retry_not_after_ms)
+                initially_expired = retry_until_ms <= now_ms
+                status = "EXPIRED" if initially_expired else "PENDING"
+                lease_expires_at = 0.0 if initially_expired else (now_ms + lease_ms) / 1000
+                last_error = _ARTIFACT_RETRY_EXPIRED_DETAIL if initially_expired else ""
+                completed_at = now_text if initially_expired else None
 
                 conn.execute(
                     "INSERT INTO artifact_publications (publication_key, world_id, run_id, "
                     "attempt_id, idempotency_key, request_digest, status, request_json, "
                     "records_json, claimant, lease_expires_at, retry_until_ms, attempt_count, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, '[]', "
-                    "?, ?, ?, 1, ?, ?)",
+                    "last_error, created_at, updated_at, completed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, 1, ?, ?, ?, ?)",
                     (
                         publication_key,
                         world_id,
@@ -1813,21 +1925,64 @@ class SqliteControlCatalog:
                         attempt_id,
                         idempotency_key,
                         request_digest,
+                        status,
                         request_json,
                         claimant,
-                        now + lease_seconds,
+                        lease_expires_at,
                         retry_until_ms,
+                        last_error,
                         now_text,
                         now_text,
+                        completed_at,
                     ),
                 )
                 created = conn.execute(
                     "SELECT * FROM artifact_publications WHERE publication_key=?",
                     (publication_key,),
                 ).fetchone()
-                return ("acquired", _artifact_publication_from_row(created))
+                return (
+                    "expired" if initially_expired else "acquired",
+                    _artifact_publication_from_row(created),
+                )
 
         return await self._run(_acquire)
+
+    async def recover_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, ArtifactPublicationRecord | None]:
+        """Acquire one exact durable publication without echoing source content."""
+
+        publication_key = _require_sha256(publication_key, field="publication_key")
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
+
+        def _recover() -> tuple[str, ArtifactPublicationRecord | None]:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
+                    (publication_key, world_id),
+                ).fetchone()
+                if row is None:
+                    return "obsolete", None
+                return _recover_artifact_publication_row(
+                    conn,
+                    _artifact_publication_from_row(row),
+                    claimant=claimant,
+                    lease_ms=lease_ms,
+                    now_ms=_now_ms(),
+                    now_text=_utcnow(),
+                )
+
+        return await self._run(_recover)
 
     async def renew_artifact_publication(
         self,
@@ -1838,6 +1993,8 @@ class SqliteControlCatalog:
         lease_seconds: float,
     ) -> ArtifactPublicationRecord:
         """Extend a publication lease while a long upload/index stage runs."""
+
+        lease_seconds = _require_artifact_lease_seconds(lease_seconds)
 
         def _renew() -> ArtifactPublicationRecord:
             conn = self._connect_sync()
@@ -1859,10 +2016,34 @@ class SqliteControlCatalog:
                         f"artifact publication {publication_key} was taken over by "
                         f"{existing.claimant}"
                     )
+                now_ms = _now_ms()
+                if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
+                    expired_at = _utcnow()
+                    conn.execute(
+                        "UPDATE artifact_publications SET status='EXPIRED', "
+                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
+                        "WHERE publication_key=? AND status='PENDING'",
+                        (
+                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
+                            expired_at,
+                            expired_at,
+                            publication_key,
+                        ),
+                    )
+                    return _artifact_publication_from_row(
+                        conn.execute(
+                            "SELECT * FROM artifact_publications WHERE publication_key=?",
+                            (publication_key,),
+                        ).fetchone()
+                    )
+                if existing.lease_expires_at <= now_ms / 1000:
+                    raise ArtifactPublicationPendingError(
+                        f"artifact publication {publication_key} lease expired before renewal"
+                    )
                 conn.execute(
                     "UPDATE artifact_publications SET lease_expires_at=?, updated_at=? "
                     "WHERE publication_key=?",
-                    (time.time() + lease_seconds, _utcnow(), publication_key),
+                    ((now_ms / 1000) + lease_seconds, _utcnow(), publication_key),
                 )
                 updated = conn.execute(
                     "SELECT * FROM artifact_publications WHERE publication_key=?",
@@ -1882,7 +2063,7 @@ class SqliteControlCatalog:
     ) -> None:
         """Persist uploaded object metadata before the Iceberg index commit."""
 
-        def _record() -> None:
+        def _record() -> bool:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1896,7 +2077,7 @@ class SqliteControlCatalog:
                     )
                 existing = _artifact_publication_from_row(row)
                 if existing.status == "INDEXED":
-                    return
+                    return False
                 if existing.status == "EXPIRED":
                     raise ArtifactPublicationExpiredError(
                         f"artifact publication {publication_key} has expired"
@@ -1911,18 +2092,42 @@ class SqliteControlCatalog:
                         existing.records_json == records_json
                         and existing.manifest_uri == manifest_uri
                     ):
-                        return
+                        return False
                     raise ArtifactPublicationConflictError(
                         f"artifact publication {publication_key} already recorded "
                         "different uploaded objects"
+                    )
+                now_ms = _now_ms()
+                if existing.retry_until_ms <= now_ms:
+                    expired_at = _utcnow()
+                    conn.execute(
+                        "UPDATE artifact_publications SET status='EXPIRED', "
+                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
+                        "WHERE publication_key=? AND status='PENDING'",
+                        (
+                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
+                            expired_at,
+                            expired_at,
+                            publication_key,
+                        ),
+                    )
+                    return True
+                if existing.lease_expires_at <= now_ms / 1000:
+                    raise ArtifactPublicationPendingError(
+                        f"artifact publication {publication_key} lease expired before uploads"
                     )
                 conn.execute(
                     "UPDATE artifact_publications SET status='UPLOADED', records_json=?, "
                     "manifest_uri=?, last_error='', updated_at=? WHERE publication_key=?",
                     (records_json, manifest_uri, _utcnow(), publication_key),
                 )
+                return False
 
-        await self._run(_record)
+        expired = await self._run(_record)
+        if expired:
+            raise ArtifactPublicationExpiredError(
+                f"artifact publication {publication_key} expired before uploads"
+            )
 
     async def complete_artifact_publication(
         self,
@@ -1971,6 +2176,10 @@ class SqliteControlCatalog:
                         f"artifact publication {publication_key} was taken over by "
                         f"{existing.claimant}"
                     )
+                if existing.lease_expires_at <= _now_ms() / 1000:
+                    raise ArtifactPublicationPendingError(
+                        f"artifact publication {publication_key} lease expired before completion"
+                    )
                 completed = _utcnow()
                 conn.execute(
                     "UPDATE artifact_publications SET status='INDEXED', "
@@ -1993,17 +2202,29 @@ class SqliteControlCatalog:
         claimant: str,
         error: str,
         *,
-        retry_at: float,
+        retry_delay_ms: int,
     ) -> None:
         """Release a failed phase for a later bounded reconciliation pass."""
+
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+        retry_delay_ms = _require_artifact_milliseconds(
+            retry_delay_ms,
+            field="artifact retry_delay_ms",
+            maximum=_MAX_ARTIFACT_RETRY_DELAY_MS,
+        )
 
         def _fail() -> None:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    "SELECT status, claimant FROM artifact_publications "
-                    "WHERE publication_key=? AND world_id=?",
+                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
                     (publication_key, world_id),
                 ).fetchone()
                 if row is None or row["status"] in {"INDEXED", "EXPIRED"}:
@@ -2012,10 +2233,35 @@ class SqliteControlCatalog:
                     raise ArtifactPublicationPendingError(
                         f"artifact publication {publication_key} is no longer owned by {claimant}"
                     )
+                existing = _artifact_publication_from_row(row)
+                now_ms = _now_ms()
+                if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
+                    expired_at = _utcnow()
+                    conn.execute(
+                        "UPDATE artifact_publications SET status='EXPIRED', "
+                        "lease_expires_at=0, last_error=?, updated_at=?, completed_at=? "
+                        "WHERE publication_key=? AND status='PENDING'",
+                        (
+                            _ARTIFACT_RETRY_EXPIRED_DETAIL,
+                            expired_at,
+                            expired_at,
+                            publication_key,
+                        ),
+                    )
+                    return
+                if existing.lease_expires_at <= now_ms / 1000:
+                    raise ArtifactPublicationPendingError(
+                        f"artifact publication {publication_key} lease expired before failure"
+                    )
                 conn.execute(
                     "UPDATE artifact_publications SET last_error=?, lease_expires_at=?, "
                     "updated_at=? WHERE publication_key=?",
-                    (error[:8000], retry_at, _utcnow(), publication_key),
+                    (
+                        error,
+                        (now_ms + retry_delay_ms) / 1000,
+                        _utcnow(),
+                        publication_key,
+                    ),
                 )
 
         await self._run(_fail)
@@ -2029,13 +2275,20 @@ class SqliteControlCatalog:
     ) -> None:
         """Terminally expire a PENDING bundle after its replay window closes."""
 
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+
         def _expire() -> None:
             conn = self._connect_sync()
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    "SELECT status, claimant FROM artifact_publications "
-                    "WHERE publication_key=? AND world_id=?",
+                    "SELECT * FROM artifact_publications WHERE publication_key=? AND world_id=?",
                     (publication_key, world_id),
                 ).fetchone()
                 if row is None:
@@ -2052,11 +2305,16 @@ class SqliteControlCatalog:
                     raise ArtifactPublicationPendingError(
                         f"artifact publication {publication_key} was taken over"
                     )
+                existing = _artifact_publication_from_row(row)
+                if existing.lease_expires_at <= _now_ms() / 1000:
+                    raise ArtifactPublicationPendingError(
+                        f"artifact publication {publication_key} lease expired before expiry"
+                    )
                 completed = _utcnow()
                 conn.execute(
                     "UPDATE artifact_publications SET status='EXPIRED', last_error=?, "
                     "updated_at=?, completed_at=? WHERE publication_key=?",
-                    (error[:8000], completed, completed, publication_key),
+                    (error, completed, completed, publication_key),
                 )
 
         await self._run(_expire)
@@ -2078,20 +2336,37 @@ class SqliteControlCatalog:
         return await self._run(_get)
 
     async def list_due_artifact_publications(
-        self, world_id: str, *, now: float, limit: int = 100
-    ) -> list[ArtifactPublicationRecord]:
-        def _list() -> list[ArtifactPublicationRecord]:
+        self,
+        world_id: str,
+        *,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> list[ArtifactPublicationCandidate]:
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("artifact publication page limit must be between 1 and 10000")
+        if after_publication_key != "":
+            after_publication_key = _require_sha256(
+                after_publication_key, field="after_publication_key"
+            )
+
+        def _list() -> list[ArtifactPublicationCandidate]:
+            now = _now_ms() / 1000
             rows = (
                 self._connect_sync()
                 .execute(
-                    "SELECT * FROM artifact_publications WHERE world_id=? "
+                    "SELECT publication_key FROM artifact_publications WHERE world_id=? "
                     "AND status IN ('PENDING', 'UPLOADED') AND lease_expires_at<=? "
-                    "ORDER BY lease_expires_at, publication_key LIMIT ?",
-                    (world_id, now, max(0, int(limit))),
+                    "AND publication_key>? ORDER BY publication_key LIMIT ?",
+                    (world_id, now, after_publication_key, limit),
                 )
                 .fetchall()
             )
-            return [_artifact_publication_from_row(row) for row in rows]
+            return [
+                ArtifactPublicationCandidate(
+                    publication_key=_require_sha256(row["publication_key"], field="publication_key")
+                )
+                for row in rows
+            ]
 
         return await self._run(_list)
 
@@ -3045,7 +3320,36 @@ def _attempt_claim_transition_replay_matches(
 
 def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecord:
     raw_snapshot_id = row["index_snapshot_id"]
-    status = str(row["status"])
+    status = row["status"]
+    if not isinstance(status, str) or status not in {
+        "PENDING",
+        "UPLOADED",
+        "INDEXED",
+        "EXPIRED",
+    }:
+        raise RuntimeError(f"local artifact publication has invalid status {status!r}")
+    raw_lease_expires_at = row["lease_expires_at"]
+    raw_retry_until_ms = row["retry_until_ms"]
+    raw_attempt_count = row["attempt_count"]
+    if (
+        type(raw_lease_expires_at) not in {int, float}
+        or not math.isfinite(raw_lease_expires_at)
+        or raw_lease_expires_at < 0
+        or raw_lease_expires_at > _MAX_PORTABLE_COUNTER
+    ):
+        raise RuntimeError("local artifact publication has invalid lease_expires_at")
+    if (
+        type(raw_retry_until_ms) is not int
+        or raw_retry_until_ms < 0
+        or raw_retry_until_ms > _MAX_PORTABLE_COUNTER
+    ):
+        raise RuntimeError("local artifact publication has invalid retry_until_ms")
+    if (
+        type(raw_attempt_count) is not int
+        or raw_attempt_count < 1
+        or raw_attempt_count > _MAX_PORTABLE_COUNTER
+    ):
+        raise RuntimeError("local artifact publication has invalid attempt_count")
     if type(raw_snapshot_id) is not int:
         raise RuntimeError("local artifact publication has a lossy snapshot ID")
     if status == "INDEXED":
@@ -3064,9 +3368,9 @@ def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecor
         request_json=row["request_json"],
         records_json=row["records_json"],
         claimant=row["claimant"],
-        lease_expires_at=float(row["lease_expires_at"]),
-        retry_until_ms=int(row["retry_until_ms"]),
-        attempt_count=int(row["attempt_count"]),
+        lease_expires_at=float(raw_lease_expires_at),
+        retry_until_ms=raw_retry_until_ms,
+        attempt_count=raw_attempt_count,
         index_snapshot_id=raw_snapshot_id,
         manifest_uri=row["manifest_uri"],
         last_error=row["last_error"],
@@ -3074,6 +3378,99 @@ def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecor
         updated_at=row["updated_at"],
         completed_at=row["completed_at"],
     )
+
+
+def _recover_artifact_publication_row(
+    conn: sqlite3.Connection,
+    existing: ArtifactPublicationRecord,
+    *,
+    claimant: str,
+    lease_ms: int,
+    now_ms: int,
+    now_text: str,
+) -> tuple[str, ArtifactPublicationRecord]:
+    """Apply the exact source-native recovery state machine under one write lock."""
+
+    if existing.status == "INDEXED":
+        return "duplicate", existing
+    if existing.status == "EXPIRED":
+        return "expired", existing
+    if existing.status not in {"PENDING", "UPLOADED"}:
+        raise ArtifactPublicationConflictError(
+            f"artifact publication {existing.publication_key} has invalid status {existing.status}"
+        )
+    if existing.status == "PENDING" and existing.retry_until_ms <= now_ms:
+        conn.execute(
+            "UPDATE artifact_publications SET status='EXPIRED', lease_expires_at=0, "
+            "last_error=?, updated_at=?, completed_at=? WHERE publication_key=? "
+            "AND status='PENDING'",
+            (
+                _ARTIFACT_RETRY_EXPIRED_DETAIL,
+                now_text,
+                now_text,
+                existing.publication_key,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM artifact_publications WHERE publication_key=?",
+            (existing.publication_key,),
+        ).fetchone()
+        assert row is not None
+        return "expired", _artifact_publication_from_row(row)
+    if existing.lease_expires_at > now_ms / 1000:
+        if existing.claimant == claimant:
+            updated = conn.execute(
+                "UPDATE artifact_publications SET lease_expires_at=?, updated_at=? "
+                "WHERE publication_key=? AND status=? AND claimant=?",
+                (
+                    (now_ms + lease_ms) / 1000,
+                    now_text,
+                    existing.publication_key,
+                    existing.status,
+                    claimant,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise ArtifactPublicationPendingError(
+                    f"artifact publication {existing.publication_key} changed before renewal"
+                )
+            row = conn.execute(
+                "SELECT * FROM artifact_publications WHERE publication_key=?",
+                (existing.publication_key,),
+            ).fetchone()
+            assert row is not None
+            return "owned", _artifact_publication_from_row(row)
+        raise ArtifactPublicationPendingError(
+            f"a live lease holds artifact publication {existing.publication_key}"
+        )
+    if existing.attempt_count >= _MAX_PORTABLE_COUNTER:
+        raise ArtifactPublicationConflictError(
+            f"artifact publication {existing.publication_key} exhausted its portable "
+            "attempt counter"
+        )
+    updated = conn.execute(
+        "UPDATE artifact_publications SET claimant=?, lease_expires_at=?, "
+        "attempt_count=attempt_count+1, updated_at=? WHERE publication_key=? "
+        "AND status=? AND lease_expires_at<=?",
+        (
+            claimant,
+            (now_ms + lease_ms) / 1000,
+            now_text,
+            existing.publication_key,
+            existing.status,
+            now_ms / 1000,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise ArtifactPublicationPendingError(
+            f"artifact publication {existing.publication_key} changed before recovery"
+        )
+    row = conn.execute(
+        "SELECT * FROM artifact_publications WHERE publication_key=?",
+        (existing.publication_key,),
+    ).fetchone()
+    assert row is not None
+    return "recovered", _artifact_publication_from_row(row)
 
 
 def _command_from_row(row: sqlite3.Row) -> CommandRecord:

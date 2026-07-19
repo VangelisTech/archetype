@@ -112,8 +112,8 @@ class _ReceiptArtifactBundlePort:
             request_digest=prepared.producer_digest,
             request_json=prepared.request_json,
             claimant=claimant,
-            retry_until_ms=10**15,
-            lease_seconds=0.05,
+            retry_window_ms=60_000,
+            lease_ms=50,
         )
         if publication.status == "PENDING":
             await self._catalog.record_artifact_uploads(

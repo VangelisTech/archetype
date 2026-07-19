@@ -29,6 +29,7 @@ import pytest
 
 from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
+    ArtifactPublicationExpiredError,
     ArtifactPublicationPendingError,
     AttemptClaimConflictError,
     AttemptClaimPendingError,
@@ -41,6 +42,7 @@ from archetype.app.storage.catalog import (
     SignatureRecord,
     SqliteControlCatalog,
     WorldRecord,
+    artifact_publication_key,
 )
 from archetype.core.interfaces import StaleWriterError
 
@@ -433,6 +435,25 @@ async def test_world_registration_parity(tmp_path, worker_url):
         listed = await catalog.list_worlds()
         assert [w.world_id for w in listed] == ["w1"]
         await catalog.close()
+
+
+async def test_world_unicode_identity_parity(tmp_path, worker_url):
+    world_id = "wörld-🚀"
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            await catalog.register_world(_world(world_id))
+            assert (await catalog.get_world(world_id)).world_id == world_id
+
+            await catalog.set_world_status(world_id, "destroyed")
+            await catalog.set_world_run(world_id, "rün-雪")
+
+            record = await catalog.get_world(world_id)
+            assert record is not None
+            assert record.status == "destroyed"
+            assert record.run_id == "rün-雪"
+            assert [world.world_id for world in await catalog.list_worlds()] == [world_id]
+        finally:
+            await catalog.close()
 
 
 async def test_signature_registration_parity(tmp_path, worker_url):
@@ -1930,9 +1951,8 @@ async def test_mission_attempt_expired_lease_rejects_every_mutation_parity(
 
 async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
     request_json = '{"world_id":"w1","run_id":"r1"}'
-    retry_until_ms = int(time.time() * 1000) + 60_000
     for catalog in await _both(tmp_path, worker_url):
-        missing = "missing-publication"
+        missing = "f" * 64
         for invalid_snapshot in (True, 1.5, "1", 0, -1, 1 << 63):
             with pytest.raises(ValueError, match="positive integer"):
                 await catalog.complete_artifact_publication(
@@ -1950,7 +1970,7 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
             await catalog.expire_artifact_publication("w1", missing, "nobody", "expired")
         # Failure release is deliberately idempotent for a missing row.
         await catalog.fail_artifact_publication(
-            "w1", missing, "nobody", "nothing to release", retry_at=0.0
+            "w1", missing, "nobody", "nothing to release", retry_delay_ms=0
         )
 
         outcome, publication = await catalog.acquire_artifact_publication(
@@ -1961,8 +1981,8 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
             request_digest="digest-1",
             request_json=request_json,
             claimant="owner-1",
-            retry_until_ms=retry_until_ms,
-            lease_seconds=30.0,
+            retry_window_ms=60_000,
+            lease_ms=30_000,
         )
         assert outcome == "acquired" and publication.status == "PENDING"
 
@@ -1975,7 +1995,7 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
                 request_digest="digest-1",
                 request_json=request_json,
                 claimant="owner-2",
-                retry_until_ms=retry_until_ms,
+                retry_window_ms=60_000,
             )
         with pytest.raises(ArtifactPublicationConflictError):
             await catalog.acquire_artifact_publication(
@@ -1986,7 +2006,7 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
                 request_digest="different",
                 request_json=request_json,
                 claimant="owner-2",
-                retry_until_ms=retry_until_ms,
+                retry_window_ms=60_000,
             )
 
         await catalog.record_artifact_uploads(
@@ -2001,21 +2021,18 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
             publication.publication_key,
             "owner-1",
             "index unavailable",
-            retry_at=0.0,
+            retry_delay_ms=0,
         )
-        due = await catalog.list_due_artifact_publications("w1", now=time.time(), limit=10)
-        assert len(due) == 1 and due[0].status == "UPLOADED"
+        due = await catalog.list_due_artifact_publications("w1", limit=10)
+        assert [candidate.publication_key for candidate in due] == [publication.publication_key]
 
-        outcome, recovered = await catalog.acquire_artifact_publication(
-            world_id="w1",
-            run_id="r1",
-            attempt_id="a1",
-            idempotency_key="bundle-1",
-            request_digest="digest-1",
-            request_json=request_json,
-            claimant="reconciler",
-            retry_until_ms=retry_until_ms,
+        outcome, recovered = await catalog.recover_artifact_publication(
+            "w1",
+            publication.publication_key,
+            "reconciler",
+            lease_ms=900_000,
         )
+        assert recovered is not None
         assert outcome == "recovered" and recovered.attempt_count == 2
         renewed = await catalog.renew_artifact_publication(
             "w1",
@@ -2043,11 +2060,356 @@ async def test_artifact_publication_lifecycle_parity(tmp_path, worker_url):
             request_digest="digest-1",
             request_json=request_json,
             claimant="later",
-            retry_until_ms=retry_until_ms,
+            retry_window_ms=60_000,
         )
         assert outcome == "duplicate"
         assert duplicate.index_snapshot_id == snapshot_id
         await catalog.close()
+
+
+async def test_due_artifact_publication_cursor_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            publications = []
+            for index in range(3):
+                _, publication = await catalog.acquire_artifact_publication(
+                    world_id="w-cursor",
+                    run_id="r-cursor",
+                    attempt_id=f"a-{index}",
+                    idempotency_key=f"bundle-{index}",
+                    request_digest=f"digest-{index}",
+                    request_json="{}",
+                    claimant=f"owner-{index}",
+                    retry_window_ms=60_000,
+                    lease_ms=60_000,
+                )
+                await catalog.fail_artifact_publication(
+                    "w-cursor",
+                    publication.publication_key,
+                    f"owner-{index}",
+                    "make publication immediately due",
+                    retry_delay_ms=0,
+                )
+                publications.append(publication)
+
+            expected_keys = sorted(row.publication_key for row in publications)
+            first = await catalog.list_due_artifact_publications("w-cursor", limit=2)
+            second = await catalog.list_due_artifact_publications(
+                "w-cursor",
+                limit=2,
+                after_publication_key=first[-1].publication_key,
+            )
+            assert [row.publication_key for row in first] == expected_keys[:2]
+            assert [row.publication_key for row in second] == expected_keys[2:]
+            with pytest.raises(ValueError, match="lowercase SHA-256"):
+                await catalog.list_due_artifact_publications(
+                    "w-cursor",
+                    after_publication_key="raw-publication-id",
+                )
+        finally:
+            await catalog.close()
+
+
+async def test_exact_artifact_recovery_state_machine_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            outcome, missing = await catalog.recover_artifact_publication(
+                "w-exact", "f" * 64, "worker", lease_ms=100
+            )
+            assert outcome == "obsolete" and missing is None
+
+            _, publication = await catalog.acquire_artifact_publication(
+                world_id="w-exact",
+                run_id="r-exact",
+                attempt_id="a-owned",
+                idempotency_key="same-owner",
+                request_digest="digest-owned",
+                request_json="{}",
+                claimant="owner",
+                retry_window_ms=10_000,
+                lease_ms=10_000,
+            )
+            outcome, owned = await catalog.recover_artifact_publication(
+                "w-exact", publication.publication_key, "owner", lease_ms=10_000
+            )
+            assert outcome == "owned" and owned is not None
+            assert owned.attempt_count == 1
+            # The remote catalog clock is millisecond-granular. Acquisition
+            # and same-owner recovery can therefore observe the same catalog
+            # millisecond and produce an equal (never regressed) expiry.
+            # The deterministic clock test in test_artifact_publication_catalog
+            # advances time explicitly and proves that renewal extends from a
+            # later catalog instant.
+            assert owned.lease_expires_at >= publication.lease_expires_at
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.recover_artifact_publication(
+                    "w-exact", publication.publication_key, "other", lease_ms=100
+                )
+            await catalog.fail_artifact_publication(
+                "w-exact",
+                publication.publication_key,
+                "owner",
+                "release owned lease",
+                retry_delay_ms=0,
+            )
+            outcome, recovered = await catalog.recover_artifact_publication(
+                "w-exact", publication.publication_key, "other", lease_ms=500
+            )
+            assert outcome == "recovered" and recovered is not None
+            assert recovered.attempt_count == 2
+
+            _, deadline = await catalog.acquire_artifact_publication(
+                world_id="w-exact",
+                run_id="r-exact",
+                attempt_id="a-deadline",
+                idempotency_key="deadline-before-live-owner",
+                request_digest="digest-deadline",
+                request_json="{}",
+                claimant="deadline-owner",
+                retry_window_ms=25,
+                lease_ms=1_000,
+            )
+            await asyncio.sleep(0.05)
+            outcome, expired = await catalog.recover_artifact_publication(
+                "w-exact", deadline.publication_key, "different-owner", lease_ms=100
+            )
+            assert outcome == "expired" and expired is not None
+            assert expired.status == "EXPIRED"
+
+            _, uploaded = await catalog.acquire_artifact_publication(
+                world_id="w-exact",
+                run_id="r-exact",
+                attempt_id="a-uploaded",
+                idempotency_key="uploaded-past-deadline",
+                request_digest="digest-uploaded",
+                request_json="{}",
+                claimant="uploader",
+                retry_window_ms=50,
+                lease_ms=500,
+            )
+            await catalog.record_artifact_uploads(
+                "w-exact", uploaded.publication_key, "uploader", "[]", "file:///manifest"
+            )
+            await catalog.fail_artifact_publication(
+                "w-exact",
+                uploaded.publication_key,
+                "uploader",
+                "release uploaded lease",
+                retry_delay_ms=0,
+            )
+            await asyncio.sleep(0.06)
+            outcome, uploaded_recovery = await catalog.recover_artifact_publication(
+                "w-exact", uploaded.publication_key, "indexer", lease_ms=500
+            )
+            assert outcome == "recovered" and uploaded_recovery is not None
+            assert uploaded_recovery.status == "UPLOADED"
+            await catalog.complete_artifact_publication(
+                "w-exact", uploaded.publication_key, "indexer", 42
+            )
+            outcome, duplicate = await catalog.recover_artifact_publication(
+                "w-exact", uploaded.publication_key, "later", lease_ms=100
+            )
+            assert outcome == "duplicate" and duplicate is not None
+
+            _, explicitly_expired = await catalog.acquire_artifact_publication(
+                world_id="w-exact",
+                run_id="r-exact",
+                attempt_id="a-explicit",
+                idempotency_key="explicit-expiry",
+                request_digest="digest-explicit",
+                request_json="{}",
+                claimant="expirer",
+                retry_window_ms=10_000,
+                lease_ms=500,
+            )
+            await catalog.expire_artifact_publication(
+                "w-exact", explicitly_expired.publication_key, "expirer", "manual"
+            )
+            outcome, terminal = await catalog.recover_artifact_publication(
+                "w-exact", explicitly_expired.publication_key, "later", lease_ms=100
+            )
+            assert outcome == "expired" and terminal is not None
+        finally:
+            await catalog.close()
+
+
+async def test_artifact_source_mutations_require_live_lease_parity(tmp_path, worker_url):
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            _, pending = await catalog.acquire_artifact_publication(
+                world_id="w-source-fence",
+                run_id="r1",
+                attempt_id="a-pending",
+                idempotency_key="stale-pending",
+                request_digest="digest-pending",
+                request_json="{}",
+                claimant="owner",
+                retry_window_ms=10_000,
+                lease_ms=40,
+            )
+            await asyncio.sleep(0.07)
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.renew_artifact_publication(
+                    "w-source-fence",
+                    pending.publication_key,
+                    "owner",
+                    lease_seconds=1.0,
+                )
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.record_artifact_uploads(
+                    "w-source-fence", pending.publication_key, "owner", "[]", "file:///m"
+                )
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.fail_artifact_publication(
+                    "w-source-fence",
+                    pending.publication_key,
+                    "owner",
+                    "late",
+                    retry_delay_ms=0,
+                )
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.expire_artifact_publication(
+                    "w-source-fence", pending.publication_key, "owner", "late"
+                )
+
+            _, uploaded = await catalog.acquire_artifact_publication(
+                world_id="w-source-fence",
+                run_id="r1",
+                attempt_id="a-uploaded",
+                idempotency_key="stale-complete",
+                request_digest="digest-uploaded",
+                request_json="{}",
+                claimant="owner",
+                retry_window_ms=10_000,
+                lease_ms=40,
+            )
+            await catalog.record_artifact_uploads(
+                "w-source-fence", uploaded.publication_key, "owner", "[]", "file:///m"
+            )
+            await asyncio.sleep(0.07)
+            with pytest.raises(ArtifactPublicationPendingError):
+                await catalog.complete_artifact_publication(
+                    "w-source-fence", uploaded.publication_key, "owner", 42
+                )
+
+            _, deadline = await catalog.acquire_artifact_publication(
+                world_id="w-source-fence",
+                run_id="r1",
+                attempt_id="a-deadline",
+                idempotency_key="deadline-upload",
+                request_digest="digest-deadline",
+                request_json="{}",
+                claimant="owner",
+                retry_window_ms=25,
+                lease_ms=500,
+            )
+            await asyncio.sleep(0.05)
+            with pytest.raises(ArtifactPublicationExpiredError):
+                await catalog.record_artifact_uploads(
+                    "w-source-fence", deadline.publication_key, "owner", "[]", "file:///m"
+                )
+            expired = await catalog.get_artifact_publication(
+                "w-source-fence", deadline.publication_key
+            )
+            assert expired is not None and expired.status == "EXPIRED"
+        finally:
+            await catalog.close()
+
+
+async def test_artifact_publication_key_unicode_parity(tmp_path, worker_url):
+    world_id = "wörld-🚀"
+    run_id = "rün-\x7f-雪"
+    idempotency_key = "bundlé-\x7f-🧪"
+    expected = artifact_publication_key(world_id, run_id, idempotency_key)
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            outcome, publication = await catalog.acquire_artifact_publication(
+                world_id=world_id,
+                run_id=run_id,
+                attempt_id="attempt-unicode",
+                idempotency_key=idempotency_key,
+                request_digest="digest-unicode",
+                request_json="{}",
+                claimant="owner",
+                retry_window_ms=10_000,
+                lease_ms=500,
+            )
+            assert outcome == "acquired"
+            assert publication.publication_key == expected
+        finally:
+            await catalog.close()
+
+
+async def test_worker_rejects_open_or_lossy_artifact_mutation_bodies(worker_url):
+    catalog = _remote(worker_url)
+    try:
+        _, publication = await catalog.acquire_artifact_publication(
+            world_id="w-mutation-wire",
+            run_id="r1",
+            attempt_id="a1",
+            idempotency_key="mutation-wire",
+            request_digest="digest",
+            request_json="{}",
+            claimant="owner",
+            retry_window_ms=10_000,
+            lease_ms=1_000,
+        )
+        base = (
+            f"{catalog._base}/w/w-mutation-wire/artifact-publications/{publication.publication_key}"
+        )
+        invalid_renewals = [
+            await catalog._client.post(
+                f"{base}/renew-v2",
+                json={"claimant": "owner", "lease_seconds": value},
+            )
+            for value in ("1", True, 0, -1, 86_401)
+        ]
+        open_renewal = await catalog._client.post(
+            f"{base}/renew-v2",
+            json={"claimant": "owner", "lease_seconds": 1, "now": time.time()},
+        )
+        open_upload = await catalog._client.post(
+            f"{base}/uploads-v2",
+            json={
+                "claimant": "owner",
+                "records_json": "[]",
+                "manifest_uri": "file:///m",
+                "request_json": "{}",
+            },
+        )
+        open_completion = await catalog._client.post(
+            f"{base}/complete-v2",
+            json={"claimant": "owner", "index_snapshot_id": "1", "retry_at": 0},
+        )
+        open_expiry = await catalog._client.post(
+            f"{base}/expire-v2",
+            json={"claimant": "owner", "error": "manual", "operator": True},
+        )
+
+        assert all(response.status_code == 400 for response in invalid_renewals)
+        assert open_renewal.status_code == 400
+        assert open_upload.status_code == 400
+        assert open_completion.status_code == 400
+        assert open_expiry.status_code == 400
+    finally:
+        await catalog.close()
+
+
+async def test_worker_artifact_key_hashes_before_clock_and_due_is_digest_only():
+    source = (WORKER_DIR / "src" / "index.ts").read_text()
+    start = source.index('route[1] === "acquire-v3"')
+    end = source.index('route[1] === "due-v1"', start)
+    acquire_block = source[start:end]
+    hash_position = acquire_block.index("await artifactPublicationKey")
+    clock_position = acquire_block.index("Date.now()", hash_position)
+
+    assert hash_position < clock_position
+    assert "await " not in acquire_block[clock_position:]
+    assert "SELECT publication_key FROM artifact_publications" in source
+    assert "function artifactPublicationAuthorityError(" in source
+    assert source.count("artifactPublicationAuthorityError(row,") >= 3
+    assert source.count('(route.length === 1 && method === "GET")') == 1
+    assert "SELECT * FROM artifact_publications WHERE status IN" not in source
 
 
 async def test_worker_rejects_invalid_snapshot_before_indexed_replay(worker_url):
@@ -2061,7 +2423,7 @@ async def test_worker_rejects_invalid_snapshot_before_indexed_replay(worker_url)
             request_digest="digest-snapshot-wire",
             request_json="{}",
             claimant="snapshot-worker",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
+            retry_window_ms=60_000,
         )
         await catalog.record_artifact_uploads(
             publication.world_id,
@@ -2123,7 +2485,7 @@ async def test_worker_rejects_invalid_snapshot_before_indexed_replay(worker_url)
             request_digest="digest-snapshot-wire-legacy",
             request_json="{}",
             claimant="snapshot-worker",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
+            retry_window_ms=60_000,
         )
         await catalog.record_artifact_uploads(
             legacy.world_id,

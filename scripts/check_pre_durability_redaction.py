@@ -58,6 +58,7 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
         "publish",
         "publish_prepared",
         "reconcile",
+        "reconcile_publication",
         "_resume",
         "_upload_bundle",
     }
@@ -69,7 +70,7 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
     prepare = methods["prepare"]
     publish = methods["publish"]
     publish_prepared = methods["publish_prepared"]
-    reconcile = methods["reconcile"]
+    reconcile_publication = methods["reconcile_publication"]
     resume = methods["_resume"]
     upload_bundle = methods["_upload_bundle"]
     _require_order(
@@ -102,8 +103,8 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
     )
     _require_order(
         errors,
-        reconcile,
-        "reconcile",
+        reconcile_publication,
+        "reconcile_publication",
         "_safe_failure_detail",
         "fail_artifact_publication",
     )

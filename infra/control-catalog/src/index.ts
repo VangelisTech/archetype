@@ -24,12 +24,19 @@ export interface Env {
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
-const CATALOG_PROTOCOL_VERSION = 4;
+const CATALOG_PROTOCOL_VERSION = 6;
 const ATTEMPT_FINALIZATION_CAPABILITY = "attempt_claim_finalization_v2";
 const ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2";
 const ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1";
+const ARTIFACT_SERVER_CLOCK_CAPABILITY = "artifact_publication_server_clock_v1";
 const MAX_SIGNED_64_BIT = 9223372036854775807n;
 const LEGACY_UNBOUND_MIGRATION = "mission_attempt_legacy_unbound_v8";
+const MAX_ARTIFACT_LEASE_MS = 24 * 60 * 60 * 1000;
+const MAX_ARTIFACT_RETRY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
+const MAX_ARTIFACT_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000;
+const ARTIFACT_RETRY_EXPIRED_DETAIL =
+  "artifact publication retry window elapsed before upload";
+const CATALOG_DIGEST_DOMAIN = "archetype.catalog.v1";
 const ATTEMPT_CLAIM_EDGES = new Set([
   "claimed->possibly_submitted",
   "possibly_submitted->provider_acknowledged",
@@ -46,6 +53,131 @@ function json(data: unknown, status = 200): Response {
 
 function conflict(kind: string, message: string): Response {
   return json({ error: kind, message }, 409);
+}
+
+class RecoveryInputError extends Error {}
+
+function recoveryInteger(
+  value: unknown,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new RecoveryInputError(`${field} must be an integer`);
+  }
+  if (value < minimum || value > maximum) {
+    throw new RecoveryInputError(
+      `${field} must be between ${minimum} and ${maximum}`,
+    );
+  }
+  return value;
+}
+
+function recoveryText(
+  value: unknown,
+  field: string,
+  maximum: number,
+  allowEmpty = false,
+): string {
+  if (typeof value !== "string") {
+    throw new RecoveryInputError(`${field} must be a string`);
+  }
+  if ((!allowEmpty && !value.trim()) || value.length > maximum) {
+    throw new RecoveryInputError(
+      !allowEmpty && !value.trim()
+        ? `${field} must not be empty`
+        : `${field} exceeds ${maximum} characters`,
+    );
+  }
+  return value;
+}
+
+function recoverySha256(value: unknown, field: string): string {
+  const digest = recoveryText(value, field, 64);
+  if (!/^[0-9a-f]{64}$/.test(digest)) {
+    throw new RecoveryInputError(`${field} must be a lowercase SHA-256 digest`);
+  }
+  return digest;
+}
+
+function recoveryObject(value: unknown, field: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new RecoveryInputError(`${field} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function recoveryExactFields(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  field: string,
+): void {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new RecoveryInputError(`${field} contains unsupported field ${key}`);
+    }
+  }
+}
+
+function recoveryExactQuery(url: URL, allowed: ReadonlySet<string>, field: string): void {
+  for (const key of url.searchParams.keys()) {
+    if (!allowed.has(key)) {
+      throw new RecoveryInputError(`${field} contains unsupported parameter ${key}`);
+    }
+    if (url.searchParams.getAll(key).length !== 1) {
+      throw new RecoveryInputError(`${field} contains duplicate parameter ${key}`);
+    }
+  }
+}
+
+function recoveryQueryInteger(
+  raw: string | null,
+  fallback: number,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (raw === null) return fallback;
+  if (!/^(0|[1-9][0-9]*)$/.test(raw)) {
+    throw new RecoveryInputError(`${field} must be canonical decimal text`);
+  }
+  return recoveryInteger(Number(raw), field, minimum, maximum);
+}
+
+function pythonAsciiJsonString(value: string): string {
+  return JSON.stringify(value).replace(/[^\x00-\x7e]/gu, (character) => {
+    let codePoint = character.codePointAt(0) as number;
+    if (codePoint <= 0xffff) return `\\u${codePoint.toString(16).padStart(4, "0")}`;
+    codePoint -= 0x10000;
+    const high = 0xd800 + (codePoint >> 10);
+    const low = 0xdc00 + (codePoint & 0x3ff);
+    return `\\u${high.toString(16).padStart(4, "0")}\\u${low
+      .toString(16)
+      .padStart(4, "0")}`;
+  });
+}
+
+async function artifactPublicationKey(
+  worldId: string,
+  runId: string,
+  idempotencyKey: string,
+): Promise<string> {
+  // Match Python json.dumps(sort_keys=True, separators=(",", ":")) including
+  // its default ensure_ascii=True behavior for non-ASCII identities.
+  const payload =
+    `{"domain":${pythonAsciiJsonString(CATALOG_DIGEST_DOMAIN)},` +
+    `"idempotency_key":${pythonAsciiJsonString(idempotencyKey)},` +
+    `"kind":"artifact-publication",` +
+    `"run_id":${pythonAsciiJsonString(runId)},` +
+    `"world_id":${pythonAsciiJsonString(worldId)}}`;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(payload),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function attemptClaimView(
@@ -65,6 +197,34 @@ function artifactPublicationView(
   view.index_snapshot_id = String(row.index_snapshot_id_text ?? "0");
   delete view.index_snapshot_id_text;
   return view;
+}
+
+function artifactPublicationAuthorityError(
+  row: Record<string, unknown>,
+  publicationKey: string,
+): Response | null {
+  if (!["PENDING", "UPLOADED", "INDEXED", "EXPIRED"].includes(String(row.status))) {
+    return conflict(
+      "artifact_publication_conflict",
+      `artifact publication ${publicationKey} has invalid durable status`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(row.retry_until_ms) ||
+    Number(row.retry_until_ms) < 0 ||
+    !Number.isSafeInteger(row.attempt_count) ||
+    Number(row.attempt_count) < 1 ||
+    typeof row.lease_expires_at !== "number" ||
+    !Number.isFinite(row.lease_expires_at) ||
+    row.lease_expires_at < 0 ||
+    row.lease_expires_at > Number.MAX_SAFE_INTEGER
+  ) {
+    return conflict(
+      "artifact_publication_conflict",
+      `artifact publication ${publicationKey} has invalid durable clock or counter state`,
+    );
+  }
+  return null;
 }
 
 function attemptClaimTransitionReplayMatches(
@@ -224,7 +384,7 @@ export default {
     if (parts[0] !== "ns" || parts.length < 3) {
       return json({ error: "bad_route", message: url.pathname }, 404);
     }
-    const namespace = parts[1];
+    const namespace = decodeURIComponent(parts[1]);
     const directory = env.DIRECTORY.get(env.DIRECTORY.idFromName(namespace));
 
     // World status is mirrored into the per-world authority before command
@@ -252,7 +412,7 @@ export default {
     if (parts[2] === "worlds" && parts.length === 4 && request.method === "PATCH") {
       const patch = (await request.clone().json()) as Record<string, unknown>;
       if (typeof patch.status === "string") {
-        const worldId = parts[3];
+        const worldId = decodeURIComponent(parts[3]);
         const world = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
         const statusResponse = await world.fetch(
           new Request(`${url.origin}/ns/${namespace}/w/${worldId}/status`, {
@@ -267,7 +427,7 @@ export default {
     }
 
     if (parts[2] === "w" && parts.length >= 4) {
-      const worldId = parts[3];
+      const worldId = decodeURIComponent(parts[3]);
       const stub = env.WORLD.get(env.WORLD.idFromName(`${namespace}:${worldId}`));
       // Manifest publication also advances the directory's world head. The
       // SQLite reference does both in one transaction; across two Durable
@@ -362,11 +522,36 @@ export class CatalogDirectoryDO implements DurableObject {
     }
 
     if (route[0] === "worlds" && route.length === 1 && method === "GET") {
+      if (
+        url.searchParams.has("after_world_id") ||
+        url.searchParams.has("limit")
+      ) {
+        const afterWorldId = url.searchParams.get("after_world_id") ?? "";
+        const rawLimit = Number(url.searchParams.get("limit") ?? 1000);
+        if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 10_000) {
+          return json(
+            {
+              error: "invalid_request",
+              message: "world discovery page limit must be between 1 and 10000",
+            },
+            422,
+          );
+        }
+        return json(
+          this.sql
+            .exec(
+              "SELECT * FROM worlds WHERE world_id > ? ORDER BY world_id LIMIT ?",
+              afterWorldId,
+              rawLimit,
+            )
+            .toArray(),
+        );
+      }
       return json(this.sql.exec("SELECT * FROM worlds ORDER BY world_id").toArray());
     }
 
     if (route[0] === "worlds" && route.length === 2) {
-      const worldId = route[1];
+      const worldId = decodeURIComponent(route[1]);
       if (method === "GET") {
         const rows = this.sql.exec("SELECT * FROM worlds WHERE world_id = ?", worldId).toArray();
         return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
@@ -653,12 +838,435 @@ export class WorldCommitDO implements DurableObject {
     });
   }
 
+  private recoverArtifactPublication(
+    publicationKey: string,
+    claimant: string,
+    leaseMs: number,
+    nowMs: number,
+  ): Response {
+    const rows = this.sql
+      .exec(
+        "SELECT * FROM artifact_publications WHERE publication_key = ?",
+        publicationKey,
+      )
+      .toArray();
+    if (!rows.length) {
+      return json({ outcome: "obsolete", publication: null });
+    }
+    const row = rows[0] as Record<string, unknown>;
+    const authorityError = artifactPublicationAuthorityError(row, publicationKey);
+    if (authorityError) return authorityError;
+    if (row.status === "INDEXED") {
+      return json({ outcome: "duplicate", publication: artifactPublicationView(row) });
+    }
+    if (row.status === "EXPIRED") {
+      return json({ outcome: "expired", publication: artifactPublicationView(row) });
+    }
+    if (row.status !== "PENDING" && row.status !== "UPLOADED") {
+      return conflict(
+        "artifact_publication_conflict",
+        `artifact publication ${publicationKey} has invalid status ${row.status}`,
+      );
+    }
+    const nowSec = nowMs / 1000;
+    const nowText = new Date(nowMs).toISOString();
+    if (row.status === "PENDING" && Number(row.retry_until_ms) <= nowMs) {
+      const expiredWrite = this.sql.exec(
+        "UPDATE artifact_publications SET status = 'EXPIRED', lease_expires_at = 0, " +
+          "last_error = ?, updated_at = ?, completed_at = ? " +
+          "WHERE publication_key = ? AND status = 'PENDING'",
+        ARTIFACT_RETRY_EXPIRED_DETAIL,
+        nowText,
+        nowText,
+        publicationKey,
+      );
+      if (expiredWrite.rowsWritten < 1) {
+        return conflict(
+          "artifact_publication_conflict",
+          `artifact publication ${publicationKey} changed before expiry`,
+        );
+      }
+      const expired = this.sql
+        .exec(
+          "SELECT * FROM artifact_publications WHERE publication_key = ?",
+          publicationKey,
+        )
+        .toArray();
+      return json({
+        outcome: "expired",
+        publication: artifactPublicationView(expired[0] as Record<string, unknown>),
+      });
+    }
+    if (Number(row.lease_expires_at) > nowSec) {
+      if (row.claimant === claimant) {
+        const renewed = this.sql.exec(
+          "UPDATE artifact_publications SET lease_expires_at = ?, updated_at = ? " +
+            "WHERE publication_key = ? AND status = ? AND claimant = ?",
+          (nowMs + leaseMs) / 1000,
+          nowText,
+          publicationKey,
+          row.status,
+          claimant,
+        );
+        if (renewed.rowsWritten < 1) {
+          return json(
+            {
+              error: "artifact_publication_pending",
+              message: `artifact publication ${publicationKey} changed before renewal`,
+            },
+            423,
+          );
+        }
+        const owned = this.sql
+          .exec(
+            "SELECT * FROM artifact_publications WHERE publication_key = ?",
+            publicationKey,
+          )
+          .toArray();
+        return json({
+          outcome: "owned",
+          publication: artifactPublicationView(owned[0] as Record<string, unknown>),
+        });
+      }
+      return json(
+        { error: "artifact_publication_pending", message: "a live publication lease exists" },
+        423,
+      );
+    }
+    if (Number(row.attempt_count) >= Number.MAX_SAFE_INTEGER) {
+      return conflict(
+        "artifact_publication_conflict",
+        `artifact publication ${publicationKey} exhausted its portable attempt counter`,
+      );
+    }
+    const updated = this.sql.exec(
+      "UPDATE artifact_publications SET claimant = ?, lease_expires_at = ?, " +
+        "attempt_count = attempt_count + 1, updated_at = ? " +
+        "WHERE publication_key = ? AND status = ? AND lease_expires_at <= ?",
+      claimant,
+      (nowMs + leaseMs) / 1000,
+      nowText,
+      publicationKey,
+      row.status,
+      nowSec,
+    );
+    if (updated.rowsWritten < 1) {
+      return json(
+        {
+          error: "artifact_publication_pending",
+          message: `artifact publication ${publicationKey} changed before recovery`,
+        },
+        423,
+      );
+    }
+    const recovered = this.sql
+      .exec(
+        "SELECT * FROM artifact_publications WHERE publication_key = ?",
+        publicationKey,
+      )
+      .toArray();
+    return json({
+      outcome: "recovered",
+      publication: artifactPublicationView(recovered[0] as Record<string, unknown>),
+    });
+  }
+
+  private async handleArtifactServerClock(
+    request: Request,
+    url: URL,
+    route: string[],
+    worldId: string,
+  ): Promise<Response> {
+    const method = request.method;
+
+    if (route.length === 2 && route[1] === "acquire-v3" && method === "POST") {
+      const p = recoveryObject(await request.json(), "artifact acquisition body");
+      recoveryExactFields(
+        p,
+        new Set([
+          "publication_key",
+          "run_id",
+          "attempt_id",
+          "idempotency_key",
+          "request_digest",
+          "request_json",
+          "claimant",
+          "retry_window_ms",
+          "retry_not_after_ms",
+          "lease_ms",
+        ]),
+        "artifact acquisition body",
+      );
+      const publicationKey = recoverySha256(p.publication_key, "publication_key");
+      const runId = recoveryText(p.run_id, "run_id", 4096);
+      const attemptId = recoveryText(p.attempt_id, "attempt_id", 4096);
+      const idempotencyKey = recoveryText(p.idempotency_key, "idempotency_key", 4096);
+      const requestDigest = recoveryText(p.request_digest, "request_digest", 4096);
+      const requestJson = recoveryText(p.request_json, "request_json", 16 * 1024 * 1024);
+      const claimant = recoveryText(p.claimant, "artifact publication claimant", 1024);
+      const retryWindowMs = recoveryInteger(
+        p.retry_window_ms,
+        "artifact retry_window_ms",
+        0,
+        MAX_ARTIFACT_RETRY_WINDOW_MS,
+      );
+      const leaseMs = recoveryInteger(
+        p.lease_ms,
+        "artifact lease_ms",
+        1,
+        MAX_ARTIFACT_LEASE_MS,
+      );
+      let retryNotAfterMs: number | null = null;
+      if (Object.prototype.hasOwnProperty.call(p, "retry_not_after_ms")) {
+        retryNotAfterMs = recoveryInteger(
+          p.retry_not_after_ms,
+          "artifact retry_not_after_ms",
+          0,
+          Number.MAX_SAFE_INTEGER,
+        );
+      }
+      const expectedPublicationKey = await artifactPublicationKey(
+        worldId,
+        runId,
+        idempotencyKey,
+      );
+      if (publicationKey !== expectedPublicationKey) {
+        throw new RecoveryInputError(
+          "publication_key does not match world_id/run_id/idempotency_key",
+        );
+      }
+      const existing = this.sql
+        .exec(
+          "SELECT * FROM artifact_publications WHERE publication_key = ?",
+          publicationKey,
+        )
+        .toArray();
+      if (existing.length) {
+        const row = existing[0] as Record<string, unknown>;
+        if (row.request_digest !== requestDigest) {
+          return conflict(
+            "artifact_publication_conflict",
+            `${idempotencyKey} was reused with a different publication request`,
+          );
+        }
+        return this.recoverArtifactPublication(
+          publicationKey,
+          claimant,
+          leaseMs,
+          Date.now(),
+        );
+      }
+      const nowMs = Date.now();
+      const retryUntilMs = retryNotAfterMs === null
+        ? nowMs + retryWindowMs
+        : Math.min(nowMs + retryWindowMs, retryNotAfterMs);
+      const initiallyExpired = retryUntilMs <= nowMs;
+      const nowText = new Date(nowMs).toISOString();
+      this.sql.exec(
+        "INSERT INTO artifact_publications (publication_key, run_id, attempt_id, " +
+          "idempotency_key, request_digest, status, request_json, records_json, claimant, " +
+          "lease_expires_at, retry_until_ms, attempt_count, last_error, created_at, " +
+          "updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, 1, " +
+          "?, ?, ?, ?)",
+        publicationKey,
+        runId,
+        attemptId,
+        idempotencyKey,
+        requestDigest,
+        initiallyExpired ? "EXPIRED" : "PENDING",
+        requestJson,
+        claimant,
+        initiallyExpired ? 0 : (nowMs + leaseMs) / 1000,
+        retryUntilMs,
+        initiallyExpired ? ARTIFACT_RETRY_EXPIRED_DETAIL : "",
+        nowText,
+        nowText,
+        initiallyExpired ? nowText : null,
+      );
+      const created = this.sql
+        .exec(
+          "SELECT * FROM artifact_publications WHERE publication_key = ?",
+          publicationKey,
+        )
+        .toArray();
+      return json({
+        outcome: initiallyExpired ? "expired" : "acquired",
+        publication: artifactPublicationView(created[0] as Record<string, unknown>),
+      });
+    }
+
+    if (route.length === 2 && route[1] === "due-v1" && method === "GET") {
+      if (url.searchParams.has("due")) {
+        throw new RecoveryInputError("artifact due listing does not accept a caller clock");
+      }
+      recoveryExactQuery(
+        url,
+        new Set(["limit", "after_publication_key"]),
+        "artifact due listing",
+      );
+      const limit = recoveryQueryInteger(
+        url.searchParams.get("limit"),
+        100,
+        "artifact publication page limit",
+        1,
+        10_000,
+      );
+      const rawCursor = url.searchParams.get("after_publication_key") ?? "";
+      const cursor = rawCursor === ""
+        ? ""
+        : recoverySha256(rawCursor, "after_publication_key");
+      const dueRows = this.sql
+        .exec(
+          "SELECT publication_key FROM artifact_publications " +
+            "WHERE status IN ('PENDING', 'UPLOADED') " +
+            "AND lease_expires_at <= ? AND publication_key > ? " +
+            "ORDER BY publication_key LIMIT ?",
+          Date.now() / 1000,
+          cursor,
+          limit,
+        )
+        .toArray();
+      return json(
+        dueRows.map((row) => ({
+          publication_key: String((row as Record<string, unknown>).publication_key),
+        })),
+      );
+    }
+
+    if (route.length === 3 && route[2] === "recover-v1" && method === "POST") {
+      const publicationKey = recoverySha256(route[1], "publication_key");
+      const p = recoveryObject(await request.json(), "artifact recovery body");
+      recoveryExactFields(
+        p,
+        new Set(["claimant", "lease_ms"]),
+        "artifact recovery body",
+      );
+      const claimant = recoveryText(p.claimant, "artifact publication claimant", 1024);
+      const leaseMs = recoveryInteger(
+        p.lease_ms,
+        "artifact lease_ms",
+        1,
+        MAX_ARTIFACT_LEASE_MS,
+      );
+      return this.recoverArtifactPublication(publicationKey, claimant, leaseMs, Date.now());
+    }
+
+    if (route.length === 3 && route[2] === "fail-v3" && method === "POST") {
+      const publicationKey = recoverySha256(route[1], "publication_key");
+      const p = recoveryObject(await request.json(), "artifact failure body");
+      recoveryExactFields(
+        p,
+        new Set(["claimant", "error", "retry_delay_ms"]),
+        "artifact failure body",
+      );
+      const claimant = recoveryText(p.claimant, "artifact publication claimant", 1024);
+      const error = recoveryText(p.error, "artifact publication error", 8000, true);
+      const retryDelayMs = recoveryInteger(
+        p.retry_delay_ms,
+        "artifact retry_delay_ms",
+        0,
+        MAX_ARTIFACT_RETRY_DELAY_MS,
+      );
+      const rows = this.sql
+        .exec(
+          "SELECT * FROM artifact_publications WHERE publication_key = ?",
+          publicationKey,
+        )
+        .toArray();
+      if (!rows.length) return json({ ok: true });
+      const row = rows[0] as Record<string, unknown>;
+      const authorityError = artifactPublicationAuthorityError(row, publicationKey);
+      if (authorityError) return authorityError;
+      if (row.status === "INDEXED" || row.status === "EXPIRED") return json({ ok: true });
+      if (row.claimant !== claimant) {
+        return json(
+          {
+            error: "artifact_publication_pending",
+            message: `artifact publication ${publicationKey} was taken over`,
+          },
+          423,
+        );
+      }
+      const nowMs = Date.now();
+      if (row.status === "PENDING" && Number(row.retry_until_ms) <= nowMs) {
+        const nowText = new Date(nowMs).toISOString();
+        this.sql.exec(
+          "UPDATE artifact_publications SET status = 'EXPIRED', lease_expires_at = 0, " +
+            "last_error = ?, updated_at = ?, completed_at = ? " +
+            "WHERE publication_key = ? AND status = 'PENDING'",
+          ARTIFACT_RETRY_EXPIRED_DETAIL,
+          nowText,
+          nowText,
+          publicationKey,
+        );
+        return json({ ok: true });
+      }
+      if (Number(row.lease_expires_at) <= nowMs / 1000) {
+        return json(
+          {
+            error: "artifact_publication_pending",
+            message: `artifact publication ${publicationKey} lease expired before failure`,
+          },
+          423,
+        );
+      }
+      this.sql.exec(
+        "UPDATE artifact_publications SET last_error = ?, lease_expires_at = ?, " +
+          "updated_at = ? WHERE publication_key = ?",
+        error,
+        (nowMs + retryDelayMs) / 1000,
+        new Date(nowMs).toISOString(),
+        publicationKey,
+      );
+      return json({ ok: true });
+    }
+
+    return json({ error: "bad_route" }, 404);
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean); // ns,:namespace,w,:world,...
     const route = parts.slice(4);
     const method = request.method;
     const now = new Date().toISOString();
+    const worldId = decodeURIComponent(parts[3]);
+
+    const artifactServerClockRoute =
+      route[0] === "artifact-publications" &&
+      (
+        (route.length === 2 && ["acquire-v3", "due-v1"].includes(route[1])) ||
+        (route.length === 3 && ["recover-v1", "fail-v3"].includes(route[2]))
+      );
+    if (artifactServerClockRoute) {
+      try {
+        return await this.handleArtifactServerClock(request, url, route, worldId);
+      } catch (error) {
+        if (error instanceof RecoveryInputError) {
+          return json({ error: "invalid", message: error.message }, 400);
+        }
+        throw error;
+      }
+    }
+
+    const legacyArtifactClockRoute =
+      route[0] === "artifact-publications" &&
+      (
+        (route.length === 1 && method === "GET") ||
+        (route.length === 2 && ["acquire", "acquire-v2"].includes(route[1])) ||
+        (route.length === 3 && ["fail", "fail-v2"].includes(route[2]))
+      );
+    if (legacyArtifactClockRoute) {
+      if (method === "POST") await request.arrayBuffer();
+      return json(
+        {
+          error: "upgrade_required",
+          message: "artifact publication clock authority requires the v3/v1 routes",
+        },
+        426,
+      );
+    }
+
 
     if (
       route[0] === "attempt-claims" &&
@@ -1361,22 +1969,6 @@ export class WorldCommitDO implements DurableObject {
       });
     }
 
-    if (route[0] === "artifact-publications" && route.length === 1 && method === "GET") {
-      const due = Number(url.searchParams.get("due") ?? Date.now() / 1000);
-      const limit = Math.max(0, Number(url.searchParams.get("limit") ?? 100));
-      const dueRows = this.sql
-          .exec(
-            "SELECT * FROM artifact_publications WHERE status IN ('PENDING', 'UPLOADED') " +
-              "AND lease_expires_at <= ? ORDER BY lease_expires_at, publication_key LIMIT ?",
-            due,
-            limit,
-          )
-          .toArray();
-      return json(
-        dueRows.map((row) => artifactPublicationView(row as Record<string, unknown>)),
-      );
-    }
-
     if (route[0] === "artifact-publications" && route.length >= 2) {
       const key = route[1];
       const rows = this.sql
@@ -1413,25 +2005,85 @@ export class WorldCommitDO implements DurableObject {
         return json({ error: "not_found" }, 404);
       }
       const row = rows[0] as Record<string, unknown>;
+      const authorityError = artifactPublicationAuthorityError(row, key);
+      if (authorityError) return authorityError;
 
       if (route.length === 2 && method === "GET") return json(artifactPublicationView(row));
 
       if ((route[2] === "renew" || route[2] === "renew-v2") && method === "POST") {
-        const body = (await request.json()) as { claimant: string; lease_seconds: number };
+        let claimant: string;
+        let leaseSeconds: number;
+        try {
+          const body = recoveryObject(await request.json(), "artifact renewal body");
+          if (route[2] === "renew-v2") {
+            recoveryExactFields(
+              body,
+              new Set(["claimant", "lease_seconds"]),
+              "artifact renewal body",
+            );
+          }
+          claimant = recoveryText(
+            body.claimant,
+            "artifact publication claimant",
+            1024,
+          );
+          if (
+            typeof body.lease_seconds !== "number" ||
+            !Number.isFinite(body.lease_seconds) ||
+            body.lease_seconds <= 0 ||
+            body.lease_seconds > MAX_ARTIFACT_LEASE_MS / 1000
+          ) {
+            throw new RecoveryInputError(
+              "artifact lease_seconds must be a finite positive bounded number",
+            );
+          }
+          leaseSeconds = body.lease_seconds;
+        } catch (error) {
+          if (error instanceof RecoveryInputError) {
+            return json({ error: "invalid", message: error.message }, 400);
+          }
+          throw error;
+        }
         if (row.status === "INDEXED" || row.status === "EXPIRED") {
           return json(artifactPublicationView(row));
         }
-        if (row.claimant !== body.claimant) {
+        if (row.claimant !== claimant) {
           return json(
             { error: "artifact_publication_pending", message: "publication was taken over" },
+            423,
+          );
+        }
+        const nowMs = Date.now();
+        const nowText = new Date(nowMs).toISOString();
+        if (row.status === "PENDING" && Number(row.retry_until_ms) <= nowMs) {
+          this.sql.exec(
+            "UPDATE artifact_publications SET status = 'EXPIRED', lease_expires_at = 0, " +
+              "last_error = ?, updated_at = ?, completed_at = ? " +
+              "WHERE publication_key = ? AND status = 'PENDING'",
+            ARTIFACT_RETRY_EXPIRED_DETAIL,
+            nowText,
+            nowText,
+            key,
+          );
+          const expired = this.sql
+            .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", key)
+            .toArray();
+          return json(artifactPublicationView(expired[0] as Record<string, unknown>));
+        }
+        if (Number(row.lease_expires_at) <= nowMs / 1000) {
+          return json(
+            {
+              error: "artifact_publication_pending",
+              message: "publication lease expired before renewal",
+            },
             423,
           );
         }
         this.sql.exec(
           "UPDATE artifact_publications SET lease_expires_at = ?, updated_at = ? " +
             "WHERE publication_key = ?",
-          Date.now() / 1000 + Number(body.lease_seconds),
-          now,
+          nowMs / 1000 + leaseSeconds,
+          nowText,
           key,
         );
         const updated = this.sql
@@ -1441,43 +2093,114 @@ export class WorldCommitDO implements DurableObject {
       }
 
       if ((route[2] === "uploads" || route[2] === "uploads-v2") && method === "POST") {
-        const body = (await request.json()) as {
-          claimant: string;
-          records_json: string;
-          manifest_uri: string;
-        };
+        let claimant: string;
+        let recordsJson: string;
+        let manifestUri: string;
+        try {
+          const body = recoveryObject(await request.json(), "artifact uploads body");
+          if (route[2] === "uploads-v2") {
+            recoveryExactFields(
+              body,
+              new Set(["claimant", "records_json", "manifest_uri"]),
+              "artifact uploads body",
+            );
+          }
+          claimant = recoveryText(
+            body.claimant,
+            "artifact publication claimant",
+            1024,
+          );
+          recordsJson = recoveryText(
+            body.records_json,
+            "artifact records_json",
+            16 * 1024 * 1024,
+            true,
+          );
+          manifestUri = recoveryText(
+            body.manifest_uri,
+            "artifact manifest_uri",
+            16 * 1024,
+            true,
+          );
+        } catch (error) {
+          if (error instanceof RecoveryInputError) {
+            return json({ error: "invalid", message: error.message }, 400);
+          }
+          throw error;
+        }
         if (row.status === "INDEXED") return json({ ok: true, idempotent: true });
         if (row.status === "EXPIRED") {
           return conflict("artifact_publication_expired", `publication ${key} expired`);
         }
-        if (row.claimant !== body.claimant) {
+        if (row.claimant !== claimant) {
           return json(
             { error: "artifact_publication_pending", message: "publication was taken over" },
             423,
           );
         }
         if (row.status === "UPLOADED") {
-          if (row.records_json === body.records_json && row.manifest_uri === body.manifest_uri) {
+          if (row.records_json === recordsJson && row.manifest_uri === manifestUri) {
             return json({ ok: true, idempotent: true });
           }
           return conflict("artifact_publication_conflict", "different uploads already recorded");
         }
+        const nowMs = Date.now();
+        const nowText = new Date(nowMs).toISOString();
+        if (Number(row.retry_until_ms) <= nowMs) {
+          this.sql.exec(
+            "UPDATE artifact_publications SET status = 'EXPIRED', lease_expires_at = 0, " +
+              "last_error = ?, updated_at = ?, completed_at = ? " +
+              "WHERE publication_key = ? AND status = 'PENDING'",
+            ARTIFACT_RETRY_EXPIRED_DETAIL,
+            nowText,
+            nowText,
+            key,
+          );
+          return conflict("artifact_publication_expired", `publication ${key} expired`);
+        }
+        if (Number(row.lease_expires_at) <= nowMs / 1000) {
+          return json(
+            {
+              error: "artifact_publication_pending",
+              message: "publication lease expired before uploads",
+            },
+            423,
+          );
+        }
         this.sql.exec(
           "UPDATE artifact_publications SET status = 'UPLOADED', records_json = ?, " +
             "manifest_uri = ?, last_error = '', updated_at = ? WHERE publication_key = ?",
-          body.records_json,
-          body.manifest_uri,
-          now,
+          recordsJson,
+          manifestUri,
+          nowText,
           key,
         );
         return json({ ok: true });
       }
 
       if ((route[2] === "complete" || route[2] === "complete-v2") && method === "POST") {
-        const body = (await request.json()) as {
-          claimant: string;
-          index_snapshot_id: unknown;
-        };
+        let body: Record<string, unknown>;
+        let claimant: string;
+        try {
+          body = recoveryObject(await request.json(), "artifact completion body");
+          if (route[2] === "complete-v2") {
+            recoveryExactFields(
+              body,
+              new Set(["claimant", "index_snapshot_id"]),
+              "artifact completion body",
+            );
+          }
+          claimant = recoveryText(
+            body.claimant,
+            "artifact publication claimant",
+            1024,
+          );
+        } catch (error) {
+          if (error instanceof RecoveryInputError) {
+            return json({ error: "invalid", message: error.message }, 400);
+          }
+          throw error;
+        }
         let snapshotId: string;
         if (route[2] === "complete-v2") {
           const supplied = body.index_snapshot_id;
@@ -1529,18 +2252,29 @@ export class WorldCommitDO implements DurableObject {
             `publication ${key} cannot move from ${row.status} to INDEXED`,
           );
         }
-        if (row.claimant !== body.claimant) {
+        if (row.claimant !== claimant) {
           return json(
             { error: "artifact_publication_pending", message: "publication was taken over" },
             423,
           );
         }
+        const nowMs = Date.now();
+        if (Number(row.lease_expires_at) <= nowMs / 1000) {
+          return json(
+            {
+              error: "artifact_publication_pending",
+              message: "publication lease expired before completion",
+            },
+            423,
+          );
+        }
+        const completedAt = new Date(nowMs).toISOString();
         this.sql.exec(
           "UPDATE artifact_publications SET status = 'INDEXED', index_snapshot_id_text = ?, " +
             "last_error = '', updated_at = ?, completed_at = ? WHERE publication_key = ?",
           snapshotId,
-          now,
-          now,
+          completedAt,
+          completedAt,
           key,
         );
         return json({ ok: true });
@@ -1571,7 +2305,34 @@ export class WorldCommitDO implements DurableObject {
       }
 
       if ((route[2] === "expire" || route[2] === "expire-v2") && method === "POST") {
-        const body = (await request.json()) as { claimant: string; error: string };
+        let claimant: string;
+        let errorDetail: string;
+        try {
+          const body = recoveryObject(await request.json(), "artifact expiry body");
+          if (route[2] === "expire-v2") {
+            recoveryExactFields(
+              body,
+              new Set(["claimant", "error"]),
+              "artifact expiry body",
+            );
+          }
+          claimant = recoveryText(
+            body.claimant,
+            "artifact publication claimant",
+            1024,
+          );
+          errorDetail = recoveryText(
+            body.error,
+            "artifact publication error",
+            8000,
+            true,
+          );
+        } catch (error) {
+          if (error instanceof RecoveryInputError) {
+            return json({ error: "invalid", message: error.message }, 400);
+          }
+          throw error;
+        }
         if (row.status === "INDEXED" || row.status === "EXPIRED") return json({ ok: true });
         if (row.status === "UPLOADED") {
           return conflict(
@@ -1579,18 +2340,29 @@ export class WorldCommitDO implements DurableObject {
             "uploaded publications must be indexed, not expired",
           );
         }
-        if (row.claimant !== body.claimant) {
+        if (row.claimant !== claimant) {
           return json(
             { error: "artifact_publication_pending", message: "publication was taken over" },
             423,
           );
         }
+        const nowMs = Date.now();
+        if (Number(row.lease_expires_at) <= nowMs / 1000) {
+          return json(
+            {
+              error: "artifact_publication_pending",
+              message: "publication lease expired before expiry",
+            },
+            423,
+          );
+        }
+        const completedAt = new Date(nowMs).toISOString();
         this.sql.exec(
           "UPDATE artifact_publications SET status = 'EXPIRED', last_error = ?, " +
             "updated_at = ?, completed_at = ? WHERE publication_key = ?",
-          String(body.error).slice(0, 8000),
-          now,
-          now,
+          errorDetail,
+          completedAt,
+          completedAt,
           key,
         );
         return json({ ok: true });
@@ -1608,6 +2380,7 @@ export class WorldCommitDO implements DurableObject {
             ATTEMPT_FINALIZATION_CAPABILITY,
             ATTEMPT_CLAIM_CAPABILITY,
             ARTIFACT_SNAPSHOT_CAPABILITY,
+            ARTIFACT_SERVER_CLOCK_CAPABILITY,
           ],
         };
         return rows.length
@@ -1648,7 +2421,7 @@ export class WorldCommitDO implements DurableObject {
       if (admissions.length === 0) return json([]);
       try {
         const records = this.state.storage.transactionSync(() => {
-          requireActiveWorld(this.sql, parts[3]);
+          requireActiveWorld(this.sql, worldId);
           const seen = new Map<string, string>();
           for (const admission of admissions) {
             const commandId = String(admission.command_id);
@@ -1728,7 +2501,7 @@ export class WorldCommitDO implements DurableObject {
       const nowSec = Date.now() / 1000;
       try {
         const records = this.state.storage.transactionSync(() => {
-          requireActiveWorld(this.sql, parts[3]);
+          requireActiveWorld(this.sql, worldId);
           const rows = this.sql
             .exec(
               "SELECT * FROM commands WHERE scheduled_tick <= ? AND (status IN ('PENDING', 'RETRYABLE') OR (status = 'LEASED' AND (lease_owner = ? OR lease_expires_at <= ?))) ORDER BY scheduled_tick, priority, sequence LIMIT ?",

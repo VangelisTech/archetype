@@ -9,11 +9,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import mimetypes
 import shutil
 import tarfile
 import tempfile
-import time
 from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,6 +36,9 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactIndexRecord,
     ArtifactPublicationStatus,
     ArtifactPublishReceipt,
+    ArtifactReconcileCandidate,
+    ArtifactReconcileDisposition,
+    ArtifactReconcileItemResult,
     ArtifactReconcileResult,
     ArtifactSourceResolver,
     ArtifactStoreConfig,
@@ -640,6 +643,18 @@ class ArtifactBundleService:
             return f"{type(exc).__name__}: failure detail unavailable"
         return result.text[:_MAX_FAILURE_DETAIL_CHARS]
 
+    @staticmethod
+    def _lease_ms(seconds: float) -> int:
+        """Convert validated configuration to a non-shortening wire duration."""
+
+        return max(1, math.ceil(seconds * 1000))
+
+    @staticmethod
+    def _delay_ms(seconds: float) -> int:
+        """Convert validated retry configuration to an exact wire duration."""
+
+        return max(0, math.ceil(seconds * 1000))
+
     async def publish(
         self,
         request: ArtifactBundleRequest,
@@ -663,10 +678,6 @@ class ArtifactBundleService:
         request = self._request_from_preparation(prepared)
         catalog = await self._control_catalog(request, storage_config)
         claimant = f"artifact-{uuid7()}"
-        now_ms = int(time.time() * 1000)
-        retry_until_ms = now_ms + config.retry_window_seconds * 1000
-        if request.checkpoint_expires_at_ms:
-            retry_until_ms = min(retry_until_ms, request.checkpoint_expires_at_ms)
         attributes = self._span_attributes(request)
 
         with _obs.span("artifact.publish", attributes=attributes):
@@ -678,8 +689,11 @@ class ArtifactBundleService:
                 request_digest=prepared.producer_digest,
                 request_json=prepared.request_json,
                 claimant=claimant,
-                retry_until_ms=retry_until_ms,
-                lease_seconds=config.lease_seconds,
+                retry_window_ms=config.retry_window_seconds * 1000,
+                retry_not_after_ms=(
+                    request.checkpoint_expires_at_ms if request.checkpoint_expires_at_ms else None
+                ),
+                lease_ms=self._lease_ms(config.lease_seconds),
             )
             if outcome == "duplicate":
                 return self._receipt(publication, duplicate=True)
@@ -703,7 +717,7 @@ class ArtifactBundleService:
                         publication.publication_key,
                         claimant,
                         failure_detail,
-                        retry_at=time.time() + config.retry_delay_seconds,
+                        retry_delay_ms=self._delay_ms(config.retry_delay_seconds),
                     )
                 except Exception as record_error:
                     exc.add_note(
@@ -745,96 +759,151 @@ class ArtifactBundleService:
         limit: int = 100,
     ) -> ArtifactReconcileResult:
         """Run one bounded pass over expired leases for a single world."""
-        if limit < 1:
-            raise ValueError("artifact reconciliation limit must be at least 1")
-        config = self._require_config()
-        storage, catalog = await self._catalog_for_world(world_id, storage_config)
-        del storage
-        due = await catalog.list_due_artifact_publications(
-            str(world_id), now=time.time(), limit=limit
+        candidates = await self.list_due_publications(
+            world_id,
+            storage_config=storage_config,
+            limit=limit,
         )
         indexed = expired = failed = 0
-        bundle_ids: list[str] = []
-        for stale in due:
-            bundle_ids.append(stale.publication_key)
-            claimant = f"artifact-reconciler-{uuid7()}"
-            owned = False
+        for candidate in candidates:
             try:
-                outcome, publication = await catalog.acquire_artifact_publication(
-                    world_id=stale.world_id,
-                    run_id=stale.run_id,
-                    attempt_id=stale.attempt_id,
-                    idempotency_key=stale.idempotency_key,
-                    request_digest=stale.request_digest,
-                    request_json=stale.request_json,
-                    claimant=claimant,
-                    retry_until_ms=stale.retry_until_ms,
-                    lease_seconds=config.lease_seconds,
+                result = await self.reconcile_publication(
+                    world_id,
+                    candidate.publication_key,
+                    storage_config=storage_config,
                 )
-                if outcome == "duplicate":
-                    indexed += 1
-                    continue
-                if outcome == "expired":
-                    expired += 1
-                    continue
-                owned = True
-                if publication.status == "PENDING" and (
-                    int(time.time() * 1000) > publication.retry_until_ms
-                ):
-                    await catalog.expire_artifact_publication(
-                        publication.world_id,
-                        publication.publication_key,
-                        claimant,
-                        "artifact publication retry window elapsed before upload",
-                    )
-                    expired += 1
-                    continue
-                request = self._request_from_publication(
-                    publication,
-                    require_policy=publication.status == "PENDING",
-                )
-                receipt = await self._resume(request, publication, claimant, catalog)
-                if receipt.status is ArtifactPublicationStatus.EXPIRED:
-                    expired += 1
-                else:
-                    indexed += 1
             except Exception as exc:
                 failed += 1
-                if not owned:
-                    logger.error(
-                        "artifact reconciliation failed before lease acquisition for %s (%s)",
-                        stale.publication_key,
-                        type(exc).__name__,
-                    )
-                    continue
-                failure_detail = self._safe_failure_detail(exc)
-                try:
-                    await catalog.fail_artifact_publication(
-                        publication.world_id,
-                        publication.publication_key,
-                        claimant,
-                        failure_detail,
-                        retry_at=time.time() + config.retry_delay_seconds,
-                    )
-                except Exception as record_error:
-                    exc.add_note(
-                        "failed to record artifact reconciliation retry state: "
-                        f"{type(record_error).__name__}"
-                    )
-                    logger.error(
-                        "artifact reconciler failed to record retry state for %s after %s; "
-                        "retry-state recording also failed (%s)",
-                        publication.publication_key,
-                        type(exc).__name__,
-                        type(record_error).__name__,
-                    )
+                logger.error(
+                    "artifact reconciliation failed for %s (%s)",
+                    candidate.publication_key,
+                    type(exc).__name__,
+                )
+                continue
+            if result.disposition is ArtifactReconcileDisposition.INDEXED:
+                indexed += 1
+            elif result.disposition is ArtifactReconcileDisposition.EXPIRED:
+                expired += 1
         return ArtifactReconcileResult(
-            examined=len(due),
+            examined=len(candidates),
             indexed=indexed,
             expired=expired,
             failed=failed,
-            bundle_ids=tuple(bundle_ids),
+            bundle_ids=tuple(candidate.publication_key for candidate in candidates),
         )
+
+    async def list_due_publications(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> tuple[ArtifactReconcileCandidate, ...]:
+        """Return a bounded page of digest-only publication references."""
+        if limit < 1:
+            raise ValueError("artifact reconciliation limit must be at least 1")
+        if after_publication_key:
+            after_publication_key = ArtifactReconcileCandidate(
+                publication_key=after_publication_key
+            ).publication_key
+        self._require_config()
+        storage, catalog = await self._catalog_for_world(world_id, storage_config)
+        del storage
+        due = await catalog.list_due_artifact_publications(
+            str(world_id),
+            limit=limit,
+            after_publication_key=after_publication_key,
+        )
+        return tuple(ArtifactReconcileCandidate(publication_key=row.publication_key) for row in due)
+
+    async def reconcile_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactReconcileItemResult:
+        """Reconcile one exact durable publication without discovering other work."""
+        candidate = ArtifactReconcileCandidate(publication_key=publication_key)
+        config = self._require_config()
+        storage, catalog = await self._catalog_for_world(world_id, storage_config)
+        del storage
+        claimant = f"artifact-reconciler-{uuid7()}"
+        owned = False
+        publication: ArtifactPublicationRecord | None = None
+        try:
+            outcome, publication = await catalog.recover_artifact_publication(
+                str(world_id),
+                candidate.publication_key,
+                claimant,
+                lease_ms=self._lease_ms(config.lease_seconds),
+            )
+            if outcome == "obsolete":
+                return ArtifactReconcileItemResult(
+                    publication_key=candidate.publication_key,
+                    disposition=ArtifactReconcileDisposition.OBSOLETE,
+                )
+            if publication is None:
+                raise RuntimeError("artifact recovery returned no authoritative publication")
+            if outcome == "duplicate":
+                return ArtifactReconcileItemResult(
+                    publication_key=candidate.publication_key,
+                    disposition=ArtifactReconcileDisposition.INDEXED,
+                )
+            if outcome == "expired":
+                return ArtifactReconcileItemResult(
+                    publication_key=candidate.publication_key,
+                    disposition=ArtifactReconcileDisposition.EXPIRED,
+                )
+            if outcome not in {"owned", "recovered"}:
+                raise RuntimeError(f"artifact recovery returned unexpected outcome {outcome!r}")
+            owned = True
+            request = self._request_from_publication(
+                publication,
+                require_policy=publication.status == "PENDING",
+            )
+            receipt = await self._resume(request, publication, claimant, catalog)
+            disposition = (
+                ArtifactReconcileDisposition.EXPIRED
+                if receipt.status is ArtifactPublicationStatus.EXPIRED
+                else ArtifactReconcileDisposition.INDEXED
+            )
+            return ArtifactReconcileItemResult(
+                publication_key=candidate.publication_key,
+                disposition=disposition,
+            )
+        except Exception as exc:
+            if not owned:
+                logger.error(
+                    "artifact reconciliation failed before lease acquisition for %s (%s)",
+                    candidate.publication_key,
+                    type(exc).__name__,
+                )
+                raise
+            assert publication is not None
+            failure_detail = self._safe_failure_detail(exc)
+            try:
+                await catalog.fail_artifact_publication(
+                    publication.world_id,
+                    publication.publication_key,
+                    claimant,
+                    failure_detail,
+                    retry_delay_ms=self._delay_ms(config.retry_delay_seconds),
+                )
+            except Exception as record_error:
+                exc.add_note(
+                    "failed to record artifact reconciliation retry state: "
+                    f"{type(record_error).__name__}"
+                )
+                logger.error(
+                    "artifact reconciler failed to record retry state for %s after %s; "
+                    "retry-state recording also failed (%s)",
+                    publication.publication_key,
+                    type(exc).__name__,
+                    type(record_error).__name__,
+                )
+            raise
 
     def _request_from_preparation(
         self,
@@ -911,6 +980,21 @@ class ArtifactBundleService:
         catalog: ControlCatalog,
     ) -> ArtifactPublishReceipt:
         config = self._require_config()
+        outcome, authoritative = await catalog.recover_artifact_publication(
+            request.world_id,
+            publication.publication_key,
+            claimant,
+            lease_ms=self._lease_ms(config.lease_seconds),
+        )
+        if outcome == "obsolete" or authoritative is None:
+            raise RuntimeError("artifact publication disappeared before external I/O")
+        if outcome in {"duplicate", "expired"}:
+            return self._receipt(authoritative, duplicate=outcome == "duplicate")
+        publication = authoritative
+        request = self._request_from_publication(
+            publication,
+            require_policy=publication.status == "PENDING",
+        )
         # The object destination is deployment configuration rather than part
         # of the durable request. Recheck it on every cold recovery before a
         # PENDING row can upload or an UPLOADED row can reach the index.
@@ -919,20 +1003,6 @@ class ArtifactBundleService:
         records: tuple[ArtifactIndexRecord, ...]
         manifest_uri = publication.manifest_uri
         if publication.status == "PENDING":
-            if int(time.time() * 1000) > publication.retry_until_ms:
-                await catalog.expire_artifact_publication(
-                    request.world_id,
-                    publication.publication_key,
-                    claimant,
-                    "artifact publication retry window elapsed before upload",
-                )
-                expired = await catalog.get_artifact_publication(
-                    request.world_id,
-                    publication.publication_key,
-                )
-                if expired is None:
-                    raise RuntimeError("expired artifact publication disappeared from its catalog")
-                return self._receipt(expired, duplicate=False)
             async with self._lease_heartbeat(
                 catalog, request.world_id, publication.publication_key, claimant
             ):

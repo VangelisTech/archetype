@@ -47,6 +47,8 @@ _FIRST_TICK = 41
 _RECOVERY_TICK = 97
 _REPLAY_TICK = 113
 _ATTEMPT_LEASE_SECONDS = 1.0
+_RECOVERY_ATTEMPT_LEASE_SECONDS = 10.0
+_ARTIFACT_LEASE_SECONDS = 1.0
 _CAPABILITIES = ProviderExecutionCapabilities(
     provider="crash-oracle",
     request_fingerprint="crash-oracle-provider-v1",
@@ -442,7 +444,7 @@ async def test_indexed_finalization_cold_restart_crash_oracle(
     boundary: str,
 ) -> None:
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifact-store").model_copy(
-        update={"lease_seconds": 0.05, "retry_delay_seconds": 0.0}
+        update={"lease_seconds": _ARTIFACT_LEASE_SECONDS, "retry_delay_seconds": 0.0}
     )
     storage = StorageConfig(
         uri=tmp_path / "non-default-world-store",
@@ -588,7 +590,7 @@ async def test_indexed_finalization_cold_restart_crash_oracle(
             tick=_RECOVERY_TICK,
             claimant=f"recovery-{boundary}",
             runner=recovery_runner,
-            lease_seconds=1.0,
+            lease_seconds=_RECOVERY_ATTEMPT_LEASE_SECONDS,
         )
 
         assert completed is not None

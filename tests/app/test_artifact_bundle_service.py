@@ -19,11 +19,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from archetype import ArchetypeRuntime, Component, _obs
-from archetype.app.artifacts import bundle_service as bundle_service_module
 from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactCandidate,
     ArtifactPublicationStatus,
+    ArtifactReconcileDisposition,
     ArtifactStoreConfig,
     MaterializedArtifact,
 )
@@ -38,8 +38,10 @@ from archetype.app.redaction import (
     RedactionService,
     SecretQuarantineError,
 )
+from archetype.app.storage import catalog as catalog_module
 from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
+    SqliteControlCatalog,
     artifact_publication_key,
 )
 from archetype.core.config import StorageConfig, WorldConfig
@@ -135,6 +137,62 @@ def _local_uri_path(uri: str) -> Path:
     parsed = urlparse(uri)
     assert parsed.scheme == "file"
     return Path(unquote(parsed.path))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("checkpoint_created_at_ms", True),
+        ("checkpoint_created_at_ms", 1.0),
+        ("checkpoint_expires_at_ms", "1"),
+        ("artifact_expires_at_ms", 1.5),
+        ("artifact_expires_at_ms", 1 << 53),
+    ],
+)
+async def test_artifact_request_durable_clocks_are_strict_portable_integers(tmp_path, field, value):
+    payload = {
+        "world_id": "world-1",
+        "run_id": "run-1",
+        "tick": 1,
+        "attempt_id": "attempt-1",
+        "idempotency_key": "publication-1",
+        "checkpoint_ref": "test-checkpoint://snapshot-1",
+        "checkpoint_provider": "test",
+        "artifacts": [
+            {
+                "source_ref": str(tmp_path / "result.json"),
+                "logical_path": "result.json",
+            }
+        ],
+        field: value,
+    }
+    with pytest.raises(ValueError):
+        ArtifactBundleRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("lease_seconds", float("inf")),
+        ("lease_seconds", float("nan")),
+        ("lease_seconds", 86_401),
+        ("retry_delay_seconds", float("inf")),
+        ("retry_delay_seconds", float("nan")),
+        ("retry_delay_seconds", 365 * 24 * 60 * 60 + 1),
+        ("retry_window_seconds", True),
+        ("retry_window_seconds", 59),
+        ("retry_window_seconds", 365 * 24 * 60 * 60 + 1),
+    ],
+)
+async def test_artifact_store_durations_are_finite_and_bounded(tmp_path, field, value):
+    base = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    payload = {
+        "object_uri": base.object_uri,
+        "index_storage": base.index_storage,
+        field: value,
+    }
+    with pytest.raises(ValueError):
+        ArtifactStoreConfig.model_validate(payload)
 
 
 async def test_span_attributes_use_only_canonical_safe_coordinates(tmp_path):
@@ -550,7 +608,7 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
             publication.publication_key,
             publication.claimant,
             "make uploaded row immediately due",
-            retry_at=0.0,
+            retry_delay_ms=0,
         )
 
         # This is a real durable corrupt row, not a list_due test double. The
@@ -564,8 +622,15 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
             request_digest="corrupt-request-digest",
             request_json="{not-json",
             claimant="corrupt-seed",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=0.0,
+            retry_window_ms=60_000,
+            lease_ms=60_000,
+        )
+        await catalog.fail_artifact_publication(
+            request.world_id,
+            corrupt.publication_key,
+            "corrupt-seed",
+            "make corrupt row immediately due",
+            retry_delay_ms=0,
         )
 
         monkeypatch.setattr(container.artifact_bundle_service, "_index_records", real_index)
@@ -593,7 +658,7 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
         await container.shutdown()
 
 
-async def test_uploaded_recovery_rejects_records_from_another_request(tmp_path, monkeypatch):
+async def test_uploaded_resume_uses_and_authenticates_authoritative_records(tmp_path, monkeypatch):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
         update={"retry_delay_seconds": 0.0}
     )
@@ -609,7 +674,10 @@ async def test_uploaded_recovery_rejects_records_from_another_request(tmp_path, 
         )
         target = _request(world, source, idempotency_key="target-publication")
 
-        async def fail_index(_records):
+        indexed_records = []
+
+        async def fail_index(records):
+            indexed_records.append(records)
             raise RuntimeError("leave target uploaded")
 
         monkeypatch.setattr(container.artifact_bundle_service, "_index_records", fail_index)
@@ -624,6 +692,7 @@ async def test_uploaded_recovery_rejects_records_from_another_request(tmp_path, 
         )
         publication = await catalog.get_artifact_publication(target.world_id, key)
         assert publication is not None and publication.status == "UPLOADED"
+        indexed_records.clear()
         corrupt = replace(
             publication,
             records_json=json.dumps(
@@ -638,13 +707,35 @@ async def test_uploaded_recovery_rejects_records_from_another_request(tmp_path, 
             require_policy=False,
         )
 
-        with pytest.raises(ValueError, match="does not match its durable request"):
+        with pytest.raises(RuntimeError, match="leave target uploaded"):
             await container.artifact_bundle_service._resume(
                 durable_request,
                 corrupt,
                 corrupt.claimant,
                 catalog,
             )
+        expected_records = json.loads(publication.records_json)
+        assert [record.model_dump(mode="json") for record in indexed_records[0]] == expected_records
+
+        # Caller-supplied publication copies are ignored, but corruption in the
+        # authoritative row must still fail before external index I/O.
+        assert isinstance(catalog, SqliteControlCatalog)
+        connection = catalog._connect_sync()
+        with connection:
+            connection.execute(
+                "UPDATE artifact_publications SET records_json=?, manifest_uri=? "
+                "WHERE publication_key=?",
+                (corrupt.records_json, corrupt.manifest_uri, publication.publication_key),
+            )
+        indexed_records.clear()
+        with pytest.raises(ValueError, match="does not match its durable request"):
+            await container.artifact_bundle_service._resume(
+                durable_request,
+                publication,
+                publication.claimant,
+                catalog,
+            )
+        assert indexed_records == []
     finally:
         await container.shutdown()
 
@@ -1388,6 +1479,98 @@ async def test_resolver_reports_required_member_missing_from_checkpoint(tmp_path
         )
 
 
+async def test_item_scoped_reconciliation_uses_digest_only_candidates(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="item-scoped")
+        prepared = container.artifact_bundle_service.prepare(request)
+        catalog = container.storage_service.get_control_catalog(storage)
+        await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=prepared.producer_digest,
+            request_json=prepared.request_json,
+            claimant="seed",
+            retry_window_ms=60_000,
+            lease_ms=60_000,
+        )
+        await catalog.fail_artifact_publication(
+            request.world_id,
+            prepared.publication_key,
+            "seed",
+            "make publication immediately due",
+            retry_delay_ms=0,
+        )
+
+        candidates = await container.artifact_bundle_service.list_due_publications(
+            request.world_id,
+            storage_config=storage,
+            limit=1,
+        )
+        assert [candidate.model_dump() for candidate in candidates] == [
+            {"publication_key": prepared.publication_key}
+        ]
+
+        indexed = await container.artifact_bundle_service.reconcile_publication(
+            request.world_id,
+            prepared.publication_key,
+            storage_config=storage,
+        )
+        assert indexed.disposition is ArtifactReconcileDisposition.INDEXED
+
+        duplicate = await container.artifact_bundle_service.reconcile_publication(
+            request.world_id,
+            prepared.publication_key,
+            storage_config=storage,
+        )
+        assert duplicate.disposition is ArtifactReconcileDisposition.INDEXED
+
+        missing_key = hashlib.sha256(b"missing-publication").hexdigest()
+        obsolete = await container.artifact_bundle_service.reconcile_publication(
+            request.world_id,
+            missing_key,
+            storage_config=storage,
+        )
+        assert obsolete.disposition is ArtifactReconcileDisposition.OBSOLETE
+    finally:
+        await container.shutdown()
+
+
+async def test_item_scoped_reconciliation_rejects_unsafe_references(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        with pytest.raises(ValueError, match="lowercase SHA-256"):
+            await container.artifact_bundle_service.reconcile_publication(
+                str(world.world_id),
+                "../../unsafe",
+                storage_config=storage,
+            )
+        with pytest.raises(ValueError, match="limit must be at least 1"):
+            await container.artifact_bundle_service.list_due_publications(
+                str(world.world_id),
+                storage_config=storage,
+                limit=0,
+            )
+        with pytest.raises(ValueError, match="lowercase SHA-256"):
+            await container.artifact_bundle_service.list_due_publications(
+                str(world.world_id),
+                storage_config=storage,
+                after_publication_key="../../unsafe",
+            )
+    finally:
+        await container.shutdown()
+
+
 async def test_reconcile_distinguishes_unowned_and_failure_recording_errors(
     tmp_path, monkeypatch, caplog
 ):
@@ -1408,8 +1591,8 @@ async def test_reconcile_distinguishes_unowned_and_failure_recording_errors(
             request_digest=valid.digest(),
             request_json=valid.canonical_json(),
             claimant="seed-valid",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=0.0,
+            retry_window_ms=60_000,
+            lease_ms=60_000,
         )
         _, corrupt_row = await catalog.acquire_artifact_publication(
             world_id=valid.world_id,
@@ -1419,20 +1602,39 @@ async def test_reconcile_distinguishes_unowned_and_failure_recording_errors(
             request_digest="corrupt",
             request_json="{not-json",
             claimant="seed-corrupt",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=0.0,
+            retry_window_ms=60_000,
+            lease_ms=60_000,
         )
-        real_acquire = catalog.acquire_artifact_publication
+        await catalog.fail_artifact_publication(
+            valid.world_id,
+            valid_row.publication_key,
+            "seed-valid",
+            "make valid row immediately due",
+            retry_delay_ms=0,
+        )
+        await catalog.fail_artifact_publication(
+            valid.world_id,
+            corrupt_row.publication_key,
+            "seed-corrupt",
+            "make corrupt row immediately due",
+            retry_delay_ms=0,
+        )
+        real_recover = catalog.recover_artifact_publication
 
-        async def selective_acquire(**kwargs):
-            if kwargs["idempotency_key"] == valid.idempotency_key:
+        async def selective_recover(world_id, publication_key, claimant, *, lease_ms):
+            if publication_key == valid_row.publication_key:
                 raise RuntimeError("acquire transport unavailable")
-            return await real_acquire(**kwargs)
+            return await real_recover(
+                world_id,
+                publication_key,
+                claimant,
+                lease_ms=lease_ms,
+            )
 
         async def fail_recording(*args, **kwargs):
             raise RuntimeError("failure catalog unavailable")
 
-        monkeypatch.setattr(catalog, "acquire_artifact_publication", selective_acquire)
+        monkeypatch.setattr(catalog, "recover_artifact_publication", selective_recover)
         monkeypatch.setattr(catalog, "fail_artifact_publication", fail_recording)
         caplog.set_level("ERROR", logger="archetype.app.artifacts.bundle_service")
 
@@ -1452,12 +1654,14 @@ async def test_reconcile_distinguishes_unowned_and_failure_recording_errors(
         assert valid_after is not None and valid_after.claimant == "seed-valid"
         assert corrupt_after is not None
         assert corrupt_after.claimant.startswith("artifact-reconciler-")
-        assert corrupt_after.last_error == ""
+        assert corrupt_after.last_error == "make corrupt row immediately due"
     finally:
         await container.shutdown()
 
 
-async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path):
+async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path, monkeypatch):
+    now_ms = [1_000_000]
+    monkeypatch.setattr(catalog_module, "_now_ms", lambda: now_ms[0])
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
     source = tmp_path / "result.json"
@@ -1475,9 +1679,10 @@ async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path
             request_digest=request.digest(),
             request_json=request.canonical_json(),
             claimant="seed",
-            retry_until_ms=1,
-            lease_seconds=0.0,
+            retry_window_ms=100,
+            lease_ms=1,
         )
+        now_ms[0] += 101
         result = await container.artifact_bundle_service.reconcile(
             request.world_id, storage_config=storage
         )
@@ -1491,13 +1696,8 @@ async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path
 
 
 async def test_reconcile_counts_expiry_crossing_inside_resume(tmp_path, monkeypatch):
-    class _Clock:
-        def __init__(self, start: float) -> None:
-            self.values = iter((start + 1.0, start + 1.0, start + 200.0))
-
-        def time(self) -> float:
-            return next(self.values)
-
+    now_ms = [2_000_000]
+    monkeypatch.setattr(catalog_module, "_now_ms", lambda: now_ms[0])
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
     source = tmp_path / "result.json"
@@ -1508,7 +1708,6 @@ async def test_reconcile_counts_expiry_crossing_inside_resume(tmp_path, monkeypa
         request = _request(world, source, idempotency_key="expires-inside-resume")
         prepared = container.artifact_bundle_service.prepare(request)
         catalog = container.storage_service.get_control_catalog(storage)
-        started_at = time.time()
         await catalog.acquire_artifact_publication(
             world_id=request.world_id,
             run_id=request.run_id,
@@ -1517,10 +1716,35 @@ async def test_reconcile_counts_expiry_crossing_inside_resume(tmp_path, monkeypa
             request_digest=prepared.producer_digest,
             request_json=prepared.request_json,
             claimant="seed",
-            retry_until_ms=int((started_at + 150.0) * 1000),
-            lease_seconds=0.0,
+            retry_window_ms=150,
+            lease_ms=1,
         )
-        monkeypatch.setattr(bundle_service_module, "time", _Clock(started_at))
+        now_ms[0] += 2
+        real_recover = catalog.recover_artifact_publication
+        recover_calls = 0
+
+        async def cross_deadline(world_id, publication_key, claimant, *, lease_ms):
+            nonlocal recover_calls
+            result = await real_recover(
+                world_id,
+                publication_key,
+                claimant,
+                lease_ms=lease_ms,
+            )
+            recover_calls += 1
+            if recover_calls == 1:
+                now_ms[0] += 200
+            return result
+
+        upload_calls = 0
+
+        async def forbidden_upload(*_args, **_kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise AssertionError("expired publication reached upload")
+
+        monkeypatch.setattr(catalog, "recover_artifact_publication", cross_deadline)
+        monkeypatch.setattr(container.artifact_bundle_service, "_upload_bundle", forbidden_upload)
 
         result = await container.artifact_bundle_service.reconcile(
             request.world_id,
@@ -1531,6 +1755,8 @@ async def test_reconcile_counts_expiry_crossing_inside_resume(tmp_path, monkeypa
         assert result.expired == 1
         assert result.indexed == 0
         assert result.failed == 0
+        assert recover_calls == 2
+        assert upload_calls == 0
         publication = await catalog.get_artifact_publication(
             request.world_id,
             prepared.publication_key,
@@ -1559,7 +1785,7 @@ async def test_duplicate_expired_publication_returns_typed_receipt(tmp_path):
             request_digest=prepared.producer_digest,
             request_json=prepared.request_json,
             claimant="seed",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
+            retry_window_ms=60_000,
         )
         await catalog.expire_artifact_publication(
             request.world_id,
@@ -1584,8 +1810,12 @@ async def test_duplicate_expired_publication_returns_typed_receipt(tmp_path):
         await container.shutdown()
 
 
-async def test_expiry_during_resume_returns_typed_receipt(tmp_path):
-    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+async def test_expiry_during_resume_returns_typed_receipt(tmp_path, monkeypatch):
+    now_ms = [3_000_000]
+    monkeypatch.setattr(catalog_module, "_now_ms", lambda: now_ms[0])
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_window_seconds": 60}
+    )
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
     source = tmp_path / "result.json"
     source.write_text("{}")
@@ -1595,17 +1825,22 @@ async def test_expiry_during_resume_returns_typed_receipt(tmp_path):
         request = _request(world, source, idempotency_key="expires-during-resume")
         prepared = container.artifact_bundle_service.prepare(request)
         catalog = container.storage_service.get_control_catalog(storage)
-        await catalog.acquire_artifact_publication(
-            world_id=request.world_id,
-            run_id=request.run_id,
-            attempt_id=request.attempt_id,
-            idempotency_key=request.idempotency_key,
-            request_digest=prepared.producer_digest,
-            request_json=prepared.request_json,
-            claimant="seed",
-            retry_until_ms=1,
-            lease_seconds=0.0,
-        )
+        real_acquire = catalog.acquire_artifact_publication
+
+        async def cross_deadline_after_acquire(**kwargs):
+            result = await real_acquire(**kwargs)
+            now_ms[0] += 60_001
+            return result
+
+        upload_calls = 0
+
+        async def forbidden_upload(*_args, **_kwargs):
+            nonlocal upload_calls
+            upload_calls += 1
+            raise AssertionError("expired publication reached upload")
+
+        monkeypatch.setattr(catalog, "acquire_artifact_publication", cross_deadline_after_acquire)
+        monkeypatch.setattr(container.artifact_bundle_service, "_upload_bundle", forbidden_upload)
 
         receipt = await container.artifact_bundle_service.publish_prepared(
             prepared,
@@ -1614,6 +1849,7 @@ async def test_expiry_during_resume_returns_typed_receipt(tmp_path):
 
         assert receipt.status is ArtifactPublicationStatus.EXPIRED
         assert not receipt.duplicate
+        assert upload_calls == 0
         expired = await catalog.get_artifact_publication(
             request.world_id,
             prepared.publication_key,
@@ -1641,7 +1877,7 @@ async def test_durable_request_identity_and_digest_are_authenticated(tmp_path):
             request_digest=request.digest(),
             request_json=request.canonical_json(),
             claimant="seed",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
+            retry_window_ms=60_000,
         )
         with pytest.raises(ValueError, match="identity does not match"):
             container.artifact_bundle_service._request_from_publication(
@@ -1838,8 +2074,15 @@ async def test_reconcile_rechecks_changed_secret_bearing_object_root_before_io(t
             request_digest=prepared.producer_digest,
             request_json=prepared.request_json,
             claimant="seed-before-config-drift",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=0.0,
+            retry_window_ms=60_000,
+            lease_ms=60_000,
+        )
+        await catalog.fail_artifact_publication(
+            request.world_id,
+            publication.publication_key,
+            "seed-before-config-drift",
+            "make publication immediately due",
+            retry_delay_ms=0,
         )
         assert outcome == "acquired" and publication.status == "PENDING"
         world_id = request.world_id
