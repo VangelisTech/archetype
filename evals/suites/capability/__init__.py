@@ -8,6 +8,7 @@ from __future__ import annotations
 from evals.harness import EvalHarness
 from evals.suites.capability import (
     agent_missions,
+    fleet_recovery,
     indexed_finalization,
     mission_attempt_claims,
     redaction,
@@ -22,12 +23,14 @@ def register(harness: EvalHarness) -> None:
     agent_missions.register(harness)
     mission_attempt_claims.register(harness)
     indexed_finalization.register(harness)
+    fleet_recovery.register(harness)
     redaction.register(harness)
     sandbox_kernel.register(harness)
 
 
 __all__ = [
     "agent_missions",
+    "fleet_recovery",
     "indexed_finalization",
     "mission_attempt_claims",
     "redaction",

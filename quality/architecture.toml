@@ -11,6 +11,7 @@ types = [
   "CommandGateway",
   "CommandScheduler",
   "EvaluationService",
+  "FleetRecoveryService",
   "MutationService",
   "MissionAttemptClaimService",
   "MissionAttemptExecutionService",
@@ -144,6 +145,17 @@ allowed_app = [
 ]
 
 [[family_rule]]
+name = "recovery-family"
+consumer = "archetype.app.recovery"
+allowed_app = [
+  "archetype.app.recovery",
+  "archetype.app.artifacts.bundle_models",
+  "archetype.app.artifacts.interfaces",
+  "archetype.app.storage.catalog",
+  "archetype.app.storage.recovery_transitions",
+]
+
+[[family_rule]]
 name = "sandbox-family"
 consumer = "archetype.app.sandboxes"
 allowed_app = [
@@ -216,6 +228,17 @@ allowed_app = [
   "archetype.app.storage.commit",
   "archetype.app.storage.signatures",
   "archetype.app.models",
+]
+
+[[module_rule]]
+module = "archetype.app.recovery.service"
+allowed_interfaces = [
+  "archetype.app.recovery.interfaces.iMaintenanceRecoveryHandler",
+  "archetype.app.recovery.interfaces.iRecoverySource",
+]
+allowed_app = [
+  "archetype.app.recovery.models",
+  "archetype.app.storage.catalog",
 ]
 
 [[module_rule]]

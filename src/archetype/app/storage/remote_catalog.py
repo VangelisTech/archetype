@@ -20,11 +20,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from typing import cast
+from urllib.parse import urlencode
 
 import httpx
 
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.storage.catalog import (
+    _MAX_ARTIFACT_RETRY_DELAY_MS,
+    _MAX_ARTIFACT_RETRY_WINDOW_MS,
+    _MAX_RECOVERY_COUNTER,
+    _RECOVERY_ERROR_CODES,
+    _RECOVERY_EXCEPTION_STATUSES,
+    _RECOVERY_KINDS,
+    _RECOVERY_SWEEP_STATUSES,
+    ArtifactPublicationCandidate,
     ArtifactPublicationConflictError,
     ArtifactPublicationExpiredError,
     ArtifactPublicationPendingError,
@@ -42,11 +53,35 @@ from archetype.app.storage.catalog import (
     CommandRecord,
     ManifestRecord,
     OutboxRecord,
+    RecoveryExceptionConflictError,
+    RecoveryExceptionRecord,
+    RecoverySweepConflictError,
+    RecoverySweepPendingError,
+    RecoverySweepRecord,
+    RecoverySweepStaleError,
     SignatureRecord,
     WorldRecord,
+    _require_artifact_lease_ms,
+    _require_artifact_lease_seconds,
+    _require_artifact_milliseconds,
+    _require_recovery_delay,
+    _require_recovery_fence,
+    _require_recovery_kind,
+    _require_recovery_lease,
+    _require_recovery_text,
+    _require_sha256,
     _validate_attempt_claim_transition,
+    _validate_recovery_error,
     artifact_publication_key,
     claim_scope_key,
+)
+from archetype.app.storage.recovery_transitions import (
+    RecoveryExceptionEvent,
+    RecoveryExceptionStatus,
+    RecoveryExceptionTransitionGraph,
+    RecoverySweepEvent,
+    RecoverySweepStatus,
+    RecoverySweepTransitionGraph,
 )
 from archetype.core.interfaces import StaleWriterError
 
@@ -56,6 +91,11 @@ _ATTEMPT_CLAIM_PROTOCOL_VERSION = 4
 _ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2"
 _ARTIFACT_SNAPSHOT_PROTOCOL_VERSION = 3
 _ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1"
+_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION = 6
+_ARTIFACT_SERVER_CLOCK_CAPABILITY = "artifact_publication_server_clock_v1"
+_RECOVERY_PROTOCOL_VERSION = 5
+_RECOVERY_CAPABILITY = "fleet_recovery_v1"
+_RECOVERY_PROTOCOL_PROBE_WORLD = "__fleet_recovery_protocol__"
 
 _ERROR_MAP: dict[str, type[Exception]] = {
     "attempt_claim_conflict": AttemptClaimConflictError,
@@ -68,8 +108,42 @@ _ERROR_MAP: dict[str, type[Exception]] = {
     "claim_conflict": ClaimConflictError,
     "claim_pending": ClaimPendingError,
     "command_conflict": CommandConflictError,
+    "recovery_exception_conflict": RecoveryExceptionConflictError,
+    "recovery_sweep_conflict": RecoverySweepConflictError,
+    "recovery_sweep_pending": RecoverySweepPendingError,
+    "recovery_sweep_stale": RecoverySweepStaleError,
     "stale_writer": StaleWriterError,
 }
+
+
+def _require_remote_sweep_transition_target(
+    record: RecoverySweepRecord,
+    operation: str,
+    *edges: tuple[RecoverySweepStatus | None, RecoverySweepEvent],
+) -> RecoverySweepRecord:
+    expected = {
+        RecoverySweepTransitionGraph.transition(source, event).value for source, event in edges
+    }
+    if record.status not in expected:
+        raise RuntimeError(
+            f"remote recovery {operation} returned status outside the transition graph"
+        )
+    return record
+
+
+def _require_remote_exception_transition_target(
+    record: RecoveryExceptionRecord,
+    operation: str,
+    *edges: tuple[RecoveryExceptionStatus | None, RecoveryExceptionEvent],
+) -> RecoveryExceptionRecord:
+    expected = {
+        RecoveryExceptionTransitionGraph.transition(source, event).value for source, event in edges
+    }
+    if record.status not in expected:
+        raise RuntimeError(
+            f"remote recovery {operation} returned status outside the transition graph"
+        )
+    return record
 
 
 class RemoteControlCatalog:
@@ -123,7 +197,7 @@ class RemoteControlCatalog:
         world_id: str,
         *,
         minimum_version: int,
-        capability: str,
+        capability: str | tuple[str, ...],
         feature: str,
     ) -> None:
         """Fail closed before a versioned write reaches an older Worker."""
@@ -138,11 +212,12 @@ class RemoteControlCatalog:
             raise RuntimeError(f"remote control catalog does not support {feature}")
         capabilities = body.get("capabilities", ())
         protocol_version = body.get("catalog_protocol_version")
+        required_capabilities = (capability,) if isinstance(capability, str) else capability
         if (
             not isinstance(protocol_version, int)
             or protocol_version < minimum_version
             or not isinstance(capabilities, list)
-            or capability not in capabilities
+            or any(required not in capabilities for required in required_capabilities)
         ):
             raise RuntimeError(f"remote control catalog does not support {feature}")
 
@@ -160,6 +235,33 @@ class RemoteControlCatalog:
             minimum_version=_ARTIFACT_SNAPSHOT_PROTOCOL_VERSION,
             capability=_ARTIFACT_SNAPSHOT_CAPABILITY,
             feature="lossless artifact snapshot IDs",
+        )
+
+    async def _require_artifact_server_clock_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION,
+            capability=_ARTIFACT_SERVER_CLOCK_CAPABILITY,
+            feature="artifact publication server-clock v1",
+        )
+
+    async def _require_artifact_mutation_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION,
+            capability=(
+                _ARTIFACT_SNAPSHOT_CAPABILITY,
+                _ARTIFACT_SERVER_CLOCK_CAPABILITY,
+            ),
+            feature="lease-fenced artifact mutation v2",
+        )
+
+    async def _require_recovery_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_RECOVERY_PROTOCOL_VERSION,
+            capability=_RECOVERY_CAPABILITY,
+            feature="fleet recovery v1",
         )
 
     # ── worlds ───────────────────────────────────────────────────────────────
@@ -193,6 +295,36 @@ class RemoteControlCatalog:
     async def list_worlds(self) -> list[WorldRecord]:
         response = await self._call("GET", "/worlds")
         return [_world_from_json(row) for row in response.json()]
+
+    async def list_worlds_page(
+        self,
+        *,
+        after_world_id: str = "",
+        limit: int = 1000,
+    ) -> list[WorldRecord]:
+        if not isinstance(after_world_id, str):
+            raise TypeError("world discovery cursor must be a string")
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("world discovery page limit must be between 1 and 10000")
+        await self._require_recovery_protocol(_RECOVERY_PROTOCOL_PROBE_WORLD)
+        query = urlencode({"after_world_id": after_world_id, "limit": limit})
+        response = await self._call("GET", f"/worlds?{query}")
+        body = response.json()
+        if not isinstance(body, list) or len(body) > limit:
+            raise RuntimeError("remote world discovery returned an invalid page size")
+        if any(
+            not isinstance(row, dict) or not isinstance(row.get("world_id"), str) for row in body
+        ):
+            raise RuntimeError("remote world discovery returned an invalid world identity")
+        records = [_world_from_json(row) for row in body]
+        previous = after_world_id
+        for record in records:
+            if record.world_id <= previous:
+                raise RuntimeError(
+                    "remote world discovery returned unordered or out-of-cursor rows"
+                )
+            previous = record.world_id
+        return records
 
     # ── signatures ───────────────────────────────────────────────────────────
 
@@ -646,28 +778,76 @@ class RemoteControlCatalog:
         request_digest: str,
         request_json: str,
         claimant: str,
-        retry_until_ms: int,
-        lease_seconds: float = 900.0,
+        retry_window_ms: int,
+        retry_not_after_ms: int | None = None,
+        lease_ms: int = 900_000,
     ) -> tuple[str, ArtifactPublicationRecord]:
+        claimant = _require_recovery_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        retry_window_ms = _require_artifact_milliseconds(
+            retry_window_ms,
+            field="artifact retry_window_ms",
+            maximum=_MAX_ARTIFACT_RETRY_WINDOW_MS,
+        )
+        if retry_not_after_ms is not None:
+            retry_not_after_ms = _require_recovery_fence(
+                retry_not_after_ms, field="artifact retry_not_after_ms"
+            )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
         publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_server_clock_protocol(world_id)
+        payload: dict[str, object] = {
+            "publication_key": publication_key,
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "idempotency_key": idempotency_key,
+            "request_digest": request_digest,
+            "request_json": request_json,
+            "claimant": claimant,
+            "retry_window_ms": retry_window_ms,
+            "lease_ms": lease_ms,
+        }
+        if retry_not_after_ms is not None:
+            payload["retry_not_after_ms"] = retry_not_after_ms
         response = await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/acquire-v2",
-            {
-                "publication_key": publication_key,
-                "run_id": run_id,
-                "attempt_id": attempt_id,
-                "idempotency_key": idempotency_key,
-                "request_digest": request_digest,
-                "request_json": request_json,
-                "claimant": claimant,
-                "retry_until_ms": retry_until_ms,
-                "lease_seconds": lease_seconds,
-            },
+            f"/w/{world_id}/artifact-publications/acquire-v3",
+            payload,
         )
         body = response.json()
-        return body["outcome"], _artifact_publication_from_json(world_id, body["publication"])
+        outcome, publication = _artifact_acquisition_from_json(world_id, body)
+        if publication is None:
+            raise RuntimeError("initial artifact acquisition returned no publication")
+        if publication.publication_key != publication_key:
+            raise RuntimeError("initial artifact acquisition returned a different publication")
+        return outcome, publication
+
+    async def recover_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, ArtifactPublicationRecord | None]:
+        publication_key = _require_sha256(publication_key, field="publication_key")
+        claimant = _require_recovery_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
+        await self._require_artifact_server_clock_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/recover-v1",
+            {"claimant": claimant, "lease_ms": lease_ms},
+        )
+        outcome, publication = _artifact_acquisition_from_json(
+            world_id, response.json(), allow_obsolete=True
+        )
+        if publication is not None and publication.publication_key != publication_key:
+            raise RuntimeError("exact artifact recovery returned a different publication")
+        return outcome, publication
 
     async def renew_artifact_publication(
         self,
@@ -677,7 +857,8 @@ class RemoteControlCatalog:
         *,
         lease_seconds: float,
     ) -> ArtifactPublicationRecord:
-        await self._require_artifact_snapshot_protocol(world_id)
+        lease_seconds = _require_artifact_lease_seconds(lease_seconds)
+        await self._require_artifact_mutation_protocol(world_id)
         response = await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/renew-v2",
@@ -693,7 +874,7 @@ class RemoteControlCatalog:
         records_json: str,
         manifest_uri: str,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/uploads-v2",
@@ -718,7 +899,7 @@ class RemoteControlCatalog:
             or index_snapshot_id > MAX_ICEBERG_SNAPSHOT_ID
         ):
             raise ValueError("index_snapshot_id must be a positive integer no greater than 2^63-1")
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/complete-v2",
@@ -732,13 +913,29 @@ class RemoteControlCatalog:
         claimant: str,
         error: str,
         *,
-        retry_at: float,
+        retry_delay_ms: int,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        claimant = _require_recovery_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+        retry_delay_ms = _require_artifact_milliseconds(
+            retry_delay_ms,
+            field="artifact retry_delay_ms",
+            maximum=_MAX_ARTIFACT_RETRY_DELAY_MS,
+        )
+        await self._require_artifact_server_clock_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/fail-v2",
-            {"claimant": claimant, "error": error, "retry_at": retry_at},
+            f"/w/{world_id}/artifact-publications/{publication_key}/fail-v3",
+            {
+                "claimant": claimant,
+                "error": error,
+                "retry_delay_ms": retry_delay_ms,
+            },
         )
 
     async def expire_artifact_publication(
@@ -748,7 +945,14 @@ class RemoteControlCatalog:
         claimant: str,
         error: str,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        claimant = _require_recovery_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/expire-v2",
@@ -768,13 +972,553 @@ class RemoteControlCatalog:
         return _artifact_publication_from_json(world_id, response.json())
 
     async def list_due_artifact_publications(
-        self, world_id: str, *, now: float, limit: int = 100
-    ) -> list[ArtifactPublicationRecord]:
+        self,
+        world_id: str,
+        *,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> list[ArtifactPublicationCandidate]:
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("artifact publication page limit must be between 1 and 10000")
+        if after_publication_key != "":
+            after_publication_key = _require_sha256(
+                after_publication_key, field="after_publication_key"
+            )
+        await self._require_artifact_server_clock_protocol(world_id)
+        query: dict[str, str | int] = {"limit": limit}
+        if after_publication_key != "":
+            query["after_publication_key"] = after_publication_key
         response = await self._call(
             "GET",
-            f"/w/{world_id}/artifact-publications?due={now}&limit={limit}",
+            f"/w/{world_id}/artifact-publications/due-v1?{urlencode(query)}",
         )
-        return [_artifact_publication_from_json(world_id, row) for row in response.json()]
+        body = response.json()
+        if not isinstance(body, list) or len(body) > limit:
+            raise RuntimeError("remote artifact due list returned an invalid page size")
+        records = [_artifact_candidate_from_json(row) for row in body]
+        previous = after_publication_key
+        for record in records:
+            if record.publication_key <= previous:
+                raise RuntimeError("remote artifact due list is not strictly ordered")
+            previous = record.publication_key
+        return records
+
+    # ── fleet recovery coordination (issue #503) ───────────────────────────
+
+    async def ensure_recovery_sweep(
+        self,
+        storage_fingerprint: str,
+        world_id: str,
+        kind: str,
+        *,
+        max_consecutive_failures: int,
+        initial_delay_ms: int = 0,
+    ) -> RecoverySweepRecord:
+        storage_fingerprint = _require_sha256(storage_fingerprint, field="storage_fingerprint")
+        kind = _require_recovery_kind(kind)
+        initial_delay_ms = _require_recovery_delay(initial_delay_ms, field="initial_delay_ms")
+        if (
+            isinstance(max_consecutive_failures, bool)
+            or not isinstance(max_consecutive_failures, int)
+            or max_consecutive_failures < 1
+            or max_consecutive_failures > 1_000_000
+        ):
+            raise ValueError("max_consecutive_failures must be between 1 and 1000000")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/ensure-v1",
+            {
+                "storage_fingerprint": storage_fingerprint,
+                "kind": kind,
+                "max_consecutive_failures": max_consecutive_failures,
+                "initial_delay_ms": initial_delay_ms,
+            },
+        )
+        return _recovery_sweep_from_json(world_id, response.json())
+
+    async def lease_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, RecoverySweepRecord]:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        lease_ms = _require_recovery_lease(lease_ms)
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/lease-v1",
+            {"kind": kind, "claimant": claimant, "lease_ms": lease_ms},
+        )
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError("remote recovery lease returned an invalid outcome")
+        outcome = body.get("outcome")
+        if not isinstance(outcome, str) or outcome not in {
+            "acquired",
+            "owned",
+            "recovered",
+            "not_due",
+            "paused",
+        }:
+            raise RuntimeError("remote recovery lease returned an invalid outcome")
+        record = _recovery_sweep_from_json(world_id, body.get("sweep"))
+        if record.kind != kind:
+            raise RuntimeError("remote recovery lease returned a different kind")
+        if outcome in {"acquired", "owned", "recovered"} and record.claimant != claimant:
+            raise RuntimeError("remote recovery lease returned a different claimant")
+        if outcome == "acquired":
+            _require_remote_sweep_transition_target(
+                record,
+                "lease",
+                (RecoverySweepStatus.IDLE, RecoverySweepEvent.LEASE),
+                (RecoverySweepStatus.RETRY_WAIT, RecoverySweepEvent.LEASE),
+            )
+        elif outcome == "recovered":
+            _require_remote_sweep_transition_target(
+                record,
+                "lease takeover",
+                (RecoverySweepStatus.LEASED, RecoverySweepEvent.TAKE_OVER),
+            )
+        elif outcome == "owned" and record.status != RecoverySweepStatus.LEASED.value:
+            raise RuntimeError("remote recovery owned lease returned a non-leased sweep")
+        elif outcome == "paused" and record.status != RecoverySweepStatus.PAUSED.value:
+            raise RuntimeError("remote recovery paused outcome returned a non-paused sweep")
+        elif outcome == "not_due" and record.status not in {
+            RecoverySweepStatus.IDLE.value,
+            RecoverySweepStatus.RETRY_WAIT.value,
+        }:
+            raise RuntimeError("remote recovery not-due outcome returned an active sweep")
+        return outcome, record
+
+    async def renew_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        lease_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        lease_ms = _require_recovery_lease(lease_ms)
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/renew-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "lease_ms": lease_ms,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "renewal",
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.RENEW),
+        )
+
+    async def checkpoint_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        cursor: str,
+        active_subject_key: str = "",
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        if cursor != "":
+            cursor = _require_sha256(cursor, field="recovery cursor")
+        if active_subject_key != "":
+            active_subject_key = _require_sha256(active_subject_key, field="active_subject_key")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/checkpoint-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "cursor": cursor,
+                "active_subject_key": active_subject_key,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "checkpoint",
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.CHECKPOINT),
+        )
+
+    async def yield_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        next_delay_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        next_delay_ms = _require_recovery_delay(next_delay_ms, field="next_delay_ms")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/yield-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "next_delay_ms": next_delay_ms,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "yield",
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.YIELD),
+        )
+
+    async def fail_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/fail-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "error_code": error_code,
+                "error_detail": error_detail,
+                "retry_delay_ms": retry_delay_ms,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "failure",
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.FAIL),
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.EXHAUST),
+        )
+
+    async def pause_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/pause-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "error_code": error_code,
+                "error_detail": error_detail,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "pause",
+            (RecoverySweepStatus.LEASED, RecoverySweepEvent.PAUSE),
+        )
+
+    async def redrive_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        *,
+        expected_fence_epoch: int,
+        delay_ms: int = 0,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        expected_fence_epoch = _require_recovery_fence(
+            expected_fence_epoch, field="expected_fence_epoch"
+        )
+        if expected_fence_epoch == _MAX_RECOVERY_COUNTER:
+            raise ValueError("expected_fence_epoch must leave room for the redrive fence")
+        delay_ms = _require_recovery_delay(delay_ms, field="delay_ms")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/sweeps/redrive-v1",
+            {
+                "kind": kind,
+                "expected_fence_epoch": expected_fence_epoch,
+                "delay_ms": delay_ms,
+            },
+        )
+        return _require_remote_sweep_transition_target(
+            _recovery_sweep_from_json(world_id, response.json()),
+            "redrive",
+            (RecoverySweepStatus.PAUSED, RecoverySweepEvent.REDRIVE),
+        )
+
+    async def list_recovery_sweeps(
+        self, world_id: str, *, status: str | None = None
+    ) -> list[RecoverySweepRecord]:
+        if status is not None and status not in _RECOVERY_SWEEP_STATUSES:
+            raise ValueError(f"unsupported recovery sweep status {status!r}")
+        await self._require_recovery_protocol(world_id)
+        query = urlencode({"status": status}) if status is not None else ""
+        suffix = f"?{query}" if query else ""
+        response = await self._call("GET", f"/w/{world_id}/recovery/sweeps{suffix}")
+        body = response.json()
+        if not isinstance(body, list) or len(body) > len(_RECOVERY_KINDS):
+            raise RuntimeError("remote recovery sweep list exceeds the closed kind set")
+        records = [_recovery_sweep_from_json(world_id, row) for row in body]
+        previous: tuple[str, str] | None = None
+        for record in records:
+            identity = (record.kind, record.sweep_key)
+            if previous is not None and identity <= previous:
+                raise RuntimeError("remote recovery sweep list is not strictly ordered")
+            if status is not None and record.status != status:
+                raise RuntimeError("remote recovery sweep list violated its status filter")
+            previous = identity
+        return records
+
+    async def retry_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        subject_key: str,
+        authority_key: str,
+        expected_attempt_count: int,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+        max_attempts: int,
+        permanent: bool = False,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        if type(permanent) is not bool:
+            raise TypeError("permanent must be a boolean")
+        subject_key = _require_sha256(subject_key, field="subject_key")
+        authority_key = _require_sha256(authority_key, field="authority_key")
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+        if (
+            isinstance(expected_attempt_count, bool)
+            or not isinstance(expected_attempt_count, int)
+            or expected_attempt_count < 0
+            or expected_attempt_count >= _MAX_RECOVERY_COUNTER
+        ):
+            raise ValueError(
+                "expected_attempt_count must be a non-negative portable incrementable integer"
+            )
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or max_attempts < 1
+            or max_attempts > 1_000_000
+        ):
+            raise ValueError("max_attempts must be between 1 and 1000000")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/exceptions/retry-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "subject_key": subject_key,
+                "authority_key": authority_key,
+                "expected_attempt_count": expected_attempt_count,
+                "error_code": error_code,
+                "error_detail": error_detail,
+                "retry_delay_ms": retry_delay_ms,
+                "max_attempts": max_attempts,
+                "permanent": permanent,
+            },
+        )
+        event = (
+            RecoveryExceptionEvent.DEAD_LETTER
+            if permanent or expected_attempt_count + 1 >= max_attempts
+            else RecoveryExceptionEvent.RETRY
+        )
+        return _require_remote_exception_transition_target(
+            _recovery_exception_from_json(world_id, response.json()),
+            "exception retry",
+            (None, event),
+            (RecoveryExceptionStatus.RETRY_WAIT, event),
+        )
+
+    async def resolve_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/exceptions/resolve-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "exception_key": exception_key,
+            },
+        )
+        return _require_remote_exception_transition_target(
+            _recovery_exception_from_json(world_id, response.json()),
+            "exception resolution",
+            (RecoveryExceptionStatus.RETRY_WAIT, RecoveryExceptionEvent.RESOLVE),
+            (RecoveryExceptionStatus.DEAD_LETTER, RecoveryExceptionEvent.RESOLVE),
+        )
+
+    async def redrive_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+        *,
+        expected_attempt_count: int,
+        retry_delay_ms: int = 0,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_recovery_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_recovery_fence(fence_epoch)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+        if (
+            isinstance(expected_attempt_count, bool)
+            or not isinstance(expected_attempt_count, int)
+            or expected_attempt_count < 0
+            or expected_attempt_count > _MAX_RECOVERY_COUNTER
+        ):
+            raise ValueError("expected_attempt_count must be a portable non-negative integer")
+        await self._require_recovery_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/recovery/exceptions/redrive-v1",
+            {
+                "kind": kind,
+                "claimant": claimant,
+                "fence_epoch": fence_epoch,
+                "exception_key": exception_key,
+                "expected_attempt_count": expected_attempt_count,
+                "retry_delay_ms": retry_delay_ms,
+            },
+        )
+        return _require_remote_exception_transition_target(
+            _recovery_exception_from_json(world_id, response.json()),
+            "exception redrive",
+            (RecoveryExceptionStatus.DEAD_LETTER, RecoveryExceptionEvent.REDRIVE),
+        )
+
+    async def get_recovery_exception(
+        self, world_id: str, kind: str, exception_key: str
+    ) -> RecoveryExceptionRecord | None:
+        kind = _require_recovery_kind(kind)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+        await self._require_recovery_protocol(world_id)
+        query = urlencode({"kind": kind})
+        response = await self._call(
+            "GET",
+            f"/w/{world_id}/recovery/exceptions/{exception_key}?{query}",
+            ignore_status=(404,),
+        )
+        if response.status_code == 404:
+            return None
+        return _recovery_exception_from_json(world_id, response.json())
+
+    async def list_recovery_exceptions(
+        self,
+        world_id: str,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        due_only: bool = False,
+        limit: int = 100,
+    ) -> list[RecoveryExceptionRecord]:
+        if kind is not None:
+            kind = _require_recovery_kind(kind)
+        if type(due_only) is not bool:
+            raise TypeError("due_only must be a boolean")
+        if status is not None and status not in _RECOVERY_EXCEPTION_STATUSES:
+            raise ValueError(f"unsupported recovery exception status {status!r}")
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("recovery exception limit must be between 1 and 10000")
+        if due_only and status not in {None, "retry_wait"}:
+            raise ValueError("due_only recovery exceptions must have retry_wait status")
+        await self._require_recovery_protocol(world_id)
+        query_values: dict[str, str | int] = {"limit": limit}
+        if kind is not None:
+            query_values["kind"] = kind
+        if status is not None:
+            query_values["status"] = status
+        if due_only:
+            query_values["due_only"] = "1"
+        response = await self._call(
+            "GET",
+            f"/w/{world_id}/recovery/exceptions?{urlencode(query_values)}",
+        )
+        body = response.json()
+        if not isinstance(body, list) or len(body) > limit:
+            raise RuntimeError("remote recovery exception list returned an invalid page size")
+        records = [_recovery_exception_from_json(world_id, row) for row in body]
+        previous: tuple[int, str] | None = None
+        for record in records:
+            identity = (record.retry_at_ms, record.exception_key)
+            if previous is not None and identity <= previous:
+                raise RuntimeError("remote recovery exception list is not strictly ordered")
+            if kind is not None and record.kind != kind:
+                raise RuntimeError("remote recovery exception list violated its kind filter")
+            if status is not None and record.status != status:
+                raise RuntimeError("remote recovery exception list violated its status filter")
+            if due_only and record.status != "retry_wait":
+                raise RuntimeError("remote due recovery exception list returned a non-retry row")
+            previous = identity
+        return records
 
 
 def _world_from_json(row: dict) -> WorldRecord:
@@ -850,28 +1594,262 @@ def _attempt_claim_from_json(world_id: str, row: dict) -> AttemptClaimRecord:
     )
 
 
+def _artifact_candidate_from_json(row: object) -> ArtifactPublicationCandidate:
+    if not isinstance(row, dict) or set(row) != {"publication_key"}:
+        raise RuntimeError("remote artifact due candidate is not digest-only")
+    candidate = cast(dict[str, object], row)
+    publication_key = candidate["publication_key"]
+    if not isinstance(publication_key, str):
+        raise RuntimeError("remote artifact due candidate has an invalid publication_key")
+    try:
+        publication_key = _require_sha256(publication_key, field="publication_key")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("remote artifact due candidate has an invalid publication_key") from exc
+    return ArtifactPublicationCandidate(publication_key=publication_key)
+
+
+def _artifact_acquisition_from_json(
+    world_id: str,
+    body: object,
+    *,
+    allow_obsolete: bool = False,
+) -> tuple[str, ArtifactPublicationRecord | None]:
+    if not isinstance(body, dict):
+        raise RuntimeError("remote artifact acquisition returned a non-object response")
+    outcome = body.get("outcome")
+    allowed = (
+        {"owned", "recovered", "duplicate", "expired", "obsolete"}
+        if allow_obsolete
+        else {"acquired", "owned", "recovered", "duplicate", "expired"}
+    )
+    if not isinstance(outcome, str) or outcome not in allowed:
+        raise RuntimeError("remote artifact acquisition returned an invalid outcome")
+    publication = body.get("publication")
+    if outcome == "obsolete":
+        if publication is not None:
+            raise RuntimeError("obsolete artifact acquisition returned a publication")
+        return outcome, None
+    if not isinstance(publication, dict):
+        raise RuntimeError("remote artifact acquisition returned no publication")
+    record = _artifact_publication_from_json(world_id, publication)
+    expected_statuses = {
+        "acquired": {"PENDING"},
+        "owned": {"PENDING", "UPLOADED"},
+        "recovered": {"PENDING", "UPLOADED"},
+        "duplicate": {"INDEXED"},
+        "expired": {"EXPIRED"},
+    }
+    if record.status not in expected_statuses[outcome]:
+        raise RuntimeError("remote artifact acquisition outcome contradicts its status")
+    return outcome, record
+
+
 def _artifact_publication_from_json(world_id: str, row: dict) -> ArtifactPublicationRecord:
+    if not isinstance(row, dict):
+        raise RuntimeError("remote artifact publication is not an object")
+    status = row.get("status")
+    if not isinstance(status, str) or status not in {
+        "PENDING",
+        "UPLOADED",
+        "INDEXED",
+        "EXPIRED",
+    }:
+        raise RuntimeError(f"remote artifact publication has invalid status {status!r}")
+    publication_key = row.get("publication_key")
+    if not isinstance(publication_key, str):
+        raise RuntimeError("remote artifact publication has a non-string publication_key")
+    try:
+        _require_sha256(publication_key, field="publication_key")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("remote artifact publication has an invalid publication_key") from exc
+    retry_until_ms = row.get("retry_until_ms")
+    attempt_count = row.get("attempt_count")
+    lease_expires_at = row.get("lease_expires_at")
+    if (
+        type(retry_until_ms) is not int
+        or retry_until_ms < 0
+        or retry_until_ms > _MAX_RECOVERY_COUNTER
+    ):
+        raise RuntimeError("remote artifact publication has invalid retry_until_ms")
+    if type(attempt_count) is not int or attempt_count < 1 or attempt_count > _MAX_RECOVERY_COUNTER:
+        raise RuntimeError("remote artifact publication has invalid attempt_count")
+    if isinstance(lease_expires_at, bool) or not isinstance(lease_expires_at, int | float):
+        raise RuntimeError("remote artifact publication has invalid lease_expires_at")
+    lease_expires_at_value = float(lease_expires_at)
+    if (
+        not math.isfinite(lease_expires_at_value)
+        or lease_expires_at_value < 0
+        or lease_expires_at_value > _MAX_RECOVERY_COUNTER
+    ):
+        raise RuntimeError("remote artifact publication has invalid lease_expires_at")
     index_snapshot_id = _remote_index_snapshot_id(row)
     return ArtifactPublicationRecord(
-        publication_key=row["publication_key"],
+        publication_key=publication_key,
         world_id=world_id,
         run_id=row["run_id"],
         attempt_id=row["attempt_id"],
         idempotency_key=row["idempotency_key"],
         request_digest=row["request_digest"],
-        status=row["status"],
+        status=status,
         request_json=row["request_json"],
         records_json=row.get("records_json", "[]"),
         claimant=row["claimant"],
-        lease_expires_at=float(row["lease_expires_at"]),
-        retry_until_ms=int(row["retry_until_ms"]),
-        attempt_count=int(row.get("attempt_count", 1)),
+        lease_expires_at=lease_expires_at_value,
+        retry_until_ms=retry_until_ms,
+        attempt_count=attempt_count,
         index_snapshot_id=index_snapshot_id,
         manifest_uri=row.get("manifest_uri", ""),
         last_error=row.get("last_error", ""),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         completed_at=row.get("completed_at"),
+    )
+
+
+def _remote_recovery_int(
+    row: dict,
+    field: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    value = row.get(field)
+    if type(value) is not int:
+        raise RuntimeError(f"remote recovery record has non-integer {field}")
+    if minimum is not None and value < minimum:
+        raise RuntimeError(f"remote recovery record has out-of-range {field}")
+    if maximum is not None and value > maximum:
+        raise RuntimeError(f"remote recovery record has out-of-range {field}")
+    return value
+
+
+def _remote_optional_recovery_int(
+    row: dict,
+    field: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    value = row.get(field)
+    if value is None:
+        return None
+    return _remote_recovery_int(row, field, minimum=minimum, maximum=maximum)
+
+
+def _remote_recovery_text(row: dict, field: str) -> str:
+    value = row.get(field)
+    if not isinstance(value, str):
+        raise RuntimeError(f"remote recovery record has non-string {field}")
+    return value
+
+
+def _remote_recovery_error_code(row: dict) -> str:
+    value = _remote_recovery_text(row, "last_error_code")
+    if value and value not in _RECOVERY_ERROR_CODES:
+        raise RuntimeError(f"remote recovery record has invalid last_error_code {value!r}")
+    return value
+
+
+def _remote_recovery_digest(row: dict, field: str, *, allow_empty: bool = False) -> str:
+    value = _remote_recovery_text(row, field)
+    if allow_empty and value == "":
+        return value
+    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+        raise RuntimeError(f"remote recovery record has invalid {field}")
+    return value
+
+
+def _recovery_sweep_from_json(world_id: str, row: dict) -> RecoverySweepRecord:
+    if not isinstance(row, dict):
+        raise RuntimeError("remote recovery sweep is not an object")
+    if row.get("world_id") != world_id:
+        raise RuntimeError("remote recovery sweep belongs to a different world")
+    status = row.get("status")
+    if not isinstance(status, str) or status not in _RECOVERY_SWEEP_STATUSES:
+        raise RuntimeError(f"remote recovery sweep has invalid status {status!r}")
+    kind = row.get("kind")
+    if not isinstance(kind, str) or kind not in _RECOVERY_KINDS:
+        raise RuntimeError(f"remote recovery sweep has invalid kind {kind!r}")
+    return RecoverySweepRecord(
+        sweep_key=_remote_recovery_digest(row, "sweep_key"),
+        storage_fingerprint=_remote_recovery_digest(row, "storage_fingerprint"),
+        world_id=world_id,
+        kind=kind,
+        status=status,
+        cursor=_remote_recovery_digest(row, "cursor", allow_empty=True),
+        cycle=_remote_recovery_int(row, "cycle", minimum=0, maximum=_MAX_RECOVERY_COUNTER),
+        claimant=_remote_recovery_text(row, "claimant"),
+        lease_expires_at_ms=_remote_recovery_int(
+            row, "lease_expires_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        fence_epoch=_remote_recovery_int(
+            row, "fence_epoch", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        active_subject_key=_remote_recovery_digest(row, "active_subject_key", allow_empty=True),
+        consecutive_failures=_remote_recovery_int(
+            row, "consecutive_failures", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        max_consecutive_failures=_remote_recovery_int(
+            row, "max_consecutive_failures", minimum=1, maximum=1_000_000
+        ),
+        next_due_at_ms=_remote_recovery_int(
+            row, "next_due_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        last_error_code=_remote_recovery_error_code(row),
+        last_error_detail=_remote_recovery_text(row, "last_error_detail"),
+        created_at_ms=_remote_recovery_int(
+            row, "created_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        updated_at_ms=_remote_recovery_int(
+            row, "updated_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        paused_at_ms=_remote_optional_recovery_int(
+            row, "paused_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+    )
+
+
+def _recovery_exception_from_json(world_id: str, row: dict) -> RecoveryExceptionRecord:
+    if not isinstance(row, dict):
+        raise RuntimeError("remote recovery exception is not an object")
+    if row.get("world_id") != world_id:
+        raise RuntimeError("remote recovery exception belongs to a different world")
+    status = row.get("status")
+    if not isinstance(status, str) or status not in _RECOVERY_EXCEPTION_STATUSES:
+        raise RuntimeError(f"remote recovery exception has invalid status {status!r}")
+    kind = row.get("kind")
+    if not isinstance(kind, str) or kind not in _RECOVERY_KINDS:
+        raise RuntimeError(f"remote recovery exception has invalid kind {kind!r}")
+    return RecoveryExceptionRecord(
+        exception_key=_remote_recovery_digest(row, "exception_key"),
+        sweep_key=_remote_recovery_digest(row, "sweep_key"),
+        storage_fingerprint=_remote_recovery_digest(row, "storage_fingerprint"),
+        world_id=world_id,
+        kind=kind,
+        subject_key=_remote_recovery_digest(row, "subject_key"),
+        authority_key=_remote_recovery_digest(row, "authority_key"),
+        status=status,
+        attempt_count=_remote_recovery_int(
+            row, "attempt_count", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        max_attempts=_remote_recovery_int(row, "max_attempts", minimum=1, maximum=1_000_000),
+        retry_at_ms=_remote_recovery_int(
+            row, "retry_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        last_error_code=_remote_recovery_error_code(row),
+        last_error_detail=_remote_recovery_text(row, "last_error_detail"),
+        created_at_ms=_remote_recovery_int(
+            row, "created_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        updated_at_ms=_remote_recovery_int(
+            row, "updated_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        resolved_at_ms=_remote_optional_recovery_int(
+            row, "resolved_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
+        dead_lettered_at_ms=_remote_optional_recovery_int(
+            row, "dead_lettered_at_ms", minimum=0, maximum=_MAX_RECOVERY_COUNTER
+        ),
     )
 
 

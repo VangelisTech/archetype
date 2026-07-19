@@ -28,6 +28,8 @@ attribute_keys = [
 [[disposition]]
 operations = [
   "interfaces.iArtifactBundleService.reconcile",
+  "interfaces.iArtifactBundleService.list_due_publications",
+  "interfaces.iArtifactBundleService.reconcile_publication",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]

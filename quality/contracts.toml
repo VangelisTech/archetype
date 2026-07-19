@@ -386,6 +386,23 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "artifacts.bundle.recovery_server_clock"
+source = "docs/guide/artifact-finalization.md"
+section = "6. Reconciler contract"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_artifact_publication_catalog.py",
+  "tests/app/test_remote_catalog_client.py",
+  "tests/app/test_remote_catalog_parity.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "missions.transition.evidence_gated"
 source = "docs/guide/agent-missions.md"
 section = "2. Typed mission/task/attempt transition graph"
@@ -442,6 +459,43 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "recovery.control.fenced"
+source = "docs/guide/fleet-recovery.md"
+section = "4. Clock, leases, fencing, and backoff"
+owner = "recovery"
+risk = "high"
+pytest = [
+  "tests/app/test_recovery_transition_authority.py",
+  "tests/app/test_recovery_catalog.py",
+  "tests/app/test_fleet_recovery_service.py",
+  "tests/app/test_remote_catalog_client.py",
+  "tests/app/test_remote_catalog_parity.py",
+]
+static = ["scripts/check_architecture.py"]
+evals = ["fleet_recovery_cold_restart"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
+id = "recovery.artifact.item_scoped"
+source = "docs/guide/fleet-recovery.md"
+section = "6. First vertical slice: one artifact publication"
+owner = "recovery"
+risk = "high"
+pytest = [
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_artifact_publication_catalog.py",
+  "tests/app/test_artifact_recovery_handler.py",
+  "tests/app/test_fleet_recovery_artifact_integration.py",
+  "tests/app/test_remote_catalog_client.py",
+  "tests/app/test_remote_catalog_parity.py",
+]
+static = ["scripts/check_architecture.py"]
+evals = ["fleet_recovery_cold_restart"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifact-finalization.md"
 section = "4. Pre-durability secret redaction"
@@ -459,6 +513,7 @@ pytest = [
   "tests/app/test_remote_catalog_client.py::test_attempt_claim_redaction_receipts_reject_blank_transport_input",
   "tests/app/test_remote_catalog_parity.py::test_mission_attempt_claim_lifecycle_parity",
   "tests/app/test_atomic_visibility.py::test_v6_catalog_adds_attempt_claims_with_redaction_evidence",
+  "tests/app/test_fleet_recovery_service.py::test_secret_bearing_failure_metadata_never_crosses_recovery_durability_boundary",
   "tests/scripts/test_check_pre_durability_redaction.py",
 ]
 static = [
