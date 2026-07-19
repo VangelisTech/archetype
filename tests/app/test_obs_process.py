@@ -79,7 +79,8 @@ def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
         class CapturingExporter(SpanExporter):
             instances = []
 
-            def __init__(self):
+            def __init__(self, *, endpoint):
+                self.endpoint = endpoint
                 self.spans = []
                 self.shutdown_calls = 0
                 self.instances.append(self)
@@ -92,7 +93,9 @@ def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
                 self.shutdown_calls += 1
 
         trace_exporter.OTLPSpanExporter = CapturingExporter
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid/v1/traces"
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = (
+            "https://collector.invalid/otlp?tenant=a"
+        )
 
         from archetype import _obs
 
@@ -112,6 +115,9 @@ def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
 
         assert provider.force_flush()
         (exporter,) = CapturingExporter.instances
+        assert exporter.endpoint == (
+            "https://collector.invalid/otlp/v1/traces?tenant=a"
+        )
         (finished,) = exporter.spans
         assert finished.name == "artifact.publish"
         assert dict(finished.attributes) == {
@@ -151,12 +157,12 @@ def test_otlp_initialization_failure_is_safe_shutdown_and_retryable() -> None:
                 return super().shutdown()
 
         class FailingExporter:
-            def __init__(self):
+            def __init__(self, *, endpoint):
                 raise RuntimeError("Bearer should-not-be-exported")
 
         sdk_trace.TracerProvider = TrackingProvider
         trace_exporter.OTLPSpanExporter = FailingExporter
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid/v1/traces"
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid"
 
         from archetype import _obs
 
@@ -167,7 +173,7 @@ def test_otlp_initialization_failure_is_safe_shutdown_and_retryable() -> None:
         assert failed_candidate.shutdown_calls == 1
 
         sdk_trace.TracerProvider = real_provider
-        del os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+        del os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"]
         _obs.configure_tracing(service_name="archetype-test", debug_console=True)
         assert _obs._configured is True
         assert not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
@@ -176,6 +182,63 @@ def test_otlp_initialization_failure_is_safe_shutdown_and_retryable() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "Bearer should-not-be-exported" not in result.stderr
+
+
+def test_invalid_daft_metrics_config_reports_only_a_fixed_host_diagnostic() -> None:
+    result = _run(
+        """
+        import os
+
+        os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = (
+            "http://endpoint-canary invalid:4317"
+        )
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in os.environ
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Unsupported Daft metrics telemetry configuration was disabled." in result.stderr
+    assert "endpoint-canary" not in result.stderr
+
+
+def test_malformed_generic_endpoint_reports_only_a_fixed_host_diagnostic() -> None:
+    result = _run(
+        """
+        import os
+
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://[endpoint-canary"
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Malformed generic OTLP trace configuration was disabled." in result.stderr
+    assert "endpoint-canary" not in result.stderr
+
+
+def test_unvalidated_daft_version_disables_native_metrics() -> None:
+    result = _run(
+        """
+        import os
+        from archetype import _dependency_telemetry
+
+        _dependency_telemetry.version = lambda distribution: "0.7.20"
+        os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] = (
+            "http://127.0.0.1:4317"
+        )
+        _dependency_telemetry.prepare_dependency_telemetry()
+
+        assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in os.environ
+        assert _dependency_telemetry.take_diagnostics() == (
+            "Daft native metrics were disabled for an unvalidated dependency version.",
+        )
+        """
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_host_adapter_failure_is_safe_and_does_not_latch() -> None:

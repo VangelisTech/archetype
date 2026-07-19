@@ -133,6 +133,8 @@ dev = [
     # explicit host adapter; the published base package remains vendor-neutral.
     "logfire[fastapi]>=4.32.0",
     "python-dotenv>=1.2.2",
+    "grpcio>=1.60",
+    "opentelemetry-proto>=1.20",
 ]
 
 # Mutation testing. Scoped narrowly: mutmut runs each mutation as a full

@@ -26,7 +26,11 @@ Imports and `create_app()` perform no logging or telemetry setup. Each worker
 configures its host from the lifespan path, which keeps reload and multi-worker
 startup explicit and idempotent. The factory does not automatically invoke
 Logfire FastAPI instrumentation; optional Logfire or OTLP export is selected
-through the vendor-neutral host adapter.
+through the vendor-neutral host adapter. The package bootstrap does route
+generic OTLP environment configuration away from Daft's independent native
+log/trace providers before route imports; that isolation installs no provider
+and remains effective for later workers that inherit the server host's
+environment.
 
 All worlds live in the server event loop. CLI invocations and remote clients talk to that process over HTTP.
 

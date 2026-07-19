@@ -44,6 +44,8 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from opentelemetry.trace import Status, StatusCode
 
+from archetype._dependency_telemetry import archetype_traces_endpoint, take_diagnostics
+
 logger = logging.getLogger(__name__)
 
 SIGNAL_SCHEMA_VERSION: Final = 1
@@ -684,6 +686,10 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
         else "archetype"
     )
 
+    otlp_endpoint = archetype_traces_endpoint()
+    for diagnostic in take_diagnostics():
+        _warn_fixed(diagnostic)
+
     with _configuration_lock:
         if _configured:
             return
@@ -724,9 +730,6 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
                     _configured = True
                     return
 
-        otlp_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT") or os.environ.get(
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-        )
         if otlp_endpoint:
             candidate: object | None = None
             try:
@@ -738,7 +741,7 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
                 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
                 candidate = TracerProvider(resource=Resource({"service.name": safe_service_name}))
-                processor = BatchSpanProcessor(OTLPSpanExporter())
+                processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
                 candidate.add_span_processor(
                     _filtered_processor(processor, service_name=safe_service_name)
                 )

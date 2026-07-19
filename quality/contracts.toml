@@ -6,7 +6,11 @@ source = "docs/guide/observability.md"
 section = "1. Safe signal contract"
 owner = "observability"
 risk = "high"
-pytest = ["tests/app/test_obs.py", "tests/app/test_obs_process.py"]
+pytest = [
+    "tests/app/test_obs.py",
+    "tests/app/test_obs_process.py",
+    "tests/app/test_daft_telemetry_process.py",
+]
 static = []
 evals = []
 benchmarks = []

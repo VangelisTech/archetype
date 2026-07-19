@@ -204,6 +204,15 @@ failure handling, and metric cardinality follow the normative
 [Observability contract](observability.md); telemetry never changes a runtime
 result or exception.
 
+`ARCHETYPE_OTLP_TRACES_ENDPOINT` is the explicit endpoint for Archetype's
+filtered HTTP/protobuf traces. Standard generic or trace-specific OTLP
+endpoints are accepted as compatibility inputs, consumed before Daft import,
+and kept out of child environments. Only
+`OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` opts Daft into native physical-execution
+telemetry; Daft logs and traces are not enabled by an Archetype host. See the
+process-host endpoint matrix in the observability contract before combining
+Archetype with an externally configured OTel process.
+
 ### R14 — Public callables do not accept raw services
 
 Supported callables may accept `ArchetypeRuntime`, handles, configuration,

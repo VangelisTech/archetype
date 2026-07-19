@@ -30,6 +30,10 @@ import os
 from importlib import import_module
 from typing import Any
 
+from archetype._dependency_telemetry import (
+    prepare_dependency_telemetry as _prepare_dependency_telemetry,
+)
+
 # Daft phones home to Scarf (daft.gateway.scarf.sh + osstelemetry.io) at import
 # and per-runner, via a *blocking* urllib.urlopen. Archetype runs Daft on every
 # world.step, so on a slow or firewalled network that telemetry adds seconds of
@@ -37,6 +41,11 @@ from typing import Any
 # 1.6s with it off) and taxes every real run. Opt out before Daft is imported;
 # `setdefault` honors an explicit `DO_NOT_TRACK=0` if a user wants telemetry on.
 os.environ.setdefault("DO_NOT_TRACK", "1")
+
+# Daft initializes independent native OTLP providers inside its compiled module
+# import.  Route process-host configuration before any lazy public export can
+# import Daft, and keep unsafe broadcast endpoints out of spawned workers.
+_prepare_dependency_telemetry()
 
 __version__ = "0.4.1"
 
@@ -259,6 +268,7 @@ def __getattr__(name: str) -> Any:
     the entire world at `import archetype` time so small utilities can run in
     minimal environments.
     """
+    _prepare_dependency_telemetry()
     if name in _SYNC_TIER_DEPRECATED:
         import warnings
 

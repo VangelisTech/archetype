@@ -142,6 +142,46 @@ runtime/server startup:
   export. Foreign fields, links, trace state, and status descriptions are
   discarded.
 
+Daft 0.7.19 owns separate Rust providers initialized when its compiled module
+is imported. Standard generic OTLP environment variables are broadcast
+configuration, not evidence that those dependency providers passed
+Archetype's safe-signal boundary. Before any Archetype submodule can import
+Daft, the package host therefore applies this signal-routing contract:
+
+| Host setting | Owner and behavior |
+|---|---|
+| `ARCHETYPE_OTLP_TRACES_ENDPOINT` | Full HTTP/protobuf traces endpoint consumed only by Archetype's filtered exporter. This is the preferred explicit setting. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Compatibility input consumed once, converted to its `/v1/traces` endpoint, and removed from the process and inherited worker environment. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Compatibility input consumed as Archetype's full traces endpoint and then removed. |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | The only supported Daft-native opt-in. It exports physical engine metrics directly through Daft and is never re-emitted as Archetype metrics. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` or `DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT` | Unsupported content-bearing dependency routes; removed before Daft initialization. |
+
+The consumed generic/log/trace variables are not restored: a later local,
+spawned, or distributed Daft worker that inherits this host environment must
+not recreate the unsafe providers. Externally managed workers require the same
+endpoint policy in their own launch environment. When native metrics are
+requested, arbitrary `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` values
+are removed before Daft import; Daft uses its fixed default service identity.
+Daft metrics are enabled only for versions named in the fresh-process
+compatibility matrix (currently exactly 0.7.19), and accept only `grpc` or
+`http/protobuf`; an unvalidated version, empty/malformed endpoint, or another
+protocol is ignored so telemetry configuration cannot make application import
+fail. The next explicit host configuration emits a fixed diagnostic without
+the rejected value. Transport headers remain operator-owned exporter
+configuration and are never copied into Archetype signal attributes.
+
+This bootstrap installs no provider and preserves lazy package imports. It can
+protect only an Archetype-owned host: importing Daft first under a generic,
+logs, or traces endpoint initializes native providers before Archetype code can
+run, and Daft 0.7.19 exposes no shutdown or reconfiguration API for them. Such
+hosts must install an external provider before importing Archetype or use the
+Archetype-specific traces endpoint, and must expose only the metrics-specific
+endpoint to Daft. A fixed diagnostic reports a detectable late ordering, but
+only when the explicit host adapter next runs; telemetry never aborts or changes
+application work. Endpoint settings are process-start configuration: mutating
+standard OTLP endpoint variables after the first Archetype import and then
+importing Daft directly is unsupported.
+
 The SDK bundled for the explicit debug-console host path is not permission for
 family imports. Optional OTLP and Logfire integrations remain host concerns.
 `RunConfig.debug` controls execution diagnostics and is not a telemetry-export
@@ -298,10 +338,10 @@ explicitly separate or use only a safe, evidence-backed correlation mechanism;
 the system never fabricates ancestry.
 
 Generic process-wide OTLP configuration is not sufficient authorization to
-export dependency-owned telemetry. #537 owns a safe, host-controlled Daft
-integration that prevents native logs, exception text, tracebacks, UDF
-arguments, payloads, or secrets from bypassing Archetype's signal policy. #444
-preserves typed processor failures at the logical boundary. With those
-prerequisites, #519 replaces the legacy world phases with the truthful tick and
-commit envelope described here while consuming, rather than duplicating,
-Daft's physical execution telemetry.
+export dependency-owned telemetry. The host routing in section 5 prevents
+native logs, exception text, tracebacks, UDF arguments, payloads, or secrets
+from bypassing Archetype's signal policy while preserving explicit Daft
+metrics. #444 preserves typed processor failures at the logical boundary. With
+those prerequisites, #519 replaces the legacy world phases with the truthful
+tick and commit envelope described here while consuming, rather than
+duplicating, Daft's physical execution telemetry.
