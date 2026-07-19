@@ -22,6 +22,7 @@ from archetype.app.world.service import WorldService
 from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.errors import TickExecutionError
 from archetype.core.hooks import PostTick, PreTick
 from evals.graders import exact_match, state_check
 from evals.harness import EvalHarness
@@ -706,9 +707,16 @@ async def _task_processor_adversarial() -> list[GraderResult]:
             ),
             state_check(
                 {
+                    # #444: classify the failure by structure, not message
+                    # text — the aggregate names the table; the original
+                    # exception object rides in failures.
                     "processor_error_surfaced": (
-                        processor_error is not None
-                        and "marked-archetype failure" in str(processor_error)
+                        isinstance(processor_error, TickExecutionError)
+                        and processor_error.phase == "compute"
+                        and any(
+                            "marked-archetype failure" in str(failure.error)
+                            for failure in processor_error.failures
+                        )
                     ),
                     "failed_tick_did_not_advance": (
                         before_failure_info.tick == after_failure_info.tick == 2

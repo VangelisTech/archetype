@@ -86,7 +86,7 @@ class AsyncSystem(iAsyncSystem):
                     )
 
                 # A processor failure fails the archetype's tick: the world
-                # step surfaces it (gather → RuntimeError) instead of
+                # step surfaces it (gather → TickExecutionError) instead of
                 # appending a frame the failed processor never transformed.
                 try:
                     # Filter kwargs to what the processor accepts; pass all if it has **kwargs.

@@ -29,6 +29,7 @@ from archetype.core.aio.async_querier import _canonicalize, _unknown_signature_e
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig
+from archetype.core.errors import TickExecutionError, TickFailure
 from archetype.core.hooks import (
     AsyncHookHandler,
     FireMode,
@@ -176,8 +177,16 @@ class AsyncWorld(iAsyncWorld):
                     raise r
 
             if errors:
-                raise RuntimeError(
-                    "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
+                # Failures keep `sigs` order (ascending table id) and the
+                # original exception objects — the public contract (#444).
+                # The ExceptionGroup cause carries every original traceback;
+                # the raised message itself stays free of exception text.
+                failures = [
+                    TickFailure(table_id=Archetype.get_name(sig), error=e)
+                    for sig, e in errors.items()
+                ]
+                raise TickExecutionError(phase="compute", failures=failures) from ExceptionGroup(
+                    "archetype compute failures", [f.error for f in failures]
                 )
 
             # Phase 2 — commit every computed frame concurrently.
@@ -202,11 +211,15 @@ class AsyncWorld(iAsyncWorld):
                 if isinstance(r, Exception):
                     errors[sig] = r
                 elif isinstance(r, BaseException):
-                    # Never mask cancellation behind the aggregate RuntimeError.
+                    # Never mask cancellation behind the aggregate TickExecutionError.
                     raise r
             if errors:
-                raise RuntimeError(
-                    "; ".join(f"{Archetype.get_name(sig)}: {e}" for sig, e in errors.items())
+                failures = [
+                    TickFailure(table_id=Archetype.get_name(sig), error=e)
+                    for sig, e in errors.items()
+                ]
+                raise TickExecutionError(phase="commit", failures=failures) from ExceptionGroup(
+                    "archetype commit failures", [f.error for f in failures]
                 )
 
             # Every remaining commit result is a DataFrame, keeping

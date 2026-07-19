@@ -35,6 +35,7 @@ from .aio import (
 from .archetype import Archetype
 from .component import Component
 from .config import CacheConfig, RunConfig, StorageConfig, WorldConfig
+from .errors import TickExecutionError, TickFailure
 from .interfaces import ArchetypeSignature
 from .resources import Resources
 
@@ -54,6 +55,9 @@ __all__ = [
     "ArchetypeSignature",
     "Archetype",
     "Resources",
+    # Step failure contract (issue #444)
+    "TickExecutionError",
+    "TickFailure",
     # Config
     "RunConfig",
     "StorageConfig",

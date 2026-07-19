@@ -155,6 +155,8 @@ PAGES: tuple[ReferencePage, ...] = (
             "AsyncSystem",
             "AsyncQueryManager",
             "AsyncUpdateManager",
+            "TickExecutionError",
+            "TickFailure",
         ),
     ),
     ReferencePage(

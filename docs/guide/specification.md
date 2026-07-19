@@ -264,10 +264,30 @@ Failure policy:
 - A store failure during the commit phase preserves the failed archetype's
   staged mutations; archetypes whose appends committed consume their caches
   with the append.
+- The public failure type is `archetype.core.errors.TickExecutionError`, a
+  `RuntimeError` subclass (issue #444). `failures` MUST preserve every failed
+  table identity (`table_id`) and original exception object, in ascending
+  table-id order; `phase` MUST be `"compute"` or `"commit"`. Sync and async
+  stacks share this contract; the async stack chains the originals as an
+  `ExceptionGroup` cause, the fail-fast sync stack chains its single original
+  directly. Task cancellation MUST propagate unwrapped.
+- The aggregate's message names failed tables and the phase only; original
+  exception text MUST NOT enter it. Callers distinguish a provider timeout or
+  rate limit from a processor bug by `isinstance` on `failure.error`, never
+  by parsing message text.
+- Runtime and app layers propagate `TickExecutionError` unchanged. The REST
+  adapter has no public client-recovery contract for it and fails closed as
+  HTTP 500 with a redacted detail
+  (`tests/api/test_errors.py::test_tick_execution_error_remains_a_redacted_internal_error`).
 - Contract tests: `tests/core/test_async_world_error_propagation.py`
   (`test_async_world_processor_error_fails_the_step`,
   `test_failed_tick_commits_nothing_and_is_retryable`,
-  `test_one_failing_archetype_blocks_all_appends`).
+  `test_one_failing_archetype_blocks_all_appends`,
+  `test_step_preserves_ordered_structured_compute_failures`,
+  `test_step_preserves_ordered_structured_commit_failures`,
+  `test_step_does_not_wrap_task_cancellation`);
+  `tests/sync/test_sync_stack_contracts.py::test_sync_world_processor_error_fails_step_without_commit`;
+  `tests/app/test_runtime_contracts.py::TestStructuredStepFailures`.
 - Composed public-boundary evidence: the `processor_adversarial` capability
   eval combines advisory hook failures, one-table processor failure, atomic
   retry, and signature-aware matching across component migrations.

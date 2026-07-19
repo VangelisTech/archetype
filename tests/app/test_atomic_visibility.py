@@ -19,6 +19,7 @@ from archetype.app.storage.commit import CatalogCommitCoordinator
 from archetype.core.archetype import Archetype
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.core.errors import TickExecutionError
 from archetype.core.interfaces import StaleWriterError
 
 pytestmark = [
@@ -142,8 +143,12 @@ async def test_partial_archetype_append_is_invisible_and_retry_is_atomic(tmp_pat
             raise RuntimeError("injected second-archetype append failure")
 
         monkeypatch.setattr(store, "append", fail_after_counter)
-        with pytest.raises(RuntimeError, match="second-archetype append failure"):
+        # #444: the commit-phase aggregate names the failed table only; the
+        # injected append error rides in failures with its text intact.
+        with pytest.raises(TickExecutionError) as raised:
             await c.simulation_service.step(world.world_id, RunConfig())
+        assert raised.value.phase == "commit"
+        assert any("second-archetype append failure" in str(f.error) for f in raised.value.failures)
 
         assert world.tick == 0
         assert await _visible_rows(c, world, storage, component=Counter) == []
