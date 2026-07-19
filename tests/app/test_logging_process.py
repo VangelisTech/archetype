@@ -21,7 +21,7 @@ pytestmark = [
 def _run(source: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for key in tuple(env):
-        if key.startswith(("LOGFIRE_", "OTEL_")) or key == "ARCHETYPE_LOG":
+        if key.startswith(("ARCHETYPE_OTLP_", "LOGFIRE_", "OTEL_")) or key == ("ARCHETYPE_LOG"):
             env.pop(key)
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(source)],

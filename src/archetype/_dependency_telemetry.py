@@ -103,6 +103,8 @@ def _valid_metrics_endpoint(endpoint: str) -> bool:
         or hostname is None
         or parsed.username is not None
         or parsed.password is not None
+        or parsed.netloc.endswith(":")
+        or bool(parsed.fragment)
         or not (parsed_port is None or 0 < parsed_port <= 65535)
     ):
         return False
