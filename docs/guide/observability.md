@@ -73,7 +73,7 @@ The current canonical span vocabulary is:
 - the existing bounded `world.query` and `world.update` scopes, without an
   execution-attribution claim; and
 - the legacy `world.materialize` and `world.execute` phases listed in section 7
-  pending measured attribution.
+  pending replacement by the logical/physical ownership model in #519.
 
 Gateway source uses only the canonical `gateway.*` names. The former
 `gate.create_world` and `gate.get_world_info` spellings are neither accepted
@@ -195,7 +195,7 @@ signal boundary.
 | Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | RBAC decision, typed application result, and access-audit evidence |
 | RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
 | Commands | No direct signal yet | Durable command ledger and settlement |
-| World lifecycle, mutation, simulation | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, and typed result/exception |
+| World lifecycle, mutation, simulation | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy planning scopes pending #519 | Tick manifest, world record, and typed result/exception |
 | Storage and query | No direct signal yet | Store/catalog state and returned frame |
 | Redaction | No direct signal; safe rule IDs may be carried by approved callers | Redaction receipt or quarantine exception |
 | Artifacts | Child spans for publish, upload, and index | Publication row, object/index state, and publish receipt |
@@ -261,15 +261,47 @@ cannot prove, including values smuggled under an approved key and telemetry
 used as application authority. Focused behavior contracts still prove typed
 failure identity, retry behavior, and durable evidence.
 
-## 7. Lazy execution honesty
+## 7. Lazy planning and execution ownership
 
 `world.materialize` and `world.execute` are retained legacy names, not claims
 that Daft work was materialized or executed inside those spans. Processor
-methods commonly build lazy expressions whose work runs at a later terminal
-boundary. Telemetry must not add `.collect()`, `.to_pylist()`, or any other
-materialization to manufacture a duration.
+methods build a lazy DataFrame plan. Building that plan is normally cheap and
+does not perform the physical work it describes; the same plan may execute
+later at a terminal boundary or in a distributed execution environment.
+Telemetry must not add any materialization or execution boundary to manufacture
+a duration.
 
-Issue #518 must characterize Daft execution attribution and worker context with the
-locked version and supported runner. #519 then replaces or redefines these
-world phases from that evidence. Until then, no processor planning duration may
-be described as processor execution duration.
+Archetype and Daft therefore own different parts of the trace:
+
+- Archetype owns the logical and durable workflow envelope: tick attempt,
+  mutation composition, terminal invocation, persistence, visibility
+  publication, command settlement, and typed outcome.
+- Daft owns physical execution telemetry for plans, stages, operators, tasks,
+  UDF execution, workers, and engine resource use through its native OTel
+  surface.
+- The process host owns the explicit bridge between those surfaces, including
+  provider and exporter configuration, signal selection, safe routing, and
+  whatever correlation the locked Daft version and runner can truthfully
+  preserve.
+
+An Archetype span may measure the wall-clock workflow phase that invokes an
+already-owned terminal boundary. It must not infer physical processor, stage,
+or worker execution from Python planning calls. Engine-level attribution comes
+from Daft or remains unavailable.
+
+The #518 characterization established that processor calls and physical plan
+nodes are not one-to-one and that application OTel context does not reliably
+propagate into Daft workers. A unified parent-child trace is therefore not a
+contract unless a focused integration test proves it for the locked Daft
+version and supported runner. Otherwise Archetype and Daft telemetry remain
+explicitly separate or use only a safe, evidence-backed correlation mechanism;
+the system never fabricates ancestry.
+
+Generic process-wide OTLP configuration is not sufficient authorization to
+export dependency-owned telemetry. #537 owns a safe, host-controlled Daft
+integration that prevents native logs, exception text, tracebacks, UDF
+arguments, payloads, or secrets from bypassing Archetype's signal policy. #444
+preserves typed processor failures at the logical boundary. With those
+prerequisites, #519 replaces the legacy world phases with the truthful tick and
+commit envelope described here while consuming, rather than duplicating,
+Daft's physical execution telemetry.
