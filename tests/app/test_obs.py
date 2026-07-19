@@ -11,6 +11,8 @@ global provider, so no test poisons the process-wide OTel state.
 
 import asyncio
 import inspect
+import logging
+import threading
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, cast
@@ -19,7 +21,7 @@ import pytest
 from opentelemetry import context, trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from uuid_utils import uuid7
@@ -38,6 +40,103 @@ def _capture(monkeypatch) -> InMemorySpanExporter:
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     monkeypatch.setattr(_obs, "_tracer", provider.get_tracer("archetype"))
     return exporter
+
+
+def test_safe_otlp_exporter_suppresses_dependency_content_and_cleans_up_filter(caplog):
+    dependency_loggers = tuple(logging.getLogger(name) for name in _obs._OTLP_EXPORT_LOGGERS)
+    original_filters = {
+        dependency_logger: tuple(dependency_logger.filters)
+        for dependency_logger in dependency_loggers
+    }
+
+    class FailingExporter:
+        instance = None
+
+        def __init__(self, *, endpoint):
+            self.endpoint = endpoint
+            self.shutdown_calls = 0
+            type(self).instance = self
+
+        def export(self, spans):
+            dependency_loggers[0].error("collector-response-body-canary")
+            raise RuntimeError("exporter-exception-canary")
+
+        def force_flush(self, timeout_millis):
+            raise RuntimeError("flush-exception-canary")
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+            raise RuntimeError("shutdown-exception-canary")
+
+    caplog.set_level(logging.WARNING)
+    exporter = _obs._safe_otlp_http_exporter(
+        FailingExporter,
+        endpoint="http://collector.invalid/v1/traces",
+    )
+    for dependency_logger in dependency_loggers:
+        assert len(dependency_logger.filters) == len(original_filters[dependency_logger]) + 1
+
+    assert exporter.export(()) is SpanExportResult.FAILURE
+    assert exporter.force_flush() is False
+    exporter.shutdown()
+    exporter.shutdown()
+
+    for dependency_logger in dependency_loggers:
+        assert tuple(dependency_logger.filters) == original_filters[dependency_logger]
+    assert FailingExporter.instance is not None
+    assert FailingExporter.instance.shutdown_calls == 1
+    assert [record.getMessage() for record in caplog.records] == [
+        "OTLP trace export failed; telemetry was dropped.",
+    ]
+    assert "canary" not in caplog.text
+
+
+def test_safe_otlp_exporter_keeps_filter_until_active_export_returns(caplog):
+    dependency_logger = logging.getLogger(_obs._OTLP_EXPORT_LOGGERS[0])
+    original_filters = tuple(dependency_logger.filters)
+    started = threading.Event()
+    release = threading.Event()
+    outcomes = []
+
+    class BlockingExporter:
+        def __init__(self, *, endpoint):
+            pass
+
+        def export(self, spans):
+            started.set()
+            assert release.wait(timeout=5)
+            dependency_logger.error("late-response-body-canary")
+            return SpanExportResult.FAILURE
+
+        def force_flush(self, timeout_millis):
+            return True
+
+        def shutdown(self):
+            return None
+
+    caplog.set_level(logging.WARNING)
+    exporter = _obs._safe_otlp_http_exporter(
+        BlockingExporter,
+        endpoint="http://collector.invalid/v1/traces",
+    )
+    worker = threading.Thread(target=lambda: outcomes.append(exporter.export(())))
+    worker.start()
+    assert started.wait(timeout=5)
+    try:
+        exporter.shutdown()
+        assert len(dependency_logger.filters) == len(original_filters) + 1
+    finally:
+        release.set()
+        worker.join(timeout=5)
+        exporter.shutdown()
+
+    assert not worker.is_alive()
+    assert outcomes == [SpanExportResult.FAILURE]
+    assert tuple(dependency_logger.filters) == original_filters
+    assert "late-response-body-canary" not in caplog.text
+    assert [record.getMessage() for record in caplog.records] == [
+        "OTLP trace export failed; telemetry was dropped.",
+    ]
 
 
 def test_instrument_is_a_noop_without_any_provider():

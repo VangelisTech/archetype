@@ -620,7 +620,7 @@ def _host_scope_allowed(scope: str, capability: str) -> bool:
     if capability == "provider_configuration":
         return scope.startswith("archetype._obs.")
     if capability == "logging_configuration":
-        return scope.startswith("archetype._logging.")
+        return scope.startswith(("archetype._logging.", "archetype._obs."))
     if capability == "console_export":
         return scope.startswith("archetype._obs.")
     if capability == "invoke_configuration":

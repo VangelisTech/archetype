@@ -142,6 +142,17 @@ runtime/server startup:
   export. Foreign fields, links, trace state, and status descriptions are
   discarded.
 
+Archetype-owned HTTP exporters suppress dependency exception tracebacks and
+collector response bodies, replacing a failed export with one fixed diagnostic.
+OTLP endpoint URLs are routing configuration, not a credential transport: only
+absolute `http` or `https` URLs without user information, a query, or a fragment
+are accepted. Authentication belongs in the operator-owned OTLP header settings.
+Rejected endpoint values are removed and are never copied into a diagnostic.
+Endpoint hosts and paths remain non-secret routing data; a host that enables
+root-level HTTP dependency debug logs may observe them. Valid standard sampling
+configuration remains host-owned; malformed SDK configuration is prevented from
+echoing its raw value while the dependency falls back to its documented default.
+
 Daft 0.7.19 owns separate Rust providers initialized when its compiled module
 is imported. Standard generic OTLP environment variables are broadcast
 configuration, not evidence that those dependency providers passed
@@ -164,11 +175,17 @@ requested, arbitrary `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` values
 are removed before Daft import; Daft uses its fixed default service identity.
 Daft metrics are enabled only for versions named in the fresh-process
 compatibility matrix (currently exactly 0.7.19), and accept only `grpc` or
-`http/protobuf`; an unvalidated version, empty/malformed endpoint, or another
-protocol is ignored so telemetry configuration cannot make application import
-fail. The next explicit host configuration emits a fixed diagnostic without
-the rejected value. Transport headers remain operator-owned exporter
-configuration and are never copied into Archetype signal attributes.
+`http/protobuf`, spelled exactly as Daft parses them; an unvalidated version,
+empty/malformed endpoint, or another protocol is removed so telemetry
+configuration cannot make application import fail. The next explicit host
+configuration emits a fixed diagnostic without the rejected value. Transport
+headers remain operator-owned exporter configuration and are never copied into
+Archetype signal attributes. Native Daft metrics are uncompressed because the
+0.7.19 wheel does not compile the Rust compression features: generic and
+metrics-specific compression settings are removed whenever that endpoint is
+enabled. A configured export interval must be a positive unsigned 64-bit
+millisecond value; zero and malformed values are removed before they can create
+an invalid or busy-spinning native reader.
 
 This bootstrap installs no provider and preserves lazy package imports. It can
 protect only an Archetype-owned host: importing Daft first under a generic,

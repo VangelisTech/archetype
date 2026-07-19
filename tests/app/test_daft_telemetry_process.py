@@ -101,19 +101,28 @@ class _TraceReceiver(trace_service_pb2_grpc.TraceServiceServicer):
         return trace_service_pb2.ExportTraceServiceResponse()
 
 
-class _MetricsHTTPServer(ThreadingHTTPServer):
+class _OTLPHTTPServer(ThreadingHTTPServer):
     captured: _CapturedOTLP
 
 
-class _MetricsHTTPHandler(BaseHTTPRequestHandler):
+class _OTLPHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
-        server = cast(_MetricsHTTPServer, self.server)
-        server.captured.append_metrics(
-            metrics_service_pb2.ExportMetricsServiceRequest.FromString(body)
-        )
-        response = metrics_service_pb2.ExportMetricsServiceResponse().SerializeToString()
+        server = cast(_OTLPHTTPServer, self.server)
+        if self.path == "/v1/metrics":
+            server.captured.append_metrics(
+                metrics_service_pb2.ExportMetricsServiceRequest.FromString(body)
+            )
+            response = metrics_service_pb2.ExportMetricsServiceResponse().SerializeToString()
+        elif self.path == "/v1/traces":
+            server.captured.append_trace(
+                trace_service_pb2.ExportTraceServiceRequest.FromString(body)
+            )
+            response = trace_service_pb2.ExportTraceServiceResponse().SerializeToString()
+        else:
+            self.send_error(404)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/x-protobuf")
         self.send_header("Content-Length", str(len(response)))
@@ -147,13 +156,29 @@ def _otlp_receiver() -> Iterator[tuple[str, _CapturedOTLP]]:
 @contextmanager
 def _metrics_http_receiver() -> Iterator[tuple[str, _CapturedOTLP]]:
     captured = _CapturedOTLP()
-    server = _MetricsHTTPServer(("127.0.0.1", 0), _MetricsHTTPHandler)
+    server = _OTLPHTTPServer(("127.0.0.1", 0), _OTLPHTTPHandler)
     server.captured = captured
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         host, port = server.server_address
         yield f"http://{host}:{port}/v1/metrics", captured
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@contextmanager
+def _otlp_http_receiver() -> Iterator[tuple[str, _CapturedOTLP]]:
+    captured = _CapturedOTLP()
+    server = _OTLPHTTPServer(("127.0.0.1", 0), _OTLPHTTPHandler)
+    server.captured = captured
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", captured
     finally:
         server.shutdown()
         server.server_close()
@@ -180,10 +205,20 @@ def _run_daft_failure(**env_values: str) -> subprocess.CompletedProcess[str]:
 
         logging.disable(logging.CRITICAL)
         late_generic_endpoint = os.environ.pop("TEST_LATE_OTLP_ENDPOINT", None)
+        emit_archetype_trace = os.environ.pop("TEST_EMIT_ARCHETYPE_TRACE", None) == "1"
 
         # Importing Archetype establishes the dependency telemetry boundary
         # before Daft's compiled extension initializes its native providers.
         import archetype  # noqa: F401
+        if emit_archetype_trace:
+            from archetype import _obs
+
+            _obs.configure_tracing(service_name="archetype-test")
+            with _obs.span(
+                "artifact.publish",
+                operation="artifact.publish",
+            ):
+                pass
         if late_generic_endpoint:
             os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = late_generic_endpoint
             from archetype import ArchetypeRuntime  # noqa: F401
@@ -199,6 +234,12 @@ def _run_daft_failure(**env_values: str) -> subprocess.CompletedProcess[str]:
         }).with_column(
             "out", fail(col("secret"))
         ).collect()
+        if emit_archetype_trace:
+            from opentelemetry import trace
+
+            provider = trace.get_tracer_provider()
+            provider.force_flush(timeout_millis=5_000)
+            provider.shutdown()
         print(json.dumps({
             "daft_version": daft.__version__,
             "archetype_trace_endpoint_preserved": bool(
@@ -282,6 +323,40 @@ def _run_inherited_daft_failure(**env_values: str) -> subprocess.CompletedProces
 def _result(completed: subprocess.CompletedProcess[str]) -> dict[str, object]:
     assert completed.returncode == 0, completed.stderr
     return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def _run_daft_import(**env_values: str) -> subprocess.CompletedProcess[str]:
+    source = """
+        import json
+        import os
+
+        import archetype  # noqa: F401
+        import daft
+
+        print(json.dumps({
+            "daft_version": daft.__version__,
+            "generic_compression_present": (
+                "OTEL_EXPORTER_OTLP_COMPRESSION" in os.environ
+            ),
+            "metrics_compression_present": (
+                "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION" in os.environ
+            ),
+            "metrics_endpoint_present": (
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" in os.environ
+            ),
+            "metrics_interval_present": (
+                "OTEL_METRIC_EXPORT_INTERVAL" in os.environ
+            ),
+        }, sort_keys=True))
+    """
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(source)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=_child_environment(**env_values),
+        timeout=30,
+    )
 
 
 def test_generic_otlp_cannot_export_daft_udf_error_content() -> None:
@@ -369,13 +444,65 @@ def test_metrics_specific_endpoint_is_explicit_daft_opt_in_without_logs() -> Non
     assert _RESOURCE_CANARY not in exported_metrics
 
 
+@pytest.mark.parametrize("protocol", ["grpc", "http/protobuf"])
+@pytest.mark.parametrize(
+    ("compression_variable", "compression_value"),
+    [
+        ("OTEL_EXPORTER_OTLP_COMPRESSION", "invalid-compression-canary"),
+        ("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip"),
+        ("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "invalid-compression-canary"),
+        ("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "gzip"),
+    ],
+)
+def test_native_metrics_compression_cannot_make_daft_import_fail(
+    protocol: str,
+    compression_variable: str,
+    compression_value: str,
+) -> None:
+    endpoint = "http://127.0.0.1:1"
+    if protocol == "http/protobuf":
+        endpoint += "/v1/metrics"
+    completed = _run_daft_import(
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=endpoint,
+        OTEL_EXPORTER_OTLP_PROTOCOL=protocol,
+        **{compression_variable: compression_value},
+    )
+
+    assert _result(completed) == {
+        "daft_version": "0.7.19",
+        "generic_compression_present": False,
+        "metrics_compression_present": False,
+        "metrics_endpoint_present": True,
+        "metrics_interval_present": False,
+    }
+    assert "invalid-compression-canary" not in completed.stderr
+
+
+@pytest.mark.parametrize("protocol", ["grpc", "http/protobuf"])
+def test_zero_metrics_interval_cannot_busy_spin_native_reader(protocol: str) -> None:
+    endpoint = "http://127.0.0.1:1"
+    if protocol == "http/protobuf":
+        endpoint += "/v1/metrics"
+    completed = _run_daft_import(
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=endpoint,
+        OTEL_EXPORTER_OTLP_PROTOCOL=protocol,
+        OTEL_METRIC_EXPORT_INTERVAL="0",
+    )
+
+    result = _result(completed)
+    assert result["daft_version"] == "0.7.19"
+    assert result["metrics_endpoint_present"] is True
+    assert result["metrics_interval_present"] is False
+
+
 def test_generic_archetype_traces_and_explicit_daft_metrics_stay_separate() -> None:
-    with _otlp_receiver() as (endpoint, captured):
+    with _otlp_http_receiver() as (endpoint, captured):
         completed = _run_daft_failure(
             OTEL_EXPORTER_OTLP_ENDPOINT=endpoint,
-            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=endpoint,
-            OTEL_EXPORTER_OTLP_PROTOCOL="grpc",
+            OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=f"{endpoint}/v1/metrics",
+            OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf",
             OTEL_METRIC_EXPORT_INTERVAL="10",
+            TEST_EMIT_ARCHETYPE_TRACE="1",
         )
 
     result = _result(completed)
@@ -384,7 +511,13 @@ def test_generic_archetype_traces_and_explicit_daft_metrics_stay_separate() -> N
     assert result["out"] == [None]
     assert captured.metric_requests
     assert captured.log_requests == []
-    assert captured.trace_requests == []
+    assert captured.trace_requests
+    exported_traces = b"".join(captured.trace_requests)
+    assert b"artifact.publish" in exported_traces
+    assert _EXCEPTION_CANARY not in exported_traces
+    assert _ARGUMENT_CANARY not in exported_traces
+    assert _PROMPT_CANARY not in exported_traces
+    assert _PAYLOAD_CANARY not in exported_traces
     exported_metrics = b"".join(captured.metric_requests)
     assert _EXCEPTION_CANARY not in exported_metrics
     assert _ARGUMENT_CANARY not in exported_metrics

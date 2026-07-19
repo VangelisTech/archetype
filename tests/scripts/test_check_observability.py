@@ -1237,6 +1237,35 @@ def sibling() -> None:
     _assert_rejected(_audit(tmp_path))
 
 
+def test_obs_host_adapter_can_register_logging_configuration(tmp_path: Path) -> None:
+    source = """
+from __future__ import annotations
+
+def approved() -> None:
+    import logging
+    logging.getLogger("dependency").addFilter(logging.Filter())
+"""
+    hosts = _with_host(
+        "archetype._obs.approved",
+        "logging_configuration",
+    )
+    _write_fixture(tmp_path, hosts=hosts, obs=OBS_VOCABULARY + source)
+
+    assert _audit(tmp_path).ok
+
+    unapproved_source = (
+        source
+        + """
+
+def sibling() -> None:
+    import logging
+    logging.basicConfig()
+"""
+    )
+    _write_source_module(tmp_path, "_obs.py", OBS_VOCABULARY + unapproved_source)
+    _assert_rejected(_audit(tmp_path))
+
+
 def test_unrelated_configuration_method_name_is_not_logging(tmp_path: Path) -> None:
     source = (
         SERVICE

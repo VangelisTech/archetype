@@ -35,6 +35,24 @@ evidence = [
 rationale = "This is the sole approved shipped non-CLI console export boundary and emits only sanitized spans."
 
 [[host_callable]]
+qualified_scope = "archetype._obs._DependencyExporterLogGuard.__init__"
+capabilities = ["logging_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_obs_process.py",
+]
+rationale = "This private process-host guard suppresses dependency exporter records whose exception or response content can include operator endpoint details."
+
+[[host_callable]]
+qualified_scope = "archetype._obs._DependencyExporterLogGuard._finish_if_ready"
+capabilities = ["logging_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_obs_process.py",
+]
+rationale = "This private process-host guard removes only the exact dependency filters that its constructor installed, after every active exporter call has returned."
+
+[[host_callable]]
 qualified_scope = "archetype._logging._ArchetypeHandler.__init__"
 capabilities = ["logging_configuration"]
 evidence = [

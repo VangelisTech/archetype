@@ -21,12 +21,15 @@ _ENVIRONMENT_KEYS = (
     "ARCHETYPE_OTLP_TRACES_ENDPOINT",
     "DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_COMPRESSION",
     "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_RESOURCE_ATTRIBUTES",
     "OTEL_SERVICE_NAME",
+    "OTEL_METRIC_EXPORT_INTERVAL",
 )
 
 
@@ -49,9 +52,11 @@ def _isolated_host_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None
     [
         ("https://collector.example", "https://collector.example/v1/traces"),
         (
-            "https://collector.example/otlp/?tenant=a#fragment",
-            "https://collector.example/otlp/v1/traces?tenant=a#fragment",
+            "https://collector.example/otlp/",
+            "https://collector.example/otlp/v1/traces",
         ),
+        ("https://collector.example/otlp?tenant=secret-canary", None),
+        ("https://collector.example/otlp#secret-canary", None),
         ("http://[malformed", None),
     ],
 )
@@ -74,6 +79,19 @@ def test_valid_metrics_endpoints_are_accepted(endpoint: str) -> None:
     assert _dependency_telemetry._valid_metrics_endpoint(endpoint) is True
 
 
+@pytest.mark.parametrize("interval", ["1", "10", "500", str(2**64 - 1)])
+def test_positive_u64_metrics_intervals_are_accepted(interval: str) -> None:
+    assert _dependency_telemetry._valid_metrics_interval(interval) is True
+
+
+@pytest.mark.parametrize(
+    "interval",
+    ["", "0", "-1", "1.0", "invalid", str(2**64), "9" * 4_301],
+)
+def test_nonpositive_or_malformed_metrics_intervals_are_rejected(interval: str) -> None:
+    assert _dependency_telemetry._valid_metrics_interval(interval) is False
+
+
 @pytest.mark.parametrize(
     "endpoint",
     [
@@ -86,6 +104,7 @@ def test_valid_metrics_endpoints_are_accepted(endpoint: str) -> None:
         "http://collector.example:99999",
         "http://[invalid]:4317",
         "http://collector.example/path#fragment",
+        "http://collector.example/path?token=secret-canary",
     ],
 )
 def test_invalid_metrics_endpoints_are_rejected(endpoint: str) -> None:
@@ -113,7 +132,7 @@ def test_generic_traces_and_validated_metrics_are_routed_to_separate_owners(
 ) -> None:
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example/otlp?tenant=a",
+        "https://collector.example/otlp",
     )
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "https://logs.example")
     monkeypatch.setenv("DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT", "https://old.example")
@@ -130,7 +149,7 @@ def test_generic_traces_and_validated_metrics_are_routed_to_separate_owners(
     _dependency_telemetry.prepare_dependency_telemetry()
 
     assert _dependency_telemetry.os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] == (
-        "https://collector.example/otlp/v1/traces?tenant=a"
+        "https://collector.example/otlp/v1/traces"
     )
     assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == (
         "http://metrics.example"
@@ -147,6 +166,86 @@ def test_generic_traces_and_validated_metrics_are_routed_to_separate_owners(
     assert _dependency_telemetry.take_diagnostics() == ()
 
 
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip"),
+        ("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "invalid-canary"),
+    ],
+)
+def test_native_metrics_compression_is_removed_while_endpoint_remains_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setenv(variable, value)
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: True,
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == (
+        "http://metrics.example:4317"
+    )
+    assert "OTEL_EXPORTER_OTLP_COMPRESSION" not in _dependency_telemetry.os.environ
+    assert "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Unsupported Daft metrics compression configuration was removed.",
+    )
+
+
+def test_generic_trace_compression_remains_when_native_metrics_are_not_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip")
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_COMPRESSION"] == "gzip"
+    assert _dependency_telemetry.take_diagnostics() == ()
+
+
+@pytest.mark.parametrize("interval", ["0", "-1", "invalid", str(2**64)])
+def test_unsafe_metrics_interval_is_removed_with_fixed_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    interval: str,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setenv("OTEL_METRIC_EXPORT_INTERVAL", interval)
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: True,
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert "OTEL_METRIC_EXPORT_INTERVAL" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Unsupported Daft metrics export interval configuration was removed.",
+    )
+
+
+def test_native_metrics_controls_are_untouched_without_a_metrics_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_COMPRESSION", "gzip")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "gzip")
+    monkeypatch.setenv("OTEL_METRIC_EXPORT_INTERVAL", "0")
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_COMPRESSION"] == "gzip"
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_METRICS_COMPRESSION"] == "gzip"
+    assert _dependency_telemetry.os.environ["OTEL_METRIC_EXPORT_INTERVAL"] == "0"
+    assert _dependency_telemetry.take_diagnostics() == ()
+
+
 def test_trace_specific_endpoint_has_precedence_over_generic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,6 +258,28 @@ def test_trace_specific_endpoint_has_precedence_over_generic(
     assert _dependency_telemetry.archetype_traces_endpoint() == ("https://traces.example/custom")
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in _dependency_telemetry.os.environ
     assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in _dependency_telemetry.os.environ
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "ARCHETYPE_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    ],
+)
+def test_secret_bearing_trace_endpoint_is_removed_without_echoing_value(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    monkeypatch.setenv(variable, "https://collector.example/path?token=secret-canary")
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert "ARCHETYPE_OTLP_TRACES_ENDPOINT" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Unsupported Archetype OTLP trace configuration was removed.",
+    )
 
 
 def test_malformed_endpoints_are_removed_with_fixed_diagnostics(
@@ -180,8 +301,8 @@ def test_malformed_endpoints_are_removed_with_fixed_diagnostics(
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in _dependency_telemetry.os.environ
     assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in _dependency_telemetry.os.environ
     assert _dependency_telemetry.take_diagnostics() == (
-        "Malformed generic OTLP trace configuration was disabled.",
-        "Unsupported Daft metrics telemetry configuration was disabled.",
+        "Unsupported Archetype OTLP trace configuration was removed.",
+        "Unsupported Daft metrics telemetry configuration was removed.",
     )
 
 
@@ -199,7 +320,52 @@ def test_unvalidated_version_removes_metrics_with_a_fixed_diagnostic(
 
     assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in _dependency_telemetry.os.environ
     assert _dependency_telemetry.take_diagnostics() == (
-        "Daft native metrics were disabled for an unvalidated dependency version.",
+        "Daft native metrics configuration was removed for an unvalidated dependency version.",
+    )
+
+
+@pytest.mark.parametrize("protocol", ["GRPC", " HTTP/PROTOBUF ", "http/json"])
+def test_noncanonical_metrics_protocol_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: True,
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Unsupported Daft metrics telemetry configuration was removed.",
+    )
+
+
+def test_rejected_metrics_after_daft_load_reports_unverified_provider_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "sys",
+        SimpleNamespace(modules={"daft.daft": object()}),
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Daft native metrics configuration was removed for an unvalidated dependency version.",
+        "Rejected Daft metrics configuration may already have initialized a dependency "
+        "provider before Archetype isolation.",
     )
 
 

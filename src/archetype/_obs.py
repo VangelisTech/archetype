@@ -580,6 +580,13 @@ def record_outcome(outcome: Outcome, *, operation: str | None = None) -> None:
 _configuration_lock = Lock()
 _configured = False
 _owned_tracer_provider: object | None = None
+_OTLP_EXPORT_LOGGERS = ("opentelemetry.exporter.otlp.proto.http.trace_exporter",)
+_OWNED_PROVIDER_CONSTRUCTION_LOGGERS = (
+    "opentelemetry.sdk.trace.export",
+    "opentelemetry.sdk.trace.sampling",
+    "opentelemetry.util.re",
+)
+_OTLP_EXPORT_FAILED_DIAGNOSTIC = "OTLP trace export failed; telemetry was dropped."
 
 
 def _warn_fixed(message: str) -> None:
@@ -594,6 +601,145 @@ def _safe_shutdown(provider: Any) -> None:
         provider.shutdown()
     except BaseException:
         pass
+
+
+class _DropDependencyExporterLogs(logging.Filter):
+    """Suppress dependency messages that may contain endpoints or response bodies."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return False
+
+
+class _DependencyExporterLogGuard:
+    """Own the temporary dependency-logger filter for one host exporter."""
+
+    def __init__(self, logger_names: tuple[str, ...]) -> None:
+        self._logger_names = logger_names
+        self._filter = _DropDependencyExporterLogs()
+        self._lock = Lock()
+        self._active_calls = 0
+        self._closing = False
+        self._closed = False
+        added: list[str] = []
+        try:
+            for logger_name in self._logger_names:
+                logging.getLogger(logger_name).addFilter(self._filter)
+                added.append(logger_name)
+        except BaseException:
+            for logger_name in added:
+                try:
+                    logging.getLogger(logger_name).removeFilter(self._filter)
+                except BaseException:
+                    pass
+            raise
+
+    def enter(self) -> bool:
+        with self._lock:
+            if self._closing or self._closed:
+                return False
+            self._active_calls += 1
+            return True
+
+    def leave(self) -> None:
+        with self._lock:
+            if self._active_calls > 0:
+                self._active_calls -= 1
+        self._finish_if_ready()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closing = True
+        self._finish_if_ready()
+
+    def _finish_if_ready(self) -> None:
+        with self._lock:
+            if self._closed or not self._closing or self._active_calls > 0:
+                return
+            self._closed = True
+        for logger_name in self._logger_names:
+            try:
+                logging.getLogger(logger_name).removeFilter(self._filter)
+            except BaseException:
+                pass
+
+
+def _safe_otlp_http_exporter(exporter_type: Any, *, endpoint: str) -> Any:
+    """Wrap the HTTP exporter so dependency failures remain fixed and content-free."""
+    from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+
+    log_guard = _DependencyExporterLogGuard(_OTLP_EXPORT_LOGGERS)
+    try:
+        delegate = exporter_type(endpoint=endpoint)
+    except BaseException:
+        log_guard.close()
+        raise
+
+    class _SafeOTLPHTTPExporter(SpanExporter):
+        def __init__(self) -> None:
+            self._failure_lock = Lock()
+            self._failure_reported = False
+            self._shutdown = False
+
+        def _report_failure(self) -> None:
+            with self._failure_lock:
+                if self._failure_reported:
+                    return
+                self._failure_reported = True
+            _warn_fixed(_OTLP_EXPORT_FAILED_DIAGNOSTIC)
+
+        def export(self, spans: Any) -> SpanExportResult:
+            with self._failure_lock:
+                if self._shutdown:
+                    return SpanExportResult.FAILURE
+            if not log_guard.enter():
+                return SpanExportResult.FAILURE
+            try:
+                try:
+                    outcome = delegate.export(spans)
+                except BaseException:
+                    self._report_failure()
+                    return SpanExportResult.FAILURE
+                if outcome is not SpanExportResult.SUCCESS:
+                    self._report_failure()
+                    return SpanExportResult.FAILURE
+                return SpanExportResult.SUCCESS
+            except BaseException:
+                self._report_failure()
+                return SpanExportResult.FAILURE
+            finally:
+                log_guard.leave()
+
+        def force_flush(self, timeout_millis: int = 30_000) -> bool:
+            with self._failure_lock:
+                if self._shutdown:
+                    return False
+            if not log_guard.enter():
+                return False
+            try:
+                try:
+                    return bool(delegate.force_flush(timeout_millis))
+                except BaseException:
+                    self._report_failure()
+                    return False
+            except BaseException:
+                self._report_failure()
+                return False
+            finally:
+                log_guard.leave()
+
+        def shutdown(self) -> None:
+            with self._failure_lock:
+                if self._shutdown:
+                    return
+                self._shutdown = True
+            try:
+                delegate.shutdown()
+            except BaseException:
+                self._report_failure()
+            finally:
+                log_guard.close()
+
+    return _SafeOTLPHTTPExporter()
 
 
 def _logfire_provider_state(instance: Any) -> tuple[object | None, bool, bool]:
@@ -732,6 +878,9 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
 
         if otlp_endpoint:
             candidate: object | None = None
+            unattached_exporter: object | None = None
+            unattached_processor: object | None = None
+            construction_log_guard: _DependencyExporterLogGuard | None = None
             try:
                 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
                     OTLPSpanExporter,
@@ -740,18 +889,37 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
                 from opentelemetry.sdk.trace import TracerProvider
                 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-                candidate = TracerProvider(resource=Resource({"service.name": safe_service_name}))
-                processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint))
-                candidate.add_span_processor(
-                    _filtered_processor(processor, service_name=safe_service_name)
+                construction_log_guard = _DependencyExporterLogGuard(
+                    _OWNED_PROVIDER_CONSTRUCTION_LOGGERS
                 )
+                candidate = TracerProvider(resource=Resource({"service.name": safe_service_name}))
+                unattached_exporter = _safe_otlp_http_exporter(
+                    OTLPSpanExporter,
+                    endpoint=otlp_endpoint,
+                )
+                unattached_processor = BatchSpanProcessor(unattached_exporter)
+                unattached_exporter = None
+                filtered_processor = _filtered_processor(
+                    unattached_processor,
+                    service_name=safe_service_name,
+                )
+                candidate.add_span_processor(filtered_processor)
+                unattached_processor = None
                 if debug_console:
                     candidate.add_span_processor(_console_processor(service_name=safe_service_name))
             except ImportError:
+                if unattached_processor is not None:
+                    _safe_shutdown(unattached_processor)
+                if unattached_exporter is not None:
+                    _safe_shutdown(unattached_exporter)
                 if candidate is not None:
                     _safe_shutdown(candidate)
                 _warn_fixed("OTLP telemetry was requested but its optional adapter is unavailable.")
             except BaseException:
+                if unattached_processor is not None:
+                    _safe_shutdown(unattached_processor)
+                if unattached_exporter is not None:
+                    _safe_shutdown(unattached_exporter)
                 if candidate is not None:
                     _safe_shutdown(candidate)
                 _warn_fixed("OTLP telemetry initialization failed; tracing remains retryable.")
@@ -759,13 +927,20 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
                 if _install_candidate(candidate):
                     _configured = True
                     return
+            finally:
+                if construction_log_guard is not None:
+                    construction_log_guard.close()
 
         if debug_console:
             candidate = None
+            construction_log_guard = None
             try:
                 from opentelemetry.sdk.resources import Resource
                 from opentelemetry.sdk.trace import TracerProvider
 
+                construction_log_guard = _DependencyExporterLogGuard(
+                    _OWNED_PROVIDER_CONSTRUCTION_LOGGERS
+                )
                 candidate = TracerProvider(resource=Resource({"service.name": safe_service_name}))
                 candidate.add_span_processor(_console_processor(service_name=safe_service_name))
             except BaseException:
@@ -775,6 +950,9 @@ def configure_tracing(*, service_name: str, debug_console: bool = False) -> None
             else:
                 if _install_candidate(candidate):
                     _configured = True
+            finally:
+                if construction_log_guard is not None:
+                    construction_log_guard.close()
 
 
 def _safe_span_context(value: object) -> Any | None:

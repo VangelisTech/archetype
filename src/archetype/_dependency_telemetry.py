@@ -42,6 +42,9 @@ _LOGS_ENDPOINT = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"
 _METRICS_ENDPOINT = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 _DEPRECATED_DAFT_ENDPOINT = "DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT"
 _PROTOCOL = "OTEL_EXPORTER_OTLP_PROTOCOL"
+_GENERIC_COMPRESSION = "OTEL_EXPORTER_OTLP_COMPRESSION"
+_METRICS_COMPRESSION = "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION"
+_METRICS_INTERVAL = "OTEL_METRIC_EXPORT_INTERVAL"
 _RESOURCE_CONFIGURATION = ("OTEL_RESOURCE_ATTRIBUTES", "OTEL_SERVICE_NAME")
 _CONTENT_BEARING_ENDPOINTS = (
     _GENERIC_ENDPOINT,
@@ -54,11 +57,17 @@ _LATE_DAFT_DIAGNOSTIC = (
     "Daft native telemetry initialized before Archetype's host isolation boundary; "
     "dependency signal export may be unsafe."
 )
-_METRICS_DISABLED_DIAGNOSTIC = "Unsupported Daft metrics telemetry configuration was disabled."
+_METRICS_DISABLED_DIAGNOSTIC = "Unsupported Daft metrics telemetry configuration was removed."
 _UNVALIDATED_DAFT_DIAGNOSTIC = (
-    "Daft native metrics were disabled for an unvalidated dependency version."
+    "Daft native metrics configuration was removed for an unvalidated dependency version."
 )
-_TRACES_DISABLED_DIAGNOSTIC = "Malformed generic OTLP trace configuration was disabled."
+_LATE_METRICS_DIAGNOSTIC = (
+    "Rejected Daft metrics configuration may already have initialized a dependency "
+    "provider before Archetype isolation."
+)
+_METRICS_COMPRESSION_DIAGNOSTIC = "Unsupported Daft metrics compression configuration was removed."
+_METRICS_INTERVAL_DIAGNOSTIC = "Unsupported Daft metrics export interval configuration was removed."
+_TRACES_DISABLED_DIAGNOSTIC = "Unsupported Archetype OTLP trace configuration was removed."
 
 _lock = RLock()
 _pending_diagnostics: set[str] = set()
@@ -70,12 +79,15 @@ _VALIDATED_DAFT_NATIVE_OTEL_VERSIONS = frozenset({"0.7.19"})
 
 
 def _generic_traces_endpoint(endpoint: str) -> str | None:
+    if not _valid_otlp_endpoint(endpoint):
+        return None
     try:
         parsed = urlsplit(endpoint)
     except (TypeError, ValueError):
         return None
     path = parsed.path + ("v1/traces" if parsed.path.endswith("/") else "/v1/traces")
-    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+    isolated = urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+    return isolated if _valid_otlp_endpoint(isolated) else None
 
 
 def _daft_native_metrics_are_validated() -> bool:
@@ -86,10 +98,13 @@ def _daft_native_metrics_are_validated() -> bool:
     return installed_version in _VALIDATED_DAFT_NATIVE_OTEL_VERSIONS
 
 
-def _valid_metrics_endpoint(endpoint: str) -> bool:
+def _valid_otlp_endpoint(endpoint: str) -> bool:
     if (
-        _ENDPOINT_RE.fullmatch(endpoint) is None
+        type(endpoint) is not str
+        or _ENDPOINT_RE.fullmatch(endpoint) is None
         or _INVALID_PERCENT_ESCAPE_RE.search(endpoint) is not None
+        or "?" in endpoint
+        or "#" in endpoint
     ):
         return False
     try:
@@ -104,7 +119,6 @@ def _valid_metrics_endpoint(endpoint: str) -> bool:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.netloc.endswith(":")
-        or bool(parsed.fragment)
         or not (parsed_port is None or 0 < parsed_port <= 65535)
     ):
         return False
@@ -115,6 +129,25 @@ def _valid_metrics_endpoint(endpoint: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _valid_metrics_endpoint(endpoint: str) -> bool:
+    return _valid_otlp_endpoint(endpoint)
+
+
+def _valid_metrics_interval(interval: str) -> bool:
+    if (
+        type(interval) is not str
+        or len(interval) > 20
+        or not interval.isascii()
+        or not interval.isdigit()
+    ):
+        return False
+    try:
+        parsed = int(interval)
+    except (TypeError, ValueError):
+        return False
+    return 0 < parsed <= (2**64 - 1)
 
 
 def prepare_dependency_telemetry() -> None:
@@ -129,41 +162,75 @@ def prepare_dependency_telemetry() -> None:
             unsafe_present = any(name in os.environ for name in _CONTENT_BEARING_ENDPOINTS)
             daft_already_loaded = "daft.daft" in sys.modules
 
+            private_endpoint_present = _ARCHETYPE_TRACES_ENDPOINT in os.environ
+            generic_endpoint_present = _GENERIC_ENDPOINT in os.environ
+            traces_endpoint_present = _TRACES_ENDPOINT in os.environ
             generic_endpoint = os.environ.get(_GENERIC_ENDPOINT)
             traces_endpoint = os.environ.get(_TRACES_ENDPOINT)
-            if not os.environ.get(_ARCHETYPE_TRACES_ENDPOINT):
-                if traces_endpoint:
-                    os.environ[_ARCHETYPE_TRACES_ENDPOINT] = traces_endpoint
-                elif generic_endpoint:
-                    isolated_endpoint = _generic_traces_endpoint(generic_endpoint)
-                    if isolated_endpoint is None:
-                        _pending_diagnostics.add(_TRACES_DISABLED_DIAGNOSTIC)
-                    else:
-                        os.environ[_ARCHETYPE_TRACES_ENDPOINT] = isolated_endpoint
+            trace_configuration_present = (
+                private_endpoint_present or generic_endpoint_present or traces_endpoint_present
+            )
+            candidate_endpoint = os.environ.get(_ARCHETYPE_TRACES_ENDPOINT)
+            if not private_endpoint_present:
+                if traces_endpoint_present:
+                    candidate_endpoint = traces_endpoint
+                elif generic_endpoint_present:
+                    candidate_endpoint = _generic_traces_endpoint(generic_endpoint or "")
+
+            if trace_configuration_present:
+                if candidate_endpoint and _valid_otlp_endpoint(candidate_endpoint):
+                    os.environ[_ARCHETYPE_TRACES_ENDPOINT] = candidate_endpoint
+                else:
+                    os.environ.pop(_ARCHETYPE_TRACES_ENDPOINT, None)
+                    _pending_diagnostics.add(_TRACES_DISABLED_DIAGNOSTIC)
 
             for name in _CONTENT_BEARING_ENDPOINTS:
                 os.environ.pop(name, None)
 
             metrics_endpoint = os.environ.get(_METRICS_ENDPOINT)
-            dependency_telemetry_requested = unsafe_present or metrics_endpoint is not None
+            metrics_compression_present = metrics_endpoint is not None and (
+                _METRICS_COMPRESSION in os.environ or _GENERIC_COMPRESSION in os.environ
+            )
+            metrics_rejected = metrics_compression_present
+            if metrics_endpoint is not None:
+                os.environ.pop(_METRICS_COMPRESSION, None)
+                os.environ.pop(_GENERIC_COMPRESSION, None)
+            if metrics_compression_present:
+                _pending_diagnostics.add(_METRICS_COMPRESSION_DIAGNOSTIC)
+            metrics_interval = os.environ.get(_METRICS_INTERVAL)
+            if (
+                metrics_endpoint is not None
+                and metrics_interval is not None
+                and not _valid_metrics_interval(metrics_interval)
+            ):
+                os.environ.pop(_METRICS_INTERVAL, None)
+                _pending_diagnostics.add(_METRICS_INTERVAL_DIAGNOSTIC)
+                metrics_rejected = True
+            dependency_telemetry_requested = (
+                trace_configuration_present or unsafe_present or metrics_endpoint is not None
+            )
             if dependency_telemetry_requested:
                 for name in _RESOURCE_CONFIGURATION:
                     os.environ.pop(name, None)
 
-            protocol = os.environ.get(_PROTOCOL, "grpc").strip().lower()
+            protocol = os.environ.get(_PROTOCOL, "grpc")
             if metrics_endpoint is not None:
                 if not _daft_native_metrics_are_validated():
                     os.environ.pop(_METRICS_ENDPOINT, None)
                     _pending_diagnostics.add(_UNVALIDATED_DAFT_DIAGNOSTIC)
+                    metrics_rejected = True
                 elif not _valid_metrics_endpoint(metrics_endpoint) or protocol not in {
                     "grpc",
                     "http/protobuf",
                 }:
                     os.environ.pop(_METRICS_ENDPOINT, None)
                     _pending_diagnostics.add(_METRICS_DISABLED_DIAGNOSTIC)
+                    metrics_rejected = True
 
             if unsafe_present and daft_already_loaded:
                 _pending_diagnostics.add(_LATE_DAFT_DIAGNOSTIC)
+            if metrics_rejected and daft_already_loaded:
+                _pending_diagnostics.add(_LATE_METRICS_DIAGNOSTIC)
     except BaseException:
         # Process-host telemetry is advisory.  Even a hostile environment
         # mapping must not become application control flow.

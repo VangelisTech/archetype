@@ -93,9 +93,7 @@ def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
                 self.shutdown_calls += 1
 
         trace_exporter.OTLPSpanExporter = CapturingExporter
-        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = (
-            "https://collector.invalid/otlp?tenant=a"
-        )
+        os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "https://collector.invalid/otlp"
 
         from archetype import _obs
 
@@ -115,9 +113,7 @@ def test_otlp_configuration_installs_a_sanitizing_owned_provider() -> None:
 
         assert provider.force_flush()
         (exporter,) = CapturingExporter.instances
-        assert exporter.endpoint == (
-            "https://collector.invalid/otlp/v1/traces?tenant=a"
-        )
+        assert exporter.endpoint == "https://collector.invalid/otlp/v1/traces"
         (finished,) = exporter.spans
         assert finished.name == "artifact.publish"
         assert dict(finished.attributes) == {
@@ -184,6 +180,149 @@ def test_otlp_initialization_failure_is_safe_shutdown_and_retryable() -> None:
     assert "Bearer should-not-be-exported" not in result.stderr
 
 
+def test_failed_processor_attachment_does_not_leak_batch_worker() -> None:
+    result = _run(
+        """
+        import os
+        import threading
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+        from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+        from archetype import _obs
+
+        class TrackingExporter(SpanExporter):
+            instance = None
+
+            def __init__(self, *, endpoint):
+                self.shutdown_calls = 0
+                type(self).instance = self
+
+            def export(self, spans):
+                return SpanExportResult.SUCCESS
+
+            def shutdown(self):
+                self.shutdown_calls += 1
+
+        def fail(processor, *, service_name):
+            raise RuntimeError("filtered-processor-canary")
+
+        trace_exporter.OTLPSpanExporter = TrackingExporter
+        _obs._filtered_processor = fail
+        os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] = (
+            "http://collector.invalid/v1/traces"
+        )
+        before = [thread.name for thread in threading.enumerate()]
+
+        _obs.configure_tracing(service_name="archetype-test")
+
+        after = [thread.name for thread in threading.enumerate()]
+        assert _obs._configured is False
+        assert isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+        assert after == before
+        assert TrackingExporter.instance is not None
+        assert TrackingExporter.instance.shutdown_calls == 1
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OTLP telemetry initialization failed; tracing remains retryable." in result.stderr
+    assert "filtered-processor-canary" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "header_variable",
+    ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"],
+)
+def test_malformed_otlp_header_parser_cannot_echo_credentials(header_variable: str) -> None:
+    result = _run(
+        f"""
+        import os
+        from opentelemetry import trace
+
+        os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] = (
+            "http://127.0.0.1:1/v1/traces"
+        )
+        os.environ[{header_variable!r}] = (
+            "Authorization Bearer header-secret-canary"
+        )
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert _obs._configured is True
+        provider = trace.get_tracer_provider()
+        provider.shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "header-secret-canary" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "bsp_variable",
+    [
+        "OTEL_BSP_EXPORT_TIMEOUT",
+        "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+        "OTEL_BSP_MAX_QUEUE_SIZE",
+        "OTEL_BSP_SCHEDULE_DELAY",
+    ],
+)
+def test_malformed_batch_processor_config_cannot_echo_raw_value(bsp_variable: str) -> None:
+    result = _run(
+        f"""
+        import os
+        from opentelemetry import trace
+
+        os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] = (
+            "http://127.0.0.1:1/v1/traces"
+        )
+        os.environ[{bsp_variable!r}] = "bsp-secret-canary"
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert _obs._configured is True
+        trace.get_tracer_provider().shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "bsp-secret-canary" not in result.stderr
+
+
+def test_malformed_sampler_config_cannot_echo_raw_value() -> None:
+    result = _run(
+        """
+        import os
+        from opentelemetry import trace
+
+        os.environ["OTEL_TRACES_SAMPLER"] = "sampler-secret-canary"
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test", debug_console=True)
+        assert _obs._configured is True
+        trace.get_tracer_provider().shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "sampler-secret-canary" not in result.stderr
+
+
+def test_valid_host_sampler_configuration_remains_authoritative() -> None:
+    result = _run(
+        """
+        import os
+        from opentelemetry import trace
+
+        os.environ["OTEL_TRACES_SAMPLER"] = "always_off"
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test", debug_console=True)
+        with _obs.span("world.query", tick=1):
+            pass
+        trace.get_tracer_provider().shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "world.query" not in result.stderr
+
+
 def test_invalid_daft_metrics_config_reports_only_a_fixed_host_diagnostic() -> None:
     result = _run(
         """
@@ -199,7 +338,7 @@ def test_invalid_daft_metrics_config_reports_only_a_fixed_host_diagnostic() -> N
         """
     )
     assert result.returncode == 0, result.stderr
-    assert "Unsupported Daft metrics telemetry configuration was disabled." in result.stderr
+    assert "Unsupported Daft metrics telemetry configuration was removed." in result.stderr
     assert "endpoint-canary" not in result.stderr
 
 
@@ -216,8 +355,109 @@ def test_malformed_generic_endpoint_reports_only_a_fixed_host_diagnostic() -> No
         """
     )
     assert result.returncode == 0, result.stderr
-    assert "Malformed generic OTLP trace configuration was disabled." in result.stderr
+    assert "Unsupported Archetype OTLP trace configuration was removed." in result.stderr
     assert "endpoint-canary" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "endpoint_variable",
+    [
+        "ARCHETYPE_OTLP_TRACES_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    ],
+)
+def test_secret_bearing_trace_endpoint_is_rejected_without_disclosure(
+    endpoint_variable: str,
+) -> None:
+    result = _run(
+        f"""
+        import os
+        from opentelemetry import trace
+
+        os.environ[{endpoint_variable!r}] = (
+            "http://127.0.0.1:1/base?token=endpoint-secret-canary"
+        )
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        assert isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider)
+        assert "ARCHETYPE_OTLP_TRACES_ENDPOINT" not in os.environ
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Unsupported Archetype OTLP trace configuration was removed." in result.stderr
+    assert "endpoint-secret-canary" not in result.stderr
+
+
+def test_otlp_export_failure_does_not_disclose_a_valid_endpoint_path() -> None:
+    result = _run(
+        """
+        import os
+        from opentelemetry import trace
+
+        os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] = (
+            "http://127.0.0.1:1/path-endpoint-secret-canary"
+        )
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        provider = trace.get_tracer_provider()
+        with provider.get_tracer("archetype").start_as_current_span(
+            "artifact.publish",
+            attributes={"archetype.operation": "artifact.publish"},
+        ):
+            pass
+        assert provider.force_flush(timeout_millis=5_000)
+        provider.shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OTLP trace export failed; telemetry was dropped." in result.stderr
+    assert "path-endpoint-secret-canary" not in result.stderr
+
+
+def test_dependency_exporter_message_and_exception_are_replaced_with_fixed_diagnostic() -> None:
+    result = _run(
+        """
+        import logging
+        import os
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http import trace_exporter
+        from opentelemetry.sdk.trace.export import SpanExporter
+
+        class FailingExporter(SpanExporter):
+            def __init__(self, *, endpoint):
+                pass
+
+            def export(self, spans):
+                logging.getLogger(trace_exporter.__name__).error(
+                    "collector-response-body-canary"
+                )
+                raise RuntimeError("exporter-exception-canary")
+
+            def shutdown(self):
+                return None
+
+        trace_exporter.OTLPSpanExporter = FailingExporter
+        os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] = "http://collector.invalid/v1/traces"
+        from archetype import _obs
+
+        _obs.configure_tracing(service_name="archetype-test")
+        provider = trace.get_tracer_provider()
+        with provider.get_tracer("archetype").start_as_current_span(
+            "artifact.publish",
+            attributes={"archetype.operation": "artifact.publish"},
+        ):
+            pass
+        assert provider.force_flush(timeout_millis=5_000)
+        provider.shutdown()
+        """
+    )
+    assert result.returncode == 0, result.stderr
+    assert "OTLP trace export failed; telemetry was dropped." in result.stderr
+    assert "collector-response-body-canary" not in result.stderr
+    assert "exporter-exception-canary" not in result.stderr
 
 
 def test_unvalidated_daft_version_disables_native_metrics() -> None:
@@ -234,7 +474,7 @@ def test_unvalidated_daft_version_disables_native_metrics() -> None:
 
         assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in os.environ
         assert _dependency_telemetry.take_diagnostics() == (
-            "Daft native metrics were disabled for an unvalidated dependency version.",
+            "Daft native metrics configuration was removed for an unvalidated dependency version.",
         )
         """
     )
