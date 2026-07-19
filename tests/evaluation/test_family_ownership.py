@@ -15,6 +15,8 @@ app -> family dependency.
 from __future__ import annotations
 
 import ast
+import subprocess
+import sys
 from pathlib import Path
 
 import pyarrow as pa
@@ -107,6 +109,31 @@ def test_supported_root_exports_resolve_to_the_single_moved_definitions() -> Non
     assert EvalReceipt.__module__ == "archetype.evaluation.components"
     assert GraderContract.__module__ == "archetype.evaluation.contracts"
     assert Outcome.__module__ == "archetype.evaluation.contracts"
+
+
+def test_contracts_import_without_the_component_stack() -> None:
+    """Digest/contract-only consumers never pay for pyarrow/lancedb.
+
+    The family initializer lazy-loads ``EvalReceipt``; importing the pure
+    contracts module must not drag in ``archetype.evaluation.components``
+    or ``archetype.core.component``.
+    """
+    probe = (
+        "import sys\n"
+        "from archetype.evaluation.contracts import GraderContract, Outcome\n"
+        "heavy = [m for m in ('archetype.evaluation.components', 'archetype.core.component',\n"
+        "                     'pyarrow', 'lancedb') if m in sys.modules]\n"
+        "assert not heavy, f'contracts import loaded {heavy}'\n"
+        "from archetype.evaluation import EvalReceipt\n"
+        "assert EvalReceipt.__module__ == 'archetype.evaluation.components'\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_no_duplicate_eval_receipt_component_exists() -> None:
