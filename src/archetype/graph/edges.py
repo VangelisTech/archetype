@@ -1,22 +1,27 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Handle-level edge operations (design D2, docs/design/graph-system.md).
+"""Handle-level edge operations, async flavor (design D2, docs/design/graph-system.md).
 
 The helpers accept any object that structurally matches :class:`WorldLike` —
-the runtime world handle satisfies it. The graph family imports only core
-(design D1), so the coupling is a protocol, not an import.
+the async runtime world handle satisfies it. The graph family imports only
+core (design D1), so the coupling is a protocol, not an import.
+
+Sync-parity counterparts for ``SyncRuntimeWorld``-shaped handles live in
+:mod:`archetype.graph.sync` (runtime.md R5). Passing a sync handle here
+raises immediately, before any mutation.
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import inspect
+from typing import Protocol, cast
 
-from daft import DataFrame, col
+from daft import DataFrame, Expression, col
 
 from archetype.core.component import Component
-from archetype.graph.components import Relation
-from archetype.graph.frames import between
+from archetype.graph.components import Relation, require_relation
+from archetype.graph.frames import live_edge_ids
 
 
 class _InfoLike(Protocol):
@@ -24,7 +29,7 @@ class _InfoLike(Protocol):
 
 
 class WorldLike(Protocol):
-    """Structural surface the edge helpers need from a world handle."""
+    """Structural surface the async edge helpers need from a world handle."""
 
     async def spawn(self, *components: Component) -> int: ...
 
@@ -35,6 +40,15 @@ class WorldLike(Protocol):
     async def info(self) -> _InfoLike: ...
 
 
+def _require_async(world: WorldLike, method: str) -> None:
+    """Fail loud on sync handles before any call, instead of `await <int>`."""
+    if not inspect.iscoroutinefunction(getattr(world, method)):
+        raise TypeError(
+            f"world.{method} is not async; for SyncRuntimeWorld-shaped handles "
+            "use archetype.graph.sync"
+        )
+
+
 async def link(world: WorldLike, rel: Relation) -> int:
     """Spawn an edge entity for ``rel``.
 
@@ -42,8 +56,8 @@ async def link(world: WorldLike, rel: Relation) -> int:
     every staged spawn. Exclusive-relation replacement arrives in stage 5a;
     today ``link`` is deliberately a thin seam over ``spawn``.
     """
-    if type(rel) is Relation:
-        raise TypeError("spawn a Relation subclass, not Relation itself")
+    require_relation(rel)
+    _require_async(world, "spawn")
     return await world.spawn(rel)
 
 
@@ -51,11 +65,14 @@ async def edges(world: WorldLike, rel: type[Relation], *, at: int | None = None)
     """The relation's EdgeTable as a lazy frame.
 
     Returns the full append-only history; ``at`` filters to the edges live at
-    one tick. Temporal reads are filters, never a feature (design D2).
+    one tick. Temporal reads are filters, never a feature (design D2). A
+    relation that has never been committed surfaces the engine's missing-table
+    error: reading a table that does not exist is a caller error.
     """
+    _require_async(world, "query")
     frame = await world.query(rel)
     if at is not None:
-        frame = frame.where(col("tick") == at)
+        frame = frame.where(cast(Expression, col("tick") == at))
     return frame
 
 
@@ -63,13 +80,19 @@ async def unlink(world: WorldLike, rel: type[Relation], source: int, target: int
     """Despawn the ``rel`` edges from ``source`` to ``target``.
 
     "Live" means: has a row at the latest persisted tick. Edges staged by
-    ``link`` but not yet persisted by a step are not found. Returns the number
-    of edges despawned.
+    ``link`` but not yet persisted by a step are not found. Unlink is
+    idempotent removal, so a relation that has never been committed is an
+    empty edge set, not an error. Returns the number of edges despawned.
     """
+    _require_async(world, "query")
     latest = (await world.info()).tick - 1
-    matches = between(await world.query(rel), rel, source, target)
-    rows = matches.where(col("tick") == latest).select("entity_id").to_pylist()
-    edge_ids = {row["entity_id"] for row in rows}
+    try:
+        frame = await world.query(rel)
+    except KeyError:
+        # The component-query path raises KeyError when other signatures
+        # exist but none contain this relation: nothing to remove.
+        return 0
+    edge_ids = live_edge_ids(frame, rel, source, target, latest)
     for edge_id in edge_ids:
         await world.despawn(edge_id)
     return len(edge_ids)

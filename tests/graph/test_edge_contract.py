@@ -32,6 +32,7 @@ from archetype.graph import (  # noqa: E402
     with_source,
     with_target,
 )
+from archetype.graph import sync as graph_sync  # noqa: E402
 
 
 class Node(Component):
@@ -170,3 +171,61 @@ def test_fork_inherits_edges(tmp_path):
             return True
 
     assert _run(go())
+
+
+def test_unlink_absent_relation_returns_zero(tmp_path):
+    """A relation that has never been committed is an empty edge set."""
+
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("absent", storage=_storage(tmp_path))
+            a = await world.spawn(Node(name="a"))
+            b = await world.spawn(Node(name="b"))
+            await world.step()  # unrelated signature persisted; no ChildOf table
+            assert await unlink(world, ChildOf, a, b) == 0
+            return True
+
+    assert _run(go())
+
+
+def test_link_rejects_non_relation_component(tmp_path):
+    async def go():
+        async with ArchetypeRuntime() as runtime:
+            world = runtime.world("nonrel", storage=_storage(tmp_path))
+            with pytest.raises(TypeError):
+                await link(world, Node(name="not-an-edge"))  # type: ignore[arg-type]
+            return True
+
+    assert _run(go())
+
+
+def test_async_helpers_reject_sync_world(tmp_path):
+    """A sync handle fails loud and early — before any mutation."""
+    with ArchetypeRuntime.sync() as runtime:
+        world = runtime.world("syncguard", storage=_storage(tmp_path))
+        a = world.spawn(Node(name="a"))
+        b = world.spawn(Node(name="b"))
+        with pytest.raises(TypeError, match="archetype.graph.sync"):
+            _run(link(world, ChildOf(source=a, target=b)))
+        world.step()
+        # The guard fired before any mutation: no ChildOf edge was created.
+        assert graph_sync.unlink(world, ChildOf, a, b) == 0
+
+
+def test_sync_parity_roundtrip(tmp_path):
+    """graph.sync mirrors link/edges/unlink without await (runtime.md R5)."""
+    with ArchetypeRuntime.sync() as runtime:
+        world = runtime.world("syncpar", storage=_storage(tmp_path))
+        a = world.spawn(Node(name="a"))
+        b = world.spawn(Node(name="b"))
+        graph_sync.link(world, ChildOf(source=a, target=b))
+        world.step()
+
+        rows = graph_sync.edges(world, ChildOf).to_pylist()
+        assert len(rows) == 1
+        assert rows[0]["childof__source"] == a
+
+        assert graph_sync.unlink(world, ChildOf, a, b) == 1
+        world.step()
+        latest = world.info().tick - 1
+        assert graph_sync.edges(world, ChildOf, at=latest).to_pylist() == []

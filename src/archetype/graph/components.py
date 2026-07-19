@@ -33,3 +33,11 @@ class Relation(Component):
 
     source: int = 0
     target: int = 0
+
+
+def require_relation(rel: Relation) -> None:
+    """Reject non-edge components and the abstract base before they spawn."""
+    if not isinstance(rel, Relation):
+        raise TypeError(f"link requires a Relation instance, got {type(rel).__name__}")
+    if type(rel) is Relation:
+        raise TypeError("spawn a Relation subclass, not Relation itself")

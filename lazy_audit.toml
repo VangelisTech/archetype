@@ -175,7 +175,7 @@ method = "to_pylist"
 reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."
 
 [[entries]]
-path = "src/archetype/graph/edges.py"
-line = 71
+path = "src/archetype/graph/frames.py"
+line = 52
 method = "to_pylist"
-reason = "Mutation-planning boundary: unlink materializes the matching edge entity ids at the latest persisted tick because despawn takes concrete ids, not a frame; the filter runs in the lazy plan and only ids cross into Python."
+reason = "Mutation-planning boundary shared by async and sync unlink: despawn takes concrete entity ids, not a frame, so live_edge_ids materializes the matching ids at the latest persisted tick; all filters run in the lazy plan and only ids cross into Python."
