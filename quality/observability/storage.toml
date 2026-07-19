@@ -19,6 +19,7 @@ operations = [
   "catalog.ControlCatalog.get_attempt_claim",
   "catalog.ControlCatalog.list_due_attempt_claims",
   "catalog.ControlCatalog.acquire_artifact_publication",
+  "catalog.ControlCatalog.recover_artifact_publication",
   "catalog.ControlCatalog.get_artifact_publication",
   "catalog.ControlCatalog.renew_artifact_publication",
   "catalog.ControlCatalog.record_artifact_uploads",

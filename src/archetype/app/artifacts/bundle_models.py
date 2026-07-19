@@ -139,11 +139,11 @@ class ArtifactBundleRequest(BaseModel):
     checkpoint_ref: str
     checkpoint_provider: str
     checkpoint_restorable: bool = True
-    checkpoint_created_at_ms: int = Field(default=0, ge=0)
-    checkpoint_expires_at_ms: int = Field(default=0, ge=0)
+    checkpoint_created_at_ms: int = Field(default=0, ge=0, le=(1 << 53) - 1, strict=True)
+    checkpoint_expires_at_ms: int = Field(default=0, ge=0, le=(1 << 53) - 1, strict=True)
     accepted: bool = False
     retention: ArtifactRetention = "attempt"
-    artifact_expires_at_ms: int = Field(default=0, ge=0)
+    artifact_expires_at_ms: int = Field(default=0, ge=0, le=(1 << 53) - 1, strict=True)
     artifacts: tuple[ArtifactCandidate, ...]
 
     @field_validator(
@@ -408,6 +408,49 @@ class ArtifactReconcileResult(BaseModel):
     bundle_ids: tuple[str, ...] = ()
 
 
+class ArtifactReconcileDisposition(StrEnum):
+    """Outcome of reconciling one exact durable publication."""
+
+    INDEXED = "indexed"
+    EXPIRED = "expired"
+    OBSOLETE = "obsolete"
+
+
+class ArtifactReconcileCandidate(BaseModel):
+    """Digest-only reference safe for the fleet recovery scheduler."""
+
+    model_config = dict(frozen=True)
+
+    publication_key: str
+
+    @field_validator("publication_key")
+    @classmethod
+    def _publication_digest(cls, value: str) -> str:
+        if not _SHA256_RE.fullmatch(value):
+            raise ValueError("publication_key must be a lowercase SHA-256 digest")
+        return value
+
+
+class ArtifactReconcileItemResult(BaseModel):
+    """Typed feedback for one item-scoped publication recovery attempt.
+
+    This value is orchestration feedback. The artifact publication row remains
+    the authority for INDEXED or EXPIRED state.
+    """
+
+    model_config = dict(frozen=True)
+
+    publication_key: str
+    disposition: ArtifactReconcileDisposition
+
+    @field_validator("publication_key")
+    @classmethod
+    def _result_publication_digest(cls, value: str) -> str:
+        if not _SHA256_RE.fullmatch(value):
+            raise ValueError("publication_key must be a lowercase SHA-256 digest")
+        return value
+
+
 class ArtifactStoreConfig(BaseModel):
     """Object destination, Iceberg index, and retry/lifecycle policy.
 
@@ -421,9 +464,24 @@ class ArtifactStoreConfig(BaseModel):
     index_storage: StorageConfig
     io_config: IOConfig | None = None
     max_connections: int = Field(default=32, ge=1)
-    lease_seconds: float = Field(default=900.0, gt=0)
-    retry_delay_seconds: float = Field(default=30.0, ge=0)
-    retry_window_seconds: int = Field(default=7 * 24 * 60 * 60, ge=60)
+    lease_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        le=24 * 60 * 60,
+        allow_inf_nan=False,
+    )
+    retry_delay_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        le=365 * 24 * 60 * 60,
+        allow_inf_nan=False,
+    )
+    retry_window_seconds: int = Field(
+        default=7 * 24 * 60 * 60,
+        ge=60,
+        le=365 * 24 * 60 * 60,
+        strict=True,
+    )
     attempt_retention_seconds: int = Field(default=30 * 24 * 60 * 60, ge=0)
     run_retention_seconds: int = Field(default=180 * 24 * 60 * 60, ge=0)
     max_artifact_bytes: int = Field(default=1 << 30, gt=0)

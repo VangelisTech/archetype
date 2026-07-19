@@ -20,11 +20,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
+from typing import cast
+from urllib.parse import urlencode
 
 import httpx
 
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.storage.catalog import (
+    _MAX_ARTIFACT_RETRY_DELAY_MS,
+    _MAX_ARTIFACT_RETRY_WINDOW_MS,
+    _MAX_PORTABLE_COUNTER,
+    ArtifactPublicationCandidate,
     ArtifactPublicationConflictError,
     ArtifactPublicationExpiredError,
     ArtifactPublicationPendingError,
@@ -44,6 +51,12 @@ from archetype.app.storage.catalog import (
     OutboxRecord,
     SignatureRecord,
     WorldRecord,
+    _require_artifact_lease_ms,
+    _require_artifact_lease_seconds,
+    _require_artifact_milliseconds,
+    _require_bounded_text,
+    _require_portable_counter,
+    _require_sha256,
     _validate_attempt_claim_transition,
     artifact_publication_key,
     claim_scope_key,
@@ -56,6 +69,8 @@ _ATTEMPT_CLAIM_PROTOCOL_VERSION = 4
 _ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2"
 _ARTIFACT_SNAPSHOT_PROTOCOL_VERSION = 3
 _ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1"
+_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION = 6
+_ARTIFACT_SERVER_CLOCK_CAPABILITY = "artifact_publication_server_clock_v1"
 
 _ERROR_MAP: dict[str, type[Exception]] = {
     "attempt_claim_conflict": AttemptClaimConflictError,
@@ -123,7 +138,7 @@ class RemoteControlCatalog:
         world_id: str,
         *,
         minimum_version: int,
-        capability: str,
+        capability: str | tuple[str, ...],
         feature: str,
     ) -> None:
         """Fail closed before a versioned write reaches an older Worker."""
@@ -138,11 +153,12 @@ class RemoteControlCatalog:
             raise RuntimeError(f"remote control catalog does not support {feature}")
         capabilities = body.get("capabilities", ())
         protocol_version = body.get("catalog_protocol_version")
+        required_capabilities = (capability,) if isinstance(capability, str) else capability
         if (
             not isinstance(protocol_version, int)
             or protocol_version < minimum_version
             or not isinstance(capabilities, list)
-            or capability not in capabilities
+            or any(required not in capabilities for required in required_capabilities)
         ):
             raise RuntimeError(f"remote control catalog does not support {feature}")
 
@@ -160,6 +176,25 @@ class RemoteControlCatalog:
             minimum_version=_ARTIFACT_SNAPSHOT_PROTOCOL_VERSION,
             capability=_ARTIFACT_SNAPSHOT_CAPABILITY,
             feature="lossless artifact snapshot IDs",
+        )
+
+    async def _require_artifact_server_clock_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION,
+            capability=_ARTIFACT_SERVER_CLOCK_CAPABILITY,
+            feature="artifact publication server-clock v1",
+        )
+
+    async def _require_artifact_mutation_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ARTIFACT_SERVER_CLOCK_PROTOCOL_VERSION,
+            capability=(
+                _ARTIFACT_SNAPSHOT_CAPABILITY,
+                _ARTIFACT_SERVER_CLOCK_CAPABILITY,
+            ),
+            feature="lease-fenced artifact mutation v2",
         )
 
     # ── worlds ───────────────────────────────────────────────────────────────
@@ -646,28 +681,76 @@ class RemoteControlCatalog:
         request_digest: str,
         request_json: str,
         claimant: str,
-        retry_until_ms: int,
-        lease_seconds: float = 900.0,
+        retry_window_ms: int,
+        retry_not_after_ms: int | None = None,
+        lease_ms: int = 900_000,
     ) -> tuple[str, ArtifactPublicationRecord]:
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        retry_window_ms = _require_artifact_milliseconds(
+            retry_window_ms,
+            field="artifact retry_window_ms",
+            maximum=_MAX_ARTIFACT_RETRY_WINDOW_MS,
+        )
+        if retry_not_after_ms is not None:
+            retry_not_after_ms = _require_portable_counter(
+                retry_not_after_ms, field="artifact retry_not_after_ms"
+            )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
         publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_server_clock_protocol(world_id)
+        payload: dict[str, object] = {
+            "publication_key": publication_key,
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "idempotency_key": idempotency_key,
+            "request_digest": request_digest,
+            "request_json": request_json,
+            "claimant": claimant,
+            "retry_window_ms": retry_window_ms,
+            "lease_ms": lease_ms,
+        }
+        if retry_not_after_ms is not None:
+            payload["retry_not_after_ms"] = retry_not_after_ms
         response = await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/acquire-v2",
-            {
-                "publication_key": publication_key,
-                "run_id": run_id,
-                "attempt_id": attempt_id,
-                "idempotency_key": idempotency_key,
-                "request_digest": request_digest,
-                "request_json": request_json,
-                "claimant": claimant,
-                "retry_until_ms": retry_until_ms,
-                "lease_seconds": lease_seconds,
-            },
+            f"/w/{world_id}/artifact-publications/acquire-v3",
+            payload,
         )
         body = response.json()
-        return body["outcome"], _artifact_publication_from_json(world_id, body["publication"])
+        outcome, publication = _artifact_acquisition_from_json(world_id, body)
+        if publication is None:
+            raise RuntimeError("initial artifact acquisition returned no publication")
+        if publication.publication_key != publication_key:
+            raise RuntimeError("initial artifact acquisition returned a different publication")
+        return outcome, publication
+
+    async def recover_artifact_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, ArtifactPublicationRecord | None]:
+        publication_key = _require_sha256(publication_key, field="publication_key")
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        lease_ms = _require_artifact_lease_ms(lease_ms)
+        await self._require_artifact_server_clock_protocol(world_id)
+        response = await self._call(
+            "POST",
+            f"/w/{world_id}/artifact-publications/{publication_key}/recover-v1",
+            {"claimant": claimant, "lease_ms": lease_ms},
+        )
+        outcome, publication = _artifact_acquisition_from_json(
+            world_id, response.json(), allow_obsolete=True
+        )
+        if publication is not None and publication.publication_key != publication_key:
+            raise RuntimeError("exact artifact recovery returned a different publication")
+        return outcome, publication
 
     async def renew_artifact_publication(
         self,
@@ -677,7 +760,8 @@ class RemoteControlCatalog:
         *,
         lease_seconds: float,
     ) -> ArtifactPublicationRecord:
-        await self._require_artifact_snapshot_protocol(world_id)
+        lease_seconds = _require_artifact_lease_seconds(lease_seconds)
+        await self._require_artifact_mutation_protocol(world_id)
         response = await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/renew-v2",
@@ -693,7 +777,7 @@ class RemoteControlCatalog:
         records_json: str,
         manifest_uri: str,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/uploads-v2",
@@ -718,7 +802,7 @@ class RemoteControlCatalog:
             or index_snapshot_id > MAX_ICEBERG_SNAPSHOT_ID
         ):
             raise ValueError("index_snapshot_id must be a positive integer no greater than 2^63-1")
-        await self._require_artifact_snapshot_protocol(world_id)
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/complete-v2",
@@ -732,13 +816,29 @@ class RemoteControlCatalog:
         claimant: str,
         error: str,
         *,
-        retry_at: float,
+        retry_delay_ms: int,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+        retry_delay_ms = _require_artifact_milliseconds(
+            retry_delay_ms,
+            field="artifact retry_delay_ms",
+            maximum=_MAX_ARTIFACT_RETRY_DELAY_MS,
+        )
+        await self._require_artifact_server_clock_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/fail-v2",
-            {"claimant": claimant, "error": error, "retry_at": retry_at},
+            f"/w/{world_id}/artifact-publications/{publication_key}/fail-v3",
+            {
+                "claimant": claimant,
+                "error": error,
+                "retry_delay_ms": retry_delay_ms,
+            },
         )
 
     async def expire_artifact_publication(
@@ -748,7 +848,14 @@ class RemoteControlCatalog:
         claimant: str,
         error: str,
     ) -> None:
-        await self._require_artifact_snapshot_protocol(world_id)
+        claimant = _require_bounded_text(
+            claimant, field="artifact publication claimant", max_chars=1024
+        )
+        if not isinstance(error, str):
+            raise TypeError("artifact publication error must be a string")
+        if len(error) > 8000:
+            raise ValueError("artifact publication error exceeds 8000 characters")
+        await self._require_artifact_mutation_protocol(world_id)
         await self._call(
             "POST",
             f"/w/{world_id}/artifact-publications/{publication_key}/expire-v2",
@@ -768,13 +875,36 @@ class RemoteControlCatalog:
         return _artifact_publication_from_json(world_id, response.json())
 
     async def list_due_artifact_publications(
-        self, world_id: str, *, now: float, limit: int = 100
-    ) -> list[ArtifactPublicationRecord]:
+        self,
+        world_id: str,
+        *,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> list[ArtifactPublicationCandidate]:
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("artifact publication page limit must be between 1 and 10000")
+        if after_publication_key != "":
+            after_publication_key = _require_sha256(
+                after_publication_key, field="after_publication_key"
+            )
+        await self._require_artifact_server_clock_protocol(world_id)
+        query: dict[str, str | int] = {"limit": limit}
+        if after_publication_key != "":
+            query["after_publication_key"] = after_publication_key
         response = await self._call(
             "GET",
-            f"/w/{world_id}/artifact-publications?due={now}&limit={limit}",
+            f"/w/{world_id}/artifact-publications/due-v1?{urlencode(query)}",
         )
-        return [_artifact_publication_from_json(world_id, row) for row in response.json()]
+        body = response.json()
+        if not isinstance(body, list) or len(body) > limit:
+            raise RuntimeError("remote artifact due list returned an invalid page size")
+        records = [_artifact_candidate_from_json(row) for row in body]
+        previous = after_publication_key
+        for record in records:
+            if record.publication_key <= previous:
+                raise RuntimeError("remote artifact due list is not strictly ordered")
+            previous = record.publication_key
+        return records
 
 
 def _world_from_json(row: dict) -> WorldRecord:
@@ -850,22 +980,109 @@ def _attempt_claim_from_json(world_id: str, row: dict) -> AttemptClaimRecord:
     )
 
 
+def _artifact_candidate_from_json(row: object) -> ArtifactPublicationCandidate:
+    if not isinstance(row, dict) or set(row) != {"publication_key"}:
+        raise RuntimeError("remote artifact due candidate is not digest-only")
+    candidate = cast(dict[str, object], row)
+    publication_key = candidate["publication_key"]
+    if not isinstance(publication_key, str):
+        raise RuntimeError("remote artifact due candidate has an invalid publication_key")
+    try:
+        publication_key = _require_sha256(publication_key, field="publication_key")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("remote artifact due candidate has an invalid publication_key") from exc
+    return ArtifactPublicationCandidate(publication_key=publication_key)
+
+
+def _artifact_acquisition_from_json(
+    world_id: str,
+    body: object,
+    *,
+    allow_obsolete: bool = False,
+) -> tuple[str, ArtifactPublicationRecord | None]:
+    if not isinstance(body, dict):
+        raise RuntimeError("remote artifact acquisition returned a non-object response")
+    outcome = body.get("outcome")
+    allowed = (
+        {"owned", "recovered", "duplicate", "expired", "obsolete"}
+        if allow_obsolete
+        else {"acquired", "owned", "recovered", "duplicate", "expired"}
+    )
+    if not isinstance(outcome, str) or outcome not in allowed:
+        raise RuntimeError("remote artifact acquisition returned an invalid outcome")
+    publication = body.get("publication")
+    if outcome == "obsolete":
+        if publication is not None:
+            raise RuntimeError("obsolete artifact acquisition returned a publication")
+        return outcome, None
+    if not isinstance(publication, dict):
+        raise RuntimeError("remote artifact acquisition returned no publication")
+    record = _artifact_publication_from_json(world_id, publication)
+    expected_statuses = {
+        "acquired": {"PENDING"},
+        "owned": {"PENDING", "UPLOADED"},
+        "recovered": {"PENDING", "UPLOADED"},
+        "duplicate": {"INDEXED"},
+        "expired": {"EXPIRED"},
+    }
+    if record.status not in expected_statuses[outcome]:
+        raise RuntimeError("remote artifact acquisition outcome contradicts its status")
+    return outcome, record
+
+
 def _artifact_publication_from_json(world_id: str, row: dict) -> ArtifactPublicationRecord:
+    if not isinstance(row, dict):
+        raise RuntimeError("remote artifact publication is not an object")
+    status = row.get("status")
+    if not isinstance(status, str) or status not in {
+        "PENDING",
+        "UPLOADED",
+        "INDEXED",
+        "EXPIRED",
+    }:
+        raise RuntimeError(f"remote artifact publication has invalid status {status!r}")
+    publication_key = row.get("publication_key")
+    if not isinstance(publication_key, str):
+        raise RuntimeError("remote artifact publication has a non-string publication_key")
+    try:
+        _require_sha256(publication_key, field="publication_key")
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("remote artifact publication has an invalid publication_key") from exc
+    retry_until_ms = row.get("retry_until_ms")
+    attempt_count = row.get("attempt_count")
+    lease_expires_at = row.get("lease_expires_at")
+    if (
+        type(retry_until_ms) is not int
+        or retry_until_ms < 0
+        or retry_until_ms > _MAX_PORTABLE_COUNTER
+    ):
+        raise RuntimeError("remote artifact publication has invalid retry_until_ms")
+    if type(attempt_count) is not int or attempt_count < 1 or attempt_count > _MAX_PORTABLE_COUNTER:
+        raise RuntimeError("remote artifact publication has invalid attempt_count")
+    if isinstance(lease_expires_at, bool) or not isinstance(lease_expires_at, int | float):
+        raise RuntimeError("remote artifact publication has invalid lease_expires_at")
+    lease_expires_at_value = float(lease_expires_at)
+    if (
+        not math.isfinite(lease_expires_at_value)
+        or lease_expires_at_value < 0
+        or lease_expires_at_value > _MAX_PORTABLE_COUNTER
+    ):
+        raise RuntimeError("remote artifact publication has invalid lease_expires_at")
     index_snapshot_id = _remote_index_snapshot_id(row)
     return ArtifactPublicationRecord(
-        publication_key=row["publication_key"],
+        publication_key=publication_key,
         world_id=world_id,
         run_id=row["run_id"],
         attempt_id=row["attempt_id"],
         idempotency_key=row["idempotency_key"],
         request_digest=row["request_digest"],
-        status=row["status"],
+        status=status,
         request_json=row["request_json"],
         records_json=row.get("records_json", "[]"),
         claimant=row["claimant"],
-        lease_expires_at=float(row["lease_expires_at"]),
-        retry_until_ms=int(row["retry_until_ms"]),
-        attempt_count=int(row.get("attempt_count", 1)),
+        lease_expires_at=lease_expires_at_value,
+        retry_until_ms=retry_until_ms,
+        attempt_count=attempt_count,
         index_snapshot_id=index_snapshot_id,
         manifest_uri=row.get("manifest_uri", ""),
         last_error=row.get("last_error", ""),

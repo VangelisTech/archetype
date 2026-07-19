@@ -195,8 +195,8 @@ async def _advance_artifact_publication(
             request_digest=projection.producer_digest,
             request_json=projection.request_json,
             claimant=claimant,
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=60,
+            retry_window_ms=60_000,
+            lease_ms=60_000,
         )
     assert publication.publication_key == projection.publication_key
 
@@ -1748,8 +1748,8 @@ async def test_actual_expired_artifact_publication_cold_settles_and_replays(
             request_digest=projection.producer_digest,
             request_json=projection.request_json,
             claimant="expiry-seed",
-            retry_until_ms=int(time.time() * 1000) + 60_000,
-            lease_seconds=1,
+            retry_window_ms=60_000,
+            lease_ms=1_000,
         )
         assert artifact_outcome == "acquired"
         assert artifact_claim.status == "PENDING"

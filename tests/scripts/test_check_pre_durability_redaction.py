@@ -36,6 +36,9 @@ class ArtifactBundleService:
         self.fail_artifact_publication()
 
     async def reconcile(self):
+        await self.reconcile_publication()
+
+    async def reconcile_publication(self):
         self._safe_failure_detail()
         self.fail_artifact_publication()
 
@@ -87,6 +90,9 @@ class ArtifactBundleService:
         self._safe_failure_detail()
 
     async def reconcile(self):
+        await self.reconcile_publication()
+
+    async def reconcile_publication(self):
         self.fail_artifact_publication()
 
     async def _resume(self):
@@ -107,7 +113,7 @@ class ArtifactBundleService:
     )
     assert checker.audit_path(source) == [
         "publish_prepared must call _safe_failure_detail() before fail_artifact_publication()",
-        "reconcile must call _safe_failure_detail()",
+        "reconcile_publication must call _safe_failure_detail()",
     ]
 
 

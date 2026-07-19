@@ -402,18 +402,39 @@ direct artifact caller enters at the artifact-publication claim row.
 ## 6. Reconciler contract
 
 `ArtifactBundleService.reconcile(world_id, limit=N)` is one bounded,
-idempotent pass.
-It does not run forever inside an API request.
+idempotent pass. It does not run forever inside an API request.
 
-1. Enumerate nonterminal publications whose lease is due.
-2. CAS-acquire one publication, retaining its current phase and incrementing
-   `attempt_count`.
-3. If `PENDING`, expire it only when `retry_until_ms` has elapsed; otherwise
-   materialize the recorded sources, reuse/upload objects, and atomically store
-   `records_json` as `UPLOADED`.
-4. If `UPLOADED`, append or verify all deterministic Iceberg rows.
-5. Mark `INDEXED`; on a transient error, record `last_error` and a new
-   `lease_expires_at` for backoff.
+1. Ask the catalog for a digest-only page of nonterminal publications whose
+   lease is due according to the catalog clock. Discovery accepts no caller
+   clock and returns no replay request.
+2. CAS-acquire one exact publication by world ID and publication digest,
+   retaining its current phase and incrementing `attempt_count` on takeover.
+   The source row returned after acquisition is the only replay authority.
+3. Immediately before external I/O, repeat that exact acquisition. This
+   reauthorizes a claimant that stalled after discovery or initial acquisition
+   and closes the race with lease takeover or retry-window expiry.
+4. If `PENDING`, expire it only when the catalog clock proves
+   `retry_until_ms` elapsed; otherwise materialize the recorded sources,
+   reuse/upload objects, and atomically store `records_json` as `UPLOADED`.
+5. If `UPLOADED`, append or verify all deterministic Iceberg rows. An uploaded
+   publication never expires because it no longer depends on the checkpoint.
+6. Mark `INDEXED`; on a transient error, send a bounded retry duration and let
+   the catalog derive the new `lease_expires_at` from its own clock.
+
+Initial publication likewise sends a retry-window duration and an optional
+provider checkpoint `not-after` bound. The catalog derives the persisted
+`retry_until_ms` from its clock, capped by that external deadline. Recovery
+never echoes `request_json`, supplies an absolute retry time, or asserts what
+time it is; it carries only the publication digest, claimant, and bounded
+durations. The durable row is reread and authenticated after every successful
+acquisition before files, objects, or the index are touched.
+
+The artifact row's source-native guard is a lease plus an invocation-unique
+claimant token, not the fleet sweep's monotonic fence epoch. Built-in publishers
+and reconcilers generate a fresh claimant for every invocation and never reuse
+one after takeover. Any future adapter calling this internal catalog contract
+MUST preserve that uniqueness; a public or mutually untrusted claimant API
+would require adding a source-native fence token before exposure.
 
 The SQLite catalog is the single-host reference implementation. The remote
 catalog implements the same CAS transitions in the per-world Durable Object.
@@ -421,12 +442,19 @@ Iceberg snapshot identity is an exact Python `int` in the range
 `1..2^63-1`; booleans, floats, numeric strings, zero, and larger values are
 rejected before completion. The remote catalog transports and stores that
 identity as canonical decimal text under `artifact_snapshot_decimal_v1`.
-Before each mutation, `GET /status` must report
-`catalog_protocol_version >= 3` and that capability. The versioned
-`acquire-v2`, `renew-v2`, `uploads-v2`, `complete-v2`, `fail-v2`, and
-`expire-v2` routes therefore fail closed before artifact I/O against an older
-Worker that could round the snapshot through a JavaScript number or accept a
-write without the current protocol semantics.
+Before snapshot-bearing mutations, `GET /status` must report
+`catalog_protocol_version >= 3` and that capability; `renew-v2`, `uploads-v2`,
+`complete-v2`, and `expire-v2` therefore fail closed against a Worker that
+could round the snapshot through a JavaScript number.
+
+Server-clock publication scheduling additionally requires
+`catalog_protocol_version >= 6` and
+`artifact_publication_server_clock_v1`. The `acquire-v3`, `due-v1`,
+`recover-v1`, and `fail-v3` routes fail closed against an older Worker that
+accepts a caller-derived clock, request echo, or absolute retry instant. The
+SQLite reference and per-world Durable Object apply the same status, deadline,
+lease-owner, and retry-duration transitions.
+
 A fleet reconciler enumerates worlds from the directory object, then performs
 bounded per-world passes. It can shard by world without cross-world locking.
 
