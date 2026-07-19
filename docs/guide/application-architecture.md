@@ -153,12 +153,13 @@ src/archetype/app/
 
 The mission-adjacent package map is adjudicated in
 [Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map).
-It assigns the provisional experiment modules to future `research`,
-`trajectories`, and `physical_ai` families, keeps HTN and missions as
-independent leaves, separates dataset identity from evaluation contracts, and
-creates no new top-level family edge. Those target packages enter this concrete
-layout only as their focused implementation issues land; the current source
-tree and manifest remain the implementation truth until then.
+It assigns the provisional experiment modules to a future `research` family,
+mission-owned trajectory modules, and a future `physical_ai` family; folds
+HTN under `archetype.missions` as its planning subdomain; folds dataset
+identity into `archetype.evaluation.contracts`; and creates no new top-level
+family edge. Those target packages enter this concrete layout only as their
+focused implementation issues land; the current source tree and manifest
+remain the implementation truth until then.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their

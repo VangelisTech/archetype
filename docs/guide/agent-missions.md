@@ -622,19 +622,28 @@ adjudicates the durable boundaries around missions, autoresearch, HTN,
 datasets, trajectories, physical-AI experiments, and the repository harness.
 It does not perform the staged source moves.
 
+This section was amended on 2026-07-19 by the operator ruling recorded on
+Issue #561: trajectory evidence and HTN planning fold under
+`archetype.missions`, and dataset identity folds into `archetype.evaluation`.
+The version of this section first merged by #593 treated those three as
+standalone families; that disposition is superseded.
+
 Until a linked implementation issue lands, the current import path remains
 implementation truth. The target below governs new work and prevents a
 temporary path from becoming an accidental compatibility promise.
 
 ### 7.1 Boundary decisions
 
-#### Missions remain narrow
+#### Missions remain narrow in authority, wide in evidence
 
-The split defined in section 1 is final for this design. Neither research,
-HTN, trajectories, physical-AI evaluation, graph projections, nor dataset
-adapters may acquire mission transition authority. They may propose plans or
-produce evidence. Only the mission workflow may validate that evidence and
-commit a legal mission edge.
+The split defined in section 1 is final for this design. The missions family
+owns its evidence and planning vocabulary — trajectory index rows, transcript
+references, and HTN plan structure live under `archetype.missions` — but none
+of that vocabulary carries transition authority. Neither research, physical-AI
+evaluation, graph projections, evaluation-side dataset adapters, nor the
+mission-owned planning and trajectory modules themselves may advance a
+mission. They may propose plans or produce evidence. Only the mission
+workflow may validate that evidence and commit a legal mission edge.
 
 #### Autoresearch is an independent domain and app workflow
 
@@ -651,28 +660,32 @@ coordination, resume validation, and research-ledger orchestration. Candidate
 preparation may invoke a coding-agent adapter supplied from outside the
 family; that does not give research provider or mission authority.
 
-#### HTN is a reusable planner
+#### HTN is mission planning
 
-`archetype.htn` remains a standalone leaf family. Its Components, STRIPS
-domain values, pure helpers, Daft UDFs, and processors describe plan
-resolution. They are not a graph projection and are not an implementation
-detail of coding-agent missions.
+HTN plan resolution exists to structure agent missions; it is not enshrined
+as a standalone reusable family. The current `archetype.htn` Components,
+STRIPS domain values, pure helpers, Daft UDFs, and processors move
+mechanically under `archetype.missions` as the planning subdomain
+(`missions/planning/`), subject to the compatibility requirements in
+section 7.6. It is not a graph projection.
 
-A future app-owned adapter may validate and translate an immutable resolved
-HTN plan into the mission workflow's task-plan input. The adapter composes the
-two leaf contracts; neither top-level package imports the other. An HTN plan
-can propose task structure but cannot authorize a provider call, settle an
-attempt, or advance a mission.
+An app-owned adapter validates and translates an immutable resolved HTN plan
+into the mission workflow's task-plan input. An HTN plan can propose task
+structure but cannot authorize a provider call, settle an attempt, or advance
+a mission; planning modules inside the family hold no transition authority.
 
-#### Dataset identity and evaluation contracts separate
+#### Dataset identity folds into evaluation
 
-`archetype.datasets` owns evidence identity and provenance:
-`TaskRef`, `EpisodeRef`, `RuntimeSlice`, and the immutable evidence-side
-`Trial`. The evaluation family owns grader kinds, graders, rubrics, eval
-bindings, outcomes, grader contracts, and evaluation receipts. Issue
-[#590](https://github.com/VangelisTech/archetype/issues/590) completes this
-split after the evaluation-family extraction in
-[#557](https://github.com/VangelisTech/archetype/issues/557).
+The `archetype.datasets` family is removed. Evidence identity and provenance
+— `TaskRef`, `EpisodeRef`, `RuntimeSlice`, and the immutable evidence-side
+`Trial` — move to `archetype.evaluation.contracts`, beside the grader kinds,
+graders, rubrics, eval bindings, outcomes, grader contracts, and evaluation
+receipts the evaluation family already owns. What was measured and how it was
+graded is one ownership story. Issue
+[#590](https://github.com/VangelisTech/archetype/issues/590) performs this
+fold after the evaluation-family extraction in
+[#557](https://github.com/VangelisTech/archetype/issues/557), preserving
+every identity defined in the dataset/eval ontology.
 
 A live physical-AI or mission attempt is not a dataset trial merely because
 both use the word *trial*. It becomes a dataset episode only when an explicit
@@ -685,9 +698,11 @@ when applicable, includes a `RuntimeSlice` as provenance.
 It is dissolved after its contents move to their owners:
 
 - research ledger state and runner-row decoding move to `research`;
-- trajectory index schemas and pure transforms move to `trajectories`;
+- trajectory index schemas and pure transforms move under `missions`
+  (`missions/trajectories.py` and `missions/projections.py`);
 - reusable manipulation and control state and processors move to
-  `physical_ai`;
+  `physical_ai`, which defines its own trajectory and rollout types when it
+  is implemented rather than sharing mission-owned rows;
 - task-evaluation and instruction-sweep orchestration move to
   `app.physical_ai`; and
 - the Cartpole demonstration moves to example or benchmark support.
@@ -712,35 +727,28 @@ claim or drive a mission transition.
 
 ```text
 src/archetype/
-  missions/                         # existing domain from #559
+  missions/                         # domain from #559, widened by #586/#591
     components.py
     transitions.py
+    trajectories.py                 # durable trajectory index rows, legacy reader
+    projections.py                  # pure trajectory/transcript rollups
+    planning/                       # HTN: components, domain, processors, udfs
+      contracts.py                  # immutable resolved-plan values when added
   research/                         # leaf family
     __init__.py
     components.py                   # Experiment, Run, Result, BranchHead
     transitions.py                  # RunStatus
     loaders.py                      # pure runner-row decoding
-  htn/                              # existing leaf family
-    components.py
-    domain.py
-    processors.py
-    udfs.py
-    contracts.py                    # immutable resolved-plan values when added
-  datasets/                         # evidence identity and provenance
-    definitions.py
   evaluation/                       # #557, then #590
     components.py
-    contracts.py
+    contracts.py                    # grading vocabulary + evidence identity
+                                    # (TaskRef, EpisodeRef, RuntimeSlice, Trial)
   artifacts/                        # #558
     components.py
     contracts.py
     bundles.py
-  trajectories/                     # leaf, deliberately not "analytics"
-    components.py                   # lightweight index rows and legacy reader
-    contracts.py                    # non-persistent authoring/parser values
-    transforms.py                   # pure row/DataFrame projections
-  physical_ai/                      # leaf reusable domain
-    components.py
+  physical_ai/                      # leaf reusable domain; owns its own
+    components.py                   # trajectory/rollout types when implemented
     contracts.py                    # env/policy and picklable spec contracts
     processors.py
     boundary.py
@@ -753,6 +761,12 @@ src/archetype/
     evaluation/
     query/
 ```
+
+`archetype.htn` and `archetype.datasets` do not appear above: HTN folds under
+`missions/planning/` (#591) and dataset identity folds into
+`archetype.evaluation.contracts` (#590). There is no standalone
+`archetype.trajectories` family; mission evidence rows live in the missions
+family (#586).
 
 Repository evidence remains outside production code:
 
@@ -774,12 +788,12 @@ moved under `src/archetype` merely because it evaluates the product.
 | `app/research/models.py` | Move `Experiment`, `Run`, `Result`, and `BranchHead` exactly once to `research/components.py`; move `RunStatus` to `research/transitions.py`; remove the app model module after consumers migrate. |
 | `app/research/contracts.py` | Keep app-owned callback, configuration, and result values that compose application execution contracts. Existing supported root exports remain supported. |
 | `app/research/interfaces.py`, `service.py` | Keep internal. They own the multi-run workflow, identity checks, ledger writes, and world/simulation coordination. |
-| `htn/components.py`, `domain.py`, `processors.py`, `udfs.py` | Keep under `archetype.htn`; add only a domain-neutral immutable resolved-plan contract when the app adapter is implemented. |
-| `datasets/definitions.py` | Keep dataset coordinates and provenance; move `GraderKind`, `Grader`, `Rubric`, and `Eval` to `archetype.evaluation.contracts`. |
+| `htn/components.py`, `domain.py`, `processors.py`, `udfs.py` | Move mechanically to `missions/planning/` under #591, preserving the section 7.6 compatibility requirements; add an immutable resolved-plan contract when the app adapter is implemented. |
+| `datasets/definitions.py` | Move `TaskRef`, `EpisodeRef`, `RuntimeSlice`, `Trial`, `GraderKind`, `Grader`, `Rubric`, and `Eval` to `archetype.evaluation.contracts` under #590; delete `archetype.datasets`. |
 | `experiments/__init__.py` | Remove after the staged moves; add no permanent shim or root re-export. |
 | `experiments/loaders.py` | Move pure runner SQLite row decoding to `research/loaders.py`; replace container-backed ingestion with the supported runtime/application mutation path. |
-| `experiments/trajectories.py` | Move the single Component definitions to `trajectories/components.py` and non-persistent helpers to `contracts.py`. |
-| `experiments/recorders.py` | Move structural row/frame transforms to `trajectories/transforms.py`; remove dependencies on app model classes from the leaf package. |
+| `experiments/trajectories.py` | Move the single Component definitions to `missions/trajectories.py`; non-persistent authoring/parser helpers stay in-memory values beside them. |
+| `experiments/recorders.py` | Move structural row/frame transforms to `missions/projections.py`; remove dependencies on app model classes from the family. |
 | `experiments/claude_sessions.py` | Move file parsing and ingestion behind the artifact/redaction boundary; keep raw JSONL as the source artifact. |
 | `experiments/boundary.py` | Move the narrowly scoped Daft external-call helpers to `physical_ai/boundary.py`. |
 | `experiments/manipulation.py` | Split persistent schemas, provider-neutral contracts, and processors into the matching `physical_ai` modules; move scripted doubles to tests/examples. |
@@ -793,9 +807,13 @@ moved under `src/archetype` merely because it evaluates the product.
 ### 7.4 Transcript, trajectory, and artifact boundary
 
 `Trajectory` and the small command, observation, action, and reward rows are
-durable index Components. They retain their current class names and schemas
-when moved. `Turn` and `LoadedSession` are in-memory authoring or parser
-values, not persistent Components.
+durable index Components owned by the missions family. They retain their
+current class names and schemas when moved to `missions/trajectories.py`.
+`Turn` and `LoadedSession` are in-memory authoring or parser values, not
+persistent Components. Transcript ingestion itself is artifact-family work:
+the redaction-gated adapter lives at the app artifact boundary, and whether a
+transcript can be ingested at all is an artifacts question, independent of
+which mission consumes the resulting index rows.
 
 The existing content-bearing `TrajectoryTurn` class remains the single class
 used to read historical rows during a separately reviewed migration. New
@@ -821,22 +839,21 @@ Every capability adjudicated here is a leaf top-level family at this stage:
 
 ```text
 research      -> core
-htn           -> core
-datasets      -> core
 evaluation    -> core
 artifacts     -> core
-trajectories  -> core
 physical_ai   -> core
 missions      -> core
 ```
 
-No new top-level family edge is required. In particular, the following edges
-are forbidden:
+`htn` and `datasets` appear in the current source tree and manifest until
+Issues #591 and #590 fold them in; while they exist they remain leaves with
+no family edge. No new top-level family edge is required. In particular, the
+following edges are forbidden:
 
-- `missions -> htn` and `htn -> missions`;
 - `missions -> graph` and `missions -> projections`;
 - `research -> missions`;
-- `physical_ai -> datasets` or `physical_ai -> evaluation`; and
+- `physical_ai -> evaluation` and `physical_ai -> missions` — physical-AI
+  defines its own trajectory and rollout types when implemented; and
 - any of these families importing `app`, `runtime`, `api`, or `cli`.
 
 Application families may consume and compose these contracts in the approved
@@ -878,10 +895,9 @@ instead of being smuggled into a package move.
 |---|---|---|
 | Missions | Mission world commit plus the app-owned fenced attempt claim and artifact-finalization authority defined above. | Mission/app manifests; signals are advisory and cannot settle a claim. |
 | Research | World-ledger rows keyed by caller `experiment_id` and semantic configuration digest. An active attempt fails closed because no concurrent-attempt claim exists. | Research app port dispositions; no exactly-once candidate claim is implied. |
-| HTN | Deterministic world rows and pure plan replay. It owns no external side-effect claim. | Family-safe logging/signals only; plan evidence is not execution authority. |
-| Datasets | Natural dataset coordinates plus artifact-envelope/content identity when rows are ingested. | Artifact workflow reports writes; dataset values emit no authority signal. |
-| Evaluation | Snapshot-pinned subject, grader contract, and claim-backed receipt owned by the evaluation app workflow. | Evaluation app manifest; a receipt is evidence, not promotion authority. |
-| Trajectories/transcripts | Lightweight world indexes plus redaction-gated, content-addressed artifact publication for full content. | No content-bearing telemetry; receipts contain counts/rule IDs, never matched text. |
+| Mission planning (HTN) | Deterministic world rows and pure plan replay under `missions/planning/`. It owns no external side-effect claim. | Family-safe logging/signals only; plan evidence is not execution authority. |
+| Evaluation (incl. evidence identity) | Snapshot-pinned subject, grader contract, and claim-backed receipt owned by the evaluation app workflow. Natural dataset coordinates plus artifact-envelope/content identity when evidence rows are ingested. | Evaluation app manifest; a receipt is evidence, not promotion authority. Identity values emit no authority signal. |
+| Mission trajectories/transcripts | Lightweight world indexes under missions plus redaction-gated, content-addressed artifact publication for full content. | No content-bearing telemetry; receipts contain counts/rule IDs, never matched text. |
 | Physical AI | Ordinary world commits for state. External env/policy calls remain non-idempotent until the durable trial authority in #322 owns admission/recovery. | Physical-AI app ports receive exact dispositions; telemetry cannot infer provider completion. |
 | Repository harness | Files and CI artifacts under `tests/`, `evals/`, and `bench/`; never product authority. | CI reporting only. |
 
@@ -891,8 +907,9 @@ instead of being smuggled into a package move.
   remain supported.
 - Concrete research, physical-AI, mission, evaluation, artifact, and query
   services and all app-family ports remain internal.
-- `archetype.htn`, `archetype.datasets`, and the future `research`,
-  `trajectories`, and `physical_ai` family paths remain provisional until an
+- `archetype.htn` and `archetype.datasets` remain provisional import paths
+  only until #591 and #590 fold them into missions and evaluation; the future
+  `research` and `physical_ai` family paths remain provisional until an
   implementation issue explicitly graduates names and updates the API
   manifest.
 - The provisional `archetype.experiments` facade is removed after migration;
@@ -910,12 +927,12 @@ focused compatibility oracle:
 | Issue | Scope | Prerequisites |
 |---|---|---|
 | [#585](https://github.com/VangelisTech/archetype/issues/585) | Extract the research ledger domain and pure runner decoder. | This design. |
-| [#586](https://github.com/VangelisTech/archetype/issues/586) | Extract trajectory schemas and pure transforms with exact compatibility. | This design. |
-| [#587](https://github.com/VangelisTech/archetype/issues/587) | Route coding-agent transcript ingestion through redacted artifacts. | #558 and #586. |
-| [#588](https://github.com/VangelisTech/archetype/issues/588) | Extract the reusable physical-AI domain. | This design; coordinate #322. |
+| [#586](https://github.com/VangelisTech/archetype/issues/586) | Fold trajectory schemas and pure transforms under `archetype.missions` with exact compatibility. | This design. |
+| [#587](https://github.com/VangelisTech/archetype/issues/587) | Route coding-agent transcript ingestion through redacted artifacts at the app artifact boundary. | #558 and #586. |
+| [#588](https://github.com/VangelisTech/archetype/issues/588) | Extract the reusable physical-AI domain with its own trajectory/rollout types. | This design; coordinate #322. |
 | [#589](https://github.com/VangelisTech/archetype/issues/589) | Move physical-AI evaluation/sweep orchestration behind app/runtime boundaries. | #557 and #588; coordinate #322. |
-| [#590](https://github.com/VangelisTech/archetype/issues/590) | Split dataset identity from evaluation contracts. | #557; coordinate #322/#558. |
-| [#591](https://github.com/VangelisTech/archetype/issues/591) | Add a resolved HTN plan contract and app-owned mission adapter. | This design; coordinate #477/#511. |
+| [#590](https://github.com/VangelisTech/archetype/issues/590) | Fold dataset identity into `archetype.evaluation.contracts` and delete `archetype.datasets`. | #557; coordinate #322/#558. |
+| [#591](https://github.com/VangelisTech/archetype/issues/591) | Fold HTN under `missions/planning/` mechanically; add the resolved-plan contract and app-owned mission adapter. | This design; coordinate #477/#511. |
 | [#592](https://github.com/VangelisTech/archetype/issues/592) | Remove the empty experiments facade and checker lane. | #585–#589 as listed in that issue. |
 
 Issue #561 owns only this adjudication, its documentation, and replacement of

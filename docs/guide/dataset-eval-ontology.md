@@ -12,14 +12,14 @@ the `evals/` repository-check runner. That runner reuses ordinary words such as
 task and trial as local implementation labels; it does not extend this model.
 
 The vocabulary contract is normative. Issue
-[#561](https://github.com/VangelisTech/archetype/issues/561) adjudicates its
-ownership: dataset identity and provenance remain under `archetype.datasets`,
-while `GraderKind`, `Grader`, `Rubric`, and `Eval` move to
-`archetype.evaluation.contracts` under
-[#590](https://github.com/VangelisTech/archetype/issues/590) after the
-evaluation-family extraction in #557. Until those moves land,
-`archetype.datasets.definitions` remains the current implementation path. The
-move cannot change the identities defined here.
+[#561](https://github.com/VangelisTech/archetype/issues/561), as amended by
+the operator ruling of 2026-07-19, adjudicates its ownership: the entire
+vocabulary — `TaskRef`, `EpisodeRef`, `RuntimeSlice`, `Trial`, `GraderKind`,
+`Grader`, `Rubric`, and `Eval` — moves to `archetype.evaluation.contracts`
+under [#590](https://github.com/VangelisTech/archetype/issues/590) after the
+evaluation-family extraction in #557, and `archetype.datasets` is removed.
+Until that fold lands, `archetype.datasets.definitions` remains the current
+implementation path. The move cannot change the identities defined here.
 
 ## 1. The contract in one view
 
