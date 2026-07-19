@@ -31,3 +31,20 @@ metrics = [
   { name = "steps_per_sec", direction = "higher" },
   { name = "entities_per_sec", direction = "higher" },
 ]
+
+[[benchmark]]
+id = "observability.daft_attribution"
+suite = "daft_attribution"
+owner = "observability"
+entrypoint = "bench/observability/daft_attribution.py"
+correctness_oracles = ["tests/bench/test_daft_attribution.py"]
+report_schema = "bench.core.report/v1"
+comparison_policy = "advisory"
+stable_runner = false
+profiles = ["nightly"]
+metrics = [
+  { name = "plan_build_s", direction = "lower" },
+  { name = "terminal_collect_s", direction = "lower" },
+  { name = "python_conversion_s", direction = "lower" },
+  { name = "udf_operator_accumulated_duration_median_s", direction = "lower" },
+]
