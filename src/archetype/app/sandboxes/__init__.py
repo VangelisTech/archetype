@@ -19,6 +19,13 @@ from archetype.app.sandboxes.models import (
     ValidatorSpec,
 )
 from archetype.app.sandboxes.service import SandboxService
+from archetype.app.sandboxes.versions import (
+    HarnessInterface,
+    PinnedArtifact,
+    VersionInventory,
+    VersionPinError,
+    load_version_inventory,
+)
 
 __all__ = [
     "AgentHarness",
@@ -30,11 +37,16 @@ __all__ = [
     "CommandResult",
     "EvidenceCapture",
     "GIT_TREE_CHANGE_GATE_NAME",
+    "HarnessInterface",
     "OpenCodeWireAPI",
+    "PinnedArtifact",
     "RepositoryPhaseReceipt",
     "SandboxService",
     "ValidatorSpec",
+    "VersionInventory",
+    "VersionPinError",
     "iSandboxBackend",
     "iSandboxService",
     "iSandboxSession",
+    "load_version_inventory",
 ]

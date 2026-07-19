@@ -42,6 +42,7 @@ from archetype.app.sandboxes.models import (
     ValidationEvidence,
     ValidatorSpec,
 )
+from archetype.app.sandboxes.versions import load_version_inventory
 
 _OPENCODE_CONFIG_PATH = "/root/.config/archetype/opencode.json"
 _FILESYSTEM_MANIFEST_SCRIPT = r"""
@@ -646,6 +647,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         )
         attempt_manifest = {
             "schema_version": 1,
+            "environment": await self._environment_evidence(),
             "attempt_id": prepared.attempt_id,
             "request_fingerprint": prepared.request_fingerprint,
             "idempotency_key": prepared.idempotency_key,
@@ -683,6 +685,81 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             git_bundle_path=evidence.git_bundle_path,
         )
         return evidence
+
+    async def _environment_evidence(self) -> dict[str, Any]:
+        """Safe effective-version evidence for the attempt manifest.
+
+        The pinned inventory resolves fail-closed; an unpinned harness stops
+        evidence capture instead of degrading to an unattributable attempt.
+        Values are names, exact versions, and digests only — never install
+        sources, credentials, or header bindings.
+        """
+
+        inventory = load_version_inventory()
+        pin = inventory.harness_pin(self.spec.harness)
+        interface = pin.harness_interface
+        assert interface is not None  # harness pins always carry an interface
+        probe = await self._exec(
+            interface.invoke[0],
+            "--version",
+            timeout=60,
+            env=self._harness_process_env(),
+        )
+        observed = self._tail((probe.stdout or probe.stderr).strip(), 200)
+        return {
+            "schema_version": 1,
+            "inventory_digest": inventory.digest,
+            "harness": {
+                "artifact_id": pin.artifact_id,
+                "name": pin.name,
+                "version": pin.version,
+                "immutable_ref": pin.immutable_ref,
+                "observed_version": observed if probe.returncode == 0 else "",
+                "observed_error": "" if probe.returncode == 0 else observed,
+            },
+            "model": self.spec.model,
+            "provider": self._checkpoint_provider(),
+            "configuration_digest": self.provider_execution_capabilities.request_fingerprint,
+            "runtime": self._runtime_version_evidence(),
+        }
+
+    def _harness_process_env(self) -> dict[str, str]:
+        """Non-secret process environment shared by agent runs and CLI probes.
+
+        Version probes must execute in the same controlled environment as the
+        pinned agent invocation — auto-updates stay disabled and the managed
+        config location applies — so observed versions describe the install
+        that actually ran the attempt.
+        """
+
+        if self.spec.harness == "codex":
+            return {"NO_COLOR": "1", "CODEX_HOME": "/root/.codex"}
+        if self.spec.harness == "claude-code":
+            return {
+                "NO_COLOR": "1",
+                "DISABLE_AUTOUPDATER": "1",
+                "CLAUDE_CONFIG_DIR": "/root/.claude",
+            }
+        if self.spec.harness == "opencode":
+            return {
+                "NO_COLOR": "1",
+                "OPENCODE_CONFIG": _OPENCODE_CONFIG_PATH,
+                "OPENCODE_DISABLE_AUTOUPDATE": "1",
+                "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+            }
+        raise ValueError(f"unsupported coding-agent harness: {self.spec.harness!r}")
+
+    def _runtime_version_evidence(self) -> dict[str, str]:
+        """Adapter-declared SDK/runtime/image/collector/proxy identities.
+
+        The provider-neutral kernel has no runtime identity of its own and
+        returns an empty map; concrete provider adapters must override this
+        with names, exact versions, and immutable digests resolved from the
+        pinned inventory. Values must stay free of secrets and provider URLs
+        with credentials.
+        """
+
+        return {}
 
     async def _checkpoint_phase(self, prepared: PreparedAttempt) -> CheckpointCapture:
         created_at_ms = int(time.time() * 1000)
@@ -894,7 +971,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             workdir=self.spec.workspace,
             timeout=self.spec.agent_timeout_seconds,
             secrets=[self._agent_secret] if self._agent_secret is not None else (),
-            env={"NO_COLOR": "1", "CODEX_HOME": "/root/.codex"},
+            env=self._harness_process_env(),
         )
 
     async def _run_claude(self, prompt: str, *, session_id: str) -> CommandResult:
@@ -918,11 +995,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             workdir=self.spec.workspace,
             timeout=self.spec.agent_timeout_seconds,
             secrets=[self._agent_secret] if self._agent_secret is not None else (),
-            env={
-                "NO_COLOR": "1",
-                "DISABLE_AUTOUPDATER": "1",
-                "CLAUDE_CONFIG_DIR": "/root/.claude",
-            },
+            env=self._harness_process_env(),
         )
 
     async def _run_opencode(self, prompt: str, *, session_id: str) -> CommandResult:
@@ -986,12 +1059,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             workdir=self.spec.workspace,
             timeout=self.spec.agent_timeout_seconds,
             secrets=[self._agent_secret] if self._agent_secret is not None else (),
-            env={
-                "NO_COLOR": "1",
-                "OPENCODE_CONFIG": _OPENCODE_CONFIG_PATH,
-                "OPENCODE_DISABLE_AUTOUPDATE": "1",
-                "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
-            },
+            env=self._harness_process_env(),
         )
 
     async def _run_validators(self, validators: Sequence[ValidatorSpec]) -> list[dict[str, Any]]:

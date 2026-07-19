@@ -46,6 +46,7 @@ from archetype.app.sandboxes.models import (
     RepositoryPhaseReceipt,
     ValidationEvidence,
 )
+from archetype.app.sandboxes.versions import load_version_inventory
 from archetype.app.storage.catalog import (
     AttemptClaimConflictError,
     AttemptClaimPendingError,
@@ -428,6 +429,18 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
     ]
     validator_call = next(call for call in client.commands if call[0][0] == "verify")
     assert validator_call[1]["secrets"] == ()
+    manifest_path = next(path for path in client.files if "/manifests/" in path)
+    environment = json.loads(client.files[manifest_path])["environment"]
+    inventory = load_version_inventory()
+    harness_pin = inventory.harness_pin(client.spec.harness)
+    assert environment["inventory_digest"] == inventory.digest
+    assert environment["harness"]["version"] == harness_pin.version
+    assert environment["harness"]["immutable_ref"] == harness_pin.immutable_ref
+    assert environment["configuration_digest"] == (
+        client.provider_execution_capabilities.request_fingerprint
+    )
+    version_probe = next(call for call in client.commands if call[0][1:] == ("--version",))
+    assert version_probe[1]["secrets"] == ()
     assert isinstance(client, iSandboxSession)
 
 
