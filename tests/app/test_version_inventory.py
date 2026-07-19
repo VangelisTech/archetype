@@ -78,6 +78,7 @@ class _ProbeClient(CodingAgentSandboxClient[_ProbeSpec]):
     _agent_secret: object | None = None
     exec_calls: list[tuple[tuple[str, ...], dict[str, Any]]] = field(default_factory=list)
     agent_argv: tuple[str, ...] = ()
+    agent_env: dict[str, str] | None = None
     files: dict[str, str] = field(default_factory=dict)
     version_output: str = ""
     version_returncode: int = 0
@@ -118,6 +119,7 @@ class _ProbeClient(CodingAgentSandboxClient[_ProbeSpec]):
         env: dict[str, str] | None = None,
     ) -> CommandResult:
         self.agent_argv = args
+        self.agent_env = env
         return CommandResult(args, 0, "", "")
 
     async def _write_text(self, path: str, value: str) -> None:
@@ -183,6 +185,28 @@ async def test_harness_command_json_and_session_compatibility(harness: str) -> N
     else:
         for session_field in interface.session_fields:
             assert client._session_id(json.dumps({session_field: "session-1"})) == "session-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("harness", sorted(get_args(AgentHarness)))
+async def test_version_probe_runs_in_the_agent_process_environment(harness: str) -> None:
+    """The probe must execute exactly like the pinned agent run, minus
+    secrets: auto-updates disabled and the managed config location applied,
+    so the observed version describes the install that ran the attempt."""
+
+    client = _ProbeClient(_ProbeSpec(harness=harness))
+    await client._run_agent("complete the task gate", session_id="")
+
+    await client._environment_evidence()
+
+    probe_call = next(call for call in client.exec_calls if call[0][1:] == ("--version",))
+    assert probe_call[1]["env"] == client.agent_env
+    assert probe_call[1]["secrets"] == ()
+    assert probe_call[1]["env"] is not None
+    if harness == "claude-code":
+        assert probe_call[1]["env"]["DISABLE_AUTOUPDATER"] == "1"
+    if harness == "opencode":
+        assert probe_call[1]["env"]["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
 
 
 @pytest.mark.asyncio
@@ -282,3 +306,73 @@ def test_inventory_rejects_credential_shaped_values(case: Any) -> None:
         parse_version_inventory(
             _mutated('name = "@openai/codex"', f"name = {json.dumps(case.payload)}")
         )
+
+
+@pytest.mark.parametrize(
+    ("data", "match"),
+    [
+        (b"not toml [", "not valid TOML"),
+        (b"schema_version = 1\n", "exactly the schema_version and artifact keys"),
+        (b"schema_version = 1\nartifact = 3\n", "at least one"),
+        (b"schema_version = 1\nartifact = [3]\n", "must be a table"),
+        (_mutated('id = "codex-cli"', 'id = "Codex-CLI"'), "invalid artifact id"),
+        (_mutated('status = "pinned"', 'status = "floating"'), "status must be one of"),
+        (_mutated('role = "agent-harness"', 'role = "wizard"'), "role must be one of"),
+        (_mutated('kind = "npm-package"', 'kind = "gem-package"'), "kind must be one of"),
+        (_mutated('name = "modal"', 'name = "Modal"'), "not a valid python-package name"),
+        (_mutated('harness = "codex"', 'harness = "unknown-agent"'), "unknown agent harness"),
+        (_mutated('consumers = ["#564"]', 'consumers = "#564"'), "must be an array"),
+        (_mutated('consumers = ["#564"]', 'consumers = ["564"]'), "does not match"),
+        (_mutated('version = "1.1.0"', "version = 110"), "must be a non-empty string"),
+        (
+            _mutated(
+                'session_event = "thread.started"',
+                'session_event = "thread started"',
+            ),
+            "interface token or empty",
+        ),
+        (
+            _mutated(
+                '[artifact.harness_interface]\ninvoke = ["opencode", "run"]',
+                '[artifact.harness_interface]\nextra = ["x"]\ninvoke = ["opencode", "run"]',
+            ),
+            "exactly the keys",
+        ),
+        (
+            _mutated(
+                'status = "planned"\nrole = "proxy"',
+                'status = "planned"\nrole = "proxy"\nname = "envoy"',
+            ),
+            "planned artifacts declare only",
+        ),
+        (
+            _mutated(
+                'source = "https://github.com/apple/container/releases/download/1.1.0/container-1.1.0-installer-signed.pkg"\n',
+                "",
+            ),
+            "declare exactly",
+        ),
+    ],
+    ids=[
+        "invalid-toml",
+        "missing-artifact-key",
+        "artifact-not-array",
+        "artifact-row-not-table",
+        "bad-artifact-id",
+        "bad-status",
+        "bad-role",
+        "bad-kind",
+        "bad-package-name",
+        "unknown-harness",
+        "consumers-not-array",
+        "consumers-bad-reference",
+        "version-not-string",
+        "bad-session-event",
+        "interface-extra-key",
+        "planned-extra-key",
+        "pinned-missing-source",
+    ],
+)
+def test_inventory_parser_fails_closed_on_malformed_documents(data: bytes, match: str) -> None:
+    with pytest.raises(VersionPinError, match=match):
+        parse_version_inventory(data)

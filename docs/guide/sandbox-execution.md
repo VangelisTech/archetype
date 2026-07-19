@@ -296,11 +296,17 @@ The evidence phase records safe effective-version evidence in the attempt
 manifest under `environment`: the inventory content digest, the pinned
 harness identity with an observed `--version` probe, the model, the
 checkpoint provider, and the configuration digest already used for claim
-identity. Adapters extend it through `_runtime_version_evidence()` with
-their SDK, runtime image, collector, and proxy identities. Evidence values
-are names, exact versions, and digests only; install sources, tokens, and
-private registry credentials never enter version evidence, and the manifest
-still passes the durable redaction gate like every other artifact source.
+identity. The probe executes in the same non-secret controlled environment
+as the pinned agent invocation — auto-updates stay disabled and the managed
+config location applies — so the observed version describes the install
+that ran the attempt, and probing cannot trigger updater side effects. The
+provider-neutral kernel records an empty `runtime` map; a concrete provider
+adapter (#563, #564) must override `_runtime_version_evidence()` with its
+SDK, runtime image, collector, and proxy identities before its attempts can
+claim runtime attribution. Evidence values are names, exact versions, and
+digests only; install sources, tokens, and private registry credentials
+never enter version evidence, and the manifest still passes the durable
+redaction gate like every other artifact source.
 
 Upgrading a pin is an explicit procedure, not a background drift:
 
