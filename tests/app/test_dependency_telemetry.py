@@ -25,6 +25,7 @@ _ENVIRONMENT_KEYS = (
     "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
     "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
     "OTEL_EXPORTER_OTLP_PROTOCOL",
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_RESOURCE_ATTRIBUTES",
@@ -38,6 +39,7 @@ def _isolated_host_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None
     for name in _ENVIRONMENT_KEYS:
         monkeypatch.delenv(name, raising=False)
     _dependency_telemetry._pending_diagnostics.clear()
+    monkeypatch.setattr(_dependency_telemetry, "_last_routed_traces_endpoint", None)
     monkeypatch.setattr(_dependency_telemetry, "sys", SimpleNamespace(modules={}))
     yield
     _dependency_telemetry._pending_diagnostics.clear()
@@ -261,6 +263,73 @@ def test_trace_specific_endpoint_has_precedence_over_generic(
 
 
 @pytest.mark.parametrize(
+    ("source_variable", "first_value", "second_value", "first_expected", "second_expected"),
+    [
+        (
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "https://first.example/otlp",
+            "https://second.example/otlp",
+            "https://first.example/otlp/v1/traces",
+            "https://second.example/otlp/v1/traces",
+        ),
+        (
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "https://first.example/v1/traces",
+            "https://second.example/v1/traces",
+            "https://first.example/v1/traces",
+            "https://second.example/v1/traces",
+        ),
+    ],
+)
+def test_repeated_prepare_consumes_later_standard_trace_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    source_variable: str,
+    first_value: str,
+    second_value: str,
+    first_expected: str,
+    second_expected: str,
+) -> None:
+    monkeypatch.setenv(source_variable, first_value)
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] == first_expected
+    assert source_variable not in _dependency_telemetry.os.environ
+
+    monkeypatch.setenv(source_variable, second_value)
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] == second_expected
+    assert source_variable not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == ()
+
+
+def test_changed_private_trace_endpoint_wins_over_later_standard_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://first.example/otlp")
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    monkeypatch.setenv(
+        "ARCHETYPE_OTLP_TRACES_ENDPOINT",
+        "https://private.example/v1/traces",
+    )
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://later.example/v1/traces",
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["ARCHETYPE_OTLP_TRACES_ENDPOINT"] == (
+        "https://private.example/v1/traces"
+    )
+    assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == ()
+
+
+@pytest.mark.parametrize(
     "variable",
     [
         "ARCHETYPE_OTLP_TRACES_ENDPOINT",
@@ -331,6 +400,61 @@ def test_noncanonical_metrics_protocol_is_rejected(
 ) -> None:
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: True,
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT" not in _dependency_telemetry.os.environ
+    assert _dependency_telemetry.take_diagnostics() == (
+        "Unsupported Daft metrics telemetry configuration was removed.",
+    )
+
+
+@pytest.mark.parametrize(
+    ("generic_protocol", "metrics_protocol"),
+    [
+        ("grpc", "http/protobuf"),
+        ("http/json", "grpc"),
+    ],
+)
+def test_signal_specific_metrics_protocol_is_validated_and_translated_for_daft(
+    monkeypatch: pytest.MonkeyPatch,
+    generic_protocol: str,
+    metrics_protocol: str,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", generic_protocol)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", metrics_protocol)
+    monkeypatch.setattr(
+        _dependency_telemetry,
+        "_daft_native_metrics_are_validated",
+        lambda: True,
+    )
+
+    _dependency_telemetry.prepare_dependency_telemetry()
+
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"] == (
+        "http://metrics.example:4317"
+    )
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] == metrics_protocol
+    assert _dependency_telemetry.os.environ["OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"] == (
+        metrics_protocol
+    )
+    assert _dependency_telemetry.take_diagnostics() == ()
+
+
+@pytest.mark.parametrize("metrics_protocol", ["http/json", "GRPC", " HTTP/PROTOBUF "])
+def test_unsupported_signal_specific_metrics_protocol_rejects_native_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    metrics_protocol: str,
+) -> None:
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics.example:4317")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", metrics_protocol)
     monkeypatch.setattr(
         _dependency_telemetry,
         "_daft_native_metrics_are_validated",

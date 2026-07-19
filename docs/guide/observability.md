@@ -162,22 +162,29 @@ Daft, the package host therefore applies this signal-routing contract:
 | Host setting | Owner and behavior |
 |---|---|
 | `ARCHETYPE_OTLP_TRACES_ENDPOINT` | Full HTTP/protobuf traces endpoint consumed only by Archetype's filtered exporter. This is the preferred explicit setting. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | Compatibility input consumed once, converted to its `/v1/traces` endpoint, and removed from the process and inherited worker environment. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Compatibility input converted to its `/v1/traces` endpoint and removed from the process and inherited worker environment. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Compatibility input consumed as Archetype's full traces endpoint and then removed. |
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | The only supported Daft-native opt-in. It exports physical engine metrics directly through Daft and is never re-emitted as Archetype metrics. |
+| `OTEL_EXPORTER_OTLP_METRICS_PROTOCOL` | Metrics-specific compatibility input. When native metrics are enabled, it takes precedence over the generic protocol and is copied to the generic setting consumed by the pinned Daft version. |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` or `DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT` | Unsupported content-bearing dependency routes; removed before Daft initialization. |
 
 The consumed generic/log/trace variables are not restored: a later local,
 spawned, or distributed Daft worker that inherits this host environment must
 not recreate the unsafe providers. Externally managed workers require the same
-endpoint policy in their own launch environment. When native metrics are
-requested, arbitrary `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` values
+endpoint policy in their own launch environment. The host remembers the private
+trace endpoint value it last routed: a standard endpoint supplied at a later
+explicit host check replaces that retained value, while a changed private
+endpoint remains an explicit override. When native metrics are requested,
+arbitrary `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` values
 are removed before Daft import; Daft uses its fixed default service identity.
 Daft metrics are enabled only for versions named in the fresh-process
 compatibility matrix (currently exactly 0.7.19), and accept only `grpc` or
-`http/protobuf`, spelled exactly as Daft parses them; an unvalidated version,
-empty/malformed endpoint, or another protocol is removed so telemetry
-configuration cannot make application import fail. The next explicit host
+`http/protobuf`, spelled exactly as Daft parses them. The metrics-specific
+protocol takes precedence over the generic protocol. Daft 0.7.19 reads only
+the generic variable, so the host copies a valid metrics-specific value there
+before import. An unvalidated version, empty/malformed endpoint, or another
+effective protocol is removed so telemetry configuration cannot make
+application import fail. The next explicit host
 configuration emits a fixed diagnostic without the rejected value. Transport
 headers remain operator-owned exporter configuration and are never copied into
 Archetype signal attributes. Native Daft metrics are uncompressed because the

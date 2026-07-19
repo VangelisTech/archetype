@@ -525,11 +525,12 @@ def test_generic_archetype_traces_and_explicit_daft_metrics_stay_separate() -> N
     assert _PAYLOAD_CANARY not in exported_metrics
 
 
-def test_metrics_specific_http_protobuf_transport_is_supported() -> None:
+def test_signal_specific_metrics_protocol_is_translated_for_daft() -> None:
     with _metrics_http_receiver() as (endpoint, captured):
         completed = _run_daft_failure(
             OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=endpoint,
-            OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf",
+            OTEL_EXPORTER_OTLP_PROTOCOL="grpc",
+            OTEL_EXPORTER_OTLP_METRICS_PROTOCOL="http/protobuf",
             OTEL_METRIC_EXPORT_INTERVAL="10",
             OTEL_RESOURCE_ATTRIBUTES="unsafe.label=resource-canary",
         )

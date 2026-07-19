@@ -21,7 +21,7 @@ import pytest
 from opentelemetry import context, trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from uuid_utils import uuid7
@@ -136,6 +136,145 @@ def test_safe_otlp_exporter_keeps_filter_until_active_export_returns(caplog):
     assert "late-response-body-canary" not in caplog.text
     assert [record.getMessage() for record in caplog.records] == [
         "OTLP trace export failed; telemetry was dropped.",
+    ]
+
+
+def test_safe_otlp_exporter_success_closed_state_and_constructor_cleanup():
+    dependency_logger = logging.getLogger(_obs._OTLP_EXPORT_LOGGERS[0])
+    original_filters = tuple(dependency_logger.filters)
+
+    class SuccessfulExporter:
+        instance = None
+
+        def __init__(self, *, endpoint):
+            self.shutdown_calls = 0
+            type(self).instance = self
+
+        def export(self, spans):
+            return SpanExportResult.SUCCESS
+
+        def force_flush(self, timeout_millis):
+            return True
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    exporter = _obs._safe_otlp_http_exporter(
+        SuccessfulExporter,
+        endpoint="http://collector.invalid/v1/traces",
+    )
+
+    assert exporter.export(()) is SpanExportResult.SUCCESS
+    assert exporter.force_flush() is True
+    exporter.shutdown()
+    assert exporter.export(()) is SpanExportResult.FAILURE
+    assert exporter.force_flush() is False
+    assert SuccessfulExporter.instance is not None
+    assert SuccessfulExporter.instance.shutdown_calls == 1
+    assert tuple(dependency_logger.filters) == original_filters
+
+    class ConstructorFailure:
+        def __init__(self, *, endpoint):
+            raise RuntimeError("constructor failure")
+
+    with pytest.raises(RuntimeError, match="constructor failure"):
+        _obs._safe_otlp_http_exporter(
+            ConstructorFailure,
+            endpoint="http://collector.invalid/v1/traces",
+        )
+    assert tuple(dependency_logger.filters) == original_filters
+
+
+def test_configure_tracing_cleans_rejected_otlp_and_console_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from opentelemetry.exporter.otlp.proto.http import trace_exporter
+
+    class TrackingExporter(SpanExporter):
+        instances = []
+
+        def __init__(self, *, endpoint):
+            self.shutdown_calls = 0
+            type(self).instances.append(self)
+
+        def export(self, spans):
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    candidates = []
+
+    def reject(candidate):
+        candidates.append(candidate)
+        candidate.shutdown()
+        return False
+
+    monkeypatch.setattr(_obs, "_configured", False)
+    monkeypatch.setattr(
+        _obs,
+        "archetype_traces_endpoint",
+        lambda: "http://collector.invalid/v1/traces",
+    )
+    monkeypatch.setattr(_obs, "take_diagnostics", lambda: ("Fixed host diagnostic.",))
+    monkeypatch.setattr(_obs.trace, "get_tracer_provider", trace.ProxyTracerProvider)
+    monkeypatch.setattr(_obs, "_install_candidate", reject)
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", TrackingExporter)
+    caplog.set_level(logging.WARNING)
+
+    _obs.configure_tracing(service_name="archetype-test", debug_console=True)
+
+    assert _obs._configured is False
+    assert len(candidates) == 2
+    assert len(TrackingExporter.instances) == 1
+    assert TrackingExporter.instances[0].shutdown_calls == 1
+    assert "Fixed host diagnostic." in [record.getMessage() for record in caplog.records]
+
+
+def test_configure_tracing_shuts_down_exporter_when_processor_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from opentelemetry.exporter.otlp.proto.http import trace_exporter
+    from opentelemetry.sdk.trace import export as trace_export
+
+    class TrackingExporter(SpanExporter):
+        instance = None
+
+        def __init__(self, *, endpoint):
+            self.shutdown_calls = 0
+            type(self).instance = self
+
+        def export(self, spans):
+            return SpanExportResult.SUCCESS
+
+        def shutdown(self):
+            self.shutdown_calls += 1
+
+    class FailingProcessor:
+        def __init__(self, exporter):
+            raise RuntimeError("processor construction failure")
+
+    monkeypatch.setattr(_obs, "_configured", False)
+    monkeypatch.setattr(
+        _obs,
+        "archetype_traces_endpoint",
+        lambda: "http://collector.invalid/v1/traces",
+    )
+    monkeypatch.setattr(_obs, "take_diagnostics", lambda: ())
+    monkeypatch.setattr(_obs.trace, "get_tracer_provider", trace.ProxyTracerProvider)
+    monkeypatch.setattr(trace_exporter, "OTLPSpanExporter", TrackingExporter)
+    monkeypatch.setattr(trace_export, "BatchSpanProcessor", FailingProcessor)
+    caplog.set_level(logging.WARNING)
+
+    _obs.configure_tracing(service_name="archetype-test")
+
+    assert _obs._configured is False
+    assert TrackingExporter.instance is not None
+    assert TrackingExporter.instance.shutdown_calls == 1
+    assert "OTLP telemetry initialization failed; tracing remains retryable." in [
+        record.getMessage() for record in caplog.records
     ]
 
 

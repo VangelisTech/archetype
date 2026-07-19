@@ -42,6 +42,7 @@ _LOGS_ENDPOINT = "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"
 _METRICS_ENDPOINT = "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"
 _DEPRECATED_DAFT_ENDPOINT = "DAFT_DEV_OTEL_EXPORTER_OTLP_ENDPOINT"
 _PROTOCOL = "OTEL_EXPORTER_OTLP_PROTOCOL"
+_METRICS_PROTOCOL = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"
 _GENERIC_COMPRESSION = "OTEL_EXPORTER_OTLP_COMPRESSION"
 _METRICS_COMPRESSION = "OTEL_EXPORTER_OTLP_METRICS_COMPRESSION"
 _METRICS_INTERVAL = "OTEL_METRIC_EXPORT_INTERVAL"
@@ -71,6 +72,7 @@ _TRACES_DISABLED_DIAGNOSTIC = "Unsupported Archetype OTLP trace configuration wa
 
 _lock = RLock()
 _pending_diagnostics: set[str] = set()
+_last_routed_traces_endpoint: str | None = None
 
 _ENDPOINT_RE = re.compile(r"[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,2048}")
 _HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?")
@@ -157,6 +159,7 @@ def prepare_dependency_telemetry() -> None:
     safe to repeat at explicit host configuration points so endpoint values set
     after package import are consumed before later Archetype imports.
     """
+    global _last_routed_traces_endpoint
     try:
         with _lock:
             unsafe_present = any(name in os.environ for name in _CONTENT_BEARING_ENDPOINTS)
@@ -165,13 +168,17 @@ def prepare_dependency_telemetry() -> None:
             private_endpoint_present = _ARCHETYPE_TRACES_ENDPOINT in os.environ
             generic_endpoint_present = _GENERIC_ENDPOINT in os.environ
             traces_endpoint_present = _TRACES_ENDPOINT in os.environ
+            private_endpoint = os.environ.get(_ARCHETYPE_TRACES_ENDPOINT)
             generic_endpoint = os.environ.get(_GENERIC_ENDPOINT)
             traces_endpoint = os.environ.get(_TRACES_ENDPOINT)
             trace_configuration_present = (
                 private_endpoint_present or generic_endpoint_present or traces_endpoint_present
             )
-            candidate_endpoint = os.environ.get(_ARCHETYPE_TRACES_ENDPOINT)
-            if not private_endpoint_present:
+            candidate_endpoint = private_endpoint
+            private_endpoint_changed = (
+                private_endpoint_present and private_endpoint != _last_routed_traces_endpoint
+            )
+            if not private_endpoint_changed:
                 if traces_endpoint_present:
                     candidate_endpoint = traces_endpoint
                 elif generic_endpoint_present:
@@ -180,9 +187,13 @@ def prepare_dependency_telemetry() -> None:
             if trace_configuration_present:
                 if candidate_endpoint and _valid_otlp_endpoint(candidate_endpoint):
                     os.environ[_ARCHETYPE_TRACES_ENDPOINT] = candidate_endpoint
+                    _last_routed_traces_endpoint = candidate_endpoint
                 else:
                     os.environ.pop(_ARCHETYPE_TRACES_ENDPOINT, None)
+                    _last_routed_traces_endpoint = None
                     _pending_diagnostics.add(_TRACES_DISABLED_DIAGNOSTIC)
+            else:
+                _last_routed_traces_endpoint = None
 
             for name in _CONTENT_BEARING_ENDPOINTS:
                 os.environ.pop(name, None)
@@ -213,7 +224,12 @@ def prepare_dependency_telemetry() -> None:
                 for name in _RESOURCE_CONFIGURATION:
                     os.environ.pop(name, None)
 
-            protocol = os.environ.get(_PROTOCOL, "grpc")
+            metrics_specific_protocol = os.environ.get(_METRICS_PROTOCOL)
+            protocol = (
+                metrics_specific_protocol
+                if metrics_specific_protocol is not None
+                else os.environ.get(_PROTOCOL, "grpc")
+            )
             if metrics_endpoint is not None:
                 if not _daft_native_metrics_are_validated():
                     os.environ.pop(_METRICS_ENDPOINT, None)
@@ -226,6 +242,11 @@ def prepare_dependency_telemetry() -> None:
                     os.environ.pop(_METRICS_ENDPOINT, None)
                     _pending_diagnostics.add(_METRICS_DISABLED_DIAGNOSTIC)
                     metrics_rejected = True
+                elif metrics_specific_protocol is not None:
+                    # Daft 0.7.19 reads only the generic protocol variable.
+                    # Translate the standard signal-specific precedence into
+                    # the exact value its pinned native provider consumes.
+                    os.environ[_PROTOCOL] = metrics_specific_protocol
 
             if unsafe_present and daft_already_loaded:
                 _pending_diagnostics.add(_LATE_DAFT_DIAGNOSTIC)
