@@ -23,12 +23,9 @@ For a checkout, install the development environment with `make sync-dev`.
 
 ## Run a simulation
 
-The example below steps a chaotic function for a few ticks, forks the world,
-and changes one value in the fork by 1e-9. Both branches then run forward, and
-the divergence between them comes from joining the two stored histories tick
-by tick. Every tick persists as immutable rows, so comparing two runs is a
-query over history, not a second experiment. The optional last stage hands the
-measured divergence to an LLM agent for review.
+The example runs a chaotic map, forks the world, and nudges the fork's state
+by 1e-9. Both branches run forward. Every tick persists as immutable rows, so
+the divergence is a join over the two histories, not a re-run.
 
 ```python
 import asyncio
@@ -41,7 +38,6 @@ from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 class Node(Component):
-    r: float = 3.9999  # chaotic regime of the logistic map
     x: float = 0.5
 
 
@@ -50,7 +46,7 @@ class LogisticMap(AsyncProcessor):
 
     async def process(self, df: DataFrame, **_) -> DataFrame:
         x = col("node__x")
-        return df.with_column("node__x", col("node__r") * x * (1.0 - x))
+        return df.with_column("node__x", 3.9999 * x * (1.0 - x))
 
 
 class Analyst(Component):
@@ -62,69 +58,59 @@ class Review(AsyncProcessor):
     components = (Analyst,)
 
     async def process(self, df: DataFrame, **_) -> DataFrame:
-        question = (
-            "Two runs of one simulation diverged after a 1e-9 nudge: "
-            + col("analyst__evidence")
-            + "\nIn one sentence: what kind of system is this?"
-        )
-        return df.with_column("analyst__verdict", prompt(question, model="gpt-5-mini"))
+        ask = "In one sentence, what does this divergence imply? " + col("analyst__evidence")
+        return df.with_column("analyst__verdict", prompt(ask, model="gpt-5-mini"))
 
 
 async def main() -> None:
     async with ArchetypeRuntime() as runtime:
         prime = runtime.world("prime", processors=[LogisticMap()])
         node = await prime.spawn(Node())
-        await prime.step()  # tick 0 persists the raw initial conditions
-        await prime.run(steps=12)
+        await prime.run(steps=13)
 
-        # Fork the world; change one value in the fork by 1e-9.
-        last = (await prime.info()).tick - 1
-        x = (await prime.query(Node)).where(col("tick") == last).to_pylist()[0]["node__x"]
+        # Fork at tick 12; nudge the fork.
+        x12 = (await prime.query(Node)).where(col("tick") == 12).to_pylist()[0]["node__x"]
         fork = await prime.fork("nudged")
-        await fork.update(node, Node(x=x + 1e-9))
-
+        await fork.update(node, Node(x=x12 + 1e-9))
         await prime.run(steps=24)
-        await fork.run(steps=25)  # the update persists first; processors apply next tick
+        await fork.run(steps=25)  # updates persist first, so the fork runs one tick behind
 
-        # Compare the two runs by joining their stored histories tick by tick.
-        a = (await prime.query(Node)).select(
-            (col("tick") - last).alias("k"), col("node__x").alias("a")
-        )
-        b = (await fork.query(Node)).select(
-            (col("tick") - last - 1).alias("k"), col("node__x").alias("b")
+        # The counterfactual is a join of the two histories.
+        base = (await prime.query(Node)).select("tick", "node__x")
+        nudged = (await fork.query(Node)).select(
+            (col("tick") - 1).alias("tick"), col("node__x").alias("nudged")
         )
         deltas = (
-            a.join(b, on="k")
-            .where(col("k") >= 0)
-            .with_column("delta", (col("a") - col("b")).abs())
-            .sort("k")
+            base.join(nudged, on="tick")
+            .where(col("tick") >= 12)
+            .with_column("delta", (col("node__x") - col("nudged")).abs())
+            .sort("tick")
             .to_pylist()
         )
-        print("  ".join(f"k={row['k']}: {row['delta']:.0e}" for row in deltas[::6]))
+        print("  ".join(f"t{r['tick']}: {r['delta']:.0e}" for r in deltas[::6]))
 
-        # Optional: an LLM agent reviews the divergence. Its verdict is stored
-        # as world state like everything else.
+        # Optional: an agent reviews the divergence. Its verdict is world state too.
         if os.getenv("OPENAI_API_KEY"):
             analyst = runtime.world("analyst", processors=[Review()])
-            evidence = ", ".join(f"tick {row['k']}: {row['delta']:.1e}" for row in deltas)
-            await analyst.spawn(Analyst(evidence=evidence))
-            await analyst.run(steps=2)  # spawned rows persist first; Review runs next tick
-            report = await analyst.query(Analyst)
-            print(report.where(col("tick") == 1).to_pylist()[0]["analyst__verdict"])
+            await analyst.spawn(Analyst(evidence=", ".join(f"{r['delta']:.0e}" for r in deltas)))
+            await analyst.run(steps=2)
+            report = (await analyst.query(Analyst)).where(col("tick") == 1)
+            print(report.to_pylist()[0]["analyst__verdict"])
 
 
 asyncio.run(main())
 ```
 
 ```text
-k=0: 1e-09  k=6: 3e-08  k=12: 1e-06  k=18: 3e-04  k=24: 2e-02
+t12: 1e-09  t18: 3e-08  t24: 1e-06  t30: 3e-04  t36: 2e-02
 ```
 
-The nudge doubles every tick. The agent stage is optional — without
-`OPENAI_API_KEY` the script prints the divergence and stops. The full
-three-regime version of the counterfactual lives in
-[`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py);
-richer agent patterns in [`examples/05_llm_agents.py`](examples/05_llm_agents.py).
+The nudge doubles every tick. Without `OPENAI_API_KEY`, the script prints the
+divergence and skips the agent.
+[`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py)
+runs three regimes;
+[`examples/05_llm_agents.py`](examples/05_llm_agents.py) shows richer agent
+patterns.
 
 For a regular script without `async`, use `with ArchetypeRuntime.sync() as
 runtime:` and omit `await`.
