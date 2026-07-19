@@ -157,7 +157,22 @@ surfaces to remove after the artifact-family cutover.
 
 Scripts own stdout. `ARCHETYPE_LOG=debug|info|warning|error` or
 `ArchetypeRuntime(log=...)` configures the `archetype` logger at the runtime
-boundary. Core and app layers emit records but configure no handlers.
+boundary. Core and app layers emit records but configure no handlers. Imports
+remain silent. At construction an otherwise unconfigured runtime owns at most
+one package handler: a null handler by default, or a stderr handler when
+logging is enabled. A later default runtime preserves an already enabled
+handler. The adapter does not alter root logging, the global `LogRecordFactory`,
+or foreign handlers and filters, so machine-readable stdout remains
+deterministic.
+
+When logging is enabled, the owned handler's fail-open filter replaces reserved
+correlation fields with the active lowercase trace/span IDs and the validated
+safe signal context. Callers cannot forge those fields through `extra`; with no
+active context the fields are absent. Its formatter omits exception and stack
+metadata from its own stderr rendering and substitutes placeholders for
+non-primitive arguments, then restores those producer fields for later
+host-owned handlers. Correlation fields remain enriched. Producer-side policy
+remains responsible for sensitive text already supplied as a primitive string.
 
 Tracing uses the OpenTelemetry API. A host-registered provider is respected;
 optional Logfire or OTLP backends are selected only at the host/runtime

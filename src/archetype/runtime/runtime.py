@@ -17,15 +17,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 from pathlib import Path
 from typing import Any
 from weakref import WeakSet
 
 from uuid_utils import UUID
 
-from archetype import _obs
+from archetype._logging import configure_host_observability
 from archetype.app.application.interfaces import iRuntimeApplication
 from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.container import ServiceContainer
@@ -34,38 +32,6 @@ from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
 from archetype.runtime.world import RuntimeWorld, SyncRuntimeWorld, _RuntimeWorldState
-
-_LOG_LEVELS = {
-    "debug": logging.DEBUG,
-    "info": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
-}
-
-
-def _resolve_log_level(env: str | None = None) -> int | None:
-    """Map ARCHETYPE_LOG (or an explicit override) to a stdlib level."""
-    value = (env if env is not None else os.environ.get("ARCHETYPE_LOG", "")).strip().lower()
-    return _LOG_LEVELS.get(value)
-
-
-def _configure_archetype_logging(level: int) -> None:
-    """Wire the ``archetype`` logger hierarchy at the script boundary.
-
-    Every layer emits on module loggers and never configures handlers; the
-    runtime is the application boundary, so the one user-facing flag lives
-    here. Root logging is left untouched.
-    """
-    pkg_logger = logging.getLogger("archetype")
-    pkg_logger.setLevel(level)
-    if not pkg_logger.handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter("%(levelname).1s %(name)s: %(message)s"))
-        pkg_logger.addHandler(handler)
-        # This handler now owns archetype records. Without this, a host that
-        # configured root logging (basicConfig, a Logfire root handler, ...)
-        # would emit every record a second time through the root sinks.
-        pkg_logger.propagate = False
 
 
 class ArchetypeRuntime:
@@ -100,21 +66,12 @@ class ArchetypeRuntime:
             artifact_source_resolver: Optional provider resolver used to copy
                 immutable sandbox references into portable bundle objects.
         """
-        # One user-facing verbosity flag: ARCHETYPE_LOG=debug|info|warning|error
-        # (or ArchetypeRuntime(log=...)). It wires the stdlib "archetype"
-        # logger hierarchy, and at debug it also turns on console span output.
-        # Quiet is the default: span walls interleave with script output and
-        # drown the program's own voice — legibility of the script wins.
-        level = _resolve_log_level(log)
-        if level is not None:
-            _configure_archetype_logging(level)
-
-        # Tracing is vendor-neutral OpenTelemetry (see archetype._obs):
-        # a host-registered provider is respected, LOGFIRE_*/OTEL_* env vars
-        # select a backend, and with neither the API stays a no-op.
-        _obs.configure_tracing(
+        # This constructor is an explicit trusted-script process host. Quiet
+        # remains the default; stdlib logging and vendor-neutral tracing are
+        # configured together only here, never by an imported family module.
+        configure_host_observability(
             service_name="archetype-runtime",
-            debug_console=level == logging.DEBUG,
+            log=log,
         )
 
         self._container = ServiceContainer(

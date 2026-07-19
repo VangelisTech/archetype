@@ -131,9 +131,13 @@ Forbidden reverse edges include:
 Core and application families may emit only through the private,
 vendor-neutral `archetype._obs` API and stdlib logging. They may not import an
 OTel SDK, exporter, collector, or vendor package. Runtime and server process
-hosts own provider/exporter and handler configuration. Because core imports
-`_obs`, the signal boundary cannot import the application redaction family; it
-uses the closed schema defined by the normative
+hosts own provider/exporter and handler configuration. Module import and API
+factory construction are not host boundaries; trusted runtime construction,
+CLI server startup, and worker lifespan are. The host adapter may attach its
+filter only to its own package handler and may not replace the global
+`LogRecordFactory` or mutate root logging. Because core imports `_obs`, the
+signal boundary cannot import the application redaction family; it uses the
+closed schema defined by the normative
 [Observability contract](observability.md). Content-bearing outer adapters
 still consume the redaction port before their own durable or external write.
 

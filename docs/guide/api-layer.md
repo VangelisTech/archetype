@@ -13,6 +13,7 @@ used by the trusted runtime.
 ```python
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_host_observability(service_name="archetype-api")
     container = get_container()
     try:
         yield
@@ -20,6 +21,12 @@ async def lifespan(app: FastAPI):
         await container.shutdown()
         set_container(None)
 ```
+
+Imports and `create_app()` perform no logging or telemetry setup. Each worker
+configures its host from the lifespan path, which keeps reload and multi-worker
+startup explicit and idempotent. The factory does not automatically invoke
+Logfire FastAPI instrumentation; optional Logfire or OTLP export is selected
+through the vendor-neutral host adapter.
 
 All worlds live in the server event loop. CLI invocations and remote clients talk to that process over HTTP.
 
@@ -140,6 +147,10 @@ The route does not construct a lifecycle command or bypass the gate.
 ## CLI
 
 The CLI (`archetype` command) is a thin HTTP client.
+
+`serve` is the sole CLI process-host path: it configures observability before
+starting Uvicorn. Every other CLI command remains an HTTP client and performs
+no local provider or handler setup.
 
 ```text
 archetype serve              Starts uvicorn with the FastAPI app

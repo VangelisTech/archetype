@@ -13,6 +13,22 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "observability.logging.correlated"
+source = "docs/guide/observability.md"
+section = "5. Process-host ownership"
+owner = "observability"
+risk = "medium"
+pytest = [
+    "tests/app/test_logging_contracts.py",
+    "tests/app/test_logging_process.py",
+    "tests/contrib/test_logfire_observer.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "sandboxes.attempt.phase_order"
 source = "docs/guide/sandbox-execution.md"
 section = "3. Six-phase attempt protocol"
