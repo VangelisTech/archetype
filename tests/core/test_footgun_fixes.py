@@ -275,6 +275,13 @@ def test_runtime_send_to_logfire_with_token_env(monkeypatch):
     monkeypatch.delenv("LOGFIRE_SEND_TO_LOGFIRE", raising=False)
     monkeypatch.delenv("ARCHETYPE_LOG", raising=False)
     monkeypatch.setattr(_obs, "_configured", False)
+    # The first-host contract also requires the process-global provider proxy;
+    # another xdist-selected test may have installed a provider in this worker.
+    monkeypatch.setattr(
+        _obs.trace,
+        "get_tracer_provider",
+        _obs.trace.ProxyTracerProvider,
+    )
 
     captured: dict = {}
     monkeypatch.setattr(logfire, "configure", lambda **kwargs: captured.update(kwargs))
