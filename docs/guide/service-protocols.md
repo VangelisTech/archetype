@@ -257,11 +257,13 @@ concrete service remains internal, and `ServiceContainer` remains unsupported.
 The top-level family never imports that port in return. Public classification
 is explicit and is not inferred from either side of the annotation.
 
-Current paths that predate this rule are migration state, not alternate
-ownership:
+The artifacts family completed this migration under #558: `ArtifactMeta` and
+`AssetRef` live in `archetype.artifacts.components`, the typed-table and
+content-addressing contracts live in `archetype.artifacts.contracts`, and the
+bundle value contracts live in `archetype.artifacts.bundles`. Current paths
+that predate this rule are migration state, not alternate ownership:
 
 - evaluation receipt Components and value contracts move under #557;
-- artifact Components and reusable bundle/value contracts move under #558;
 - research ledger Components and runner imports move under #585, trajectory
   recorder imports under #586, and physical-AI rollout/sweep orchestration
   under #589, as adjudicated by #561; and

@@ -17,10 +17,7 @@ from urllib.parse import unquote, urlparse
 
 import pytest
 
-from archetype.app.artifacts.bundle_models import (
-    ArtifactStoreConfig,
-    PreparedArtifactBundleRequest,
-)
+from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
 from archetype.app.artifacts.bundle_service import _ARTIFACT_INDEX_TABLE
 from archetype.app.container import ServiceContainer
 from archetype.app.missions import (
@@ -35,6 +32,7 @@ from archetype.app.storage.catalog import (
     artifact_publication_key,
     catalog_path_for,
 )
+from archetype.artifacts.bundles import ArtifactStoreConfig
 from archetype.core.config import StorageConfig, WorldConfig
 from archetype.missions import AttemptStatus, FinalizationPhase
 

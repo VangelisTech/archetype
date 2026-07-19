@@ -141,6 +141,7 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - storage family: `src/archetype/app/storage/`
 - query family: `src/archetype/app/query/`
 - artifacts: `src/archetype/app/artifacts/`
+- artifact domain contracts and schemas: `src/archetype/artifacts/`
 - evaluation: `src/archetype/app/evaluation/`
 - research: `src/archetype/app/research/`
 - audit: `src/archetype/app/audit/`

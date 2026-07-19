@@ -56,6 +56,11 @@ reserved_infrastructure = [
 # exact lower family here, and the complete graph must remain acyclic.
 
 [[top_level_family_rule]]
+name = "artifacts-domain-family"
+consumer = "archetype.artifacts"
+allowed_families = []
+
+[[top_level_family_rule]]
 name = "datasets-domain-family"
 consumer = "archetype.datasets"
 allowed_families = []
@@ -292,7 +297,6 @@ allowed_interfaces = [
   "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
-  "archetype.app.artifacts.models",
   "archetype.app.storage.iceberg",
 ]
 
@@ -303,7 +307,6 @@ allowed_interfaces = [
   "archetype.app.world.interfaces.iWorldService",
 ]
 allowed_app = [
-  "archetype.app.artifacts.models",
   "archetype.app.storage.catalog",
 ]
 
@@ -560,26 +563,6 @@ owner = "evaluation"
 issue = 557
 reason = "EvalReceipt is persistent ECS schema still colocated with evaluation app authority."
 expiry_condition = "Remove when #557 moves EvalReceipt to archetype.evaluation.components without duplicating its class identity."
-expires = "v0.5"
-
-[[exception]]
-rule = "app_component_model"
-consumer = "archetype.app.artifacts.models"
-target = "archetype.app.artifacts.models.ArtifactMeta"
-owner = "artifacts"
-issue = 558
-reason = "ArtifactMeta is persistent ECS schema still colocated with artifact app authority."
-expiry_condition = "Remove when #558 moves ArtifactMeta to archetype.artifacts.components without duplicating its class identity."
-expires = "v0.5"
-
-[[exception]]
-rule = "app_component_model"
-consumer = "archetype.app.artifacts.models"
-target = "archetype.app.artifacts.models.AssetRef"
-owner = "artifacts"
-issue = 558
-reason = "AssetRef is persistent ECS schema still colocated with artifact app authority."
-expiry_condition = "Remove when #558 moves AssetRef to archetype.artifacts.components without duplicating its class identity."
 expires = "v0.5"
 
 [[exception]]

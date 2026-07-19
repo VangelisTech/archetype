@@ -1,0 +1,1129 @@
+{
+  "schema_version": 1,
+  "kind": "eval",
+  "profile": "conformance",
+  "suites": [
+    "regression",
+    "spec"
+  ],
+  "failure_policy": "every required task and every trial passes",
+  "started_at": "2026-07-19T22:16:48.092619Z",
+  "duration_s": 0.859716,
+  "outcome": "passed",
+  "revision": {
+    "commit": "dbecb456d22816cb5bda17654bdcd80401b7e212",
+    "dirty": false
+  },
+  "environment": {
+    "runner_id": "Everetts-MacBook-Pro.local",
+    "system": "Darwin",
+    "release": "25.5.0",
+    "machine": "arm64",
+    "python_implementation": "CPython",
+    "python_version": "3.12.12",
+    "packages": {
+      "archetype-ecs": "0.4.1",
+      "daft": "0.7.19",
+      "lancedb": "0.30.2",
+      "pyiceberg": "0.11.0",
+      "pytest": "9.0.3"
+    }
+  },
+  "invocation": [
+    "/Users/everettkleven/conductor/workspaces/archetype/havana/evals/run.py",
+    "--profile",
+    "conformance",
+    "--out",
+    "eval-conformance-results.json"
+  ],
+  "configuration": {
+    "trials": 1,
+    "seed": null
+  },
+  "results": [
+    {
+      "task_id": "component_serde",
+      "suite": "regression",
+      "contract_ids": [
+        "core.ecs.data_model"
+      ],
+      "desc": "Component serialization round-trip (row_dict, prefix, schema)",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0001,
+          "error": null,
+          "graders": [
+            {
+              "name": "row_dict_values",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "prefix_format",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "schema_fields",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "archetype_signatures",
+      "suite": "regression",
+      "contract_ids": [
+        "core.ecs.data_model"
+      ],
+      "desc": "Signature stability, set operations, naming, schema composition",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0001,
+          "error": null,
+          "graders": [
+            {
+              "name": "order_invariant",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "sorted_order",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "remove_op",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "name_stable",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "name_unique",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "schema_completeness",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "row_hp",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "row_label",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "row_entity_id",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "rbac_enforcement",
+      "suite": "regression",
+      "contract_ids": [
+        "gateway.authorization.rbac"
+      ],
+      "desc": "RBAC allows/denies per role, token costs, default role",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0001,
+          "error": null,
+          "graders": [
+            {
+              "name": "admin_spawn",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "admin_add_processor",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "viewer_denied_spawn",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "viewer_denied_despawn",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "player_spawn",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "player_denied_add_processor",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "token_costs_positive",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "default_role_viewer",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "command_ordering",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.identity.idempotent"
+      ],
+      "desc": "Command ordering by (tick, priority, seq)",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0,
+          "error": null,
+          "graders": [
+            {
+              "name": "lower_tick_first",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "lower_priority_first",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "earlier_seq_first",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "unique_ids",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "command_pipeline",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.settlement.atomic"
+      ],
+      "desc": "Authorize \u2192 admit \u2192 schedule \u2192 dispatch \u2192 history at the API boundary",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.274,
+          "error": null,
+          "graders": [
+            {
+              "name": "submit_enqueues",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "step_drains",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "pending_cleared",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "history_recorded",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "history_type",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "rbac_at_boundary",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "query_correctness",
+      "suite": "regression",
+      "contract_ids": [
+        "query.cold_reads.correct"
+      ],
+      "desc": "Cold gated component/archetype reads, filters, projection, and discovery",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0944,
+          "error": null,
+          "graders": [
+            {
+              "name": "no_live_world_shortcut",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "subset_union_across_signatures",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "tick_and_entity_filters",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "exact_signature_projection",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "cold_signature_discovery",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "tick_quota_resets",
+      "suite": "regression",
+      "contract_ids": [
+        "gateway.authorization.rbac"
+      ],
+      "desc": "Per-tick RBAC command quota resets each tick, not process-wide (B1)",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0748,
+          "error": null,
+          "graders": [
+            {
+              "name": "quota_resets_across_ticks",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "quota_boundaries",
+      "suite": "regression",
+      "contract_ids": [
+        "gateway.authorization.rbac"
+      ],
+      "desc": "Exact per-tick and daily quota edges, atomic bulk debit, and actor isolation",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.1074,
+          "error": null,
+          "graders": [
+            {
+              "name": "concurrent_actor_499_boundary",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "bulk_overflow_atomic",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "exact_500_501_boundary",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "daily_budget_actor_isolation",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "utc_midnight_rollover",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "runtime_contracts",
+      "suite": "regression",
+      "contract_ids": [
+        "runtime.lifecycle.single_flight_and_drain"
+      ],
+      "desc": "Lazy activation, wait-then-close shutdown, handle invalidation, and sync parity",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0571,
+          "error": null,
+          "graders": [
+            {
+              "name": "lazy_single_flight_activation",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "wait_then_close_shutdown",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "sync_async_world_surface",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "episode_value_termination",
+      "suite": "regression",
+      "contract_ids": [
+        "simulation.episode.termination"
+      ],
+      "desc": "run_episode stops on terminal_field latched, not at max_steps (B2)",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.037,
+          "error": null,
+          "graders": [
+            {
+              "name": "value_termination_fires",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "not_capped_not_structural",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "poison_in_batch",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.failure.preserves_progress"
+      ],
+      "desc": "Malformed command in a batch must not block valid commands",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0395,
+          "error": null,
+          "graders": [
+            {
+              "name": "valid_commands_applied",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "world_not_corrupted",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "missing_payload_keys",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.failure.preserves_progress"
+      ],
+      "desc": "Commands with missing required keys fail without world corruption",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0268,
+          "error": null,
+          "graders": [
+            {
+              "name": "world_unchanged",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "unknown_component_type",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.failure.preserves_progress"
+      ],
+      "desc": "REMOVE_COMPONENT with bogus type name preserves entity",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0455,
+          "error": null,
+          "graders": [
+            {
+              "name": "entity_intact",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "despawn_nonexistent",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.failure.preserves_progress"
+      ],
+      "desc": "DESPAWN for missing entity does not corrupt existing entities",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0556,
+          "error": null,
+          "graders": [
+            {
+              "name": "world_intact",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "unhandled_command_noop",
+      "suite": "regression",
+      "contract_ids": [
+        "commands.settlement.atomic"
+      ],
+      "desc": "MESSAGE/QUERY_WORLD/CUSTOM are dequeued as no-ops",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0293,
+          "error": null,
+          "graders": [
+            {
+              "name": "clean_noop",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.manifest_traceability",
+      "suite": "spec",
+      "contract_ids": [
+        "architecture.dependencies.enforced"
+      ],
+      "desc": "Spec cases cite normative docs and registered eval tasks.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0005,
+          "error": null,
+          "graders": [
+            {
+              "name": "spec_sources_and_anchors",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "task_ids_registered",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.role_permission_matrix",
+      "suite": "spec",
+      "contract_ids": [
+        "gateway.authorization.rbac"
+      ],
+      "desc": "Role permissions match command-gate.md exactly.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0,
+          "error": null,
+          "graders": [
+            {
+              "name": "exact_role_matrix",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "admin_auto_includes_all",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "non_admin_commands_reviewed",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.runtime_gate_only_boundary",
+      "suite": "spec",
+      "contract_ids": [
+        "architecture.dependencies.enforced",
+        "runtime.trust.actor_free"
+      ],
+      "desc": "Runtime depends on RuntimeApplication-facing ports and stores no live world refs.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0088,
+          "error": null,
+          "graders": [
+            {
+              "name": "runtime_app_imports",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "runtime_no_live_world_refs",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.command_gateway_gate_map",
+      "suite": "spec",
+      "contract_ids": [
+        "gateway.authorization.rbac"
+      ],
+      "desc": "CommandGateway public methods use the documented gate and audit shape.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.004,
+          "error": null,
+          "graders": [
+            {
+              "name": "command_gateway_gate_shape",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.append_only_protocols",
+      "suite": "spec",
+      "contract_ids": [
+        "audit.append_only.evidence"
+      ],
+      "desc": "Storage and audit protocols expose no destructive delete/drop methods.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0,
+          "error": null,
+          "graders": [
+            {
+              "name": "iAsyncStore_append_only",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "iAuditLog_append_only",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.receipt_authority_firewall",
+      "suite": "spec",
+      "contract_ids": [
+        "artifacts.publication.exactly_once_visible"
+      ],
+      "desc": "Receipt/artifact components carry no authority fields (evidence only).",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0,
+          "error": null,
+          "graders": [
+            {
+              "name": "receipt_authority_firewall",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.dataset_eval_ontology",
+      "suite": "spec",
+      "contract_ids": [
+        "evaluation.ontology.separated"
+      ],
+      "desc": "Dataset identity remains separate from optional runtime provenance.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0025,
+          "error": null,
+          "graders": [
+            {
+              "name": "dataset_eval_ontology",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "spec.info_class_downgrades",
+      "suite": "spec",
+      "contract_ids": [
+        "architecture.protocols.complete"
+      ],
+      "desc": "Gate lifecycle and introspection methods return frozen info snapshots.",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0005,
+          "error": null,
+          "graders": [
+            {
+              "name": "info_downgrade_types",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "regression": {
+      "tasks": 15,
+      "fully_passing_tasks": 15,
+      "trials_per_task": [
+        1
+      ],
+      "pass_at_k": {
+        "1": 1.0
+      },
+      "mean_pass_rate": 1.0,
+      "mean_score": 1.0
+    },
+    "spec": {
+      "tasks": 8,
+      "fully_passing_tasks": 8,
+      "trials_per_task": [
+        1
+      ],
+      "pass_at_k": {
+        "1": 1.0
+      },
+      "mean_pass_rate": 1.0,
+      "mean_score": 1.0
+    }
+  }
+}

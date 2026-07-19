@@ -22,9 +22,6 @@ import uuid_utils as uuid
 from pydantic import BaseModel, Field, FieldSerializationInfo, field_serializer
 from uuid_utils import UUID
 
-from archetype.app.artifacts.models import ArtifactProcessor as ArtifactProcessor
-from archetype.app.artifacts.models import ArtifactReceipt as ArtifactReceipt
-from archetype.app.artifacts.models import ArtifactWriteReceipt as ArtifactWriteReceipt
 from archetype.core.config import JsonUUID, RunConfig
 
 # Global sequence counter for command ordering

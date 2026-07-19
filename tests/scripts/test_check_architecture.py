@@ -279,6 +279,35 @@ allowed_families = []
     }
 
 
+def test_artifacts_family_scope_rejects_synthetic_reverse_app_dependency(
+    tmp_path: Path,
+) -> None:
+    """#558 acceptance: an artifacts-family module importing app authority fails."""
+    bundles = tmp_path / "src" / "archetype" / "artifacts" / "bundles.py"
+    bundles.parent.mkdir(parents=True)
+    bundles.write_text(
+        "from archetype.app.storage.catalog import artifact_publication_key\n",
+        encoding="utf-8",
+    )
+    rules = """
+
+[[top_level_family_rule]]
+name = "artifacts-domain-family"
+consumer = "archetype.artifacts"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert {(violation.rule, violation.target) for violation in result.violations} == {
+        ("top_level_family_outward_dependency", "archetype.app.storage.catalog"),
+    }
+
+
 def test_root_package_and_facade_imports_match_explicit_forbidden_imports(
     tmp_path: Path,
 ) -> None:

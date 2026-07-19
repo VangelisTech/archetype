@@ -10,15 +10,15 @@ from typing import Any, Protocol, runtime_checkable
 
 from daft import DataFrame
 
-from archetype.app.artifacts.bundle_models import (
+from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
+from archetype.artifacts.bundles import (
     ArtifactBundleRequest,
     ArtifactPublishReceipt,
     ArtifactReconcileCandidate,
     ArtifactReconcileItemResult,
     ArtifactReconcileResult,
-    PreparedArtifactBundleRequest,
 )
-from archetype.app.artifacts.models import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
+from archetype.artifacts.contracts import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
 

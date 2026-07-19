@@ -25,9 +25,9 @@ from uuid_utils import UUID
 
 from archetype._logging import configure_host_observability
 from archetype.app.application.interfaces import iRuntimeApplication
-from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.container import ServiceContainer
 from archetype.app.models import WorldInfo
+from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.core.config import CacheConfig, StorageConfig
 from archetype.core.hooks import HookEvent
 from archetype.runtime._config import coerce_cache, coerce_storage
