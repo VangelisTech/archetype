@@ -31,10 +31,11 @@ before its own durable or external write. These protections are complementary.
 
 `SIGNAL_SCHEMA_VERSION`, `SPAN_NAMES`, `LEGACY_SPAN_NAMES`,
 `TRACE_ATTRIBUTE_KEYS`, `METRIC_NAMES`, `METRIC_LABEL_KEYS`, `EVENT_NAMES`,
-`ERROR_TYPES`, `FAILURE_DISPOSITIONS`, `OUTCOMES`, `SPAN_NAME_ALIASES`, and
-`TRACE_ATTRIBUTE_ALIASES` in `archetype._obs` are the single machine-readable
-vocabulary. The repository audit consumes these literals; it must not maintain
-a second allowlist.
+`ERROR_TYPES`, `FAILURE_DISPOSITIONS`, `OUTCOMES`, `SPAN_NAME_ALIASES`,
+`TRACE_ATTRIBUTE_ALIASES`, `RECORDER_METRIC_NAMES`, and
+`RECORDER_METRIC_LABEL_KEYS` in `archetype._obs` are the single
+machine-readable vocabulary. The repository audit consumes these literals; it
+must not maintain a second allowlist.
 
 Signal names are fixed. Unknown or dynamic names are no-ops. Custom attributes
 use the `archetype.*` namespace; `error.type` is the approved standard semantic
@@ -74,9 +75,10 @@ The current canonical span vocabulary is:
 - the legacy `world.materialize` and `world.execute` phases listed in section 7
   pending measured attribution.
 
-`gate.create_world` and `gate.get_world_info` temporarily normalize to the
-canonical `gateway.*` names. The deterministic audit introduced by #514 owns
-their source migration and expiry.
+Gateway source uses only the canonical `gateway.*` names. The former
+`gate.create_world` and `gate.get_world_info` spellings are neither accepted
+legacy names nor aliases. `SPAN_NAME_ALIASES` remains part of the versioned
+vocabulary and is currently empty.
 
 ## 3. Failure and outcome semantics
 
@@ -188,7 +190,7 @@ retain an open-span table, or bypass the safe signal boundary.
 |---|---|---|
 | Runtime host | Explicit construction-time provider and owned-handler setup; no family workflow span | Runtime lifecycle and returned/raised result |
 | CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert | HTTP result and gateway/domain result |
-| Gateway | Child spans for the three currently decorated operations | RBAC decision, typed application result, and access-audit evidence |
+| Gateway | Child spans for the three currently decorated operations; #515 owns a coherent ingress-root design | RBAC decision, typed application result, and access-audit evidence |
 | RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
 | Commands | No direct signal yet | Durable command ledger and settlement |
 | World lifecycle, mutation, simulation | Existing query/update scopes without execution-attribution claims; materialize/execute names are legacy pending #518/#519 | Tick manifest, world record, and typed result/exception |
@@ -199,9 +201,63 @@ retain an open-span table, or bypass the safe signal boundary.
 | Audit | Logging only; no direct signal yet | Journal/outbox and projection watermark |
 | Missions and sandboxes | No direct signal yet | Typed transition rows, attempt state, checkpoints, and artifacts |
 
-`none` means no new signal has been approved, not that an operation lacks an
-outcome. #514 turns these dispositions into per-family machine manifests and
-requires rationale for every `none` row.
+The machine authority is one independently owned manifest per family under
+`quality/observability/<family>.toml`. The required universe is every callable
+member — method, async method, or property — of every `Protocol` declared
+anywhere under `src/archetype/app/<family>/`, not only protocols co-located in
+`interfaces.py`. Every such member has exactly one disposition row in its
+owning family manifest. Rows use exact qualified names; wildcards, method
+ranges, and inherited blanket dispositions are forbidden. A family may add an
+exact workflow row for an instrumented internal operation that is not a
+protocol member; there is no reverse requirement that every safe internal
+emitter have a workflow row.
+
+Each row declares plural signals and outcomes, its authoritative durable or
+typed evidence when one exists, and only the fixed names, fields, and bounded
+metric labels it uses. Every workflow claim must exactly match literal
+emissions in its declared callable. Context-manager factories count only when
+entered directly and decorator factories only when applied directly; merely
+constructing either object is not an emission. Called helpers and nested
+callables are not attributed transitively. The fixed metric contract of
+`record_failure()` and `record_outcome()` comes from `_obs`'s machine-readable
+recorder vocabulary. A positive protocol disposition lists same-owner
+`emission_workflows` and its fixed signal claims must equal the union of those
+source-backed workflows. This binds positive intent to source without
+inventing protocol-to-implementation mappings or requiring a workflow for
+every internal emitter.
+
+`root` and `child` are mutually exclusive. `none` is exclusive, requires a
+rationale, and records approval intent: no new signal is approved for that
+contract. It does not claim the operation lacks an outcome, nor does it pretend
+to prove source absence without a protocol-to-implementation registry. A
+temporary legacy exception names one exact rule, path, qualified scope, and
+target together with its owner, issue, reason, and objective expiry condition.
+A missing, duplicate, phantom, wildcard, stale, cross-owner, or
+source-divergent row fails the audit.
+
+An owner cannot absorb another package's workflow or legacy debt. The sole
+current cross-package ownership is the `world` family's two explicit
+`AsyncWorld` compute/commit workflows. Host capabilities live only in
+`hosts.toml`: provider setup and console export remain in `_obs`, logging
+configuration remains in `_logging`, and runtime/API/CLI hosts may only invoke
+those private adapters.
+
+`root` describes Archetype's logical ingress ownership; it does not discard an
+upstream distributed parent. Runtime and gateway ingress workflows may own
+roots, while `RuntimeApplication` and lower families own children. The
+repository audit enforces the vocabulary, declared ownership, and
+root/child/none exclusivity. It also binds fixed workflow fields to exact
+lexical source emissions, but it does not prove runtime topology. This change
+leaves the three existing gateway decorators as child dispositions; Issue #515
+owns the coherent root model and any corresponding instrumentation.
+
+`scripts/check_observability.py` provides deterministic syntax and disposition
+enforcement from source and these manifests. It does not parse exported
+telemetry or depend on a collector. The existing footgun reviewer separately
+checks semantic boundary/authority and safety/cardinality mistakes that syntax
+cannot prove, including values smuggled under an approved key and telemetry
+used as application authority. Focused behavior contracts still prove typed
+failure identity, retry behavior, and durable evidence.
 
 ## 7. Lazy execution honesty
 

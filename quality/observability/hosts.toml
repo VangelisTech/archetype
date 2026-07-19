@@ -1,0 +1,89 @@
+version = 1
+owner = "hosts"
+
+[[host_callable]]
+qualified_scope = "archetype._obs._install_candidate"
+capabilities = ["provider_configuration"]
+evidence = ["docs/guide/observability.md"]
+rationale = "This adapter installs one validated provider candidate and discards a candidate that loses the host race."
+
+[[host_callable]]
+qualified_scope = "archetype._obs.configure_tracing"
+capabilities = ["provider_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_obs_process.py",
+]
+rationale = "This is the private provider/exporter adapter invoked only from an explicit process host."
+
+[[host_callable]]
+qualified_scope = "archetype._obs._console_processor"
+capabilities = ["provider_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_obs.py",
+]
+rationale = "This private factory constructs the approved debug-console processor after host configuration is requested."
+
+[[host_callable]]
+qualified_scope = "archetype._obs._console_processor._OneLineExporter.export"
+capabilities = ["console_export"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_obs.py",
+]
+rationale = "This is the sole approved shipped non-CLI console export boundary and emits only sanitized spans."
+
+[[host_callable]]
+qualified_scope = "archetype._logging._ArchetypeHandler.__init__"
+capabilities = ["logging_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_logging_contracts.py",
+]
+rationale = "This private handler constructor installs only the package-owned safe formatter and correlation filter."
+
+[[host_callable]]
+qualified_scope = "archetype._logging.configure_archetype_logging"
+capabilities = ["logging_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_logging_contracts.py",
+]
+rationale = "This private adapter performs idempotent package-handler configuration on behalf of an explicit host."
+
+[[host_callable]]
+qualified_scope = "archetype._logging.configure_host_observability"
+capabilities = ["invoke_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_runtime_observability.py",
+]
+rationale = "This private coordinator invokes tracing and logging configuration only when called by an explicit host."
+
+[[host_callable]]
+qualified_scope = "archetype.runtime.runtime.ArchetypeRuntime.__init__"
+capabilities = ["invoke_configuration"]
+evidence = [
+  "docs/guide/observability.md",
+  "tests/app/test_runtime_observability.py",
+]
+rationale = "Runtime construction is the explicit trusted-script process-host boundary."
+
+[[host_callable]]
+qualified_scope = "archetype.api.app.lifespan"
+capabilities = ["invoke_configuration"]
+evidence = [
+  "docs/guide/api-layer.md",
+  "tests/app/test_runtime_observability.py",
+]
+rationale = "FastAPI lifespan is the serving-worker process-host boundary; importing or creating the app remains inert."
+
+[[host_callable]]
+qualified_scope = "archetype.cli.main.serve"
+capabilities = ["invoke_configuration"]
+evidence = [
+  "docs/guide/api-layer.md",
+  "tests/app/test_runtime_observability.py",
+]
+rationale = "The serve command is the CLI-owned server process-host boundary."

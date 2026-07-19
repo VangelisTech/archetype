@@ -1,0 +1,30 @@
+version = 1
+owner = "query"
+family = "query"
+
+[[disposition]]
+operations = [
+  "interfaces.iQueryService.query_archetype",
+  "interfaces.iQueryService.query_components",
+  "interfaces.iQueryService.get_lineage",
+  "interfaces.iQueryService.list_signatures",
+  "interfaces.iQueryService.get_command_history",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "advisory_suppression"]
+authority = "Persisted store/catalog state and the returned lazy frame or typed history result remain authoritative."
+evidence = [
+  "docs/guide/service-protocols.md",
+  "tests/app/test_durable_discovery.py",
+]
+rationale = "The query family has no approved direct signal; bounded discovery degradation remains explicit in its returned result."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/app/query/service.py"
+qualified_scope = "archetype.app.query.service.QueryService._signature_records"
+target = "log:exception:'control catalog unavailable for durable signature discovery':exception"
+owner = "query"
+issue = 520
+reason = "The durable-signature fallback currently logs a raw control-catalog exception."
+expiry_condition = "Remove when #520 introduces bounded query failure diagnostics at the materialization boundary."

@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_WORKFLOW = ROOT / ".github" / "workflows" / "python-tests.yml"
 AUTOMERGE_WORKFLOW = ROOT / ".github" / "workflows" / "automerge.yml"
+MAKEFILE = ROOT / "Makefile"
 
 
 def _job(workflow: str, job_id: str) -> str:
@@ -49,6 +50,22 @@ def test_quality_workflow_keeps_fail_loud_coverage_and_infrastructure() -> None:
     assert "make eval-reliability" in evals
     assert "make eval-capability" in evals
     assert "make package-smoke" in evals
+
+
+def test_observability_audit_uses_the_existing_required_format_context() -> None:
+    workflow = QUALITY_WORKFLOW.read_text(encoding="utf-8")
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    format_job = _job(workflow, "format")
+
+    assert "- run: make lint" in format_job
+    lint_target = re.search(r"^lint:(?P<dependencies>[^\n]*)$", makefile, re.MULTILINE)
+    assert lint_target is not None
+    assert "observability-audit" in lint_target.group("dependencies").split()
+    assert re.search(
+        r"^observability-audit:\n\t@uv run python scripts/check_observability\.py$",
+        makefile,
+        re.MULTILINE,
+    )
 
 
 def test_quality_gate_aggregates_every_applicable_job() -> None:

@@ -93,6 +93,24 @@ record measurements; they do not become CI regression gates without a stable
 runner, durable retention, a comparison window, and an owner who will respond
 to the signal.
 
+## Observability enforcement
+
+Observability uses two complementary repository oracles. Independent family
+manifests under `quality/observability/` declare an exact disposition for every
+callable application-family protocol member and any explicitly instrumented
+internal workflow. `scripts/check_observability.py` deterministically validates
+that coverage plus obvious boundary, vocabulary, secret-safety, logging, and
+cardinality violations. It consumes the literal vocabulary in
+`archetype._obs`; it does not copy an allowlist, inspect exported telemetry, or
+require a live collector.
+
+The existing footgun reviewer owns the semantic remainder: whether telemetry
+has become authority, whether a value is unsafe despite using an approved key,
+and whether dimensions are bounded in the actual workflow. It adds that review
+to the current reviewer rather than introducing a second model, check, or
+required context. Focused contract tests remain the oracle for durable outcome
+authority and retry/failure behavior.
+
 ## Gate ownership
 
 The ordinary Python matrix owns product tests and static checks. Repository
@@ -104,6 +122,7 @@ Use these entry points:
 
 ```bash
 make ci          # static checks + pytest with coverage
+make observability-audit # signal safety and exact family dispositions
 make eval        # all current repository-check groups
 make bench       # supported local ECS snapshot
 make bench-query # supported local query snapshot

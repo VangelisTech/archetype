@@ -94,6 +94,8 @@ def test_invalid_names_and_values_are_safe_noops(monkeypatch):
 
     with _obs.span("dynamic.secret.Bearer-token", tick=True, world_id="not-a-uuid"):
         result = "application-result"
+    with _obs.span("gate.get_world_info"):
+        pass
 
     assert result == "application-result"
     assert exporter.get_finished_spans() == ()
@@ -274,7 +276,7 @@ def test_context_binding_is_nested_safe_and_restored(monkeypatch):
             "archetype.correlation.digest": correlation_digest,
             "archetype.world.id": world_id,
         }
-        with _obs.span("gate.get_world_info"):
+        with _obs.span("gateway.get_world_info"):
             pass
     assert _obs.capture_context() == {}
 
@@ -520,6 +522,8 @@ def test_signal_vocabulary_is_immutable_and_namespaced():
     assert isinstance(_obs.EVENT_NAMES, frozenset)
     assert isinstance(_obs.SPAN_NAME_ALIASES, MappingProxyType)
     assert isinstance(_obs.TRACE_ATTRIBUTE_ALIASES, MappingProxyType)
+    assert isinstance(_obs.RECORDER_METRIC_NAMES, MappingProxyType)
+    assert isinstance(_obs.RECORDER_METRIC_LABEL_KEYS, MappingProxyType)
     assert all(name.startswith("archetype.") for name in _obs.METRIC_NAMES)
     assert all(
         key.startswith("archetype.") or key == "error.type" for key in _obs.TRACE_ATTRIBUTE_KEYS
@@ -531,6 +535,10 @@ def test_signal_vocabulary_is_immutable_and_namespaced():
         "archetype.attempt.digest",
         "archetype.idempotency.digest",
     }.isdisjoint(_obs.METRIC_LABEL_KEYS)
+    assert _obs.LEGACY_SPAN_NAMES == frozenset({"world.execute", "world.materialize"})
+    assert dict(_obs.SPAN_NAME_ALIASES) == {}
+    assert set(_obs.RECORDER_METRIC_NAMES.values()) <= _obs.METRIC_NAMES
+    assert set(_obs.RECORDER_METRIC_LABEL_KEYS.values()) <= _obs.METRIC_LABEL_KEYS
 
 
 def test_outcome_helper_is_bounded_and_advisory(monkeypatch):

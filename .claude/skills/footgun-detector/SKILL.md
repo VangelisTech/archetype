@@ -128,6 +128,12 @@ Component fields containing `dict`, `list[dict]`, custom objects, or other non-A
 #### Tick-boundary violations
 Reading messages or state written in the same tick they were produced. Outbox at tick N should only be readable from Inbox at tick N+1.
 
+#### Observability boundary and authority
+Telemetry introduced at the wrong ownership boundary or allowed to become application authority: family code importing a provider, exporter, SDK, or vendor integration; lower-layer work opening a new logical root instead of a child; or signal success/failure deciding authorization, retry, settlement, commit, or the returned exception/result. Telemetry must remain vendor-neutral below process hosts and semantically inert when disabled or failing. Verify the typed result and durable family record still own every operational outcome.
+
+#### Telemetry safety and cardinality
+Signals that export content or create unbounded dimensions despite superficially valid instrumentation: data-derived names or keys, secrets/payloads/prompts/paths, raw exception messages or stacks, arbitrary object strings, per-request or workflow-instance identifiers (world, run, actor, command, artifact, attempt, task, evaluation, or entity IDs) used as metric labels, or handled/retried failures reported as propagated failures. Fixed names from the approved `archetype.operation` vocabulary remain valid bounded labels. Check values flowing indirectly under approved keys as well as direct calls; fixed vocabulary and bounded labels are necessary but do not make an unsafe producer value safe.
+
 ## Step 4: Report findings
 
 For each footgun found, output exactly this format:

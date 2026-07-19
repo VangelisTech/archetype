@@ -25,6 +25,7 @@ help:
 	@echo "  make contract-audit Validate normative sources and executable oracles"
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
+	@echo "  make observability-audit Enforce signal safety and family dispositions"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
 	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
@@ -97,7 +98,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit sandbox-phase-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit sandbox-phase-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -142,6 +143,10 @@ api-boundary-audit:
 .PHONY: architecture-audit
 architecture-audit:
 	@uv run python scripts/check_architecture.py
+
+.PHONY: observability-audit
+observability-audit:
+	@uv run python scripts/check_observability.py
 
 .PHONY: sandbox-phase-audit
 sandbox-phase-audit:

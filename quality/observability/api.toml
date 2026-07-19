@@ -1,0 +1,12 @@
+version = 1
+owner = "api"
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/api/errors.py"
+qualified_scope = "archetype.api.errors.raise_api_error"
+target = "log:exception:'Unhandled API exception':exception"
+owner = "api"
+issue = 515
+reason = "The existing API fallback logger still exports exception stack details pending ingress observability remediation."
+expiry_condition = "Remove when #515 replaces this fallback with safe bounded error diagnostics."

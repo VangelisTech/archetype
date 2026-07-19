@@ -1,0 +1,231 @@
+version = 1
+owner = "world"
+family = "world"
+
+[[disposition]]
+operations = [
+  "interfaces.iSimulationService.step",
+  "interfaces.iSimulationService.run",
+  "interfaces.iSimulationService.run_episode",
+  "interfaces.iSimulationService.run_rollout",
+]
+signals = ["child"]
+emission_workflows = ["world.compute_archetype", "world.commit_archetype"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "The tick manifest, append receipts, world record, and typed simulation result remain authoritative."
+evidence = [
+  "docs/guide/atomic-visibility.md",
+  "docs/guide/worlds.md",
+  "tests/app/test_atomic_visibility.py",
+]
+span_names = [
+  "world.query",
+  "world.materialize",
+  "world.execute",
+  "world.update",
+]
+attribute_keys = [
+  "archetype.component.signature",
+  "archetype.tick",
+]
+
+[[disposition]]
+operations = [
+  "interfaces.iWorldService.create_world",
+  "interfaces.iWorldService.get_world",
+  "interfaces.iWorldService.get_world_by_name",
+  "interfaces.iWorldService.has_world",
+  "interfaces.iWorldService.list_worlds",
+  "interfaces.iWorldService.storage_record",
+  "interfaces.iWorldService.catalog_world_ids",
+  "interfaces.iWorldService.control_catalog",
+  "interfaces.iWorldService.fork_world",
+  "interfaces.iWorldService.destroy_world",
+  "interfaces.iWorldService.discover_worlds",
+  "interfaces.iWorldService.open_world_readonly",
+  "interfaces.iWorldService.open_world_mutable",
+  "interfaces.iWorldService.record_step",
+  "interfaces.iWorldService.add_resource",
+  "interfaces.iWorldService.add_hook",
+  "interfaces.iWorldService.remove_hook",
+  "interfaces.iWorldService.list_processors",
+  "interfaces.iWorldService.list_hooks",
+  "interfaces.iWorldService.list_resources",
+  "interfaces.iWorldService.shutdown",
+  "interfaces.iMutationService.create_entity",
+  "interfaces.iMutationService.create_entities",
+  "interfaces.iMutationService.reserve_entity_ids",
+  "interfaces.iMutationService.spawn_with_reserved_id",
+  "interfaces.iMutationService.remove_entity",
+  "interfaces.iMutationService.update_entity",
+  "interfaces.iMutationService.add_components",
+  "interfaces.iMutationService.remove_components",
+  "interfaces.iMutationService.add_processor",
+  "interfaces.iMutationService.remove_processor",
+  "interfaces.iSimulationService.set_command_drain",
+  "interfaces.iSimulationService.set_quota_reset",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "World registry/catalog state, staged mutations, tick manifests, and typed lifecycle results remain authoritative."
+evidence = [
+  "docs/guide/world-lifecycle.md",
+  "docs/guide/atomic-visibility.md",
+  "tests/app/test_world_resume.py",
+  "tests/app/test_mutation_service.py",
+]
+rationale = "No direct signal is approved for these lifecycle, mutation, and simulation-configuration operations."
+
+[[workflow]]
+id = "world.compute_archetype"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+signals = ["child"]
+outcomes = ["propagated_failure", "retryable_attempt"]
+authority = "The eventual tick manifest and append receipts, not planning spans, prove successful computation."
+evidence = [
+  "docs/guide/observability.md",
+  "docs/guide/atomic-visibility.md",
+  "tests/app/test_atomic_visibility.py",
+]
+span_names = ["world.query", "world.materialize", "world.execute"]
+attribute_keys = [
+  "archetype.component.signature",
+  "archetype.tick",
+]
+
+[[workflow]]
+id = "world.commit_archetype"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._commit_archetype"
+signals = ["child"]
+outcomes = ["propagated_failure", "retryable_attempt"]
+authority = "The append receipt and published tick manifest prove durable visibility."
+evidence = [
+  "docs/guide/observability.md",
+  "docs/guide/atomic-visibility.md",
+  "tests/app/test_atomic_visibility.py",
+]
+span_names = ["world.update"]
+attribute_keys = [
+  "archetype.component.signature",
+  "archetype.tick",
+]
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/app/world/service.py"
+qualified_scope = "archetype.app.world.service.WorldService.open_world_mutable"
+target = "log:exception:'resume for world %s acquired fence epoch %d but failed before installing its replacement writer; the previous writer is now stale':exception"
+owner = "world"
+issue = 519
+reason = "The fenced-resume recovery path currently exports the raw exception stack while preserving retry semantics."
+expiry_condition = "Remove when #519 emits a bounded resume-failure diagnostic with durable catalog evidence."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/app/world/service.py"
+qualified_scope = "archetype.app.world.service.WorldService.record_step"
+target = "log:exception:'catalog run update failed for world %s':exception"
+owner = "world"
+issue = 519
+reason = "The post-step catalog projection warning currently exports a raw exception stack."
+expiry_condition = "Remove when #519 emits a bounded projection-failure diagnostic distinct from tick durability."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.query:attribute:sig"
+owner = "world"
+issue = 519
+reason = "The query child span still emits the pre-canonical component-signature alias during tick computation."
+expiry_condition = "Remove when #519 replaces sig with archetype.component.signature at the truthful tick boundary."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.query:attribute:tick"
+owner = "world"
+issue = 519
+reason = "The query child span still emits the pre-canonical tick alias during tick computation."
+expiry_condition = "Remove when #519 replaces tick with archetype.tick at the truthful tick boundary."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.materialize:attribute:sig"
+owner = "world"
+issue = 519
+reason = "The legacy materialization span still emits the pre-canonical component-signature alias."
+expiry_condition = "Remove when #519 replaces sig with archetype.component.signature while correcting execution attribution."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.materialize:attribute:tick"
+owner = "world"
+issue = 519
+reason = "The legacy materialization span still emits the pre-canonical tick alias."
+expiry_condition = "Remove when #519 replaces tick with archetype.tick while correcting execution attribution."
+
+[[legacy]]
+rule = "legacy_span_name"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.materialize"
+owner = "world"
+issue = 519
+reason = "The current materialization span predates the evidence-backed world execution boundary."
+expiry_condition = "Remove when #519 replaces world.materialize according to the #518 execution-attribution conclusion."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.execute:attribute:sig"
+owner = "world"
+issue = 519
+reason = "The legacy execution span still emits the pre-canonical component-signature alias."
+expiry_condition = "Remove when #519 replaces sig with archetype.component.signature at the measured execution boundary."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.execute:attribute:tick"
+owner = "world"
+issue = 519
+reason = "The legacy execution span still emits the pre-canonical tick alias."
+expiry_condition = "Remove when #519 replaces tick with archetype.tick at the measured execution boundary."
+
+[[legacy]]
+rule = "legacy_span_name"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._compute_archetype"
+target = "span:world.execute"
+owner = "world"
+issue = 519
+reason = "The current execution span reports processor planning as execution and is retained only for migration tracking."
+expiry_condition = "Remove when #519 replaces world.execute according to the #518 execution-attribution conclusion."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._commit_archetype"
+target = "span:world.update:attribute:sig"
+owner = "world"
+issue = 519
+reason = "The update child span still emits the pre-canonical component-signature alias at commit."
+expiry_condition = "Remove when #519 replaces sig with archetype.component.signature at the durable commit boundary."
+
+[[legacy]]
+rule = "legacy_attribute_key"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._commit_archetype"
+target = "span:world.update:attribute:tick"
+owner = "world"
+issue = 519
+reason = "The update child span still emits the pre-canonical tick alias at commit."
+expiry_condition = "Remove when #519 replaces tick with archetype.tick at the durable commit boundary."

@@ -1,0 +1,22 @@
+version = 1
+owner = "experiments"
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/experiments/claude_sessions.py"
+qualified_scope = "archetype.experiments.claude_sessions.load_claude_session"
+target = "log:warning:'unreadable session %s: %s':exception"
+owner = "experiments"
+issue = 530
+reason = "The existing experiment-session loader records raw exception text while reporting unreadable input."
+expiry_condition = "Remove when #530 replaces this call with a bounded error type and safe path diagnostic."
+
+[[legacy]]
+rule = "unsafe_log_value"
+path = "src/archetype/experiments/claude_sessions.py"
+qualified_scope = "archetype.experiments.claude_sessions.load_claude_session"
+target = "log:warning:'unreadable session %s: %s':sensitive-value"
+owner = "experiments"
+issue = 530
+reason = "The pre-existing session diagnostic exports a filesystem path; #530 owns a bounded replacement or removal with the experiments helper."
+expiry_condition = "Remove when #530 replaces the path with a bounded session-read category or removes the helper."

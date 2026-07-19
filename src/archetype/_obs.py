@@ -66,22 +66,14 @@ SPAN_NAMES: Final[frozenset[str]] = frozenset(
 )
 
 # ``world.execute`` and ``world.materialize`` describe legacy lazy-plan phases,
-# not proven execution timing.  #518/#519 own their replacement.  ``gate.*``
-# is normalized until #514 updates and expires the old call sites.
+# not proven execution timing.  #518/#519 own their replacement.
 LEGACY_SPAN_NAMES: Final[frozenset[str]] = frozenset(
     {
-        "gate.create_world",
-        "gate.get_world_info",
         "world.execute",
         "world.materialize",
     }
 )
-SPAN_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "gate.create_world": "gateway.create_world",
-        "gate.get_world_info": "gateway.get_world_info",
-    }
-)
+SPAN_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType({})
 
 TRACE_ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
     {
@@ -139,6 +131,20 @@ METRIC_LABEL_KEYS: Final[frozenset[str]] = frozenset(
         "archetype.operation",
         "archetype.outcome",
         "error.type",
+    }
+)
+RECORDER_METRIC_NAMES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "record_failure": "archetype.operation.failures",
+        "record_outcome": "archetype.operation.outcomes",
+    }
+)
+RECORDER_METRIC_LABEL_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "record_failure.disposition": "archetype.failure.disposition",
+        "record_failure.error_type": "error.type",
+        "record_outcome.operation": "archetype.operation",
+        "record_outcome.outcome": "archetype.outcome",
     }
 )
 EVENT_NAMES: Final[frozenset[str]] = frozenset({"archetype.failure", "archetype.outcome"})
@@ -547,22 +553,22 @@ def record_failure(error: BaseException, *, disposition: FailureDisposition) -> 
         return
     category = _classify_error(error)
     attributes = {
-        "error.type": category,
-        "archetype.failure.disposition": disposition,
+        RECORDER_METRIC_LABEL_KEYS["record_failure.error_type"]: category,
+        RECORDER_METRIC_LABEL_KEYS["record_failure.disposition"]: disposition,
     }
     _safe_event("archetype.failure", attributes)
-    counter_add("archetype.operation.failures", attributes=attributes)
+    counter_add(RECORDER_METRIC_NAMES["record_failure"], attributes=attributes)
 
 
 def record_outcome(outcome: Outcome, *, operation: str | None = None) -> None:
     """Record a bounded advisory outcome; durable records remain authoritative."""
     if type(outcome) is not str or outcome not in OUTCOMES:
         return
-    attributes: dict[str, Any] = {"archetype.outcome": outcome}
+    attributes: dict[str, Any] = {RECORDER_METRIC_LABEL_KEYS["record_outcome.outcome"]: outcome}
     if operation is not None:
-        attributes["archetype.operation"] = operation
+        attributes[RECORDER_METRIC_LABEL_KEYS["record_outcome.operation"]] = operation
     _safe_event("archetype.outcome", attributes)
-    counter_add("archetype.operation.outcomes", attributes=attributes)
+    counter_add(RECORDER_METRIC_NAMES["record_outcome"], attributes=attributes)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

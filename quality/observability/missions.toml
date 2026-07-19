@@ -1,0 +1,29 @@
+version = 1
+owner = "missions"
+family = "missions"
+
+[[disposition]]
+operations = [
+  "interfaces.iMissionService.prepare_attempt",
+  "interfaces.iMissionService.apply_attempt",
+  "interfaces.iMissionAttemptClaimService.acquire",
+  "interfaces.iMissionAttemptClaimService.decide_recovery",
+  "interfaces.iMissionAttemptClaimService.renew",
+  "interfaces.iMissionAttemptClaimService.acknowledge_provider",
+  "interfaces.iMissionAttemptClaimService.settle",
+  "interfaces.iMissionAttemptClaimService.consume_execution",
+  "interfaces.iMissionAttemptClaimService.prepare_durable_outcome",
+  "interfaces.iMissionAttemptClaimService.settled_outcome",
+  "interfaces.iMissionAttemptExecutionService.run",
+  "models.FencedAttemptRunner.provider_execution_capabilities",
+  "models.FencedAttemptRunner.run_attempt",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "Fenced attempt-claim rows, validated mission transitions, provider receipts, and durable outcomes remain authoritative."
+evidence = [
+  "docs/guide/agent-missions.md",
+  "tests/app/test_mission_attempt_claims.py",
+  "tests/app/test_mission_transition_authority.py",
+]
+rationale = "Mission and attempt workflows have no approved direct signal; durable claims and transition validators own truth."

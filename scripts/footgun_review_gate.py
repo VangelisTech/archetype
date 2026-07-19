@@ -56,6 +56,8 @@ REQUIRED_CATEGORIES = (
     "deprecated-daft-apis",
     "arrow-serialization-violations",
     "tick-boundary-violations",
+    "observability-boundary-and-authority",
+    "telemetry-safety-and-cardinality",
 )
 
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")

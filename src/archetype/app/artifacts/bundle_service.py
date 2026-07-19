@@ -461,7 +461,7 @@ class ArtifactBundleService:
             retry_until_ms = min(retry_until_ms, request.checkpoint_expires_at_ms)
         attributes = self._span_attributes(request)
 
-        with _obs.span("artifact.publish", **attributes):
+        with _obs.span("artifact.publish", attributes=attributes):
             outcome, publication = await catalog.acquire_artifact_publication(
                 world_id=request.world_id,
                 run_id=request.run_id,
@@ -678,11 +678,11 @@ class ArtifactBundleService:
             async with self._lease_heartbeat(
                 catalog, request.world_id, publication.publication_key, claimant
             ):
-                with _obs.span(
-                    "artifact.upload",
-                    bundle_id=publication.publication_key,
+                upload_attributes = {
                     **self._span_attributes(request),
-                ):
+                    "archetype.artifact.bundle.digest": publication.publication_key,
+                }
+                with _obs.span("artifact.upload", attributes=upload_attributes):
                     records, manifest_uri = await self._upload_bundle(
                         request,
                         publication.publication_key,
@@ -712,12 +712,12 @@ class ArtifactBundleService:
         async with self._lease_heartbeat(
             catalog, request.world_id, publication.publication_key, claimant
         ):
-            with _obs.span(
-                "artifact.index",
-                bundle_id=publication.publication_key,
-                artifact_count=len(records),
+            index_attributes = {
                 **self._span_attributes(request),
-            ):
+                "archetype.artifact.bundle.digest": publication.publication_key,
+                "archetype.artifact.count": len(records),
+            }
+            with _obs.span("artifact.index", attributes=index_attributes):
                 snapshot_id = await self._index_records(records)
         await catalog.complete_artifact_publication(
             request.world_id,
@@ -1213,12 +1213,10 @@ class ArtifactBundleService:
     @staticmethod
     def _span_attributes(request: ArtifactBundleRequest) -> dict[str, object]:
         return {
-            "world_id": request.world_id,
-            "run_id": request.run_id,
-            "entity_id": request.entity_id,
-            "tick": request.tick,
-            "attempt_id": request.attempt_id,
-            "idempotency_key": request.idempotency_key,
+            "archetype.world.id": request.world_id,
+            "archetype.run.id": request.run_id,
+            "archetype.entity.id": request.entity_id,
+            "archetype.tick": request.tick,
         }
 
     @asynccontextmanager
