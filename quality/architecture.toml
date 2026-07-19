@@ -90,6 +90,11 @@ name = "missions-domain-family"
 consumer = "archetype.missions"
 allowed_families = []
 
+[[top_level_family_rule]]
+name = "projections-domain-family"
+consumer = "archetype.projections"
+allowed_families = []
+
 [[package_rule]]
 name = "core-does-not-import-outward"
 consumer = "archetype.core"
