@@ -4,6 +4,25 @@ This guide covers the local workflow, CI, and pull requests. Read
 `LEARNINGS.md` before changing engine behavior; the specification pages define
 the contracts that tests enforce.
 
+## Choose Package Ownership First
+
+| Kind | Canonical location |
+|---|---|
+| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
+| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+
+Top-level domain families depend inward on core and only explicitly declared
+lower family contracts. They never import app, runtime, API, or CLI packages;
+application authority may consume their contracts in the other direction.
+Every first-party top-level package or module is classified explicitly, and the
+declared family graph must remain acyclic. Importing a root-facade name has the
+same architectural disposition as importing its owning module. Package
+placement does not make a symbol public. See the normative
+[Application Architecture](docs/guide/application-architecture.md) before
+adding a package or module, or moving a domain type.
+
 ## Prerequisites
 
 - **Python 3.12+**

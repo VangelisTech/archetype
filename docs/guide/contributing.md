@@ -10,6 +10,34 @@ the problem, the relevant contract, the likely owner, and what will count as
 done. Direct commits remain appropriate for typo fixes and small documentation
 edits whose behavior is not in question.
 
+## Choose the Owning Package First
+
+Package location states architectural ownership before any symbol is exported:
+
+| Kind | Canonical location |
+|---|---|
+| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
+| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+
+A top-level family may depend on `archetype.core`, itself, third-party
+libraries, and only reviewed lower top-level family contracts declared in
+`quality/architecture.toml`. It never imports `archetype.app`,
+`archetype.runtime`, `archetype.api`, or `archetype.cli`. The application layer
+may consume top-level family contracts; the reverse edge is forbidden.
+Every first-party top-level package or module must be classified as reserved
+infrastructure or registered as a family with one exact dependency
+disposition. The complete family graph is acyclic, and root-facade imports are
+checked against the module that owns the exported name.
+
+Use semantic module names: `components.py` for persistent ECS schema,
+`processors.py` for processors, `contracts.py` for supported value contracts,
+`transitions.py` for pure typed transition graphs, `interfaces.py` for internal
+application ports, and `service.py` for application authority. A top-level
+location does not make every symbol public; supported exports remain explicit
+under [API Stability](api-stability.md).
+
 ## Source of Truth
 
 When repository sources disagree, use this order:
@@ -85,7 +113,8 @@ This repository is opinionated about where changes should land.
 | Area | Guidance |
 |---|---|
 | `src/archetype/core/` | Treat as curated and effectively read-only unless the change has been explicitly approved |
-| `src/archetype/app/` | Internal implementation layer; extend carefully behind the supported runtime or adapter boundary |
+| `src/archetype/<family>/` | Reusable domain state and pure behavior; obey the declared top-level family DAG |
+| `src/archetype/app/` | Internal application authority and orchestration; extend carefully behind the supported runtime or adapter boundary |
 | `src/archetype/api/`, `src/archetype/cli/`, `docs/`, `examples/`, `tests/` | Good contribution targets |
 
 If you are proposing a core behavior change, you should document the contract

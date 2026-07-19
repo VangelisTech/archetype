@@ -16,6 +16,25 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY = ROOT / "quality" / "architecture.toml"
+TOP_LEVEL_FAMILY_OUTWARD_PACKAGES = frozenset(
+    {
+        "archetype.app",
+        "archetype.runtime",
+        "archetype.api",
+        "archetype.cli",
+    }
+)
+REQUIRED_TOP_LEVEL_INFRASTRUCTURE = TOP_LEVEL_FAMILY_OUTWARD_PACKAGES | {"archetype.core"}
+ROOT_EXPORT_POLICY_ERROR = (
+    "unable to statically parse archetype._EXPORTS; root-facade import enforcement is degraded"
+)
+COMPONENT_BASES = frozenset(
+    {
+        "archetype.Component",
+        "archetype.core.Component",
+        "archetype.core.component.Component",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -73,15 +92,68 @@ def _resolve_import_from(node: ast.ImportFrom, consumer: str, is_package: bool) 
     return ".".join(parts)
 
 
-def _imports(tree: ast.AST, consumer: str, is_package: bool) -> list[tuple[str, int]]:
+def _imports(
+    tree: ast.AST,
+    consumer: str,
+    is_package: bool,
+    *,
+    root_export_owners: dict[str, str],
+    root_scopes: frozenset[str],
+) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
+    root_bindings = {
+        alias.asname or "archetype"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "archetype"
+        or (alias.name.startswith("archetype.") and alias.asname is None)
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.extend((alias.name, node.lineno) for alias in node.names)
+            found.extend(
+                (alias.name, node.lineno) for alias in node.names if alias.name != "archetype"
+            )
         elif isinstance(node, ast.ImportFrom):
             module = _resolve_import_from(node, consumer, is_package)
-            if module:
-                found.append((module, node.lineno))
+            if module != "archetype":
+                if module:
+                    found.append((module, node.lineno))
+                continue
+
+            # Root-facade imports must receive the same disposition as their
+            # owning modules. Python also permits ``from archetype import app``
+            # for package attributes, so resolve both lazy public exports and
+            # first-party root modules/packages here for every architecture
+            # rule, not only the top-level-family rules.
+            for alias in node.names:
+                owner = root_export_owners.get(alias.name)
+                candidate = f"archetype.{alias.name}"
+                if owner:
+                    found.append((owner, node.lineno))
+                elif candidate in root_scopes:
+                    found.append((candidate, node.lineno))
+                else:
+                    # Unknown root names remain first-party dependencies and
+                    # are denied by registered-family default-deny handling.
+                    found.append((candidate, node.lineno))
+        elif isinstance(node, ast.Attribute) and root_bindings:
+            dotted = _dotted_name(node)
+            binding, separator, attribute_path = dotted.partition(".")
+            if not separator or binding not in root_bindings:
+                continue
+            root_name = attribute_path.split(".", 1)[0]
+            owner = root_export_owners.get(root_name)
+            candidate = f"archetype.{root_name}"
+            if owner:
+                found.append((owner, node.lineno))
+            elif candidate in root_scopes:
+                found.append((candidate, node.lineno))
+            else:
+                # Attribute access after a bare root import is another root-
+                # facade dependency form. Keep unknown names first-party so
+                # registered-family default deny remains exhaustive.
+                found.append((candidate, node.lineno))
     return found
 
 
@@ -143,11 +215,67 @@ def _source_files(source_root: Path) -> list[Path]:
     return sorted(path for path in source_root.rglob("*.py") if path.is_file())
 
 
+def _top_level_first_party_scopes(source_root: Path) -> frozenset[str]:
+    package_root = source_root / "archetype"
+    if not package_root.is_dir():
+        return frozenset()
+    scopes: set[str] = set()
+    for path in package_root.iterdir():
+        if path.is_dir():
+            if not path.name.startswith(".") and any(
+                candidate.is_file() for candidate in path.rglob("*.py")
+            ):
+                scopes.add(f"archetype.{path.name}")
+        elif path.is_file() and path.suffix == ".py" and path.name != "__init__.py":
+            scopes.add(f"archetype.{path.stem}")
+    return frozenset(scopes)
+
+
+def _root_export_owners(tree: ast.AST | None) -> tuple[dict[str, str], str | None]:
+    """Read the lazy root-facade export map without importing the package."""
+
+    if tree is None:
+        return {}, None
+    for node in getattr(tree, "body", []):
+        value: ast.AST | None = None
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_EXPORTS"
+        ):
+            value = node.value
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "_EXPORTS" for target in node.targets
+        ):
+            value = node.value
+        if value is None:
+            continue
+        try:
+            exports = ast.literal_eval(value)
+        except (TypeError, ValueError):
+            return {}, ROOT_EXPORT_POLICY_ERROR
+        if not isinstance(exports, dict):
+            return {}, ROOT_EXPORT_POLICY_ERROR
+        owners: dict[str, str] = {}
+        for name, export in exports.items():
+            if not (
+                isinstance(name, str)
+                and bool(name)
+                and isinstance(export, tuple)
+                and len(export) == 2
+                and all(isinstance(value, str) and bool(value) for value in export)
+            ):
+                return {}, ROOT_EXPORT_POLICY_ERROR
+            owners[name] = export[0]
+        return owners, None
+    return {}, ROOT_EXPORT_POLICY_ERROR
+
+
 def _load_policy(policy_path: Path) -> dict[str, Any]:
     with policy_path.open("rb") as handle:
         policy = tomllib.load(handle)
-    if policy.get("version") not in {1, 2}:
-        raise ValueError("architecture policy version must be 1 or 2")
+    if policy.get("version") not in {1, 2, 3}:
+        raise ValueError("architecture policy version must be 1, 2, or 3")
     return policy
 
 
@@ -157,6 +285,42 @@ def _release_version(value: str) -> tuple[int, int, int] | None:
         return None
     major, minor, patch = match.groups()
     return (int(major), int(minor or 0), int(patch or 0))
+
+
+def _dependency_cycle(
+    graph: dict[str, frozenset[str]],
+) -> tuple[str, ...] | None:
+    """Return one deterministic cycle from a directed dependency graph."""
+
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    stack_indexes: dict[str, int] = {}
+
+    def visit(node: str) -> tuple[str, ...] | None:
+        state[node] = 1
+        stack_indexes[node] = len(stack)
+        stack.append(node)
+        for dependency in sorted(graph.get(node, frozenset())):
+            dependency_state = state.get(dependency, 0)
+            if dependency_state == 0:
+                cycle = visit(dependency)
+                if cycle is not None:
+                    return cycle
+            elif dependency_state == 1:
+                start = stack_indexes[dependency]
+                return (*stack[start:], dependency)
+        stack.pop()
+        stack_indexes.pop(node)
+        state[node] = 2
+        return None
+
+    for node in sorted(graph):
+        if state.get(node, 0) != 0:
+            continue
+        cycle = visit(node)
+        if cycle is not None:
+            return cycle
+    return None
 
 
 def _project_version(repo_root: Path) -> tuple[int, int, int] | None:
@@ -203,8 +367,22 @@ def audit_repository(
             path.name == "__init__.py",
         )
 
+    actual_top_level_scopes = _top_level_first_party_scopes(source_root)
+    root_tree = parsed.get("archetype", (None, None, False))[1]
+    root_export_owners, root_export_error = _root_export_owners(root_tree)
+    if root_export_error is not None:
+        result.policy_errors.append(root_export_error)
+    first_party_root_scopes = actual_top_level_scopes | frozenset(
+        module for module in parsed if module.startswith("archetype.") and module.count(".") == 1
+    )
+
+    policy_version = int(policy["version"])
     package_rules = policy.get("package_rule", [])
     family_rules = policy.get("family_rule", [])
+    top_level_family_rules = policy.get("top_level_family_rule", [])
+    if not isinstance(top_level_family_rules, list):
+        result.policy_errors.append("top_level_family_rule must be an array of tables")
+        top_level_family_rules = []
     module_rules = policy.get("module_rule", [])
     concrete = policy.get("concrete_services", {})
     concrete_values = [str(value) for value in concrete.get("types", [])]
@@ -212,6 +390,213 @@ def audit_repository(
     composition_roots = set(concrete.get("composition_roots", []))
     if len(concrete_values) != len(concrete_types):
         result.policy_errors.append("concrete_services.types contains duplicate entries")
+
+    top_level_family_config = policy.get("top_level_family_policy", {})
+    if not isinstance(top_level_family_config, dict):
+        result.policy_errors.append("top_level_family_policy must be a table")
+        top_level_family_config = {}
+    configured_outward = top_level_family_config.get("forbidden_outward", [])
+    if not isinstance(configured_outward, list):
+        result.policy_errors.append("top_level_family_policy.forbidden_outward must be a list")
+        configured_outward = []
+    outward_values = [str(value).strip() for value in configured_outward]
+    outward_packages = frozenset(value for value in outward_values if value)
+    if len(outward_values) != len(outward_packages):
+        result.policy_errors.append(
+            "top_level_family_policy.forbidden_outward contains empty or duplicate entries"
+        )
+    invalid_outward = sorted(
+        value
+        for value in outward_packages
+        if re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", value) is None
+    )
+    if invalid_outward:
+        result.policy_errors.append(
+            "top_level_family_policy.forbidden_outward has non-top-level scopes: "
+            + ", ".join(invalid_outward)
+        )
+
+    configured_infrastructure = top_level_family_config.get("reserved_infrastructure", [])
+    if not isinstance(configured_infrastructure, list):
+        result.policy_errors.append(
+            "top_level_family_policy.reserved_infrastructure must be a list"
+        )
+        configured_infrastructure = []
+    infrastructure_values = [str(value).strip() for value in configured_infrastructure]
+    reserved_infrastructure = frozenset(value for value in infrastructure_values if value)
+    if len(infrastructure_values) != len(reserved_infrastructure):
+        result.policy_errors.append(
+            "top_level_family_policy.reserved_infrastructure contains empty or duplicate entries"
+        )
+    invalid_infrastructure = sorted(
+        value
+        for value in reserved_infrastructure
+        if re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", value) is None
+    )
+    if invalid_infrastructure:
+        result.policy_errors.append(
+            "top_level_family_policy.reserved_infrastructure has non-top-level scopes: "
+            + ", ".join(invalid_infrastructure)
+        )
+    if policy_version >= 3:
+        missing_outward = sorted(TOP_LEVEL_FAMILY_OUTWARD_PACKAGES - outward_packages)
+        if missing_outward:
+            result.policy_errors.append(
+                "top_level_family_policy.forbidden_outward omits required packages: "
+                + ", ".join(missing_outward)
+            )
+        missing_infrastructure = sorted(REQUIRED_TOP_LEVEL_INFRASTRUCTURE - reserved_infrastructure)
+        if missing_infrastructure:
+            result.policy_errors.append(
+                "top_level_family_policy.reserved_infrastructure omits required packages: "
+                + ", ".join(missing_infrastructure)
+            )
+        outward_not_reserved = sorted(outward_packages - reserved_infrastructure)
+        if outward_not_reserved:
+            result.policy_errors.append(
+                "top_level_family_policy.forbidden_outward has unclassified packages: "
+                + ", ".join(outward_not_reserved)
+            )
+        if not top_level_family_rules:
+            result.policy_errors.append("architecture policy registers no top-level family scopes")
+    if not outward_packages:
+        outward_packages = TOP_LEVEL_FAMILY_OUTWARD_PACKAGES
+
+    top_level_family_names: set[str] = set()
+    top_level_family_scopes: dict[str, frozenset[str]] = {}
+    pending_allowed_families: dict[str, list[str]] = {}
+    reserved_family_scopes = reserved_infrastructure | REQUIRED_TOP_LEVEL_INFRASTRUCTURE
+    for index, rule in enumerate(top_level_family_rules):
+        name = str(rule.get("name", "")).strip()
+        label = repr(name) if name else f"at index {index}"
+        if not name:
+            result.policy_errors.append(f"top-level family rule {label} has an empty name")
+        elif name in top_level_family_names:
+            result.policy_errors.append(f"duplicate top-level family rule name: {name}")
+        else:
+            top_level_family_names.add(name)
+
+        if "consumer" not in rule:
+            result.policy_errors.append(
+                f"top-level family rule {label} is missing its consumer scope"
+            )
+            continue
+        consumer_scope = str(rule.get("consumer", "")).strip()
+        if not consumer_scope:
+            result.policy_errors.append(
+                f"top-level family rule {label} has an empty consumer scope"
+            )
+            continue
+        if re.fullmatch(r"archetype\.[A-Za-z_][A-Za-z0-9_]*", consumer_scope) is None:
+            result.policy_errors.append(
+                f"top-level family rule {label} has non-top-level scope: {consumer_scope}"
+            )
+            continue
+        if consumer_scope in reserved_family_scopes:
+            result.policy_errors.append(
+                f"top-level family rule {label} uses reserved scope: {consumer_scope}"
+            )
+            continue
+        if consumer_scope in top_level_family_scopes:
+            result.policy_errors.append(f"duplicate top-level family scope: {consumer_scope}")
+            continue
+
+        matched = [
+            tree
+            for module, (_path, tree, _is_package) in parsed.items()
+            if _matches_prefix(module, consumer_scope)
+        ]
+        if not matched:
+            result.policy_errors.append(
+                f"top-level family rule {label} references stale scope: {consumer_scope}"
+            )
+        elif not any(getattr(tree, "body", []) for tree in matched):
+            result.policy_errors.append(
+                f"top-level family rule {label} matched an empty source scope: {consumer_scope}"
+            )
+
+        if "allowed_families" not in rule:
+            result.policy_errors.append(
+                f"top-level family rule {label} lacks an exact allowed_families disposition"
+            )
+            allowed_values: list[Any] = []
+        else:
+            configured_allowed = rule.get("allowed_families")
+            if not isinstance(configured_allowed, list):
+                result.policy_errors.append(
+                    f"top-level family rule {label} allowed_families must be a list"
+                )
+                allowed_values = []
+            else:
+                allowed_values = configured_allowed
+        allowed_families = [str(value).strip() for value in allowed_values]
+        if any(not value for value in allowed_families):
+            result.policy_errors.append(
+                f"top-level family rule {label} has an empty allowed family scope"
+            )
+        if len(allowed_families) != len(set(allowed_families)):
+            result.policy_errors.append(
+                f"top-level family rule {label} has duplicate allowed family scopes"
+            )
+        top_level_family_scopes[consumer_scope] = frozenset()
+        pending_allowed_families[consumer_scope] = allowed_families
+
+    registered_family_scopes = frozenset(top_level_family_scopes)
+    for consumer_scope, allowed_values in pending_allowed_families.items():
+        label = next(
+            (
+                str(rule.get("name", consumer_scope))
+                for rule in top_level_family_rules
+                if str(rule.get("consumer", "")).strip() == consumer_scope
+            ),
+            consumer_scope,
+        )
+        allowed = frozenset(value for value in allowed_values if value)
+        unknown = sorted(allowed - registered_family_scopes)
+        if unknown:
+            result.policy_errors.append(
+                f"top-level family rule {label!r} allows unregistered family scopes: "
+                + ", ".join(unknown)
+            )
+        if consumer_scope in allowed:
+            result.policy_errors.append(
+                f"top-level family rule {label!r} redundantly allows its own scope"
+            )
+        top_level_family_scopes[consumer_scope] = allowed
+
+    if policy_version >= 3:
+        overlapping_scopes = sorted(registered_family_scopes & reserved_infrastructure)
+        if overlapping_scopes:
+            result.policy_errors.append(
+                "top-level scopes classified as both family and reserved infrastructure: "
+                + ", ".join(overlapping_scopes)
+            )
+        unclassified_scopes = sorted(
+            actual_top_level_scopes - registered_family_scopes - reserved_infrastructure
+        )
+        if unclassified_scopes:
+            result.policy_errors.append(
+                "unclassified first-party top-level scopes: " + ", ".join(unclassified_scopes)
+            )
+
+        graph = {
+            consumer_scope: frozenset(
+                dependency
+                for dependency in allowed
+                if dependency in registered_family_scopes and dependency != consumer_scope
+            )
+            for consumer_scope, allowed in top_level_family_scopes.items()
+        }
+        cycle = _dependency_cycle(graph)
+        if cycle is not None:
+            result.policy_errors.append("top-level family dependency cycle: " + " -> ".join(cycle))
+
+    governed_root_scopes = (
+        first_party_root_scopes
+        | registered_family_scopes
+        | reserved_infrastructure
+        | outward_packages
+    )
 
     for rule in package_rules:
         consumer_prefix = str(rule["consumer"])
@@ -270,13 +655,89 @@ def audit_repository(
     findings: list[Violation] = []
     seen: set[tuple[str, str, str]] = set()
     for consumer, (path, tree, is_package) in parsed.items():
-        imports = _imports(tree, consumer, is_package)
+        imports = _imports(
+            tree,
+            consumer,
+            is_package,
+            root_export_owners=root_export_owners,
+            root_scopes=governed_root_scopes,
+        )
+
+        consumer_family_scope = next(
+            (scope for scope in registered_family_scopes if _matches_prefix(consumer, scope)),
+            None,
+        )
+        if consumer_family_scope is not None:
+            allowed_families = top_level_family_scopes[consumer_family_scope]
+            for dependency, line in imports:
+                if any(_matches_prefix(dependency, prefix) for prefix in outward_packages):
+                    _add_once(
+                        findings,
+                        seen,
+                        Violation(
+                            rule="top_level_family_outward_dependency",
+                            consumer=consumer,
+                            target=dependency,
+                            path=path,
+                            line=line,
+                            detail=(
+                                f"{consumer} imports outward package {dependency}; "
+                                "top-level domain families may depend only on core, "
+                                "themselves, and declared lower family contracts"
+                            ),
+                        ),
+                    )
+                    continue
+
+                if _matches_prefix(dependency, "archetype.core") or _matches_prefix(
+                    dependency, consumer_family_scope
+                ):
+                    continue
+
+                dependency_family_scope = next(
+                    (
+                        scope
+                        for scope in registered_family_scopes
+                        if _matches_prefix(dependency, scope)
+                    ),
+                    None,
+                )
+                if (
+                    dependency_family_scope is not None
+                    and dependency_family_scope in allowed_families
+                ):
+                    continue
+                if not _matches_prefix(dependency, "archetype"):
+                    continue
+                _add_once(
+                    findings,
+                    seen,
+                    Violation(
+                        rule="top_level_family_dependency",
+                        consumer=consumer,
+                        target=dependency,
+                        path=path,
+                        line=line,
+                        detail=(
+                            f"{consumer} imports undeclared first-party dependency "
+                            f"{dependency}; classify every top-level package and declare "
+                            "each reviewed lower-family contract edge in "
+                            "quality/architecture.toml"
+                        ),
+                    ),
+                )
 
         for rule in package_rules:
             if not _matches_prefix(consumer, str(rule["consumer"])):
                 continue
+            forbidden = {str(prefix) for prefix in rule["forbidden"]}
+            if policy_version >= 3 and str(rule["consumer"]) == "archetype.core":
+                # The domain-family registry is the source of truth for the
+                # foundation's reverse-dependency ban. A newly registered
+                # family must be forbidden without a second manifest edit.
+                forbidden.update(registered_family_scopes)
             for dependency, line in imports:
-                if any(_matches_prefix(dependency, str(prefix)) for prefix in rule["forbidden"]):
+                if any(_matches_prefix(dependency, prefix) for prefix in forbidden):
                     _add_once(
                         findings,
                         seen,
@@ -386,6 +847,27 @@ def audit_repository(
                     )
 
             elif isinstance(node, ast.ClassDef):
+                if _matches_prefix(consumer, "archetype.app"):
+                    for base in node.bases:
+                        if _resolved_name(base, bindings) not in COMPONENT_BASES:
+                            continue
+                        _add_once(
+                            findings,
+                            seen,
+                            Violation(
+                                rule="app_component_model",
+                                consumer=consumer,
+                                target=f"{consumer}.{node.name}",
+                                path=path,
+                                line=node.lineno,
+                                detail=(
+                                    f"{consumer}.{node.name} is a persistent Component "
+                                    "declared in the application layer; move reusable ECS "
+                                    "schema to archetype.<family>.components"
+                                ),
+                            ),
+                        )
+
                 for base in node.bases:
                     target = _resolved_name(base, bindings).rsplit(".", 1)[-1]
                     if target in concrete_types:
@@ -453,15 +935,28 @@ def audit_repository(
         if key in declared:
             result.policy_errors.append(f"duplicate architecture exception: {key}")
             continue
+        if policy_version >= 3 and any("*" in coordinate for coordinate in key):
+            result.policy_errors.append(
+                f"architecture exception {key} uses a wildcard instead of an exact edge"
+            )
+        required_metadata = ["owner", "reason", "expires"]
+        if policy_version >= 3:
+            required_metadata.extend(["issue", "expiry_condition"])
         missing_metadata = [
             field_name
-            for field_name in ("owner", "reason", "expires")
+            for field_name in required_metadata
             if not str(exception.get(field_name, "")).strip()
         ]
         if missing_metadata:
             result.policy_errors.append(
                 f"architecture exception {key} lacks {', '.join(missing_metadata)}"
             )
+        if policy_version >= 3 and "issue" in exception:
+            issue = exception.get("issue")
+            if isinstance(issue, bool) or not isinstance(issue, int) or issue <= 0:
+                result.policy_errors.append(
+                    f"architecture exception {key} has invalid tracking issue: {issue!r}"
+                )
         expires = _release_version(str(exception.get("expires", "")))
         if expires is None:
             result.policy_errors.append(

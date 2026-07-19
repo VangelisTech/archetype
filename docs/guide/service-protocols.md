@@ -13,6 +13,9 @@ purpose and active mapping of each family port.
 
 Application protocols are internal dependency boundaries unless a focused
 specification explicitly promotes one. Importability does not make them public.
+Their value types may live in a supported top-level domain family without
+promoting the protocol, its implementation, or the service container. Port
+ownership and value-contract ownership are separate decisions.
 
 Every active protocol has:
 
@@ -232,25 +235,38 @@ uses the injected admission callback rather than importing the claim service.
 It emits typed phase evidence without importing Modal, Apple Container, or
 another provider SDK. See [Sandbox Execution](sandbox-execution.md).
 
-## 5. Models crossing families
+## 5. Values crossing family ports
 
-Cross-family models are immutable or frozen where identity matters. The root
-`app/models.py` intentionally owns command envelopes and broadly shared
-runtime/application result records. Family-specific models remain with their
-owners:
+Cross-family values are immutable or frozen where identity matters, but their
+Python modeling technology does not decide their layer. Persistent ECS schema
+is a `Component` and belongs in `archetype.<family>.components`. Supported
+reusable Pydantic/dataclass values belong in the top-level family's
+`contracts.py` or another specifically named family module. Application
+commands, authority records, backend state, authorization values, and service
+ports remain under `archetype.app.<family>`.
 
-- artifact descriptors and receipts: `app/artifacts/models.py`;
-- artifact bundle requests and publication receipts: `app/artifacts/bundle_models.py`;
-- mission facts, attempt requests, and typed states: `app/missions/`;
-- redaction policy configuration, safe receipts, and quarantine errors: `app/redaction/models.py`;
-- evaluation contracts, outcomes, and receipts: `app/evaluation/models.py`;
-- research contracts and ledger components: `app/research/`;
-- audit access events: `app/audit/models.py`;
-- public cross-family errors: `app/errors.py`.
-- sandbox validator, phase, command, checkpoint, and handoff values:
-  `app/sandboxes/models.py`.
+An internal app protocol may therefore accept or return a top-level family
+value. The protocol still lives in `archetype.app.<family>.interfaces`, its
+concrete service remains internal, and `ServiceContainer` remains unsupported.
+The top-level family never imports that port in return. Public classification
+is explicit and is not inferred from either side of the annotation.
 
-No app model is owned by the outward `experiments` package.
+Current paths that predate this rule are migration state, not alternate
+ownership:
+
+- evaluation receipt Components and value contracts move under #557;
+- artifact Components and reusable bundle/value contracts move under #558;
+- mission Components and pure world-transition definitions move under #559;
+- research ledger Components and provisional experiment dependencies await the
+  #561 design gate, which must replace its temporary architecture entries with
+  concrete implementation issues before it closes; and
+- the root `app/models.py` boundary-model split remains owned by #560.
+
+The exact temporary edges are recorded in `quality/architecture.toml`; no
+wildcard compatibility package is implied. Redaction, audit, sandbox,
+command, world, and other authority-specific models remain with their app
+owners unless a focused specification classifies an individual value as a
+reusable family contract.
 
 ## 6. Construction and shutdown
 

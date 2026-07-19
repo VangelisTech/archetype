@@ -2,12 +2,35 @@
 
 Repo-specific guidance for AI collaborators. For normative behavior, read the specification group under `docs/guide/`, starting with `docs/guide/specification.md`.
 
+## Package ownership
+
+Choose the owning package before adding a type or behavior:
+
+| Kind | Canonical location |
+|---|---|
+| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
+| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+
+Top-level families may import `archetype.core`, themselves, third-party
+libraries, and only lower top-level family contracts declared in
+`quality/architecture.toml`. They never import `app`, `runtime`, `api`, or
+`cli`; application families may consume their contracts in the other
+direction. Use `components.py`, `processors.py`, `contracts.py`,
+`transitions.py`, `interfaces.py`, and `service.py` according to those semantic
+roles. Every first-party top-level package or module must be classified as
+reserved infrastructure or a registered family, and the family graph must
+remain acyclic. Root-facade imports receive the disposition of their owning module.
+Package placement never makes a symbol public by itself.
+
 ## Layout
 
 ```text
 archetype/
 ├── src/archetype/
 │   ├── core/           # ECS engine (Daft + Arrow + LanceDB)
+│   ├── <family>/       # Reusable ECS/domain state and pure behavior
 │   ├── app/            # Internal application families
 │   │   ├── application/ #   Actor-free RuntimeApplication facade
 │   │   ├── gateway/     #   CommandGateway + RBAC/auth
@@ -33,7 +56,8 @@ archetype/
 | Layer | Access |
 |-------|--------|
 | `core/` | Modify only after discussion. It holds the hard invariants; breakage there cascades everywhere. |
-| `app/` | Extend carefully. Internal service implementation; contracts are in the specification. |
+| `<family>/` | Reusable domain contracts and pure behavior. Follow the declared top-level family DAG. |
+| `app/` | Extend carefully. Internal authority, orchestration, service ports, and concrete implementations. |
 | `runtime/` | Recommended top-level API (`ArchetypeRuntime`). Contract changes require focused specs/tests. |
 | `api/`, `cli/` | Write freely, subject to the contracts they wrap. |
 
