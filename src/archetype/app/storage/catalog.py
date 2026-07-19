@@ -24,9 +24,9 @@ Design rules (issue #272, design review 2026-07-14):
 - The catalog location is a **pure function of the storage identity**: the
   same StorageConfig always resolves the same catalog, across processes,
   restarts, and crashes.
-- Records are compact pointers (a world row, a signature row with its stored
-  Arrow schema). Never operational state: no entity directories, no lineage
-  copies (``core/lineage`` is already durable), no manifest snapshots.
+- Records remain compact control-plane authority: discovery pointers, commit
+  fences, bounded scheduler state, and sparse recovery exceptions. They never
+  copy entity directories, lineage, or full manifest payloads.
 - Append-only in spirit: worlds transition status; nothing is deleted.
 - Same identity + same content → idempotent no-op. Same identity + different
   content → loud ``CatalogConflictError``. Fail closed, never fail quiet.
@@ -60,20 +60,56 @@ from uuid_utils import uuid7
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.app.errors import AvailabilityError, ConflictError
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
+from archetype.app.storage.recovery_transitions import (
+    RecoveryExceptionEvent,
+    RecoveryExceptionStatus,
+    RecoveryExceptionTransitionGraph,
+    RecoverySweepEvent,
+    RecoverySweepStatus,
+    RecoverySweepTransitionGraph,
+)
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _DIGEST_DOMAIN = "archetype.catalog.v1"
+_RECOVERY_SWEEP_DOMAIN = "archetype.fleet-recovery-sweep.v1"
+_RECOVERY_EXCEPTION_DOMAIN = "archetype.fleet-recovery-exception.v1"
+_MAX_RECOVERY_LEASE_MS = 24 * 60 * 60 * 1000
+_MAX_RECOVERY_DELAY_MS = 365 * 24 * 60 * 60 * 1000
 _MAX_PORTABLE_COUNTER = (1 << 53) - 1
+_MAX_RECOVERY_ERROR_CODE_CHARS = 128
+_MAX_RECOVERY_ERROR_DETAIL_CHARS = 4096
 _MAX_ARTIFACT_LEASE_MS = 24 * 60 * 60 * 1000
 _MAX_ARTIFACT_RETRY_WINDOW_MS = 365 * 24 * 60 * 60 * 1000
 _MAX_ARTIFACT_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000
 _ARTIFACT_RETRY_EXPIRED_DETAIL = "artifact publication retry window elapsed before upload"
 
+_RECOVERY_SWEEP_STATUSES = frozenset(status.value for status in RecoverySweepStatus)
+_RECOVERY_EXCEPTION_STATUSES = frozenset(status.value for status in RecoveryExceptionStatus)
+_RECOVERY_ERROR_CODES = frozenset(
+    {
+        "discovery_failed",
+        "handler_failed",
+        "source_corrupt",
+        "policy_rejected",
+        "capability_unavailable",
+    }
+)
+_RECOVERY_KINDS = frozenset(
+    {
+        "mission_model_recovery",
+        "mission_finalization",
+        "artifact_publication",
+        "event_projection",
+        "artifact_retention",
+        "checkpoint_retention",
+        "local_staging_retention",
+    }
+)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -81,6 +117,22 @@ def _now_ms() -> int:
     """Catalog-authoritative wall time for leases and durable scheduling."""
 
     return time.time_ns() // 1_000_000
+
+
+def _recovery_key(domain: str, *parts: str) -> str:
+    return hashlib.sha256((domain + "\0" + "\0".join(parts)).encode()).hexdigest()
+
+
+def recovery_sweep_key(storage_fingerprint: str, world_id: str, kind: str) -> str:
+    """Deterministic identity for one recurring world/kind sweep."""
+
+    return _recovery_key(_RECOVERY_SWEEP_DOMAIN, storage_fingerprint, world_id, kind)
+
+
+def recovery_exception_key(sweep_key: str, subject_key: str) -> str:
+    """Deterministic identity for one sparse poison subject."""
+
+    return _recovery_key(_RECOVERY_EXCEPTION_DOMAIN, sweep_key, subject_key)
 
 
 def _require_sha256(value: str, *, field: str) -> str:
@@ -98,6 +150,31 @@ def _require_bounded_text(value: str, *, field: str, max_chars: int) -> str:
         raise ValueError(f"{field} must not be empty")
     if len(value) > max_chars:
         raise ValueError(f"{field} exceeds {max_chars} characters")
+    return value
+
+
+def _require_recovery_kind(value: str) -> str:
+    value = _require_bounded_text(value, field="recovery kind", max_chars=128)
+    if value not in _RECOVERY_KINDS:
+        raise ValueError(f"unsupported recovery kind {value!r}")
+    return value
+
+
+def _require_recovery_delay(value: int, *, field: str, allow_zero: bool = True) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field} must be an integer number of milliseconds")
+    minimum = 0 if allow_zero else 1
+    if value < minimum or value > _MAX_RECOVERY_DELAY_MS:
+        raise ValueError(
+            f"{field} must be between {minimum} and {_MAX_RECOVERY_DELAY_MS} milliseconds"
+        )
+    return value
+
+
+def _require_recovery_lease(value: int) -> int:
+    value = _require_recovery_delay(value, field="recovery lease_ms", allow_zero=False)
+    if value > _MAX_RECOVERY_LEASE_MS:
+        raise ValueError(f"recovery lease_ms must be no greater than {_MAX_RECOVERY_LEASE_MS}")
     return value
 
 
@@ -348,6 +425,30 @@ class AttemptClaimStaleError(ConflictError):
     public_detail = "Mission attempt claim fence is stale"
 
 
+class RecoverySweepConflictError(ConflictError):
+    """A recurring recovery sweep conflicts with its durable identity/state."""
+
+    public_detail = "Recovery sweep conflicts with existing state"
+
+
+class RecoverySweepPendingError(AvailabilityError):
+    """Another fleet worker owns the live sweep lease."""
+
+    public_detail = "Recovery sweep is currently leased"
+
+
+class RecoverySweepStaleError(ConflictError):
+    """A fleet worker no longer owns the sweep fence."""
+
+    public_detail = "Recovery sweep fence is stale"
+
+
+class RecoveryExceptionConflictError(ConflictError):
+    """A sparse recovery exception conflicts with its durable subject identity."""
+
+    public_detail = "Recovery exception conflicts with existing state"
+
+
 @dataclass(frozen=True)
 class ClaimRecord:
     """One artifact-publication claim: the exactly-once-visible authority.
@@ -467,6 +568,59 @@ class ArtifactPublicationCandidate:
 
 
 @dataclass(frozen=True)
+class RecoverySweepRecord:
+    """One recurring, bounded per-world recovery scan.
+
+    The sweep fence schedules a bounded pass. It never authorizes a model,
+    sandbox, artifact, or retention side effect; handlers must still acquire
+    the owning domain record's fence before mutating that authority.
+    """
+
+    sweep_key: str
+    storage_fingerprint: str
+    world_id: str
+    kind: str
+    status: str
+    cursor: str
+    cycle: int
+    claimant: str
+    lease_expires_at_ms: int
+    fence_epoch: int
+    active_subject_key: str
+    consecutive_failures: int
+    max_consecutive_failures: int
+    next_due_at_ms: int
+    last_error_code: str
+    last_error_detail: str
+    created_at_ms: int
+    updated_at_ms: int
+    paused_at_ms: int | None
+
+
+@dataclass(frozen=True)
+class RecoveryExceptionRecord:
+    """Sparse retry/DLQ state for one poison subject within a sweep."""
+
+    exception_key: str
+    sweep_key: str
+    storage_fingerprint: str
+    world_id: str
+    kind: str
+    subject_key: str
+    authority_key: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    retry_at_ms: int
+    last_error_code: str
+    last_error_detail: str
+    created_at_ms: int
+    updated_at_ms: int
+    resolved_at_ms: int | None
+    dead_lettered_at_ms: int | None
+
+
+@dataclass(frozen=True)
 class SignatureRecord:
     """Compact durable pointer to one archetype table."""
 
@@ -551,6 +705,9 @@ class ControlCatalog(Protocol):
     async def set_world_run(self, world_id: str, run_id: str) -> None: ...
     async def get_world(self, world_id: str) -> WorldRecord | None: ...
     async def list_worlds(self) -> list[WorldRecord]: ...
+    async def list_worlds_page(
+        self, *, after_world_id: str = "", limit: int = 1000
+    ) -> list[WorldRecord]: ...
     async def register_signature(self, record: SignatureRecord) -> None: ...
     async def list_signatures(self) -> list[SignatureRecord]: ...
     async def max_manifest_tick(self, world_id: str, run_id: str) -> int | None: ...
@@ -691,6 +848,130 @@ class ControlCatalog(Protocol):
         limit: int = 100,
         after_publication_key: str = "",
     ) -> list[ArtifactPublicationCandidate]: ...
+    async def ensure_recovery_sweep(
+        self,
+        storage_fingerprint: str,
+        world_id: str,
+        kind: str,
+        *,
+        max_consecutive_failures: int,
+        initial_delay_ms: int = 0,
+    ) -> RecoverySweepRecord: ...
+    async def lease_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, RecoverySweepRecord]: ...
+    async def renew_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        lease_ms: int,
+    ) -> RecoverySweepRecord: ...
+    async def checkpoint_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        cursor: str,
+        active_subject_key: str = "",
+    ) -> RecoverySweepRecord: ...
+    async def yield_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        next_delay_ms: int,
+    ) -> RecoverySweepRecord: ...
+    async def fail_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+    ) -> RecoverySweepRecord: ...
+    async def pause_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+    ) -> RecoverySweepRecord: ...
+    async def redrive_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        *,
+        expected_fence_epoch: int,
+        delay_ms: int = 0,
+    ) -> RecoverySweepRecord: ...
+    async def list_recovery_sweeps(
+        self, world_id: str, *, status: str | None = None
+    ) -> list[RecoverySweepRecord]: ...
+    async def retry_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        subject_key: str,
+        authority_key: str,
+        expected_attempt_count: int,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+        max_attempts: int,
+        permanent: bool = False,
+    ) -> RecoveryExceptionRecord: ...
+    async def resolve_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+    ) -> RecoveryExceptionRecord: ...
+    async def redrive_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+        *,
+        expected_attempt_count: int,
+        retry_delay_ms: int = 0,
+    ) -> RecoveryExceptionRecord: ...
+    async def get_recovery_exception(
+        self, world_id: str, kind: str, exception_key: str
+    ) -> RecoveryExceptionRecord | None: ...
+    async def list_recovery_exceptions(
+        self,
+        world_id: str,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        due_only: bool = False,
+        limit: int = 100,
+    ) -> list[RecoveryExceptionRecord]: ...
     async def admit_commands(
         self, world_id: str, admissions: list[CommandAdmission]
     ) -> list[CommandRecord]: ...
@@ -851,6 +1132,57 @@ CREATE TABLE IF NOT EXISTS artifact_publications (
 );
 CREATE INDEX IF NOT EXISTS artifact_publications_due
 ON artifact_publications (world_id, status, lease_expires_at);
+CREATE TABLE IF NOT EXISTS fleet_recovery_sweeps (
+    sweep_key TEXT PRIMARY KEY,
+    storage_fingerprint TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    cursor TEXT NOT NULL DEFAULT '',
+    cycle INTEGER NOT NULL DEFAULT 0,
+    claimant TEXT NOT NULL DEFAULT '',
+    lease_expires_at_ms INTEGER NOT NULL DEFAULT 0,
+    fence_epoch INTEGER NOT NULL DEFAULT 0,
+    active_subject_key TEXT NOT NULL DEFAULT '',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    max_consecutive_failures INTEGER NOT NULL,
+    next_due_at_ms INTEGER NOT NULL,
+    last_error_code TEXT NOT NULL DEFAULT '',
+    last_error_detail TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    paused_at_ms INTEGER,
+    UNIQUE (world_id, kind)
+);
+CREATE INDEX IF NOT EXISTS fleet_recovery_sweeps_due
+ON fleet_recovery_sweeps (
+    world_id, status, next_due_at_ms, lease_expires_at_ms, kind, sweep_key
+);
+CREATE TABLE IF NOT EXISTS fleet_recovery_exceptions (
+    exception_key TEXT PRIMARY KEY,
+    sweep_key TEXT NOT NULL,
+    storage_fingerprint TEXT NOT NULL,
+    world_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    subject_key TEXT NOT NULL,
+    authority_key TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL,
+    retry_at_ms INTEGER NOT NULL,
+    last_error_code TEXT NOT NULL DEFAULT '',
+    last_error_detail TEXT NOT NULL DEFAULT '',
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    resolved_at_ms INTEGER,
+    dead_lettered_at_ms INTEGER,
+    UNIQUE (sweep_key, subject_key),
+    FOREIGN KEY (sweep_key) REFERENCES fleet_recovery_sweeps (sweep_key)
+);
+CREATE INDEX IF NOT EXISTS fleet_recovery_exceptions_due
+ON fleet_recovery_exceptions (
+    world_id, kind, status, retry_at_ms, exception_key
+);
 CREATE TABLE IF NOT EXISTS commands (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     command_id TEXT NOT NULL UNIQUE,
@@ -1114,6 +1446,34 @@ class SqliteControlCatalog:
         def _list() -> list[WorldRecord]:
             conn = self._connect_sync()
             rows = conn.execute("SELECT * FROM worlds ORDER BY world_id").fetchall()
+            return [_world_from_row(row) for row in rows]
+
+        return await self._run(_list)
+
+    async def list_worlds_page(
+        self,
+        *,
+        after_world_id: str = "",
+        limit: int = 1000,
+    ) -> list[WorldRecord]:
+        """Return one stable lexicographic discovery page.
+
+        The cursor is advisory discovery progress, never recovery authority.
+        Destroyed worlds remain present because artifact and retention work can
+        outlive a live world handle.
+        """
+
+        if not isinstance(after_world_id, str):
+            raise TypeError("world discovery cursor must be a string")
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("world discovery page limit must be between 1 and 10000")
+
+        def _list() -> list[WorldRecord]:
+            conn = self._connect_sync()
+            rows = conn.execute(
+                "SELECT * FROM worlds WHERE world_id>? ORDER BY world_id LIMIT ?",
+                (after_world_id, limit),
+            ).fetchall()
             return [_world_from_row(row) for row in rows]
 
         return await self._run(_list)
@@ -2370,6 +2730,956 @@ class SqliteControlCatalog:
 
         return await self._run(_list)
 
+    # ── fleet recovery coordination (issue #503) ───────────────────────────
+
+    async def ensure_recovery_sweep(
+        self,
+        storage_fingerprint: str,
+        world_id: str,
+        kind: str,
+        *,
+        max_consecutive_failures: int,
+        initial_delay_ms: int = 0,
+    ) -> RecoverySweepRecord:
+        storage_fingerprint = _require_sha256(storage_fingerprint, field="storage_fingerprint")
+        kind = _require_recovery_kind(kind)
+        initial_delay_ms = _require_recovery_delay(initial_delay_ms, field="initial_delay_ms")
+        if (
+            isinstance(max_consecutive_failures, bool)
+            or not isinstance(max_consecutive_failures, int)
+            or max_consecutive_failures < 1
+            or max_consecutive_failures > 1_000_000
+        ):
+            raise ValueError("max_consecutive_failures must be between 1 and 1000000")
+        sweep_key = recovery_sweep_key(storage_fingerprint, world_id, kind)
+
+        def _ensure() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if (
+                    conn.execute("SELECT 1 FROM worlds WHERE world_id=?", (world_id,)).fetchone()
+                    is None
+                ):
+                    raise RecoverySweepConflictError(
+                        f"world {world_id} is not registered in this catalog"
+                    )
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if row is not None:
+                    existing = _recovery_sweep_from_row(row)
+                    if (
+                        existing.sweep_key != sweep_key
+                        or existing.storage_fingerprint != storage_fingerprint
+                        or existing.max_consecutive_failures != max_consecutive_failures
+                    ):
+                        raise RecoverySweepConflictError(
+                            f"recovery sweep {world_id}/{kind} has different immutable policy"
+                        )
+                    return existing
+                now_ms = _now_ms()
+                initial_status = RecoverySweepTransitionGraph.transition(
+                    None, RecoverySweepEvent.CREATE
+                ).value
+                conn.execute(
+                    "INSERT INTO fleet_recovery_sweeps "
+                    "(sweep_key, storage_fingerprint, world_id, kind, status, "
+                    "max_consecutive_failures, next_due_at_ms, created_at_ms, updated_at_ms) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        sweep_key,
+                        storage_fingerprint,
+                        world_id,
+                        kind,
+                        initial_status,
+                        max_consecutive_failures,
+                        now_ms + initial_delay_ms,
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?", (sweep_key,)
+                ).fetchone()
+                assert row is not None
+                return _recovery_sweep_from_row(row)
+
+        return await self._run(_ensure)
+
+    async def lease_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        *,
+        lease_ms: int,
+    ) -> tuple[str, RecoverySweepRecord]:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        lease_ms = _require_recovery_lease(lease_ms)
+
+        def _lease() -> tuple[str, RecoverySweepRecord]:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if row is None:
+                    raise RecoverySweepConflictError(
+                        f"recovery sweep {world_id}/{kind} is not registered"
+                    )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                existing = _recovery_sweep_from_row(row)
+                now_ms = _now_ms()
+                if existing.status == "paused":
+                    return "paused", existing
+                if existing.status == "leased" and existing.lease_expires_at_ms > now_ms:
+                    if existing.claimant == claimant:
+                        return "owned", existing
+                    raise RecoverySweepPendingError(
+                        f"recovery sweep {world_id}/{kind} is leased by another worker"
+                    )
+                if existing.status in {"idle", "retry_wait"} and existing.next_due_at_ms > now_ms:
+                    return "not_due", existing
+                if existing.status not in {"idle", "retry_wait", "leased"}:
+                    raise RecoverySweepConflictError(
+                        f"recovery sweep {world_id}/{kind} has invalid status {existing.status}"
+                    )
+                if (
+                    existing.fence_epoch >= _MAX_PORTABLE_COUNTER
+                    or existing.cycle >= _MAX_PORTABLE_COUNTER
+                ):
+                    raise RecoverySweepConflictError(
+                        f"recovery sweep {world_id}/{kind} exhausted its portable counter"
+                    )
+                outcome = "recovered" if existing.status == "leased" else "acquired"
+                event = (
+                    RecoverySweepEvent.TAKE_OVER
+                    if source_status is RecoverySweepStatus.LEASED
+                    else RecoverySweepEvent.LEASE
+                )
+                target_status = RecoverySweepTransitionGraph.transition(source_status, event).value
+                # A live active subject is crash evidence. Preserve it across
+                # both expired-lease takeover and due retry acquisition so the
+                # next worker reconciles the interrupted domain authority.
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, claimant=?, "
+                    "lease_expires_at_ms=?, fence_epoch=fence_epoch+1, cycle=cycle+1, "
+                    "active_subject_key=?, updated_at_ms=?, paused_at_ms=NULL "
+                    "WHERE sweep_key=? AND fence_epoch=? AND status=?",
+                    (
+                        target_status,
+                        claimant,
+                        now_ms + lease_ms,
+                        existing.active_subject_key,
+                        now_ms,
+                        existing.sweep_key,
+                        existing.fence_epoch,
+                        source_status.value,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before lease acquisition"
+                    )
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (existing.sweep_key,),
+                ).fetchone()
+                assert row is not None
+                return outcome, _recovery_sweep_from_row(row)
+
+        return await self._run(_lease)
+
+    async def renew_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        lease_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        lease_ms = _require_recovery_lease(lease_ms)
+
+        def _renew() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                row = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                target_status = RecoverySweepTransitionGraph.transition(
+                    source_status, RecoverySweepEvent.RENEW
+                ).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, lease_expires_at_ms=?, "
+                    "updated_at_ms=? WHERE sweep_key=? AND status=? AND claimant=? AND fence_epoch=? "
+                    "AND lease_expires_at_ms>?",
+                    (
+                        target_status,
+                        now_ms + lease_ms,
+                        now_ms,
+                        row["sweep_key"],
+                        source_status.value,
+                        claimant,
+                        fence_epoch,
+                        now_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before renewal"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_renew)
+
+    async def checkpoint_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        cursor: str,
+        active_subject_key: str = "",
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        if cursor != "":
+            cursor = _require_sha256(cursor, field="recovery cursor")
+        if active_subject_key != "":
+            active_subject_key = _require_sha256(active_subject_key, field="active_subject_key")
+
+        def _checkpoint() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                row = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                target_status = RecoverySweepTransitionGraph.transition(
+                    source_status, RecoverySweepEvent.CHECKPOINT
+                ).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, cursor=?, active_subject_key=?, "
+                    "updated_at_ms=? WHERE sweep_key=? AND status=? AND claimant=? "
+                    "AND fence_epoch=? AND lease_expires_at_ms>?",
+                    (
+                        target_status,
+                        cursor,
+                        active_subject_key,
+                        now_ms,
+                        row["sweep_key"],
+                        source_status.value,
+                        claimant,
+                        fence_epoch,
+                        now_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before checkpoint"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_checkpoint)
+
+    async def yield_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        next_delay_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        next_delay_ms = _require_recovery_delay(next_delay_ms, field="next_delay_ms")
+
+        def _yield() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                existing = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if existing is not None and (
+                    existing["status"] == "idle"
+                    and existing["claimant"] == claimant
+                    and int(existing["fence_epoch"]) == fence_epoch
+                ):
+                    return _recovery_sweep_from_row(existing)
+                row = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                target_status = RecoverySweepTransitionGraph.transition(
+                    source_status, RecoverySweepEvent.YIELD
+                ).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, lease_expires_at_ms=0, "
+                    "active_subject_key='', consecutive_failures=0, next_due_at_ms=?, "
+                    "last_error_code='', last_error_detail='', updated_at_ms=?, paused_at_ms=NULL "
+                    "WHERE sweep_key=? AND status=? AND claimant=? AND fence_epoch=? "
+                    "AND lease_expires_at_ms>?",
+                    (
+                        target_status,
+                        now_ms + next_delay_ms,
+                        now_ms,
+                        row["sweep_key"],
+                        source_status.value,
+                        claimant,
+                        fence_epoch,
+                        now_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before yield"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_yield)
+
+    async def fail_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+
+        def _fail() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                existing = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if existing is not None and (
+                    existing["status"] in {"retry_wait", "paused"}
+                    and existing["claimant"] == claimant
+                    and int(existing["fence_epoch"]) == fence_epoch
+                    and existing["last_error_code"] == error_code
+                    and existing["last_error_detail"] == error_detail
+                ):
+                    return _recovery_sweep_from_row(existing)
+                row = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                failures = int(row["consecutive_failures"]) + 1
+                paused = failures >= int(row["max_consecutive_failures"])
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                event = RecoverySweepEvent.EXHAUST if paused else RecoverySweepEvent.FAIL
+                target_status = RecoverySweepTransitionGraph.transition(source_status, event).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, lease_expires_at_ms=0, "
+                    "consecutive_failures=?, next_due_at_ms=?, last_error_code=?, "
+                    "last_error_detail=?, updated_at_ms=?, paused_at_ms=? "
+                    "WHERE sweep_key=? AND status=? AND claimant=? AND fence_epoch=? "
+                    "AND lease_expires_at_ms>?",
+                    (
+                        target_status,
+                        failures,
+                        now_ms + retry_delay_ms,
+                        error_code,
+                        error_detail,
+                        now_ms,
+                        now_ms if paused else None,
+                        row["sweep_key"],
+                        source_status.value,
+                        claimant,
+                        fence_epoch,
+                        now_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before failure recording"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_fail)
+
+    async def pause_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        error_code: str,
+        error_detail: str,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+
+        def _pause() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                existing = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if existing is not None and (
+                    existing["status"] == "paused"
+                    and existing["claimant"] == claimant
+                    and int(existing["fence_epoch"]) == fence_epoch
+                    and existing["last_error_code"] == error_code
+                    and existing["last_error_detail"] == error_detail
+                ):
+                    return _recovery_sweep_from_row(existing)
+                row = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                target_status = RecoverySweepTransitionGraph.transition(
+                    source_status, RecoverySweepEvent.PAUSE
+                ).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, lease_expires_at_ms=0, "
+                    "last_error_code=?, last_error_detail=?, updated_at_ms=?, paused_at_ms=? "
+                    "WHERE sweep_key=? AND status=? AND claimant=? AND fence_epoch=? "
+                    "AND lease_expires_at_ms>?",
+                    (
+                        target_status,
+                        error_code,
+                        error_detail,
+                        now_ms,
+                        now_ms,
+                        row["sweep_key"],
+                        source_status.value,
+                        claimant,
+                        fence_epoch,
+                        now_ms,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before pause"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_pause)
+
+    async def redrive_recovery_sweep(
+        self,
+        world_id: str,
+        kind: str,
+        *,
+        expected_fence_epoch: int,
+        delay_ms: int = 0,
+    ) -> RecoverySweepRecord:
+        kind = _require_recovery_kind(kind)
+        expected_fence_epoch = _require_portable_counter(
+            expected_fence_epoch, field="expected_fence_epoch"
+        )
+        if expected_fence_epoch == _MAX_PORTABLE_COUNTER:
+            raise ValueError("expected_fence_epoch must leave room for the redrive fence")
+        delay_ms = _require_recovery_delay(delay_ms, field="delay_ms")
+
+        def _redrive() -> RecoverySweepRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+                    (world_id, kind),
+                ).fetchone()
+                if row is None:
+                    raise RecoverySweepConflictError(
+                        f"recovery sweep {world_id}/{kind} is not registered"
+                    )
+                source_status = RecoverySweepTransitionGraph.state(row["status"])
+                if row["status"] == "idle" and int(row["fence_epoch"]) == (
+                    expected_fence_epoch + 1
+                ):
+                    return _recovery_sweep_from_row(row)
+                if row["status"] != "paused" or int(row["fence_epoch"]) != (expected_fence_epoch):
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} is not paused at the expected fence"
+                    )
+                now_ms = _now_ms()
+                target_status = RecoverySweepTransitionGraph.transition(
+                    source_status, RecoverySweepEvent.REDRIVE
+                ).value
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_sweeps SET status=?, claimant='', "
+                    "lease_expires_at_ms=0, fence_epoch=fence_epoch+1, "
+                    "consecutive_failures=0, next_due_at_ms=?, last_error_code='', "
+                    "last_error_detail='', updated_at_ms=?, paused_at_ms=NULL "
+                    "WHERE sweep_key=? AND status=? AND fence_epoch=?",
+                    (
+                        target_status,
+                        now_ms + delay_ms,
+                        now_ms,
+                        row["sweep_key"],
+                        source_status.value,
+                        expected_fence_epoch,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoverySweepStaleError(
+                        f"recovery sweep {world_id}/{kind} changed before redrive"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE sweep_key=?",
+                    (row["sweep_key"],),
+                ).fetchone()
+                assert result is not None
+                return _recovery_sweep_from_row(result)
+
+        return await self._run(_redrive)
+
+    async def list_recovery_sweeps(
+        self, world_id: str, *, status: str | None = None
+    ) -> list[RecoverySweepRecord]:
+        if status is not None and status not in _RECOVERY_SWEEP_STATUSES:
+            raise ValueError(f"unsupported recovery sweep status {status!r}")
+
+        def _list() -> list[RecoverySweepRecord]:
+            conn = self._connect_sync()
+            if status is None:
+                rows = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? ORDER BY kind, sweep_key",
+                    (world_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND status=? "
+                    "ORDER BY kind, sweep_key",
+                    (world_id, status),
+                ).fetchall()
+            if len(rows) > len(_RECOVERY_KINDS):
+                raise RuntimeError("local recovery sweep list exceeds the closed kind set")
+            return [_recovery_sweep_from_row(row) for row in rows]
+
+        return await self._run(_list)
+
+    async def retry_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        *,
+        subject_key: str,
+        authority_key: str,
+        expected_attempt_count: int,
+        error_code: str,
+        error_detail: str,
+        retry_delay_ms: int,
+        max_attempts: int,
+        permanent: bool = False,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        if type(permanent) is not bool:
+            raise TypeError("permanent must be a boolean")
+        subject_key = _require_sha256(subject_key, field="subject_key")
+        authority_key = _require_sha256(authority_key, field="authority_key")
+        error_code, error_detail = _validate_recovery_error(error_code, error_detail)
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+        if (
+            isinstance(expected_attempt_count, bool)
+            or not isinstance(expected_attempt_count, int)
+            or expected_attempt_count < 0
+            or expected_attempt_count >= _MAX_PORTABLE_COUNTER
+        ):
+            raise ValueError(
+                "expected_attempt_count must be a non-negative portable incrementable integer"
+            )
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or max_attempts < 1
+            or max_attempts > 1_000_000
+        ):
+            raise ValueError("max_attempts must be between 1 and 1000000")
+
+        def _retry() -> RecoveryExceptionRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                sweep = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                exception_key = recovery_exception_key(str(sweep["sweep_key"]), subject_key)
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                next_attempt = expected_attempt_count + 1
+                event = (
+                    RecoveryExceptionEvent.DEAD_LETTER
+                    if permanent or next_attempt >= max_attempts
+                    else RecoveryExceptionEvent.RETRY
+                )
+                target_status = RecoveryExceptionTransitionGraph.transition(None, event).value
+                retry_at_ms = now_ms + retry_delay_ms
+                if row is not None:
+                    if (
+                        row["sweep_key"] != sweep["sweep_key"]
+                        or row["storage_fingerprint"] != sweep["storage_fingerprint"]
+                        or row["world_id"] != world_id
+                        or row["kind"] != kind
+                        or row["subject_key"] != subject_key
+                        or row["authority_key"] != authority_key
+                        or int(row["max_attempts"]) != max_attempts
+                    ):
+                        raise RecoveryExceptionConflictError(
+                            f"recovery exception {exception_key} has different immutable content"
+                        )
+                    # Lost-response replay: the requested increment is already durable.
+                    if (
+                        int(row["attempt_count"]) == next_attempt
+                        and row["status"] == target_status
+                        and row["last_error_code"] == error_code
+                        and row["last_error_detail"] == error_detail
+                    ):
+                        return _recovery_exception_from_row(row)
+                    try:
+                        source_status = RecoveryExceptionTransitionGraph.state(row["status"])
+                        target_status = RecoveryExceptionTransitionGraph.transition(
+                            source_status, event
+                        ).value
+                    except ValueError as exc:
+                        raise RecoveryExceptionConflictError(
+                            f"recovery exception {exception_key} must be redriven before retry"
+                        ) from exc
+                    if int(row["attempt_count"]) != expected_attempt_count:
+                        raise RecoveryExceptionConflictError(
+                            f"recovery exception {exception_key} attempt count changed"
+                        )
+                    updated = conn.execute(
+                        "UPDATE fleet_recovery_exceptions SET status=?, attempt_count=?, "
+                        "retry_at_ms=?, last_error_code=?, last_error_detail=?, updated_at_ms=?, "
+                        "resolved_at_ms=NULL, dead_lettered_at_ms=? "
+                        "WHERE exception_key=? AND status=? AND attempt_count=?",
+                        (
+                            target_status,
+                            next_attempt,
+                            retry_at_ms,
+                            error_code,
+                            error_detail,
+                            now_ms,
+                            now_ms if target_status == "dead_letter" else None,
+                            exception_key,
+                            source_status.value,
+                            expected_attempt_count,
+                        ),
+                    )
+                    if updated.rowcount != 1:
+                        raise RecoveryExceptionConflictError(
+                            f"recovery exception {exception_key} changed before retry recording"
+                        )
+                else:
+                    if expected_attempt_count != 0:
+                        raise RecoveryExceptionConflictError(
+                            f"recovery exception {exception_key} has not been recorded"
+                        )
+                    conn.execute(
+                        "INSERT INTO fleet_recovery_exceptions "
+                        "(exception_key, sweep_key, storage_fingerprint, world_id, kind, "
+                        "subject_key, authority_key, status, attempt_count, max_attempts, "
+                        "retry_at_ms, last_error_code, last_error_detail, created_at_ms, "
+                        "updated_at_ms, dead_lettered_at_ms) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            exception_key,
+                            sweep["sweep_key"],
+                            sweep["storage_fingerprint"],
+                            world_id,
+                            kind,
+                            subject_key,
+                            authority_key,
+                            target_status,
+                            next_attempt,
+                            max_attempts,
+                            retry_at_ms,
+                            error_code,
+                            error_detail,
+                            now_ms,
+                            now_ms,
+                            now_ms if target_status == "dead_letter" else None,
+                        ),
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                assert result is not None
+                return _recovery_exception_from_row(result)
+
+        return await self._run(_retry)
+
+    async def resolve_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+
+        def _resolve() -> RecoveryExceptionRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                sweep = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                if row is None or row["sweep_key"] != sweep["sweep_key"]:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} is not part of {world_id}/{kind}"
+                    )
+                source_status = RecoveryExceptionTransitionGraph.state(row["status"])
+                if source_status is RecoveryExceptionStatus.RESOLVED:
+                    return _recovery_exception_from_row(row)
+                try:
+                    target_status = RecoveryExceptionTransitionGraph.transition(
+                        source_status, RecoveryExceptionEvent.RESOLVE
+                    ).value
+                except ValueError as exc:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} has invalid status {row['status']}"
+                    ) from exc
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_exceptions SET status=?, updated_at_ms=?, "
+                    "resolved_at_ms=? WHERE exception_key=? AND status=?",
+                    (target_status, now_ms, now_ms, exception_key, source_status.value),
+                )
+                if updated.rowcount != 1:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} changed before resolution"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                assert result is not None
+                return _recovery_exception_from_row(result)
+
+        return await self._run(_resolve)
+
+    async def redrive_recovery_exception(
+        self,
+        world_id: str,
+        kind: str,
+        claimant: str,
+        fence_epoch: int,
+        exception_key: str,
+        *,
+        expected_attempt_count: int,
+        retry_delay_ms: int = 0,
+    ) -> RecoveryExceptionRecord:
+        kind = _require_recovery_kind(kind)
+        claimant = _require_bounded_text(claimant, field="recovery claimant", max_chars=1024)
+        fence_epoch = _require_portable_counter(fence_epoch)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+        retry_delay_ms = _require_recovery_delay(retry_delay_ms, field="retry_delay_ms")
+        if (
+            isinstance(expected_attempt_count, bool)
+            or not isinstance(expected_attempt_count, int)
+            or expected_attempt_count < 0
+            or expected_attempt_count > _MAX_PORTABLE_COUNTER
+        ):
+            raise ValueError("expected_attempt_count must be a portable non-negative integer")
+
+        def _redrive() -> RecoveryExceptionRecord:
+            conn = self._connect_sync()
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                now_ms = _now_ms()
+                sweep = _require_live_recovery_sweep(
+                    conn, world_id, kind, claimant, fence_epoch, now_ms
+                )
+                row = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                if row is None or row["sweep_key"] != sweep["sweep_key"]:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} is not part of {world_id}/{kind}"
+                    )
+                if int(row["attempt_count"]) != expected_attempt_count:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} attempt count changed"
+                    )
+                source_status = RecoveryExceptionTransitionGraph.state(row["status"])
+                if source_status is RecoveryExceptionStatus.RETRY_WAIT:
+                    return _recovery_exception_from_row(row)
+                try:
+                    target_status = RecoveryExceptionTransitionGraph.transition(
+                        source_status, RecoveryExceptionEvent.REDRIVE
+                    ).value
+                except ValueError as exc:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} is not dead-lettered"
+                    ) from exc
+                updated = conn.execute(
+                    "UPDATE fleet_recovery_exceptions SET status=?, retry_at_ms=?, "
+                    "updated_at_ms=?, resolved_at_ms=NULL, dead_lettered_at_ms=NULL "
+                    "WHERE exception_key=? AND status=? AND attempt_count=?",
+                    (
+                        target_status,
+                        now_ms + retry_delay_ms,
+                        now_ms,
+                        exception_key,
+                        source_status.value,
+                        expected_attempt_count,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise RecoveryExceptionConflictError(
+                        f"recovery exception {exception_key} changed before redrive"
+                    )
+                result = conn.execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE exception_key=?",
+                    (exception_key,),
+                ).fetchone()
+                assert result is not None
+                return _recovery_exception_from_row(result)
+
+        return await self._run(_redrive)
+
+    async def get_recovery_exception(
+        self, world_id: str, kind: str, exception_key: str
+    ) -> RecoveryExceptionRecord | None:
+        kind = _require_recovery_kind(kind)
+        exception_key = _require_sha256(exception_key, field="exception_key")
+
+        def _get() -> RecoveryExceptionRecord | None:
+            row = (
+                self._connect_sync()
+                .execute(
+                    "SELECT * FROM fleet_recovery_exceptions "
+                    "WHERE world_id=? AND kind=? AND exception_key=?",
+                    (world_id, kind, exception_key),
+                )
+                .fetchone()
+            )
+            return _recovery_exception_from_row(row) if row is not None else None
+
+        return await self._run(_get)
+
+    async def list_recovery_exceptions(
+        self,
+        world_id: str,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        due_only: bool = False,
+        limit: int = 100,
+    ) -> list[RecoveryExceptionRecord]:
+        if kind is not None:
+            kind = _require_recovery_kind(kind)
+        if type(due_only) is not bool:
+            raise TypeError("due_only must be a boolean")
+        if status is not None and status not in _RECOVERY_EXCEPTION_STATUSES:
+            raise ValueError(f"unsupported recovery exception status {status!r}")
+        if type(limit) is not int or limit < 1 or limit > 10_000:
+            raise ValueError("recovery exception limit must be between 1 and 10000")
+        if due_only and status not in {None, "retry_wait"}:
+            raise ValueError("due_only recovery exceptions must have retry_wait status")
+
+        def _list() -> list[RecoveryExceptionRecord]:
+            where = ["world_id=?"]
+            values: list[object] = [world_id]
+            if kind is not None:
+                where.append("kind=?")
+                values.append(kind)
+            if status is not None:
+                where.append("status=?")
+                values.append(status)
+            if due_only:
+                where.append("status='retry_wait'")
+                where.append("retry_at_ms<=?")
+                values.append(_now_ms())
+            values.append(limit)
+            rows = (
+                self._connect_sync()
+                .execute(
+                    "SELECT * FROM fleet_recovery_exceptions WHERE "
+                    + " AND ".join(where)
+                    + " ORDER BY retry_at_ms, exception_key LIMIT ?",
+                    tuple(values),
+                )
+                .fetchall()
+            )
+            return [_recovery_exception_from_row(row) for row in rows]
+
+        return await self._run(_list)
+
     # ── signatures ───────────────────────────────────────────────────────────
 
     async def register_signature(self, record: SignatureRecord) -> None:
@@ -3471,6 +4781,177 @@ def _recover_artifact_publication_row(
     ).fetchone()
     assert row is not None
     return "recovered", _artifact_publication_from_row(row)
+
+
+def _validate_recovery_error(error_code: str, error_detail: str) -> tuple[str, str]:
+    error_code = _require_bounded_text(
+        error_code,
+        field="recovery error_code",
+        max_chars=_MAX_RECOVERY_ERROR_CODE_CHARS,
+    )
+    if error_code not in _RECOVERY_ERROR_CODES:
+        raise ValueError(f"unsupported recovery error_code {error_code!r}")
+    if not isinstance(error_detail, str):
+        raise TypeError("recovery error_detail must be a string")
+    if len(error_detail) > _MAX_RECOVERY_ERROR_DETAIL_CHARS:
+        raise ValueError(
+            f"recovery error_detail exceeds {_MAX_RECOVERY_ERROR_DETAIL_CHARS} characters"
+        )
+    return error_code, error_detail
+
+
+def _require_live_recovery_sweep(
+    conn: sqlite3.Connection,
+    world_id: str,
+    kind: str,
+    claimant: str,
+    fence_epoch: int,
+    now_ms: int,
+) -> sqlite3.Row:
+    row = conn.execute(
+        "SELECT * FROM fleet_recovery_sweeps WHERE world_id=? AND kind=?",
+        (world_id, kind),
+    ).fetchone()
+    if row is None:
+        raise RecoverySweepConflictError(f"recovery sweep {world_id}/{kind} is not registered")
+    if (
+        row["status"] != "leased"
+        or row["claimant"] != claimant
+        or int(row["fence_epoch"]) != fence_epoch
+        or int(row["lease_expires_at_ms"]) <= now_ms
+    ):
+        raise RecoverySweepStaleError(
+            f"recovery sweep {world_id}/{kind} is not live at fence {fence_epoch}"
+        )
+    return row
+
+
+def _local_recovery_int(
+    row: sqlite3.Row,
+    field: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Decode one SQLite recovery integer without accepting lossy coercion."""
+
+    value = row[field]
+    if type(value) is not int:
+        raise RuntimeError(f"local recovery record has non-integer {field}")
+    if minimum is not None and value < minimum:
+        raise RuntimeError(f"local recovery record has out-of-range {field}")
+    if maximum is not None and value > maximum:
+        raise RuntimeError(f"local recovery record has out-of-range {field}")
+    return value
+
+
+def _local_optional_recovery_int(
+    row: sqlite3.Row,
+    field: str,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | None:
+    value = row[field]
+    if value is None:
+        return None
+    return _local_recovery_int(row, field, minimum=minimum, maximum=maximum)
+
+
+def _local_recovery_error_code(row: sqlite3.Row) -> str:
+    value = row["last_error_code"]
+    if not isinstance(value, str):
+        raise RuntimeError("local recovery record has non-string last_error_code")
+    if value and value not in _RECOVERY_ERROR_CODES:
+        raise RuntimeError(f"local recovery record has invalid last_error_code {value!r}")
+    return value
+
+
+def _recovery_sweep_from_row(row: sqlite3.Row) -> RecoverySweepRecord:
+    status = str(row["status"])
+    if status not in _RECOVERY_SWEEP_STATUSES:
+        raise RuntimeError(f"local recovery sweep has invalid status {status!r}")
+    kind = str(row["kind"])
+    if kind not in _RECOVERY_KINDS:
+        raise RuntimeError(f"local recovery sweep has invalid kind {kind!r}")
+    cycle = _local_recovery_int(row, "cycle", minimum=0, maximum=_MAX_PORTABLE_COUNTER)
+    fence_epoch = _local_recovery_int(row, "fence_epoch", minimum=0, maximum=_MAX_PORTABLE_COUNTER)
+    return RecoverySweepRecord(
+        sweep_key=str(row["sweep_key"]),
+        storage_fingerprint=str(row["storage_fingerprint"]),
+        world_id=str(row["world_id"]),
+        kind=kind,
+        status=status,
+        cursor=str(row["cursor"]),
+        cycle=cycle,
+        claimant=str(row["claimant"]),
+        lease_expires_at_ms=_local_recovery_int(
+            row, "lease_expires_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        fence_epoch=fence_epoch,
+        active_subject_key=str(row["active_subject_key"]),
+        consecutive_failures=_local_recovery_int(
+            row, "consecutive_failures", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        max_consecutive_failures=_local_recovery_int(
+            row, "max_consecutive_failures", minimum=1, maximum=1_000_000
+        ),
+        next_due_at_ms=_local_recovery_int(
+            row, "next_due_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        last_error_code=_local_recovery_error_code(row),
+        last_error_detail=str(row["last_error_detail"]),
+        created_at_ms=_local_recovery_int(
+            row, "created_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        updated_at_ms=_local_recovery_int(
+            row, "updated_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        paused_at_ms=_local_optional_recovery_int(
+            row, "paused_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+    )
+
+
+def _recovery_exception_from_row(row: sqlite3.Row) -> RecoveryExceptionRecord:
+    status = str(row["status"])
+    if status not in _RECOVERY_EXCEPTION_STATUSES:
+        raise RuntimeError(f"local recovery exception has invalid status {status!r}")
+    kind = str(row["kind"])
+    if kind not in _RECOVERY_KINDS:
+        raise RuntimeError(f"local recovery exception has invalid kind {kind!r}")
+    attempt_count = _local_recovery_int(
+        row, "attempt_count", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+    )
+    return RecoveryExceptionRecord(
+        exception_key=str(row["exception_key"]),
+        sweep_key=str(row["sweep_key"]),
+        storage_fingerprint=str(row["storage_fingerprint"]),
+        world_id=str(row["world_id"]),
+        kind=kind,
+        subject_key=str(row["subject_key"]),
+        authority_key=str(row["authority_key"]),
+        status=status,
+        attempt_count=attempt_count,
+        max_attempts=_local_recovery_int(row, "max_attempts", minimum=1, maximum=1_000_000),
+        retry_at_ms=_local_recovery_int(
+            row, "retry_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        last_error_code=_local_recovery_error_code(row),
+        last_error_detail=str(row["last_error_detail"]),
+        created_at_ms=_local_recovery_int(
+            row, "created_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        updated_at_ms=_local_recovery_int(
+            row, "updated_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        resolved_at_ms=_local_optional_recovery_int(
+            row, "resolved_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+        dead_lettered_at_ms=_local_optional_recovery_int(
+            row, "dead_lettered_at_ms", minimum=0, maximum=_MAX_PORTABLE_COUNTER
+        ),
+    )
 
 
 def _command_from_row(row: sqlite3.Row) -> CommandRecord:
