@@ -2107,7 +2107,13 @@ async def test_exact_artifact_recovery_state_machine_parity(tmp_path, worker_url
             )
             assert outcome == "owned" and owned is not None
             assert owned.attempt_count == 1
-            assert owned.lease_expires_at > publication.lease_expires_at
+            # The remote catalog clock is millisecond-granular. Acquisition
+            # and same-owner recovery can therefore observe the same catalog
+            # millisecond and produce an equal (never regressed) expiry.
+            # The deterministic clock test in test_artifact_publication_catalog
+            # advances time explicitly and proves that renewal extends from a
+            # later catalog instant.
+            assert owned.lease_expires_at >= publication.lease_expires_at
             with pytest.raises(ArtifactPublicationPendingError):
                 await catalog.recover_artifact_publication(
                     "w-exact", publication.publication_key, "other", lease_ms=100
