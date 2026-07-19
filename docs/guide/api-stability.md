@@ -47,12 +47,14 @@ what these packages may depend on; it does not promote them to public API.
 
 The target ownership is now decided in
 [Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map),
-but it is not yet implemented. `archetype.htn` remains an independent planner
-and is hardened by #591. Dataset identity remains under `datasets`, while
-evaluation values split under #590. The mixed `experiments` package is staged
-into `research` (#585), `trajectories` (#586/#587), and `physical_ai`
-(#588/#589), then removed by #592. Those future family paths also remain
-provisional until an implementation issue explicitly graduates a surface.
+but it is not yet implemented. `archetype.htn` folds under
+`archetype.missions` as the planning subdomain via #591. `archetype.datasets`
+is removed by #590, which folds evidence identity into
+`archetype.evaluation.contracts`. The mixed `experiments` package is staged
+into `research` (#585), mission-owned trajectory modules (#586/#587), and
+`physical_ai` (#588/#589), then removed by #592. The surviving future family
+paths remain provisional until an implementation issue explicitly graduates a
+surface.
 
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future

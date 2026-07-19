@@ -489,7 +489,7 @@ target = "archetype.app.models"
 owner = "experiments"
 issue = 586
 reason = "The provisional recorder imports application command and episode result models."
-expiry_condition = "Remove when #586 moves structural trajectory transforms to a leaf family with no app-model import."
+expiry_condition = "Remove when #586 moves structural trajectory transforms under archetype.missions with no app-model import."
 expires = "v0.5"
 
 [[exception]]
