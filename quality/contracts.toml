@@ -402,6 +402,23 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "artifacts.bundle.recovery_server_clock"
+source = "docs/guide/artifact-finalization.md"
+section = "6. Reconciler contract"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_artifact_publication_catalog.py",
+  "tests/app/test_remote_catalog_client.py",
+  "tests/app/test_remote_catalog_parity.py",
+]
+static = []
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "missions.transition.evidence_gated"
 source = "docs/guide/agent-missions.md"
 section = "2. Typed mission/task/attempt transition graph"

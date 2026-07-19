@@ -13,6 +13,8 @@ from daft import DataFrame
 from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactPublishReceipt,
+    ArtifactReconcileCandidate,
+    ArtifactReconcileItemResult,
     ArtifactReconcileResult,
     PreparedArtifactBundleRequest,
 )
@@ -123,3 +125,20 @@ class iArtifactBundleService(Protocol):
         storage_config: StorageConfig | None = None,
         limit: int = 100,
     ) -> ArtifactReconcileResult: ...
+
+    async def list_due_publications(
+        self,
+        world_id: str,
+        *,
+        storage_config: StorageConfig | None = None,
+        limit: int = 100,
+        after_publication_key: str = "",
+    ) -> tuple[ArtifactReconcileCandidate, ...]: ...
+
+    async def reconcile_publication(
+        self,
+        world_id: str,
+        publication_key: str,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactReconcileItemResult: ...

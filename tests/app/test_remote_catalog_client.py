@@ -14,12 +14,15 @@ from archetype.app.storage.catalog import (
     AttemptClaimConflictError,
     AttemptClaimStaleError,
     CommandAdmission,
+    artifact_publication_key,
 )
 from archetype.app.storage.remote_catalog import RemoteControlCatalog
 from archetype.app.storage.service import StorageService
 from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.asyncio
+
+_ARTIFACT_KEY = artifact_publication_key("world-1", "run-1", "bundle-1")
 
 
 async def _catalog_with(
@@ -53,8 +56,11 @@ def _artifact_protocol_response() -> httpx.Response:
         200,
         json={
             "status": "active",
-            "catalog_protocol_version": 3,
-            "capabilities": ["artifact_snapshot_decimal_v1"],
+            "catalog_protocol_version": 6,
+            "capabilities": [
+                "artifact_snapshot_decimal_v1",
+                "artifact_publication_server_clock_v1",
+            ],
         },
     )
 
@@ -184,7 +190,7 @@ def _outbox_row():
 
 def _artifact_publication_row(**overrides):
     row = {
-        "publication_key": "publication-1",
+        "publication_key": _ARTIFACT_KEY,
         "run_id": "run-1",
         "attempt_id": "attempt-1",
         "idempotency_key": "bundle-1",
@@ -216,7 +222,7 @@ async def _acquire_test_artifact(catalog: RemoteControlCatalog) -> None:
         request_digest="digest-1",
         request_json="{}",
         claimant="owner-1",
-        retry_until_ms=60_000,
+        retry_window_ms=60_000,
     )
 
 
@@ -912,7 +918,8 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
                 200,
                 json=_artifact_publication_row(status="INDEXED", index_snapshot_id="42"),
             ),
-            httpx.Response(200, json=[_artifact_publication_row(status="UPLOADED")]),
+            _artifact_protocol_response(),
+            httpx.Response(200, json=[{"publication_key": _ARTIFACT_KEY}]),
         ],
         requests,
     )
@@ -925,8 +932,8 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
             request_digest="digest-1",
             request_json="{}",
             claimant="owner-1",
-            retry_until_ms=60_000,
-            lease_seconds=15.0,
+            retry_window_ms=60_000,
+            lease_ms=15_000,
         )
         renewed = await catalog.renew_artifact_publication(
             "world-1", publication.publication_key, "owner-1", lease_seconds=60.0
@@ -938,39 +945,195 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
             "world-1", publication.publication_key, "owner-1", 42
         )
         await catalog.fail_artifact_publication(
-            "world-1", publication.publication_key, "owner-1", "retry", retry_at=3.0
+            "world-1",
+            publication.publication_key,
+            "owner-1",
+            "retry",
+            retry_delay_ms=3_000,
         )
         await catalog.expire_artifact_publication(
             "world-1", publication.publication_key, "owner-1", "expired"
         )
         missing = await catalog.get_artifact_publication("world-1", "missing")
         indexed = await catalog.get_artifact_publication("world-1", publication.publication_key)
-        due = await catalog.list_due_artifact_publications("world-1", now=5.0, limit=7)
+        due = await catalog.list_due_artifact_publications(
+            "world-1",
+            limit=7,
+            after_publication_key="1" * 64,
+        )
 
         assert outcome == "acquired" and publication.world_id == "world-1"
         assert renewed.lease_expires_at == 90.0
         assert missing is None
         assert indexed is not None and indexed.status == "INDEXED"
-        assert [record.status for record in due] == ["UPLOADED"]
+        assert [record.publication_key for record in due] == [_ARTIFACT_KEY]
         assert [request.url.path for request in requests] == [
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/acquire-v2",
+            "/ns/test/w/world-1/artifact-publications/acquire-v3",
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/publication-1/renew-v2",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/renew-v2",
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/publication-1/uploads-v2",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/uploads-v2",
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/publication-1/complete-v2",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/complete-v2",
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/publication-1/fail-v2",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/fail-v3",
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/publication-1/expire-v2",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/expire-v2",
             "/ns/test/w/world-1/artifact-publications/missing",
-            "/ns/test/w/world-1/artifact-publications/publication-1",
-            "/ns/test/w/world-1/artifact-publications",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/due-v1",
         ]
-        assert dict(requests[-1].url.params) == {"due": "5.0", "limit": "7"}
+        assert dict(requests[-1].url.params) == {
+            "limit": "7",
+            "after_publication_key": "1" * 64,
+        }
         assert json.loads(requests[7].content)["index_snapshot_id"] == "42"
+    finally:
+        await catalog.close()
+
+
+async def test_exact_artifact_recovery_sends_only_claimant_and_lease_duration():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            _artifact_protocol_response(),
+            httpx.Response(
+                200,
+                json={
+                    "outcome": "owned",
+                    "publication": _artifact_publication_row(),
+                },
+            ),
+        ],
+        requests,
+    )
+    try:
+        outcome, publication = await catalog.recover_artifact_publication(
+            "world-1", _ARTIFACT_KEY, "owner-1", lease_ms=15_000
+        )
+        assert outcome == "owned" and publication is not None
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            f"/ns/test/w/world-1/artifact-publications/{_ARTIFACT_KEY}/recover-v1",
+        ]
+        assert json.loads(requests[-1].content) == {
+            "claimant": "owner-1",
+            "lease_ms": 15_000,
+        }
+    finally:
+        await catalog.close()
+
+
+async def test_exact_artifact_recovery_rejects_a_different_response_key():
+    catalog = await _catalog_with(
+        [
+            _artifact_protocol_response(),
+            httpx.Response(
+                200,
+                json={
+                    "outcome": "owned",
+                    "publication": _artifact_publication_row(publication_key="b" * 64),
+                },
+            ),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="different publication"):
+            await catalog.recover_artifact_publication(
+                "world-1", _ARTIFACT_KEY, "owner-1", lease_ms=15_000
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_remote_due_discovery_rejects_full_replay_rows():
+    catalog = await _catalog_with(
+        [
+            _artifact_protocol_response(),
+            httpx.Response(200, json=[_artifact_publication_row()]),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="digest-only"):
+            await catalog.list_due_artifact_publications("world-1")
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("outcome", "status"),
+    [
+        ("owned", "INDEXED"),
+        ("recovered", "EXPIRED"),
+        ("duplicate", "PENDING"),
+        ("expired", "UPLOADED"),
+    ],
+)
+async def test_remote_exact_recovery_rejects_contradictory_outcome_status(outcome, status):
+    catalog = await _catalog_with(
+        [
+            _artifact_protocol_response(),
+            httpx.Response(
+                200,
+                json={
+                    "outcome": outcome,
+                    "publication": _artifact_publication_row(
+                        status=status,
+                        index_snapshot_id="1" if status == "INDEXED" else "0",
+                    ),
+                },
+            ),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="contradicts"):
+            await catalog.recover_artifact_publication(
+                "world-1", _ARTIFACT_KEY, "owner-1", lease_ms=15_000
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_remote_artifact_decoder_requires_attempt_count():
+    row = _artifact_publication_row()
+    del row["attempt_count"]
+    catalog = await _catalog_with([httpx.Response(200, json=row)])
+    try:
+        with pytest.raises(RuntimeError, match="attempt_count"):
+            await catalog.get_artifact_publication("world-1", _ARTIFACT_KEY)
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize("lease_ms", [0, True, 1.0, "1"])
+async def test_remote_artifact_lease_duration_is_strictly_positive(lease_ms):
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    try:
+        with pytest.raises((TypeError, ValueError)):
+            await catalog.recover_artifact_publication(
+                "world-1", _ARTIFACT_KEY, "owner-1", lease_ms=lease_ms
+            )
+        assert requests == []
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize("lease_seconds", [True, 0, -1, float("inf"), float("nan"), 86_401])
+async def test_remote_artifact_renewal_duration_is_finite_and_bounded(lease_seconds):
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    try:
+        with pytest.raises((TypeError, ValueError)):
+            await catalog.renew_artifact_publication(
+                "world-1",
+                _ARTIFACT_KEY,
+                "owner-1",
+                lease_seconds=lease_seconds,
+            )
+        assert requests == []
     finally:
         await catalog.close()
 
@@ -1001,14 +1164,14 @@ async def test_artifact_acquire_missing_capability_fails_before_mutation():
         requests,
     )
     try:
-        with pytest.raises(RuntimeError, match="lossless artifact snapshot IDs"):
+        with pytest.raises(RuntimeError, match="artifact publication server-clock v1"):
             await _acquire_test_artifact(catalog)
         assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
     finally:
         await catalog.close()
 
 
-async def test_artifact_acquire_v2_route_404_fails_closed_after_probe():
+async def test_artifact_acquire_v3_route_404_fails_closed_after_probe():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
         [_artifact_protocol_response(), httpx.Response(404, json={"error": "bad_route"})],
@@ -1019,7 +1182,7 @@ async def test_artifact_acquire_v2_route_404_fails_closed_after_probe():
             await _acquire_test_artifact(catalog)
         assert [request.url.path for request in requests] == [
             "/ns/test/w/world-1/status",
-            "/ns/test/w/world-1/artifact-publications/acquire-v2",
+            "/ns/test/w/world-1/artifact-publications/acquire-v3",
         ]
     finally:
         await catalog.close()
@@ -1044,7 +1207,7 @@ async def test_artifact_publication_completion_rejects_nonpositive_noninteger_sn
         await catalog.close()
 
 
-async def test_artifact_snapshot_protocol_missing_capability_fails_before_write():
+async def test_artifact_mutation_protocol_missing_capability_fails_before_write():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
         [
@@ -1060,14 +1223,14 @@ async def test_artifact_snapshot_protocol_missing_capability_fails_before_write(
         requests,
     )
     try:
-        with pytest.raises(RuntimeError, match="lossless artifact snapshot IDs"):
+        with pytest.raises(RuntimeError, match="lease-fenced artifact mutation v2"):
             await catalog.complete_artifact_publication("world-1", "publication-1", "owner-1", 42)
         assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
     finally:
         await catalog.close()
 
 
-async def test_artifact_snapshot_v2_route_404_fails_closed_after_probe():
+async def test_artifact_mutation_v2_route_404_fails_closed_after_probe():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
         [
@@ -1075,8 +1238,11 @@ async def test_artifact_snapshot_v2_route_404_fails_closed_after_probe():
                 200,
                 json={
                     "status": "active",
-                    "catalog_protocol_version": 3,
-                    "capabilities": ["artifact_snapshot_decimal_v1"],
+                    "catalog_protocol_version": 6,
+                    "capabilities": [
+                        "artifact_snapshot_decimal_v1",
+                        "artifact_publication_server_clock_v1",
+                    ],
                 },
             ),
             httpx.Response(404, json={"error": "bad_route"}),
