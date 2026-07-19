@@ -15,3 +15,7 @@
 ::: archetype.core.AsyncQueryManager
 
 ::: archetype.core.AsyncUpdateManager
+
+::: archetype.core.TickExecutionError
+
+::: archetype.core.TickFailure
