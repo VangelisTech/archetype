@@ -40,6 +40,7 @@ forbidden_outward = [
 ]
 reserved_infrastructure = [
   "archetype._api",
+  "archetype._dependency_telemetry",
   "archetype._logging",
   "archetype._obs",
   "archetype._storage_uri",
