@@ -1,4 +1,4 @@
-version = 2
+version = 3
 source_root = "src"
 
 [concrete_services]
@@ -30,6 +30,32 @@ composition_roots = [
   "archetype.runtime.runtime",
 ]
 
+[top_level_family_policy]
+forbidden_outward = [
+  "archetype.app",
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+]
+
+# Top-level domain families may import core and themselves implicitly. Every
+# reviewed family-to-family edge must name the exact lower family here.
+
+[[top_level_family_rule]]
+name = "datasets-domain-family"
+consumer = "archetype.datasets"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "experiments-domain-family"
+consumer = "archetype.experiments"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "htn-domain-family"
+consumer = "archetype.htn"
+allowed_families = []
+
 [[package_rule]]
 name = "core-does-not-import-outward"
 consumer = "archetype.core"
@@ -38,7 +64,9 @@ forbidden = [
   "archetype.runtime",
   "archetype.api",
   "archetype.cli",
+  "archetype.datasets",
   "archetype.experiments",
+  "archetype.htn",
 ]
 
 [[package_rule]]
@@ -48,7 +76,6 @@ forbidden = [
   "archetype.runtime",
   "archetype.api",
   "archetype.cli",
-  "archetype.experiments",
 ]
 
 # Family rules apply to every module in the package, not only service.py.
@@ -415,3 +442,226 @@ allowed_app = [
   "archetype.app.gateway.auth.models",
   "archetype.app.models",
 ]
+
+# Exact migration edges. These preserve current behavior while the sequenced
+# family relocations move each definition once, without compatibility copies.
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments"
+target = "archetype.app.research.models"
+owner = "experiments"
+issue = 561
+reason = "The provisional experiments package re-exports research ledger components from app."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue eliminates the reverse import."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.loaders"
+target = "archetype.app.research.models"
+owner = "experiments"
+issue = 561
+reason = "The provisional runner-state loader imports the app-owned Run component."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue gives the loader a top-level domain owner."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.recorders"
+target = "archetype.app.models"
+owner = "experiments"
+issue = 561
+reason = "The provisional recorder imports application command and episode result models."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue separates domain recording from app boundaries."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.eval_rollouts"
+target = "archetype.app.models"
+owner = "experiments"
+issue = 561
+reason = "The provisional rollout helper imports an application episode contract."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns the helper a non-reverse dependency boundary."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.eval_rollouts"
+target = "archetype.runtime"
+owner = "experiments"
+issue = 561
+reason = "The provisional rollout helper carries a type-only runtime dependency."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue replaces the runtime type with an inward domain port."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.instruction_sweep"
+target = "archetype.app.models"
+owner = "experiments"
+issue = 561
+reason = "The provisional instruction sweep imports an application episode contract."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns the sweep a non-reverse dependency boundary."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_outward_dependency"
+consumer = "archetype.experiments.instruction_sweep"
+target = "archetype.runtime"
+owner = "experiments"
+issue = 561
+reason = "The provisional instruction sweep carries a type-only runtime dependency."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue replaces the runtime type with an inward domain port."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.evaluation.models"
+target = "archetype.app.evaluation.models.EvalReceipt"
+owner = "evaluation"
+issue = 557
+reason = "EvalReceipt is persistent ECS schema still colocated with evaluation app authority."
+expiry_condition = "Remove when #557 moves EvalReceipt to archetype.evaluation.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.artifacts.models"
+target = "archetype.app.artifacts.models.ArtifactMeta"
+owner = "artifacts"
+issue = 558
+reason = "ArtifactMeta is persistent ECS schema still colocated with artifact app authority."
+expiry_condition = "Remove when #558 moves ArtifactMeta to archetype.artifacts.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.artifacts.models"
+target = "archetype.app.artifacts.models.AssetRef"
+owner = "artifacts"
+issue = 558
+reason = "AssetRef is persistent ECS schema still colocated with artifact app authority."
+expiry_condition = "Remove when #558 moves AssetRef to archetype.artifacts.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Mission"
+owner = "missions"
+issue = 559
+reason = "Mission is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Mission to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.TaskGate"
+owner = "missions"
+issue = 559
+reason = "TaskGate is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves TaskGate to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Attempt"
+owner = "missions"
+issue = 559
+reason = "Attempt is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Attempt to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Checkpoint"
+owner = "missions"
+issue = 559
+reason = "Checkpoint is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Checkpoint to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Finalization"
+owner = "missions"
+issue = 559
+reason = "Finalization is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Finalization to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Commit"
+owner = "missions"
+issue = 559
+reason = "Commit is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Commit to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.Evidence"
+owner = "missions"
+issue = 559
+reason = "Evidence is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves Evidence to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.missions.models"
+target = "archetype.app.missions.models.FrictionLog"
+owner = "missions"
+issue = 559
+reason = "FrictionLog is persistent ECS schema still colocated with mission app authority."
+expiry_condition = "Remove when #559 moves FrictionLog to archetype.missions.components without duplicating its class identity."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Experiment"
+owner = "research"
+issue = 561
+reason = "Experiment is persistent ECS schema whose final family awaits the research design gate."
+expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Experiment a top-level family owner."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Run"
+owner = "research"
+issue = 561
+reason = "Run is persistent ECS schema whose final family awaits the research design gate."
+expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Run a top-level family owner."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.Result"
+owner = "research"
+issue = 561
+reason = "Result is persistent ECS schema whose final family awaits the research design gate."
+expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Result a top-level family owner."
+expires = "v0.5"
+
+[[exception]]
+rule = "app_component_model"
+consumer = "archetype.app.research.models"
+target = "archetype.app.research.models.BranchHead"
+owner = "research"
+issue = 561
+reason = "BranchHead is persistent ECS schema whose final family awaits the research design gate."
+expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives BranchHead a top-level family owner."
+expires = "v0.5"

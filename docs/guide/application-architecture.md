@@ -79,7 +79,43 @@ leak into the server.
 
 ## 4. Package direction and family layout
 
-The application layout is:
+Repository package ownership is normative:
+
+| Kind | Canonical location |
+|---|---|
+| Components, processors, pure DataFrame transforms, transition graphs, and reusable projections | `archetype.<family>` |
+| Supported family value contracts | `archetype.<family>.contracts` or another specifically named family module |
+| Durable authority, cross-family orchestration, internal service ports, and concrete implementations | `archetype.app.<family>` |
+| Transport, authentication, application facade, and composition | `archetype.api`, `archetype.app.gateway`, `archetype.app.application`, and `archetype.app.container` |
+
+A top-level domain-family package owns reusable ECS state and pure domain
+behavior. It may depend on `archetype.core`, itself, third-party libraries, and
+only reviewed lower top-level family contracts declared in
+`quality/architecture.toml`. It must not import `archetype.app`,
+`archetype.runtime`, `archetype.api`, or `archetype.cli`, and it does not
+configure providers, exporters, storage backends, process hosts, or the
+service container. The application layer may import a registered top-level
+family contract; the reverse edge is forbidden. Undeclared top-level
+family-to-family dependencies are denied.
+
+Naming states semantic ownership:
+
+- `components.py` contains `Component` subclasses and component-local
+  construction helpers;
+- `processors.py` contains processor implementations;
+- `contracts.py` contains supported Pydantic or dataclass value contracts;
+- `interfaces.py` contains internal application ports;
+- `transitions.py` contains pure typed transition graphs; and
+- `service.py` contains application authority or orchestration.
+
+A `Component` is persistent ECS schema even though its implementation uses
+Pydantic. It is not an application DTO and does not belong in an app
+`models.py`. Conversely, a top-level path does not automatically make a symbol
+public. Supported names remain an explicit classification owned by
+[API Stability](api-stability.md); concrete services and `ServiceContainer`
+remain internal.
+
+The application-authority layout is:
 
 ```text
 src/archetype/app/
@@ -87,23 +123,24 @@ src/archetype/app/
   world/             world lifecycle, mutation, and simulation
   storage/           stores, catalog/control authority, backend construction
   query/             persisted ECS read paths
-  artifacts/         ingestion, publication claims, content and indexes
+  artifacts/         ingestion, publication claims, storage and indexes
   redaction/         pre-durability secret scanning, receipts and quarantine
-  evaluation/        graders, snapshot pinning, receipts
+  evaluation/        grading orchestration, snapshot pinning and receipt writes
   commands/          durable ledger, scheduling, dispatch, settlement
   gateway/           authorization policy boundary
   audit/             journals, outboxes, projections
   research/          autoresearch and multi-run research workflows
-  missions/          transitions, redaction-gated attempt claims, fenced orchestration
+  missions/          redaction-gated claims, fencing and orchestration
   sandboxes/         provider-neutral isolated execution and live-handle lifetime
   errors.py          cross-family application error contracts
   container.py       sole concrete cross-family wiring root
 ```
 
-Every family co-locates its protocols, safe models, and implementation. A
-family package exports only the contracts intended for other families. A
-generic `services/` bucket and a monolithic `app/interfaces.py` are prohibited;
-the architecture checker rejects edges that recreate them.
+Every application family co-locates its internal protocols, boundary models,
+and authority implementation. It imports reusable domain values from their
+top-level family once those values have moved. A generic `services/` bucket
+and a monolithic `app/interfaces.py` are prohibited; the architecture checker
+rejects edges that recreate them.
 
 The allowed outer-package direction is:
 
@@ -113,18 +150,28 @@ CLI              -> REST API over HTTP
 runtime          -> app.application contracts and safe models
 API              -> app.gateway contracts, safe models, and app errors
 gateway          -> app.application port plus auth/audit ports
-app families     -> approved lower app-family ports and core
+app families     -> top-level family contracts, approved app-family ports, core
+top-level family -> core and explicitly declared lower top-level families
 core             -> foundation and third-party libraries only
 ```
 
 Forbidden reverse edges include:
 
-- core importing app, runtime, API, CLI, or experiments;
-- app importing runtime, API, CLI, or experiments;
+- core importing app, runtime, API, CLI, or registered domain families;
+- a top-level family importing app, runtime, API, or CLI;
+- a top-level family importing another registered family without a declared
+  lower-family edge;
+- app importing runtime, API, or CLI;
 - runtime importing gateway, auth, concrete app services, or API;
 - API routes importing `RuntimeApplication` or concrete app services;
-- experiments importing the container or concrete app services; and
 - CLI command implementations bypassing HTTP.
+
+The proposed graph-family design in
+[PR #545](https://github.com/VangelisTech/archetype/pull/545) is a supporting
+design record, not a competing normative source. Its graph and projection
+stages ([#546](https://github.com/VangelisTech/archetype/issues/546) and
+[#547](https://github.com/VangelisTech/archetype/issues/547)) consume this
+package policy and register any reviewed family edge here before importing it.
 
 ### Observability dependency boundary
 
@@ -319,7 +366,15 @@ belongs to the workflow and its validators.
 Together, the repository's architecture and observability checkers must:
 
 - cover every declared source scope and fail if a required scope is empty;
-- enforce outer package and family dependency rules;
+- reject missing, stale, duplicate, or empty top-level family registrations;
+- require one exact cross-family dependency disposition for every registered
+  top-level family;
+- reject top-level-family imports of app, runtime, API, or CLI and reject
+  undeclared top-level family-to-family imports;
+- allow application authority to consume registered top-level family
+  contracts without treating that path as public-API promotion;
+- reject direct `Component` subclasses in any app-family `models.py`;
+- enforce the existing outer-package and application-family dependency rules;
 - confine `ActorCtx` to gateway/auth code and approved adapter construction;
 - restrict concrete cross-family construction to `container.py`;
 - reject concrete-service inheritance;
@@ -328,7 +383,8 @@ Together, the repository's architecture and observability checkers must:
 - confine provider/exporter and logging configuration to explicit process-host
   callables and require one exact observation disposition for every callable
   application-family protocol member;
-- support exact, owned migration exceptions with objective expiry conditions;
+- support only exact, issue-owned migration exceptions with release deadlines
+  and objective expiry conditions; wildcard package exceptions are invalid;
 - report the forbidden edge, governing rule, and supported alternative.
 
 Representative invalid fixtures prove every rule fires. Passing the current
@@ -342,9 +398,19 @@ evaluation ownership, and co-located protocols are implemented. Runtime calls
 do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
 services and the container are not top-level exports.
 
-`quality/architecture.toml` contains the complete allowed family DAG and zero
-migration exceptions. `scripts/check_architecture.py` enforces package
-direction, protocol imports, concrete construction, and concrete inheritance.
+`quality/architecture.toml` contains both the application-family DAG and the
+registered top-level family dispositions for `datasets`, `experiments`, and
+`htn`. `scripts/check_architecture.py` enforces their package direction,
+protocol imports, concrete construction, concrete inheritance, and persistent
+Component placement.
+
+The current reverse edges from provisional `archetype.experiments` and the
+current Components under app-family `models.py` are preserved only by exact
+migration entries. Evaluation, artifacts, and missions point to relocation
+issues #557, #558, and #559. Research and provisional experiment ownership
+point temporarily to design gate #561; every such expiry condition requires
+Issue #561 to replace itself with the concrete implementation issue it creates.
+These entries move no code and make no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
@@ -403,7 +469,7 @@ family consumes only the mission-owned immutable execution authorization,
 callbacks, and recovery action; it does not import the claim service or storage
 catalog.
 
-Two deliberately retained implementation seams are documented rather than
+Other deliberately retained implementation seams are documented rather than
 hidden: `QueryService` uses `iAuditLog` for compatibility history reads, and
 the root `app/models.py` holds cross-family boundary models. Changing either is
 a separate contract/model-ownership decision, not undocumented drift.
