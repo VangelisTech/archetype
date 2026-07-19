@@ -437,6 +437,25 @@ async def test_world_registration_parity(tmp_path, worker_url):
         await catalog.close()
 
 
+async def test_world_unicode_identity_parity(tmp_path, worker_url):
+    world_id = "wörld-🚀"
+    for catalog in await _both(tmp_path, worker_url):
+        try:
+            await catalog.register_world(_world(world_id))
+            assert (await catalog.get_world(world_id)).world_id == world_id
+
+            await catalog.set_world_status(world_id, "destroyed")
+            await catalog.set_world_run(world_id, "rün-雪")
+
+            record = await catalog.get_world(world_id)
+            assert record is not None
+            assert record.status == "destroyed"
+            assert record.run_id == "rün-雪"
+            assert [world.world_id for world in await catalog.list_worlds()] == [world_id]
+        finally:
+            await catalog.close()
+
+
 async def test_signature_registration_parity(tmp_path, worker_url):
     rec = SignatureRecord(
         table_id="t1", component_names=("A", "B"), schema_json='{"fields":[]}', fingerprint="f1"

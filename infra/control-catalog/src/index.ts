@@ -551,7 +551,7 @@ export class CatalogDirectoryDO implements DurableObject {
     }
 
     if (route[0] === "worlds" && route.length === 2) {
-      const worldId = route[1];
+      const worldId = decodeURIComponent(route[1]);
       if (method === "GET") {
         const rows = this.sql.exec("SELECT * FROM worlds WHERE world_id = ?", worldId).toArray();
         return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
