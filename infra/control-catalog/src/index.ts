@@ -33,6 +33,16 @@ function conflict(kind: string, message: string): Response {
   return json({ error: kind, message }, 409);
 }
 
+function attemptClaimView(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  // The acquisition receipt is durable identity used only for reacquisition
+  // checks. Public claim records expose the latest phase receipt instead.
+  const view = { ...row };
+  delete view.redaction_acquisition_evidence_json;
+  return view;
+}
+
 function appendCommandEvent(
   sql: SqlStorage,
   command: Record<string, unknown>,
@@ -339,6 +349,33 @@ export class WorldCommitDO implements DurableObject {
         claimant TEXT NOT NULL, lease_expires_at REAL NOT NULL,
         fence_epoch INTEGER NOT NULL, created_at TEXT NOT NULL, completed_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS mission_attempt_claims (
+        claim_key TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+        mission_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL, request_fingerprint TEXT NOT NULL,
+        request_json TEXT NOT NULL, redaction_policy_id TEXT NOT NULL DEFAULT '',
+        redaction_acquisition_evidence_json TEXT NOT NULL DEFAULT '',
+        redaction_evidence_json TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL, provider TEXT NOT NULL,
+        provider_request_fingerprint TEXT NOT NULL,
+        supports_idempotent_replay INTEGER NOT NULL,
+        supports_session_resume INTEGER NOT NULL,
+        provider_idempotency_key TEXT NOT NULL,
+        claimant TEXT NOT NULL, lease_expires_at REAL NOT NULL,
+        fence_epoch INTEGER NOT NULL, execution_nonce TEXT NOT NULL DEFAULT '',
+        execution_consumed_at TEXT, provider_session_id TEXT NOT NULL DEFAULT '',
+        provider_request_id TEXT NOT NULL DEFAULT '',
+        settlement_status TEXT NOT NULL DEFAULT '',
+        outcome_digest TEXT NOT NULL DEFAULT '', outcome_json TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        possibly_submitted_at TEXT, acknowledged_at TEXT, settled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS mission_attempt_claims_due
+      ON mission_attempt_claims (status, lease_expires_at);
+      -- World identity is implicit in this per-world Durable Object.
+      CREATE UNIQUE INDEX IF NOT EXISTS mission_attempt_claims_identity
+      ON mission_attempt_claims (mission_id, task_id, attempt_id);
       CREATE TABLE IF NOT EXISTS artifact_publications (
         publication_key TEXT PRIMARY KEY, run_id TEXT NOT NULL,
         attempt_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
@@ -387,6 +424,44 @@ export class WorldCommitDO implements DurableObject {
         "ALTER TABLE claims RENAME COLUMN fact_entity_id TO artifact_entity_id",
       );
     }
+    const attemptClaimColumns = this.sql
+      .exec("PRAGMA table_info(mission_attempt_claims)")
+      .toArray()
+      .map((row) => String(row.name));
+    if (!attemptClaimColumns.includes("outcome_json")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN outcome_json TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!attemptClaimColumns.includes("execution_nonce")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+          "execution_nonce TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!attemptClaimColumns.includes("execution_consumed_at")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN execution_consumed_at TEXT",
+      );
+    }
+    if (!attemptClaimColumns.includes("redaction_policy_id")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+          "redaction_policy_id TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!attemptClaimColumns.includes("redaction_acquisition_evidence_json")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+          "redaction_acquisition_evidence_json TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!attemptClaimColumns.includes("redaction_evidence_json")) {
+      this.sql.exec(
+        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+          "redaction_evidence_json TEXT NOT NULL DEFAULT ''",
+      );
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -395,6 +470,392 @@ export class WorldCommitDO implements DurableObject {
     const route = parts.slice(4);
     const method = request.method;
     const now = new Date().toISOString();
+
+    if (route[0] === "attempt-claims" && route[1] === "acquire" && method === "POST") {
+      const p = (await request.json()) as Record<string, unknown>;
+      const nowSec = Date.now() / 1000;
+      const lease = Number(p.lease_seconds ?? 900);
+      if (lease < 0) {
+        return json({ error: "invalid", message: "lease_seconds must be non-negative" }, 400);
+      }
+      const redactionPolicyId = String(p.redaction_policy_id ?? "");
+      const redactionEvidence = String(p.redaction_evidence_json ?? "");
+      if (!redactionPolicyId.trim()) {
+        return json(
+          { error: "invalid", message: "redaction_policy_id must not be empty" },
+          400,
+        );
+      }
+      if (!redactionEvidence.trim()) {
+        return json(
+          { error: "invalid", message: "redaction_evidence_json must not be empty" },
+          400,
+        );
+      }
+      const existing = this.sql
+        .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", p.claim_key)
+        .toArray();
+      if (existing.length > 0) {
+        const row = existing[0] as Record<string, unknown>;
+        const immutableMatches =
+          row.run_id === p.run_id &&
+          row.mission_id === p.mission_id &&
+          row.task_id === p.task_id &&
+          row.attempt_id === p.attempt_id &&
+          row.idempotency_key === p.idempotency_key &&
+          row.request_fingerprint === p.request_fingerprint &&
+          row.request_json === p.request_json &&
+          row.redaction_policy_id === redactionPolicyId &&
+          row.redaction_acquisition_evidence_json === redactionEvidence &&
+          row.provider === p.provider &&
+          row.provider_request_fingerprint === p.provider_request_fingerprint &&
+          Boolean(row.supports_idempotent_replay) === Boolean(p.supports_idempotent_replay) &&
+          Boolean(row.supports_session_resume) === Boolean(p.supports_session_resume) &&
+          row.provider_idempotency_key === (p.provider_idempotency_key ?? "");
+        if (!immutableMatches) {
+          return conflict(
+            "attempt_claim_conflict",
+            `attempt claim ${p.claim_key} was reused with different immutable input`,
+          );
+        }
+        if (row.status === "settled") {
+          return json({ outcome: "duplicate", claim: attemptClaimView(row) });
+        }
+        if (Number(row.lease_expires_at) > nowSec) {
+          if (row.claimant === p.claimant) {
+            return json({ outcome: "owned", claim: attemptClaimView(row) });
+          }
+          return json(
+            { error: "attempt_claim_pending", message: "a live attempt lease exists" },
+            423,
+          );
+        }
+        this.sql.exec(
+          "UPDATE mission_attempt_claims SET claimant = ?, lease_expires_at = ?, " +
+            "fence_epoch = fence_epoch + 1, updated_at = ? WHERE claim_key = ?",
+          p.claimant,
+          nowSec + lease,
+          now,
+          p.claim_key,
+        );
+        const recovered = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", p.claim_key)
+          .toArray();
+        return json({
+          outcome: "recovered",
+          claim: attemptClaimView(recovered[0] as Record<string, unknown>),
+        });
+      }
+      const identity = this.sql
+        .exec(
+          "SELECT claim_key FROM mission_attempt_claims " +
+            "WHERE mission_id = ? AND task_id = ? AND attempt_id = ?",
+          p.mission_id,
+          p.task_id,
+          p.attempt_id,
+        )
+        .toArray();
+      if (identity.length > 0) {
+        return conflict(
+          "attempt_claim_conflict",
+          `attempt identity ${p.mission_id}/${p.task_id}/${p.attempt_id} ` +
+            `already belongs to claim ${identity[0].claim_key}`,
+        );
+      }
+      try {
+        this.sql.exec(
+          "INSERT INTO mission_attempt_claims (claim_key, run_id, mission_id, task_id, " +
+            "attempt_id, idempotency_key, request_fingerprint, request_json, " +
+            "redaction_policy_id, redaction_acquisition_evidence_json, " +
+            "redaction_evidence_json, status, " +
+            "provider, provider_request_fingerprint, supports_idempotent_replay, " +
+            "supports_session_resume, provider_idempotency_key, claimant, lease_expires_at, " +
+            "fence_epoch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, " +
+            "'claimed', ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+          p.claim_key,
+          p.run_id,
+          p.mission_id,
+          p.task_id,
+          p.attempt_id,
+          p.idempotency_key,
+          p.request_fingerprint,
+          p.request_json,
+          redactionPolicyId,
+          redactionEvidence,
+          redactionEvidence,
+          p.provider,
+          p.provider_request_fingerprint,
+          p.supports_idempotent_replay ? 1 : 0,
+          p.supports_session_resume ? 1 : 0,
+          p.provider_idempotency_key ?? "",
+          p.claimant,
+          nowSec + lease,
+          now,
+          now,
+        );
+      } catch (error) {
+        const collision = this.sql
+          .exec(
+            "SELECT claim_key FROM mission_attempt_claims " +
+              "WHERE mission_id = ? AND task_id = ? AND attempt_id = ?",
+            p.mission_id,
+            p.task_id,
+            p.attempt_id,
+          )
+          .toArray();
+        if (collision.length > 0) {
+          return conflict(
+            "attempt_claim_conflict",
+            `attempt identity ${p.mission_id}/${p.task_id}/${p.attempt_id} ` +
+              `already belongs to claim ${collision[0].claim_key}`,
+          );
+        }
+        throw error;
+      }
+      const created = this.sql
+        .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", p.claim_key)
+        .toArray();
+      return json({
+        outcome: "acquired",
+        claim: attemptClaimView(created[0] as Record<string, unknown>),
+      });
+    }
+
+    if (route[0] === "attempt-claims" && route.length === 1 && method === "GET") {
+      const due = Number(url.searchParams.get("due") ?? Date.now() / 1000);
+      const limit = Math.max(0, Number(url.searchParams.get("limit") ?? 100));
+      return json(
+        this.sql
+          .exec(
+            "SELECT * FROM mission_attempt_claims WHERE status != 'settled' " +
+              "AND lease_expires_at <= ? ORDER BY lease_expires_at, claim_key LIMIT ?",
+            due,
+            limit,
+          )
+          .toArray()
+          .map((row) => attemptClaimView(row as Record<string, unknown>)),
+      );
+    }
+
+    if (route[0] === "attempt-claims" && route.length >= 2) {
+      const claimKey = route[1];
+      if (route.length === 2 && method === "GET") {
+        const rows = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        return rows.length
+          ? json(attemptClaimView(rows[0] as Record<string, unknown>))
+          : json({ error: "not_found" }, 404);
+      }
+
+      if (route.length === 3 && route[2] === "renew" && method === "POST") {
+        const p = (await request.json()) as Record<string, unknown>;
+        const lease = Number(p.lease_seconds ?? 0);
+        if (lease <= 0) {
+          return json({ error: "invalid", message: "lease_seconds must be positive" }, 400);
+        }
+        const rows = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        if (!rows.length) {
+          return conflict("attempt_claim_conflict", `no attempt claim ${claimKey} exists`);
+        }
+        const row = rows[0] as Record<string, unknown>;
+        const nowSec = Date.now() / 1000;
+        if (
+          row.claimant !== p.claimant ||
+          Number(row.fence_epoch) !== Number(p.fence_epoch) ||
+          row.status === "settled" ||
+          Number(row.lease_expires_at) <= nowSec
+        ) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim fence is stale" },
+            412,
+          );
+        }
+        const renewed = this.sql.exec(
+          "UPDATE mission_attempt_claims SET lease_expires_at = ?, updated_at = ? " +
+            "WHERE claim_key = ? AND claimant = ? AND fence_epoch = ? " +
+            "AND status != 'settled' AND lease_expires_at > ?",
+          nowSec + lease,
+          now,
+          claimKey,
+          p.claimant,
+          p.fence_epoch,
+          nowSec,
+        );
+        if (renewed.rowsWritten < 1) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim lease expired" },
+            412,
+          );
+        }
+        const updated = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        return json(attemptClaimView(updated[0] as Record<string, unknown>));
+      }
+
+      if (route.length === 3 && route[2] === "consume" && method === "POST") {
+        const p = (await request.json()) as Record<string, unknown>;
+        const executionNonce = String(p.execution_nonce ?? "");
+        if (!executionNonce) {
+          return json(
+            { error: "invalid", message: "attempt execution nonce must not be empty" },
+            400,
+          );
+        }
+        const consumedAt = new Date().toISOString();
+        const consumed = this.sql.exec(
+          "UPDATE mission_attempt_claims SET execution_consumed_at = ?, updated_at = ? " +
+            "WHERE claim_key = ? AND status = 'possibly_submitted' AND claimant = ? " +
+            "AND fence_epoch = ? AND execution_nonce = ? " +
+            "AND execution_consumed_at IS NULL AND lease_expires_at > ?",
+          consumedAt,
+          consumedAt,
+          claimKey,
+          p.claimant,
+          p.fence_epoch,
+          executionNonce,
+          Date.now() / 1000,
+        );
+        if (consumed.rowsWritten < 1) {
+          return json(
+            {
+              error: "attempt_claim_stale",
+              message: `attempt execution grant ${claimKey} is stale or already consumed`,
+            },
+            412,
+          );
+        }
+        const updated = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        return json(attemptClaimView(updated[0] as Record<string, unknown>));
+      }
+
+      if (route.length === 3 && route[2] === "transition" && method === "POST") {
+        const p = (await request.json()) as Record<string, unknown>;
+        const rows = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        if (!rows.length) {
+          return conflict("attempt_claim_conflict", `no attempt claim ${claimKey} exists`);
+        }
+        const row = rows[0] as Record<string, unknown>;
+        const nowSec = Date.now() / 1000;
+        if (
+          row.claimant !== p.claimant ||
+          Number(row.fence_epoch) !== Number(p.fence_epoch)
+        ) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim fence is stale" },
+            412,
+          );
+        }
+        if (row.status === "settled") {
+          return json(
+            { error: "attempt_claim_stale", message: "settled attempt claim cannot be mutated" },
+            412,
+          );
+        }
+        if (Number(row.lease_expires_at) <= nowSec) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim lease expired" },
+            412,
+          );
+        }
+        if (row.status !== p.expected_status) {
+          return conflict(
+            "attempt_claim_conflict",
+            `attempt claim ${claimKey} is ${row.status}, expected ${p.expected_status}`,
+          );
+        }
+        const target = String(p.target_status ?? "");
+        const executionNonce = String(p.execution_nonce ?? "");
+        if (target === "possibly_submitted" && !executionNonce) {
+          return json(
+            { error: "invalid", message: "arming submission requires an execution nonce" },
+            400,
+          );
+        }
+        if (executionNonce && target !== "possibly_submitted") {
+          return json(
+            {
+              error: "invalid",
+              message: "execution nonce may only be recorded while arming submission",
+            },
+            400,
+          );
+        }
+        const redactionEvidence = String(p.redaction_evidence_json ?? "");
+        if (redactionEvidence && !redactionEvidence.trim()) {
+          return json(
+            { error: "invalid", message: "redaction evidence update must not be blank" },
+            400,
+          );
+        }
+        const possiblySubmittedAt = target === "possibly_submitted" ? now : null;
+        const acknowledgedAt = target === "provider_acknowledged" ? now : null;
+        const settledAt = target === "settled" ? now : null;
+        const transition = this.sql.exec(
+          "UPDATE mission_attempt_claims SET status = ?, " +
+            "execution_nonce = CASE WHEN ? = '' THEN execution_nonce ELSE ? END, " +
+            "redaction_evidence_json = CASE WHEN ? = '' " +
+            "THEN redaction_evidence_json ELSE ? END, " +
+            "provider_session_id = CASE WHEN ? = '' THEN provider_session_id ELSE ? END, " +
+            "provider_request_id = CASE WHEN ? = '' THEN provider_request_id ELSE ? END, " +
+            "settlement_status = CASE WHEN ? = '' THEN settlement_status ELSE ? END, " +
+            "outcome_digest = CASE WHEN ? = '' THEN outcome_digest ELSE ? END, " +
+            "outcome_json = CASE WHEN ? = '' THEN outcome_json ELSE ? END, " +
+            "last_error = CASE WHEN ? = '' THEN last_error ELSE ? END, updated_at = ?, " +
+            "possibly_submitted_at = COALESCE(possibly_submitted_at, ?), " +
+            "acknowledged_at = COALESCE(acknowledged_at, ?), " +
+            "settled_at = COALESCE(settled_at, ?) WHERE claim_key = ? " +
+            "AND status = ? AND status != 'settled' AND claimant = ? " +
+            "AND fence_epoch = ? AND lease_expires_at > ?",
+          target,
+          executionNonce,
+          executionNonce,
+          redactionEvidence,
+          redactionEvidence,
+          p.provider_session_id ?? "",
+          p.provider_session_id ?? "",
+          p.provider_request_id ?? "",
+          p.provider_request_id ?? "",
+          p.settlement_status ?? "",
+          p.settlement_status ?? "",
+          p.outcome_digest ?? "",
+          p.outcome_digest ?? "",
+          p.outcome_json ?? "",
+          p.outcome_json ?? "",
+          p.last_error ?? "",
+          p.last_error ?? "",
+          now,
+          possiblySubmittedAt,
+          acknowledgedAt,
+          settledAt,
+          claimKey,
+          p.expected_status,
+          p.claimant,
+          p.fence_epoch,
+          nowSec,
+        );
+        // SqlStorage counts index maintenance as writes, so one logical row
+        // may report more than one write when unique indexes are present.
+        if (transition.rowsWritten < 1) {
+          return conflict(
+            "attempt_claim_conflict",
+            `attempt claim ${claimKey} changed during transition from ` +
+              `${p.expected_status} to ${p.target_status}`,
+          );
+        }
+        const updated = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        return json(attemptClaimView(updated[0] as Record<string, unknown>));
+      }
+    }
 
     if (route[0] === "artifact-publications" && route[1] === "acquire" && method === "POST") {
       const p = (await request.json()) as Record<string, unknown>;

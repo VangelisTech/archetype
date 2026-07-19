@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable
 
+from archetype.app.missions.models import (
+    FencedExecutionAuthorization,
+    ProviderExecutionCapabilities,
+)
 from archetype.app.sandboxes.models import ValidatorSpec
 
 
@@ -18,6 +22,9 @@ class iSandboxSession(Protocol):
     @property
     def sandbox_id(self) -> str: ...
 
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities: ...
+
     async def run_attempt(
         self,
         *,
@@ -26,6 +33,9 @@ class iSandboxSession(Protocol):
         step_name: str,
         attempt_index: int,
         idempotency_key: str,
+        authorization: FencedExecutionAuthorization,
+        authorize_execution: Callable[[FencedExecutionAuthorization], Awaitable[None]],
+        acknowledge_provider: Callable[[str, str], Awaitable[None]],
         previous_session_id: str = "",
         previous_validator_details: Sequence[dict[str, Any]] = (),
         correlation: Mapping[str, Any] | None = None,

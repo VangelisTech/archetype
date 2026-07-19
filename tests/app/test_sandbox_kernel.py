@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import hashlib
 import json
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -13,7 +15,19 @@ from typing import Any
 
 import pytest
 
-from archetype.app.missions import MissionService
+from archetype.app.missions import (
+    AttemptClaimAcquireOutcome,
+    AttemptClaimStatus,
+    AttemptRecoveryAction,
+    FencedExecutionAuthorization,
+    MissionAttemptClaimService,
+    MissionAttemptExecution,
+    MissionAttemptExecutionService,
+    MissionService,
+    ProviderExecutionCapabilities,
+    attempt_invocation_fingerprint,
+)
+from archetype.app.redaction.service import RedactionService
 from archetype.app.sandboxes import (
     GIT_TREE_CHANGE_GATE_NAME,
     AttemptPhase,
@@ -32,6 +46,16 @@ from archetype.app.sandboxes.models import (
     RepositoryPhaseReceipt,
     ValidationEvidence,
 )
+from archetype.app.storage.catalog import (
+    AttemptClaimConflictError,
+    AttemptClaimPendingError,
+    AttemptClaimStaleError,
+    SqliteControlCatalog,
+)
+
+
+def _claim_service(catalog: Any) -> MissionAttemptClaimService:
+    return MissionAttemptClaimService(catalog, redaction_service=RedactionService())
 
 
 @dataclass(frozen=True)
@@ -243,14 +267,91 @@ class _FakeClient(CodingAgentSandboxClient[_Spec]):
         )
 
 
+def _authorization(
+    idempotency_key: str,
+    *,
+    action: AttemptRecoveryAction = AttemptRecoveryAction.EXECUTE,
+    prompt: str = "Fix the reported bug",
+    validators: tuple[dict[str, Any], ...] = (
+        {
+            "name": "tests",
+            "command": ["verify"],
+            "timeout_seconds": 10,
+        },
+    ),
+    step_name: str = "fix",
+    attempt_index: int = 1,
+    previous_session_id: str = "",
+    previous_validator_details: tuple[dict[str, Any], ...] = (),
+    correlation: dict[str, Any] | None = None,
+    provider_session_id: str = "",
+    provider_idempotency_key: str = "",
+    lease_expires_at: float | None = None,
+) -> FencedExecutionAuthorization:
+    correlation = correlation or {
+        "world_id": "world",
+        "run_id": "run",
+        "entity_id": "7",
+        "step_index": 0,
+    }
+    return FencedExecutionAuthorization(
+        action=action,
+        claim_key="claim-1",
+        world_id="world",
+        run_id="run",
+        mission_id="world:run:7",
+        task_id="task-1",
+        attempt_id=hashlib.sha256(idempotency_key.encode()).hexdigest(),
+        idempotency_key=idempotency_key,
+        request_fingerprint="request-fingerprint",
+        sandbox_request_fingerprint=attempt_invocation_fingerprint(
+            prompt=prompt,
+            validators=validators,
+            step_name=step_name,
+            attempt_index=attempt_index,
+            previous_session_id=previous_session_id,
+            previous_validator_details=previous_validator_details,
+            correlation=correlation,
+        ),
+        execution_nonce="execution-nonce-1",
+        claimant="worker-1",
+        fence_epoch=1,
+        lease_expires_at=time.time() + 3600 if lease_expires_at is None else lease_expires_at,
+        provider_session_id=provider_session_id,
+        provider_idempotency_key=provider_idempotency_key,
+    )
+
+
+async def _acknowledge_provider(
+    provider_session_id: str,
+    provider_request_id: str,
+) -> None:
+    del provider_session_id, provider_request_id
+
+
+async def _authorize_execution(
+    authorization: FencedExecutionAuthorization,
+) -> None:
+    del authorization
+
+
 def _attempt_kwargs() -> dict[str, Any]:
+    idempotency_key = "world/run/attempt-1"
     return {
         "prompt": "Fix the reported bug",
         "validators": [ValidatorSpec("tests", ("verify",), timeout_seconds=10)],
         "step_name": "fix",
         "attempt_index": 1,
-        "idempotency_key": "world/run/attempt-1",
-        "correlation": {"world_id": "world", "run_id": "run"},
+        "idempotency_key": idempotency_key,
+        "authorization": _authorization(idempotency_key),
+        "authorize_execution": _authorize_execution,
+        "acknowledge_provider": _acknowledge_provider,
+        "correlation": {
+            "world_id": "world",
+            "run_id": "run",
+            "entity_id": "7",
+            "step_index": 0,
+        },
     }
 
 
@@ -289,6 +390,10 @@ def _mission_row() -> dict[str, Any]:
     }
 
 
+def _provider_capabilities() -> ProviderExecutionCapabilities:
+    return _FakeClient(_Spec()).provider_execution_capabilities
+
+
 @pytest.mark.asyncio
 async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff() -> None:
     client = _FakeClient(_Spec())
@@ -304,7 +409,12 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
     assert outcome["finalization_phase"] == "checkpointed"
     assert client._latest_checkpoint_ref == "fake-checkpoint://checkpoint-1"
     assert outcome["agent_session_id"] == "thread-1"
-    assert outcome["correlation"] == {"world_id": "world", "run_id": "run"}
+    assert outcome["correlation"] == {
+        "world_id": "world",
+        "run_id": "run",
+        "entity_id": "7",
+        "step_index": 0,
+    }
     assert outcome["git_bundle_ref"].startswith("fake-checkpoint://checkpoint-1#")
     assert outcome["live_events_ref"].startswith("fake-sandbox://sandbox-1/")
     assert any(path.endswith(".json") for path in client.files)
@@ -341,10 +451,72 @@ async def test_sandbox_receipt_rejects_idempotency_key_reuse_for_changed_request
     changed = _attempt_kwargs()
     changed["prompt"] = "A materially different task"
 
-    with pytest.raises(ValueError, match="reused with a different"):
+    with pytest.raises(ValueError, match="does not match its durable attempt claim"):
         await client.run_attempt(**changed)
 
     assert len(client.agent_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"prompt": "A different prompt"},
+        {"validators": [ValidatorSpec("tests", ("verify",), timeout_seconds=11)]},
+        {"step_name": "different-step"},
+        {"attempt_index": 2},
+        {"previous_session_id": "different-session"},
+        {"previous_validator_details": ({"name": "tests", "passed": False},)},
+        {
+            "correlation": {
+                "world_id": "world",
+                "run_id": "run",
+                "entity_id": "7",
+                "step_index": 1,
+            }
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_fenced_authorization_binds_every_sandbox_invocation_field(
+    changes: dict[str, Any],
+) -> None:
+    client = _FakeClient(_Spec())
+    kwargs = _attempt_kwargs()
+    kwargs.update(changes)
+
+    with pytest.raises(ValueError, match="does not match its durable attempt claim"):
+        await client.run_attempt(**kwargs)
+
+    assert client.agent_calls == []
+    assert client.phases == []
+
+
+def test_invocation_fingerprint_normalizes_validator_dict_defaults() -> None:
+    correlation = {
+        "world_id": "world",
+        "run_id": "run",
+        "entity_id": "7",
+        "step_index": 0,
+    }
+    raw = attempt_invocation_fingerprint(
+        prompt="fix",
+        validators=({"name": "tests", "command": ["pytest", "-q"]},),
+        step_name="fix",
+        attempt_index=1,
+        previous_session_id="",
+        previous_validator_details=(),
+        correlation=correlation,
+    )
+    normalized = _FakeClient._request_fingerprint(
+        prompt="fix",
+        validators=(ValidatorSpec("tests", ("pytest", "-q")),),
+        step_name="fix",
+        attempt_index=1,
+        previous_session_id="",
+        previous_validator_details=(),
+        correlation=correlation,
+    )
+    assert raw == normalized
 
 
 @pytest.mark.asyncio
@@ -412,7 +584,12 @@ async def test_repository_receipt_resumes_after_post_commit_evidence_crash() -> 
 
     client.evidence_error = None
     client.agent_result = CommandResult(("codex",), 99, "", "must not run")
-    outcome = await client.run_attempt(**_attempt_kwargs())
+    recovered = _attempt_kwargs()
+    recovered["authorization"] = _authorization(
+        recovered["idempotency_key"],
+        action=AttemptRecoveryAction.RECONCILE,
+    )
+    outcome = await client.run_attempt(**recovered)
 
     assert outcome["accepted"] is True
     assert outcome["sha"] == "committed"
@@ -421,6 +598,101 @@ async def test_repository_receipt_resumes_after_post_commit_evidence_crash() -> 
         len([call for call in client.commands if call[0][0] == "git" and "commit" in call[0]]) == 1
     )
     assert any(event == "attempt_resumed" for event, _ in client.events)
+
+
+@pytest.mark.asyncio
+async def test_nonexecuting_claim_action_requires_a_repository_receipt() -> None:
+    client = _FakeClient(_Spec())
+    kwargs = _attempt_kwargs()
+    kwargs["authorization"] = _authorization(
+        kwargs["idempotency_key"],
+        action=AttemptRecoveryAction.RECONCILE,
+    )
+
+    with pytest.raises(RuntimeError, match="forbids model execution"):
+        await client.run_attempt(**kwargs)
+
+    assert client.agent_calls == []
+    assert client.phases == []
+
+
+@pytest.mark.parametrize(
+    ("authorization", "previous_session_id", "message"),
+    [
+        (
+            _authorization("wrong-key"),
+            "",
+            "does not match the idempotency key",
+        ),
+        (
+            replace(
+                _authorization("world/run/attempt-1"),
+                attempt_id="wrong-attempt",
+            ),
+            "",
+            "does not match the attempt identity",
+        ),
+        (
+            replace(
+                _authorization("world/run/attempt-1"),
+                fence_epoch=0,
+            ),
+            "",
+            "positive owned fence",
+        ),
+        (
+            replace(
+                _authorization("world/run/attempt-1"),
+                claim_key="",
+            ),
+            "",
+            "claim and request identity",
+        ),
+        (
+            _authorization(
+                "world/run/attempt-1",
+                lease_expires_at=0,
+            ),
+            "",
+            "lease expired",
+        ),
+        (
+            _authorization(
+                "world/run/attempt-1",
+                action=AttemptRecoveryAction.REPLAY_IDEMPOTENT,
+                provider_idempotency_key="provider-operation-1",
+            ),
+            "",
+            "no implemented provider transport",
+        ),
+        (
+            _authorization(
+                "world/run/attempt-1",
+                action=AttemptRecoveryAction.RESUME_SESSION,
+                previous_session_id="session-1",
+                provider_session_id="session-1",
+            ),
+            "session-1",
+            "no implemented provider transport",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_sandbox_rejects_invalid_fenced_authorization_before_execution(
+    authorization: FencedExecutionAuthorization,
+    previous_session_id: str,
+    message: str,
+) -> None:
+    client = _FakeClient(_Spec())
+    kwargs = _attempt_kwargs()
+    kwargs["authorization"] = authorization
+    kwargs["previous_session_id"] = previous_session_id
+
+    with pytest.raises((ValueError, RuntimeError), match=message):
+        await client.run_attempt(**kwargs)
+
+    assert client.agent_calls == []
+    assert client.phases == []
 
 
 @pytest.mark.asyncio
@@ -473,6 +745,18 @@ async def test_real_sandbox_checkpoint_outcome_crosses_the_mission_boundary(
         step_name=request.step_name,
         attempt_index=request.attempt_index,
         idempotency_key=request.idempotency_key,
+        authorization=_authorization(
+            request.idempotency_key,
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        ),
+        authorize_execution=_authorize_execution,
+        acknowledge_provider=_acknowledge_provider,
         previous_session_id=request.previous_session_id,
         previous_validator_details=request.previous_validator_details,
         correlation=request.correlation,
@@ -481,6 +765,556 @@ async def test_real_sandbox_checkpoint_outcome_crosses_the_mission_boundary(
 
     assert updated["checkpoint__status"] == persisted_status
     assert updated["attempt__status"] == attempt_status
+
+
+@pytest.mark.asyncio
+async def test_claim_acquisition_failure_precedes_every_sandbox_phase(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    executions = MissionAttemptExecutionService(claims, MissionService())
+    client = _FakeClient(_Spec())
+    row = _mission_row()
+    request = MissionService().prepare_attempt(row, tick=1)
+    assert request is not None
+
+    async def fail_before_claim_commit(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise RuntimeError("claim commit failed")
+
+    monkeypatch.setattr(claims, "acquire", fail_before_claim_commit)
+    with pytest.raises(RuntimeError, match="claim commit failed"):
+        await executions.run(
+            row,
+            tick=1,
+            claimant="worker-before-commit",
+            runner=client,
+        )
+
+    claim_key = claims.claim_key(
+        world_id=request.correlation["world_id"],
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    assert await claims.get(request.correlation["world_id"], claim_key) is None
+    assert client.agent_calls == []
+    assert client.phases == []
+    assert client.commands == []
+    assert client.events == []
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_crash_after_claim_commit_recovers_claimed_then_executes_once(tmp_path) -> None:
+    path = tmp_path / "catalog.db"
+    row = _mission_row()
+    request = MissionService().prepare_attempt(row, tick=1)
+    assert request is not None
+
+    original_catalog = SqliteControlCatalog(path)
+    original = _claim_service(original_catalog)
+    acquired = await original.acquire(
+        request,
+        _provider_capabilities(),
+        claimant="worker-crashed-before-provider",
+        lease_seconds=0,
+    )
+    persisted_before_crash = await original.get(
+        acquired.claim.world_id,
+        acquired.claim.claim_key,
+    )
+    assert persisted_before_crash == acquired.claim
+    assert persisted_before_crash.status is AttemptClaimStatus.CLAIMED
+    assert persisted_before_crash.possibly_submitted_at is None
+    await original_catalog.close()
+
+    recovered_catalog = SqliteControlCatalog(path)
+    recovered_claims = _claim_service(recovered_catalog)
+    takeover = await recovered_claims.acquire(
+        request,
+        _provider_capabilities(),
+        claimant="worker-recovered-before-provider",
+        lease_seconds=60,
+    )
+    assert takeover.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert takeover.claim.status is AttemptClaimStatus.CLAIMED
+    assert takeover.claim.possibly_submitted_at is None
+    assert takeover.claim.fence_epoch == acquired.claim.fence_epoch + 1
+
+    client = _FakeClient(_Spec())
+    completed = await MissionAttemptExecutionService(recovered_claims, MissionService()).run(
+        row,
+        tick=1,
+        claimant="worker-recovered-before-provider",
+        runner=client,
+        lease_seconds=60,
+    )
+
+    assert completed is not None
+    assert completed.acquisition.outcome is AttemptClaimAcquireOutcome.OWNED
+    assert completed.decision.action is AttemptRecoveryAction.EXECUTE
+    assert completed.claim.status is AttemptClaimStatus.SETTLED
+    assert completed.replayed is False
+    assert len(client.agent_calls) == 1
+    assert client.phases == list(AttemptPhase)
+    persisted_after_execution = await recovered_claims.get(
+        completed.claim.world_id,
+        completed.claim.claim_key,
+    )
+    assert persisted_after_execution == completed.claim
+    await recovered_catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_claim_fenced_execution_settles_and_replays_without_second_model_call(
+    tmp_path,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    executions = MissionAttemptExecutionService(claims, MissionService())
+    client = _FakeClient(_Spec())
+    row = _mission_row()
+
+    first = await executions.run(
+        row,
+        tick=1,
+        claimant="worker-incarnation-1",
+        runner=client,
+    )
+    replay = await executions.run(
+        row,
+        tick=2,
+        claimant="worker-incarnation-2",
+        runner=client,
+    )
+
+    assert first is not None and replay is not None
+    assert first.acquisition.outcome is AttemptClaimAcquireOutcome.ACQUIRED
+    assert first.claim.status is AttemptClaimStatus.SETTLED
+    assert first.replayed is False
+    assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+    assert replay.claim == first.claim
+    assert replay.outcome == first.outcome
+    assert replay.updated_row == first.updated_row
+    assert replay.replayed is True
+    assert len(client.agent_calls) == 1
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_crash_after_artifact_handoff_reconciles_receipt_without_second_model_call(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    executions = MissionAttemptExecutionService(claims, MissionService())
+    client = _FakeClient(_Spec())
+    original_settle = claims.settle
+
+    async def crash_before_claim_settlement(*args: Any, **kwargs: Any):
+        del args, kwargs
+        raise RuntimeError("crash after artifact handoff")
+
+    monkeypatch.setattr(claims, "settle", crash_before_claim_settlement)
+    with pytest.raises(RuntimeError, match="after artifact handoff"):
+        await executions.run(
+            _mission_row(),
+            tick=1,
+            claimant="worker-incarnation",
+            runner=client,
+        )
+    assert len(client.agent_calls) == 1
+
+    monkeypatch.setattr(claims, "settle", original_settle)
+    recovered = await executions.run(
+        _mission_row(),
+        tick=2,
+        claimant="worker-incarnation",
+        runner=client,
+    )
+
+    assert recovered is not None
+    assert recovered.decision.action is AttemptRecoveryAction.RECONCILE
+    assert recovered.claim.status is AttemptClaimStatus.SETTLED
+    assert recovered.replayed is False
+    assert len(client.agent_calls) == 1
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_settled_execute_authorization_cannot_reach_a_fresh_model_process(
+    tmp_path,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    row = _mission_row()
+    first_client = _FakeClient(_Spec())
+    first = await MissionAttemptExecutionService(claims, MissionService()).run(
+        row,
+        tick=1,
+        claimant="worker-incarnation-1",
+        runner=first_client,
+    )
+    assert first is not None
+    assert first.claim.status is AttemptClaimStatus.SETTLED
+
+    fresh_client = _FakeClient(_Spec())
+    request = first.request
+    with pytest.raises(AttemptClaimStaleError, match="stale or already consumed"):
+        await fresh_client.run_attempt(
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            idempotency_key=request.idempotency_key,
+            authorization=first.decision.authorization,
+            authorize_execution=claims.consume_execution,
+            acknowledge_provider=_acknowledge_provider,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        )
+
+    assert fresh_client.agent_calls == []
+    assert fresh_client.phases == []
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_orchestration_derives_provider_identity_from_the_runner(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    row = _mission_row()
+    request = MissionService().prepare_attempt(row, tick=1)
+    assert request is not None
+    original = _FakeClient(_Spec())
+    await claims.acquire(
+        request,
+        original.provider_execution_capabilities,
+        claimant="expired-worker",
+        lease_seconds=0,
+    )
+    different = _FakeClient(replace(_Spec(), model="different-model"))
+
+    with pytest.raises(AttemptClaimConflictError, match="different immutable input"):
+        await MissionAttemptExecutionService(claims, MissionService()).run(
+            row,
+            tick=2,
+            claimant="replacement-worker",
+            runner=different,
+        )
+
+    assert different.agent_calls == []
+    assert different.phases == []
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_service_rejects_runner_that_skips_claim_callbacks(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    client = _FakeClient(_Spec())
+    original_run = client.run_attempt
+
+    async def run_without_durable_callbacks(**kwargs: Any) -> dict[str, Any]:
+        kwargs["authorize_execution"] = _authorize_execution
+        kwargs["acknowledge_provider"] = _acknowledge_provider
+        return await original_run(**kwargs)
+
+    monkeypatch.setattr(client, "run_attempt", run_without_durable_callbacks)
+    with pytest.raises(RuntimeError, match="without consuming its execution grant"):
+        await MissionAttemptExecutionService(claims, MissionService()).run(
+            _mission_row(),
+            tick=1,
+            claimant="worker",
+            runner=client,
+        )
+
+    request = MissionService().prepare_attempt(_mission_row(), tick=1)
+    assert request is not None
+    claim_key = claims.claim_key(
+        world_id=request.correlation["world_id"],
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    persisted = await claims.get(request.correlation["world_id"], claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.POSSIBLY_SUBMITTED
+    assert persisted.execution_consumed_at is None
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_heartbeat_prevents_live_attempt_takeover(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "catalog.db"
+    catalog = SqliteControlCatalog(path)
+    contender_catalog = SqliteControlCatalog(path)
+    claims = _claim_service(catalog)
+    contender = _claim_service(contender_catalog)
+    client = _FakeClient(_Spec())
+    original_run_agent = client._run_agent
+    original_renew = claims.renew
+    provider_started = asyncio.Event()
+    heartbeat_renewed = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def slow_run_agent(prompt: str, *, session_id: str) -> CommandResult:
+        provider_started.set()
+        await release_provider.wait()
+        return await original_run_agent(prompt, session_id=session_id)
+
+    async def observed_renew(*args: Any, **kwargs: Any):
+        renewed = await original_renew(*args, **kwargs)
+        if provider_started.is_set():
+            heartbeat_renewed.set()
+        return renewed
+
+    monkeypatch.setattr(client, "_run_agent", slow_run_agent)
+    monkeypatch.setattr(claims, "renew", observed_renew)
+    execution = asyncio.create_task(
+        MissionAttemptExecutionService(claims, MissionService()).run(
+            _mission_row(),
+            tick=1,
+            claimant="live-worker",
+            runner=client,
+            lease_seconds=3.0,
+        )
+    )
+    await provider_started.wait()
+    await heartbeat_renewed.wait()
+    request = MissionService().prepare_attempt(_mission_row(), tick=1)
+    assert request is not None
+
+    with pytest.raises(AttemptClaimPendingError, match="live claimant 'live-worker'"):
+        await contender.acquire(
+            request,
+            client.provider_execution_capabilities,
+            claimant="contender",
+        )
+
+    release_provider.set()
+    completed = await execution
+    assert completed is not None
+    assert completed.claim.status is AttemptClaimStatus.SETTLED
+    await catalog.close()
+    await contender_catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_execution_stops_runner_and_lease_heartbeat(tmp_path, monkeypatch) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    client = _FakeClient(_Spec())
+    provider_started = asyncio.Event()
+    provider_cancelled = asyncio.Event()
+    renewals = 0
+    original_renew = claims.renew
+
+    async def blocked_run_agent(prompt: str, *, session_id: str) -> CommandResult:
+        del prompt, session_id
+        provider_started.set()
+        try:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable blocked provider")
+        finally:
+            provider_cancelled.set()
+
+    async def counted_renew(*args: Any, **kwargs: Any):
+        nonlocal renewals
+        renewals += 1
+        return await original_renew(*args, **kwargs)
+
+    monkeypatch.setattr(client, "_run_agent", blocked_run_agent)
+    monkeypatch.setattr(claims, "renew", counted_renew)
+    execution = asyncio.create_task(
+        MissionAttemptExecutionService(claims, MissionService()).run(
+            _mission_row(),
+            tick=1,
+            claimant="cancelled-worker",
+            runner=client,
+            lease_seconds=0.06,
+        )
+    )
+    await provider_started.wait()
+    await asyncio.sleep(0.08)
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    assert provider_cancelled.is_set()
+    renewals_after_cancel = renewals
+    await asyncio.sleep(0.08)
+    assert renewals == renewals_after_cancel
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_execution_decisions_reach_the_model_exactly_once(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "catalog.db")
+    claims = _claim_service(catalog)
+    executions = MissionAttemptExecutionService(claims, MissionService())
+    client = _FakeClient(_Spec())
+    row = _mission_row()
+
+    results = await asyncio.gather(
+        executions.run(
+            row,
+            tick=1,
+            claimant="shared-worker-incarnation",
+            runner=client,
+        ),
+        executions.run(
+            row,
+            tick=1,
+            claimant="shared-worker-incarnation",
+            runner=client,
+        ),
+        return_exceptions=True,
+    )
+
+    assert len(client.agent_calls) == 1
+    successful = [value for value in results if not isinstance(value, BaseException)]
+    assert successful
+    assert isinstance(successful[0], MissionAttemptExecution)
+    persisted = await claims.get(
+        successful[0].claim.world_id,
+        successful[0].claim.claim_key,
+    )
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.SETTLED
+    await catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_crash_after_send_before_ack_never_becomes_a_second_model_call(
+    tmp_path,
+) -> None:
+    path = tmp_path / "catalog.db"
+    catalog = SqliteControlCatalog(path)
+    claims = _claim_service(catalog)
+    request = MissionService().prepare_attempt(_mission_row(), tick=1)
+    assert request is not None
+    acquired = await claims.acquire(
+        request,
+        _provider_capabilities(),
+        claimant="crashed-worker",
+        lease_seconds=0.5,
+    )
+    decision = await claims.decide_recovery(acquired.claim, lease_seconds=0.5)
+    client = _FakeClient(_Spec())
+
+    async def crash_before_ack(
+        provider_session_id: str,
+        provider_request_id: str,
+    ) -> None:
+        del provider_session_id, provider_request_id
+        raise RuntimeError("crash before acknowledgement commit")
+
+    with pytest.raises(RuntimeError, match="before acknowledgement"):
+        await client.run_attempt(
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            idempotency_key=request.idempotency_key,
+            authorization=decision.authorization,
+            authorize_execution=claims.consume_execution,
+            acknowledge_provider=crash_before_ack,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        )
+    assert len(client.agent_calls) == 1
+    uncertain = await claims.get(acquired.claim.world_id, acquired.claim.claim_key)
+    assert uncertain is not None
+    assert uncertain.status is AttemptClaimStatus.POSSIBLY_SUBMITTED
+    await asyncio.sleep(0.51)
+    await catalog.close()
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    recovered = await cold.acquire(
+        request,
+        _provider_capabilities(),
+        claimant="recovery-worker",
+    )
+    recovery = await cold.decide_recovery(recovered.claim)
+    assert recovery.action is AttemptRecoveryAction.RECONCILE
+    with pytest.raises(RuntimeError, match="forbids model execution"):
+        await client.run_attempt(
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            idempotency_key=request.idempotency_key,
+            authorization=recovery.authorization,
+            authorize_execution=_authorize_execution,
+            acknowledge_provider=_acknowledge_provider,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        )
+    assert len(client.agent_calls) == 1
+    await cold_catalog.close()
+
+
+@pytest.mark.asyncio
+async def test_crash_after_provider_ack_is_restart_discoverable_without_resubmission(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "catalog.db"
+    catalog = SqliteControlCatalog(path)
+    claims = _claim_service(catalog)
+    executions = MissionAttemptExecutionService(claims, MissionService())
+    client = _FakeClient(_Spec())
+
+    async def crash_before_validation(*args: Any, **kwargs: Any) -> ValidationEvidence:
+        del args, kwargs
+        raise RuntimeError("crash after provider acknowledgement")
+
+    monkeypatch.setattr(client, "_validation_phase", crash_before_validation)
+    with pytest.raises(RuntimeError, match="after provider acknowledgement"):
+        await executions.run(
+            _mission_row(),
+            tick=1,
+            claimant="crashed-worker",
+            runner=client,
+            lease_seconds=0.5,
+        )
+    assert len(client.agent_calls) == 1
+    request = MissionService().prepare_attempt(_mission_row(), tick=1)
+    assert request is not None
+    claim_key = claims.claim_key(
+        world_id=request.correlation["world_id"],
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    acknowledged = await claims.get(request.correlation["world_id"], claim_key)
+    assert acknowledged is not None
+    assert acknowledged.status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED
+    await asyncio.sleep(0.51)
+    await catalog.close()
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    recovered = await cold.acquire(
+        request,
+        _provider_capabilities(),
+        claimant="recovery-worker",
+    )
+    recovery = await cold.decide_recovery(recovered.claim)
+    assert recovery.action is AttemptRecoveryAction.RECONCILE
+    assert len(client.agent_calls) == 1
+    await cold_catalog.close()
 
 
 @pytest.mark.asyncio

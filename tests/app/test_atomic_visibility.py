@@ -412,7 +412,40 @@ async def test_v4_catalog_renames_fact_claim_identity_without_data_loss(tmp_path
     ]
     conn.close()
     assert "artifact_entity_id" in columns and "fact_entity_id" not in columns
-    assert version == "6"
+    assert version == "7"
+
+
+async def test_v6_catalog_adds_attempt_claims_with_redaction_evidence(tmp_path):
+    """Schema v7 adds the complete claim authority to a released v6 catalog."""
+    import sqlite3
+
+    path = tmp_path / "cat.db"
+    catalog = SqliteControlCatalog(path)
+    assert await catalog.get_world("missing") is None  # create the current schema
+    await catalog.close()
+
+    conn = sqlite3.connect(path)
+    conn.execute("DROP TABLE mission_attempt_claims")
+    conn.execute("UPDATE catalog_meta SET value='6' WHERE key='schema_version'")
+    conn.commit()
+    conn.close()
+
+    upgraded = SqliteControlCatalog(path)
+    assert await upgraded.get_attempt_claim("w1", "missing") is None
+    await upgraded.close()
+
+    conn = sqlite3.connect(path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(mission_attempt_claims)")}
+    version = conn.execute("SELECT value FROM catalog_meta WHERE key='schema_version'").fetchone()[
+        0
+    ]
+    conn.close()
+    assert {
+        "redaction_policy_id",
+        "redaction_acquisition_evidence_json",
+        "redaction_evidence_json",
+    } <= columns
+    assert version == "7"
 
 
 async def test_catalog_failure_fails_reads_closed_not_open(tmp_path, monkeypatch):

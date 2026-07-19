@@ -23,6 +23,7 @@ from archetype.app.missions import (
     MissionTransitionGraph,
     TaskGate,
     TaskStatus,
+    attempt_invocation_fingerprint,
 )
 
 
@@ -72,14 +73,31 @@ def _outcome(
 ) -> dict[str, Any]:
     provider_status = status or ("accepted" if accepted else "rejected")
     return {
-        "attempt_id": f"attempt-{request.attempt_index}",
+        "attempt_id": request.attempt_id,
         "attempt_index": request.attempt_index,
         "idempotency_key": request.idempotency_key,
+        "request_fingerprint": attempt_invocation_fingerprint(
+            prompt=request.prompt,
+            validators=request.validators,
+            step_name=request.step_name,
+            attempt_index=request.attempt_index,
+            previous_session_id=request.previous_session_id,
+            previous_validator_details=request.previous_validator_details,
+            correlation=request.correlation,
+        ),
         "status": provider_status,
         "accepted": accepted,
         "harness": "fake",
         "agent_session_id": "session-test",
-        "validator_details": [{"name": "tests", "passed": accepted}],
+        "validator_details": [
+            {
+                "name": "tests",
+                "command": ["pytest"],
+                "expected_returncode": 0,
+                "returncode": 0 if accepted else 1,
+                "passed": accepted,
+            }
+        ],
         "checkpoint_provider": "fake",
         "checkpoint_status": "created" if checkpoint else "failed",
         "checkpoint_restorable": checkpoint,
@@ -318,6 +336,28 @@ def test_prepare_attempt_fails_closed_on_corrupt_or_inactive_state() -> None:
     invalid_previous["attempt__validator_details_json"] = "{}"
     cases.append((invalid_previous, "validator details"))
 
+    empty_command = _row(
+        plan=[
+            {
+                "name": "fix",
+                "prompt": "Fix the bug",
+                "validators": [{"name": "tests", "command": []}],
+            }
+        ]
+    )
+    cases.append((empty_command, "non-empty string command"))
+
+    invalid_timeout = _row(
+        plan=[
+            {
+                "name": "fix",
+                "prompt": "Fix the bug",
+                "validators": [{"name": "tests", "command": ["pytest"], "timeout_seconds": 0}],
+            }
+        ]
+    )
+    cases.append((invalid_timeout, "timeout_seconds"))
+
     for row, message in cases:
         with pytest.raises(ValueError, match=message):
             service.prepare_attempt(row, tick=0)
@@ -373,6 +413,20 @@ def test_apply_attempt_rejects_stale_identity_and_vacuous_evidence() -> None:
     no_commit["sha"] = ""
     with pytest.raises(ValueError, match="commit SHA"):
         service.apply_attempt(row, request, no_commit)
+
+    with pytest.raises(ValueError, match="max_attempts changed"):
+        service.apply_attempt(
+            dict(row, taskgate__max_attempts=4),
+            request,
+            _outcome(request, accepted=False),
+        )
+
+    with pytest.raises(ValueError, match="finalization gate changed"):
+        service.apply_attempt(
+            dict(row, taskgate__required_finalization_phase="indexed"),
+            request,
+            _outcome(request, accepted=True),
+        )
 
 
 def test_attempt_identity_binds_typed_source_state() -> None:

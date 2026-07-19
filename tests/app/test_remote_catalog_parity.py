@@ -15,6 +15,7 @@ The final test runs the real service stack — coordinator, ingestion,
 receipts — against the remote catalog via ARCHETYPE_CONTROL_CATALOG_URL.
 """
 
+import asyncio
 import shutil
 import socket
 import subprocess
@@ -28,6 +29,9 @@ import pytest
 from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
     ArtifactPublicationPendingError,
+    AttemptClaimConflictError,
+    AttemptClaimPendingError,
+    AttemptClaimStaleError,
     CatalogConflictError,
     ClaimConflictError,
     ClaimPendingError,
@@ -470,6 +474,491 @@ async def test_world_deactivation_rejects_open_and_future_commands(tmp_path, wor
             await catalog.admit_commands("w1", [after_destroy])
         with pytest.raises(CommandConflictError, match="not active"):
             await catalog.lease_commands("w1", 0, "worker-after-destroy")
+        await catalog.close()
+
+
+async def test_mission_attempt_claim_lifecycle_parity(tmp_path, worker_url):
+    base = {
+        "claim_key": "claim-1",
+        "world_id": "w1",
+        "run_id": "r1",
+        "mission_id": "mission-1",
+        "task_id": "task-1",
+        "attempt_id": "attempt-1",
+        "idempotency_key": "mission-idempotency-1",
+        "request_fingerprint": "request-fingerprint-1",
+        "request_json": '{"request_fingerprint":"mission-request-1"}',
+        "redaction_policy_id": "redaction-v1",
+        "redaction_evidence_json": '{"phase":"acquired"}',
+        "provider": "modal",
+        "provider_request_fingerprint": "provider-request-1",
+        "supports_idempotent_replay": False,
+        "supports_session_resume": True,
+        "provider_idempotency_key": "",
+    }
+    for catalog in await _both(tmp_path, worker_url):
+        outcome, claim = await catalog.acquire_attempt_claim(
+            **base,
+            claimant="worker-1",
+            lease_seconds=30.0,
+        )
+        assert outcome == "acquired"
+        assert claim.status == "claimed" and claim.fence_epoch == 1
+        assert claim.redaction_policy_id == "redaction-v1"
+        assert claim.redaction_evidence_json == '{"phase":"acquired"}'
+        assert not hasattr(claim, "redaction_acquisition_evidence_json")
+
+        # A caller-supplied claim key cannot create a second row for the same
+        # world/mission/task/attempt identity.
+        with pytest.raises(AttemptClaimConflictError):
+            await catalog.acquire_attempt_claim(
+                **{**base, "claim_key": "claim-shadow"},
+                claimant="worker-shadow",
+            )
+
+        outcome, owned = await catalog.acquire_attempt_claim(
+            **base,
+            claimant="worker-1",
+            lease_seconds=30.0,
+        )
+        assert outcome == "owned" and owned.fence_epoch == 1
+        with pytest.raises(AttemptClaimPendingError):
+            await catalog.acquire_attempt_claim(
+                **base,
+                claimant="worker-2",
+            )
+        with pytest.raises(AttemptClaimConflictError):
+            await catalog.acquire_attempt_claim(
+                **{**base, "request_fingerprint": "changed"},
+                claimant="worker-2",
+            )
+        with pytest.raises(AttemptClaimConflictError):
+            await catalog.acquire_attempt_claim(
+                **{**base, "redaction_policy_id": "redaction-v2"},
+                claimant="worker-1",
+            )
+        with pytest.raises(AttemptClaimConflictError):
+            await catalog.acquire_attempt_claim(
+                **{**base, "redaction_evidence_json": '{"phase":"different"}'},
+                claimant="worker-1",
+            )
+
+        uncertain = await catalog.transition_attempt_claim(
+            "w1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="execution-lifecycle-1",
+            redaction_evidence_json='{"phase":"armed"}',
+        )
+        assert uncertain.status == "possibly_submitted"
+        assert uncertain.redaction_evidence_json == '{"phase":"armed"}'
+        assert uncertain.possibly_submitted_at
+        with pytest.raises(AttemptClaimConflictError):
+            await catalog.transition_attempt_claim(
+                "w1",
+                claim.claim_key,
+                "worker-1",
+                1,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="execution-lifecycle-1",
+                last_error="conflicting same-target evidence",
+            )
+        unchanged = await catalog.get_attempt_claim("w1", claim.claim_key)
+        assert unchanged is not None and unchanged.last_error == ""
+        renewed = await catalog.renew_attempt_claim(
+            "w1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            lease_seconds=60.0,
+        )
+        assert renewed.lease_expires_at > time.time()
+        acknowledged = await catalog.transition_attempt_claim(
+            "w1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            expected_status="possibly_submitted",
+            target_status="provider_acknowledged",
+            provider_session_id="session-1",
+            provider_request_id="request-1",
+        )
+        assert acknowledged.provider_session_id == "session-1"
+        settled = await catalog.transition_attempt_claim(
+            "w1",
+            claim.claim_key,
+            "worker-1",
+            1,
+            expected_status="provider_acknowledged",
+            target_status="settled",
+            settlement_status="accepted",
+            outcome_digest="outcome-1",
+            outcome_json='{"status":"accepted"}',
+        )
+        assert settled.status == "settled" and settled.settled_at
+
+        outcome, duplicate = await catalog.acquire_attempt_claim(
+            **base,
+            claimant="worker-2",
+        )
+        assert outcome == "duplicate" and duplicate.outcome_digest == "outcome-1"
+        assert duplicate.redaction_evidence_json == '{"phase":"armed"}'
+        assert await catalog.list_due_attempt_claims("w1", now=time.time() + 100) == []
+
+        expiring = {**base, "claim_key": "claim-2", "attempt_id": "attempt-2"}
+        _, dead = await catalog.acquire_attempt_claim(
+            **expiring,
+            claimant="dead-worker",
+            lease_seconds=0,
+        )
+        due = await catalog.list_due_attempt_claims("w1", now=time.time() + 1)
+        assert [record.claim_key for record in due] == ["claim-2"]
+        outcome, recovered = await catalog.acquire_attempt_claim(
+            **expiring,
+            claimant="recovery-worker",
+        )
+        assert outcome == "recovered" and recovered.fence_epoch == 2
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.transition_attempt_claim(
+                "w1",
+                dead.claim_key,
+                "dead-worker",
+                1,
+                expected_status="claimed",
+                target_status="settled",
+            )
+        await catalog.close()
+
+
+async def test_mission_attempt_claim_same_target_race_parity(tmp_path, worker_url):
+    base = {
+        "claim_key": "claim-race",
+        "world_id": "w-race",
+        "run_id": "r-race",
+        "mission_id": "mission-race",
+        "task_id": "task-race",
+        "attempt_id": "attempt-race",
+        "idempotency_key": "mission-idempotency-race",
+        "request_fingerprint": "request-fingerprint-race",
+        "request_json": '{"request_fingerprint":"mission-request-race"}',
+        "redaction_policy_id": "redaction-v1",
+        "redaction_evidence_json": '{"phase":"acquired"}',
+        "provider": "modal",
+        "provider_request_fingerprint": "provider-request-race",
+        "supports_idempotent_replay": False,
+        "supports_session_resume": False,
+        "provider_idempotency_key": "",
+    }
+    for catalog in await _both(tmp_path, worker_url):
+        _, claim = await catalog.acquire_attempt_claim(
+            **base,
+            claimant="race-worker",
+        )
+
+        results = await asyncio.gather(
+            catalog.transition_attempt_claim(
+                "w-race",
+                claim.claim_key,
+                "race-worker",
+                claim.fence_epoch,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="execution-race-1",
+                last_error="evidence-left",
+            ),
+            catalog.transition_attempt_claim(
+                "w-race",
+                claim.claim_key,
+                "race-worker",
+                claim.fence_epoch,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="execution-race-1",
+                last_error="evidence-right",
+            ),
+            return_exceptions=True,
+        )
+        successes = [result for result in results if not isinstance(result, BaseException)]
+        failures = [result for result in results if isinstance(result, BaseException)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], AttemptClaimConflictError)
+
+        persisted = await catalog.get_attempt_claim("w-race", claim.claim_key)
+        assert persisted is not None
+        assert persisted.status == "possibly_submitted"
+        assert persisted.last_error == successes[0].last_error
+        assert persisted.last_error in {"evidence-left", "evidence-right"}
+        await catalog.close()
+
+
+async def test_mission_attempt_execution_grant_single_consume_parity(tmp_path, worker_url):
+    base = {
+        "claim_key": "claim-execution-grant",
+        "world_id": "w-execution-grant",
+        "run_id": "r-execution-grant",
+        "mission_id": "mission-execution-grant",
+        "task_id": "task-execution-grant",
+        "attempt_id": "attempt-execution-grant",
+        "idempotency_key": "idempotency-execution-grant",
+        "request_fingerprint": "request-execution-grant",
+        "request_json": '{"request_fingerprint":"mission-execution-grant"}',
+        "redaction_policy_id": "redaction-v1",
+        "redaction_evidence_json": '{"phase":"acquired"}',
+        "provider": "modal",
+        "provider_request_fingerprint": "provider-execution-grant",
+        "supports_idempotent_replay": False,
+        "supports_session_resume": False,
+        "provider_idempotency_key": "",
+    }
+    for catalog in await _both(tmp_path, worker_url):
+        _, claim = await catalog.acquire_attempt_claim(
+            **base,
+            claimant="execution-worker",
+            lease_seconds=30.0,
+        )
+        with pytest.raises(ValueError, match="execution nonce"):
+            await catalog.transition_attempt_claim(
+                base["world_id"],
+                claim.claim_key,
+                "execution-worker",
+                claim.fence_epoch,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+            )
+        armed = await catalog.transition_attempt_claim(
+            base["world_id"],
+            claim.claim_key,
+            "execution-worker",
+            claim.fence_epoch,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="execution-nonce-1",
+        )
+        assert armed.execution_nonce == "execution-nonce-1"
+        assert armed.execution_consumed_at is None
+        for claimant, fence_epoch, nonce in (
+            ("wrong-worker", claim.fence_epoch, "execution-nonce-1"),
+            ("execution-worker", claim.fence_epoch + 1, "execution-nonce-1"),
+            ("execution-worker", claim.fence_epoch, "wrong-nonce"),
+        ):
+            with pytest.raises(AttemptClaimStaleError):
+                await catalog.consume_attempt_execution(
+                    base["world_id"],
+                    claim.claim_key,
+                    claimant,
+                    fence_epoch,
+                    nonce,
+                )
+
+        results = await asyncio.gather(
+            catalog.consume_attempt_execution(
+                base["world_id"],
+                claim.claim_key,
+                "execution-worker",
+                claim.fence_epoch,
+                "execution-nonce-1",
+            ),
+            catalog.consume_attempt_execution(
+                base["world_id"],
+                claim.claim_key,
+                "execution-worker",
+                claim.fence_epoch,
+                "execution-nonce-1",
+            ),
+            return_exceptions=True,
+        )
+        consumed = [result for result in results if not isinstance(result, BaseException)]
+        rejected = [result for result in results if isinstance(result, BaseException)]
+        assert len(consumed) == 1
+        assert consumed[0].execution_consumed_at
+        assert len(rejected) == 1
+        assert isinstance(rejected[0], AttemptClaimStaleError)
+
+        persisted = await catalog.get_attempt_claim(base["world_id"], claim.claim_key)
+        assert persisted is not None
+        assert persisted.execution_consumed_at == consumed[0].execution_consumed_at
+        settled = await catalog.transition_attempt_claim(
+            base["world_id"],
+            claim.claim_key,
+            "execution-worker",
+            claim.fence_epoch,
+            expected_status="possibly_submitted",
+            target_status="settled",
+            settlement_status="failed",
+            outcome_digest="outcome-execution-grant",
+            outcome_json='{"status":"failed"}',
+        )
+        assert settled.status == "settled"
+        assert settled.execution_consumed_at == persisted.execution_consumed_at
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.transition_attempt_claim(
+                base["world_id"],
+                claim.claim_key,
+                "execution-worker",
+                claim.fence_epoch,
+                expected_status="settled",
+                target_status="settled",
+                settlement_status="failed",
+                outcome_digest="changed-outcome",
+                outcome_json='{"status":"changed"}',
+            )
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.consume_attempt_execution(
+                base["world_id"],
+                claim.claim_key,
+                "execution-worker",
+                claim.fence_epoch,
+                "execution-nonce-1",
+            )
+
+        await catalog.close()
+
+
+async def test_mission_attempt_expired_lease_rejects_every_mutation_parity(
+    tmp_path,
+    worker_url,
+):
+    base = {
+        "world_id": "w-expired-attempt",
+        "run_id": "r-expired-attempt",
+        "mission_id": "mission-expired-attempt",
+        "task_id": "task-expired-attempt",
+        "idempotency_key": "idempotency-expired-attempt",
+        "request_fingerprint": "request-expired-attempt",
+        "request_json": '{"request_fingerprint":"mission-expired-attempt"}',
+        "redaction_policy_id": "redaction-v1",
+        "redaction_evidence_json": '{"phase":"acquired"}',
+        "provider": "modal",
+        "provider_request_fingerprint": "provider-expired-attempt",
+        "supports_idempotent_replay": False,
+        "supports_session_resume": False,
+        "provider_idempotency_key": "",
+    }
+
+    async def acquire(catalog, suffix: str, lease_seconds: float):
+        _, claim = await catalog.acquire_attempt_claim(
+            **base,
+            claim_key=f"claim-{suffix}",
+            attempt_id=f"attempt-{suffix}",
+            claimant=f"worker-{suffix}",
+            lease_seconds=lease_seconds,
+        )
+        return claim
+
+    for catalog in await _both(tmp_path, worker_url):
+        expired_renew = await acquire(catalog, "expired-renew", 0)
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.renew_attempt_claim(
+                base["world_id"],
+                expired_renew.claim_key,
+                expired_renew.claimant,
+                expired_renew.fence_epoch,
+                lease_seconds=30,
+            )
+
+        expired_arm = await acquire(catalog, "expired-arm", 0)
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.transition_attempt_claim(
+                base["world_id"],
+                expired_arm.claim_key,
+                expired_arm.claimant,
+                expired_arm.fence_epoch,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="nonce-expired-arm",
+            )
+
+        expiring_ack = await acquire(catalog, "expired-ack", 1.0)
+        expiring_ack = await catalog.transition_attempt_claim(
+            base["world_id"],
+            expiring_ack.claim_key,
+            expiring_ack.claimant,
+            expiring_ack.fence_epoch,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="nonce-expired-ack",
+        )
+        expiring_settle = await acquire(catalog, "expired-settle", 1.0)
+        expiring_settle = await catalog.transition_attempt_claim(
+            base["world_id"],
+            expiring_settle.claim_key,
+            expiring_settle.claimant,
+            expiring_settle.fence_epoch,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="nonce-expired-settle",
+        )
+        expiring_settle = await catalog.transition_attempt_claim(
+            base["world_id"],
+            expiring_settle.claim_key,
+            expiring_settle.claimant,
+            expiring_settle.fence_epoch,
+            expected_status="possibly_submitted",
+            target_status="provider_acknowledged",
+            provider_request_id="request-expired-settle",
+        )
+        expiring_consume = await acquire(catalog, "expired-consume", 1.0)
+        expiring_consume = await catalog.transition_attempt_claim(
+            base["world_id"],
+            expiring_consume.claim_key,
+            expiring_consume.claimant,
+            expiring_consume.fence_epoch,
+            expected_status="claimed",
+            target_status="possibly_submitted",
+            execution_nonce="nonce-expired-consume",
+        )
+
+        deadline = max(
+            expiring_ack.lease_expires_at,
+            expiring_settle.lease_expires_at,
+            expiring_consume.lease_expires_at,
+        )
+        await asyncio.sleep(max(0.0, deadline - time.time()) + 0.05)
+
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.transition_attempt_claim(
+                base["world_id"],
+                expiring_ack.claim_key,
+                expiring_ack.claimant,
+                expiring_ack.fence_epoch,
+                expected_status="possibly_submitted",
+                target_status="provider_acknowledged",
+                provider_request_id="request-expired-ack",
+            )
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.transition_attempt_claim(
+                base["world_id"],
+                expiring_settle.claim_key,
+                expiring_settle.claimant,
+                expiring_settle.fence_epoch,
+                expected_status="provider_acknowledged",
+                target_status="settled",
+                settlement_status="failed",
+                outcome_digest="outcome-expired-settle",
+                outcome_json='{"status":"failed"}',
+            )
+        with pytest.raises(AttemptClaimStaleError):
+            await catalog.consume_attempt_execution(
+                base["world_id"],
+                expiring_consume.claim_key,
+                expiring_consume.claimant,
+                expiring_consume.fence_epoch,
+                expiring_consume.execution_nonce,
+            )
+
+        unchanged_ack = await catalog.get_attempt_claim(base["world_id"], expiring_ack.claim_key)
+        unchanged_settle = await catalog.get_attempt_claim(
+            base["world_id"], expiring_settle.claim_key
+        )
+        assert unchanged_ack is not None and unchanged_ack.status == "possibly_submitted"
+        assert unchanged_ack.acknowledged_at is None
+        assert unchanged_settle is not None and unchanged_settle.status == "provider_acknowledged"
+        assert unchanged_settle.settled_at is None
         await catalog.close()
 
 

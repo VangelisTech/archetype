@@ -12,6 +12,8 @@ types = [
   "CommandScheduler",
   "EvaluationService",
   "MutationService",
+  "MissionAttemptClaimService",
+  "MissionAttemptExecutionService",
   "MissionService",
   "QueryService",
   "RedactionService",
@@ -123,6 +125,9 @@ name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
+  "archetype.app.redaction.interfaces",
+  "archetype.app.redaction.models",
+  "archetype.app.storage.catalog",
 ]
 
 [[family_rule]]
@@ -139,6 +144,8 @@ name = "sandbox-family"
 consumer = "archetype.app.sandboxes"
 allowed_app = [
   "archetype.app.sandboxes",
+  "archetype.app.missions.models",
+  "archetype.app.missions.transitions",
 ]
 
 [[family_rule]]
@@ -284,6 +291,29 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.missions.service"
 allowed_interfaces = []
+allowed_app = [
+  "archetype.app.missions.models",
+  "archetype.app.missions.outcomes",
+  "archetype.app.missions.transitions",
+]
+
+[[module_rule]]
+module = "archetype.app.missions.claim_service"
+allowed_interfaces = ["archetype.app.redaction.interfaces.iRedactionService"]
+allowed_app = [
+  "archetype.app.missions.models",
+  "archetype.app.missions.outcomes",
+  "archetype.app.missions.transitions",
+  "archetype.app.redaction.models",
+  "archetype.app.storage.catalog",
+]
+
+[[module_rule]]
+module = "archetype.app.missions.execution_service"
+allowed_interfaces = [
+  "archetype.app.missions.interfaces.iMissionAttemptClaimService",
+  "archetype.app.missions.interfaces.iMissionService",
+]
 allowed_app = [
   "archetype.app.missions.models",
   "archetype.app.missions.transitions",

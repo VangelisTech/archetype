@@ -12,9 +12,11 @@ handle retention, and provider checkpoint references. A provider adapter owns
 SDK calls, command transport, filesystem writes, checkpoint creation,
 provider URIs, and resource teardown.
 
-The common kernel imports no provider adapter or provider SDK. Modal, Apple
-Container, and future adapters point inward to the common kernel. Docker is not
-a dependency or fallback of this architecture.
+The common kernel imports no provider adapter or provider SDK. It consumes the
+mission family's immutable fenced-execution authorization and typed recovery
+action, not its claim service or storage authority. Modal, Apple Container, and
+future adapters point inward to the common kernel. Docker is not a dependency
+or fallback of this architecture.
 
 The sandbox family does not own mission/task advancement, durable submission
 claims, artifact indexing, evaluation, PR policy, or fleet scheduling.
@@ -22,8 +24,9 @@ claims, artifact indexing, evaluation, PR policy, or fleet scheduling.
 ## 2. Live handles and durable state
 
 `SandboxService` keeps a process-local map of live `iSandboxSession` handles.
-The map is an optimization, not mission state. A provider checkpoint and
-persisted Archetype facts are the recovery inputs after process loss.
+The map is an optimization, not mission state. The durable attempt claim,
+provider checkpoint, sandbox receipts, and persisted Archetype facts are the
+recovery inputs after process loss.
 
 The container owns shutdown of retained handles. Closing one handle is
 idempotent. Shutdown stops new admission, attempts every close, and reports all
@@ -35,8 +38,23 @@ shutdown step has been attempted.
 
 ## 3. Six-phase attempt protocol
 
-After validating the request and reading the repository baseline,
-`CodingAgentSandboxClient.run_attempt` executes these phases in order:
+After validating a mission-issued fenced authorization, the request, and the
+repository baseline, `CodingAgentSandboxClient.run_attempt` executes these
+phases in order:
+
+The mission authority has already canonicalized validator names, commands,
+return codes, timeouts, and defaults before claim acquisition. The kernel
+revalidates that canonical boundary and fingerprints the exact normalized
+invocation; malformed or differently normalized commands cannot reach grant
+consumption.
+
+Before phase preparation, an attempt without a matching recovery receipt calls
+the mission-provided execution-authorization callback. In the supported
+`MissionAttemptExecutionService` path, that callback atomically consumes the
+authorization's single-use nonce through the control catalog. Only successful
+consumption permits preparation or the provider call; stale, expired,
+duplicate, mismatched, or settled grants stop before provider work. This is an
+admission boundary for the execution phase, not a seventh attempt phase.
 
 1. **Execution** — run exactly one agent submission, preserve stdout/stderr and
    session identity, and treat the process result as untrusted evidence.
@@ -64,6 +82,14 @@ After validating the request and reading the repository baseline,
    upload or index artifacts; authoritative mission finalization owns that
    transition.
 
+Immediately after the execution phase returns and before validation begins,
+the kernel invokes the mission-provided acknowledgement callback with the
+provider session/request identity it has. Callback failure stops the attempt
+before validation. This boundary makes a crash after provider return but before
+later evidence distinguishable from a wholly unacknowledged submission whenever
+the provider supplies an identity. The claim authority accepts that
+acknowledgement only after the execution grant was consumed.
+
 Every phase has one typed result in `app/sandboxes/models.py`. The ordering is a
 contract so later telemetry can create one correlated span per phase without
 guessing at control flow.
@@ -72,9 +98,13 @@ guessing at control flow.
 
 | Failure | Remaining work | Returned meaning |
 |---|---|---|
-| Agent transport raises | Stop before validation | No completed attempt; an external durable claim must recover submission ambiguity |
+| Execution-grant consumption fails | Stop before preparation and provider I/O | No authorized provider call; stale, expired, duplicate, or settled grants fail closed |
+| Lease heartbeat fails while the runner is active | Cancel and await the runner | No outcome is applied or settled; recovery waits for a valid lease |
+| Caller cancels orchestration | Cancel and await local runner and heartbeat tasks | No local child task is orphaned; remote work may remain `possibly_submitted` and requires adapter-specific cancellation or reconciliation |
+| Agent transport raises | Stop before validation | No completed attempt; the mission claim remains `possibly_submitted` until reconciliation |
+| Provider acknowledgement callback fails | Stop before validation | Provider return has occurred; the durable claim remains uncertain unless the acknowledgement committed |
 | Agent exits nonzero | Continue all phases | Agent friction plus authoritative validator outcome |
-| Validator fails | Continue evidence and checkpoint | Rejected, resumable attempt |
+| Validator fails | Continue evidence and checkpoint | Rejected attempt with recovery evidence |
 | Validators pass but tree is unchanged | Continue evidence and checkpoint | Rejected `git_tree_change` gate |
 | Agent moves repository `HEAD` | Continue evidence and checkpoint | Rejected `git_tree_change` gate; untrusted commit is never pushed |
 | Commit or push transport fails | Raise; do not claim completed handoff | External supervisor resumes from durable state |
@@ -89,6 +119,28 @@ checkpoint metadata receive none. Provider adapters must preserve this process
 boundary. Durable redaction is a separate required gate before any trace,
 archive, event, or artifact is published.
 
+Mission control uses that gate before its own durability as well.
+`MissionAttemptClaimService` requires `iRedactionService`: canonical request
+JSON and this runner's provider capabilities are scanned before a claim exists,
+and provider acknowledgement identity is scanned before its catalog CAS. A
+semantic finding quarantines rather than rewriting identity.
+
+The sandbox outcome remains untrusted when the runner returns. Before
+`MissionService` can project it or the catalog can settle it, the claim
+authority quarantines secret-bearing IDs, fingerprints, session/checkpoint
+identity, references, validator command identity, and result keys. It
+deterministically redacts narrative validator output, friction, messages, and
+errors. The execution service supplies only that sanitized outcome to
+`MissionService`; settlement stores its typed outcome/error receipts and
+preserves the original finding receipt from the first narrative scan. A clean
+defensive rescan of already-sanitized text cannot erase the finding evidence.
+
+The policy ID participates in immutable claim identity. Non-terminal work may
+continue only under that exact active policy; drift fails closed. Settled
+sanitized outcomes remain readable and replayable after a policy rollout. A
+sandbox-local receipt or checkpoint is therefore recovery input, never proof
+that its contents may bypass the mission or artifact redaction authorities.
+
 Codex, Claude Code, and OpenCode are executable harnesses in the common
 kernel. OpenCode writes a sandbox-local config outside the repository, disables
 project configuration and sharing, and stores only environment placeholders
@@ -98,7 +150,54 @@ URL, provider identifier, wire API (`chat-completions` or `responses`), model,
 and header-to-environment bindings come from the provider specification.
 OpenCode resume uses the prior session ID through `opencode run --session`.
 
-## 6. Idempotency and explicit non-claims
+## 6. Fenced execution, idempotency, and recovery
+
+Every call carries `FencedExecutionAuthorization` issued from a durable mission
+claim. The supported mission orchestrator derives the claim's provider identity
+and request fingerprint from this runner's
+`provider_execution_capabilities`; callers cannot supply metadata for a
+different runner. Before reading a receipt or performing any sandbox mutation,
+including reconciliation, the kernel requires:
+
+- the authorization's idempotency key and deterministic attempt ID to match the
+  request;
+- a non-empty claim key and request fingerprint;
+- the exact normalized sandbox invocation fingerprint to match prompt,
+  validators and defaults, task name, attempt index, prior session and validator
+  evidence, and correlation;
+- correlation world and run IDs, entity-derived mission identity, and task step
+  to match the claim;
+- a positive fence epoch and claimant identity;
+- an unexpired lease at sandbox admission, before any mutation; and
+- for `execute`, a non-empty, per-fence execution nonce.
+
+`execute` is the only action that may enter the model phase. `reconcile` may
+continue only from a matching repository-phase or final receipt and otherwise
+fails closed. `replay_idempotent` and `resume_session` are rejected even when
+their capability metadata is present, because no corresponding provider
+transport is implemented. A settled claim is replayed by
+`MissionAttemptExecutionService` without entering the sandbox. The kernel does
+not choose recovery policy; the mission claim authority does.
+
+The supported execution service supervises the runner with a durable-lease
+heartbeat from runner start through runner completion. If renewal fails, it
+cancels and awaits the runner before propagating failure. If the caller is
+cancelled, it cancels and awaits both runner and heartbeat. On successful
+completion it stops and awaits the heartbeat, then renews the active claim once
+more before outcome application or settlement. Sandbox mutation and lease
+renewal therefore cannot continue in orphaned local tasks. Async cancellation
+does not prove a remote Modal or CLI operation terminated; external work may
+remain `possibly_submitted`, and remote cancellation is adapter-specific or
+handled through reconciliation.
+
+For `execute` without a receipt, the kernel consumes the nonce through the
+injected authorization callback immediately before attempt preparation. The
+catalog compare-and-swap requires `possibly_submitted`, the exact claimant,
+fence and nonce, an unconsumed grant, and an unexpired lease, then records
+`execution_consumed_at`. A second caller cannot consume the same grant, and a
+provider acknowledgement cannot be persisted before consumption. Recovery
+from an existing receipt performs no provider work and therefore consumes no
+new grant.
 
 The kernel creates the gate and manifest directories before agent execution,
 then writes two receipts under `.archetype-agent/gates/`. A repository-phase
@@ -109,14 +208,32 @@ another model call, validator run, commit, or push. A separate final receipt
 suppresses all work once artifact handoff completes. Corrupt repository-phase
 state fails closed instead of replaying model execution.
 
-Both receipts bind the key to a hash of the complete attempt request and reject
-key reuse with changed inputs. They are not a durable pre-execution claim. A
-crash after model submission but before the repository-phase receipt is stored
-is therefore **possibly submitted**, and the architecture makes no exactly-once
-model-execution claim.
+Both receipts bind the key to a hash of the complete sandbox request and reject
+key reuse with changed inputs. They complement rather than replace the durable
+claim: the claim answers whether provider execution is permitted, while the
+receipts answer which completed sandbox phases can be skipped.
 
-Durable claim ownership and recovery policy belong above this transport. The
-claim must be acquired before entering the execution phase.
+With a live lease and repository-phase receipt, a `reconcile` authorization may
+resume at evidence capture without another model call, validator run, commit,
+or push. With a live lease and final receipt, reconciliation returns the
+completed outcome. Corrupt or mismatched receipt state fails closed. A crash
+after model submission but before the repository-phase receipt remains
+`possibly_submitted`; provider capability flags never convert missing local
+evidence into permission for a blind replay.
+
+Grant consumption proves one provider call was authorized to begin; it does
+not prove an exactly-once external side effect. Consumption and provider
+transport are not atomic, so a crash immediately afterward may leave the
+request unsent or its provider result unknown. Recovery remains
+`reconcile`-only in either case.
+
+Before the outcome crosses the mission boundary, the execution service also
+requires an `execute` result to retain consumed-grant evidence and requires the
+outcome's agent session to equal the claim's provider acknowledgement. Claim
+settlement applies the stronger provider binding for every terminal result:
+checkpoint provider must equal the claimed runner provider, and any
+provider-accepted result—authoritatively `accepted` or `incomplete` after
+mission gates—requires the consumed grant.
 
 ## 7. Artifact handoff
 
@@ -134,6 +251,8 @@ publishes, indexes, and correlates the required evidence. A sandbox-local
 An adapter implements:
 
 - stable `sandbox_id` and live path URI construction;
+- stable `provider_execution_capabilities` derived from the adapter identity
+  and effective execution specification;
 - command execution with isolated secret injection;
 - UTF-8 text writes;
 - checkpoint creation with explicit disabled/failure behavior;
