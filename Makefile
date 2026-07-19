@@ -26,6 +26,7 @@ help:
 	@echo "  make benchmark-audit Validate benchmark ownership and policies"
 	@echo "  make architecture-audit  Enforce dependency and encapsulation policy"
 	@echo "  make observability-audit Enforce signal safety and family dispositions"
+	@echo "  make version-inventory-audit  Validate pinned execution-environment inventory"
 	@echo "  make lint-fix       Lint and auto-fix"
 	@echo "  make check          Format + lint"
 	@echo "  make complexity     Cyclomatic complexity / maintainability report (radon)"
@@ -99,7 +100,7 @@ format:
 	@uv run ruff format $(RUFF_PATHS)
 
 .PHONY: lint
-lint: lazy-audit architecture-audit observability-audit sandbox-phase-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
+lint: lazy-audit architecture-audit observability-audit sandbox-phase-audit version-inventory-audit api-boundary-audit idempotency-audit gate-coverage-audit redaction-audit
 	@uv run ruff check $(RUFF_PATHS)
 
 .PHONY: lint-fix
@@ -152,6 +153,12 @@ observability-audit:
 .PHONY: sandbox-phase-audit
 sandbox-phase-audit:
 	@uv run python scripts/check_sandbox_phase_order.py
+
+# Fail-closed load of the pinned execution-environment inventory plus a
+# freshness check of its rendered operator page (#507).
+.PHONY: version-inventory-audit
+version-inventory-audit:
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_version_inventory.py --check
 
 # Keep every normative idempotency-matrix row mapped to a registered eval.
 # This is static and fast; make eval-idem executes the behavioral scenarios.
@@ -398,6 +405,7 @@ publish: build
 docs-gen:
 	@echo "Generating API & CLI reference docs..."
 	@PYTHONPATH=$(PYTHONPATH):. uv run python scripts/generate_contract_traceability.py
+	@PYTHONPATH=$(PYTHONPATH) uv run python scripts/generate_version_inventory.py
 	@uv run python scripts/generate_python_api_docs.py
 	@uv run python scripts/generate_api_docs.py
 	@uv run python scripts/generate_cli_docs.py

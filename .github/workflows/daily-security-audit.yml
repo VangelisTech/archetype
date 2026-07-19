@@ -59,6 +59,12 @@ jobs:
             printf "uv export failed; dependency graph may be unsatisfiable\n" > .github/security-artifacts/dependency-audit-status.txt
           fi
 
+          if python3 scripts/scan_pinned_artifacts.py --fail-on-findings --out .github/security-artifacts/pinned-artifact-osv.json > .github/security-artifacts/pinned-artifact-osv.stdout 2> .github/security-artifacts/pinned-artifact-osv.stderr; then
+            printf "pinned-artifact OSV scan succeeded\n" >> .github/security-artifacts/dependency-audit-status.txt
+          else
+            printf "pinned-artifact OSV scan reported findings or failed; inspect pinned-artifact-osv.json and stderr\n" >> .github/security-artifacts/dependency-audit-status.txt
+          fi
+
       - name: Build bounded audit schema
         id: schema
         run: python3 scripts/daily_security_audit.py schema >> "${GITHUB_OUTPUT}"
@@ -81,7 +87,8 @@ jobs:
             - docs/reports/2026-03-28-security-program-review.md
             - current ingress and authorization code under src/archetype/app/gateway/auth/, src/archetype/app/gateway/, and src/archetype/api/
             - security-relevant durability boundaries under src/archetype/app/commands/, src/archetype/app/storage/, src/archetype/app/audit/, src/archetype/app/artifacts/, and src/archetype/app/container.py
-            - dependency evidence under .github/security-artifacts/
+            - the pinned execution-environment inventory at src/archetype/app/sandboxes/versions.toml
+            - dependency evidence under .github/security-artifacts/, including the pinned-artifact OSV scan
 
             Requirements:
             - Focus on outstanding security findings, noteworthy positive design decisions, dependency CVEs/advisories, dependency-resolution failures, and the highest-priority next actions

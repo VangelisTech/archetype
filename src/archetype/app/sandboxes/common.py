@@ -42,6 +42,7 @@ from archetype.app.sandboxes.models import (
     ValidationEvidence,
     ValidatorSpec,
 )
+from archetype.app.sandboxes.versions import load_version_inventory
 
 _OPENCODE_CONFIG_PATH = "/root/.config/archetype/opencode.json"
 _FILESYSTEM_MANIFEST_SCRIPT = r"""
@@ -646,6 +647,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         )
         attempt_manifest = {
             "schema_version": 1,
+            "environment": await self._environment_evidence(),
             "attempt_id": prepared.attempt_id,
             "request_fingerprint": prepared.request_fingerprint,
             "idempotency_key": prepared.idempotency_key,
@@ -683,6 +685,48 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             git_bundle_path=evidence.git_bundle_path,
         )
         return evidence
+
+    async def _environment_evidence(self) -> dict[str, Any]:
+        """Safe effective-version evidence for the attempt manifest.
+
+        The pinned inventory resolves fail-closed; an unpinned harness stops
+        evidence capture instead of degrading to an unattributable attempt.
+        Values are names, exact versions, and digests only — never install
+        sources, credentials, or header bindings.
+        """
+
+        inventory = load_version_inventory()
+        pin = inventory.harness_pin(self.spec.harness)
+        interface = pin.harness_interface
+        assert interface is not None  # harness pins always carry an interface
+        probe = await self._exec(interface.invoke[0], "--version", timeout=60)
+        observed = self._tail((probe.stdout or probe.stderr).strip(), 200)
+        return {
+            "schema_version": 1,
+            "inventory_digest": inventory.digest,
+            "harness": {
+                "artifact_id": pin.artifact_id,
+                "name": pin.name,
+                "version": pin.version,
+                "immutable_ref": pin.immutable_ref,
+                "observed_version": observed if probe.returncode == 0 else "",
+                "observed_error": "" if probe.returncode == 0 else observed,
+            },
+            "model": self.spec.model,
+            "provider": self._checkpoint_provider(),
+            "configuration_digest": self.provider_execution_capabilities.request_fingerprint,
+            "runtime": self._runtime_version_evidence(),
+        }
+
+    def _runtime_version_evidence(self) -> dict[str, str]:
+        """Adapter-declared SDK/runtime/image/collector/proxy identities.
+
+        Adapters override this with names, exact versions, and immutable
+        digests resolved from the pinned inventory; values must stay free of
+        secrets and provider URLs with credentials.
+        """
+
+        return {}
 
     async def _checkpoint_phase(self, prepared: PreparedAttempt) -> CheckpointCapture:
         created_at_ms = int(time.time() * 1000)

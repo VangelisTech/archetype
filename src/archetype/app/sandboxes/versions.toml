@@ -1,0 +1,121 @@
+# Copyright 2026 Vangelis Technologies Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Machine-readable pinned inventory of every executable dependency that can
+# affect a coding-agent attempt. Normative contract:
+# docs/guide/sandbox-execution.md, "9. Pinned environment inventory".
+# Rendered operator view: docs/reference/version-inventory.md (generated).
+#
+# Every pinned artifact carries an exact version, a credential-free https
+# source, and an immutable digest. `archetype.app.sandboxes.versions` fails
+# closed on ranges, floating tags, missing digests, or credential-shaped
+# values; installers must consume the resolved pin and digest, never `latest`.
+
+schema_version = 1
+
+[[artifact]]
+id = "codex-cli"
+status = "pinned"
+role = "agent-harness"
+kind = "npm-package"
+harness = "codex"
+name = "@openai/codex"
+version = "0.144.6"
+source = "https://registry.npmjs.org/@openai/codex/-/codex-0.144.6.tgz"
+immutable_ref = "sha512-wk+2CWiBNXiJLBoN2D08N9RceWkSBnlgk5g2K1a4CXrP/C0gdlHyRUG7RFzm9y41DCK/7tvCct233JVxyFmznw=="
+consumers = ["#563", "#565", "#567"]
+
+[artifact.harness_interface]
+invoke = ["codex", "exec"]
+output_flags = ["--json"]
+resume = ["exec", "resume"]
+session_event = "thread.started"
+session_fields = ["thread_id"]
+
+[[artifact]]
+id = "claude-code-cli"
+status = "pinned"
+role = "agent-harness"
+kind = "npm-package"
+harness = "claude-code"
+name = "@anthropic-ai/claude-code"
+version = "2.1.215"
+source = "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.215.tgz"
+immutable_ref = "sha512-lsWBvyMyBqg/rOZ06o/HEhlpOzHsH8IBf9RH4u5gzizQ1LWS/oXAh5nqWNUu3hn2d8QkyYg0aseNzMDlGD+3qg=="
+consumers = ["#508", "#563", "#565"]
+
+[artifact.harness_interface]
+invoke = ["claude", "--print"]
+output_flags = ["--output-format", "stream-json"]
+resume = ["--resume"]
+session_event = ""
+session_fields = ["session_id"]
+
+[[artifact]]
+id = "opencode-cli"
+status = "pinned"
+role = "agent-harness"
+kind = "npm-package"
+harness = "opencode"
+name = "opencode-ai"
+version = "1.18.3"
+source = "https://registry.npmjs.org/opencode-ai/-/opencode-ai-1.18.3.tgz"
+immutable_ref = "sha512-HnItl/+uhSpj7JV9x6ITiE0XFq4b/PKF5OM03TIyiFoFiLw3MQoJOAXZFTEzC7IOgAIYcysRQBBmCmlXILkxww=="
+consumers = ["#563", "#565"]
+
+[artifact.harness_interface]
+invoke = ["opencode", "run"]
+output_flags = ["--format", "json"]
+resume = ["--session"]
+session_event = ""
+session_fields = ["sessionID", "session_id"]
+
+[[artifact]]
+id = "modal-sdk"
+status = "pinned"
+role = "sandbox-sdk"
+kind = "python-package"
+name = "modal"
+version = "1.5.2"
+source = "https://files.pythonhosted.org/packages/e3/fe/7e284d889eb3ea2c307e48828eccdd9a984beb2e096bce5577ef796592e9/modal-1.5.2-py3-none-any.whl"
+immutable_ref = "sha256:7508a44f8742c6f26be4d28da71f46092ef3bcc07d0f27cbd0ea8c9d6d9fc873"
+consumers = ["#563", "#566"]
+
+[[artifact]]
+id = "apple-container-runtime"
+status = "pinned"
+role = "sandbox-runtime"
+kind = "macos-installer"
+name = "apple/container"
+version = "1.1.0"
+source = "https://github.com/apple/container/releases/download/1.1.0/container-1.1.0-installer-signed.pkg"
+immutable_ref = "sha256:0ca1c42a2269c2557efb1d82b1b38ac553e6a3a3da1b1179c439bcee1e7d6714"
+consumers = ["#564"]
+
+[[artifact]]
+id = "otel-collector"
+status = "pinned"
+role = "collector"
+kind = "container-image"
+name = "otel/opentelemetry-collector-contrib"
+version = "0.156.0"
+source = "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.156.0"
+immutable_ref = "docker.io/otel/opentelemetry-collector-contrib@sha256:125bdbeb7590cc1952c5b3430ecf14063568980c2c93d5b38676cc0446ed8108"
+consumers = ["#492"]
+
+[[artifact]]
+id = "pydantic-evals"
+status = "pinned"
+role = "evaluation"
+kind = "python-package"
+name = "pydantic-evals"
+version = "2.13.0"
+source = "https://files.pythonhosted.org/packages/6f/58/2a0bb7be9a001481ebddf162d881aebf7f351acd749d85c2057685554a31/pydantic_evals-2.13.0-py3-none-any.whl"
+immutable_ref = "sha256:c3a87e73cad0ae26c44ee5d648419822b36f385bff39836c273a998bec5f1ff9"
+consumers = ["#477"]
+
+[[artifact]]
+id = "l7-egress-proxy"
+status = "planned"
+role = "proxy"
+consumers = ["#490"]

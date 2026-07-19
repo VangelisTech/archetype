@@ -37,6 +37,10 @@ class _Spec:
     base_ref: str = "main"
     harness: AgentHarness = cast(AgentHarness, "codex")
     model: str = ""
+    opencode_base_url: str = "https://endpoint.example/v1"
+    opencode_provider_id: str = "eval-endpoint"
+    opencode_wire_api: str = "chat-completions"
+    opencode_header_env: dict[str, str] = field(default_factory=dict)
     workspace: str = "/workspace/repo"
     agent_timeout_seconds: int = 60
     snapshot_timeout_seconds: int = 30

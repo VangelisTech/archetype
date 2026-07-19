@@ -70,6 +70,11 @@ package-dir = { "" = "src" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# The pinned execution-environment inventory ships with the package so
+# installed adapters resolve immutable versions fail-closed (#507).
+"archetype.app.sandboxes" = ["versions.toml"]
+
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

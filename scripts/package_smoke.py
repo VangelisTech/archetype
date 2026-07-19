@@ -104,6 +104,7 @@ from pathlib import Path
 import archetype
 from archetype import ArchetypeRuntime
 from archetype.api.app import create_app
+from archetype.app.sandboxes.versions import load_version_inventory
 from archetype.cli.main import app
 from typer.testing import CliRunner
 
@@ -112,6 +113,9 @@ assert 'site-packages' in package_root.parts, package_root
 assert '/src/archetype/' not in str(package_root), package_root
 assert version('archetype-ecs') == archetype.__version__
 assert ArchetypeRuntime.__name__ == 'ArchetypeRuntime'
+inventory = load_version_inventory()
+assert inventory.digest.startswith('sha256:'), inventory.digest
+assert inventory.harness_pin('codex').immutable_ref
 api = create_app()
 assert api.version == archetype.__version__
 result = CliRunner().invoke(app, ['--help'])

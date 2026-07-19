@@ -90,6 +90,7 @@ nav:
       - Contributing: guide/contributing.md
       - API Stability and Docstrings: guide/api-stability.md
       - Contract Traceability: reference/contract-traceability.md
+      - Version Inventory: reference/version-inventory.md
       - Architecture Overview: guide/architecture.md
       - Application Architecture: guide/application-architecture.md
       - Runtime Contract: guide/runtime.md

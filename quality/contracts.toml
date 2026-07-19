@@ -56,6 +56,22 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "sandboxes.environment.pinned"
+source = "docs/guide/sandbox-execution.md"
+section = "9. Pinned environment inventory"
+owner = "sandboxes"
+risk = "high"
+pytest = [
+    "tests/app/test_version_inventory.py",
+    "tests/scripts/test_generate_version_inventory.py",
+    "tests/scripts/test_scan_pinned_artifacts.py",
+]
+static = ["scripts/generate_version_inventory.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "architecture.dependencies.enforced"
 source = "docs/guide/application-architecture.md"
 section = "11. Static enforcement"
