@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 
@@ -219,11 +220,19 @@ def test_state_check_preserves_partial_credit_for_nonempty_checks() -> None:
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    # These CLI contracts do not opt into process-host telemetry. Keep them
+    # deterministic when another test or the runner supplies ambient config.
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("ARCHETYPE_OTLP_", "LOGFIRE_", "OTEL_")) and key != "ARCHETYPE_LOG"
+    }
     return subprocess.run(
         [sys.executable, "-m", "evals.run", *args],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
 
 
