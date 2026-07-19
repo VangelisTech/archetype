@@ -846,8 +846,8 @@ missions      -> core
 ```
 
 `htn` and `datasets` appear in the current source tree and manifest until
-#591 and #590 fold them in; while they exist they remain leaves with no
-family edge. No new top-level family edge is required. In particular, the
+Issues #591 and #590 fold them in; while they exist they remain leaves with
+no family edge. No new top-level family edge is required. In particular, the
 following edges are forbidden:
 
 - `missions -> graph` and `missions -> projections`;
