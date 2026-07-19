@@ -377,6 +377,8 @@ Together, the repository's architecture and observability checkers must:
 - require one exact cross-family dependency disposition for every registered
   top-level family;
 - reject cycles in the complete registered top-level family graph;
+- derive core's ban on domain-family imports from that registry, so registering
+  a family cannot bypass the reverse-dependency rule;
 - reject top-level-family imports of app, runtime, API, or CLI and reject
   undeclared top-level family-to-family imports;
 - resolve root-facade package and symbol imports to their owning module before

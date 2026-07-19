@@ -98,9 +98,18 @@ def _imports(
     root_scopes: frozenset[str],
 ) -> list[tuple[str, int]]:
     found: list[tuple[str, int]] = []
+    root_bindings = {
+        alias.asname or "archetype"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "archetype"
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            found.extend((alias.name, node.lineno) for alias in node.names)
+            found.extend(
+                (alias.name, node.lineno) for alias in node.names if alias.name != "archetype"
+            )
         elif isinstance(node, ast.ImportFrom):
             module = _resolve_import_from(node, consumer, is_package)
             if module != "archetype":
@@ -124,6 +133,23 @@ def _imports(
                     # Unknown root names remain first-party dependencies and
                     # are denied by registered-family default-deny handling.
                     found.append((candidate, node.lineno))
+        elif isinstance(node, ast.Attribute) and root_bindings:
+            dotted = _dotted_name(node)
+            binding, separator, attribute_path = dotted.partition(".")
+            if not separator or binding not in root_bindings:
+                continue
+            root_name = attribute_path.split(".", 1)[0]
+            owner = root_export_owners.get(root_name)
+            candidate = f"archetype.{root_name}"
+            if owner:
+                found.append((owner, node.lineno))
+            elif candidate in root_scopes:
+                found.append((candidate, node.lineno))
+            else:
+                # Attribute access after a bare root import is another root-
+                # facade dependency form. Keep unknown names first-party so
+                # registered-family default deny remains exhaustive.
+                found.append((candidate, node.lineno))
     return found
 
 
@@ -693,8 +719,14 @@ def audit_repository(
         for rule in package_rules:
             if not _matches_prefix(consumer, str(rule["consumer"])):
                 continue
+            forbidden = {str(prefix) for prefix in rule["forbidden"]}
+            if policy_version >= 3 and str(rule["consumer"]) == "archetype.core":
+                # The domain-family registry is the source of truth for the
+                # foundation's reverse-dependency ban. A newly registered
+                # family must be forbidden without a second manifest edit.
+                forbidden.update(registered_family_scopes)
             for dependency, line in imports:
-                if any(_matches_prefix(dependency, str(prefix)) for prefix in rule["forbidden"]):
+                if any(_matches_prefix(dependency, prefix) for prefix in forbidden):
                     _add_once(
                         findings,
                         seen,

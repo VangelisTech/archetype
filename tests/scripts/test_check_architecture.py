@@ -282,6 +282,8 @@ def test_root_package_and_facade_imports_match_explicit_forbidden_imports(
         "from archetype import runtime\n",
         "from archetype import ArchetypeRuntime\n",
         "from archetype.runtime import ArchetypeRuntime\n",
+        "import archetype\nvalue = archetype.ArchetypeRuntime\n",
+        "import archetype as root\nvalue = root.ArchetypeRuntime\n",
     )
     consumers = {
         "core": "package_dependency",
@@ -328,6 +330,52 @@ allowed_families = []
             assert [(violation.rule, violation.target) for violation in result.violations] == [
                 (expected_rule, "archetype.runtime")
             ]
+
+
+def test_core_rejects_every_registered_family_without_static_enumeration(
+    tmp_path: Path,
+) -> None:
+    core = tmp_path / "src" / "archetype" / "core" / "probe.py"
+    alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
+    graph = tmp_path / "src" / "archetype" / "graph" / "contracts.py"
+    core.parent.mkdir(parents=True)
+    alpha.parent.mkdir(parents=True)
+    graph.parent.mkdir(parents=True)
+    core.write_text("from archetype.graph import contracts\n", encoding="utf-8")
+    alpha.write_text("value = 1\n", encoding="utf-8")
+    graph.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+
+[[top_level_family_rule]]
+name = "graph"
+consumer = "archetype.graph"
+allowed_families = []
+
+[[package_rule]]
+name = "core-outward"
+consumer = "archetype.core"
+forbidden = [
+  "archetype.app",
+  "archetype.runtime",
+  "archetype.api",
+  "archetype.cli",
+]
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert [(violation.rule, violation.target) for violation in result.violations] == [
+        ("package_dependency", "archetype.graph")
+    ]
 
 
 def test_undeclared_top_level_family_dependency_fails(tmp_path: Path) -> None:

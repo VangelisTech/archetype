@@ -69,14 +69,13 @@ allowed_families = []
 [[package_rule]]
 name = "core-does-not-import-outward"
 consumer = "archetype.core"
+# The checker adds every registered top-level family to this forbidden set.
+# Keep the registry as the single source of truth for domain-family scopes.
 forbidden = [
   "archetype.app",
   "archetype.runtime",
   "archetype.api",
   "archetype.cli",
-  "archetype.datasets",
-  "archetype.experiments",
-  "archetype.htn",
 ]
 
 [[package_rule]]
