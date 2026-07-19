@@ -21,6 +21,7 @@ from archetype.app.missions.models import (
     PreparedFinalizationSettlement,
     ProviderExecutionCapabilities,
 )
+from archetype.app.missions.outcomes import MissionAttemptAssessment
 from archetype.app.redaction.models import RedactedRecord
 from archetype.missions.transitions import AttemptStatus
 
@@ -44,6 +45,14 @@ class iMissionService(Protocol):
 @runtime_checkable
 class _iMissionExecutionProjection(iMissionService, Protocol):
     """Family-private row transformer reached only after durable authentication."""
+
+    def _apply_claimed_attempt(
+        self,
+        row: Mapping[str, Any],
+        request: MissionAttemptRequest,
+        outcome: Mapping[str, Any],
+        claim: AttemptClaim,
+    ) -> dict[str, Any]: ...
 
     def _apply_settled_attempt(
         self,
@@ -136,6 +145,12 @@ class iMissionAttemptClaimService(Protocol):
         claim: AttemptClaim,
         outcome: Mapping[str, Any],
     ) -> RedactedRecord: ...
+
+    def assess_outcome(
+        self,
+        claim: AttemptClaim,
+        outcome: Mapping[str, Any],
+    ) -> MissionAttemptAssessment: ...
 
     def settled_outcome(self, claim: AttemptClaim) -> Any: ...
 

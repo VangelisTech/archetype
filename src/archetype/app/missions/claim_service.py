@@ -364,7 +364,7 @@ class MissionAttemptClaimService:
         self._require_active_policy(current)
         durable_outcome = self._coerce_durable_outcome(current, outcome)
         request = self.recover_request(current)
-        assessment = self._assess_claim_outcome(current, durable_outcome.value)
+        assessment = self.assess_outcome(current, durable_outcome.value)
         if request.required_finalization_phase is not FinalizationPhase.INDEXED:
             raise ValueError("artifact finalization may only be staged for an indexed gate")
         if assessment.provider_status not in {
@@ -718,7 +718,7 @@ class MissionAttemptClaimService:
         self._require_active_policy(claim)
         self._validate_outcome(
             claim,
-            settlement=self._assess_claim_outcome(claim, outcome).attempt_status,
+            settlement=self.assess_outcome(claim, outcome).attempt_status,
             outcome=outcome,
         )
         canonical = json.loads(self._json(outcome))
@@ -731,7 +731,7 @@ class MissionAttemptClaimService:
         )
         self._validate_outcome(
             claim,
-            settlement=self._assess_claim_outcome(claim, redacted.value).attempt_status,
+            settlement=self.assess_outcome(claim, redacted.value).attempt_status,
             outcome=redacted.value,
         )
         return redacted
@@ -866,7 +866,7 @@ class MissionAttemptClaimService:
         )
         finalized = self._rescan_enriched_outcome(claim, value)
         self._assert_safe_outcome_identity(finalized.value)
-        assessment = self._assess_claim_outcome(claim, finalized.value)
+        assessment = self.assess_outcome(claim, finalized.value)
         self._validate_outcome(
             claim,
             settlement=assessment.attempt_status,
@@ -931,7 +931,7 @@ class MissionAttemptClaimService:
         value["finalization_error"] = _ARTIFACT_PUBLICATION_EXPIRED
         self._assert_safe_outcome_identity(value)
         rescanned = self._rescan_enriched_outcome(claim, value)
-        assessment = self._assess_claim_outcome(claim, rescanned.value)
+        assessment = self.assess_outcome(claim, rescanned.value)
         if assessment.attempt_status not in {
             AttemptStatus.INCOMPLETE,
             AttemptStatus.REJECTED,
@@ -1164,7 +1164,7 @@ class MissionAttemptClaimService:
         )
         if defensive.value != outcome.value:
             raise ValueError("prepared attempt outcome is not safe for durability")
-        assessment = self._assess_claim_outcome(claim, outcome.value)
+        assessment = self.assess_outcome(claim, outcome.value)
         self._validate_outcome(
             claim,
             settlement=assessment.attempt_status,
@@ -1603,7 +1603,7 @@ class MissionAttemptClaimService:
             raise ValueError("mission attempt request fingerprint is invalid")
 
     @classmethod
-    def _assess_claim_outcome(
+    def assess_outcome(
         cls,
         claim: AttemptClaim,
         outcome: Mapping[str, Any],
@@ -1621,7 +1621,7 @@ class MissionAttemptClaimService:
         settlement: AttemptStatus,
         outcome: Mapping[str, Any],
     ) -> None:
-        assessment = cls._assess_claim_outcome(claim, outcome)
+        assessment = cls.assess_outcome(claim, outcome)
         if settlement is not assessment.attempt_status:
             raise ValueError(
                 "attempt settlement status disagrees with its authoritative mission outcome"

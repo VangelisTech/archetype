@@ -6,6 +6,7 @@ family = "missions"
 operations = [
   "interfaces.iMissionService.prepare_attempt",
   "interfaces.iMissionService.apply_attempt",
+  "interfaces._iMissionExecutionProjection._apply_claimed_attempt",
   "interfaces._iMissionExecutionProjection._apply_settled_attempt",
   "interfaces.iMissionAttemptClaimService.acquire",
   "interfaces.iMissionAttemptClaimService.decide_recovery",
@@ -19,6 +20,7 @@ operations = [
   "interfaces.iMissionAttemptClaimService.require_settled",
   "interfaces.iMissionAttemptClaimService.list_due",
   "interfaces.iMissionAttemptClaimService.prepare_durable_outcome",
+  "interfaces.iMissionAttemptClaimService.assess_outcome",
   "interfaces.iMissionAttemptClaimService.settled_outcome",
   "interfaces.iMissionAttemptClaimService.staged_artifact_projection",
   "interfaces.iMissionAttemptClaimService.prepare_artifact_finalization_outcome",

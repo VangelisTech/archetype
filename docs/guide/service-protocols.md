@@ -204,7 +204,11 @@ and awaits both local tasks. This cleanup makes no claim that a remote provider
 operation was terminated; that remains adapter-specific or reconciled from
 `possibly_submitted`. After successful runner completion, the service renews
 the claim once more before it validates evidence through the claim service's
-pre-durability redaction boundary. When policy requires `indexed`, it asks
+pre-durability redaction boundary. Outcome assessment and the private
+pre-settlement row projection both use the authenticated claim contract, so a
+reconciled pre-v9 provider response remains readable without weakening the
+current-write `iMissionService.apply_attempt` contract. When policy requires
+`indexed`, it asks
 `iMissionArtifactFinalizer.prepare` for an exact request without external I/O,
 atomically stages that request and sanitized outcome on the claim, then calls
 `publish` only with the reconstructed staged projection. Accepted and rejected

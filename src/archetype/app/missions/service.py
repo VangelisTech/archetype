@@ -247,6 +247,38 @@ class MissionService:
             expected_status=settlement,
         )
 
+    def _apply_claimed_attempt(
+        self,
+        row: Mapping[str, Any],
+        request: MissionAttemptRequest,
+        outcome: Mapping[str, Any],
+        claim: AttemptClaim,
+    ) -> dict[str, Any]:
+        """Project sanitized evidence under its authenticated claim contract."""
+
+        if claim.status not in {
+            AttemptClaimStatus.POSSIBLY_SUBMITTED,
+            AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
+        }:
+            raise ValueError("claimed mission projection requires an active attempt claim")
+        if (
+            claim.attempt_id != request.attempt_id
+            or claim.idempotency_key != request.idempotency_key
+            or claim.mission_id != request.mission_id
+            or claim.task_id != request.task_id
+        ):
+            raise ValueError("active attempt claim does not match its mission request")
+        return self._apply_attempt(
+            row,
+            request,
+            outcome,
+            legacy_unbound=False,
+            pre_worktree_archive=(
+                claim.contract_version < WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION
+            ),
+            expected_status=None,
+        )
+
     def _apply_attempt(
         self,
         row: Mapping[str, Any],

@@ -558,6 +558,20 @@ class _IndexedRunner:
         )
 
 
+class _CachedOutcomeRunner:
+    def __init__(self, outcome: dict[str, Any]) -> None:
+        self.outcome = outcome
+        self.run_calls = 0
+
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities:
+        return _capabilities()
+
+    async def run_attempt(self, **_: Any) -> dict[str, Any]:
+        self.run_calls += 1
+        return dict(self.outcome)
+
+
 class _StageObservingFinalizer:
     def __init__(
         self,
@@ -1986,6 +2000,59 @@ async def test_v8_settled_claim_without_worktree_archive_cold_replays(
     assert replay.updated_row["finalization__legacy_unbound"] is False
     assert runner.run_calls == 0
     await catalog.close()
+
+
+async def test_v8_acknowledged_claim_reconciles_cached_outcome_without_worktree_archive(
+    tmp_path,
+) -> None:
+    path = tmp_path / "v8-acknowledged-before-worktree-archive.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    request = _request()
+    acquired = await first.acquire(
+        request,
+        _capabilities(),
+        claimant="v8-worker",
+        lease_seconds=0.05,
+    )
+    decision = await first.decide_recovery(acquired.claim, lease_seconds=0.05)
+    consumed = await first.consume_execution(decision.authorization)
+    acknowledged = await first.acknowledge_provider(
+        consumed,
+        provider_session_id="session-v8",
+        provider_request_id="request-v8",
+    )
+    assert acknowledged.status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED
+    _set_claim_contract_version(path, 8)
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cached_outcome = _outcome(
+        request=request,
+        status=AttemptStatus.ACCEPTED,
+        agent_session_id="session-v8",
+    )
+    assert cached_outcome.pop("worktree_archive_ref") == "fake://full-worktree"
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _CachedOutcomeRunner(cached_outcome)
+    execution = await MissionAttemptExecutionService(cold, MissionService()).run(
+        _row(),
+        tick=100,
+        claimant="v8-recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert execution.decision.action is AttemptRecoveryAction.RECONCILE
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.claim.contract_version == 8
+    assert "worktree_archive_ref" not in execution.outcome
+    assert execution.updated_row["evidence__worktree_archive_ref"] == ""
+    assert runner.run_calls == 1
+    await cold_catalog.close()
 
 
 @pytest.mark.parametrize(

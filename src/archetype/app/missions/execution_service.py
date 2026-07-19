@@ -25,7 +25,6 @@ from archetype.app.missions.models import (
     MissionAttemptExecution,
     MissionAttemptRequest,
 )
-from archetype.app.missions.outcomes import assess_attempt_outcome
 from archetype.app.missions.transitions import (
     AttemptClaimStatus,
     AttemptRecoveryAction,
@@ -189,7 +188,7 @@ class MissionAttemptExecutionService:
             )
         durable_outcome = self._claims.prepare_durable_outcome(active_claim, outcome)
         sanitized_outcome = dict(durable_outcome.value)
-        assessment = assess_attempt_outcome(request, sanitized_outcome)
+        assessment = self._claims.assess_outcome(active_claim, sanitized_outcome)
         if (
             request.required_finalization_phase is FinalizationPhase.INDEXED
             and assessment.provider_status in {AttemptStatus.ACCEPTED, AttemptStatus.REJECTED}
@@ -226,7 +225,12 @@ class MissionAttemptExecutionService:
                 lease_seconds=lease_seconds,
                 replayed=False,
             )
-        updated = self._missions.apply_attempt(row, request, sanitized_outcome)
+        updated = self._missions._apply_claimed_attempt(
+            row,
+            request,
+            sanitized_outcome,
+            active_claim,
+        )
         settled = await self._claims.settle(
             active_claim,
             attempt_status=AttemptStatus(str(updated["attempt__status"])),
