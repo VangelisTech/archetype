@@ -10,6 +10,7 @@ operations = [
   "interfaces.iSimulationService.run_rollout",
 ]
 signals = ["child"]
+emission_workflows = ["world.compute_archetype", "world.commit_archetype"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The tick manifest, append receipts, world record, and typed simulation result remain authoritative."
 evidence = [

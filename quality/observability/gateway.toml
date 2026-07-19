@@ -9,6 +9,11 @@ operations = [
   "interfaces.iCommandGateway.get_world_info",
 ]
 signals = ["child"]
+emission_workflows = [
+  "gateway.create_entity",
+  "gateway.create_world",
+  "gateway.get_world_info",
+]
 outcomes = ["propagated_failure", "handled_outcome"]
 authority = "The RBAC decision, typed application result, and access-audit evidence remain authoritative."
 evidence = [

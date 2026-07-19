@@ -522,6 +522,8 @@ def test_signal_vocabulary_is_immutable_and_namespaced():
     assert isinstance(_obs.EVENT_NAMES, frozenset)
     assert isinstance(_obs.SPAN_NAME_ALIASES, MappingProxyType)
     assert isinstance(_obs.TRACE_ATTRIBUTE_ALIASES, MappingProxyType)
+    assert isinstance(_obs.RECORDER_METRIC_NAMES, MappingProxyType)
+    assert isinstance(_obs.RECORDER_METRIC_LABEL_KEYS, MappingProxyType)
     assert all(name.startswith("archetype.") for name in _obs.METRIC_NAMES)
     assert all(
         key.startswith("archetype.") or key == "error.type" for key in _obs.TRACE_ATTRIBUTE_KEYS
@@ -535,6 +537,8 @@ def test_signal_vocabulary_is_immutable_and_namespaced():
     }.isdisjoint(_obs.METRIC_LABEL_KEYS)
     assert _obs.LEGACY_SPAN_NAMES == frozenset({"world.execute", "world.materialize"})
     assert dict(_obs.SPAN_NAME_ALIASES) == {}
+    assert set(_obs.RECORDER_METRIC_NAMES.values()) <= _obs.METRIC_NAMES
+    assert set(_obs.RECORDER_METRIC_LABEL_KEYS.values()) <= _obs.METRIC_LABEL_KEYS
 
 
 def test_outcome_helper_is_bounded_and_advisory(monkeypatch):

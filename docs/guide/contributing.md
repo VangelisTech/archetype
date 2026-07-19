@@ -213,9 +213,12 @@ profile select it; mark it and keep it beside its owner.
 Adding, removing, or renaming a callable member of any `Protocol` anywhere
 under an application family also updates that family's exact
 `quality/observability/<family>.toml` disposition. Do not use wildcard or
-class-wide rows. Add an internal workflow row only when that exact non-protocol
-operation is intentionally instrumented. The deterministic audit owns syntax
-and declared coverage; the existing footgun reviewer owns semantic
+class-wide rows. A positive span or metric disposition names same-owner
+`emission_workflows`; each referenced workflow is checked against the literal
+signals emitted by its exact callable, and the disposition must equal their
+union. Workflow rows remain optional for unrelated internal emitters, and the
+audit never infers a call graph. The deterministic audit owns syntax, declared
+coverage, and that source binding; the existing footgun reviewer owns semantic
 observability boundary, authority, safety, and cardinality review.
 
 ### Before you open a PR

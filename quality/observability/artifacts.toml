@@ -7,6 +7,7 @@ operations = [
   "interfaces.iArtifactBundleService.publish",
 ]
 signals = ["child"]
+emission_workflows = ["artifact.bundle.publish", "artifact.bundle.resume"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The artifact publication row, object/index state, and publish receipt remain authoritative."
 evidence = [

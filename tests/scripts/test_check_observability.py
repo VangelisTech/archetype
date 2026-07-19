@@ -27,14 +27,41 @@ SPAN_NAMES: Final[frozenset[str]] = frozenset({"probe.run", "probe.legacy"})
 LEGACY_SPAN_NAMES: Final[frozenset[str]] = frozenset({"probe.legacy"})
 SPAN_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType({})
 TRACE_ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
-    {"archetype.operation", "archetype.outcome", "archetype.world.id", "error.type"}
+    {
+        "archetype.failure.disposition",
+        "archetype.operation",
+        "archetype.outcome",
+        "archetype.world.id",
+        "error.type",
+    }
 )
 TRACE_ATTRIBUTE_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
     {"operation": "archetype.operation"}
 )
-METRIC_NAMES: Final[frozenset[str]] = frozenset({"archetype.operation.outcomes"})
+METRIC_NAMES: Final[frozenset[str]] = frozenset(
+    {"archetype.operation.failures", "archetype.operation.outcomes"}
+)
 METRIC_LABEL_KEYS: Final[frozenset[str]] = frozenset(
-    {"archetype.operation", "archetype.outcome", "error.type"}
+    {
+        "archetype.failure.disposition",
+        "archetype.operation",
+        "archetype.outcome",
+        "error.type",
+    }
+)
+RECORDER_METRIC_NAMES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "record_failure": "archetype.operation.failures",
+        "record_outcome": "archetype.operation.outcomes",
+    }
+)
+RECORDER_METRIC_LABEL_KEYS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "record_failure.disposition": "archetype.failure.disposition",
+        "record_failure.error_type": "error.type",
+        "record_outcome.operation": "archetype.operation",
+        "record_outcome.outcome": "archetype.outcome",
+    }
 )
 EVENT_NAMES: Final[frozenset[str]] = frozenset({"archetype.outcome"})
 FAILURE_DISPOSITIONS: Final[frozenset[str]] = frozenset({"handled", "retrying"})
@@ -42,7 +69,10 @@ OUTCOMES: Final[frozenset[str]] = frozenset({"rejected", "succeeded"})
 ERROR_TYPES: Final[frozenset[str]] = frozenset({"internal", "validation"})
 
 def span(name: str, attributes: object = None, **values: object) -> object: ...
+def instrument(name: str) -> object: ...
 def counter_add(name: str, amount: int = 1, *, attributes: object = None) -> None: ...
+def record_failure(error: BaseException, *, disposition: str) -> None: ...
+def record_outcome(outcome: str, *, operation: str | None = None) -> None: ...
 def configure_tracing(*, service_name: str, debug_console: bool = False) -> None: ...
 """
 
@@ -58,13 +88,15 @@ class iProbe(Protocol):
 
 SERVICE = """
 from typing import Protocol
+from archetype import _obs
 
 class LocalPort(Protocol):
     def flush(self) -> None: ...
 
 class Probe:
     async def run(self) -> None:
-        return None
+        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):
+            return None
 """
 
 MANIFEST = """
@@ -79,11 +111,33 @@ operations = [
   "service.LocalPort.flush",
 ]
 signals = ["child"]
+emission_workflows = ["probe.run"]
 outcomes = ["propagated_failure", "handled_outcome"]
 authority = "The fixture receipt and typed result remain authoritative."
 evidence = ["docs/evidence.md"]
 span_names = ["probe.run"]
 attribute_keys = ["archetype.outcome"]
+
+[[workflow]]
+id = "probe.run"
+qualified_scope = "archetype.app.probe.service.Probe.run"
+signals = [
+  "child",
+]
+outcomes = [
+  "propagated_failure",
+  "handled_outcome",
+]
+authority = "The fixture workflow receipt and typed result remain authoritative."
+evidence = [
+  "docs/evidence.md",
+]
+span_names = [
+  "probe.run",
+]
+attribute_keys = [
+  "archetype.outcome",
+]
 """
 
 HOSTS = """
@@ -142,6 +196,31 @@ def _assert_rejected(result) -> None:
 def _replace_once(value: str, old: str, new: str) -> str:
     assert value.count(old) == 1
     return value.replace(old, new)
+
+
+def _with_metric_claims(manifest: str, metric_name: str, labels: tuple[str, ...]) -> str:
+    inline_labels = ", ".join(f'"{label}"' for label in labels)
+    block_labels = "".join(f'  "{label}",\n' for label in labels)
+    result = _replace_once(manifest, 'signals = ["child"]', 'signals = ["child", "metric"]')
+    result = _replace_once(
+        result,
+        'signals = [\n  "child",\n]\n',
+        'signals = [\n  "child",\n  "metric",\n]\n',
+    )
+    result = _replace_once(
+        result,
+        'attribute_keys = ["archetype.outcome"]\n',
+        'attribute_keys = ["archetype.outcome"]\n'
+        f'metric_names = ["{metric_name}"]\n'
+        f"metric_label_keys = [{inline_labels}]\n",
+    )
+    return _replace_once(
+        result,
+        'attribute_keys = [\n  "archetype.outcome",\n]\n',
+        'attribute_keys = [\n  "archetype.outcome",\n]\n'
+        f'metric_names = [\n  "{metric_name}",\n]\n'
+        f"metric_label_keys = [\n{block_labels}]\n",
+    )
 
 
 def _with_host(
@@ -264,8 +343,11 @@ def test_gateway_workflow_may_declare_an_ingress_root(tmp_path: Path) -> None:
         tmp_path,
         "app/gateway/service.py",
         """
+from archetype import _obs
+
 def ingress() -> None:
-    pass
+    with _obs.span("probe.run"):
+        pass
 """,
     )
     gateway = """
@@ -292,14 +374,18 @@ span_names = ["probe.run"]
 def test_none_disposition_requires_rationale_and_accepts_one(tmp_path: Path) -> None:
     without_rationale = (
         _replace_once(MANIFEST, 'signals = ["child"]', 'signals = ["none"]')
+        .replace('emission_workflows = ["probe.run"]\n', "")
         .replace('span_names = ["probe.run"]\n', "")
         .replace('attribute_keys = ["archetype.outcome"]\n', "")
     )
     _write_fixture(tmp_path, manifest=without_rationale)
     _assert_rejected(_audit(tmp_path))
 
-    with_rationale = without_rationale + (
-        'rationale = "No direct signal is approved; the typed result remains authoritative."\n'
+    with_rationale = _replace_once(
+        without_rationale,
+        'evidence = ["docs/evidence.md"]\n',
+        'evidence = ["docs/evidence.md"]\n'
+        'rationale = "No direct signal is approved; the typed result remains authoritative."\n',
     )
     (tmp_path / "quality" / "observability" / "probe.toml").write_text(
         with_rationale,
@@ -309,12 +395,38 @@ def test_none_disposition_requires_rationale_and_accepts_one(tmp_path: Path) -> 
 
 
 def test_metric_disposition_requires_fixed_names_and_bounded_labels(tmp_path: Path) -> None:
-    valid = (
-        _replace_once(MANIFEST, 'signals = ["child"]', 'signals = ["child", "metric"]')
-        + 'metric_names = ["archetype.operation.outcomes"]\n'
-        + 'metric_label_keys = ["archetype.outcome"]\n'
+    valid = _replace_once(MANIFEST, 'signals = ["child"]', 'signals = ["child", "metric"]')
+    valid = _replace_once(
+        valid,
+        'attribute_keys = ["archetype.outcome"]\n',
+        'attribute_keys = ["archetype.outcome"]\n'
+        'metric_names = ["archetype.operation.outcomes"]\n'
+        'metric_label_keys = ["archetype.outcome"]\n',
     )
-    _write_fixture(tmp_path, manifest=valid)
+    valid = _replace_once(
+        valid,
+        'signals = [\n  "child",\n]\n',
+        'signals = [\n  "child",\n  "metric",\n]\n',
+    )
+    valid = _replace_once(
+        valid,
+        'attribute_keys = [\n  "archetype.outcome",\n]\n',
+        'attribute_keys = [\n  "archetype.outcome",\n]\n'
+        'metric_names = [\n  "archetype.operation.outcomes",\n]\n'
+        'metric_label_keys = [\n  "archetype.outcome",\n]\n',
+    )
+    metric_service = _replace_once(
+        SERVICE,
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n'
+        "            return None\n",
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n'
+        "            _obs.counter_add(\n"
+        '                "archetype.operation.outcomes",\n'
+        '                attributes={"archetype.outcome": "succeeded"},\n'
+        "            )\n"
+        "            return None\n",
+    )
+    _write_fixture(tmp_path, manifest=valid, service=metric_service)
     assert _audit(tmp_path).ok
 
     invalid_name = _replace_once(
@@ -339,27 +451,29 @@ def test_metric_disposition_requires_fixed_names_and_bounded_labels(tmp_path: Pa
     )
     _assert_rejected(_audit(tmp_path))
 
+    wrong_bounded_label = _replace_once(
+        valid,
+        'metric_label_keys = ["archetype.outcome"]',
+        'metric_label_keys = ["error.type"]',
+    )
+    (tmp_path / "quality" / "observability" / "probe.toml").write_text(
+        wrong_bounded_label,
+        encoding="utf-8",
+    )
+    result = _audit(tmp_path)
+    _assert_rejected(result)
+    assert any(
+        "disposition[0].metric_label_keys does not match source emissions" in error
+        for error in result.policy_errors
+    )
+
 
 def test_workflow_scope_must_exist_and_be_callable(tmp_path: Path) -> None:
-    valid = (
-        MANIFEST
-        + """
-
-[[workflow]]
-id = "probe.run"
-qualified_scope = "archetype.app.probe.service.Probe.run"
-signals = ["child"]
-outcomes = ["propagated_failure"]
-authority = "The fixture typed result remains authoritative."
-evidence = ["docs/evidence.md"]
-span_names = ["probe.run"]
-"""
-    )
-    _write_fixture(tmp_path, manifest=valid)
+    _write_fixture(tmp_path)
     assert _audit(tmp_path).ok
 
     stale = _replace_once(
-        valid,
+        MANIFEST,
         "archetype.app.probe.service.Probe.run",
         "archetype.app.probe.service.Probe.missing",
     )
@@ -368,6 +482,367 @@ span_names = ["probe.run"]
         encoding="utf-8",
     )
     _assert_rejected(_audit(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "field_name"),
+    [
+        (
+            'span_names = [\n  "probe.run",\n]',
+            'span_names = [\n  "probe.legacy",\n]',
+            "span_names",
+        ),
+        (
+            'attribute_keys = [\n  "archetype.outcome",\n]',
+            'attribute_keys = [\n  "archetype.world.id",\n]',
+            "attribute_keys",
+        ),
+    ],
+    ids=["globally-valid-span", "globally-safe-attribute"],
+)
+def test_workflow_signal_claims_match_their_exact_source_scope(
+    tmp_path: Path,
+    old: str,
+    new: str,
+    field_name: str,
+) -> None:
+    manifest = _replace_once(MANIFEST, old, new)
+    _write_fixture(tmp_path, manifest=manifest)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(
+        f"workflow[0].{field_name} does not match source emissions" in error
+        for error in result.policy_errors
+    )
+
+
+def test_disposition_signal_claims_are_backed_by_referenced_workflows(tmp_path: Path) -> None:
+    manifest = _replace_once(
+        MANIFEST,
+        'span_names = ["probe.run"]',
+        'span_names = ["probe.legacy"]',
+    )
+    _write_fixture(tmp_path, manifest=manifest)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(
+        "disposition[0].span_names does not match source emissions" in error
+        for error in result.policy_errors
+    )
+
+
+def test_declared_but_absent_workflow_signal_is_rejected(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n'
+        "            return None\n",
+        "        return None\n",
+    )
+    _write_fixture(tmp_path, service=service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any("declared-only=['probe.run']" in error for error in result.policy_errors)
+
+
+def test_emitted_but_undeclared_workflow_field_is_rejected(tmp_path: Path) -> None:
+    manifest = _replace_once(
+        MANIFEST,
+        'attribute_keys = [\n  "archetype.outcome",\n]\n',
+        "attribute_keys = []\n",
+    )
+    _write_fixture(tmp_path, manifest=manifest)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any("observed-only=['archetype.outcome']" in error for error in result.policy_errors)
+
+
+def test_instrument_decorator_is_attributed_to_the_decorated_callable(tmp_path: Path) -> None:
+    service = """
+from typing import Protocol
+from archetype import _obs
+
+class LocalPort(Protocol):
+    def flush(self) -> None: ...
+
+class Probe:
+    @_obs.instrument("probe.run")
+    async def run(self) -> None:
+        return None
+"""
+    manifest = _replace_once(MANIFEST, 'attribute_keys = ["archetype.outcome"]\n', "")
+    manifest = _replace_once(
+        manifest,
+        'attribute_keys = [\n  "archetype.outcome",\n]\n',
+        "",
+    )
+    _write_fixture(tmp_path, service=service, manifest=manifest)
+
+    assert _audit(tmp_path).ok
+
+
+@pytest.mark.parametrize(
+    "inactive_call",
+    [
+        '_obs.span("probe.run", attributes={"archetype.outcome": "succeeded"})',
+        '_obs.instrument("probe.run")',
+    ],
+    ids=["span-context-factory", "instrument-decorator-factory"],
+)
+def test_inactive_emitter_factories_do_not_satisfy_workflow_claims(
+    tmp_path: Path,
+    inactive_call: str,
+) -> None:
+    service = _replace_once(
+        SERVICE,
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n'
+        "            return None\n",
+        f"        {inactive_call}\n        return None\n",
+    )
+    _write_fixture(tmp_path, service=service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any("declared-only=['probe.run']" in error for error in result.policy_errors)
+
+
+def test_workflow_attribution_does_not_follow_called_helpers(tmp_path: Path) -> None:
+    service = """
+from typing import Protocol
+from archetype import _obs
+
+class LocalPort(Protocol):
+    def flush(self) -> None: ...
+
+class Probe:
+    async def run(self) -> None:
+        self._emit()
+
+    def _emit(self) -> None:
+        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):
+            pass
+"""
+    _write_fixture(tmp_path, service=service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any("declared-only=['probe.run']" in error for error in result.policy_errors)
+
+
+def test_workflow_attribution_does_not_absorb_nested_lambda_emissions(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        "    async def run(self) -> None:\n",
+        "    async def run(self) -> None:\n"
+        "        callback = lambda: _obs.counter_add(\n"
+        '            "archetype.operation.outcomes",\n'
+        '            attributes={"archetype.outcome": "succeeded"},\n'
+        "        )\n"
+        "        callback()\n",
+    )
+    _write_fixture(tmp_path, service=service)
+
+    assert _audit(tmp_path).ok
+
+
+def test_nested_lambda_emissions_remain_safety_checked(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        "    async def run(self) -> None:\n",
+        "    async def run(self) -> None:\n"
+        '        callback = lambda suffix: _obs.counter_add(f"probe.{suffix}")\n'
+        '        callback("dynamic")\n',
+    )
+    _write_fixture(tmp_path, service=service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    violation = next(item for item in result.violations if item.rule == "dynamic_signal_name")
+    assert ".<lambda>@L" in violation.qualified_scope
+
+
+def test_lambda_walrus_alias_to_obs_remains_safety_checked(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        "    async def run(self) -> None:\n",
+        "    async def run(self) -> None:\n"
+        "        callback = lambda suffix: (\n"
+        "            (emit := _obs),\n"
+        '            emit.counter_add(f"probe.{suffix}"),\n'
+        "        )\n"
+        '        callback("dynamic")\n',
+    )
+    _write_fixture(tmp_path, service=service)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    violation = next(item for item in result.violations if item.rule == "dynamic_signal_name")
+    assert ".<lambda>@L" in violation.qualified_scope
+
+
+def test_lambda_parameter_shadowing_does_not_impersonate_obs_adapter(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        "    async def run(self) -> None:\n",
+        "    async def run(self) -> None:\n"
+        '        callback = lambda _obs: _obs.counter_add(f"probe.{self}")\n'
+        "        del callback\n",
+    )
+    _write_fixture(tmp_path, service=service)
+
+    assert _audit(tmp_path).ok
+
+
+def test_lambda_walrus_shadowing_does_not_impersonate_obs_adapter(tmp_path: Path) -> None:
+    service = _replace_once(
+        SERVICE,
+        "    async def run(self) -> None:\n",
+        "    async def run(self) -> None:\n"
+        "        fake = object()\n"
+        "        callback = lambda: (\n"
+        "            (_obs := fake),\n"
+        '            _obs.counter_add("archetype.operation.outcomes"),\n'
+        "        )\n"
+        "        del callback\n",
+    )
+    _write_fixture(tmp_path, service=service)
+
+    assert _audit(tmp_path).ok
+
+
+@pytest.mark.parametrize(
+    ("call", "metric_name", "labels"),
+    [
+        (
+            '_obs.record_outcome("succeeded")',
+            "archetype.operation.outcomes",
+            ("archetype.outcome",),
+        ),
+        (
+            '_obs.record_outcome("succeeded", operation="probe.run")',
+            "archetype.operation.outcomes",
+            ("archetype.operation", "archetype.outcome"),
+        ),
+        (
+            '_obs.record_failure(ValueError(), disposition="handled")',
+            "archetype.operation.failures",
+            ("archetype.failure.disposition", "error.type"),
+        ),
+    ],
+    ids=["outcome", "outcome-with-operation", "failure"],
+)
+def test_safe_recorders_contribute_their_fixed_metric_contract(
+    tmp_path: Path,
+    call: str,
+    metric_name: str,
+    labels: tuple[str, ...],
+) -> None:
+    service = _replace_once(
+        SERVICE,
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n',
+        '        with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):\n'
+        f"            {call}\n",
+    )
+    manifest = _with_metric_claims(MANIFEST, metric_name, labels)
+    _write_fixture(tmp_path, service=service, manifest=manifest)
+
+    assert _audit(tmp_path).ok
+
+    undeclared = manifest.replace(f'metric_names = ["{metric_name}"]', "metric_names = []", 1)
+    (tmp_path / "quality" / "observability" / "probe.toml").write_text(
+        undeclared,
+        encoding="utf-8",
+    )
+    result = _audit(tmp_path)
+    _assert_rejected(result)
+    assert any(
+        "disposition[0].metric_names does not match source emissions" in error
+        for error in result.policy_errors
+    )
+
+
+def test_safe_unregistered_internal_emitter_remains_allowed(tmp_path: Path) -> None:
+    service = (
+        SERVICE
+        + """
+
+def internal_observation() -> None:
+    with _obs.span("probe.run", attributes={"archetype.outcome": "succeeded"}):
+        pass
+"""
+    )
+    _write_fixture(tmp_path, service=service)
+
+    assert _audit(tmp_path).ok
+
+
+def test_stale_emission_workflow_reference_is_rejected(tmp_path: Path) -> None:
+    manifest = _replace_once(
+        MANIFEST,
+        'emission_workflows = ["probe.run"]',
+        'emission_workflows = ["probe.missing"]',
+    )
+    _write_fixture(tmp_path, manifest=manifest)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(
+        "references unknown workflow 'probe.missing'" in error for error in result.policy_errors
+    )
+
+
+def test_cross_owner_emission_workflow_reference_is_rejected(tmp_path: Path) -> None:
+    manifest = _replace_once(
+        MANIFEST,
+        'emission_workflows = ["probe.run"]',
+        'emission_workflows = ["gateway.ingress"]',
+    )
+    _write_fixture(tmp_path, manifest=manifest)
+    _write_source_module(
+        tmp_path,
+        "app/gateway/service.py",
+        """
+from archetype import _obs
+
+def ingress() -> None:
+    with _obs.span("probe.run"):
+        pass
+""",
+    )
+    gateway = """
+version = 1
+owner = "gateway"
+
+[[workflow]]
+id = "gateway.ingress"
+qualified_scope = "archetype.app.gateway.service.ingress"
+signals = ["root"]
+outcomes = ["propagated_failure"]
+authority = "The typed gateway result remains authoritative."
+evidence = ["docs/evidence.md"]
+span_names = ["probe.run"]
+"""
+    (tmp_path / "quality" / "observability" / "gateway.toml").write_text(
+        dedent(gateway).lstrip(),
+        encoding="utf-8",
+    )
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any("owned by 'gateway', not 'probe'" in error for error in result.policy_errors)
 
 
 def test_vocabulary_must_be_literal_and_fail_closed(tmp_path: Path) -> None:
@@ -389,18 +864,8 @@ def test_checker_consumes_new_literal_vocabulary_without_a_duplicate_allowlist(
         '{"probe.run", "probe.legacy"}',
         '{"probe.run", "probe.new", "probe.legacy"}',
     )
-    manifest = _replace_once(MANIFEST, '["probe.run"]', '["probe.new"]')
-    service = (
-        SERVICE
-        + """
-
-from archetype import _obs
-
-def observed() -> None:
-    with _obs.span("probe.new", attributes={"archetype.outcome": "succeeded"}):
-        pass
-"""
-    )
+    manifest = MANIFEST.replace('"probe.run"', '"probe.new"')
+    service = SERVICE.replace('"probe.run"', '"probe.new"')
     _write_fixture(tmp_path, obs=obs, manifest=manifest, service=service)
 
     assert _audit(tmp_path).ok
@@ -828,6 +1293,7 @@ diagnostics = logging.getLogger(__name__)
 
 def observed(world_id: str) -> None:
     diagnostics.info("world=%s", world_id)
+    diagnostics.log(logging.INFO, "world=%s", world_id)
 """
     )
     _write_fixture(tmp_path, service=safe)
@@ -842,6 +1308,51 @@ def observed(world_id: str) -> None:
         encoding="utf-8",
     )
     _assert_rejected(_audit(tmp_path))
+
+
+def test_logger_log_audits_its_message_after_the_level(tmp_path: Path) -> None:
+    source = (
+        SERVICE
+        + """
+
+import logging
+diagnostics = logging.getLogger(__name__)
+
+def observed(value: str) -> None:
+    diagnostics.log(logging.ERROR, f"payload={value}", exc_info=True)
+"""
+    )
+    _write_fixture(tmp_path, service=source)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert {
+        "eager_log_interpolation",
+        "raw_exception_logging",
+        "unsafe_log_value",
+    } <= {violation.rule for violation in result.violations}
+    assert any("f'payload={value}'" in violation.target for violation in result.violations)
+
+
+def test_logger_log_keyword_message_is_audited(tmp_path: Path) -> None:
+    source = (
+        SERVICE
+        + """
+
+import logging
+diagnostics = logging.getLogger(__name__)
+
+def observed(world_id: str) -> None:
+    diagnostics.log(level=logging.INFO, msg=f"world={world_id}")
+"""
+    )
+    _write_fixture(tmp_path, service=source)
+
+    result = _audit(tmp_path)
+
+    _assert_rejected(result)
+    assert any(violation.rule == "eager_log_interpolation" for violation in result.violations)
 
 
 @pytest.mark.parametrize(
@@ -1020,7 +1531,7 @@ def observed(
     "statement",
     [
         'diagnostics.info("event", extra={"password": secret})',
-        'diagnostics.info("payload=%s", payload)',
+        'diagnostics.info("payload=%s", value)',
     ],
     ids=["unsafe-extra-key", "obvious-payload-value"],
 )
@@ -1035,7 +1546,7 @@ def test_structured_logging_rejects_obvious_content_export(
 import logging
 diagnostics = logging.getLogger(__name__)
 
-def observed(secret: str, payload: str) -> None:
+def observed(secret: str, value: str) -> None:
     {statement}
 """
     )

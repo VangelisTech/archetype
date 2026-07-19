@@ -338,11 +338,12 @@ direction, protocol imports, concrete construction, and concrete inheritance.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact
-coverage and the vendor-neutral signal/configuration boundary without a live
-collector. It validates root syntax and exclusivity but does not invent
-runtime topology: the three existing gateway decorators remain children, and
-Issue #515 owns coherent ingress roots. The existing footgun reviewer complements
-this deterministic audit with semantic observability review.
+coverage, source-backed positive signal claims, and the vendor-neutral
+signal/configuration boundary without a live collector. It validates root
+syntax and exclusivity but does not invent call graphs or runtime topology: the
+three existing gateway decorators remain children, and Issue #515 owns
+coherent ingress roots. The existing footgun reviewer complements this
+deterministic audit with semantic observability review.
 
 `MissionService` remains pure transition authority over persisted row values.
 The same family now owns `MissionAttemptClaimService`, a control-catalog-backed

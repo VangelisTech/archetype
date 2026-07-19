@@ -47,11 +47,25 @@ VOCABULARY_SETS = (
     "OUTCOMES",
     "ERROR_TYPES",
 )
-VOCABULARY_MAPS = ("SPAN_NAME_ALIASES", "TRACE_ATTRIBUTE_ALIASES")
+VOCABULARY_MAPS = (
+    "SPAN_NAME_ALIASES",
+    "TRACE_ATTRIBUTE_ALIASES",
+    "RECORDER_METRIC_NAMES",
+    "RECORDER_METRIC_LABEL_KEYS",
+)
+RECORDER_EMITTERS = frozenset({"record_failure", "record_outcome"})
+RECORDER_LABEL_COORDINATES = frozenset(
+    {
+        "record_failure.disposition",
+        "record_failure.error_type",
+        "record_outcome.operation",
+        "record_outcome.outcome",
+    }
+)
 OBS_EMITTERS = frozenset(
     {"span", "instrument", "counter_add", "record_failure", "record_outcome", "bind_context"}
 )
-LOG_METHODS = frozenset({"debug", "info", "warning", "error", "critical", "exception"})
+LOG_METHODS = frozenset({"debug", "info", "warning", "error", "critical", "exception", "log"})
 VENDOR_PREFIXES = ("opentelemetry", "logfire")
 PRIVATE_ADAPTER_MODULES = frozenset({"archetype._obs", "archetype._logging"})
 AMBIGUOUS_OBSERVABILITY_BINDING = "__observability_sensitive__"
@@ -142,12 +156,40 @@ class Vocabulary:
     def metric_label_keys(self) -> frozenset[str]:
         return self.sets["METRIC_LABEL_KEYS"]
 
+    def recorder_metric_name(self, emitter: str) -> str | None:
+        return self.maps["RECORDER_METRIC_NAMES"].get(emitter)
+
+    def recorder_metric_labels(self, emitter: str) -> dict[str, str]:
+        prefix = f"{emitter}."
+        return {
+            coordinate.removeprefix(prefix): key
+            for coordinate, key in self.maps["RECORDER_METRIC_LABEL_KEYS"].items()
+            if coordinate.startswith(prefix)
+        }
+
+
+@dataclass
+class ScopeEmissions:
+    """Literal signal vocabulary observed in one exact callable scope."""
+
+    span_names: set[str] = field(default_factory=set)
+    attribute_keys: set[str] = field(default_factory=set)
+    metric_names: set[str] = field(default_factory=set)
+    metric_label_keys: set[str] = field(default_factory=set)
+
+    def update(self, other: ScopeEmissions) -> None:
+        self.span_names.update(other.span_names)
+        self.attribute_keys.update(other.attribute_keys)
+        self.metric_names.update(other.metric_names)
+        self.metric_label_keys.update(other.metric_label_keys)
+
 
 @dataclass
 class ManifestState:
     operations: dict[str, dict[str, list[str]]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(list))
     )
+    dispositions: list[dict[str, Any]] = field(default_factory=list)
     workflows: list[dict[str, Any]] = field(default_factory=list)
     hosts: dict[str, frozenset[str]] = field(default_factory=dict)
     legacy: dict[tuple[str, str, str, str], dict[str, Any]] = field(default_factory=dict)
@@ -408,6 +450,7 @@ def _scope_bindings(
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     assignments = [node for node in nodes if isinstance(node, (ast.Assign, ast.AnnAssign))]
+    named_expressions = [node for node in nodes if isinstance(node, ast.NamedExpr)]
 
     local_names = set(parameters)
     for node in imports:
@@ -417,12 +460,17 @@ def _scope_bindings(
         local_names.update(
             target.id for target in _target_nodes(node) if isinstance(target, ast.Name)
         )
+    local_names.update(
+        node.target.id for node in named_expressions if isinstance(node.target, ast.Name)
+    )
 
     initial = {name: value for name, value in parent.items() if name not in local_names}
     return _flow_bindings(statements, initial, module, scope)
 
 
-def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+def _parameter_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
     arguments = node.args
     names = {
         argument.arg
@@ -452,6 +500,8 @@ def _function_bindings(
             local_names.update(
                 target.id for target in _target_nodes(child) if isinstance(target, ast.Name)
             )
+        elif isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name):
+            local_names.add(child.target.id)
     return {name: value for name, value in parent.items() if name not in local_names}
 
 
@@ -710,6 +760,22 @@ def _load_vocabulary(repo_root: Path, result: AuditResult) -> Vocabulary:
         )
     if not sets["METRIC_LABEL_KEYS"] <= sets["TRACE_ATTRIBUTE_KEYS"]:
         result.policy_errors.append("METRIC_LABEL_KEYS must be a subset of TRACE_ATTRIBUTE_KEYS")
+    recorder_metrics = maps["RECORDER_METRIC_NAMES"]
+    if set(recorder_metrics) != RECORDER_EMITTERS:
+        result.policy_errors.append(
+            "RECORDER_METRIC_NAMES must define record_failure and record_outcome exactly"
+        )
+    if not set(recorder_metrics.values()) <= sets["METRIC_NAMES"]:
+        result.policy_errors.append("RECORDER_METRIC_NAMES targets must be canonical METRIC_NAMES")
+    recorder_labels = maps["RECORDER_METRIC_LABEL_KEYS"]
+    if set(recorder_labels) != RECORDER_LABEL_COORDINATES:
+        result.policy_errors.append(
+            "RECORDER_METRIC_LABEL_KEYS must define the fixed recorder coordinates exactly"
+        )
+    if not set(recorder_labels.values()) <= sets["METRIC_LABEL_KEYS"]:
+        result.policy_errors.append(
+            "RECORDER_METRIC_LABEL_KEYS targets must be canonical METRIC_LABEL_KEYS"
+        )
     return Vocabulary(sets, maps)
 
 
@@ -887,8 +953,37 @@ def _load_manifests(
                 local_errors,
                 root_allowed=owner in {"gateway", "runtime"},
             )
+            signal_values = row.get("signals", [])
+            signals = (
+                {item for item in signal_values if isinstance(item, str)}
+                if isinstance(signal_values, list)
+                else set()
+            )
+            source_bound = bool({"root", "child", "metric"} & signals)
+            emission_workflows = _string_array(
+                row.get("emission_workflows", []),
+                f"{label}.emission_workflows",
+                local_errors,
+                required=source_bound,
+            )
+            if source_bound and not emission_workflows:
+                local_errors.append(
+                    f"{label}.emission_workflows is required for root/child/metric signals"
+                )
+            if emission_workflows and not source_bound:
+                local_errors.append(
+                    f"{label}.emission_workflows requires a root, child, or metric signal"
+                )
             for operation in operations:
                 state.operations[owner][operation].append(label)
+            state.dispositions.append(
+                {
+                    **row,
+                    "owner": owner,
+                    "_label": label,
+                    "emission_workflows": emission_workflows,
+                }
+            )
 
         workflows = document.get("workflow", [])
         if not isinstance(workflows, list) or any(not isinstance(row, dict) for row in workflows):
@@ -1000,6 +1095,25 @@ def _load_manifests(
     for workflow_id, count in sorted(workflow_ids.items()):
         if workflow_id and count != 1:
             result.policy_errors.append(f"duplicate workflow id {workflow_id!r}")
+    workflows_by_id = {
+        str(row.get("id")): row
+        for row in state.workflows
+        if workflow_ids[str(row.get("id", ""))] == 1
+    }
+    for row in state.dispositions:
+        label = str(row["_label"])
+        owner = str(row["owner"])
+        for workflow_id in row.get("emission_workflows", []):
+            workflow = workflows_by_id.get(workflow_id)
+            if workflow is None:
+                result.policy_errors.append(
+                    f"{label}.emission_workflows references unknown workflow {workflow_id!r}"
+                )
+            elif workflow.get("owner") != owner:
+                result.policy_errors.append(
+                    f"{label}.emission_workflows references workflow {workflow_id!r} "
+                    f"owned by {workflow.get('owner')!r}, not {owner!r}"
+                )
     workflow_scopes = Counter(str(row.get("qualified_scope", "")) for row in state.workflows)
     for scope, count in sorted(workflow_scopes.items()):
         if scope and count != 1:
@@ -1108,6 +1222,8 @@ def _contains_sensitive_log_coordinate(node: ast.AST) -> bool:
             value = child.id
         elif isinstance(child, ast.Attribute):
             value = child.attr
+        elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+            value = child.value
         else:
             continue
         tokens = {token for token in re.split(r"[^a-z0-9]+", value.lower()) if token}
@@ -1189,6 +1305,21 @@ class _SourceAnalyzer(ast.NodeVisitor):
         self.assignments: list[dict[str, ast.AST]] = []
         self.binding_scopes: list[dict[str, str]] = [unit.bindings]
         self.violations: list[Violation] = []
+        self.emissions: dict[str, ScopeEmissions] = defaultdict(ScopeEmissions)
+        self.entered_context_calls = {
+            id(item.context_expr)
+            for candidate in ast.walk(unit.tree)
+            if isinstance(candidate, ast.With)
+            for item in candidate.items
+            if isinstance(item.context_expr, ast.Call)
+        }
+        self.decorator_calls = {
+            id(decorator)
+            for candidate in ast.walk(unit.tree)
+            if isinstance(candidate, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+            for decorator in candidate.decorator_list
+            if isinstance(decorator, ast.Call)
+        }
         collector = _ReturnMapCollector(unit.module)
         collector.visit(unit.tree)
         self.return_maps = collector.maps
@@ -1242,6 +1373,29 @@ class _SourceAnalyzer(ast.NodeVisitor):
 
     visit_FunctionDef = _visit_function
     visit_AsyncFunctionDef = _visit_function
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        # Defaults execute in the enclosing scope; the lambda body is a distinct
+        # callable boundary and must never donate emissions to its parent.
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+
+        self.parts.append(f"<lambda>@L{node.lineno}C{node.col_offset}")
+        local_names = set(_parameter_names(node))
+        local_names.update(
+            child.target.id
+            for child in _same_scope_nodes([node.body])
+            if isinstance(child, ast.NamedExpr) and isinstance(child.target, ast.Name)
+        )
+        self.binding_scopes.append(
+            {name: value for name, value in self.bindings.items() if name not in local_names}
+        )
+        self.assignments.append({})
+        self.visit(node.body)
+        self.assignments.pop()
+        self.binding_scopes.pop()
+        self.parts.pop()
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         names = {node.name} if isinstance(node.name, str) else set()
@@ -1327,6 +1481,11 @@ class _SourceAnalyzer(ast.NodeVisitor):
         self.visit(node.target)
         self.visit(node.value)
         self._update_assignment_bindings([node.target], None)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self.visit(node.target)
+        self._update_assignment_bindings([node.target], node.value)
 
     def _visit_branch(
         self,
@@ -1534,10 +1693,16 @@ class _SourceAnalyzer(ast.NodeVisitor):
         if not _looks_like_logger(node, self.bindings):
             return
         method = node.func.attr if isinstance(node.func, ast.Attribute) else "log"
-        message = ast.unparse(node.args[0]) if node.args else "<no-message>"
+        message_position = 1 if method == "log" else 0
+        message_node = _call_argument(node, message_position, "msg")
+        message = ast.unparse(message_node) if message_node is not None else "<no-message>"
         site = f"log:{method}:{message}"
         resolved_arguments = [self._resolve_local_expression(argument) for argument in node.args]
-        if resolved_arguments and _is_eager_log_expression(resolved_arguments[0]):
+        logged_arguments = resolved_arguments[1:] if method == "log" else resolved_arguments
+        resolved_message = (
+            self._resolve_local_expression(message_node) if message_node is not None else None
+        )
+        if resolved_message is not None and _is_eager_log_expression(resolved_message):
             self._add(
                 "eager_log_interpolation",
                 f"{site}:interpolation",
@@ -1554,9 +1719,7 @@ class _SourceAnalyzer(ast.NodeVisitor):
             )
             for keyword in node.keywords
         )
-        raw = raw or any(
-            _contains_raw_exception(argument, caught) for argument in resolved_arguments
-        )
+        raw = raw or any(_contains_raw_exception(argument, caught) for argument in logged_arguments)
         raw = raw or any(
             keyword.arg != "exc_info" and _contains_raw_exception(keyword.value, caught)
             for keyword in node.keywords
@@ -1569,7 +1732,10 @@ class _SourceAnalyzer(ast.NodeVisitor):
                 "raw exceptions, messages, and stacks must not be exported",
             )
 
-        if any(_contains_sensitive_log_coordinate(argument) for argument in resolved_arguments):
+        sensitive_arguments = list(logged_arguments)
+        if resolved_message is not None:
+            sensitive_arguments.append(resolved_message)
+        if any(_contains_sensitive_log_coordinate(argument) for argument in sensitive_arguments):
             self._add(
                 "unsafe_log_value",
                 f"{site}:sensitive-value",
@@ -1692,8 +1858,9 @@ class _SourceAnalyzer(ast.NodeVisitor):
                 pairs.append((_literal_name(key_node), value_node))
         return pairs
 
-    def _check_attributes(self, node: ast.Call, emitter: str, site: str) -> None:
+    def _check_attributes(self, node: ast.Call, emitter: str, site: str) -> set[str]:
         caught = self._current_caught()
+        observed: set[str] = set()
         for key, value, target in self._attribute_pairs(node, emitter, site):
             if key is None:
                 self._add(
@@ -1704,6 +1871,7 @@ class _SourceAnalyzer(ast.NodeVisitor):
                 )
                 continue
             if key in self.vocabulary.maps.get("TRACE_ATTRIBUTE_ALIASES", {}):
+                observed.add(self.vocabulary.maps["TRACE_ATTRIBUTE_ALIASES"][key])
                 self._add(
                     "legacy_attribute_key",
                     target,
@@ -1717,13 +1885,15 @@ class _SourceAnalyzer(ast.NodeVisitor):
                     node,
                     "attribute key is outside the safe literal vocabulary",
                 )
-            elif emitter == "counter_add" and key not in self.vocabulary.metric_label_keys:
-                self._add(
-                    "high_cardinality_metric_label",
-                    target,
-                    node,
-                    "metric labels must use the bounded label vocabulary",
-                )
+            else:
+                observed.add(key)
+                if emitter == "counter_add" and key not in self.vocabulary.metric_label_keys:
+                    self._add(
+                        "high_cardinality_metric_label",
+                        target,
+                        node,
+                        "metric labels must use the bounded label vocabulary",
+                    )
             if _contains_raw_exception(value, caught):
                 self._add(
                     "raw_exception_attribute",
@@ -1731,12 +1901,38 @@ class _SourceAnalyzer(ast.NodeVisitor):
                     value,
                     "raw exception values must not be exported as telemetry attributes",
                 )
+        return observed
 
     def _check_emitter(self, node: ast.Call, emitter: str) -> None:
         if self.unit.module in PRIVATE_ADAPTER_MODULES:
             return
+        emission: ScopeEmissions | None = self.emissions[self.scope]
+        if emitter == "instrument" and id(node) not in self.decorator_calls:
+            emission = None
+        elif emitter in {"bind_context", "span"} and id(node) not in (
+            self.entered_context_calls | self.decorator_calls
+        ):
+            emission = None
+
         if emitter == "bind_context":
-            self._check_attributes(node, emitter, "context:bind")
+            attributes = self._check_attributes(node, emitter, "context:bind")
+            if emission is not None:
+                emission.attribute_keys.update(attributes)
+            return
+        if emitter in RECORDER_EMITTERS:
+            if emission is None:
+                return
+            metric_name = self.vocabulary.recorder_metric_name(emitter)
+            if metric_name is not None:
+                emission.metric_names.add(metric_name)
+            labels = self.vocabulary.recorder_metric_labels(emitter)
+            if emitter == "record_outcome":
+                operation = _call_argument(node, 1, "operation")
+                if operation is None or (
+                    isinstance(operation, ast.Constant) and operation.value is None
+                ):
+                    labels.pop("operation", None)
+            emission.metric_label_keys.update(labels.values())
             return
         if emitter in {"span", "instrument"}:
             kind = "span"
@@ -1751,6 +1947,9 @@ class _SourceAnalyzer(ast.NodeVisitor):
 
         name_node = _call_argument(node, 0, "name")
         name = _literal_name(name_node)
+        canonical_name = name
+        if kind == "span" and name is not None:
+            canonical_name = self.vocabulary.maps.get("SPAN_NAME_ALIASES", {}).get(name, name)
         category = f"{kind}:{name if name is not None else '<dynamic>'}"
         site = category
         if name is None:
@@ -1760,21 +1959,38 @@ class _SourceAnalyzer(ast.NodeVisitor):
                 name_node or node,
                 f"{kind} names must be literal",
             )
-        elif name not in allowed:
+        elif canonical_name not in allowed:
             self._add(
                 "unknown_signal_name",
                 site,
                 name_node or node,
                 f"unknown {kind} name {name!r}",
             )
-        elif name in legacy:
+        elif name in self.vocabulary.maps.get("SPAN_NAME_ALIASES", {}):
+            self._add(
+                "legacy_span_name",
+                site,
+                name_node or node,
+                f"legacy {kind} alias {name!r} requires an exact migration entry",
+            )
+        elif canonical_name in legacy:
             self._add(
                 "legacy_span_name",
                 site,
                 name_node or node,
                 f"legacy {kind} name {name!r} requires an exact migration entry",
             )
-        self._check_attributes(node, emitter, site)
+        if canonical_name in allowed and emission is not None:
+            if kind == "span":
+                emission.span_names.add(canonical_name)
+            else:
+                emission.metric_names.add(canonical_name)
+        attributes = self._check_attributes(node, emitter, site)
+        if emission is not None:
+            if kind == "span":
+                emission.attribute_keys.update(attributes)
+            else:
+                emission.metric_label_keys.update(attributes)
 
     def visit_Call(self, node: ast.Call) -> None:
         resolved = _resolved_name(node.func, self.bindings)
@@ -1791,13 +2007,127 @@ def _analyze_sources(
     units: list[SourceUnit],
     vocabulary: Vocabulary,
     hosts: dict[str, frozenset[str]],
-) -> list[Violation]:
+) -> tuple[list[Violation], dict[str, ScopeEmissions]]:
     violations: list[Violation] = []
+    emissions: dict[str, ScopeEmissions] = defaultdict(ScopeEmissions)
     for unit in units:
         analyzer = _SourceAnalyzer(unit, vocabulary, hosts)
         analyzer.visit(unit.tree)
         violations.extend(analyzer.violations)
-    return violations
+        for scope, observed in analyzer.emissions.items():
+            emissions[scope].update(observed)
+    return violations, dict(emissions)
+
+
+_EMISSION_FIELDS = (
+    "span_names",
+    "attribute_keys",
+    "metric_names",
+    "metric_label_keys",
+)
+
+
+def _manifest_string_set(row: dict[str, Any], field_name: str) -> set[str]:
+    value = row.get(field_name, [])
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def _observed_emissions(
+    scopes: list[str],
+    emissions: dict[str, ScopeEmissions],
+) -> ScopeEmissions:
+    observed = ScopeEmissions()
+    for scope in scopes:
+        current = emissions.get(scope)
+        if current is not None:
+            observed.update(current)
+    return observed
+
+
+def _validate_emission_fields(
+    row: dict[str, Any],
+    scopes: list[str],
+    emissions: dict[str, ScopeEmissions],
+    result: AuditResult,
+) -> None:
+    if not scopes:
+        return
+    label = str(row["_label"])
+    observed = _observed_emissions(scopes, emissions)
+    for field_name in _EMISSION_FIELDS:
+        declared = _manifest_string_set(row, field_name)
+        actual = set(getattr(observed, field_name))
+        if declared == actual:
+            continue
+        result.policy_errors.append(
+            f"{label}.{field_name} does not match source emissions for {scopes!r}: "
+            f"declared-only={sorted(declared - actual)!r}, "
+            f"observed-only={sorted(actual - declared)!r}"
+        )
+
+
+def _validate_manifest_emissions(
+    state: ManifestState,
+    emissions: dict[str, ScopeEmissions],
+    result: AuditResult,
+) -> None:
+    """Bind optional workflow claims and positive dispositions to exact source."""
+
+    workflow_counts = Counter(str(row.get("id", "")) for row in state.workflows)
+    workflows_by_id = {
+        str(row.get("id")): row
+        for row in state.workflows
+        if isinstance(row.get("id"), str)
+        and row.get("id")
+        and workflow_counts[str(row.get("id"))] == 1
+    }
+    for workflow in state.workflows:
+        scope = workflow.get("qualified_scope")
+        _validate_emission_fields(
+            workflow,
+            [scope] if isinstance(scope, str) and scope else [],
+            emissions,
+            result,
+        )
+
+    for disposition in state.dispositions:
+        workflow_ids = disposition.get("emission_workflows", [])
+        if not isinstance(workflow_ids, list) or not workflow_ids:
+            continue
+        workflows = [
+            workflows_by_id[workflow_id]
+            for workflow_id in workflow_ids
+            if isinstance(workflow_id, str)
+            and workflow_id in workflows_by_id
+            and workflows_by_id[workflow_id].get("owner") == disposition.get("owner")
+        ]
+        if len(workflows) != len(workflow_ids):
+            continue
+        scopes = [
+            scope
+            for workflow in workflows
+            if isinstance((scope := workflow.get("qualified_scope")), str) and scope
+        ]
+        _validate_emission_fields(disposition, scopes, emissions, result)
+
+        declared_signals = _manifest_string_set(disposition, "signals") & {
+            "root",
+            "child",
+            "metric",
+        }
+        workflow_signals: set[str] = set()
+        for workflow in workflows:
+            workflow_signals.update(
+                _manifest_string_set(workflow, "signals") & {"root", "child", "metric"}
+            )
+        if declared_signals != workflow_signals:
+            result.policy_errors.append(
+                f"{disposition['_label']}.signals does not match referenced workflows: "
+                f"declared-only={sorted(declared_signals - workflow_signals)!r}, "
+                f"workflow-only={sorted(workflow_signals - declared_signals)!r}"
+            )
 
 
 def _reconcile_legacy(
@@ -1862,7 +2192,8 @@ def audit_repository(
         callable_paths,
         result,
     )
-    findings = _analyze_sources(units, vocabulary, state.hosts)
+    findings, emissions = _analyze_sources(units, vocabulary, state.hosts)
+    _validate_manifest_emissions(state, emissions, result)
     _reconcile_legacy(findings, state.legacy, result)
     return result
 
