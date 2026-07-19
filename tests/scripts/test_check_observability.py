@@ -1787,5 +1787,5 @@ def test_repository_observability_policy_passes_for_all_protocol_operations() ->
     )
 
     assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "262 operations" in completed.stdout
+    assert "259 operations" in completed.stdout
     assert "Observability audit passed" in completed.stdout

@@ -432,22 +432,32 @@ do not fabricate `ActorCtx`; API routes depend on `iCommandGateway`; concrete
 services and the container are not top-level exports.
 
 `quality/architecture.toml` contains both the application-family DAG and the
-registered top-level family dispositions for `datasets`, `experiments`, `htn`,
-and `missions`. `scripts/check_architecture.py` enforces their package direction,
-protocol imports, concrete construction, concrete inheritance, and persistent
-Component placement.
+registered top-level family dispositions for `artifacts`, `datasets`,
+`experiments`, `htn`, and `missions`. `scripts/check_architecture.py`
+enforces their package direction, protocol imports, concrete construction,
+concrete inheritance, and persistent Component placement.
+
+The artifact relocation (#558) is complete: `ArtifactMeta` and `AssetRef`
+live in `archetype.artifacts.components`, the typed-table and
+content-addressing contracts live in `archetype.artifacts.contracts`, the
+bundle value contracts live in `archetype.artifacts.bundles`, and
+`archetype.app.artifacts` retains publication, indexing, reconciliation, and
+storage authority while importing those domain definitions inward. The
+catalog-bound `PreparedArtifactBundleRequest` remains application-owned
+because its validation binds to the control catalog's publication-key
+derivation.
 
 The remaining reverse edges from provisional `archetype.experiments` and the
 remaining Components under app-family `models.py` are preserved only by exact
-migration entries. Evaluation and artifacts point to relocation issues #557
-and #558. The design gate in #561 has been adjudicated: research Components and
-runner imports now point to #585, trajectory recorder imports point to #586,
-and physical-AI rollout/sweep reverse imports point to #589. The transcript,
-physical-AI domain, ontology, HTN-adapter, and final umbrella-removal stages are
+migration entries. Evaluation points to relocation issue #557. The design gate
+in #561 has been adjudicated: research Components and runner imports now point
+to #585, trajectory recorder imports point to #586, and physical-AI
+rollout/sweep reverse imports point to #589. The transcript, physical-AI
+domain, ontology, HTN-adapter, and final umbrella-removal stages are
 Issues #587, #588, #590, #591, and #592. No architecture exception remains
-owned by Issue #561. Mission Components and pure world transitions moved under
-Issue #559, so no mission migration exception remains. These entries make no
-app symbol supported.
+owned by Issue #561. Mission Components and pure world transitions moved
+under Issue #559, so no mission migration exception remains. These entries
+make no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

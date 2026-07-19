@@ -109,7 +109,7 @@
 | `num_episodes` | `int` | `0` | Number of completed episodes. |
 | `total_duration_steps` | `int` | `0` | Total ticks executed across all episodes. |
 
-::: archetype.app.artifacts.models.ArtifactReceipt
+::: archetype.artifacts.contracts.ArtifactReceipt
     options:
       members: false
 
@@ -126,7 +126,7 @@
 | `table_id` | `str` | `required` |
 | `duplicate` | `bool` | `required` |
 
-::: archetype.app.artifacts.models.ArtifactWriteReceipt
+::: archetype.artifacts.contracts.ArtifactWriteReceipt
     options:
       members:
         - duplicate

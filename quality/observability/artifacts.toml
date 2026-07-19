@@ -40,10 +40,10 @@ evidence = [
 ]
 rationale = "Reconciliation reuses durable publication state; no additional signal has been approved."
 
+# The resolver and processor protocols moved to the archetype.artifacts
+# family under #558; dispositions cover only application-family ports.
 [[disposition]]
 operations = [
-  "bundle_models.ArtifactSourceResolver.materialize",
-  "bundle_models.BoundedArtifactSourceResolver.materialize_bounded",
   "interfaces.iArtifactService.publish",
   "interfaces.iArtifactService.publish_evaluation",
   "interfaces.iArtifactService.snapshot_ref",
@@ -53,7 +53,6 @@ operations = [
   "interfaces.iArtifactBundleService.enabled",
   "interfaces.iArtifactBundleService.prepare",
   "interfaces.iArtifactBundleService.query",
-  "models.ArtifactProcessor.process",
 ]
 signals = ["none"]
 outcomes = ["propagated_failure", "handled_outcome"]

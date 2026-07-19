@@ -134,7 +134,6 @@ _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
 _RUNTIME_ALLOWED_APP_IMPORTS = _RUNTIME_TYPE_ONLY_APP_IMPORTS | frozenset(
     {
         "archetype.app.application.interfaces",
-        "archetype.app.artifacts.bundle_models",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.storage.session",
@@ -659,8 +658,8 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
     receipt/artifact component may name an authority decision. A PASS means one
     grader passed under one pinned contract — the layer above owns meaning.
     """
-    from archetype.app.artifacts.models import ArtifactMeta, AssetRef
     from archetype.app.evaluation.models import EvalReceipt
+    from archetype.artifacts.components import ArtifactMeta, AssetRef
 
     forbidden = {
         "accepted",

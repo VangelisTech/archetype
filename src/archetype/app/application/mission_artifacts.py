@@ -8,12 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from archetype.app.artifacts.bundle_models import (
-    ArtifactBundleRequest,
-    ArtifactCandidate,
-    ArtifactPublicationStatus,
-    PreparedArtifactBundleRequest,
-)
+from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
 from archetype.app.artifacts.interfaces import iArtifactBundleService
 from archetype.app.missions.interfaces import iMissionArtifactFinalizer
 from archetype.app.missions.models import (
@@ -22,6 +17,11 @@ from archetype.app.missions.models import (
     AttemptArtifactPublication,
     MissionArtifactFinalizationExpiredError,
     MissionAttemptRequest,
+)
+from archetype.artifacts.bundles import (
+    ArtifactBundleRequest,
+    ArtifactCandidate,
+    ArtifactPublicationStatus,
 )
 from archetype.core.config import StorageConfig
 from archetype.missions.transitions import FinalizationPhase

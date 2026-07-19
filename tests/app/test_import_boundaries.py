@@ -34,7 +34,6 @@ _RUNTIME_TYPE_ONLY_APP = frozenset(
 _RUNTIME_ALLOWED_APP = _RUNTIME_TYPE_ONLY_APP | frozenset(
     {
         "archetype.app.application.interfaces",
-        "archetype.app.artifacts.bundle_models",
         "archetype.app.container",
         "archetype.app.models",
         "archetype.app.gateway.auth.models",

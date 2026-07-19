@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 from archetype.app.application.mission_artifacts import MissionArtifactFinalizer
 from archetype.app.application.service import RuntimeApplication
-from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
 from archetype.app.artifacts.service import ArtifactService
 from archetype.app.artifacts.table_service import ArtifactTableService
@@ -43,6 +42,7 @@ from archetype.app.storage.service import StorageService
 from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
+from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.core.config import StorageConfig
 
 

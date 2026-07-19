@@ -14,8 +14,8 @@ import pytest
 
 import archetype.app.artifacts.table_service as artifact_table_service_module
 from archetype import ArchetypeRuntime
-from archetype.app.artifacts.models import ARTIFACT_ENVELOPE_COLUMNS
 from archetype.app.container import ServiceContainer
+from archetype.artifacts.contracts import ARTIFACT_ENVELOPE_COLUMNS
 from archetype.core.config import RunConfig, StorageBackend, StorageConfig, WorldConfig
 
 

@@ -8,17 +8,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from archetype.app.artifacts.bundle_models import (
+from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
+from archetype.app.storage.catalog import artifact_publication_key
+from archetype.artifacts.bundles import (
     ArtifactBundleRequest,
     ArtifactCandidate,
     ArtifactIndexRecord,
     ArtifactPublicationStatus,
     ArtifactPublishReceipt,
     ArtifactStoreConfig,
-    PreparedArtifactBundleRequest,
 )
-from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
-from archetype.app.storage.catalog import artifact_publication_key
 from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.contract("artifacts.bundle.publication_replay")

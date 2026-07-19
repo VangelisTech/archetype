@@ -14,13 +14,14 @@ from dataclasses import replace
 
 import pytest
 
-from archetype.app.artifacts.models import ArtifactMeta, artifact_payload_digest
 from archetype.app.container import ServiceContainer
 from archetype.app.storage.catalog import (
     ClaimConflictError,
     SqliteControlCatalog,
     claim_scope_key,
 )
+from archetype.artifacts.components import ArtifactMeta
+from archetype.artifacts.contracts import artifact_payload_digest
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.core.interfaces import iAsyncProcessor

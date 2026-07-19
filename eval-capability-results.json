@@ -1,0 +1,552 @@
+{
+  "schema_version": 1,
+  "kind": "eval",
+  "profile": "capability",
+  "suites": [
+    "capability"
+  ],
+  "failure_policy": "every architectural capability task and every trial passes",
+  "started_at": "2026-07-19T22:16:49.924944Z",
+  "duration_s": 0.504845,
+  "outcome": "passed",
+  "revision": {
+    "commit": "dbecb456d22816cb5bda17654bdcd80401b7e212",
+    "dirty": true
+  },
+  "environment": {
+    "runner_id": "Everetts-MacBook-Pro.local",
+    "system": "Darwin",
+    "release": "25.5.0",
+    "machine": "arm64",
+    "python_implementation": "CPython",
+    "python_version": "3.12.12",
+    "packages": {
+      "archetype-ecs": "0.4.1",
+      "daft": "0.7.19",
+      "lancedb": "0.30.2",
+      "pyiceberg": "0.11.0",
+      "pytest": "9.0.3"
+    }
+  },
+  "invocation": [
+    "/Users/everettkleven/conductor/workspaces/archetype/havana/evals/run.py",
+    "--profile",
+    "capability",
+    "--out",
+    "eval-capability-results.json"
+  ],
+  "configuration": {
+    "trials": 1,
+    "seed": null
+  },
+  "results": [
+    {
+      "task_id": "storage_roundtrip",
+      "suite": "capability",
+      "contract_ids": [
+        "storage.cache.concurrent_no_loss"
+      ],
+      "desc": "Write entities with mixed types, flush to storage, read back, verify field integrity",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0293,
+          "error": null,
+          "graders": [
+            {
+              "name": "entity_ids_match",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "field_integrity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "simulation_correctness",
+      "suite": "capability",
+      "contract_ids": [
+        "simulation.episode.termination"
+      ],
+      "desc": "Multi-step simulation: entity preservation, processor correctness, data integrity",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0343,
+          "error": null,
+          "graders": [
+            {
+              "name": "entity_preservation",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "processor_correctness",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "untouched_data",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "query_completeness",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "fork_divergence",
+      "suite": "capability",
+      "contract_ids": [
+        "world.lifecycle.idempotent"
+      ],
+      "desc": "Fork-of-fork lineage continuity, shared resources, and isolated branch mutations",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.1042,
+          "error": null,
+          "graders": [
+            {
+              "name": "fork_identity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "fork_resource_sharing",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "fork_lineage_cutoffs",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "base_branch_history",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "mid_branch_history",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "leaf_branch_history",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "time_travel_and_run_id",
+      "suite": "capability",
+      "contract_ids": [
+        "world.lifecycle.idempotent"
+      ],
+      "desc": "Live and cold historical reads preserve run identity across durable resume",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0793,
+          "error": null,
+          "graders": [
+            {
+              "name": "live_historical_read",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "cold_read_parity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "resumed_history_continuity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "durable_read_identity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "resume_run_continuity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "processor_adversarial",
+      "suite": "capability",
+      "contract_ids": [
+        "world.mutations.compose_deterministically"
+      ],
+      "desc": "Hook isolation, atomic processor failure, retry, and migration-aware matching",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0922,
+          "error": null,
+          "graders": [
+            {
+              "name": "hook_failure_isolation",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "whole_tick_failure_and_retry",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "failed_tick_committed_nothing",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "widened_then_narrowed_timeline",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "stable_marked_timeline",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "signature_migration_matching",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "agent_mission_transition_authority",
+      "suite": "capability",
+      "contract_ids": [
+        "missions.transition.evidence_gated"
+      ],
+      "desc": "Mission progress requires validator, commit, checkpoint, and finalization evidence",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0003,
+          "error": null,
+          "graders": [
+            {
+              "name": "mission_gate_holds",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "mission_gate_advances",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "mission_attempt_claim_recovery",
+      "suite": "capability",
+      "contract_ids": [
+        "missions.attempt.claim_fenced"
+      ],
+      "desc": "Durable claim fencing, conservative uncertain recovery, and terminal replay survive a cold restart",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0746,
+          "error": null,
+          "graders": [
+            {
+              "name": "attempt_claim_recovery_authority",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "attempt_claim_terminal_replay",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "mission_indexed_finalization_gate",
+      "suite": "capability",
+      "contract_ids": [
+        "missions.attempt.indexed_finalization"
+      ],
+      "desc": "INDEXED evidence gates mission progress and cold FINALIZING recovery settles exact staged identity without another runner/model call",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0876,
+          "error": null,
+          "graders": [
+            {
+              "name": "indexed_row_gate_holds",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "cold_finalizing_recovery",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "indexed_evidence_identity",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "indexed_settlement_exactly_once",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "security.pre_durability_redaction",
+      "suite": "capability",
+      "contract_ids": [
+        "security.redaction.pre_durability"
+      ],
+      "desc": "Shared scanner redacts provider/cloud credentials, preserves safe placeholders, and fails metadata closed without echoing secrets",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0006,
+          "error": null,
+          "graders": [
+            {
+              "name": "pre_durability_secret_redaction",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "task_id": "sandbox_attempt_phase_contract",
+      "suite": "capability",
+      "contract_ids": [
+        "sandboxes.attempt.phase_order"
+      ],
+      "desc": "Provider-neutral six-phase attempt, validator authority, checkpoint handoff, replay",
+      "trial_count": 1,
+      "correct_samples": 1,
+      "pass_rate": 1.0,
+      "pass_at_k": 1.0,
+      "pass_at_k_curve": {
+        "1": 1.0
+      },
+      "pass_pow_k": 1.0,
+      "avg_score": 1.0,
+      "all_passed": true,
+      "trials": [
+        {
+          "trial": 0,
+          "passed": true,
+          "score": 1.0,
+          "elapsed_s": 0.0011,
+          "error": null,
+          "graders": [
+            {
+              "name": "six_phase_order",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            },
+            {
+              "name": "sandbox_kernel_outcome",
+              "passed": true,
+              "score": 1.0,
+              "details": ""
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "capability": {
+      "tasks": 10,
+      "fully_passing_tasks": 10,
+      "trials_per_task": [
+        1
+      ],
+      "pass_at_k": {
+        "1": 1.0
+      },
+      "mean_pass_rate": 1.0,
+      "mean_score": 1.0
+    }
+  }
+}
