@@ -14,11 +14,12 @@ Archetype-owned adapter failure may change an application result, retry
 decision, commit, authorization decision, or exception identity. A process
 host remains responsible for failure behavior in handlers it installs itself.
 
-Family and core code emit through the private `archetype._obs` boundary using
-OpenTelemetry APIs and stdlib logging only. They do not import an OTel SDK,
-exporter, collector, or vendor integration. Process hosts own provider and
-exporter installation. `archetype._obs` remains internal and does not expand
-the supported Python or REST surface.
+Family and core code emit telemetry through the private `archetype._obs`
+boundary and diagnostics through stdlib logging. They do not import an OTel
+SDK, exporter, collector, or vendor integration. Process hosts own provider,
+exporter, and handler installation through the private `archetype._logging`
+adapter. Both modules remain internal and do not expand the supported Python
+or REST surface.
 
 The signal boundary cannot import `app.redaction`: core imports `_obs`, so that
 edge would invert the application dependency direction. Instead, `_obs` is
@@ -111,9 +112,10 @@ broad suppression of application work under an “observability” label.
 
 `bind_context()` stores only validated canonical correlation coordinates in a
 `ContextVar`; nested bindings restore their predecessor on normal return or
-failure. `capture_context()` returns a detached copy suitable for #326's
-structured logging adapter. Context never contains payloads, prompts, paths,
-URLs, headers, exception text, or arbitrary object strings.
+failure. `capture_context()` returns a detached copy that the private host
+logging adapter revalidates before enriching a record. Context never contains
+payloads, prompts, paths, URLs, headers, exception text, or arbitrary object
+strings.
 
 Proxy tracers and counters may be created before a provider. Once a host
 registers a provider, future calls use it. Signals emitted before registration
@@ -141,14 +143,51 @@ runtime/server startup:
 The SDK bundled for the explicit debug-console host path is not permission for
 family imports. Optional OTLP and Logfire integrations remain host concerns.
 `RunConfig.debug` controls execution diagnostics and is not a telemetry-export
-switch. #326 owns removing API import-time setup and correlating stdlib logs.
+switch.
+
+Importing Archetype, its runtime, or its API installs no handler or provider;
+`create_app()` is also inert. The explicit configuration points are runtime
+construction for trusted scripts, CLI `serve` startup for the server process,
+and each FastAPI lifespan for the serving worker. Repeated worker setup is
+safe. `create_app()` does not automatically invoke Logfire FastAPI
+instrumentation; explicit backend selection continues through the
+vendor-neutral host adapter.
+
+When `ARCHETYPE_LOG=debug|info|warning|error` or the runtime's `log=` argument
+enables logging, the host adapter owns at most one `archetype` package stderr
+handler. Otherwise the explicit host boundary installs a package-owned null
+handler so Python's `lastResort` handler cannot emit warnings or errors; any
+handler the host explicitly installed remains authoritative through normal
+propagation. Later quiet/default setup does not downgrade an already enabled
+owned stderr handler. The adapter does not alter root handlers, root filters,
+root level, the global `LogRecordFactory`, or foreign handlers and filters. Its
+fail-open filter first
+removes forged reserved fields and then restores only valid lowercase
+`trace_id` and `span_id` coordinates plus revalidated
+`TRACE_ATTRIBUTE_KEYS`. `LOG_RECORD_FIELDS` is exactly that derived union, not
+a second attribute vocabulary. With no active context the fields are absent.
+Correlation never reads or renders payloads, prompts, arbitrary objects,
+exception objects, traceback text, or exception messages. The default
+formatter suppresses traceback rendering and writes human diagnostics to
+stderr, then restores the producer's message, arguments, and exception/stack
+fields for later host-owned handlers. It cannot sanitize sensitive text already
+embedded in a primitive string; producer-side policy and foreign-handler export
+safety remain host responsibilities. Stdout remains owned by application and
+machine-result output. When enabled, the stderr handler runs first, so a host
+handler attached to the `archetype` package logger receives the same enriched
+correlation fields without moving the filter onto that foreign handler or the
+root logger.
+
+The old `contrib.logfire_observer.logfire_hooks()` entry point is a deprecated,
+warning-only shim that returns no hooks. It cannot create a second tick root,
+retain an open-span table, or bypass the safe signal boundary.
 
 ## 6. Family dispositions
 
 | Family or layer | Current signal disposition | Authoritative outcome |
 |---|---|---|
-| Runtime host | Explicit provider/log-handler configuration; no family workflow span | Runtime lifecycle and returned/raised result |
-| CLI and API | No family-owned signals in this contract; #326 owns host/log correlation | HTTP result and gateway/domain result |
+| Runtime host | Explicit construction-time provider and owned-handler setup; no family workflow span | Runtime lifecycle and returned/raised result |
+| CLI and API | `serve` and worker lifespan configure the host; imports and `create_app()` remain inert | HTTP result and gateway/domain result |
 | Gateway | Child spans for the three currently decorated operations | RBAC decision, typed application result, and access-audit evidence |
 | RuntimeApplication | No direct signal yet; lower owning family remains visible | Typed family result/exception |
 | Commands | No direct signal yet | Durable command ledger and settlement |

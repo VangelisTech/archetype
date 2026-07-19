@@ -31,6 +31,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from archetype._logging import configure_host_observability
+
 DEFAULT_BASE_URL = "http://localhost:8000"
 ENV_BASE_URL = "ARCHETYPE_URL"
 
@@ -246,6 +248,7 @@ def serve(
     """Start the FastAPI server."""
     import uvicorn
 
+    configure_host_observability(service_name="archetype-api")
     uvicorn.run("archetype.api.app:create_app", host=host, port=port, reload=reload, factory=True)
 
 
