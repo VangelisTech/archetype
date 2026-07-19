@@ -232,7 +232,7 @@ roots, while `RuntimeApplication` and lower families own children. The
 repository audit enforces the vocabulary, declared ownership, and
 root/child/none exclusivity, but it does not prove runtime topology. This
 change leaves the three existing gateway decorators as child dispositions;
-#515 owns the coherent root model and any corresponding instrumentation.
+Issue #515 owns the coherent root model and any corresponding instrumentation.
 
 `scripts/check_observability.py` provides deterministic syntax and disposition
 enforcement from source and these manifests. It does not parse exported
