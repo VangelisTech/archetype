@@ -387,6 +387,7 @@ class MissionService:
                 "evidence__git_status_ref": str(outcome["git_status_ref"]),
                 "evidence__git_patch_ref": str(outcome["git_patch_ref"]),
                 "evidence__git_bundle_ref": str(outcome["git_bundle_ref"]),
+                "evidence__worktree_archive_ref": str(outcome["worktree_archive_ref"]),
                 "evidence__context_ref": str(outcome["context_ref"]),
                 "frictionlog__entries_json": self._json(prior_friction),
             }

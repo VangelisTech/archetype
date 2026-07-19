@@ -478,6 +478,25 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "artifacts.worktree_archive.portable"
+source = "docs/guide/artifact-finalization.md"
+section = "Portable full-worktree archive"
+owner = "artifacts"
+risk = "high"
+pytest = [
+  "tests/app/test_worktree_archive.py",
+  "tests/app/test_mission_artifact_finalizer.py",
+  "tests/app/test_indexed_finalization_crash_oracle.py",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_pre_durability_redaction.py",
+]
+evals = ["security.pre_durability_redaction"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifact-finalization.md"
 section = "4. Pre-durability secret redaction"
@@ -486,6 +505,7 @@ risk = "high"
 pytest = [
   "tests/app/test_redaction_service.py",
   "tests/app/test_artifact_bundle_service.py",
+  "tests/app/test_worktree_archive.py",
   "tests/app/test_mission_attempt_claims.py::test_secret_bearing_request_is_quarantined_before_claim_commit",
   "tests/app/test_mission_attempt_claims.py::test_secret_bearing_provider_capability_is_quarantined_before_claim_commit",
   "tests/app/test_mission_attempt_claims.py::test_secret_bearing_provider_identity_is_quarantined_before_ack_commit",

@@ -233,6 +233,7 @@ class Evidence(Component):
     git_status_ref: str = ""
     git_patch_ref: str = ""
     git_bundle_ref: str = ""
+    worktree_archive_ref: str = ""
     context_ref: str = ""
 
 

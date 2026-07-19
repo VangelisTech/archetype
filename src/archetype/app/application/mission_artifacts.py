@@ -59,6 +59,13 @@ _MISSION_ARTIFACT_CANDIDATES = (
     ("git_status_ref", "recovery/git-status.txt", "git_status", False, True),
     ("git_patch_ref", "recovery/worktree.patch", "git_patch", False, True),
     ("git_bundle_ref", "recovery/repository.bundle", "git_bundle", False, True),
+    (
+        "worktree_archive_ref",
+        "recovery/full-worktree.tar",
+        "worktree_archive",
+        False,
+        True,
+    ),
     ("context_ref", "context", "context", True, False),
 )
 

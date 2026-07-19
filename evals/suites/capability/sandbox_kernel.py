@@ -232,6 +232,9 @@ async def _task_sandbox_kernel_phase_contract() -> list[GraderResult]:
                 "nonzero_agent_retained": first["agent_returncode"] == 7,
                 "checkpoint_qualified": first["finalization_phase"] == "checkpointed",
                 "artifact_declared": first["git_bundle_ref"].startswith("eval-checkpoint://one#"),
+                "worktree_archive_declared": first["worktree_archive_ref"].startswith(
+                    "eval-checkpoint://one#"
+                ),
                 "correlated": first["correlation"]["world_id"] == "eval-world",
                 "sandbox_receipt_replayed": second == first and client.agent_calls == 1,
             },

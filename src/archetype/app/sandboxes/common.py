@@ -163,6 +163,226 @@ with open(output, "w", encoding="utf-8") as file:
         )
 """
 
+_WORKTREE_ARCHIVE_SCRIPT = r"""
+import errno
+import hashlib
+import json
+import os
+import shutil
+import stat
+import sys
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
+
+root = Path(sys.argv[1]).resolve(strict=True)
+output = Path(sys.argv[2])
+baseline_sha, head_sha = sys.argv[3:5]
+recovery = {
+    "git-status.txt": Path(sys.argv[5]),
+    "worktree.patch": Path(sys.argv[6]),
+    "repository.bundle": Path(sys.argv[7]),
+}
+caches = {
+    ".cache", ".mypy_cache", ".nox", ".pytest_cache", ".ruff_cache", ".tox",
+    ".venv", "__pycache__", "build", "dist", "node_modules", "venv",
+}
+credential_names = {
+    ".env", ".env.development", ".env.local", ".env.production", ".git-credentials",
+    ".netrc", ".npmrc", ".pypirc", "id_dsa", "id_ecdsa", "id_ed25519", "id_rsa",
+}
+credential_suffixes = (
+    (".codex", "auth.json"), (".claude", ".credentials.json"),
+    (".config", "opencode", "auth.json"),
+    (".local", "share", "opencode", "auth.json"), (".aws", "credentials"),
+    (".config", "gcloud", "application_default_credentials.json"),
+    (".config", "gcloud", "credentials.db"),
+    (".config", "gcloud", "access_tokens.db"), (".config", "gh", "hosts.yml"),
+    (".docker", "config.json"), (".kube", "config"),
+    (".azure", "accesstokens.json"), (".cache", "huggingface", "token"),
+    (".huggingface", "token"),
+)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+
+
+def reason(parts, is_dir):
+    lower = tuple(part.lower() for part in parts)
+    if parts and parts[0] == ".git":
+        return "git-internals"
+    if parts and parts[0] == ".archetype-agent":
+        return "provider-internals"
+    if (lower and lower[-1] in credential_names) or any(
+        len(lower) >= len(suffix) and lower[-len(suffix):] == suffix
+        for suffix in credential_suffixes
+    ):
+        return "credential-path"
+    if is_dir and parts and parts[-1] in caches:
+        return "cache"
+    return None
+
+
+def inventory():
+    values = {}
+    excluded = []
+    inodes = set()
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    root_descriptor = os.open(root, flags)
+    root_device = os.fstat(root_descriptor).st_dev
+    stack = [(root_descriptor, ())]
+    try:
+        while stack:
+            descriptor, prefix = stack.pop()
+            try:
+                children = sorted(os.scandir(descriptor), key=lambda item: item.name, reverse=True)
+            except BaseException:
+                os.close(descriptor)
+                raise
+            try:
+                for child in children:
+                    parts = (*prefix, child.name)
+                    path = PurePosixPath(*parts).as_posix()
+                    info = child.stat(follow_symlinks=False)
+                    is_dir = stat.S_ISDIR(info.st_mode)
+                    is_file = stat.S_ISREG(info.st_mode)
+                    if stat.S_ISLNK(info.st_mode):
+                        raise RuntimeError("worktree archive rejects symbolic links")
+                    if not is_dir and not is_file:
+                        raise RuntimeError("worktree archive rejects special files")
+                    why = reason(parts, is_dir)
+                    if why:
+                        excluded.append({"path": path, "type": "directory" if is_dir else "file", "reason": why})
+                        continue
+                    if info.st_dev != root_device:
+                        raise RuntimeError("worktree archive rejects nested filesystems")
+                    if is_dir:
+                        kind, size = "directory", 0
+                        child_descriptor = os.open(child.name, flags, dir_fd=descriptor)
+                        opened = os.fstat(child_descriptor)
+                        if not stat.S_ISDIR(opened.st_mode) or opened.st_dev != info.st_dev or opened.st_ino != info.st_ino:
+                            os.close(child_descriptor)
+                            raise RuntimeError("worktree directory changed during inventory")
+                        stack.append((child_descriptor, parts))
+                    elif is_file:
+                        if info.st_nlink != 1 or (info.st_dev, info.st_ino) in inodes:
+                            raise RuntimeError("worktree archive rejects hard-linked files")
+                        inodes.add((info.st_dev, info.st_ino))
+                        kind, size = "file", info.st_size
+                    values[path] = (
+                        kind, stat.S_IMODE(info.st_mode), size, info.st_dev, info.st_ino,
+                        info.st_mtime_ns, info.st_ctime_ns,
+                    )
+            finally:
+                os.close(descriptor)
+    finally:
+        for descriptor, _ in stack:
+            os.close(descriptor)
+    return values, sorted(excluded, key=lambda item: (item["path"], item["reason"]))
+
+
+def copy_stable(source, destination, expected):
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise RuntimeError("worktree file became a symbolic link") from None
+        raise
+    try:
+        opened = os.fstat(descriptor)
+        identity = (opened.st_size, opened.st_dev, opened.st_ino, opened.st_mtime_ns, opened.st_ctime_ns)
+        wanted = (expected[2], expected[3], expected[4], expected[5], expected[6])
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or identity != wanted:
+            raise RuntimeError("worktree file changed before its stable read")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(descriptor, "rb", closefd=False) as reader, destination.open("xb") as writer:
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+        finished = os.fstat(descriptor)
+        final = (finished.st_size, finished.st_dev, finished.st_ino, finished.st_mtime_ns, finished.st_ctime_ns)
+        if final != identity or destination.stat().st_size != expected[2]:
+            raise RuntimeError("worktree file changed during its stable read")
+    finally:
+        os.close(descriptor)
+
+
+def file_entry(path, mode, source):
+    digest = hashlib.sha256()
+    with source.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": path, "type": "file", "mode": mode,
+        "size_bytes": source.stat().st_size, "sha256": digest.hexdigest(),
+    }
+
+
+def tar_info(name, mode, size=0, directory=False):
+    info = tarfile.TarInfo(name)
+    info.mode, info.uid, info.gid, info.uname, info.gname, info.mtime = mode, 0, 0, "", "", 0
+    info.size = size
+    info.type = tarfile.DIRTYPE if directory else tarfile.REGTYPE
+    return info
+
+
+initial, exclusions = inventory()
+with tempfile.TemporaryDirectory(prefix="archetype-worktree-") as temporary:
+    staged = Path(temporary)
+    entries = []
+    for path, value in sorted(initial.items()):
+        kind, mode = value[:2]
+        archive_path = f"worktree/{path}"
+        target = staged / PurePosixPath(archive_path)
+        if kind == "directory":
+            target.mkdir(parents=True, exist_ok=True)
+            entries.append({"path": archive_path, "type": kind, "mode": mode, "size_bytes": 0, "sha256": ""})
+        else:
+            copy_stable(root / PurePosixPath(path), target, value)
+            entries.append(file_entry(archive_path, mode, target))
+    for name, source in sorted(recovery.items()):
+        info = source.lstat()
+        expected = (
+            "file", stat.S_IMODE(info.st_mode), info.st_size, info.st_dev, info.st_ino,
+            info.st_mtime_ns, info.st_ctime_ns,
+        )
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise RuntimeError("Git recovery material must be a regular file")
+        archive_path = f"recovery/{name}"
+        target = staged / archive_path
+        copy_stable(source, target, expected)
+        entries.append(file_entry(archive_path, expected[1], target))
+    if inventory() != (initial, exclusions):
+        raise RuntimeError("worktree changed while the archive was captured")
+    entries.sort(key=lambda item: item["path"])
+    manifest = {
+        "schema_version": 1,
+        "archive_format": "archetype-worktree-tar-v1",
+        "baseline_sha": baseline_sha,
+        "head_sha": head_sha,
+        "redaction_policy_id": "",
+        "entries": entries,
+        "exclusions": exclusions,
+        "redaction": {
+            "status": "unscanned", "files_scanned": 0, "bytes_scanned": 0,
+            "redaction_count": 0, "rule_ids": [], "files": [],
+        },
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    writing = output.with_name(output.name + ".writing")
+    writing.unlink(missing_ok=True)
+    manifest_bytes = canonical(manifest)
+    with tarfile.open(writing, "w", format=tarfile.PAX_FORMAT) as archive:
+        archive.addfile(tar_info("archive-manifest.json", 0o644, len(manifest_bytes)), __import__("io").BytesIO(manifest_bytes))
+        for entry in entries:
+            if entry["type"] == "directory":
+                archive.addfile(tar_info(entry["path"], entry["mode"], directory=True))
+            else:
+                with (staged / PurePosixPath(entry["path"])).open("rb") as stream:
+                    archive.addfile(tar_info(entry["path"], entry["mode"], entry["size_bytes"]), stream)
+    os.replace(writing, output)
+"""
+
 
 @dataclass
 class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
@@ -620,6 +840,11 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
     ) -> EvidenceCapture:
         await self._emit_live_event("evidence_capture_started")
         git_recovery = await self._capture_git_recovery(prepared.attempt_id, prepared.baseline_sha)
+        worktree_archive_path = await self._capture_worktree_archive(
+            prepared.attempt_id,
+            prepared.baseline_sha,
+            git_recovery,
+        )
         context_path = f"{self.spec.workspace}/.context"
         context_exists = await self._exec("test", "-d", context_path, timeout=30)
         if context_exists.returncode != 0:
@@ -643,6 +868,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             git_status_path=git_recovery["status"],
             git_patch_path=git_recovery["patch"],
             git_bundle_path=git_recovery["bundle"],
+            worktree_archive_path=worktree_archive_path,
             context_path=context_path,
         )
         attempt_manifest = {
@@ -674,6 +900,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
                 "git_status": evidence.git_status_path,
                 "git_patch": evidence.git_patch_path,
                 "git_bundle": evidence.git_bundle_path,
+                "worktree_archive": evidence.worktree_archive_path,
                 "context_directory": evidence.context_path,
             },
         }
@@ -683,6 +910,7 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             attempt_manifest_path=attempt_manifest_path,
             filesystem_diff_path=filesystem_diff_path,
             git_bundle_path=evidence.git_bundle_path,
+            worktree_archive_path=evidence.worktree_archive_path,
         )
         return evidence
 
@@ -899,6 +1127,9 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
             "git_status_ref": self._artifact_ref(checkpoint.ref, evidence.git_status_path),
             "git_patch_ref": self._artifact_ref(checkpoint.ref, evidence.git_patch_path),
             "git_bundle_ref": self._artifact_ref(checkpoint.ref, evidence.git_bundle_path),
+            "worktree_archive_ref": self._artifact_ref(
+                checkpoint.ref, evidence.worktree_archive_path
+            ),
             "context_ref": self._artifact_ref(checkpoint.ref, evidence.context_path),
         }
         return ArtifactHandoff(
@@ -1174,6 +1405,31 @@ class CodingAgentSandboxClient[SandboxSpecT: CodingAgentSandboxSpec](ABC):
         await self._write_text(patch_path, patch.stdout)
         await self._git("bundle", "create", bundle_path, "--all")
         return {"status": status_path, "patch": patch_path, "bundle": bundle_path}
+
+    async def _capture_worktree_archive(
+        self,
+        attempt_id: str,
+        baseline: str,
+        git_recovery: Mapping[str, str],
+    ) -> str:
+        directory = f"{self.spec.workspace}/.archetype-agent/recovery"
+        archive_path = f"{directory}/{attempt_id}-worktree.tar"
+        head = (await self._git("rev-parse", "HEAD")).stdout.strip()
+        result = await self._exec(
+            "python3",
+            "-c",
+            _WORKTREE_ARCHIVE_SCRIPT,
+            self.spec.workspace,
+            archive_path,
+            baseline,
+            head,
+            git_recovery["status"],
+            git_recovery["patch"],
+            git_recovery["bundle"],
+            timeout=self.spec.snapshot_timeout_seconds,
+        )
+        self._raise_for_result(result, "portable worktree archive")
+        return archive_path
 
     async def _ensure_start_manifest(self) -> str:
         if not self.spec.capture_filesystem_manifests:

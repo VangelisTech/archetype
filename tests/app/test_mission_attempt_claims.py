@@ -639,6 +639,7 @@ def _outcome(
         "git_status_ref": "fake://git-status",
         "git_patch_ref": "fake://git-patch",
         "git_bundle_ref": "fake://git-bundle",
+        "worktree_archive_ref": "fake://full-worktree",
         "context_ref": "fake://context",
         "friction": [],
         "sha": "abc123" if status is AttemptStatus.ACCEPTED else "",

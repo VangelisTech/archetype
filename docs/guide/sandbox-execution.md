@@ -71,7 +71,8 @@ admission boundary for the execution phase, not a seventh attempt phase.
    worktree on top of the trusted baseline. The outer gate supplies the commit
    identity and message.
 4. **Evidence** — capture the attempt manifest, agent trace, validator details,
-   Git status, binary patch, Git bundle source, filesystem manifests and diff,
+   Git status, binary patch, Git bundle source, deterministic full-worktree
+   archive, filesystem manifests and diff,
    live-event paths, and `.context` when present. These sources remain
    non-durable until the redaction gate accepts them.
 5. **Checkpoint** — after evidence exists, request a provider checkpoint. A

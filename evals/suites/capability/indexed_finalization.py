@@ -321,6 +321,7 @@ def _accepted_outcome(request: MissionAttemptRequest) -> dict[str, Any]:
         "git_status_ref": "eval://recovery/git-status.txt",
         "git_patch_ref": "eval://recovery/worktree.patch",
         "git_bundle_ref": "eval://recovery/repository.bundle",
+        "worktree_archive_ref": "eval://recovery/full-worktree.tar",
         "context_ref": "eval://context",
         "friction": [],
         "sha": "e" * 40,

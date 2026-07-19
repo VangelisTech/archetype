@@ -173,6 +173,7 @@ class EvidenceCapture:
     git_status_path: str
     git_patch_path: str
     git_bundle_path: str
+    worktree_archive_path: str
     context_path: str
 
 

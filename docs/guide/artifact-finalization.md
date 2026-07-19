@@ -22,6 +22,13 @@ snapshot as bytes at all. The artifact index stores a
 reference, its provider, and its expiration. Portable files are uploaded as
 ordinary objects and carry hashes, sizes, and MIME types.
 
+One portable object is the sanitized full-worktree archive at
+`recovery/full-worktree.tar` (`kind=worktree_archive`). It is distinct from
+the provider checkpoint, sanitized Git bundle, binary patch, declared result
+files, and generated bundle manifest; each retains its own artifact identity,
+object URI, hash, and lifecycle row. Provider checkpoint expiry or deletion
+therefore cannot erase the indexed worktree archive.
+
 Telemetry is operational evidence, not the state authority. Losing a trace
 must not make an otherwise indexed bundle disappear; losing the control record
 or artifact index is a durability failure.
@@ -189,6 +196,50 @@ back to the logical filename's registered MIME type. Upload uses
 `daft.functions.upload`; R2 is supplied through Daft's S3-compatible
 `IOConfig`. Credentials remain in that process-local configuration and are
 never serialized into requests, control rows, manifests, or the index.
+
+### Portable full-worktree archive
+
+The archive format is `archetype-worktree-tar-v1`: an uncompressed POSIX PAX
+tar with normalized `uid`, `gid`, owner/group names, and `mtime`. Members are
+ordered by portable path; modes are retained; links and special members are
+forbidden. Identical approved repository state, Git identities, exclusions,
+and redaction policy therefore produce identical bytes.
+
+`archive-manifest.json` has `schema_version=1` and records:
+
+- baseline and end-state `HEAD` identities plus the archive-format identity;
+- every approved path, type, mode, byte size, and SHA-256 hash;
+- every policy exclusion with path, observed type, and reason; and
+- the bound redaction policy plus aggregate and per-file safe receipts.
+
+The `worktree/` subtree captures tracked, untracked, ignored, rejected, and
+uncommitted repository files, including policy-allowed `.context` content.
+Raw `.git` internals are excluded. `recovery/` instead contains the separately
+generated status, binary patch, and sanitized Git bundle needed to reconstruct
+Git state. Credential paths, auth material, caches, provider internals, and
+archive staging are excluded by construction and recorded. A symbolic link,
+hard link, device, FIFO, socket, path escape, or unreadable/incomplete file
+fails the capture rather than being represented ambiguously.
+
+Capture inventories the tree before and after copying. Every regular file is
+opened without following links, its device/inode/size/time identity is checked
+against the inventory, and that same handle supplies the staged bytes. A
+change before, during, or after a read fails the attempt's evidence capture.
+The raw provider-side tar is not durable evidence. During artifact publication
+the application validates its manifest and exact member set, sanitizes every
+regular member through `iRedactionService`, rebuilds the deterministic tar,
+binds the active policy and safe receipts into the manifest, and only then
+hashes and uploads it. Text findings are rewritten; credential paths, opaque
+secret-bearing bytes, nested containers, invalid metadata, and incomplete
+inspection quarantine before object or index visibility.
+
+Restore requires a clean directory and optionally the expected indexed object
+hash. It validates the complete tar and manifest before writing, rejects any
+undeclared, missing, linked, special, oversized, escaped, or hash-mismatched
+member, and creates every output beneath no-follow directory handles. It then
+rehashes the reconstructed bytes. This round-trip is the executable proof that
+the approved tree and recovery material remain usable without the provider
+snapshot.
 
 ## 4. Pre-durability secret redaction
 

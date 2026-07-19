@@ -125,9 +125,10 @@ its drain and quota-reset callables.
 `iCommandScheduler` exposes the current combined scheduling/dispatch port over
 the control catalog. Tick publication performs terminal applied settlement.
 `iArtifactService` and `iEvaluationService` expose separate claim-backed
-workflows. `iArtifactBundleService` owns full attempt-bundle publication and
-reconciliation while provider checkpoints remain recovery objects. It consumes
-`iRedactionService` before its control, object, manifest, and index durability
+workflows. `iArtifactBundleService` owns full attempt-bundle publication,
+including the validated and sanitized `archetype-worktree-tar-v1` recovery
+object, and reconciliation while provider checkpoints remain recovery objects.
+It consumes `iRedactionService` before its control, object, manifest, and index durability
 boundaries. Future live-event, OTel, and proxy exporters consume that same port;
 they do not fork scanner policy.
 `iAuditLog` is a projection/read port, not the authority for command outcome.

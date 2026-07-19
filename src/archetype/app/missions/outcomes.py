@@ -52,6 +52,7 @@ REPLAY_REQUIRED_OUTCOME_FIELDS = frozenset(
         "git_status_ref",
         "git_patch_ref",
         "git_bundle_ref",
+        "worktree_archive_ref",
         "context_ref",
         "sha",
         "message",

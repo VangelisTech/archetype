@@ -5,6 +5,14 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
+from archetype.app.artifacts.worktree_archive import (
+    capture_worktree_archive,
+    restore_worktree_archive,
+    sanitize_worktree_archive,
+)
 from archetype.app.redaction import RedactionService, SecretQuarantineError
 from evals.graders import state_check
 from evals.harness import EvalHarness
@@ -34,6 +42,70 @@ def task_pre_durability_redaction() -> list[GraderResult]:
         else:
             metadata_fails_closed = False
 
+    with tempfile.TemporaryDirectory(prefix="archetype-archive-eval-") as temporary_value:
+        temporary = Path(temporary_value)
+        worktree = temporary / "worktree"
+        worktree.mkdir()
+        corpus = "\n".join(case.payload for case in SECRET_LEAK_CORPUS)
+        (worktree / "tracked.txt").write_text(corpus)
+        (worktree / "ignored.log").write_text("ignored but portable\n")
+        (worktree / ".context").mkdir()
+        (worktree / ".context" / "review.md").write_text("portable context\n")
+        (worktree / ".env").write_text(SECRET_LEAK_CORPUS[0].payload)
+        recovery = temporary / "recovery"
+        recovery.mkdir()
+        recovery_files = {}
+        for name in ("git-status.txt", "worktree.patch", "repository.bundle"):
+            path = recovery / name
+            path.write_text(f"safe {name}\n")
+            recovery_files[name] = path
+        raw = temporary / "raw.tar"
+        capture_worktree_archive(
+            worktree,
+            raw,
+            baseline_sha="a" * 40,
+            head_sha="b" * 40,
+            recovery_files=recovery_files,
+        )
+        approved = temporary / "approved.tar"
+        archive_receipt = sanitize_worktree_archive(
+            raw,
+            approved,
+            logical_path="recovery/full-worktree.tar",
+            redaction_service=service,
+        ).receipt
+        restored = temporary / "restored"
+        archive_manifest = restore_worktree_archive(approved, restored)
+        restored_corpus = (restored / "worktree/tracked.txt").read_text()
+        ignored_and_context_restored = (restored / "worktree/ignored.log").is_file() and (
+            restored / "worktree/.context/review.md"
+        ).is_file()
+        credential_path_excluded = not (restored / "worktree/.env").exists() and any(
+            item["path"] == ".env" and item["reason"] == "credential-path"
+            for item in archive_manifest["exclusions"]
+        )
+
+        opaque = temporary / "opaque"
+        opaque.mkdir()
+        (opaque / "secret.bin").write_bytes(b"\x00" + SECRET_LEAK_CORPUS[0].payload.encode())
+        opaque_raw = temporary / "opaque-raw.tar"
+        capture_worktree_archive(
+            opaque,
+            opaque_raw,
+            baseline_sha="a" * 40,
+            head_sha="b" * 40,
+        )
+        opaque_quarantined = False
+        try:
+            sanitize_worktree_archive(
+                opaque_raw,
+                temporary / "opaque-approved.tar",
+                logical_path="recovery/full-worktree.tar",
+                redaction_service=service,
+            )
+        except SecretQuarantineError:
+            opaque_quarantined = True
+
     return [
         state_check(
             {
@@ -53,6 +125,11 @@ def task_pre_durability_redaction() -> list[GraderResult]:
                 "policy_identity_is_versioned": service.policy_id.startswith(
                     "archetype-secret-redaction-v1:"
                 ),
+                "worktree_archive_redacts_complete_corpus": archive_receipt.status == "redacted"
+                and all(case.payload not in restored_corpus for case in SECRET_LEAK_CORPUS),
+                "worktree_archive_keeps_ignored_and_context": ignored_and_context_restored,
+                "worktree_archive_excludes_credential_paths": credential_path_excluded,
+                "worktree_archive_quarantines_opaque_secret": opaque_quarantined,
             },
             name="pre_durability_secret_redaction",
         )
@@ -66,6 +143,6 @@ def register(harness: EvalHarness) -> None:
         fn=task_pre_durability_redaction,
         desc=(
             "Shared scanner redacts provider/cloud credentials, preserves safe placeholders, "
-            "and fails metadata closed without echoing secrets"
+            "fails metadata closed, and sanitizes portable full-worktree archives"
         ),
     )

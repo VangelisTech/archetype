@@ -119,6 +119,7 @@ async def _task_mission_attempt_claim_recovery() -> list[GraderResult]:
         "git_status_ref": "eval://git-status",
         "git_patch_ref": "eval://git-patch",
         "git_bundle_ref": "eval://git-bundle",
+        "worktree_archive_ref": "eval://full-worktree",
         "context_ref": "eval://context",
         "friction": [],
         "sha": "",

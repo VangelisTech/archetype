@@ -417,6 +417,7 @@ async def test_attempt_runs_six_phases_and_returns_checkpoint_qualified_handoff(
         "step_index": 0,
     }
     assert outcome["git_bundle_ref"].startswith("fake-checkpoint://checkpoint-1#")
+    assert outcome["worktree_archive_ref"].startswith("fake-checkpoint://checkpoint-1#")
     assert outcome["live_events_ref"].startswith("fake-sandbox://sandbox-1/")
     assert any(path.endswith(".json") for path in client.files)
     initial_mkdir = next(call[0] for call in client.commands if call[0][:2] == ("mkdir", "-p"))
@@ -722,6 +723,7 @@ async def test_checkpoint_failure_is_evidence_not_lost_attempt() -> None:
     assert outcome["finalization_phase"] == "captured"
     assert "snapshot unavailable" in outcome["finalization_error"]
     assert outcome["git_bundle_ref"].startswith("fake-sandbox://sandbox-1/")
+    assert outcome["worktree_archive_ref"].startswith("fake-sandbox://sandbox-1/")
     assert outcome["friction"][-1]["finding"] == "Provider checkpoint failed"
 
 

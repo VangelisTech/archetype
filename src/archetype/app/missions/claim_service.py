@@ -107,6 +107,7 @@ _OUTCOME_IDENTITY_FIELDS = (
     "git_status_ref",
     "git_patch_ref",
     "git_bundle_ref",
+    "worktree_archive_ref",
     "context_ref",
     "sha",
     "artifact_publication_key",

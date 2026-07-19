@@ -122,6 +122,7 @@ def _outcome() -> dict[str, object]:
         "git_status_ref": "modal-image://checkpoint-1#/git/status.txt",
         "git_patch_ref": "modal-image://checkpoint-1#/git/worktree.patch",
         "git_bundle_ref": "modal-image://checkpoint-1#/git/repository.bundle",
+        "worktree_archive_ref": "modal-image://checkpoint-1#/git/full-worktree.tar",
         "context_ref": "modal-image://checkpoint-1#/.context",
     }
 
@@ -176,11 +177,14 @@ def test_mission_projection_is_deterministic_and_maps_every_evidence_family(tmp_
         "recovery/git-status.txt",
         "recovery/worktree.patch",
         "recovery/repository.bundle",
+        "recovery/full-worktree.tar",
         "context",
     }
     assert by_path["attempt/traces"].recursive
     assert not by_path["attempt/traces"].required
     assert by_path["context"].recursive
+    assert by_path["recovery/full-worktree.tar"].kind == "worktree_archive"
+    assert by_path["recovery/full-worktree.tar"].required
     assert not by_path["attempt/live-events.jsonl"].required
 
 
@@ -330,12 +334,13 @@ async def test_mission_finalizer_returns_exact_indexed_evidence(tmp_path):
     assert publication.index_snapshot_id == 42
 
 
-def test_mission_projection_rejects_missing_required_recovery_reference(tmp_path):
+@pytest.mark.parametrize("field", ["git_bundle_ref", "worktree_archive_ref"])
+def test_mission_projection_rejects_missing_required_recovery_reference(tmp_path, field):
     finalizer, _bundles, policy_id = _finalizer(tmp_path)
     outcome = _outcome()
-    outcome["git_bundle_ref"] = ""
+    outcome[field] = ""
 
-    with pytest.raises(ValueError, match="requires git_bundle_ref"):
+    with pytest.raises(ValueError, match=f"requires {field}"):
         finalizer.prepare(
             _request(),
             outcome,

@@ -19,6 +19,7 @@ import pytest
 
 from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
 from archetype.app.artifacts.bundle_service import _ARTIFACT_INDEX_TABLE
+from archetype.app.artifacts.worktree_archive import capture_worktree_archive
 from archetype.app.container import ServiceContainer
 from archetype.app.missions import (
     AttemptClaimAcquireOutcome,
@@ -158,9 +159,26 @@ def _source_evidence(root: Path) -> dict[str, str]:
         "git_status_ref": root / "git-status.txt",
         "git_patch_ref": root / "worktree.patch",
         "git_bundle_ref": root / "repository.bundle",
+        "worktree_archive_ref": root / "full-worktree.tar",
     }
     for field, path in files.items():
+        if field == "worktree_archive_ref":
+            continue
         path.write_text(f"durable local evidence for {field}\n")
+    worktree = root / "worktree"
+    worktree.mkdir()
+    (worktree / "tracked.py").write_text("print('recoverable')\n")
+    capture_worktree_archive(
+        worktree,
+        files["worktree_archive_ref"],
+        baseline_sha="a" * 40,
+        head_sha="b" * 40,
+        recovery_files={
+            "git-status.txt": files["git_status_ref"],
+            "worktree.patch": files["git_patch_ref"],
+            "repository.bundle": files["git_bundle_ref"],
+        },
+    )
     traces = root / "traces"
     traces.mkdir()
     (traces / "0001.jsonl").write_text('{"event":"first"}\n')

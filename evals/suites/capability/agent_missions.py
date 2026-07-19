@@ -107,6 +107,7 @@ def _outcome(
         "git_status_ref": "fake://status",
         "git_patch_ref": "fake://patch",
         "git_bundle_ref": "fake://bundle",
+        "worktree_archive_ref": "fake://full-worktree",
         "context_ref": "fake://context",
         "friction": [],
         "sha": "abc123" if accepted else "",

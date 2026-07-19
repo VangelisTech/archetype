@@ -57,6 +57,17 @@ from archetype.artifacts.bundles import (
     MaterializedArtifact,
     _canonical_json,
 )
+from archetype.app.artifacts.worktree_archive import sanitize_worktree_archive
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
+from archetype.app.redaction.interfaces import iRedactionService
+from archetype.app.redaction.models import RedactionReceipt
+from archetype.app.storage.catalog import (
+    ArtifactPublicationExpiredError,
+    ArtifactPublicationRecord,
+    artifact_publication_key,
+)
+from archetype.app.storage.interfaces import iStorageService
+from archetype.app.world.interfaces import iWorldService
 from archetype.core.config import StorageConfig
 
 if TYPE_CHECKING:
@@ -1258,11 +1269,19 @@ class ArtifactBundleService:
         sanitized: list[MaterializedArtifact] = []
         receipts: list[RedactionReceipt] = []
         for index, value in enumerate(values):
-            result = self._redaction_service.sanitize_file(
-                value.path,
-                destination / f"{index:08d}",
-                logical_path=value.logical_path,
-            )
+            if value.kind == "worktree_archive":
+                result = sanitize_worktree_archive(
+                    value.path,
+                    destination / f"{index:08d}",
+                    logical_path=value.logical_path,
+                    redaction_service=self._redaction_service,
+                )
+            else:
+                result = self._redaction_service.sanitize_file(
+                    value.path,
+                    destination / f"{index:08d}",
+                    logical_path=value.logical_path,
+                )
             sanitized.append(
                 MaterializedArtifact(
                     path=result.path,
