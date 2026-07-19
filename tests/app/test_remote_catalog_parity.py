@@ -2318,8 +2318,8 @@ async def test_artifact_source_mutations_require_live_lease_parity(tmp_path, wor
 
 async def test_artifact_publication_key_unicode_parity(tmp_path, worker_url):
     world_id = "wörld-🚀"
-    run_id = "rün-雪"
-    idempotency_key = "bundlé-🧪"
+    run_id = "rün-\x7f-雪"
+    idempotency_key = "bundlé-\x7f-🧪"
     expected = artifact_publication_key(world_id, run_id, idempotency_key)
     for catalog in await _both(tmp_path, worker_url):
         try:
@@ -2408,6 +2408,8 @@ async def test_worker_artifact_key_hashes_before_clock_and_due_is_digest_only():
     assert "SELECT publication_key FROM artifact_publications" in source
     assert "function artifactPublicationAuthorityError(" in source
     assert source.count("artifactPublicationAuthorityError(row,") >= 3
+    assert source.count('(route.length === 1 && method === "GET")') == 1
+    assert "SELECT * FROM artifact_publications WHERE status IN" not in source
 
 
 async def test_worker_rejects_invalid_snapshot_before_indexed_replay(worker_url):

@@ -146,7 +146,7 @@ function recoveryQueryInteger(
 }
 
 function pythonAsciiJsonString(value: string): string {
-  return JSON.stringify(value).replace(/[^\x00-\x7f]/gu, (character) => {
+  return JSON.stringify(value).replace(/[^\x00-\x7e]/gu, (character) => {
     let codePoint = character.codePointAt(0) as number;
     if (codePoint <= 0xffff) return `\\u${codePoint.toString(16).padStart(4, "0")}`;
     codePoint -= 0x10000;
@@ -1967,35 +1967,6 @@ export class WorldCommitDO implements DurableObject {
         outcome: "acquired",
         publication: artifactPublicationView(created[0] as Record<string, unknown>),
       });
-    }
-
-    if (route[0] === "artifact-publications" && route.length === 1 && method === "GET") {
-      const due = Number(url.searchParams.get("due") ?? Date.now() / 1000);
-      const limit = Math.max(0, Number(url.searchParams.get("limit") ?? 100));
-      const rawCursor = url.searchParams.get("after_publication_key") ?? "";
-      if (rawCursor && !/^[0-9a-f]{64}$/.test(rawCursor)) {
-        return json(
-          {
-            error: "invalid",
-            message: "after_publication_key must be a lowercase SHA-256 digest",
-          },
-          400,
-        );
-      }
-      const afterPublicationKey = rawCursor;
-      const dueRows = this.sql
-          .exec(
-            "SELECT * FROM artifact_publications WHERE status IN ('PENDING', 'UPLOADED') " +
-              "AND lease_expires_at <= ? AND publication_key > ? " +
-              "ORDER BY publication_key LIMIT ?",
-            due,
-            afterPublicationKey,
-            limit,
-          )
-          .toArray();
-      return json(
-        dueRows.map((row) => artifactPublicationView(row as Record<string, unknown>)),
-      );
     }
 
     if (route[0] === "artifact-publications" && route.length >= 2) {
