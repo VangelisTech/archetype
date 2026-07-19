@@ -23,9 +23,12 @@ For a checkout, install the development environment with `make sync-dev`.
 
 ## Run a simulation
 
-Simulate a butterfly: run a chaotic map, fork the timeline, nudge the fork by
-one part in a billion, and diff the two histories. Because every tick persists
-as immutable rows, the counterfactual is a join — not a re-run.
+The example below steps a chaotic function for a few ticks, forks the world,
+and changes one value in the fork by 1e-9. Both branches then run forward, and
+the divergence between them comes from joining the two stored histories tick
+by tick. Every tick persists as immutable rows, so comparing two runs is a
+query over history, not a second experiment. The optional last stage hands the
+measured divergence to an LLM agent for review.
 
 ```python
 import asyncio
@@ -74,16 +77,16 @@ async def main() -> None:
         await prime.step()  # tick 0 persists the raw initial conditions
         await prime.run(steps=12)
 
-        # Fork the timeline; nudge the fork by one part in a billion.
+        # Fork the world; change one value in the fork by 1e-9.
         last = (await prime.info()).tick - 1
         x = (await prime.query(Node)).where(col("tick") == last).to_pylist()[0]["node__x"]
         fork = await prime.fork("nudged")
         await fork.update(node, Node(x=x + 1e-9))
 
         await prime.run(steps=24)
-        await fork.run(steps=25)  # the nudge lands raw, then dynamics resume
+        await fork.run(steps=25)  # the update persists first; processors apply next tick
 
-        # A counterfactual is a join over two histories, not a re-run.
+        # Compare the two runs by joining their stored histories tick by tick.
         a = (await prime.query(Node)).select(
             (col("tick") - last).alias("k"), col("node__x").alias("a")
         )
@@ -99,12 +102,13 @@ async def main() -> None:
         )
         print("  ".join(f"k={row['k']}: {row['delta']:.0e}" for row in deltas[::6]))
 
-        # Put an agent at the end: evidence in, verdict into the same ledger.
+        # Optional: an LLM agent reviews the divergence. Its verdict is stored
+        # as world state like everything else.
         if os.getenv("OPENAI_API_KEY"):
             analyst = runtime.world("analyst", processors=[Review()])
             evidence = ", ".join(f"tick {row['k']}: {row['delta']:.1e}" for row in deltas)
             await analyst.spawn(Analyst(evidence=evidence))
-            await analyst.run(steps=2)  # spawns land raw; the review runs next tick
+            await analyst.run(steps=2)  # spawned rows persist first; Review runs next tick
             report = await analyst.query(Analyst)
             print(report.where(col("tick") == 1).to_pylist()[0]["analyst__verdict"])
 
@@ -131,7 +135,7 @@ runtime:` and omit `await`.
 - Every tick is append-only, so historical reads are ordinary queries.
 - Forks inherit source history and create an independent future.
 - Agents are entities: an LLM call is one more columnar processor writing to
-  the same ledger.
+  the same history.
 - The service layer can authorize and audit mutations before a tick applies
   them.
 
