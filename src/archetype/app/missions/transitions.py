@@ -48,6 +48,7 @@ class AttemptClaimStatus(StrEnum):
     CLAIMED = "claimed"
     POSSIBLY_SUBMITTED = "possibly_submitted"
     PROVIDER_ACKNOWLEDGED = "provider_acknowledged"
+    FINALIZING = "finalizing"
     SETTLED = "settled"
 
 
@@ -56,9 +57,11 @@ class AttemptClaimEvent(StrEnum):
 
     ARM_SUBMISSION = "arm_submission"
     ACKNOWLEDGE_PROVIDER = "acknowledge_provider"
+    STAGE_FINALIZATION = "stage_finalization"
     SETTLE_WITHOUT_SUBMISSION = "settle_without_submission"
     SETTLE_AFTER_RECONCILIATION = "settle_after_reconciliation"
     SETTLE_ACKNOWLEDGED = "settle_acknowledged"
+    SETTLE_FINALIZED = "settle_finalized"
 
 
 class AttemptClaimAcquireOutcome(StrEnum):
@@ -75,6 +78,7 @@ class AttemptRecoveryAction(StrEnum):
 
     EXECUTE = "execute"
     RECONCILE = "reconcile"
+    FINALIZE = "finalize"
     REPLAY_IDEMPOTENT = "replay_idempotent"
     RESUME_SESSION = "resume_session"
     SETTLED = "settled"
@@ -95,7 +99,11 @@ class FinalizationPhase(StrEnum):
     PENDING = "pending"
     CAPTURED = "captured"
     CHECKPOINTED = "checkpointed"
+    UPLOADED = "uploaded"
     INDEXED = "indexed"
+    # Compatibility value emitted before portable artifact publication had its
+    # own PENDING -> UPLOADED -> INDEXED state machine. It remains parseable,
+    # but indexed policy treats it explicitly rather than by rank.
     PUBLISHED = "published"
 
     @property
@@ -156,8 +164,9 @@ _FINALIZATION_RANK = MappingProxyType(
         FinalizationPhase.PENDING: 0,
         FinalizationPhase.CAPTURED: 1,
         FinalizationPhase.CHECKPOINTED: 2,
-        FinalizationPhase.INDEXED: 3,
-        FinalizationPhase.PUBLISHED: 4,
+        FinalizationPhase.UPLOADED: 3,
+        FinalizationPhase.INDEXED: 4,
+        FinalizationPhase.PUBLISHED: 5,
     }
 )
 
@@ -226,6 +235,10 @@ ATTEMPT_CLAIM_TRANSITION_GRAPH = MappingProxyType(
             AttemptClaimEvent.ACKNOWLEDGE_PROVIDER,
         ): AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
         (
+            AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
+            AttemptClaimEvent.STAGE_FINALIZATION,
+        ): AttemptClaimStatus.FINALIZING,
+        (
             AttemptClaimStatus.CLAIMED,
             AttemptClaimEvent.SETTLE_WITHOUT_SUBMISSION,
         ): AttemptClaimStatus.SETTLED,
@@ -236,6 +249,10 @@ ATTEMPT_CLAIM_TRANSITION_GRAPH = MappingProxyType(
         (
             AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
             AttemptClaimEvent.SETTLE_ACKNOWLEDGED,
+        ): AttemptClaimStatus.SETTLED,
+        (
+            AttemptClaimStatus.FINALIZING,
+            AttemptClaimEvent.SETTLE_FINALIZED,
         ): AttemptClaimStatus.SETTLED,
     }
 )

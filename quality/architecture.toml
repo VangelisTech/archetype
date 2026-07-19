@@ -60,6 +60,7 @@ consumer = "archetype.app.storage"
 allowed_app = [
   "archetype.app.storage",
   "archetype.app.errors",
+  "archetype.app.limits",
 ]
 
 [[family_rule]]
@@ -96,6 +97,7 @@ name = "artifact-family"
 consumer = "archetype.app.artifacts"
 allowed_app = [
   "archetype.app.artifacts",
+  "archetype.app.limits",
   "archetype.app.redaction.interfaces",
   "archetype.app.redaction.models",
   "archetype.app.storage",
@@ -125,6 +127,8 @@ name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
+  "archetype.app.errors",
+  "archetype.app.limits",
   "archetype.app.redaction.interfaces",
   "archetype.app.redaction.models",
   "archetype.app.storage.catalog",
@@ -164,10 +168,14 @@ name = "application-family"
 consumer = "archetype.app.application"
 allowed_app = [
   "archetype.app.application",
+  "archetype.app.artifacts.bundle_models",
   "archetype.app.artifacts.interfaces",
   "archetype.app.audit.interfaces",
   "archetype.app.commands.interfaces",
   "archetype.app.evaluation.interfaces",
+  "archetype.app.missions.interfaces",
+  "archetype.app.missions.models",
+  "archetype.app.missions.transitions",
   "archetype.app.query.interfaces",
   "archetype.app.research.interfaces",
   "archetype.app.world.interfaces",
@@ -264,6 +272,7 @@ allowed_interfaces = [
 ]
 allowed_app = [
   "archetype.app.artifacts.bundle_models",
+  "archetype.app.limits",
   "archetype.app.redaction.models",
   "archetype.app.storage.catalog",
 ]
@@ -292,6 +301,7 @@ allowed_app = [
 module = "archetype.app.missions.service"
 allowed_interfaces = []
 allowed_app = [
+  "archetype.app.limits",
   "archetype.app.missions.models",
   "archetype.app.missions.outcomes",
   "archetype.app.missions.transitions",
@@ -301,6 +311,7 @@ allowed_app = [
 module = "archetype.app.missions.claim_service"
 allowed_interfaces = ["archetype.app.redaction.interfaces.iRedactionService"]
 allowed_app = [
+  "archetype.app.limits",
   "archetype.app.missions.models",
   "archetype.app.missions.outcomes",
   "archetype.app.missions.transitions",
@@ -311,10 +322,24 @@ allowed_app = [
 [[module_rule]]
 module = "archetype.app.missions.execution_service"
 allowed_interfaces = [
+  "archetype.app.missions.interfaces._iMissionExecutionProjection",
+  "archetype.app.missions.interfaces.iMissionArtifactFinalizer",
   "archetype.app.missions.interfaces.iMissionAttemptClaimService",
-  "archetype.app.missions.interfaces.iMissionService",
 ]
 allowed_app = [
+  "archetype.app.missions.models",
+  "archetype.app.missions.outcomes",
+  "archetype.app.missions.transitions",
+]
+
+[[module_rule]]
+module = "archetype.app.application.mission_artifacts"
+allowed_interfaces = [
+  "archetype.app.artifacts.interfaces.iArtifactBundleService",
+  "archetype.app.missions.interfaces.iMissionArtifactFinalizer",
+]
+allowed_app = [
+  "archetype.app.artifacts.bundle_models",
   "archetype.app.missions.models",
   "archetype.app.missions.transitions",
 ]

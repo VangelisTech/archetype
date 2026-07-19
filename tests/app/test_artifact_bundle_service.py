@@ -19,9 +19,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from archetype import ArchetypeRuntime, Component, _obs
+from archetype.app.artifacts import bundle_service as bundle_service_module
 from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactCandidate,
+    ArtifactPublicationStatus,
     ArtifactStoreConfig,
     MaterializedArtifact,
 )
@@ -213,6 +215,58 @@ async def test_publication_spans_emit_only_canonical_safe_coordinates(tmp_path, 
     assert request.idempotency_key not in exported
 
 
+async def test_prepare_binds_and_authenticates_request_without_any_io(tmp_path):
+    class _ForbiddenIO:
+        def __getattr__(self, name):
+            raise AssertionError(f"prepare attempted forbidden I/O through {name}")
+
+    object_root = tmp_path / "objects-that-must-not-exist"
+    config = ArtifactStoreConfig.local(tmp_path / "artifact-config").model_copy(
+        update={"object_uri": object_root}
+    )
+    service = ArtifactBundleService(
+        _ForbiddenIO(),
+        _ForbiddenIO(),
+        config,
+        _ForbiddenIO(),
+        redaction_service=RedactionService(),
+    )
+    request = ArtifactBundleRequest(
+        world_id="world-1",
+        run_id="run-1",
+        entity_id=7,
+        tick=3,
+        attempt_id="attempt-1",
+        idempotency_key="publication-1",
+        checkpoint_ref="test-checkpoint://snapshot-1",
+        checkpoint_provider="test",
+        artifacts=(
+            ArtifactCandidate(
+                source_ref="forbidden-source://snapshot/result.json",
+                logical_path="result.json",
+            ),
+        ),
+    )
+
+    prepared = service.prepare(request)
+
+    bound = ArtifactBundleRequest.model_validate_json(prepared.request_json)
+    assert bound.redaction_policy_id == service._redaction_service.policy_id
+    assert prepared.request_digest == bound.request_digest()
+    assert prepared.producer_digest == request.producer_digest()
+    assert prepared.publication_key == artifact_publication_key(
+        request.world_id,
+        request.run_id,
+        request.idempotency_key,
+    )
+    assert not object_root.exists()
+
+    tampered = prepared.model_copy(update={"producer_digest": "f" * 64})
+    with pytest.raises(ValueError, match="producer_digest does not authenticate"):
+        await service.publish_prepared(tampered)
+    assert not object_root.exists()
+
+
 async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
     world_storage = StorageConfig(uri=tmp_path / "world", namespace="world")
@@ -230,6 +284,13 @@ async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):
             request, storage_config=world_storage
         )
         assert first.status == "indexed"
+        prepared = container.artifact_bundle_service.prepare(request)
+        assert first.bundle_id == prepared.publication_key
+        assert first.request_digest == prepared.request_digest
+        assert first.producer_digest == prepared.producer_digest
+        assert first.redaction_policy_id == prepared.redaction_policy_id
+        assert first.manifest_uri
+        assert first.index_snapshot_id > 0
         assert not first.duplicate
         assert len(first.records) == 3  # payload + provider checkpoint + bundle manifest
 
@@ -291,6 +352,143 @@ async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):
         await fresh.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("raw_snapshot_id", "error"),
+    [
+        pytest.param(True, "non-integer snapshot identity", id="bool"),
+        pytest.param(1.0, "non-integer snapshot identity", id="float"),
+        pytest.param("1", "non-integer snapshot identity", id="numeric-string"),
+        pytest.param(None, "non-integer snapshot identity", id="none"),
+        pytest.param(0, "outside the positive signed 64-bit range", id="zero"),
+        pytest.param(
+            1 << 63,
+            "outside the positive signed 64-bit range",
+            id="above-signed-64",
+        ),
+    ],
+)
+async def test_raw_iceberg_snapshot_identity_must_be_exact_before_catalog_indexing(
+    tmp_path,
+    monkeypatch,
+    raw_snapshot_id,
+    error,
+):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text('{"passed":true}\n')
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        iceberg = await container.storage_service.get_iceberg_context(artifact_config.index_storage)
+        monkeypatch.setattr(
+            type(iceberg),
+            "current_snapshot_id",
+            lambda _self, _table: raw_snapshot_id,
+        )
+
+        with pytest.raises(ValueError, match=error):
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(
+            request.world_id,
+            artifact_publication_key(
+                request.world_id,
+                request.run_id,
+                request.idempotency_key,
+            ),
+        )
+        assert publication is not None
+        assert publication.status == "UPLOADED"
+        assert publication.index_snapshot_id == 0
+        assert publication.completed_at is None
+    finally:
+        await container.shutdown()
+
+
+async def test_raw_iceberg_snapshot_identity_accepts_positive_signed_64_max(
+    tmp_path,
+    monkeypatch,
+):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text('{"passed":true}\n')
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        iceberg = await container.storage_service.get_iceberg_context(artifact_config.index_storage)
+        max_snapshot_id = (1 << 63) - 1
+        monkeypatch.setattr(
+            type(iceberg),
+            "current_snapshot_id",
+            lambda _self, _table: max_snapshot_id,
+        )
+
+        receipt = await container.artifact_bundle_service.publish(
+            request,
+            storage_config=storage,
+        )
+
+        assert receipt.status is ArtifactPublicationStatus.INDEXED
+        assert receipt.index_snapshot_id == max_snapshot_id
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(
+            request.world_id,
+            artifact_publication_key(
+                request.world_id,
+                request.run_id,
+                request.idempotency_key,
+            ),
+        )
+        assert publication is not None
+        assert publication.status == "INDEXED"
+        assert publication.index_snapshot_id == max_snapshot_id
+    finally:
+        await container.shutdown()
+
+
+async def test_recursive_candidate_records_remain_bound_to_declared_children(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "context"
+    (source / "nested").mkdir(parents=True)
+    (source / "one.txt").write_text("one")
+    (source / "nested" / "two.txt").write_text("two")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source).model_copy(
+            update={
+                "artifacts": (
+                    ArtifactCandidate(
+                        source_ref=str(source),
+                        logical_path="context",
+                        kind="context",
+                        recursive=True,
+                    ),
+                )
+            }
+        )
+
+        receipt = await container.artifact_bundle_service.publish(
+            request,
+            storage_config=storage,
+        )
+
+        portable = {
+            record.logical_path: record for record in receipt.records if record.kind == "context"
+        }
+        assert set(portable) == {"context/one.txt", "context/nested/two.txt"}
+        assert portable["context/one.txt"].source_ref == f"{source}/one.txt"
+        assert portable["context/nested/two.txt"].source_ref == f"{source}/nested/two.txt"
+    finally:
+        await container.shutdown()
+
+
 async def test_same_idempotency_key_with_different_request_conflicts(tmp_path):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
@@ -307,6 +505,14 @@ async def test_same_idempotency_key_with_different_request_conflicts(tmp_path):
                 _request(world, source, logical_path="different.json"),
                 storage_config=storage,
             )
+
+        original = container.artifact_bundle_service.prepare(_request(world, source))
+        changed = container.artifact_bundle_service.prepare(
+            _request(world, source, logical_path="different.json")
+        )
+        assert changed.publication_key == original.publication_key
+        assert changed.request_digest != original.request_digest
+        assert changed.producer_digest != original.producer_digest
     finally:
         await container.shutdown()
 
@@ -387,6 +593,170 @@ async def test_uploaded_phase_reconciles_without_uploading_again(tmp_path, monke
         await container.shutdown()
 
 
+async def test_uploaded_recovery_rejects_records_from_another_request(tmp_path, monkeypatch):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("durable evidence")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        other = await container.artifact_bundle_service.publish(
+            _request(world, source, idempotency_key="other-publication"),
+            storage_config=storage,
+        )
+        target = _request(world, source, idempotency_key="target-publication")
+
+        async def fail_index(_records):
+            raise RuntimeError("leave target uploaded")
+
+        monkeypatch.setattr(container.artifact_bundle_service, "_index_records", fail_index)
+        with pytest.raises(RuntimeError, match="leave target uploaded"):
+            await container.artifact_bundle_service.publish(target, storage_config=storage)
+
+        catalog = container.storage_service.get_control_catalog(storage)
+        key = artifact_publication_key(
+            target.world_id,
+            target.run_id,
+            target.idempotency_key,
+        )
+        publication = await catalog.get_artifact_publication(target.world_id, key)
+        assert publication is not None and publication.status == "UPLOADED"
+        corrupt = replace(
+            publication,
+            records_json=json.dumps(
+                [record.model_dump(mode="json") for record in other.records],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            manifest_uri=other.manifest_uri,
+        )
+        durable_request = container.artifact_bundle_service._request_from_publication(
+            corrupt,
+            require_policy=False,
+        )
+
+        with pytest.raises(ValueError, match="does not match its durable request"):
+            await container.artifact_bundle_service._resume(
+                durable_request,
+                corrupt,
+                corrupt.claimant,
+                catalog,
+            )
+    finally:
+        await container.shutdown()
+
+
+async def test_misbound_resolver_records_leave_publication_pending(tmp_path):
+    class _MisboundResolver:
+        async def materialize(self, candidates, _destination):
+            candidate = candidates[0]
+            return [
+                MaterializedArtifact(
+                    path=source,
+                    source_ref=str(source) + ".different",
+                    logical_path=candidate.logical_path,
+                    kind=candidate.kind,
+                )
+            ]
+
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("durable evidence")
+    container = ServiceContainer(
+        artifact_store_config=artifact_config,
+        artifact_source_resolver=_MisboundResolver(),
+    )
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="misbound-resolver")
+
+        with pytest.raises(ValueError, match="does not match exactly one declared candidate"):
+            await container.artifact_bundle_service.publish(request, storage_config=storage)
+
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(
+            request.world_id,
+            artifact_publication_key(
+                request.world_id,
+                request.run_id,
+                request.idempotency_key,
+            ),
+        )
+        assert publication is not None
+        assert publication.status == "PENDING"
+        assert publication.records_json == "[]"
+        assert publication.manifest_uri == ""
+    finally:
+        await container.shutdown()
+
+
+async def test_indexed_receipt_rejects_manifest_uri_mismatch(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("durable evidence")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        await container.artifact_bundle_service.publish(request, storage_config=storage)
+        catalog = container.storage_service.get_control_catalog(storage)
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None and publication.status == "INDEXED"
+
+        with pytest.raises(ValueError, match="manifest object_uri does not match"):
+            container.artifact_bundle_service._receipt(
+                replace(publication, manifest_uri="file:///different/manifest.json"),
+                duplicate=True,
+            )
+    finally:
+        await container.shutdown()
+
+
+async def test_indexed_receipt_rejects_object_uri_outside_content_address(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("durable evidence")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        await container.artifact_bundle_service.publish(request, storage_config=storage)
+        catalog = container.storage_service.get_control_catalog(storage)
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None and publication.status == "INDEXED"
+        records = json.loads(publication.records_json)
+        manifest_uri = next(
+            record["object_uri"] for record in records if record["kind"] == "bundle_manifest"
+        )
+        payload = next(record for record in records if record["kind"] == "result")
+        payload["object_uri"] = manifest_uri
+        corrupt = replace(
+            publication,
+            records_json=json.dumps(records, sort_keys=True, separators=(",", ":")),
+        )
+
+        with pytest.raises(ValueError, match="outside its content-addressed folder"):
+            container.artifact_bundle_service._receipt(corrupt, duplicate=True)
+    finally:
+        await container.shutdown()
+
+
 async def test_pending_retry_reuses_objects_and_original_lifecycle_clock(tmp_path, monkeypatch):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
         update={"retry_delay_seconds": 0.0}
@@ -424,6 +794,175 @@ async def test_pending_retry_reuses_objects_and_original_lifecycle_clock(tmp_pat
         assert receipt.status == "indexed"
         assert files_after == files_before
         assert len({record.created_at_ms for record in receipt.records}) == 1
+    finally:
+        await container.shutdown()
+
+
+async def test_partial_payload_upload_is_verified_and_replaced_before_index(
+    tmp_path,
+    monkeypatch,
+):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_bytes(b"durable payload that must survive a transport crash")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        service = container.artifact_bundle_service
+        real_upload_files = service._upload_files
+        partial_path: Path | None = None
+
+        def crash_during_payload_upload(rows):
+            nonlocal partial_path
+            assert len(rows) == 1
+            destination = _local_uri_path(rows[0]["destination"])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            partial_path = destination
+            partial_path.write_bytes(source.read_bytes()[:7])
+            raise RuntimeError("transport crashed during payload upload")
+
+        monkeypatch.setattr(service, "_upload_files", crash_during_payload_upload)
+        with pytest.raises(RuntimeError, match="during payload upload"):
+            await service.publish(request, storage_config=storage)
+
+        assert partial_path is not None and partial_path.read_bytes() == source.read_bytes()[:7]
+        partial_destination = partial_path
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        catalog = container.storage_service.get_control_catalog(storage)
+        publication = await catalog.get_artifact_publication(request.world_id, key)
+        assert publication is not None and publication.status == "PENDING"
+        assert (await service.query(request.world_id, request.run_id)).collect().to_pylist() == []
+
+        real_existing_object = service._existing_object
+        rejected_partial = False
+
+        def observe_existing_object(folder, *, content_hash, size_bytes):
+            nonlocal rejected_partial
+            result = real_existing_object(
+                folder,
+                content_hash=content_hash,
+                size_bytes=size_bytes,
+            )
+            if _local_uri_path(folder) == partial_destination:
+                rejected_partial = True
+                assert result == ""
+            return result
+
+        monkeypatch.setattr(service, "_existing_object", observe_existing_object)
+        monkeypatch.setattr(service, "_upload_files", real_upload_files)
+        receipt = await service.publish(request, storage_config=storage)
+
+        payload = next(record for record in receipt.records if record.kind == "result")
+        indexed_bytes = _local_uri_path(payload.object_uri).read_bytes()
+        assert rejected_partial
+        assert receipt.status == "indexed"
+        assert indexed_bytes == source.read_bytes()
+        assert len(indexed_bytes) == payload.size_bytes
+        assert hashlib.sha256(indexed_bytes).hexdigest() == payload.content_hash
+    finally:
+        await container.shutdown()
+
+
+async def test_corrupt_manifest_retry_reuploads_manifest_before_index(tmp_path, monkeypatch):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("manifest integrity must be checked")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        service = container.artifact_bundle_service
+        catalog = container.storage_service.get_control_catalog(storage)
+        real_record_uploads = catalog.record_artifact_uploads
+        record_calls = 0
+
+        async def crash_before_uploaded_transition(*args, **kwargs):
+            nonlocal record_calls
+            record_calls += 1
+            if record_calls == 1:
+                raise RuntimeError("crash after manifest upload")
+            return await real_record_uploads(*args, **kwargs)
+
+        monkeypatch.setattr(
+            catalog,
+            "record_artifact_uploads",
+            crash_before_uploaded_transition,
+        )
+        with pytest.raises(RuntimeError, match="after manifest upload"):
+            await service.publish(request, storage_config=storage)
+
+        key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        manifest_path: Path | None = None
+        for candidate in Path(artifact_config.object_uri).rglob("*"):
+            if not candidate.is_file():
+                continue
+            try:
+                value = json.loads(candidate.read_bytes())
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if value.get("schema_version") == 1 and value.get("bundle_id") == key:
+                manifest_path = candidate
+                break
+        assert manifest_path is not None
+        manifest_destination = manifest_path.parent
+        original_manifest = manifest_path.read_bytes()
+        corrupted_manifest = bytearray(original_manifest)
+        corrupted_manifest[len(corrupted_manifest) // 2] ^= 1
+        manifest_path.write_bytes(corrupted_manifest)
+
+        real_existing_object = service._existing_object
+        rejected_manifest = False
+
+        def observe_existing_object(folder, *, content_hash, size_bytes):
+            nonlocal rejected_manifest
+            result = real_existing_object(
+                folder,
+                content_hash=content_hash,
+                size_bytes=size_bytes,
+            )
+            if _local_uri_path(folder) == manifest_destination:
+                rejected_manifest = True
+                assert result == ""
+            return result
+
+        def forbid_payload_reupload(_rows):
+            raise AssertionError("valid payload object should be reused")
+
+        real_upload_bytes = service._upload_bytes
+        manifest_uploads = 0
+
+        def count_manifest_upload(value, destination):
+            nonlocal manifest_uploads
+            manifest_uploads += 1
+            return real_upload_bytes(value, destination)
+
+        monkeypatch.setattr(service, "_existing_object", observe_existing_object)
+        monkeypatch.setattr(service, "_upload_files", forbid_payload_reupload)
+        monkeypatch.setattr(service, "_upload_bytes", count_manifest_upload)
+        receipt = await service.publish(request, storage_config=storage)
+
+        manifest = next(record for record in receipt.records if record.kind == "bundle_manifest")
+        indexed_bytes = _local_uri_path(manifest.object_uri).read_bytes()
+        assert rejected_manifest
+        assert manifest_uploads == 1
+        assert indexed_bytes == original_manifest
+        assert len(indexed_bytes) == manifest.size_bytes
+        assert hashlib.sha256(indexed_bytes).hexdigest() == manifest.content_hash
     finally:
         await container.shutdown()
 
@@ -951,6 +1490,139 @@ async def test_reconcile_expires_pending_publication_after_retry_window(tmp_path
         await container.shutdown()
 
 
+async def test_reconcile_counts_expiry_crossing_inside_resume(tmp_path, monkeypatch):
+    class _Clock:
+        def __init__(self, start: float) -> None:
+            self.values = iter((start + 1.0, start + 1.0, start + 200.0))
+
+        def time(self) -> float:
+            return next(self.values)
+
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="expires-inside-resume")
+        prepared = container.artifact_bundle_service.prepare(request)
+        catalog = container.storage_service.get_control_catalog(storage)
+        started_at = time.time()
+        await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=prepared.producer_digest,
+            request_json=prepared.request_json,
+            claimant="seed",
+            retry_until_ms=int((started_at + 150.0) * 1000),
+            lease_seconds=0.0,
+        )
+        monkeypatch.setattr(bundle_service_module, "time", _Clock(started_at))
+
+        result = await container.artifact_bundle_service.reconcile(
+            request.world_id,
+            storage_config=storage,
+        )
+
+        assert result.examined == 1
+        assert result.expired == 1
+        assert result.indexed == 0
+        assert result.failed == 0
+        publication = await catalog.get_artifact_publication(
+            request.world_id,
+            prepared.publication_key,
+        )
+        assert publication is not None and publication.status == "EXPIRED"
+    finally:
+        await container.shutdown()
+
+
+async def test_duplicate_expired_publication_returns_typed_receipt(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="expired-duplicate")
+        prepared = container.artifact_bundle_service.prepare(request)
+        catalog = container.storage_service.get_control_catalog(storage)
+        _, publication = await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=prepared.producer_digest,
+            request_json=prepared.request_json,
+            claimant="seed",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+        )
+        await catalog.expire_artifact_publication(
+            request.world_id,
+            publication.publication_key,
+            "seed",
+            "checkpoint expired",
+        )
+
+        receipt = await container.artifact_bundle_service.publish_prepared(
+            prepared,
+            storage_config=storage,
+        )
+
+        assert receipt.status is ArtifactPublicationStatus.EXPIRED
+        assert receipt.duplicate
+        assert receipt.bundle_id == prepared.publication_key
+        assert receipt.request_digest == prepared.request_digest
+        assert receipt.producer_digest == prepared.producer_digest
+        assert receipt.redaction_policy_id == prepared.redaction_policy_id
+        assert receipt.records == ()
+    finally:
+        await container.shutdown()
+
+
+async def test_expiry_during_resume_returns_typed_receipt(tmp_path):
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text("{}")
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source, idempotency_key="expires-during-resume")
+        prepared = container.artifact_bundle_service.prepare(request)
+        catalog = container.storage_service.get_control_catalog(storage)
+        await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=prepared.producer_digest,
+            request_json=prepared.request_json,
+            claimant="seed",
+            retry_until_ms=1,
+            lease_seconds=0.0,
+        )
+
+        receipt = await container.artifact_bundle_service.publish_prepared(
+            prepared,
+            storage_config=storage,
+        )
+
+        assert receipt.status is ArtifactPublicationStatus.EXPIRED
+        assert not receipt.duplicate
+        expired = await catalog.get_artifact_publication(
+            request.world_id,
+            prepared.publication_key,
+        )
+        assert expired is not None and expired.status == "EXPIRED"
+    finally:
+        await container.shutdown()
+
+
 async def test_durable_request_identity_and_digest_are_authenticated(tmp_path):
     artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
     storage = StorageConfig(uri=tmp_path / "world", namespace="world")
@@ -1143,6 +1815,62 @@ async def test_binary_secret_quarantine_has_no_object_or_index_visibility(tmp_pa
         assert indexed.collect().to_pylist() == []
     finally:
         await container.shutdown()
+
+
+async def test_reconcile_rechecks_changed_secret_bearing_object_root_before_io(tmp_path):
+    safe_config = ArtifactStoreConfig.local(tmp_path / "artifacts").model_copy(
+        update={"retry_delay_seconds": 0.0}
+    )
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.txt"
+    source.write_text("safe durable recovery input")
+    first = ServiceContainer(artifact_store_config=safe_config)
+    try:
+        world = await first.world_service.create_world(WorldConfig(name="w"), storage)
+        request = _request(world, source)
+        prepared = first.artifact_bundle_service.prepare(request)
+        catalog = first.storage_service.get_control_catalog(storage)
+        outcome, publication = await catalog.acquire_artifact_publication(
+            world_id=request.world_id,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+            idempotency_key=request.idempotency_key,
+            request_digest=prepared.producer_digest,
+            request_json=prepared.request_json,
+            claimant="seed-before-config-drift",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=0.0,
+        )
+        assert outcome == "acquired" and publication.status == "PENDING"
+        world_id = request.world_id
+        run_id = request.run_id
+        publication_key = publication.publication_key
+    finally:
+        await first.shutdown()
+
+    secret = "ghp_" + "R" * 36
+    unsafe_root = tmp_path / secret
+    drifted_config = safe_config.model_copy(update={"object_uri": unsafe_root})
+    cold = ServiceContainer(artifact_store_config=drifted_config)
+    try:
+        result = await cold.artifact_bundle_service.reconcile(
+            world_id,
+            storage_config=storage,
+        )
+
+        assert result.examined == 1
+        assert result.indexed == 0
+        assert result.failed == 1
+        catalog = cold.storage_service.get_control_catalog(storage)
+        failed = await catalog.get_artifact_publication(world_id, publication_key)
+        assert failed is not None and failed.status == "PENDING"
+        assert "github-token" in failed.last_error
+        assert secret not in failed.last_error
+        assert not unsafe_root.exists()
+        indexed = await cold.artifact_bundle_service.query(world_id, run_id)
+        assert indexed.collect().to_pylist() == []
+    finally:
+        await cold.shutdown()
 
 
 async def test_retry_catalog_redacts_untrusted_failure_diagnostics(tmp_path, monkeypatch):

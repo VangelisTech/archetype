@@ -77,12 +77,28 @@ One publication request is identified by:
 bundle_id = SHA256(domain, world_id, run_id, idempotency_key)
 ```
 
-Reusing that key with the same producer request returns the original receipt.
-Reusing it with a different producer request digest is a conflict and fails
-closed. The digest excludes the service-bound `redaction_policy_id`: upgrading
-the scanner must not turn replay of an already indexed bundle into an identity
-conflict. The persisted canonical request still records the exact policy that
-processed the payload.
+This value is both the bundle ID and the prepared request's deterministic
+`publication_key`. Reusing it with the same producer request returns the
+original receipt. Reusing it with a different producer request is a conflict
+and fails closed.
+
+Preparation binds two deliberately different digests:
+
+- `producer_digest` hashes the logical producer request without the
+  service-bound `redaction_policy_id`. It is the stable catalog conflict
+  identity across scanner upgrades.
+- `request_digest` hashes the exact canonical `request_json`, including the
+  bound `redaction_policy_id`. It authenticates the bytes that one in-flight
+  publication must replay.
+
+`PreparedArtifactBundleRequest` contains that canonical JSON, both digests,
+the publication key, and the policy ID. The five values are validated as one
+identity. Preparation binds and scans metadata but performs no source,
+object-store, catalog, or index I/O. Publication revalidates all five values
+before its first catalog operation. The artifact control row retains the exact
+canonical request even though its historical conflict-digest field uses the
+policy-independent producer digest.
+
 The control row's immutable claim time supplies `created_at_ms` and any derived
 retention deadline, so replaying a `PENDING` upload produces the same manifest
 and index rows rather than resetting their lifecycle clock.
@@ -109,9 +125,11 @@ The object destination is stable up to Daft's generated terminal filename:
 
 The content-addressed folder is the retry key. If a worker crashes after an
 upload but before recording it, the next worker lists that folder and reuses
-the existing object instead of creating another logical artifact. Multiple
-physical files in that folder are harmless orphans; reconciliation chooses a
-stable first path and lifecycle cleanup may remove the rest.
+an existing object only after reading it back and verifying its exact bytes
+and size. A truncated, corrupt, or same-size wrong payload is replaced before
+metadata can reach `UPLOADED`; the bundle manifest is verified the same way.
+Multiple physical files in that folder are harmless orphans; reconciliation
+chooses a stable verified path and lifecycle cleanup may remove the rest.
 
 ## 3. Request and index contracts
 
@@ -157,6 +175,14 @@ checkpoint uses an empty content hash and `size_bytes=-1` when the provider
 does not expose those values. The generated `bundle_manifest` describes every
 payload object and the checkpoint. It does not recursively include its own
 record.
+
+Before upload metadata becomes durable, and again before recovery, indexing,
+or receipt construction, the service authenticates the complete record set
+against the exact request. All rows must preserve its identity and lifecycle;
+portable IDs and content-addressed object folders must be deterministic; there
+must be exactly one bound checkpoint and one bound manifest; and every payload
+row must match exactly one declared direct or recursive candidate. A resolver
+or corrupted control row cannot redirect evidence into another publication.
 
 MIME detection uses `daft.functions.guess_mime_type` on the bytes and falls
 back to the logical filename's registered MIME type. Upload uses
@@ -211,6 +237,22 @@ The order is authoritative:
 6. Generate and scan the manifest, validate every index string, then record
    upload metadata and append the index.
 
+Every resume re-scans the active process-local object-store root before object
+reuse, upload, or index access. A changed or secret-bearing `StorageConfig`
+cannot use an already-durable safe request to redirect publication; the row
+remains retryable and only a sanitized diagnostic may be recorded.
+
+For mission-owned indexed finalization there are two ordered durable claims.
+First, the mission claim stages the complete `PreparedArtifactBundleRequest`
+identity and sanitized provisional outcome, reaching `finalizing`. The outcome
+carries four independently checked linkage markers: publication key, exact
+request digest, producer digest, and redaction-policy identity. Only then may
+the artifact service acquire its publication row and start step 3 above.
+After artifact-catalog acquisition, the catalog's exact `request_json` is
+authoritative and the caller's decoded object is discarded. This upstream
+mission claim and downstream artifact row form the finalization outbox; neither
+may regenerate a request from current world state during recovery.
+
 Every retry diagnostic is also redacted and bounded before the control catalog
 records it. Quarantine exceptions retain only rule identifiers—not the matched
 value or caller-provided scope—and the HTTP adapter maps them to a fixed 422
@@ -261,7 +303,27 @@ their transports are developed.
 
 ## 5. Publication state machine
 
-The control catalog records the canonical request **before external I/O**.
+The artifact control catalog records the canonical request **before external
+I/O**. For a mission requiring indexed evidence, its claim records the exact
+prepared request even earlier:
+
+```text
+provider_acknowledged
+        │ stage sanitized outcome + exact prepared request
+        ▼
+    finalizing  ── authenticate terminal row + sealed settle ──▶  settled
+        │
+        └── artifact outbox: PENDING ──▶ UPLOADED ──▶ INDEXED
+
+    settled  ── require_settled + private row transform + tick ──▶ completed row
+```
+
+The `finalizing` edge is authoritative authorization for publication. It is
+available to recoverable provider-accepted and provider-rejected attempts; a
+rejected attempt is indexed for review but remains rejected and never advances
+the task. Both require a restorable checkpoint. An accepted outcome also
+requires a commit SHA. Changed prepared identity or provisional outcome is a
+conflict, while an exact lost-response staging retry is idempotent.
 
 ```text
              upload every declared object
@@ -280,11 +342,30 @@ EXPIRED                                          INDEXED
   This is the portable publication success state.
 - `EXPIRED`: the retry window elapsed while still `PENDING`. `UPLOADED`
   publications never expire; they no longer need the provider and must be
-  driven to `INDEXED`.
+  driven to `INDEXED`. When an indexed mission owns the exact expired row, its
+  finalizer preserves the staged provider evidence, adds the generic
+  `artifact_publication_expired` marker, and settles that attempt incomplete or
+  rejected. It never synthesizes indexed authority and never reruns the same
+  attempt.
 
-`published` is intentionally not part of this state machine. Git branch push,
-PR creation, and merge are software-delivery states. They may reference the
-same attempt and bundle but do not alter whether evidence is durably indexed.
+Legacy mission phase `published` is intentionally not part of this state
+machine. It predates the artifact outbox and remains sufficient only for the
+historical pending, captured, checkpointed, and published mission gates. It is
+never evidence of artifact `UPLOADED` or `INDEXED`. Under an indexed gate it is
+only eligible staging input and must traverse this outbox. Git branch push, PR
+creation, and merge are software-delivery states; they may reference the same
+attempt and bundle but cannot satisfy portable publication.
+
+An unbound sandbox outcome that claims `indexed` is rejected even when the
+mission's minimum gate is lower. The staged request and claim-owned linkage,
+not the provider's string, establish authority. Existing terminal legacy rows
+remain readable and queryable; they are not rewritten into the new outbox. The
+v7-to-v8 migration records `legacy_unbound_eligible` only for claims already
+settled under an indexed gate before these artifact-authority columns existed.
+Non-indexed v7 claims remain ordinary historical replays. A narrowly valid
+legacy replay exposes `Finalization.legacy_unbound=true` while preserving its
+canonical outcome unchanged. That flag is an explicit compatibility
+classification, not a claim that historical artifact provenance was recovered.
 
 The Iceberg append is the query visibility point. If a process dies after the
 append but before marking the control row `INDEXED`, a retry reads and verifies
@@ -298,14 +379,25 @@ rare physical duplicates without changing the index contract.
 
 ### Crash matrix
 
+The indexed mission path has the following complete finalization matrix. A
+direct artifact caller enters at the artifact-publication claim row.
+
 | Crash point | Durable state | Recovery action |
 |---|---|---|
-| Before claim | Nothing | Submit the same request |
-| After claim, before upload | `PENDING` + replay request | Reopen checkpoint, upload |
-| During upload | `PENDING` + some content-addressed folders | Reuse present folders, upload missing objects |
-| After upload metadata | `UPLOADED` + complete records | Index without reopening checkpoint |
-| After Iceberg commit | Query rows visible, control row `UPLOADED` | Verify rows, mark `INDEXED` |
-| After completion | `INDEXED` | Return duplicate receipt |
+| Before artifact preparation | Mission `provider_acknowledged` plus recoverable sandbox receipt | Reconcile the matching receipt, sanitize it, and prepare deterministically; do not call the model again. |
+| After preparation, before mission staging | Mission `provider_acknowledged`; prepared value was only in memory | Reproduce the exact preparation and retry `stage_finalization`; no artifact I/O occurred. |
+| During or after staging response loss | Mission is either `provider_acknowledged` or `finalizing` | Re-read the claim. Retry only byte-identical outcome and prepared identity; changed evidence fails closed. |
+| After mission reaches `finalizing`, before artifact claim | Exact request JSON, digests, key, policy, and provisional outcome are durable | Cold `FINALIZE` from the projection. Do not invoke the attempt runner, model, validators, repository finalization, or checkpoint creation. |
+| After artifact claim, before upload | Mission `finalizing`; artifact `PENDING` plus exact replay request | Materialize from the already-bound checkpoint and upload. |
+| Artifact retry window elapses before upload | Mission remains `finalizing`; its exact artifact publication is `EXPIRED` | Authenticate the terminal row, preserve the staged evidence, add only `artifact_publication_expired`, seal and settle incomplete or rejected, then authenticate the durable winner through `require_settled`. Do not rerun or republish the same attempt. |
+| During upload | Artifact `PENDING` plus some content-addressed folders | Byte-verify present payload and manifest objects; reuse exact objects and replace truncated or corrupt ones before upload metadata. |
+| After upload metadata | Artifact `UPLOADED` plus complete records | Index without reopening a sandbox or checkpoint. |
+| After Iceberg commit, before artifact completion | Query rows visible; artifact control row `UPLOADED` | Verify deterministic rows and mark `INDEXED`; do not append logically new evidence. |
+| After artifact `INDEXED`, before finalized outcome construction | Mission `finalizing` plus exact terminal artifact row | Reread the row, validate its staged identity and positive snapshot, and add authoritative indexed fields. |
+| After finalized outcome construction, before mission settlement | Mission remains `finalizing`; finalized value was only in memory | Reconstruct and seal the same value from the staged claim and terminal row, then settle; projection is still forbidden. |
+| During or after settlement response loss | Mission is either `finalizing` or `settled` | Re-read. If still finalizing, retry only the exact sealed settlement; if settled, use `require_settled` to authenticate the winning stored outcome before private projection. Conflicts fail closed. |
+| After mission `settled`, before world commit | Canonical terminal outcome is durable | Call `require_settled(world_id, claim_key)`, then let the execution service invoke the private row transformer; no runner, repository, checkpoint, or artifact work is permitted. A supplied claim DTO is not authority. |
+| After world commit | `settled` claim plus visible completed-attempt row | Return/replay the committed result without external work. |
 
 ## 6. Reconciler contract
 
@@ -325,6 +417,16 @@ It does not run forever inside an API request.
 
 The SQLite catalog is the single-host reference implementation. The remote
 catalog implements the same CAS transitions in the per-world Durable Object.
+Iceberg snapshot identity is an exact Python `int` in the range
+`1..2^63-1`; booleans, floats, numeric strings, zero, and larger values are
+rejected before completion. The remote catalog transports and stores that
+identity as canonical decimal text under `artifact_snapshot_decimal_v1`.
+Before each mutation, `GET /status` must report
+`catalog_protocol_version >= 3` and that capability. The versioned
+`acquire-v2`, `renew-v2`, `uploads-v2`, `complete-v2`, `fail-v2`, and
+`expire-v2` routes therefore fail closed before artifact I/O against an older
+Worker that could round the snapshot through a JavaScript number or accept a
+write without the current protocol semantics.
 A fleet reconciler enumerates worlds from the directory object, then performs
 bounded per-world passes. It can shard by world without cross-world locking.
 
@@ -400,11 +502,50 @@ validator failure does not abort persistence of that tick. What is gated is the
 task state transition: a mission may require `checkpointed` or `indexed`
 finalization before moving to the next task.
 
-The example currently proves both boundaries explicitly: `MissionService` gates
-task advancement on a restorable provider checkpoint, and its driver publishes
-every recoverable accepted or rejected attempt and queries the portable bundles
-before teardown. Attempts whose provider checkpoint failed remain visible as
-Archetype facts but cannot claim durable artifact publication. A mission that requires
-`indexed` atomically with task advancement should invoke the same artifact
-bundle service through the application path before returning the next task state;
-the service contract and idempotency key do not change.
+For an indexed gate, the authoritative application path is:
+
+1. Assess and sanitize the complete provider outcome. Recoverable accepted and
+   rejected outcomes are both eligible; both require a restorable checkpoint,
+   and acceptance also requires a commit SHA.
+2. Prepare the exact policy-bound artifact request without publication I/O and
+   stage it with the provisional outcome in the mission claim. The durable
+   claim reaches `finalizing` before the artifact service is called.
+3. Publish only that persisted projection through
+   `PENDING -> UPLOADED -> INDEXED`. Legacy mission phase `published` is merely
+   eligible staging input, never index evidence.
+4. Reread the exact durable `INDEXED` row and validate it against the staged
+   bundle/publication key, request JSON and digest, producer digest, policy,
+   attempt identity, manifest, and positive index snapshot. Upgrade the
+   provisional outcome and settle the claim. A publication receipt cannot
+   substitute for this read.
+5. Call `iMissionAttemptClaimService.require_settled(world_id, claim_key)` to
+   re-read the winning terminal claim and authenticate its canonical stored
+   JSON, digest, status, and any explicit legacy compatibility classification.
+   The execution service then invokes the mission service's private settled-row
+   transformer. Only the world's ordinary two-phase tick commit makes the
+   completed attempt and task edge visible. A detached or caller-replaced
+   `AttemptClaim` DTO cannot substitute for `require_settled`.
+
+Public `MissionService.apply_attempt` cannot shortcut steps 4–5. It
+categorically rejects an `indexed` phase and any artifact staging, linkage,
+finalized authority, or nonzero snapshot. Public `iMissionService` has no
+settled-projection operation; only the execution workflow's immediate
+`require_settled` plus private row-transform sequence may project the durable
+winner.
+
+Indexing a rejected attempt preserves portable review evidence but does not
+change its rejection or advance the task. An accepted attempt advances only
+after the exact terminal row has been bound, the claim has settled, and the
+world commit publishes the typed edge. Attempts with a failed or non-restorable
+checkpoint cannot enter `finalizing`; they remain persistable incomplete or
+failed mission facts under the ordinary evidence gate.
+
+A crash anywhere after staging is recoverable from control state. `finalizing`
+recovery never invokes the attempt runner, model, validators, repository
+finalization, or checkpoint creation. A `PENDING` artifact row may read the
+already-recorded checkpoint solely for extraction; `UPLOADED` and later phases
+do not require it. A crash after claim settlement but before the world commit
+reapplies the stored canonical outcome without repeating artifact or provider
+work. An exact `EXPIRED` row settles the attempt with no indexed authority; the
+same attempt never runs again, though the retryable world state may identify a
+new next attempt.

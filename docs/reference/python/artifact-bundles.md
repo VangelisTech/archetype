@@ -82,10 +82,13 @@
 | `world_id` | `str` | `required` |
 | `run_id` | `str` | `required` |
 | `attempt_id` | `str` | `required` |
-| `status` | `Literal[pending, uploaded, indexed, expired]` | `required` |
+| `status` | `ArtifactPublicationStatus` | `required` |
 | `duplicate` | `bool` | `False` |
 | `manifest_uri` | `str` | `''` |
 | `index_snapshot_id` | `int` | `0` |
+| `request_digest` | `str` | `''` |
+| `producer_digest` | `str` | `''` |
+| `redaction_policy_id` | `str` | `''` |
 | `records` | `tuple[ArtifactIndexRecord, Ellipsis]` | `()` |
 
 ::: archetype.app.artifacts.bundle_models.ArtifactReconcileResult

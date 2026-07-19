@@ -6,26 +6,37 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, cast
 
 from pydantic import JsonValue
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.models import (
+    AttemptArtifactExpiration,
+    AttemptArtifactProjection,
+    AttemptArtifactPublication,
     AttemptClaim,
     AttemptClaimAcquisition,
     AttemptRecoveryDecision,
     FencedExecutionAuthorization,
+    FinalizationSettlementKind,
     MissionAttemptRequest,
+    PreparedFinalizationSettlement,
     ProviderExecutionCapabilities,
     attempt_invocation_fingerprint,
     mission_attempt_request_fingerprint,
     normalize_attempt_validators,
 )
-from archetype.app.missions.outcomes import assess_attempt_outcome
+from archetype.app.missions.outcomes import (
+    assess_attempt_outcome,
+    assess_legacy_unbound_settled_outcome,
+)
 from archetype.app.missions.transitions import (
     AttemptClaimAcquireOutcome,
     AttemptClaimEvent,
@@ -45,6 +56,7 @@ from archetype.app.redaction.models import (
     SecretQuarantineError,
 )
 from archetype.app.storage.catalog import (
+    ArtifactPublicationRecord,
     AttemptClaimConflictError,
     AttemptClaimRecord,
     AttemptClaimStaleError,
@@ -52,6 +64,9 @@ from archetype.app.storage.catalog import (
 )
 
 _CLAIM_DOMAIN = "archetype.mission-attempt-claim.v1"
+_CURRENT_CLAIM_CONTRACT_VERSION = 8
+_LEGACY_CLAIM_CONTRACT_VERSION = 7
+_ARTIFACT_PUBLICATION_EXPIRED = "artifact_publication_expired"
 _MAX_LAST_ERROR_CHARS = 4096
 _REDACTION_EVIDENCE_KEYS = frozenset(
     {
@@ -92,6 +107,15 @@ _OUTCOME_IDENTITY_FIELDS = (
     "git_bundle_ref",
     "context_ref",
     "sha",
+    "artifact_publication_key",
+    "artifact_request_digest",
+    "artifact_producer_digest",
+    "artifact_redaction_policy_id",
+    "finalization_bundle_id",
+    "finalization_request_digest",
+    "finalization_producer_digest",
+    "finalization_redaction_policy_id",
+    "finalization_index_snapshot_id",
 )
 
 
@@ -108,6 +132,7 @@ class MissionAttemptClaimService:
         self._catalog = catalog
         self._graph = graph or AttemptClaimTransitionGraph()
         self._redaction_service = redaction_service
+        self._finalization_seal_key = secrets.token_bytes(32)
 
     async def acquire(
         self,
@@ -132,13 +157,27 @@ class MissionAttemptClaimService:
             attempt_id=request.attempt_id,
         )
         existing = await self.get(world_id, claim_key)
+        if existing is not None:
+            recovered_request = self.recover_request(existing)
+            # Observation time is durable evidence, not provider-submission
+            # identity. Preserve the first observation when a later tick
+            # rediscovers the same deterministic claim.
+            if replace(request, observation_tick=recovered_request.observation_tick) != (
+                recovered_request
+            ):
+                raise AttemptClaimConflictError(
+                    f"attempt claim {claim_key} was reused with different immutable input"
+                )
+            # A pre-v8 request has no contract marker. Preserve its exact
+            # immutable bytes during lease recovery rather than rewriting it.
+            request_json = existing.request_json
         if existing is not None and existing.status is AttemptClaimStatus.SETTLED:
             expected = self._claim_request_fingerprint(
                 request,
                 capabilities,
                 redaction_policy_id=existing.redaction_policy_id,
             )
-            if existing.request_json != request_json or existing.request_fingerprint != expected:
+            if existing.request_fingerprint != expected:
                 raise AttemptClaimConflictError(
                     f"attempt claim {claim_key} was reused with different immutable input"
                 )
@@ -231,6 +270,9 @@ class MissionAttemptClaimService:
             # uncertainty states fail closed to reconciliation.
             return self._decision(AttemptRecoveryAction.RECONCILE, current)
 
+        if current.status is AttemptClaimStatus.FINALIZING:
+            return self._decision(AttemptRecoveryAction.FINALIZE, current)
+
         raise AssertionError(f"unhandled attempt claim state: {current.status.value}")
 
     async def acknowledge_provider(
@@ -300,6 +342,130 @@ class MissionAttemptClaimService:
             raise exc
         return self._project(record)
 
+    async def stage_finalization(
+        self,
+        claim: AttemptClaim,
+        *,
+        outcome: RedactedRecord,
+        projection: AttemptArtifactProjection,
+    ) -> AttemptClaim:
+        """Persist one sanitized outcome and exact artifact request before I/O."""
+
+        current = await self._current_owned(claim, allow_settled=True)
+        if current.status is AttemptClaimStatus.SETTLED:
+            raise ValueError("a settled attempt claim cannot stage artifact finalization")
+        self._require_active_policy(current)
+        durable_outcome = self._coerce_durable_outcome(current, outcome)
+        request = self.recover_request(current)
+        assessment = assess_attempt_outcome(request, durable_outcome.value)
+        if request.required_finalization_phase is not FinalizationPhase.INDEXED:
+            raise ValueError("artifact finalization may only be staged for an indexed gate")
+        if assessment.provider_status not in {
+            AttemptStatus.ACCEPTED,
+            AttemptStatus.REJECTED,
+        }:
+            raise ValueError("artifact finalization requires an accepted or rejected outcome")
+        if not bool(durable_outcome.value["checkpoint_restorable"]):
+            raise ValueError("artifact finalization requires a restorable checkpoint")
+        if assessment.finalization_phase not in {
+            FinalizationPhase.CAPTURED,
+            FinalizationPhase.CHECKPOINTED,
+            FinalizationPhase.UPLOADED,
+            FinalizationPhase.PUBLISHED,
+        }:
+            raise ValueError("artifact finalization requires captured or checkpointed evidence")
+        if (
+            assessment.provider_status is AttemptStatus.ACCEPTED
+            and not str(durable_outcome.value["sha"]).strip()
+        ):
+            raise ValueError("artifact finalization requires a commit SHA")
+        if projection.redaction_policy_id != current.redaction_policy_id:
+            raise ValueError("prepared artifact request changed the bound redaction policy")
+
+        artifact_value = json.loads(projection.request_json)
+        scan = self._redaction_service.redact_record(
+            cast(Mapping[str, JsonValue], artifact_value),
+            scope="mission-attempt-artifact-request",
+        )
+        self._quarantine_if_redacted(scan.receipt)
+        for name, value in (
+            ("request_digest", projection.request_digest),
+            ("publication_key", projection.publication_key),
+            ("producer_digest", projection.producer_digest),
+            ("redaction_policy_id", projection.redaction_policy_id),
+        ):
+            self._redaction_service.assert_safe_metadata(
+                value,
+                field=f"mission-attempt-artifact.{name}",
+            )
+
+        staged_value = dict(durable_outcome.value)
+        staged_value.update(
+            {
+                "artifact_publication_key": projection.publication_key,
+                "artifact_request_digest": projection.request_digest,
+                "artifact_producer_digest": projection.producer_digest,
+                "artifact_redaction_policy_id": projection.redaction_policy_id,
+            }
+        )
+        staged_outcome = RedactedRecord(
+            value=cast(dict[str, JsonValue], staged_value),
+            receipt=durable_outcome.receipt,
+        )
+        outcome_json = self._json(staged_outcome.value)
+        outcome_digest = hashlib.sha256(outcome_json.encode()).hexdigest()
+        if current.status is AttemptClaimStatus.FINALIZING:
+            if self._staging_matches(
+                current,
+                outcome_digest=outcome_digest,
+                outcome_json=outcome_json,
+                projection=projection,
+            ):
+                return current
+            raise ValueError("attempt artifact finalization changed on replay")
+        evidence_json = self._updated_redaction_evidence(
+            current,
+            outcome=staged_outcome.receipt,
+        )
+        transition = self._graph.transition(
+            current.status,
+            AttemptClaimEvent.STAGE_FINALIZATION,
+        )
+        try:
+            record = await self._catalog.transition_attempt_claim(
+                current.world_id,
+                current.claim_key,
+                current.claimant,
+                current.fence_epoch,
+                expected_status=transition.source.value,
+                target_status=transition.target.value,
+                redaction_evidence_json=evidence_json,
+                outcome_digest=outcome_digest,
+                outcome_json=outcome_json,
+                artifact_request_json=projection.request_json,
+                artifact_request_digest=projection.request_digest,
+                artifact_publication_key=projection.publication_key,
+            )
+        except (AttemptClaimConflictError, AttemptClaimStaleError) as exc:
+            observed = await self._current_owned(current, allow_settled=True)
+            if observed.status in {
+                AttemptClaimStatus.FINALIZING,
+                AttemptClaimStatus.SETTLED,
+            } and self._staging_matches(
+                observed,
+                outcome_digest=outcome_digest,
+                outcome_json=outcome_json,
+                projection=projection,
+            ):
+                return observed
+            if observed.status in {
+                AttemptClaimStatus.FINALIZING,
+                AttemptClaimStatus.SETTLED,
+            }:
+                raise ValueError("attempt artifact finalization changed concurrently") from None
+            raise exc
+        return self._project(record)
+
     async def settle(
         self,
         claim: AttemptClaim,
@@ -308,7 +474,7 @@ class MissionAttemptClaimService:
         outcome: Mapping[str, Any] | RedactedRecord,
         last_error: str = "",
     ) -> AttemptClaim:
-        """Terminally settle one claim through the edge matching its uncertainty."""
+        """Settle a non-finalizing claim or prove an exact terminal replay."""
 
         try:
             settlement = AttemptStatus(attempt_status)
@@ -317,8 +483,62 @@ class MissionAttemptClaimService:
         if settlement is AttemptStatus.PENDING:
             raise ValueError("a pending attempt cannot terminally settle a claim")
         current = await self._current_owned(claim, allow_settled=True)
+        if current.status is AttemptClaimStatus.FINALIZING:
+            raise ValueError("a finalizing claim requires a prepared finalization settlement")
+        return await self._settle_current(
+            current,
+            settlement=settlement,
+            outcome=outcome,
+            last_error=last_error,
+            finalization_authorized=False,
+        )
+
+    async def settle_finalized(
+        self,
+        claim: AttemptClaim,
+        prepared: PreparedFinalizationSettlement,
+        *,
+        last_error: str = "",
+    ) -> AttemptClaim:
+        """Settle FINALIZING only from one exact service-sealed preparation."""
+
+        if not isinstance(prepared, PreparedFinalizationSettlement):
+            raise TypeError("finalized settlement requires a typed prepared value")
+        current = await self._current_owned(claim, allow_settled=True)
+        if current.status not in {
+            AttemptClaimStatus.FINALIZING,
+            AttemptClaimStatus.SETTLED,
+        }:
+            raise ValueError("prepared finalization can settle only a finalizing claim")
+        self._validate_prepared_finalization_settlement(current, prepared)
+        return await self._settle_current(
+            current,
+            settlement=prepared.attempt_status,
+            outcome=prepared.outcome,
+            last_error=last_error,
+            finalization_authorized=True,
+        )
+
+    async def _settle_current(
+        self,
+        current: AttemptClaim,
+        *,
+        settlement: AttemptStatus,
+        outcome: Mapping[str, Any] | RedactedRecord,
+        last_error: str,
+        finalization_authorized: bool,
+    ) -> AttemptClaim:
+        if current.status is AttemptClaimStatus.FINALIZING and not finalization_authorized:
+            raise ValueError("a finalizing claim requires a prepared finalization settlement")
         if current.status is AttemptClaimStatus.SETTLED:
-            if current.redaction_policy_id == self._redaction_service.policy_id:
+            if current.legacy_unbound:
+                # Compatibility is read-only: compare the caller's raw value
+                # with the terminal bytes, without rescanning or normalizing it
+                # under current write semantics.
+                replay_value = outcome.value if isinstance(outcome, RedactedRecord) else outcome
+                outcome_json = self._json(replay_value)
+                last_error = current.last_error
+            elif current.redaction_policy_id == self._redaction_service.policy_id:
                 durable_outcome = self._coerce_durable_outcome(current, outcome)
                 outcome_json = self._json(durable_outcome.value)
                 last_error = self._redaction_service.redact_text(
@@ -369,6 +589,7 @@ class MissionAttemptClaimService:
             AttemptClaimStatus.CLAIMED: AttemptClaimEvent.SETTLE_WITHOUT_SUBMISSION,
             AttemptClaimStatus.POSSIBLY_SUBMITTED: (AttemptClaimEvent.SETTLE_AFTER_RECONCILIATION),
             AttemptClaimStatus.PROVIDER_ACKNOWLEDGED: (AttemptClaimEvent.SETTLE_ACKNOWLEDGED),
+            AttemptClaimStatus.FINALIZING: AttemptClaimEvent.SETTLE_FINALIZED,
         }[current.status]
         transition = self._graph.transition(current.status, event)
         try:
@@ -452,6 +673,20 @@ class MissionAttemptClaimService:
         record = await self._catalog.get_attempt_claim(world_id, claim_key)
         return self._project(record) if record is not None else None
 
+    async def require_settled(self, world_id: str, claim_key: str) -> AttemptClaim:
+        """Reread and authenticate the durable terminal winner for projection."""
+
+        current = await self.get(world_id, claim_key)
+        if current is None:
+            raise ValueError(f"attempt claim {claim_key} no longer exists")
+        if current.status is not AttemptClaimStatus.SETTLED:
+            raise ValueError("attempt claim is not durably settled")
+        # Verify the canonical payload at the same boundary that turns the
+        # catalog row into projection authority. The returned DTO is a value,
+        # never authority independent of this reread.
+        self.settled_outcome(current)
+        return current
+
     async def list_due(
         self,
         world_id: str,
@@ -496,6 +731,411 @@ class MissionAttemptClaimService:
         )
         return redacted
 
+    def staged_artifact_projection(self, claim: AttemptClaim) -> AttemptArtifactProjection:
+        """Reconstruct the exact prepared request retained by a finalizing claim."""
+
+        if claim.status is not AttemptClaimStatus.FINALIZING:
+            raise ValueError("attempt claim is not awaiting artifact finalization")
+        staged = self._staged_outcome(claim)
+        try:
+            producer_digest = str(staged["artifact_producer_digest"])
+            policy_id = str(staged["artifact_redaction_policy_id"])
+        except KeyError as exc:
+            raise ValueError("finalizing attempt claim lacks prepared artifact identity") from exc
+        projection = AttemptArtifactProjection(
+            request_json=claim.artifact_request_json,
+            request_digest=claim.artifact_request_digest,
+            publication_key=claim.artifact_publication_key,
+            producer_digest=producer_digest,
+            redaction_policy_id=policy_id,
+        )
+        if projection.redaction_policy_id != claim.redaction_policy_id:
+            raise ValueError("finalizing artifact request changed the claim redaction policy")
+        return projection
+
+    async def prepare_artifact_finalization_outcome(
+        self,
+        claim: AttemptClaim,
+    ) -> PreparedFinalizationSettlement:
+        """Derive terminal authority only from the durable artifact outbox row."""
+
+        current = await self._current_owned(claim)
+        if current.status is not AttemptClaimStatus.FINALIZING:
+            raise ValueError("attempt claim is not awaiting artifact finalization")
+        self._require_active_policy(current)
+        projection = self.staged_artifact_projection(current)
+        publication = await self._catalog.get_artifact_publication(
+            current.world_id,
+            projection.publication_key,
+        )
+        if publication is None:
+            raise ValueError("durable artifact publication authority is missing")
+        self._validate_artifact_publication_authority(
+            current,
+            projection,
+            publication,
+        )
+        if publication.status == "INDEXED":
+            return self._prepare_finalized_outcome(
+                current,
+                AttemptArtifactPublication(
+                    status=FinalizationPhase.INDEXED,
+                    bundle_id=publication.publication_key,
+                    manifest_uri=publication.manifest_uri,
+                    index_snapshot_id=publication.index_snapshot_id,
+                    request_digest=projection.request_digest,
+                    producer_digest=projection.producer_digest,
+                    redaction_policy_id=projection.redaction_policy_id,
+                ),
+            )
+        if publication.status == "EXPIRED":
+            return self._prepare_expired_finalization_outcome(
+                current,
+                AttemptArtifactExpiration(
+                    status="expired",
+                    bundle_id=publication.publication_key,
+                    request_digest=projection.request_digest,
+                    producer_digest=projection.producer_digest,
+                    redaction_policy_id=projection.redaction_policy_id,
+                ),
+            )
+        raise RuntimeError(
+            "durable artifact publication has not reached INDEXED or EXPIRED authority"
+        )
+
+    def _prepare_finalized_outcome(
+        self,
+        claim: AttemptClaim,
+        publication: AttemptArtifactPublication,
+    ) -> PreparedFinalizationSettlement:
+        """Upgrade staged evidence only for the exact authoritative INDEXED receipt."""
+
+        self._require_active_policy(claim)
+        projection = self.staged_artifact_projection(claim)
+        if publication.status is not FinalizationPhase.INDEXED:
+            raise ValueError("artifact publication is not authoritatively indexed")
+        expected = (
+            projection.publication_key,
+            projection.request_digest,
+            projection.producer_digest,
+            projection.redaction_policy_id,
+        )
+        actual = (
+            publication.bundle_id,
+            publication.request_digest,
+            publication.producer_digest,
+            publication.redaction_policy_id,
+        )
+        if actual != expected:
+            raise ValueError("artifact publication receipt does not match the staged request")
+        if type(publication.index_snapshot_id) is not int:
+            raise ValueError("indexed artifact publication requires an exact integer snapshot")
+        if not 1 <= publication.index_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
+            raise ValueError(
+                "indexed artifact publication snapshot is outside the positive signed 64-bit range"
+            )
+        for name, value in (
+            ("bundle_id", publication.bundle_id),
+            ("manifest_uri", publication.manifest_uri),
+            ("request_digest", publication.request_digest),
+            ("producer_digest", publication.producer_digest),
+            ("redaction_policy_id", publication.redaction_policy_id),
+        ):
+            field_kind = "source_ref" if name == "manifest_uri" else "metadata"
+            self._redaction_service.assert_safe_metadata(
+                value,
+                field=f"mission-attempt-artifact-publication.{field_kind}.{name}",
+            )
+        value = self._staged_outcome(claim)
+        value.update(
+            {
+                "finalization_phase": FinalizationPhase.INDEXED.value,
+                "finalization_manifest_ref": publication.manifest_uri,
+                "finalization_bundle_id": publication.bundle_id,
+                "finalization_request_digest": publication.request_digest,
+                "finalization_producer_digest": publication.producer_digest,
+                "finalization_redaction_policy_id": publication.redaction_policy_id,
+                "finalization_index_snapshot_id": publication.index_snapshot_id,
+                "finalization_error": "",
+            }
+        )
+        finalized = self._rescan_enriched_outcome(claim, value)
+        self._assert_safe_outcome_identity(finalized.value)
+        assessment = assess_attempt_outcome(self.recover_request(claim), finalized.value)
+        self._validate_outcome(
+            claim,
+            settlement=assessment.attempt_status,
+            outcome=finalized.value,
+        )
+        if assessment.attempt_status not in {
+            AttemptStatus.ACCEPTED,
+            AttemptStatus.REJECTED,
+        }:
+            raise ValueError("indexed artifact receipt did not produce a terminal mission outcome")
+        return self._prepare_finalization_settlement(
+            claim,
+            kind="indexed",
+            attempt_status=assessment.attempt_status,
+            outcome=finalized,
+        )
+
+    def _prepare_expired_finalization_outcome(
+        self,
+        claim: AttemptClaim,
+        expiration: AttemptArtifactExpiration,
+    ) -> PreparedFinalizationSettlement:
+        """Rescan staged evidence for terminal publication expiry settlement."""
+
+        self._require_active_policy(claim)
+        if not isinstance(expiration, AttemptArtifactExpiration):
+            raise TypeError("expired finalization requires a typed artifact expiration receipt")
+        projection = self.staged_artifact_projection(claim)
+        expected = (
+            "expired",
+            projection.publication_key,
+            projection.request_digest,
+            projection.producer_digest,
+            projection.redaction_policy_id,
+        )
+        actual = (
+            expiration.status,
+            expiration.bundle_id,
+            expiration.request_digest,
+            expiration.producer_digest,
+            expiration.redaction_policy_id,
+        )
+        if actual != expected:
+            raise ValueError("artifact expiration receipt does not match the staged request")
+        value = self._staged_outcome(claim)
+        phase = FinalizationPhase(str(value["finalization_phase"]))
+        if phase is FinalizationPhase.INDEXED:
+            raise ValueError("an indexed attempt cannot expire during artifact finalization")
+        if any(
+            str(value.get(field, "")).strip()
+            for field in (
+                "finalization_bundle_id",
+                "finalization_request_digest",
+                "finalization_producer_digest",
+                "finalization_redaction_policy_id",
+            )
+        ):
+            raise ValueError("expired artifact staging contains indexed authority")
+        snapshot = value.get("finalization_index_snapshot_id", 0)
+        if isinstance(snapshot, bool) or snapshot not in (None, "", 0, "0"):
+            raise ValueError("expired artifact staging contains an index snapshot")
+        value["finalization_error"] = _ARTIFACT_PUBLICATION_EXPIRED
+        self._assert_safe_outcome_identity(value)
+        rescanned = self._rescan_enriched_outcome(claim, value)
+        assessment = assess_attempt_outcome(self.recover_request(claim), rescanned.value)
+        if assessment.attempt_status not in {
+            AttemptStatus.INCOMPLETE,
+            AttemptStatus.REJECTED,
+        }:
+            raise ValueError("expired artifact publication is not a terminal mission outcome")
+        self._validate_outcome(
+            claim,
+            settlement=assessment.attempt_status,
+            outcome=rescanned.value,
+        )
+        return self._prepare_finalization_settlement(
+            claim,
+            kind="expired",
+            attempt_status=assessment.attempt_status,
+            outcome=rescanned,
+        )
+
+    def _validate_artifact_publication_authority(
+        self,
+        claim: AttemptClaim,
+        projection: AttemptArtifactProjection,
+        publication: ArtifactPublicationRecord,
+    ) -> None:
+        """Authenticate one terminal artifact row against the staged mission claim."""
+
+        identity = (
+            publication.publication_key,
+            publication.world_id,
+            publication.run_id,
+            publication.attempt_id,
+            publication.idempotency_key,
+        )
+        expected_identity = (
+            projection.publication_key,
+            claim.world_id,
+            claim.run_id,
+            claim.attempt_id,
+            claim.idempotency_key,
+        )
+        if identity != expected_identity:
+            raise ValueError("durable artifact publication identity does not match the claim")
+        if publication.request_json != projection.request_json:
+            raise ValueError("durable artifact request does not match the staged request")
+        if hashlib.sha256(publication.request_json.encode()).hexdigest() != (
+            projection.request_digest
+        ):
+            raise ValueError("durable artifact request JSON does not match its staged digest")
+        if publication.request_digest != projection.producer_digest:
+            raise ValueError("durable artifact producer digest does not match the staged request")
+        try:
+            durable_request = json.loads(publication.request_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("durable artifact request JSON is invalid") from exc
+        if not isinstance(durable_request, dict):
+            raise ValueError("durable artifact request JSON must be an object")
+        if str(durable_request.get("redaction_policy_id", "")) != (projection.redaction_policy_id):
+            raise ValueError("durable artifact request changed the staged redaction policy")
+        if publication.status in {"INDEXED", "EXPIRED"} and publication.completed_at is None:
+            raise ValueError("terminal artifact publication lacks a completion timestamp")
+
+        if publication.status == "INDEXED":
+            if not publication.manifest_uri.strip() or not publication.records_json.strip():
+                raise ValueError("indexed artifact publication lacks durable upload metadata")
+            try:
+                records = json.loads(publication.records_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError("indexed artifact publication records are invalid") from exc
+            if not isinstance(records, list) or not records:
+                raise ValueError("indexed artifact publication requires durable index records")
+            if type(publication.index_snapshot_id) is not int:
+                raise ValueError("indexed artifact publication requires an exact integer snapshot")
+            if not 1 <= publication.index_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
+                raise ValueError(
+                    "indexed artifact publication snapshot is outside the positive "
+                    "signed 64-bit range"
+                )
+            return
+        if publication.status == "EXPIRED":
+            try:
+                records = json.loads(publication.records_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError("expired artifact publication records are invalid") from exc
+            if (
+                not isinstance(records, list)
+                or records
+                or publication.manifest_uri
+                or type(publication.index_snapshot_id) is not int
+                or publication.index_snapshot_id != 0
+            ):
+                raise ValueError("expired artifact publication contains indexed authority")
+            return
+        if publication.status not in {"PENDING", "UPLOADED"}:
+            raise ValueError("durable artifact publication has an unknown status")
+
+    def _prepare_finalization_settlement(
+        self,
+        claim: AttemptClaim,
+        *,
+        kind: FinalizationSettlementKind,
+        attempt_status: AttemptStatus,
+        outcome: RedactedRecord,
+    ) -> PreparedFinalizationSettlement:
+        seal = self._finalization_settlement_seal(
+            claim,
+            kind=kind,
+            attempt_status=attempt_status,
+            outcome=outcome,
+        )
+        return PreparedFinalizationSettlement(
+            claim_key=claim.claim_key,
+            world_id=claim.world_id,
+            attempt_id=claim.attempt_id,
+            claimant=claim.claimant,
+            fence_epoch=claim.fence_epoch,
+            attempt_status=attempt_status,
+            kind=kind,
+            outcome=outcome,
+            seal=seal,
+        )
+
+    def _validate_prepared_finalization_settlement(
+        self,
+        claim: AttemptClaim,
+        prepared: PreparedFinalizationSettlement,
+    ) -> None:
+        if claim.legacy_unbound:
+            raise ValueError("legacy compatibility claims cannot use current finalization")
+        if (
+            prepared.claim_key != claim.claim_key
+            or prepared.world_id != claim.world_id
+            or prepared.attempt_id != claim.attempt_id
+            or prepared.claimant != claim.claimant
+            or prepared.fence_epoch != claim.fence_epoch
+        ):
+            raise ValueError("prepared finalization does not match its durable claim fence")
+        expected_seal = self._finalization_settlement_seal(
+            claim,
+            kind=prepared.kind,
+            attempt_status=prepared.attempt_status,
+            outcome=prepared.outcome,
+        )
+        if not hmac.compare_digest(prepared.seal, expected_seal):
+            raise ValueError("prepared finalization seal does not match its claim and outcome")
+        try:
+            phase = FinalizationPhase(str(prepared.value["finalization_phase"]))
+        except (KeyError, ValueError) as exc:
+            raise ValueError("prepared finalization has an invalid phase") from exc
+        error = str(prepared.value.get("finalization_error", ""))
+        if prepared.kind == "indexed":
+            if phase is not FinalizationPhase.INDEXED or error:
+                raise ValueError("indexed finalization preparation changed its authority")
+            if prepared.attempt_status not in {
+                AttemptStatus.ACCEPTED,
+                AttemptStatus.REJECTED,
+            }:
+                raise ValueError("indexed finalization has an invalid terminal status")
+        else:
+            if phase is FinalizationPhase.INDEXED or error != _ARTIFACT_PUBLICATION_EXPIRED:
+                raise ValueError("expired finalization preparation changed its evidence")
+            if prepared.attempt_status not in {
+                AttemptStatus.INCOMPLETE,
+                AttemptStatus.REJECTED,
+            }:
+                raise ValueError("expired finalization has an invalid terminal status")
+
+    def _finalization_settlement_seal(
+        self,
+        claim: AttemptClaim,
+        *,
+        kind: FinalizationSettlementKind,
+        attempt_status: AttemptStatus,
+        outcome: RedactedRecord,
+    ) -> str:
+        payload = {
+            "domain": "archetype.mission-finalization-settlement.v1",
+            "claim_key": claim.claim_key,
+            "world_id": claim.world_id,
+            "attempt_id": claim.attempt_id,
+            "claimant": claim.claimant,
+            "fence_epoch": claim.fence_epoch,
+            "artifact_request_json": claim.artifact_request_json,
+            "artifact_request_digest": claim.artifact_request_digest,
+            "artifact_publication_key": claim.artifact_publication_key,
+            "redaction_policy_id": claim.redaction_policy_id,
+            "finalizing_at": claim.finalizing_at,
+            "kind": kind,
+            "attempt_status": attempt_status.value,
+            "outcome": outcome.model_dump(mode="json"),
+        }
+        return hmac.new(
+            self._finalization_seal_key,
+            self._json(payload).encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+    @classmethod
+    def _staged_outcome(cls, claim: AttemptClaim) -> dict[str, Any]:
+        if not claim.outcome_json or not claim.outcome_digest:
+            raise ValueError("finalizing attempt claim lacks a staged outcome")
+        if hashlib.sha256(claim.outcome_json.encode()).hexdigest() != claim.outcome_digest:
+            raise ValueError("finalizing attempt claim outcome digest is corrupt")
+        try:
+            value = json.loads(claim.outcome_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("finalizing attempt claim outcome_json is invalid") from exc
+        if not isinstance(value, dict):
+            raise ValueError("finalizing attempt claim outcome_json must be an object")
+        return value
+
     def _coerce_durable_outcome(
         self,
         claim: AttemptClaim,
@@ -526,6 +1166,30 @@ class MissionAttemptClaimService:
             outcome=outcome.value,
         )
         return outcome
+
+    def _rescan_enriched_outcome(
+        self,
+        claim: AttemptClaim,
+        value: Mapping[str, Any],
+    ) -> RedactedRecord:
+        """Cover exact enriched bytes without erasing prior narrative findings."""
+
+        evidence = self._parse_redaction_evidence(
+            claim.redaction_evidence_json,
+            redaction_policy_id=claim.redaction_policy_id,
+        )
+        prior_receipt = RedactionReceipt.model_validate(evidence["outcome"])
+        rescanned = self._redaction_service.redact_record(
+            cast(Mapping[str, JsonValue], value),
+            scope="mission-attempt-outcome",
+        )
+        self._quarantine_if_redacted(rescanned.receipt)
+        receipt = rescanned.receipt
+        if prior_receipt.status == "redacted":
+            receipt = prior_receipt.model_copy(
+                update={"scanned_bytes": rescanned.receipt.scanned_bytes}
+            )
+        return rescanned.model_copy(update={"receipt": receipt})
 
     def _acquisition_redaction_evidence(
         self,
@@ -639,6 +1303,8 @@ class MissionAttemptClaimService:
             if field == "correlation" or field.endswith(("_ref", "_url", "_id", "_sha"))
         )
         for field in sorted(semantic_fields):
+            if field not in outcome:
+                continue
             raw_value = outcome[field]
             value = raw_value if isinstance(raw_value, str) else self._json(raw_value)
             field_kind = "source_ref" if field.endswith(("_ref", "_url")) else "metadata"
@@ -686,10 +1352,16 @@ class MissionAttemptClaimService:
     def _recover_request_json(cls, request_json: str) -> MissionAttemptRequest:
         try:
             value = json.loads(request_json)
+            contract_version = cls._request_contract_version(value)
             source = value["source"]
             validators = tuple(value["validators"])
             previous = tuple(value["previous_validator_details"])
             correlation = dict(value["correlation"])
+            observation_tick = (
+                0
+                if contract_version == _LEGACY_CLAIM_CONTRACT_VERSION
+                else value["observation_tick"]
+            )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError("persisted attempt claim cannot reconstruct its request") from exc
         if any(not isinstance(item, dict) for item in validators + previous):
@@ -717,8 +1389,13 @@ class MissionAttemptClaimService:
                 MissionStatus(str(source["mission"])),
                 TaskStatus(str(source["task"])),
             ),
+            observation_tick=observation_tick,
         )
-        if cls._request_json(request) != request_json:
+        expected_value = json.loads(cls._request_json(request))
+        if contract_version == _LEGACY_CLAIM_CONTRACT_VERSION:
+            expected_value.pop("claim_contract_version")
+            expected_value.pop("observation_tick")
+        if cls._json(expected_value) != request_json:
             raise ValueError("persisted attempt claim request is not canonical")
         expected_fingerprint = mission_attempt_request_fingerprint(
             idempotency_key=request.idempotency_key,
@@ -824,6 +1501,7 @@ class MissionAttemptClaimService:
     def _request_json(cls, request: MissionAttemptRequest) -> str:
         return cls._json(
             {
+                "claim_contract_version": _CURRENT_CLAIM_CONTRACT_VERSION,
                 "prompt": request.prompt,
                 "validators": request.validators,
                 "step_name": request.step_name,
@@ -840,12 +1518,32 @@ class MissionAttemptClaimService:
                 "previous_session_id": request.previous_session_id,
                 "previous_validator_details": request.previous_validator_details,
                 "correlation": request.correlation,
+                "observation_tick": request.observation_tick,
                 "source": {
                     "mission": request.source.mission.value,
                     "task": request.source.task.value,
                 },
             }
         )
+
+    @staticmethod
+    def _request_contract_version(value: Mapping[str, Any]) -> int:
+        raw_version = value.get(
+            "claim_contract_version",
+            _LEGACY_CLAIM_CONTRACT_VERSION,
+        )
+        if isinstance(raw_version, bool):
+            raise ValueError("persisted attempt claim has an invalid contract version")
+        try:
+            version = int(raw_version)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("persisted attempt claim has an invalid contract version") from exc
+        if version not in {
+            _LEGACY_CLAIM_CONTRACT_VERSION,
+            _CURRENT_CLAIM_CONTRACT_VERSION,
+        }:
+            raise ValueError("persisted attempt claim has an unsupported contract version")
+        return version
 
     @staticmethod
     def _request_world_run(request: MissionAttemptRequest) -> tuple[str, str]:
@@ -916,6 +1614,39 @@ class MissionAttemptClaimService:
             provider_session_id=claim.provider_session_id,
             outcome=outcome,
         )
+        if assessment.finalization_phase is FinalizationPhase.INDEXED:
+            cls._validate_indexed_outcome_binding(claim, outcome)
+
+    @staticmethod
+    def _validate_indexed_outcome_binding(
+        claim: AttemptClaim,
+        outcome: Mapping[str, Any],
+    ) -> None:
+        if not (
+            claim.artifact_request_json
+            and claim.artifact_request_digest
+            and claim.artifact_publication_key
+            and claim.finalizing_at
+        ):
+            raise ValueError("indexed attempt outcome lacks a staged artifact request")
+        if str(outcome.get("finalization_bundle_id", "")) != claim.artifact_publication_key:
+            raise ValueError("indexed attempt bundle does not match its staged publication key")
+        if str(outcome.get("finalization_request_digest", "")) != claim.artifact_request_digest:
+            raise ValueError("indexed attempt request digest does not match its staged request")
+        if str(outcome.get("artifact_publication_key", "")) != claim.artifact_publication_key:
+            raise ValueError("indexed attempt staged publication key changed after staging")
+        if str(outcome.get("artifact_request_digest", "")) != claim.artifact_request_digest:
+            raise ValueError("indexed attempt staged request digest changed after staging")
+        if str(outcome.get("finalization_producer_digest", "")) != str(
+            outcome.get("artifact_producer_digest", "")
+        ):
+            raise ValueError("indexed attempt producer digest changed after staging")
+        if str(outcome.get("finalization_redaction_policy_id", "")) != str(
+            outcome.get("artifact_redaction_policy_id", "")
+        ):
+            raise ValueError("indexed attempt redaction policy changed after staging")
+        if str(outcome.get("finalization_redaction_policy_id", "")) != claim.redaction_policy_id:
+            raise ValueError("indexed attempt redaction policy does not match its claim")
 
     @staticmethod
     def _validate_provider_outcome_binding(
@@ -932,6 +1663,10 @@ class MissionAttemptClaimService:
     @classmethod
     def _project(cls, record: AttemptClaimRecord) -> AttemptClaim:
         request = cls._recover_request_json(record.request_json)
+        request_value = json.loads(record.request_json)
+        if not isinstance(request_value, dict):
+            raise ValueError("persisted attempt claim request must be an object")
+        contract_version = cls._request_contract_version(request_value)
         if (
             record.run_id != str(request.correlation["run_id"])
             or record.mission_id != request.mission_id
@@ -983,17 +1718,31 @@ class MissionAttemptClaimService:
             raise ValueError("provider acknowledgement identity and timestamp are inconsistent")
         if has_acknowledgement and status not in {
             AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
+            AttemptClaimStatus.FINALIZING,
             AttemptClaimStatus.SETTLED,
         }:
             raise ValueError("provider acknowledgement is invalid for the claim state")
         if has_acknowledgement and not record.execution_consumed_at:
             raise ValueError("provider acknowledgement lacks consumed execution evidence")
-        has_terminal_evidence = (
-            evidence["outcome"] is not None or evidence["last_error"] is not None
-        )
-        if has_terminal_evidence != (status is AttemptClaimStatus.SETTLED):
-            raise ValueError("attempt terminal state and redaction evidence are inconsistent")
-        if status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED and not has_acknowledgement:
+        has_outcome_evidence = evidence["outcome"] is not None
+        if has_outcome_evidence != (
+            status
+            in {
+                AttemptClaimStatus.FINALIZING,
+                AttemptClaimStatus.SETTLED,
+            }
+        ):
+            raise ValueError("attempt outcome state and redaction evidence are inconsistent")
+        if (evidence["last_error"] is not None) != (status is AttemptClaimStatus.SETTLED):
+            raise ValueError("attempt terminal state and error evidence are inconsistent")
+        if (
+            status
+            in {
+                AttemptClaimStatus.PROVIDER_ACKNOWLEDGED,
+                AttemptClaimStatus.FINALIZING,
+            }
+            and not has_acknowledgement
+        ):
             raise ValueError("provider-acknowledged claim lacks provider identity")
         if status is AttemptClaimStatus.CLAIMED and (
             record.execution_nonce or record.execution_consumed_at
@@ -1003,6 +1752,39 @@ class MissionAttemptClaimService:
             raise ValueError("armed attempt claim lacks its execution nonce")
         if record.execution_consumed_at and not record.execution_nonce:
             raise ValueError("consumed attempt claim lacks its execution nonce")
+        artifact_values = (
+            record.artifact_request_json,
+            record.artifact_request_digest,
+            record.artifact_publication_key,
+        )
+        if any(artifact_values) and not all(artifact_values):
+            raise ValueError("attempt claim contains partial artifact request evidence")
+        has_artifact_request = all(artifact_values)
+        if status is AttemptClaimStatus.FINALIZING and not has_artifact_request:
+            raise ValueError("finalizing attempt claim lacks its artifact request")
+        if has_artifact_request and status not in {
+            AttemptClaimStatus.FINALIZING,
+            AttemptClaimStatus.SETTLED,
+        }:
+            raise ValueError("artifact request evidence is invalid for the claim state")
+        if bool(record.finalizing_at) != has_artifact_request:
+            raise ValueError("artifact request and finalizing timestamp are inconsistent")
+        if record.legacy_unbound_eligible and (
+            contract_version != _LEGACY_CLAIM_CONTRACT_VERSION
+            or status is not AttemptClaimStatus.SETTLED
+            or has_artifact_request
+        ):
+            raise ValueError("legacy unbound eligibility is inconsistent with the claim")
+        # Early v8 migrations overmarked every settled v7 claim. Normalize that
+        # durable compatibility bit at the read boundary: only an INDEXED gate
+        # ever needed the legacy unbound authority exception.
+        legacy_unbound_eligible = (
+            record.legacy_unbound_eligible
+            and request.required_finalization_phase is FinalizationPhase.INDEXED
+        )
+
+        settlement: AttemptStatus | None = None
+        legacy_unbound = False
         if status is AttemptClaimStatus.SETTLED:
             try:
                 settlement = AttemptStatus(record.settlement_status)
@@ -1010,24 +1792,40 @@ class MissionAttemptClaimService:
                 raise ValueError("settled attempt claim has invalid settlement status") from exc
             if settlement is AttemptStatus.PENDING or not record.outcome_digest:
                 raise ValueError("settled attempt claim lacks terminal outcome evidence")
-        elif record.settlement_status or record.outcome_digest or record.settled_at:
+        elif record.settlement_status or record.settled_at:
             raise ValueError("non-terminal attempt claim contains settlement evidence")
-        if status is AttemptClaimStatus.SETTLED:
+        if status in {AttemptClaimStatus.FINALIZING, AttemptClaimStatus.SETTLED}:
             if not record.outcome_json:
-                raise ValueError("settled attempt claim lacks replayable outcome JSON")
+                raise ValueError("durable attempt claim lacks replayable outcome JSON")
             if hashlib.sha256(record.outcome_json.encode()).hexdigest() != record.outcome_digest:
-                raise ValueError("settled attempt claim outcome digest is corrupt")
+                raise ValueError("durable attempt claim outcome digest is corrupt")
             try:
                 outcome = json.loads(record.outcome_json)
             except json.JSONDecodeError as exc:
-                raise ValueError("settled attempt claim outcome_json is invalid") from exc
+                raise ValueError("durable attempt claim outcome_json is invalid") from exc
             if not isinstance(outcome, dict):
-                raise ValueError("settled attempt claim outcome_json must be an object")
-            assessment = assess_attempt_outcome(request, outcome)
-            if assessment.attempt_status is not settlement:
-                raise ValueError(
-                    "settled attempt claim status disagrees with its authoritative outcome"
-                )
+                raise ValueError("durable attempt claim outcome_json must be an object")
+            legacy_candidate = (
+                status is AttemptClaimStatus.SETTLED
+                and settlement is AttemptStatus.ACCEPTED
+                and not has_artifact_request
+                and legacy_unbound_eligible
+                and contract_version == _LEGACY_CLAIM_CONTRACT_VERSION
+            )
+            if legacy_candidate:
+                # Migration provenance is exclusive. Authority-shaped extra
+                # keys accepted by v7 remain inert terminal bytes and must
+                # never be reinterpreted under the current indexed contract.
+                assessment = assess_legacy_unbound_settled_outcome(request, outcome)
+                legacy_unbound = True
+            else:
+                assessment = assess_attempt_outcome(request, outcome)
+            if (
+                not legacy_unbound
+                and assessment.finalization_phase is FinalizationPhase.INDEXED
+                and not has_artifact_request
+            ):
+                raise ValueError("settled indexed claim lacks a staged artifact request")
             if (
                 assessment.provider_status is AttemptStatus.ACCEPTED
                 and not record.execution_consumed_at
@@ -1038,9 +1836,122 @@ class MissionAttemptClaimService:
                 provider_session_id=record.provider_session_id,
                 outcome=outcome,
             )
-            if evidence["outcome"] is None or evidence["last_error"] is None:
-                raise ValueError("settled attempt claim lacks terminal redaction evidence")
-        elif record.outcome_json:
+            projection: AttemptArtifactProjection | None = None
+            if has_artifact_request:
+                try:
+                    projection = AttemptArtifactProjection(
+                        request_json=record.artifact_request_json,
+                        request_digest=record.artifact_request_digest,
+                        publication_key=record.artifact_publication_key,
+                        producer_digest=str(outcome["artifact_producer_digest"]),
+                        redaction_policy_id=str(outcome["artifact_redaction_policy_id"]),
+                    )
+                except KeyError as exc:
+                    raise ValueError(
+                        "artifact-backed attempt claim lacks its prepared identity"
+                    ) from exc
+                if projection.redaction_policy_id != record.redaction_policy_id:
+                    raise ValueError("artifact request redaction policy differs from its claim")
+            if status is AttemptClaimStatus.FINALIZING:
+                if request.required_finalization_phase is not FinalizationPhase.INDEXED:
+                    raise ValueError("finalizing attempt claim does not require indexed evidence")
+                if assessment.provider_status not in {
+                    AttemptStatus.ACCEPTED,
+                    AttemptStatus.REJECTED,
+                }:
+                    raise ValueError("finalizing attempt claim has an unsupported provider result")
+                if assessment.finalization_phase not in {
+                    FinalizationPhase.CAPTURED,
+                    FinalizationPhase.CHECKPOINTED,
+                    FinalizationPhase.UPLOADED,
+                    FinalizationPhase.PUBLISHED,
+                }:
+                    raise ValueError("finalizing attempt claim has an invalid prepared phase")
+                if not bool(outcome["checkpoint_restorable"]):
+                    raise ValueError("finalizing attempt claim lacks recovery evidence")
+                if assessment.provider_status is AttemptStatus.ACCEPTED and not str(outcome["sha"]):
+                    raise ValueError("finalizing accepted claim lacks commit evidence")
+            else:
+                assert settlement is not None
+                if assessment.attempt_status is not settlement:
+                    raise ValueError(
+                        "settled attempt claim status disagrees with its authoritative outcome"
+                    )
+                if has_artifact_request:
+                    assert projection is not None
+                    if outcome.get("finalization_error") == _ARTIFACT_PUBLICATION_EXPIRED:
+                        if assessment.finalization_phase not in {
+                            FinalizationPhase.CAPTURED,
+                            FinalizationPhase.CHECKPOINTED,
+                            FinalizationPhase.UPLOADED,
+                            FinalizationPhase.PUBLISHED,
+                        }:
+                            raise ValueError(
+                                "expired artifact-backed claim has an invalid finalization phase"
+                            )
+                        if settlement not in {
+                            AttemptStatus.INCOMPLETE,
+                            AttemptStatus.REJECTED,
+                        }:
+                            raise ValueError(
+                                "expired artifact-backed claim has an invalid settlement status"
+                            )
+                        if (
+                            str(outcome.get("artifact_publication_key", ""))
+                            != record.artifact_publication_key
+                            or str(outcome.get("artifact_request_digest", ""))
+                            != record.artifact_request_digest
+                        ):
+                            raise ValueError(
+                                "expired artifact-backed claim changed its staged request"
+                            )
+                        snapshot = outcome.get("finalization_index_snapshot_id", 0)
+                        if (
+                            any(
+                                str(outcome.get(field, "")).strip()
+                                for field in (
+                                    "finalization_bundle_id",
+                                    "finalization_request_digest",
+                                    "finalization_producer_digest",
+                                    "finalization_redaction_policy_id",
+                                )
+                            )
+                            or isinstance(snapshot, bool)
+                            or snapshot not in (None, "", 0, "0")
+                        ):
+                            raise ValueError(
+                                "expired artifact-backed claim contains indexed authority"
+                            )
+                    else:
+                        if assessment.finalization_phase is not FinalizationPhase.INDEXED:
+                            raise ValueError("artifact-backed settled claim is not indexed")
+                        if (
+                            str(outcome["finalization_bundle_id"])
+                            != record.artifact_publication_key
+                        ):
+                            raise ValueError("settled artifact bundle changed after staging")
+                        if (
+                            str(outcome["finalization_request_digest"])
+                            != record.artifact_request_digest
+                        ):
+                            raise ValueError(
+                                "settled artifact request digest changed after staging"
+                            )
+                        if (
+                            str(outcome["finalization_producer_digest"])
+                            != projection.producer_digest
+                        ):
+                            raise ValueError(
+                                "settled artifact producer digest changed after staging"
+                            )
+                        if (
+                            str(outcome["finalization_redaction_policy_id"])
+                            != projection.redaction_policy_id
+                        ):
+                            raise ValueError(
+                                "settled artifact redaction policy changed after staging"
+                            )
+        elif record.outcome_json or record.outcome_digest:
             raise ValueError("non-terminal attempt claim contains outcome JSON")
         if has_acknowledgement:
             acknowledgement = RedactionReceipt.model_validate(evidence["acknowledgement"])
@@ -1074,12 +1985,19 @@ class MissionAttemptClaimService:
             settlement_status=record.settlement_status,
             outcome_digest=record.outcome_digest,
             outcome_json=record.outcome_json,
+            artifact_request_json=record.artifact_request_json,
+            artifact_request_digest=record.artifact_request_digest,
+            artifact_publication_key=record.artifact_publication_key,
             last_error=record.last_error,
             created_at=record.created_at,
             updated_at=record.updated_at,
             possibly_submitted_at=record.possibly_submitted_at,
             acknowledged_at=record.acknowledged_at,
+            finalizing_at=record.finalizing_at,
             settled_at=record.settled_at,
+            contract_version=contract_version,
+            legacy_unbound_eligible=legacy_unbound_eligible,
+            legacy_unbound=legacy_unbound,
         )
 
     @staticmethod
@@ -1118,11 +2036,10 @@ class MissionAttemptClaimService:
 
     @classmethod
     def _nonexecuting_decision(cls, claim: AttemptClaim) -> AttemptRecoveryDecision:
-        action = (
-            AttemptRecoveryAction.SETTLED
-            if claim.status is AttemptClaimStatus.SETTLED
-            else AttemptRecoveryAction.RECONCILE
-        )
+        action = {
+            AttemptClaimStatus.FINALIZING: AttemptRecoveryAction.FINALIZE,
+            AttemptClaimStatus.SETTLED: AttemptRecoveryAction.SETTLED,
+        }.get(claim.status, AttemptRecoveryAction.RECONCILE)
         return cls._decision(action, claim)
 
     @staticmethod
@@ -1139,6 +2056,22 @@ class MissionAttemptClaimService:
             and claim.outcome_digest == outcome_digest
             and claim.outcome_json == outcome_json
             and claim.last_error == last_error
+        )
+
+    @staticmethod
+    def _staging_matches(
+        claim: AttemptClaim,
+        *,
+        outcome_digest: str,
+        outcome_json: str,
+        projection: AttemptArtifactProjection,
+    ) -> bool:
+        return (
+            claim.outcome_digest == outcome_digest
+            and claim.outcome_json == outcome_json
+            and claim.artifact_request_json == projection.request_json
+            and claim.artifact_request_digest == projection.request_digest
+            and claim.artifact_publication_key == projection.publication_key
         )
 
     @staticmethod

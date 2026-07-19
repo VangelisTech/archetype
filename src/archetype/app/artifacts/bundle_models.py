@@ -13,17 +13,28 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, runtime_checkable
 
 from daft.io import IOConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.core.config import StorageBackend, StorageConfig
 
 ArtifactRetention = Literal["attempt", "run", "durable"]
 ArtifactStorageKind = Literal["object", "provider_checkpoint"]
-ArtifactPublicationStatus = Literal["pending", "uploaded", "indexed", "expired"]
+
+
+class ArtifactPublicationStatus(StrEnum):
+    """Typed durable phases for one portable artifact publication."""
+
+    PENDING = "pending"
+    UPLOADED = "uploaded"
+    INDEXED = "indexed"
+    EXPIRED = "expired"
+
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -186,6 +197,14 @@ class ArtifactBundleRequest(BaseModel):
         return _canonical_json(payload)
 
     def digest(self) -> str:
+        """Return the policy-independent producer identity.
+
+        This historical method remains the catalog conflict identity.  The
+        exact prepared request is authenticated separately by
+        :meth:`request_digest` so a scanner upgrade does not create a second
+        logical bundle while an in-flight request remains pinned to one policy.
+        """
+
         # ``redaction_policy_id`` is bound by the service, not supplied by the
         # producer. Excluding it preserves producer idempotency across scanner
         # upgrades while the persisted canonical request still pins the exact
@@ -193,6 +212,75 @@ class ArtifactBundleRequest(BaseModel):
         payload = json.loads(self.canonical_json())
         payload.pop("redaction_policy_id", None)
         return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
+
+    def producer_digest(self) -> str:
+        """Return the stable producer identity used by the publication catalog."""
+
+        return self.digest()
+
+    def request_digest(self) -> str:
+        """Authenticate the exact canonical request, including bound policy."""
+
+        return hashlib.sha256(self.canonical_json().encode()).hexdigest()
+
+
+class PreparedArtifactBundleRequest(BaseModel):
+    """Immutable, scanned identity safe to persist before publication I/O.
+
+    ``request_digest`` authenticates the exact bound canonical JSON while
+    ``producer_digest`` preserves the logical publication identity across
+    compatible redaction-policy upgrades.
+    """
+
+    model_config = dict(frozen=True)
+
+    request_json: str
+    request_digest: str
+    publication_key: str
+    producer_digest: str
+    redaction_policy_id: str
+
+    @field_validator("request_json", "redaction_policy_id")
+    @classmethod
+    def _required_prepared_value(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be empty")
+        return value
+
+    @field_validator("request_digest", "publication_key", "producer_digest")
+    @classmethod
+    def _prepared_sha256(cls, value: str) -> str:
+        if not _SHA256_RE.fullmatch(value):
+            raise ValueError("must be a lowercase SHA-256 digest")
+        return value
+
+    @model_validator(mode="after")
+    def _authenticates_exact_request(self) -> PreparedArtifactBundleRequest:
+        # Keep the deterministic publication identity owned by the control
+        # catalog.  The narrow local import avoids duplicating its domain
+        # separator here while keeping the public model import graph acyclic.
+        from archetype.app.storage.catalog import artifact_publication_key
+
+        try:
+            request = ArtifactBundleRequest.model_validate_json(self.request_json)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("request_json must encode an ArtifactBundleRequest") from exc
+        if request.canonical_json() != self.request_json:
+            raise ValueError("request_json must use the canonical artifact request encoding")
+        if request.request_digest() != self.request_digest:
+            raise ValueError("request_digest does not authenticate request_json")
+        if request.producer_digest() != self.producer_digest:
+            raise ValueError("producer_digest does not authenticate request_json")
+        if request.redaction_policy_id != self.redaction_policy_id:
+            raise ValueError("redaction_policy_id does not match request_json")
+        expected_key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        if self.publication_key != expected_key:
+            raise ValueError("publication_key does not match request_json")
+        return self
 
 
 class ArtifactIndexRecord(BaseModel):
@@ -283,8 +371,29 @@ class ArtifactPublishReceipt(BaseModel):
     status: ArtifactPublicationStatus
     duplicate: bool = False
     manifest_uri: str = ""
-    index_snapshot_id: int = Field(default=0, ge=0)
+    index_snapshot_id: int = 0
+    request_digest: str = ""
+    producer_digest: str = ""
+    redaction_policy_id: str = ""
     records: tuple[ArtifactIndexRecord, ...] = ()
+
+    @field_validator("index_snapshot_id", mode="before")
+    @classmethod
+    def _exact_snapshot_integer(cls, value: object) -> int:
+        if type(value) is not int:
+            raise ValueError("artifact index_snapshot_id must be an exact integer")
+        if value < 0 or value > MAX_ICEBERG_SNAPSHOT_ID:
+            raise ValueError("artifact index_snapshot_id is outside the signed 64-bit range")
+        return value
+
+    @model_validator(mode="after")
+    def _snapshot_matches_status(self) -> ArtifactPublishReceipt:
+        if self.status is ArtifactPublicationStatus.INDEXED:
+            if self.index_snapshot_id < 1:
+                raise ValueError("indexed artifact receipt requires a positive index snapshot")
+        elif self.index_snapshot_id != 0:
+            raise ValueError("only an indexed artifact receipt may carry an index snapshot")
+        return self
 
 
 class ArtifactReconcileResult(BaseModel):

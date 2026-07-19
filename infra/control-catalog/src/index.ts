@@ -24,6 +24,21 @@ export interface Env {
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
+const CATALOG_PROTOCOL_VERSION = 4;
+const ATTEMPT_FINALIZATION_CAPABILITY = "attempt_claim_finalization_v2";
+const ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2";
+const ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1";
+const MAX_SIGNED_64_BIT = 9223372036854775807n;
+const LEGACY_UNBOUND_MIGRATION = "mission_attempt_legacy_unbound_v8";
+const ATTEMPT_CLAIM_EDGES = new Set([
+  "claimed->possibly_submitted",
+  "possibly_submitted->provider_acknowledged",
+  "provider_acknowledged->finalizing",
+  "claimed->settled",
+  "possibly_submitted->settled",
+  "provider_acknowledged->settled",
+  "finalizing->settled",
+]);
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
@@ -41,6 +56,97 @@ function attemptClaimView(
   const view = { ...row };
   delete view.redaction_acquisition_evidence_json;
   return view;
+}
+
+function artifactPublicationView(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  const view = { ...row };
+  view.index_snapshot_id = String(row.index_snapshot_id_text ?? "0");
+  delete view.index_snapshot_id_text;
+  return view;
+}
+
+function attemptClaimTransitionReplayMatches(
+  row: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): boolean {
+  const expected = String(payload.expected_status ?? "");
+  const target = String(payload.target_status ?? "");
+  let exact: string[];
+  if (target === "finalizing") {
+    if (expected !== "provider_acknowledged") return false;
+    exact = [
+      "redaction_evidence_json",
+      "outcome_digest",
+      "outcome_json",
+      "artifact_request_json",
+      "artifact_request_digest",
+      "artifact_publication_key",
+    ];
+  } else if (target === "settled") {
+    if (expected !== attemptClaimSettlementSource(row)) return false;
+    exact = [
+      "redaction_evidence_json",
+      "settlement_status",
+      "outcome_digest",
+      "outcome_json",
+      "last_error",
+    ];
+  } else {
+    return false;
+  }
+  for (const field of exact) {
+    if (String(row[field] ?? "") !== String(payload[field] ?? "")) return false;
+  }
+  // Provider identities and staged artifacts are inherited source evidence.
+  // Empty arguments preserve them; any explicitly repeated value is exact.
+  for (const field of [
+    "provider_session_id",
+    "provider_request_id",
+    "artifact_request_json",
+    "artifact_request_digest",
+    "artifact_publication_key",
+  ]) {
+    const supplied = String(payload[field] ?? "");
+    if (supplied && String(row[field] ?? "") !== supplied) return false;
+  }
+  return true;
+}
+
+function attemptClaimSettlementSource(row: Record<string, unknown>): string {
+  if (
+    row.finalizing_at ||
+    row.artifact_request_json ||
+    row.artifact_request_digest ||
+    row.artifact_publication_key
+  ) {
+    return "finalizing";
+  }
+  if (row.acknowledged_at) return "provider_acknowledged";
+  if (row.possibly_submitted_at) return "possibly_submitted";
+  return "claimed";
+}
+
+function legacyClaimRequest(row: Record<string, unknown>): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(String(row.request_json ?? "")) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const request = value as Record<string, unknown>;
+    return request.claim_contract_version === undefined ? request : null;
+  } catch {
+    return null;
+  }
+}
+
+function isUnboundLegacyIndexedClaim(row: Record<string, unknown>): boolean {
+  const request = legacyClaimRequest(row);
+  return (
+    request?.required_finalization_phase === "indexed" &&
+    !String(row.artifact_request_json ?? "") &&
+    !String(row.artifact_request_digest ?? "") &&
+    !String(row.artifact_publication_key ?? "")
+  );
 }
 
 function appendCommandEvent(
@@ -367,9 +473,14 @@ export class WorldCommitDO implements DurableObject {
         provider_request_id TEXT NOT NULL DEFAULT '',
         settlement_status TEXT NOT NULL DEFAULT '',
         outcome_digest TEXT NOT NULL DEFAULT '', outcome_json TEXT NOT NULL DEFAULT '',
+        artifact_request_json TEXT NOT NULL DEFAULT '',
+        artifact_request_digest TEXT NOT NULL DEFAULT '',
+        artifact_publication_key TEXT NOT NULL DEFAULT '',
+        legacy_unbound_eligible INTEGER NOT NULL DEFAULT 0,
         last_error TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        possibly_submitted_at TEXT, acknowledged_at TEXT, settled_at TEXT
+        possibly_submitted_at TEXT, acknowledged_at TEXT,
+        finalizing_at TEXT, settled_at TEXT
       );
       CREATE INDEX IF NOT EXISTS mission_attempt_claims_due
       ON mission_attempt_claims (status, lease_expires_at);
@@ -384,11 +495,15 @@ export class WorldCommitDO implements DurableObject {
         claimant TEXT NOT NULL, lease_expires_at REAL NOT NULL,
         retry_until_ms INTEGER NOT NULL, attempt_count INTEGER NOT NULL DEFAULT 1,
         index_snapshot_id INTEGER NOT NULL DEFAULT 0,
+        index_snapshot_id_text TEXT NOT NULL DEFAULT '0',
         manifest_uri TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
       );
       CREATE INDEX IF NOT EXISTS artifact_publications_due
       ON artifact_publications (status, lease_expires_at);
+      CREATE TABLE IF NOT EXISTS catalog_meta (
+        key TEXT PRIMARY KEY, value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS commands (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         command_id TEXT NOT NULL UNIQUE,
@@ -424,44 +539,118 @@ export class WorldCommitDO implements DurableObject {
         "ALTER TABLE claims RENAME COLUMN fact_entity_id TO artifact_entity_id",
       );
     }
-    const attemptClaimColumns = this.sql
-      .exec("PRAGMA table_info(mission_attempt_claims)")
-      .toArray()
-      .map((row) => String(row.name));
-    if (!attemptClaimColumns.includes("outcome_json")) {
+    this.state.storage.transactionSync(() => {
+      const attemptClaimColumns = this.sql
+        .exec("PRAGMA table_info(mission_attempt_claims)")
+        .toArray()
+        .map((row) => String(row.name));
+      if (!attemptClaimColumns.includes("outcome_json")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN outcome_json TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("execution_nonce")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "execution_nonce TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("execution_consumed_at")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN execution_consumed_at TEXT",
+        );
+      }
+      if (!attemptClaimColumns.includes("redaction_policy_id")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "redaction_policy_id TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("redaction_acquisition_evidence_json")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "redaction_acquisition_evidence_json TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("redaction_evidence_json")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "redaction_evidence_json TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("artifact_request_json")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "artifact_request_json TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("artifact_request_digest")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "artifact_request_digest TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("artifact_publication_key")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "artifact_publication_key TEXT NOT NULL DEFAULT ''",
+        );
+      }
+      if (!attemptClaimColumns.includes("finalizing_at")) {
+        this.sql.exec("ALTER TABLE mission_attempt_claims ADD COLUMN finalizing_at TEXT");
+      }
+      if (!attemptClaimColumns.includes("legacy_unbound_eligible")) {
+        this.sql.exec(
+          "ALTER TABLE mission_attempt_claims ADD COLUMN " +
+            "legacy_unbound_eligible INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      const legacyMigration = this.sql
+        .exec("SELECT value FROM catalog_meta WHERE key = ?", LEGACY_UNBOUND_MIGRATION)
+        .toArray();
+      if (!legacyMigration.length) {
+        const candidates = this.sql
+          .exec(
+            "SELECT * FROM mission_attempt_claims WHERE status = 'settled' " +
+              "AND legacy_unbound_eligible = 0 " +
+              "AND artifact_request_json = '' AND artifact_request_digest = '' " +
+              "AND artifact_publication_key = ''",
+          )
+          .toArray();
+        for (const candidate of candidates) {
+          const row = candidate as Record<string, unknown>;
+          if (isUnboundLegacyIndexedClaim(row)) {
+            this.sql.exec(
+              "UPDATE mission_attempt_claims SET legacy_unbound_eligible = 1 " +
+                "WHERE claim_key = ?",
+              row.claim_key,
+            );
+          }
+        }
+        this.sql.exec(
+          "INSERT INTO catalog_meta (key, value) VALUES (?, 'complete')",
+          LEGACY_UNBOUND_MIGRATION,
+        );
+      }
+      const artifactPublicationColumns = this.sql
+        .exec("PRAGMA table_info(artifact_publications)")
+        .toArray()
+        .map((row) => String(row.name));
+      if (!artifactPublicationColumns.includes("index_snapshot_id_text")) {
+        this.sql.exec(
+          "ALTER TABLE artifact_publications ADD COLUMN " +
+            "index_snapshot_id_text TEXT NOT NULL DEFAULT '0'",
+        );
+      }
+      // Backfill only legacy values that were provably JS-safe. Larger values
+      // may already have been rounded by the old JSON-number protocol; leaving
+      // their text receipt at "0" makes new INDEXED reads fail closed.
       this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN outcome_json TEXT NOT NULL DEFAULT ''",
+        "UPDATE artifact_publications SET index_snapshot_id_text = CAST(index_snapshot_id AS TEXT) " +
+          "WHERE index_snapshot_id_text = '0' " +
+          "AND index_snapshot_id BETWEEN 1 AND 9007199254740991",
       );
-    }
-    if (!attemptClaimColumns.includes("execution_nonce")) {
-      this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
-          "execution_nonce TEXT NOT NULL DEFAULT ''",
-      );
-    }
-    if (!attemptClaimColumns.includes("execution_consumed_at")) {
-      this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN execution_consumed_at TEXT",
-      );
-    }
-    if (!attemptClaimColumns.includes("redaction_policy_id")) {
-      this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
-          "redaction_policy_id TEXT NOT NULL DEFAULT ''",
-      );
-    }
-    if (!attemptClaimColumns.includes("redaction_acquisition_evidence_json")) {
-      this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
-          "redaction_acquisition_evidence_json TEXT NOT NULL DEFAULT ''",
-      );
-    }
-    if (!attemptClaimColumns.includes("redaction_evidence_json")) {
-      this.sql.exec(
-        "ALTER TABLE mission_attempt_claims ADD COLUMN " +
-          "redaction_evidence_json TEXT NOT NULL DEFAULT ''",
-      );
-    }
+    });
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -471,7 +660,11 @@ export class WorldCommitDO implements DurableObject {
     const method = request.method;
     const now = new Date().toISOString();
 
-    if (route[0] === "attempt-claims" && route[1] === "acquire" && method === "POST") {
+    if (
+      route[0] === "attempt-claims" &&
+      (route[1] === "acquire" || route[1] === "acquire-v2") &&
+      method === "POST"
+    ) {
       const p = (await request.json()) as Record<string, unknown>;
       const nowSec = Date.now() / 1000;
       const lease = Number(p.lease_seconds ?? 900);
@@ -696,7 +889,11 @@ export class WorldCommitDO implements DurableObject {
         return json(attemptClaimView(updated[0] as Record<string, unknown>));
       }
 
-      if (route.length === 3 && route[2] === "consume" && method === "POST") {
+      if (
+        route.length === 3 &&
+        (route[2] === "consume" || route[2] === "consume-v2") &&
+        method === "POST"
+      ) {
         const p = (await request.json()) as Record<string, unknown>;
         const executionNonce = String(p.execution_nonce ?? "");
         if (!executionNonce) {
@@ -734,44 +931,23 @@ export class WorldCommitDO implements DurableObject {
         return json(attemptClaimView(updated[0] as Record<string, unknown>));
       }
 
-      if (route.length === 3 && route[2] === "transition" && method === "POST") {
+      if (
+        route.length === 3 &&
+        (route[2] === "transition" || route[2] === "transition-v2") &&
+        method === "POST"
+      ) {
         const p = (await request.json()) as Record<string, unknown>;
-        const rows = this.sql
-          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
-          .toArray();
-        if (!rows.length) {
-          return conflict("attempt_claim_conflict", `no attempt claim ${claimKey} exists`);
-        }
-        const row = rows[0] as Record<string, unknown>;
-        const nowSec = Date.now() / 1000;
-        if (
-          row.claimant !== p.claimant ||
-          Number(row.fence_epoch) !== Number(p.fence_epoch)
-        ) {
-          return json(
-            { error: "attempt_claim_stale", message: "attempt claim fence is stale" },
-            412,
-          );
-        }
-        if (row.status === "settled") {
-          return json(
-            { error: "attempt_claim_stale", message: "settled attempt claim cannot be mutated" },
-            412,
-          );
-        }
-        if (Number(row.lease_expires_at) <= nowSec) {
-          return json(
-            { error: "attempt_claim_stale", message: "attempt claim lease expired" },
-            412,
-          );
-        }
-        if (row.status !== p.expected_status) {
-          return conflict(
-            "attempt_claim_conflict",
-            `attempt claim ${claimKey} is ${row.status}, expected ${p.expected_status}`,
-          );
-        }
         const target = String(p.target_status ?? "");
+        const expected = String(p.expected_status ?? "");
+        if (!ATTEMPT_CLAIM_EDGES.has(`${expected}->${target}`)) {
+          return json(
+            {
+              error: "invalid",
+              message: `illegal attempt claim transition: ${expected} to ${target}`,
+            },
+            400,
+          );
+        }
         const executionNonce = String(p.execution_nonce ?? "");
         if (target === "possibly_submitted" && !executionNonce) {
           return json(
@@ -795,8 +971,247 @@ export class WorldCommitDO implements DurableObject {
             400,
           );
         }
+        const artifactRequestJson = String(p.artifact_request_json ?? "");
+        const artifactRequestDigest = String(p.artifact_request_digest ?? "");
+        const artifactPublicationKey = String(p.artifact_publication_key ?? "");
+        const settlementStatus = String(p.settlement_status ?? "");
+        const outcomeDigest = String(p.outcome_digest ?? "");
+        const outcomeJson = String(p.outcome_json ?? "");
+        const providerSessionId = String(p.provider_session_id ?? "");
+        const providerRequestId = String(p.provider_request_id ?? "");
+        const lastError = String(p.last_error ?? "");
+        const stagedArtifact = [
+          artifactRequestJson,
+          artifactRequestDigest,
+          artifactPublicationKey,
+        ];
+        const terminalEvidence = [
+          settlementStatus,
+          outcomeDigest,
+          outcomeJson,
+          ...stagedArtifact,
+          lastError,
+        ];
+        if (target === "possibly_submitted" || target === "provider_acknowledged") {
+          if (terminalEvidence.some((value) => value)) {
+            return json(
+              {
+                error: "invalid",
+                message: "non-terminal transition may not record terminal evidence",
+              },
+              400,
+            );
+          }
+          if (target === "provider_acknowledged") {
+            if (!redactionEvidence.trim()) {
+              return json(
+                {
+                  error: "invalid",
+                  message: "provider acknowledgement requires redaction evidence",
+                },
+                400,
+              );
+            }
+            if (!providerSessionId.trim() && !providerRequestId.trim()) {
+              return json(
+                {
+                  error: "invalid",
+                  message: "provider acknowledgement requires a provider identity",
+                },
+                400,
+              );
+            }
+          } else if (providerSessionId || providerRequestId) {
+            return json(
+              {
+                error: "invalid",
+                message: "provider identity may only be recorded during provider acknowledgement",
+              },
+              400,
+            );
+          }
+        } else if (providerSessionId || providerRequestId) {
+          return json(
+            {
+              error: "invalid",
+              message: "provider identity may only be recorded during provider acknowledgement",
+            },
+            400,
+          );
+        }
+        if (target === "finalizing") {
+          if (!redactionEvidence.trim()) {
+            return json(
+              { error: "invalid", message: "entering finalizing requires redaction evidence" },
+              400,
+            );
+          }
+          if (settlementStatus || lastError) {
+            return json(
+              {
+                error: "invalid",
+                message: "terminal settlement evidence may only be recorded while settling",
+              },
+              400,
+            );
+          }
+          if (!stagedArtifact.every((value) => value.trim())) {
+            return json(
+              {
+                error: "invalid",
+                message: "entering finalizing requires a complete artifact request",
+              },
+              400,
+            );
+          }
+          if (!outcomeDigest.trim() || !outcomeJson.trim()) {
+            return json(
+              {
+                error: "invalid",
+                message: "entering finalizing requires a complete durable outcome",
+              },
+              400,
+            );
+          }
+        } else if (target === "settled") {
+          const missing = [
+            ["redaction_evidence_json", redactionEvidence],
+            ["settlement_status", settlementStatus],
+            ["outcome_digest", outcomeDigest],
+            ["outcome_json", outcomeJson],
+          ]
+            .filter(([, value]) => !value.trim())
+            .map(([name]) => name);
+          if (missing.length) {
+            return json(
+              {
+                error: "invalid",
+                message: `entering settled requires complete terminal evidence: ${missing.join(", ")}`,
+              },
+              400,
+            );
+          }
+          if (
+            stagedArtifact.some((value) => value) &&
+            !stagedArtifact.every((value) => value.trim())
+          ) {
+            return json(
+              {
+                error: "invalid",
+                message: "settlement artifact evidence must be complete when supplied",
+              },
+              400,
+            );
+          }
+          if (stagedArtifact.some((value) => value) && expected !== "finalizing") {
+            return json(
+              {
+                error: "invalid",
+                message: "artifact request evidence may only be recorded while finalizing",
+              },
+              400,
+            );
+          }
+        } else if (stagedArtifact.some((value) => value)) {
+          return json(
+            {
+              error: "invalid",
+              message: "artifact request evidence may only be recorded while finalizing",
+            },
+            400,
+          );
+        }
+        const rows = this.sql
+          .exec("SELECT * FROM mission_attempt_claims WHERE claim_key = ?", claimKey)
+          .toArray();
+        if (!rows.length) {
+          return conflict("attempt_claim_conflict", `no attempt claim ${claimKey} exists`);
+        }
+        const row = rows[0] as Record<string, unknown>;
+        const nowSec = Date.now() / 1000;
+        if (
+          row.claimant !== p.claimant ||
+          Number(row.fence_epoch) !== Number(p.fence_epoch)
+        ) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim fence is stale" },
+            412,
+          );
+        }
+        if (
+          row.status !== "settled" &&
+          target === "settled" &&
+          settlementStatus === "accepted" &&
+          isUnboundLegacyIndexedClaim(row)
+        ) {
+          return conflict(
+            "attempt_claim_conflict",
+            `legacy indexed attempt claim ${claimKey} must bind artifact authority before settlement`,
+          );
+        }
+        const replayMatches = attemptClaimTransitionReplayMatches(row, p);
+        if (row.status === "settled") {
+          if (target === "settled" && replayMatches) {
+            return json(attemptClaimView(row));
+          }
+          return json(
+            { error: "attempt_claim_stale", message: "settled attempt claim cannot be mutated" },
+            412,
+          );
+        }
+        if (Number(row.lease_expires_at) <= nowSec) {
+          return json(
+            { error: "attempt_claim_stale", message: "attempt claim lease expired" },
+            412,
+          );
+        }
+        if (row.status !== expected) {
+          if (row.status === "finalizing" && target === "finalizing" && replayMatches) {
+            return json(attemptClaimView(row));
+          }
+          return conflict(
+            "attempt_claim_conflict",
+            `attempt claim ${claimKey} is ${row.status}, expected ${expected}`,
+          );
+        }
+        if (expected === "finalizing" && target === "settled") {
+          if (
+            !String(row.artifact_request_json ?? "") ||
+            !String(row.artifact_request_digest ?? "") ||
+            !String(row.artifact_publication_key ?? "")
+          ) {
+            return conflict(
+              "attempt_claim_conflict",
+              `attempt claim ${claimKey} has incomplete finalization evidence`,
+            );
+          }
+          if (
+            outcomeDigest === String(row.outcome_digest ?? "") ||
+            outcomeJson === String(row.outcome_json ?? "")
+          ) {
+            return conflict(
+              "attempt_claim_conflict",
+              `attempt claim ${claimKey} settlement must replace provisional outcome`,
+            );
+          }
+        }
+        for (const field of [
+          "artifact_request_json",
+          "artifact_request_digest",
+          "artifact_publication_key",
+        ]) {
+          const supplied = String(p[field] ?? "");
+          const recorded = String(row[field] ?? "");
+          if (supplied && recorded && supplied !== recorded) {
+            return conflict(
+              "attempt_claim_conflict",
+              `attempt claim ${claimKey} immutable ${field} changed`,
+            );
+          }
+        }
         const possiblySubmittedAt = target === "possibly_submitted" ? now : null;
         const acknowledgedAt = target === "provider_acknowledged" ? now : null;
+        const finalizingAt = target === "finalizing" ? now : null;
         const settledAt = target === "settled" ? now : null;
         const transition = this.sql.exec(
           "UPDATE mission_attempt_claims SET status = ?, " +
@@ -808,9 +1223,16 @@ export class WorldCommitDO implements DurableObject {
             "settlement_status = CASE WHEN ? = '' THEN settlement_status ELSE ? END, " +
             "outcome_digest = CASE WHEN ? = '' THEN outcome_digest ELSE ? END, " +
             "outcome_json = CASE WHEN ? = '' THEN outcome_json ELSE ? END, " +
-            "last_error = CASE WHEN ? = '' THEN last_error ELSE ? END, updated_at = ?, " +
+            "artifact_request_json = CASE WHEN ? = '' THEN artifact_request_json ELSE ? END, " +
+            "artifact_request_digest = CASE WHEN ? = '' " +
+            "THEN artifact_request_digest ELSE ? END, " +
+            "artifact_publication_key = CASE WHEN ? = '' " +
+            "THEN artifact_publication_key ELSE ? END, " +
+            "last_error = CASE WHEN ? = 'settled' THEN ? " +
+            "WHEN ? = '' THEN last_error ELSE ? END, updated_at = ?, " +
             "possibly_submitted_at = COALESCE(possibly_submitted_at, ?), " +
             "acknowledged_at = COALESCE(acknowledged_at, ?), " +
+            "finalizing_at = COALESCE(finalizing_at, ?), " +
             "settled_at = COALESCE(settled_at, ?) WHERE claim_key = ? " +
             "AND status = ? AND status != 'settled' AND claimant = ? " +
             "AND fence_epoch = ? AND lease_expires_at > ?",
@@ -829,14 +1251,23 @@ export class WorldCommitDO implements DurableObject {
           p.outcome_digest ?? "",
           p.outcome_json ?? "",
           p.outcome_json ?? "",
+          artifactRequestJson,
+          artifactRequestJson,
+          artifactRequestDigest,
+          artifactRequestDigest,
+          artifactPublicationKey,
+          artifactPublicationKey,
+          target,
+          p.last_error ?? "",
           p.last_error ?? "",
           p.last_error ?? "",
           now,
           possiblySubmittedAt,
           acknowledgedAt,
+          finalizingAt,
           settledAt,
           claimKey,
-          p.expected_status,
+          expected,
           p.claimant,
           p.fence_epoch,
           nowSec,
@@ -857,7 +1288,11 @@ export class WorldCommitDO implements DurableObject {
       }
     }
 
-    if (route[0] === "artifact-publications" && route[1] === "acquire" && method === "POST") {
+    if (
+      route[0] === "artifact-publications" &&
+      (route[1] === "acquire" || route[1] === "acquire-v2") &&
+      method === "POST"
+    ) {
       const p = (await request.json()) as Record<string, unknown>;
       const nowSec = Date.now() / 1000;
       const lease = Number(p.lease_seconds ?? 900);
@@ -873,10 +1308,10 @@ export class WorldCommitDO implements DurableObject {
           );
         }
         if (row.status === "INDEXED") {
-          return json({ outcome: "duplicate", publication: row });
+          return json({ outcome: "duplicate", publication: artifactPublicationView(row) });
         }
         if (row.status === "EXPIRED") {
-          return json({ outcome: "expired", publication: row });
+          return json({ outcome: "expired", publication: artifactPublicationView(row) });
         }
         if (Number(row.lease_expires_at) > nowSec) {
           return json(
@@ -895,7 +1330,10 @@ export class WorldCommitDO implements DurableObject {
         const updated = this.sql
           .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", p.publication_key)
           .toArray();
-        return json({ outcome: "recovered", publication: updated[0] });
+        return json({
+          outcome: "recovered",
+          publication: artifactPublicationView(updated[0] as Record<string, unknown>),
+        });
       }
       this.sql.exec(
         "INSERT INTO artifact_publications (publication_key, run_id, attempt_id, " +
@@ -917,21 +1355,25 @@ export class WorldCommitDO implements DurableObject {
       const created = this.sql
         .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", p.publication_key)
         .toArray();
-      return json({ outcome: "acquired", publication: created[0] });
+      return json({
+        outcome: "acquired",
+        publication: artifactPublicationView(created[0] as Record<string, unknown>),
+      });
     }
 
     if (route[0] === "artifact-publications" && route.length === 1 && method === "GET") {
       const due = Number(url.searchParams.get("due") ?? Date.now() / 1000);
       const limit = Math.max(0, Number(url.searchParams.get("limit") ?? 100));
-      return json(
-        this.sql
+      const dueRows = this.sql
           .exec(
             "SELECT * FROM artifact_publications WHERE status IN ('PENDING', 'UPLOADED') " +
               "AND lease_expires_at <= ? ORDER BY lease_expires_at, publication_key LIMIT ?",
             due,
             limit,
           )
-          .toArray(),
+          .toArray();
+      return json(
+        dueRows.map((row) => artifactPublicationView(row as Record<string, unknown>)),
       );
     }
 
@@ -949,8 +1391,19 @@ export class WorldCommitDO implements DurableObject {
           // otherwise workerd reports an uncaught stream error after sending
           // this response and a subsequent request can receive a spurious 503.
           await request.arrayBuffer();
-          if (route[2] === "fail") return json({ ok: true });
-          if (["renew", "uploads", "complete", "expire"].includes(route[2])) {
+          if (route[2] === "fail" || route[2] === "fail-v2") return json({ ok: true });
+          if (
+            [
+              "renew",
+              "renew-v2",
+              "uploads",
+              "uploads-v2",
+              "complete",
+              "complete-v2",
+              "expire",
+              "expire-v2",
+            ].includes(route[2])
+          ) {
             return conflict(
               "artifact_publication_conflict",
               `no artifact publication recorded for ${key}`,
@@ -961,11 +1414,13 @@ export class WorldCommitDO implements DurableObject {
       }
       const row = rows[0] as Record<string, unknown>;
 
-      if (route.length === 2 && method === "GET") return json(row);
+      if (route.length === 2 && method === "GET") return json(artifactPublicationView(row));
 
-      if (route[2] === "renew" && method === "POST") {
+      if ((route[2] === "renew" || route[2] === "renew-v2") && method === "POST") {
         const body = (await request.json()) as { claimant: string; lease_seconds: number };
-        if (row.status === "INDEXED" || row.status === "EXPIRED") return json(row);
+        if (row.status === "INDEXED" || row.status === "EXPIRED") {
+          return json(artifactPublicationView(row));
+        }
         if (row.claimant !== body.claimant) {
           return json(
             { error: "artifact_publication_pending", message: "publication was taken over" },
@@ -982,10 +1437,10 @@ export class WorldCommitDO implements DurableObject {
         const updated = this.sql
           .exec("SELECT * FROM artifact_publications WHERE publication_key = ?", key)
           .toArray();
-        return json(updated[0]);
+        return json(artifactPublicationView(updated[0] as Record<string, unknown>));
       }
 
-      if (route[2] === "uploads" && method === "POST") {
+      if ((route[2] === "uploads" || route[2] === "uploads-v2") && method === "POST") {
         const body = (await request.json()) as {
           claimant: string;
           records_json: string;
@@ -1018,9 +1473,56 @@ export class WorldCommitDO implements DurableObject {
         return json({ ok: true });
       }
 
-      if (route[2] === "complete" && method === "POST") {
-        const body = (await request.json()) as { claimant: string; index_snapshot_id: number };
-        if (row.status === "INDEXED") return json({ ok: true, idempotent: true });
+      if ((route[2] === "complete" || route[2] === "complete-v2") && method === "POST") {
+        const body = (await request.json()) as {
+          claimant: string;
+          index_snapshot_id: unknown;
+        };
+        let snapshotId: string;
+        if (route[2] === "complete-v2") {
+          const supplied = body.index_snapshot_id;
+          if (
+            typeof supplied !== "string" ||
+            !/^[1-9][0-9]{0,18}$/.test(supplied) ||
+            BigInt(supplied) > MAX_SIGNED_64_BIT
+          ) {
+            return json(
+              {
+                error: "invalid",
+                message:
+                  "index_snapshot_id must be canonical positive signed-64-bit decimal text",
+              },
+              400,
+            );
+          }
+          snapshotId = supplied;
+        } else {
+          const supplied = body.index_snapshot_id;
+          if (
+            typeof supplied !== "number" ||
+            !Number.isSafeInteger(supplied) ||
+            supplied <= 0
+          ) {
+            return json(
+              {
+                error: "invalid",
+                message: "legacy index_snapshot_id must be a positive safe integer",
+              },
+              400,
+            );
+          }
+          snapshotId = String(supplied);
+        }
+        if (row.status === "INDEXED") {
+          if (String(row.index_snapshot_id_text ?? "0") === snapshotId) {
+            return json({ ok: true, idempotent: true });
+          }
+          return conflict(
+            "artifact_publication_conflict",
+            `publication ${key} was indexed at snapshot ${row.index_snapshot_id_text}, ` +
+              `not ${snapshotId}`,
+          );
+        }
         if (row.status !== "UPLOADED") {
           return conflict(
             "artifact_publication_conflict",
@@ -1034,9 +1536,9 @@ export class WorldCommitDO implements DurableObject {
           );
         }
         this.sql.exec(
-          "UPDATE artifact_publications SET status = 'INDEXED', index_snapshot_id = ?, " +
+          "UPDATE artifact_publications SET status = 'INDEXED', index_snapshot_id_text = ?, " +
             "last_error = '', updated_at = ?, completed_at = ? WHERE publication_key = ?",
-          body.index_snapshot_id,
+          snapshotId,
           now,
           now,
           key,
@@ -1044,7 +1546,7 @@ export class WorldCommitDO implements DurableObject {
         return json({ ok: true });
       }
 
-      if (route[2] === "fail" && method === "POST") {
+      if ((route[2] === "fail" || route[2] === "fail-v2") && method === "POST") {
         const body = (await request.json()) as {
           claimant: string;
           error: string;
@@ -1068,7 +1570,7 @@ export class WorldCommitDO implements DurableObject {
         return json({ ok: true });
       }
 
-      if (route[2] === "expire" && method === "POST") {
+      if ((route[2] === "expire" || route[2] === "expire-v2") && method === "POST") {
         const body = (await request.json()) as { claimant: string; error: string };
         if (row.status === "INDEXED" || row.status === "EXPIRED") return json({ ok: true });
         if (row.status === "UPLOADED") {
@@ -1100,7 +1602,17 @@ export class WorldCommitDO implements DurableObject {
         const rows = this.sql
           .exec("SELECT status FROM world_state WHERE singleton = 1")
           .toArray();
-        return rows.length ? json(rows[0]) : json({ error: "not_found" }, 404);
+        const protocol = {
+          catalog_protocol_version: CATALOG_PROTOCOL_VERSION,
+          capabilities: [
+            ATTEMPT_FINALIZATION_CAPABILITY,
+            ATTEMPT_CLAIM_CAPABILITY,
+            ARTIFACT_SNAPSHOT_CAPABILITY,
+          ],
+        };
+        return rows.length
+          ? json({ ...rows[0], ...protocol })
+          : json({ error: "not_found", ...protocol }, 404);
       }
       if (method === "PATCH") {
         const body = (await request.json()) as { status?: unknown };

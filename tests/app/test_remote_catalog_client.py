@@ -3,6 +3,7 @@
 
 """Transport behavior for the remote control-catalog client."""
 
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -34,6 +35,28 @@ async def _catalog_with(
 
     catalog._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     return catalog
+
+
+def _attempt_protocol_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "status": "active",
+            "catalog_protocol_version": 4,
+            "capabilities": ["attempt_claim_execution_v2"],
+        },
+    )
+
+
+def _artifact_protocol_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "status": "active",
+            "catalog_protocol_version": 3,
+            "capabilities": ["artifact_snapshot_decimal_v1"],
+        },
+    )
 
 
 async def test_remote_catalog_configuration_requires_token(monkeypatch):
@@ -173,7 +196,7 @@ def _artifact_publication_row(**overrides):
         "lease_expires_at": 30.0,
         "retry_until_ms": 60_000,
         "attempt_count": 1,
-        "index_snapshot_id": 0,
+        "index_snapshot_id": "0",
         "manifest_uri": "",
         "last_error": "",
         "created_at": "2026-01-01T00:00:00+00:00",
@@ -182,6 +205,19 @@ def _artifact_publication_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+async def _acquire_test_artifact(catalog: RemoteControlCatalog) -> None:
+    await catalog.acquire_artifact_publication(
+        world_id="world-1",
+        run_id="run-1",
+        attempt_id="attempt-1",
+        idempotency_key="bundle-1",
+        request_digest="digest-1",
+        request_json="{}",
+        claimant="owner-1",
+        retry_until_ms=60_000,
+    )
 
 
 def _attempt_claim_row(**overrides):
@@ -212,25 +248,54 @@ def _attempt_claim_row(**overrides):
         "settlement_status": "",
         "outcome_digest": "",
         "outcome_json": "",
+        "artifact_request_json": "",
+        "artifact_request_digest": "",
+        "artifact_publication_key": "",
+        "legacy_unbound_eligible": 0,
         "last_error": "",
         "created_at": "2026-01-01T00:00:00+00:00",
         "updated_at": "2026-01-01T00:00:00+00:00",
         "possibly_submitted_at": None,
         "acknowledged_at": None,
+        "finalizing_at": None,
         "settled_at": None,
     }
     row.update(overrides)
     return row
 
 
+async def _acquire_test_attempt(catalog: RemoteControlCatalog) -> None:
+    await catalog.acquire_attempt_claim(
+        claim_key="claim-1",
+        world_id="world-1",
+        run_id="run-1",
+        mission_id="mission-1",
+        task_id="task-1",
+        attempt_id="attempt-1",
+        idempotency_key="idempotency-1",
+        request_fingerprint="request-fingerprint-1",
+        request_json="{}",
+        redaction_policy_id="redaction-v1",
+        redaction_evidence_json='{"phase":"acquired"}',
+        provider="modal",
+        provider_request_fingerprint="provider-fingerprint-1",
+        supports_idempotent_replay=False,
+        supports_session_resume=True,
+        provider_idempotency_key="",
+        claimant="worker-1",
+    )
+
+
 async def test_attempt_claim_transport_is_typed_and_scoped():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
         [
+            _attempt_protocol_response(),
             httpx.Response(
                 200,
                 json={"outcome": "acquired", "claim": _attempt_claim_row()},
             ),
+            _attempt_protocol_response(),
             httpx.Response(
                 200,
                 json=_attempt_claim_row(
@@ -240,6 +305,7 @@ async def test_attempt_claim_transport_is_typed_and_scoped():
                     possibly_submitted_at="2026-01-01T00:00:01+00:00",
                 ),
             ),
+            _attempt_protocol_response(),
             httpx.Response(
                 200,
                 json=_attempt_claim_row(
@@ -315,20 +381,23 @@ async def test_attempt_claim_transport_is_typed_and_scoped():
         assert [record.status for record in due] == ["possibly_submitted"]
         assert missing is None
         assert [request.url.path for request in requests] == [
-            "/ns/test/w/world-1/attempt-claims/acquire",
-            "/ns/test/w/world-1/attempt-claims/claim-1/transition",
-            "/ns/test/w/world-1/attempt-claims/claim-1/consume",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/acquire-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/claim-1/transition-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/claim-1/consume-v2",
             "/ns/test/w/world-1/attempt-claims/claim-1/renew",
             "/ns/test/w/world-1/attempt-claims/claim-1",
             "/ns/test/w/world-1/attempt-claims",
             "/ns/test/w/world-1/attempt-claims/missing",
         ]
         assert dict(requests[-2].url.params) == {"due": "5.0", "limit": "7"}
-        assert b'"execution_nonce":"execution-1"' in requests[1].content
-        assert b'"redaction_policy_id":"redaction-v1"' in requests[0].content
-        assert b'"redaction_evidence_json":"{\\"phase\\":\\"acquired\\"}"' in requests[0].content
-        assert b'"redaction_evidence_json":"{\\"phase\\":\\"armed\\"}"' in requests[1].content
-        assert b'"execution_nonce":"execution-1"' in requests[2].content
+        assert b'"execution_nonce":"execution-1"' in requests[3].content
+        assert b'"redaction_policy_id":"redaction-v1"' in requests[1].content
+        assert b'"redaction_evidence_json":"{\\"phase\\":\\"acquired\\"}"' in requests[1].content
+        assert b'"redaction_evidence_json":"{\\"phase\\":\\"armed\\"}"' in requests[3].content
+        assert b'"execution_nonce":"execution-1"' in requests[5].content
     finally:
         await catalog.close()
 
@@ -372,6 +441,216 @@ async def test_attempt_claim_redaction_receipts_reject_blank_transport_input():
                 target_status="provider_acknowledged",
                 redaction_evidence_json="  ",
             )
+        with pytest.raises(ValueError, match="complete artifact request"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="provider_acknowledged",
+                target_status="finalizing",
+                redaction_evidence_json='{"phase":"finalizing"}',
+                outcome_digest="outcome-1",
+                outcome_json='{"status":"accepted"}',
+                artifact_request_json='{"attempt_id":"attempt-1"}',
+                artifact_request_digest="artifact-request-1",
+            )
+        with pytest.raises(ValueError, match="complete durable outcome"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="provider_acknowledged",
+                target_status="finalizing",
+                redaction_evidence_json='{"phase":"finalizing"}',
+                artifact_request_json='{"attempt_id":"attempt-1"}',
+                artifact_request_digest="artifact-request-1",
+                artifact_publication_key="publication-1",
+            )
+        complete_terminal = {
+            "redaction_evidence_json": '{"phase":"settled"}',
+            "settlement_status": "failed",
+            "outcome_digest": "outcome-1",
+            "outcome_json": '{"status":"failed"}',
+        }
+        for omitted in complete_terminal:
+            with pytest.raises(ValueError, match=omitted):
+                await catalog.transition_attempt_claim(
+                    "world-1",
+                    "claim-1",
+                    "worker-1",
+                    1,
+                    expected_status="claimed",
+                    target_status="settled",
+                    **{**complete_terminal, omitted: ""},
+                )
+        with pytest.raises(ValueError, match="illegal attempt claim transition"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="settled",
+                target_status="settled",
+                **complete_terminal,
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_acquire_missing_capability_fails_before_mutation():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [httpx.Response(200, json={"status": "active"})],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="attempt-claim execution v2"):
+            await _acquire_test_attempt(catalog)
+        assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_acquire_v2_route_404_fails_closed_after_probe():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [_attempt_protocol_response(), httpx.Response(404, json={"error": "bad_route"})],
+        requests,
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await _acquire_test_attempt(catalog)
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/acquire-v2",
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_finalizing_transport_persists_typed_outbox_payload():
+    requests: list[httpx.Request] = []
+    finalizing_at = "2026-01-01T00:00:03+00:00"
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "status": "active",
+                    "catalog_protocol_version": 4,
+                    "capabilities": ["attempt_claim_execution_v2"],
+                },
+            ),
+            httpx.Response(
+                200,
+                json=_attempt_claim_row(
+                    status="finalizing",
+                    outcome_digest="outcome-1",
+                    outcome_json='{"status":"accepted"}',
+                    artifact_request_json='{"attempt_id":"attempt-1"}',
+                    artifact_request_digest="artifact-request-1",
+                    artifact_publication_key="publication-1",
+                    finalizing_at=finalizing_at,
+                ),
+            ),
+        ],
+        requests,
+    )
+    try:
+        staged = await catalog.transition_attempt_claim(
+            "world-1",
+            "claim-1",
+            "worker-1",
+            1,
+            expected_status="provider_acknowledged",
+            target_status="finalizing",
+            redaction_evidence_json='{"phase":"finalizing"}',
+            outcome_digest="outcome-1",
+            outcome_json='{"status":"accepted"}',
+            artifact_request_json='{"attempt_id":"attempt-1"}',
+            artifact_request_digest="artifact-request-1",
+            artifact_publication_key="publication-1",
+        )
+        assert staged.status == "finalizing"
+        assert staged.outcome_json == '{"status":"accepted"}'
+        assert staged.artifact_request_json == '{"attempt_id":"attempt-1"}'
+        assert staged.artifact_request_digest == "artifact-request-1"
+        assert staged.artifact_publication_key == "publication-1"
+        assert staged.finalizing_at == finalizing_at
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/claim-1/transition-v2",
+        ]
+        payload = json.loads(requests[1].content)
+        assert payload["expected_status"] == "provider_acknowledged"
+        assert payload["target_status"] == "finalizing"
+        assert payload["outcome_digest"] == "outcome-1"
+        assert payload["outcome_json"] == '{"status":"accepted"}'
+        assert payload["artifact_request_json"] == '{"attempt_id":"attempt-1"}'
+        assert payload["artifact_request_digest"] == "artifact-request-1"
+        assert payload["artifact_publication_key"] == "publication-1"
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_execution_protocol_missing_capability_fails_before_write():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [httpx.Response(200, json={"status": "active"})],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="attempt-claim execution v2"):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="claimed",
+                target_status="settled",
+                redaction_evidence_json='{"phase":"settled"}',
+                settlement_status="failed",
+                outcome_digest="outcome-1",
+                outcome_json='{"status":"failed"}',
+            )
+        assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
+    finally:
+        await catalog.close()
+
+
+async def test_attempt_claim_transition_v2_route_404_fails_closed_after_probe():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "status": "active",
+                    "catalog_protocol_version": 4,
+                    "capabilities": ["attempt_claim_execution_v2"],
+                },
+            ),
+            httpx.Response(404, json={"error": "bad_route"}),
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await catalog.transition_attempt_claim(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                expected_status="claimed",
+                target_status="possibly_submitted",
+                execution_nonce="execution-1",
+            )
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/claim-1/transition-v2",
+        ]
     finally:
         await catalog.close()
 
@@ -379,13 +658,14 @@ async def test_attempt_claim_redaction_receipts_reject_blank_transport_input():
 async def test_attempt_claim_transition_conflict_is_typed():
     catalog = await _catalog_with(
         [
+            _attempt_protocol_response(),
             httpx.Response(
                 409,
                 json={
                     "error": "attempt_claim_conflict",
                     "message": "attempt claim claim-1 is possibly_submitted, expected claimed",
                 },
-            )
+            ),
         ]
     )
     try:
@@ -398,7 +678,6 @@ async def test_attempt_claim_transition_conflict_is_typed():
                 expected_status="claimed",
                 target_status="possibly_submitted",
                 execution_nonce="execution-conflict",
-                last_error="conflicting evidence",
             )
     finally:
         await catalog.close()
@@ -407,13 +686,14 @@ async def test_attempt_claim_transition_conflict_is_typed():
 async def test_attempt_execution_consume_stale_is_typed():
     catalog = await _catalog_with(
         [
+            _attempt_protocol_response(),
             httpx.Response(
                 412,
                 json={
                     "error": "attempt_claim_stale",
                     "message": "attempt execution grant claim-1 is already consumed",
                 },
-            )
+            ),
         ]
     )
     try:
@@ -429,6 +709,29 @@ async def test_attempt_execution_consume_stale_is_typed():
         await catalog.close()
 
 
+async def test_attempt_execution_consume_v2_route_404_fails_closed_after_probe():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [_attempt_protocol_response(), httpx.Response(404, json={"error": "bad_route"})],
+        requests,
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await catalog.consume_attempt_execution(
+                "world-1",
+                "claim-1",
+                "worker-1",
+                1,
+                "execution-1",
+            )
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/attempt-claims/claim-1/consume-v2",
+        ]
+    finally:
+        await catalog.close()
+
+
 async def test_expired_attempt_renew_and_transition_are_typed_as_stale():
     catalog = await _catalog_with(
         [
@@ -439,6 +742,7 @@ async def test_expired_attempt_renew_and_transition_are_typed_as_stale():
                     "message": "attempt claim lease expired before renewal",
                 },
             ),
+            _attempt_protocol_response(),
             httpx.Response(
                 412,
                 json={
@@ -465,6 +769,7 @@ async def test_expired_attempt_renew_and_transition_are_typed_as_stale():
                 1,
                 expected_status="possibly_submitted",
                 target_status="provider_acknowledged",
+                redaction_evidence_json='{"phase":"acknowledged"}',
                 provider_request_id="request-1",
             )
     finally:
@@ -584,6 +889,7 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
     requests: list[httpx.Request] = []
     catalog = await _catalog_with(
         [
+            _artifact_protocol_response(),
             httpx.Response(
                 200,
                 json={
@@ -591,13 +897,21 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
                     "publication": _artifact_publication_row(),
                 },
             ),
+            _artifact_protocol_response(),
             httpx.Response(200, json=_artifact_publication_row(lease_expires_at=90.0)),
+            _artifact_protocol_response(),
             httpx.Response(204),
+            _artifact_protocol_response(),
             httpx.Response(204),
+            _artifact_protocol_response(),
             httpx.Response(204),
+            _artifact_protocol_response(),
             httpx.Response(204),
             httpx.Response(404),
-            httpx.Response(200, json=_artifact_publication_row(status="INDEXED")),
+            httpx.Response(
+                200,
+                json=_artifact_publication_row(status="INDEXED", index_snapshot_id="42"),
+            ),
             httpx.Response(200, json=[_artifact_publication_row(status="UPLOADED")]),
         ],
         requests,
@@ -639,16 +953,142 @@ async def test_artifact_publication_transport_is_typed_and_scoped():
         assert indexed is not None and indexed.status == "INDEXED"
         assert [record.status for record in due] == ["UPLOADED"]
         assert [request.url.path for request in requests] == [
-            "/ns/test/w/world-1/artifact-publications/acquire",
-            "/ns/test/w/world-1/artifact-publications/publication-1/renew",
-            "/ns/test/w/world-1/artifact-publications/publication-1/uploads",
-            "/ns/test/w/world-1/artifact-publications/publication-1/complete",
-            "/ns/test/w/world-1/artifact-publications/publication-1/fail",
-            "/ns/test/w/world-1/artifact-publications/publication-1/expire",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/acquire-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/renew-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/uploads-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/complete-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/fail-v2",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/expire-v2",
             "/ns/test/w/world-1/artifact-publications/missing",
             "/ns/test/w/world-1/artifact-publications/publication-1",
             "/ns/test/w/world-1/artifact-publications",
         ]
         assert dict(requests[-1].url.params) == {"due": "5.0", "limit": "7"}
+        assert json.loads(requests[7].content)["index_snapshot_id"] == "42"
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_publication_read_rejects_old_numeric_indexed_snapshot():
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json=_artifact_publication_row(
+                    status="INDEXED",
+                    index_snapshot_id=8_123_456_789_012_346_000,
+                ),
+            )
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="lossy snapshot ID"):
+            await catalog.get_artifact_publication("world-1", "publication-1")
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_acquire_missing_capability_fails_before_mutation():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [httpx.Response(200, json={"status": "active"})],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="lossless artifact snapshot IDs"):
+            await _acquire_test_artifact(catalog)
+        assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_acquire_v2_route_404_fails_closed_after_probe():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [_artifact_protocol_response(), httpx.Response(404, json={"error": "bad_route"})],
+        requests,
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await _acquire_test_artifact(catalog)
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/acquire-v2",
+        ]
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize("snapshot_id", [True, 1.5, "1", 0, -1, 1 << 63])
+async def test_artifact_publication_completion_rejects_nonpositive_noninteger_snapshot(
+    snapshot_id,
+):
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    try:
+        with pytest.raises(ValueError, match="positive integer"):
+            await catalog.complete_artifact_publication(
+                "world-1",
+                "publication-1",
+                "owner-1",
+                snapshot_id,
+            )
+        assert requests == []
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_snapshot_protocol_missing_capability_fails_before_write():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "status": "active",
+                    "catalog_protocol_version": 2,
+                    "capabilities": ["attempt_claim_finalization_v2"],
+                },
+            )
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="lossless artifact snapshot IDs"):
+            await catalog.complete_artifact_publication("world-1", "publication-1", "owner-1", 42)
+        assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
+    finally:
+        await catalog.close()
+
+
+async def test_artifact_snapshot_v2_route_404_fails_closed_after_probe():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "status": "active",
+                    "catalog_protocol_version": 3,
+                    "capabilities": ["artifact_snapshot_decimal_v1"],
+                },
+            ),
+            httpx.Response(404, json={"error": "bad_route"}),
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await catalog.complete_artifact_publication("world-1", "publication-1", "owner-1", 42)
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/artifact-publications/publication-1/complete-v2",
+        ]
     finally:
         await catalog.close()

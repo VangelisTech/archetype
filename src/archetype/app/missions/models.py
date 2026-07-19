@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 from pydantic import field_validator, model_validator
 
+from archetype.app.errors import ConflictError
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.transitions import (
     AttemptClaimAcquireOutcome,
     AttemptClaimStatus,
@@ -25,7 +28,41 @@ from archetype.app.missions.transitions import (
     MissionTransitionEvent,
     TaskStatus,
 )
+from archetype.app.redaction.models import RedactedRecord, RedactionReceipt
 from archetype.core.component import Component
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class AttemptArtifactExpiration:
+    """Typed artifact-outbox evidence that one exact publication expired."""
+
+    status: Literal["expired"]
+    bundle_id: str
+    request_digest: str
+    producer_digest: str
+    redaction_policy_id: str
+
+    def __post_init__(self) -> None:
+        if self.status != "expired":
+            raise ValueError("artifact expiration status must be expired")
+        for name in ("bundle_id", "request_digest", "producer_digest"):
+            if not _SHA256_RE.fullmatch(getattr(self, name)):
+                raise ValueError(f"artifact expiration {name} must be a lowercase SHA-256 digest")
+        if not self.redaction_policy_id.strip():
+            raise ValueError("artifact expiration redaction_policy_id must not be empty")
+
+
+class MissionArtifactFinalizationExpiredError(ConflictError):
+    """The exact staged artifact publication can no longer reach INDEXED."""
+
+    def __init__(self, receipt: AttemptArtifactExpiration) -> None:
+        if not isinstance(receipt, AttemptArtifactExpiration):
+            raise TypeError("artifact finalization expiry requires a typed expiration receipt")
+        self.receipt = receipt
+        self.bundle_id = receipt.bundle_id
+        super().__init__(f"artifact publication {receipt.bundle_id} expired")
 
 
 class Mission(Component):
@@ -157,12 +194,62 @@ class Finalization(Component):
     phase: str = FinalizationPhase.PENDING.value
     idempotency_key: str = ""
     manifest_ref: str = ""
+    bundle_id: str = ""
+    request_digest: str = ""
+    producer_digest: str = ""
+    redaction_policy_id: str = ""
+    index_snapshot_id: int = 0
+    legacy_unbound: bool = False
     error: str = ""
 
     @field_validator("phase")
     @classmethod
     def _valid_phase(cls, value: str) -> str:
         return FinalizationPhase(value).value
+
+    @field_validator("index_snapshot_id", mode="before")
+    @classmethod
+    def _exact_snapshot_integer(cls, value: object) -> int:
+        if type(value) is not int:
+            raise ValueError("finalization index_snapshot_id must be an exact integer")
+        if value < 0 or value > MAX_ICEBERG_SNAPSHOT_ID:
+            raise ValueError("finalization index_snapshot_id is outside the signed 64-bit range")
+        return value
+
+    @model_validator(mode="after")
+    def _indexed_authority_is_complete(self) -> Finalization:
+        if self.index_snapshot_id < 0:
+            raise ValueError("finalization index_snapshot_id must be non-negative")
+        phase = FinalizationPhase(self.phase)
+        if self.legacy_unbound:
+            if phase not in {FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED}:
+                raise ValueError(
+                    "legacy unbound finalization must retain a published or indexed phase"
+                )
+            if any(
+                (
+                    self.bundle_id,
+                    self.request_digest,
+                    self.producer_digest,
+                    self.redaction_policy_id,
+                    self.index_snapshot_id,
+                )
+            ):
+                raise ValueError(
+                    "legacy unbound finalization cannot contain current authority evidence"
+                )
+            return self
+        if phase is FinalizationPhase.INDEXED:
+            for name in ("bundle_id", "request_digest", "producer_digest"):
+                if not _SHA256_RE.fullmatch(getattr(self, name)):
+                    raise ValueError(f"indexed finalization requires a lowercase SHA-256 {name}")
+            if not self.redaction_policy_id.strip():
+                raise ValueError("indexed finalization requires a redaction policy identity")
+            if not self.manifest_ref.strip():
+                raise ValueError("indexed finalization requires a manifest reference")
+            if self.index_snapshot_id < 1:
+                raise ValueError("indexed finalization requires a positive index snapshot")
+        return self
 
 
 class Commit(Component):
@@ -218,6 +305,126 @@ class MissionAttemptRequest:
     previous_validator_details: tuple[dict[str, Any], ...]
     correlation: dict[str, Any]
     source: MissionTaskState
+    observation_tick: int = 0
+
+    def __post_init__(self) -> None:
+        if type(self.observation_tick) is not int:
+            raise TypeError("mission attempt observation_tick must be an exact integer")
+        if self.observation_tick < 0:
+            raise ValueError("mission attempt observation_tick must be non-negative")
+
+
+@dataclass(frozen=True)
+class AttemptArtifactProjection:
+    """Exact artifact request staged with a claim before publication I/O."""
+
+    request_json: str
+    request_digest: str
+    publication_key: str
+    producer_digest: str
+    redaction_policy_id: str
+
+    def __post_init__(self) -> None:
+        try:
+            value = json.loads(self.request_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("prepared artifact request_json is invalid") from exc
+        if not isinstance(value, dict):
+            raise ValueError("prepared artifact request_json must be an object")
+        canonical = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        if canonical != self.request_json:
+            raise ValueError("prepared artifact request_json must be canonical")
+        if hashlib.sha256(self.request_json.encode()).hexdigest() != self.request_digest:
+            raise ValueError("prepared artifact request digest does not match its JSON")
+        for name in ("request_digest", "publication_key", "producer_digest"):
+            if not _SHA256_RE.fullmatch(getattr(self, name)):
+                raise ValueError(f"prepared artifact {name} must be a lowercase SHA-256 digest")
+        if not self.redaction_policy_id.strip():
+            raise ValueError("prepared artifact redaction_policy_id must not be empty")
+
+
+@dataclass(frozen=True)
+class AttemptArtifactPublication:
+    """Mission-facing artifact receipt checked before indexed advancement."""
+
+    status: FinalizationPhase
+    bundle_id: str
+    manifest_uri: str
+    index_snapshot_id: int
+    request_digest: str
+    producer_digest: str
+    redaction_policy_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, FinalizationPhase):
+            raise TypeError("artifact publication status must be a FinalizationPhase")
+        for name in ("bundle_id", "request_digest", "producer_digest"):
+            if not _SHA256_RE.fullmatch(getattr(self, name)):
+                raise ValueError(f"artifact publication {name} must be a lowercase SHA-256 digest")
+        if not self.manifest_uri.strip():
+            raise ValueError("artifact publication manifest_uri must not be empty")
+        if type(self.index_snapshot_id) is not int:
+            raise TypeError("artifact publication index_snapshot_id must be an exact integer")
+        if not 1 <= self.index_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
+            raise ValueError(
+                "artifact publication index_snapshot_id must be within the positive "
+                "signed 64-bit range"
+            )
+        if not self.redaction_policy_id.strip():
+            raise ValueError("artifact publication redaction_policy_id must not be empty")
+
+
+FinalizationSettlementKind = Literal["indexed", "expired"]
+
+
+@dataclass(frozen=True)
+class PreparedFinalizationSettlement:
+    """Claim-bound, service-sealed terminal outcome for one finalizing attempt."""
+
+    claim_key: str
+    world_id: str
+    attempt_id: str
+    claimant: str
+    fence_epoch: int
+    attempt_status: AttemptStatus
+    kind: FinalizationSettlementKind
+    outcome: RedactedRecord
+    seal: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("claim_key", "world_id", "attempt_id", "claimant"):
+            if not getattr(self, name).strip():
+                raise ValueError(f"prepared finalization {name} must not be empty")
+        if type(self.fence_epoch) is not int or self.fence_epoch < 1:
+            raise ValueError("prepared finalization fence_epoch must be a positive integer")
+        if not isinstance(self.attempt_status, AttemptStatus):
+            raise TypeError("prepared finalization attempt_status must be typed")
+        if self.attempt_status is AttemptStatus.PENDING:
+            raise ValueError("prepared finalization cannot settle as pending")
+        if self.kind not in {"indexed", "expired"}:
+            raise ValueError("prepared finalization kind is invalid")
+        if not isinstance(self.outcome, RedactedRecord):
+            raise TypeError("prepared finalization outcome must be a RedactedRecord")
+        if not _SHA256_RE.fullmatch(self.seal):
+            raise ValueError("prepared finalization seal must be a lowercase SHA-256 digest")
+
+    @property
+    def value(self) -> dict[str, Any]:
+        """Expose the sanitized value that may be projected only after settlement."""
+
+        return self.outcome.value
+
+    @property
+    def receipt(self) -> RedactionReceipt:
+        """Expose the outcome's redaction receipt without weakening the seal."""
+
+        return self.outcome.receipt
 
 
 def normalize_attempt_validators(
@@ -389,12 +596,19 @@ class AttemptClaim:
     settlement_status: str
     outcome_digest: str
     outcome_json: str
+    artifact_request_json: str
+    artifact_request_digest: str
+    artifact_publication_key: str
     last_error: str
     created_at: str
     updated_at: str
     possibly_submitted_at: str | None
     acknowledged_at: str | None
+    finalizing_at: str | None
     settled_at: str | None
+    contract_version: int = 8
+    legacy_unbound_eligible: bool = False
+    legacy_unbound: bool = False
 
 
 @dataclass(frozen=True)

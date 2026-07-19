@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.models import (
     MissionAttemptRequest,
     attempt_invocation_fingerprint,
@@ -20,6 +22,7 @@ from archetype.app.missions.transitions import (
 )
 
 REPOSITORY_CHANGE_GATE_NAME = "git_tree_change"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REPLAY_REQUIRED_OUTCOME_FIELDS = frozenset(
     {
         "attempt_id",
@@ -69,11 +72,73 @@ class MissionAttemptAssessment:
     attempt_status: AttemptStatus
 
 
-def assess_attempt_outcome(
+def _phase_satisfies_gate(
+    actual: FinalizationPhase,
+    required: FinalizationPhase,
+) -> bool:
+    """Apply ordered publication phases with explicit legacy compatibility."""
+
+    if actual is FinalizationPhase.PUBLISHED:
+        # ``published`` predates the artifact outbox. It remains sufficient for
+        # the old checkpoint-and-delivery policies, but is never evidence that
+        # an artifact bundle reached UPLOADED or INDEXED.
+        return required in {
+            FinalizationPhase.PENDING,
+            FinalizationPhase.CAPTURED,
+            FinalizationPhase.CHECKPOINTED,
+            FinalizationPhase.PUBLISHED,
+        }
+    if required is FinalizationPhase.PUBLISHED:
+        return False
+    if required is FinalizationPhase.INDEXED:
+        return actual is FinalizationPhase.INDEXED
+    return actual.rank >= required.rank
+
+
+def _validate_indexed_authority(outcome: Mapping[str, Any]) -> None:
+    """Require complete typed evidence whenever an outcome claims INDEXED."""
+
+    for field in (
+        "finalization_bundle_id",
+        "finalization_request_digest",
+        "finalization_producer_digest",
+    ):
+        if not _SHA256_RE.fullmatch(str(outcome.get(field, ""))):
+            raise ValueError(f"indexed attempt outcome requires a lowercase SHA-256 {field}")
+    if not str(outcome.get("finalization_redaction_policy_id", "")).strip():
+        raise ValueError("indexed attempt outcome requires a redaction policy identity")
+    if not str(outcome.get("finalization_manifest_ref", "")).strip():
+        raise ValueError("indexed attempt outcome requires a manifest reference")
+    raw_snapshot = outcome.get("finalization_index_snapshot_id", 0)
+    if type(raw_snapshot) is not int:
+        raise ValueError("indexed attempt outcome requires an exact integer index snapshot")
+    if not 1 <= raw_snapshot <= MAX_ICEBERG_SNAPSHOT_ID:
+        raise ValueError(
+            "indexed attempt outcome requires an index snapshot within the positive "
+            "signed 64-bit range"
+        )
+
+    staged_to_final = (
+        ("artifact_publication_key", "finalization_bundle_id"),
+        ("artifact_request_digest", "finalization_request_digest"),
+        ("artifact_producer_digest", "finalization_producer_digest"),
+        ("artifact_redaction_policy_id", "finalization_redaction_policy_id"),
+    )
+    for staged_field, final_field in staged_to_final:
+        staged = str(outcome.get(staged_field, ""))
+        if not staged:
+            raise ValueError(f"indexed attempt outcome requires staged authority {staged_field}")
+        if staged != str(outcome[final_field]):
+            raise ValueError(f"indexed attempt outcome {final_field} does not match {staged_field}")
+
+
+def _assess_attempt_outcome(
     request: MissionAttemptRequest,
     outcome: Mapping[str, Any],
+    *,
+    legacy_unbound: bool,
 ) -> MissionAttemptAssessment:
-    """Validate a replayable outcome and derive its authoritative attempt status."""
+    """Validate one outcome under either current or terminal-legacy semantics."""
 
     missing = sorted(REPLAY_REQUIRED_OUTCOME_FIELDS - outcome.keys())
     if missing:
@@ -222,8 +287,15 @@ def assess_attempt_outcome(
         raise ValueError(
             f"unknown outcome finalization phase: {outcome['finalization_phase']!r}"
         ) from exc
+    if actual_phase is FinalizationPhase.INDEXED and not legacy_unbound:
+        _validate_indexed_authority(outcome)
     gate_passed = (
-        accepted and restorable and actual_phase.rank >= request.required_finalization_phase.rank
+        accepted
+        and restorable
+        and (
+            legacy_unbound
+            or _phase_satisfies_gate(actual_phase, request.required_finalization_phase)
+        )
     )
     attempt_status = (
         AttemptStatus.ACCEPTED
@@ -243,3 +315,41 @@ def assess_attempt_outcome(
         gate_passed=gate_passed,
         attempt_status=attempt_status,
     )
+
+
+def assess_attempt_outcome(
+    request: MissionAttemptRequest,
+    outcome: Mapping[str, Any],
+) -> MissionAttemptAssessment:
+    """Validate a replayable outcome under the current write authority."""
+
+    return _assess_attempt_outcome(request, outcome, legacy_unbound=False)
+
+
+def assess_legacy_unbound_settled_outcome(
+    request: MissionAttemptRequest,
+    outcome: Mapping[str, Any],
+) -> MissionAttemptAssessment:
+    """Read one accepted pre-v8 terminal outcome without upgrading its evidence.
+
+    This compatibility path is intentionally separate from current assessment:
+    callers may use it only after a durable claim is already terminal. Pre-v8
+    outcomes could satisfy an INDEXED gate with either the legacy PUBLISHED
+    rank or a bare INDEXED phase, before exact artifact authority was stored.
+    """
+
+    if request.required_finalization_phase is not FinalizationPhase.INDEXED:
+        raise ValueError("legacy unbound finalization requires an indexed mission gate")
+    try:
+        phase = FinalizationPhase(str(outcome["finalization_phase"]))
+    except (KeyError, ValueError) as exc:
+        raise ValueError("legacy unbound finalization has an invalid phase") from exc
+    if phase not in {FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED}:
+        raise ValueError("legacy unbound finalization must be published or indexed")
+
+    # v7 accepted arbitrary extra keys. Authority-shaped names in its terminal
+    # bytes are inert compatibility data, never current artifact provenance.
+    assessment = _assess_attempt_outcome(request, outcome, legacy_unbound=True)
+    if assessment.attempt_status is not AttemptStatus.ACCEPTED:
+        raise ValueError("legacy unbound finalization is not an accepted terminal outcome")
+    return assessment

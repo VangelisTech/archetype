@@ -57,14 +57,33 @@ from uuid_utils import uuid7
 
 from archetype._storage_uri import local_storage_path, normalized_storage_uri
 from archetype.app.errors import AvailabilityError, ConflictError
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.core.config import StorageConfig
 from archetype.core.interfaces import StaleWriterError
 from archetype.core.paths import require_safe_namespace, resolve_local_root
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _DIGEST_DOMAIN = "archetype.catalog.v1"
+
+
+def _is_unbound_legacy_indexed_claim(row: sqlite3.Row) -> bool:
+    """Classify only pre-v8 unbound claims whose mission gate was INDEXED."""
+
+    try:
+        request = json.loads(str(row["request_json"]))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if not isinstance(request, dict):
+        return False
+    return (
+        "claim_contract_version" not in request
+        and request.get("required_finalization_phase") == "indexed"
+        and not str(row["artifact_request_json"])
+        and not str(row["artifact_request_digest"])
+        and not str(row["artifact_publication_key"])
+    )
 
 
 class CatalogConflictError(ConflictError):
@@ -306,11 +325,16 @@ class AttemptClaimRecord:
     settlement_status: str
     outcome_digest: str
     outcome_json: str
+    artifact_request_json: str
+    artifact_request_digest: str
+    artifact_publication_key: str
+    legacy_unbound_eligible: bool
     last_error: str
     created_at: str
     updated_at: str
     possibly_submitted_at: str | None
     acknowledged_at: str | None
+    finalizing_at: str | None
     settled_at: str | None
 
 
@@ -483,6 +507,9 @@ class ControlCatalog(Protocol):
         settlement_status: str = "",
         outcome_digest: str = "",
         outcome_json: str = "",
+        artifact_request_json: str = "",
+        artifact_request_digest: str = "",
+        artifact_publication_key: str = "",
         last_error: str = "",
     ) -> AttemptClaimRecord: ...
     async def consume_attempt_execution(
@@ -687,11 +714,16 @@ CREATE TABLE IF NOT EXISTS mission_attempt_claims (
     settlement_status TEXT NOT NULL DEFAULT '',
     outcome_digest TEXT NOT NULL DEFAULT '',
     outcome_json TEXT NOT NULL DEFAULT '',
+    artifact_request_json TEXT NOT NULL DEFAULT '',
+    artifact_request_digest TEXT NOT NULL DEFAULT '',
+    artifact_publication_key TEXT NOT NULL DEFAULT '',
+    legacy_unbound_eligible INTEGER NOT NULL DEFAULT 0,
     last_error TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     possibly_submitted_at TEXT,
     acknowledged_at TEXT,
+    finalizing_at TEXT,
     settled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS mission_attempt_claims_due
@@ -817,6 +849,11 @@ class SqliteControlCatalog:
                 str(row["name"])
                 for row in conn.execute("PRAGMA table_info(mission_attempt_claims)").fetchall()
             }
+            legacy_unbound_migration = version < 8 and not {
+                "artifact_request_json",
+                "artifact_request_digest",
+                "artifact_publication_key",
+            }.issubset(attempt_claim_columns)
             if "execution_nonce" not in attempt_claim_columns:
                 conn.execute(
                     "ALTER TABLE mission_attempt_claims ADD COLUMN "
@@ -841,9 +878,51 @@ class SqliteControlCatalog:
                     "ALTER TABLE mission_attempt_claims ADD COLUMN "
                     "redaction_evidence_json TEXT NOT NULL DEFAULT ''"
                 )
+            if "artifact_request_json" not in attempt_claim_columns:
+                conn.execute(
+                    "ALTER TABLE mission_attempt_claims ADD COLUMN "
+                    "artifact_request_json TEXT NOT NULL DEFAULT ''"
+                )
+            if "artifact_request_digest" not in attempt_claim_columns:
+                conn.execute(
+                    "ALTER TABLE mission_attempt_claims ADD COLUMN "
+                    "artifact_request_digest TEXT NOT NULL DEFAULT ''"
+                )
+            if "artifact_publication_key" not in attempt_claim_columns:
+                conn.execute(
+                    "ALTER TABLE mission_attempt_claims ADD COLUMN "
+                    "artifact_publication_key TEXT NOT NULL DEFAULT ''"
+                )
+            if "finalizing_at" not in attempt_claim_columns:
+                conn.execute("ALTER TABLE mission_attempt_claims ADD COLUMN finalizing_at TEXT")
+            if "legacy_unbound_eligible" not in attempt_claim_columns:
+                conn.execute(
+                    "ALTER TABLE mission_attempt_claims ADD COLUMN "
+                    "legacy_unbound_eligible INTEGER NOT NULL DEFAULT 0"
+                )
+            if legacy_unbound_migration:
+                candidates = conn.execute(
+                    "SELECT * FROM mission_attempt_claims WHERE status='settled'"
+                ).fetchall()
+                for candidate in candidates:
+                    if _is_unbound_legacy_indexed_claim(candidate):
+                        conn.execute(
+                            "UPDATE mission_attempt_claims SET legacy_unbound_eligible=1 "
+                            "WHERE claim_key=?",
+                            (str(candidate["claim_key"]),),
+                        )
             conn.execute(
                 "UPDATE catalog_meta SET value=? WHERE key='schema_version'",
                 (str(_SCHEMA_VERSION),),
+            )
+        current_attempt_claim_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(mission_attempt_claims)").fetchall()
+        }
+        if "legacy_unbound_eligible" not in current_attempt_claim_columns:
+            conn.execute(
+                "ALTER TABLE mission_attempt_claims ADD COLUMN "
+                "legacy_unbound_eligible INTEGER NOT NULL DEFAULT 0"
             )
         conn.commit()
         self._conn = conn
@@ -1122,16 +1201,28 @@ class SqliteControlCatalog:
         settlement_status: str = "",
         outcome_digest: str = "",
         outcome_json: str = "",
+        artifact_request_json: str = "",
+        artifact_request_digest: str = "",
+        artifact_publication_key: str = "",
         last_error: str = "",
     ) -> AttemptClaimRecord:
         """CAS one typed mission-owned transition while preserving its evidence."""
 
-        if target_status == "possibly_submitted" and not execution_nonce:
-            raise ValueError("arming submission requires an execution nonce")
-        if execution_nonce and target_status != "possibly_submitted":
-            raise ValueError("execution nonce may only be recorded while arming submission")
-        if redaction_evidence_json and not redaction_evidence_json.strip():
-            raise ValueError("redaction evidence update must not be blank")
+        _validate_attempt_claim_transition(
+            expected_status=expected_status,
+            target_status=target_status,
+            execution_nonce=execution_nonce,
+            redaction_evidence_json=redaction_evidence_json,
+            provider_session_id=provider_session_id,
+            provider_request_id=provider_request_id,
+            settlement_status=settlement_status,
+            outcome_digest=outcome_digest,
+            outcome_json=outcome_json,
+            artifact_request_json=artifact_request_json,
+            artifact_request_digest=artifact_request_digest,
+            artifact_publication_key=artifact_publication_key,
+            last_error=last_error,
+        )
 
         def _transition() -> AttemptClaimRecord:
             conn = self._connect_sync()
@@ -1152,7 +1243,24 @@ class SqliteControlCatalog:
                         f"attempt claim {claim_key} is fenced by "
                         f"{existing.claimant}@{existing.fence_epoch}"
                     )
+                replay_matches = _attempt_claim_transition_replay_matches(
+                    existing,
+                    expected_status=expected_status,
+                    target_status=target_status,
+                    redaction_evidence_json=redaction_evidence_json,
+                    provider_session_id=provider_session_id,
+                    provider_request_id=provider_request_id,
+                    settlement_status=settlement_status,
+                    outcome_digest=outcome_digest,
+                    outcome_json=outcome_json,
+                    artifact_request_json=artifact_request_json,
+                    artifact_request_digest=artifact_request_digest,
+                    artifact_publication_key=artifact_publication_key,
+                    last_error=last_error,
+                )
                 if existing.status == "settled":
+                    if target_status == "settled" and replay_matches:
+                        return existing
                     raise AttemptClaimStaleError(
                         f"settled attempt claim {claim_key} cannot be mutated"
                     )
@@ -1161,12 +1269,47 @@ class SqliteControlCatalog:
                         f"attempt claim {claim_key} lease expired before transition"
                     )
                 if existing.status != expected_status:
+                    if (
+                        existing.status == "finalizing"
+                        and target_status == "finalizing"
+                        and replay_matches
+                    ):
+                        return existing
                     raise AttemptClaimConflictError(
                         f"attempt claim {claim_key} is {existing.status}, expected {expected_status}"
                     )
+                if expected_status == "finalizing" and target_status == "settled":
+                    if not all(
+                        (
+                            existing.artifact_request_json,
+                            existing.artifact_request_digest,
+                            existing.artifact_publication_key,
+                        )
+                    ):
+                        raise AttemptClaimConflictError(
+                            f"attempt claim {claim_key} has incomplete finalization evidence"
+                        )
+                    if (
+                        outcome_digest == existing.outcome_digest
+                        or outcome_json == existing.outcome_json
+                    ):
+                        raise AttemptClaimConflictError(
+                            f"attempt claim {claim_key} settlement must replace provisional outcome"
+                        )
+                for field, supplied in (
+                    ("artifact_request_json", artifact_request_json),
+                    ("artifact_request_digest", artifact_request_digest),
+                    ("artifact_publication_key", artifact_publication_key),
+                ):
+                    recorded = getattr(existing, field)
+                    if supplied and recorded and supplied != recorded:
+                        raise AttemptClaimConflictError(
+                            f"attempt claim {claim_key} immutable {field} changed"
+                        )
                 now_text = _utcnow()
                 possibly_submitted_at = now_text if target_status == "possibly_submitted" else None
                 acknowledged_at = now_text if target_status == "provider_acknowledged" else None
+                finalizing_at = now_text if target_status == "finalizing" else None
                 settled_at = now_text if target_status == "settled" else None
                 cursor = conn.execute(
                     "UPDATE mission_attempt_claims SET status=?, "
@@ -1178,9 +1321,16 @@ class SqliteControlCatalog:
                     "settlement_status=CASE WHEN ?='' THEN settlement_status ELSE ? END, "
                     "outcome_digest=CASE WHEN ?='' THEN outcome_digest ELSE ? END, "
                     "outcome_json=CASE WHEN ?='' THEN outcome_json ELSE ? END, "
-                    "last_error=CASE WHEN ?='' THEN last_error ELSE ? END, updated_at=?, "
+                    "artifact_request_json=CASE WHEN ?='' THEN artifact_request_json ELSE ? END, "
+                    "artifact_request_digest=CASE WHEN ?='' "
+                    "THEN artifact_request_digest ELSE ? END, "
+                    "artifact_publication_key=CASE WHEN ?='' "
+                    "THEN artifact_publication_key ELSE ? END, "
+                    "last_error=CASE WHEN ?='settled' THEN ? "
+                    "WHEN ?='' THEN last_error ELSE ? END, updated_at=?, "
                     "possibly_submitted_at=COALESCE(possibly_submitted_at, ?), "
                     "acknowledged_at=COALESCE(acknowledged_at, ?), "
+                    "finalizing_at=COALESCE(finalizing_at, ?), "
                     "settled_at=COALESCE(settled_at, ?) "
                     "WHERE claim_key=? AND world_id=? AND status=? "
                     "AND status!='settled' AND claimant=? AND fence_epoch=? "
@@ -1201,11 +1351,20 @@ class SqliteControlCatalog:
                         outcome_digest,
                         outcome_json,
                         outcome_json,
+                        artifact_request_json,
+                        artifact_request_json,
+                        artifact_request_digest,
+                        artifact_request_digest,
+                        artifact_publication_key,
+                        artifact_publication_key,
+                        target_status,
+                        last_error,
                         last_error,
                         last_error,
                         now_text,
                         possibly_submitted_at,
                         acknowledged_at,
+                        finalizing_at,
                         settled_at,
                         claim_key,
                         world_id,
@@ -1774,6 +1933,14 @@ class SqliteControlCatalog:
     ) -> None:
         """Mark the bundle indexed after its query rows become visible."""
 
+        if (
+            isinstance(index_snapshot_id, bool)
+            or not isinstance(index_snapshot_id, int)
+            or index_snapshot_id <= 0
+            or index_snapshot_id > MAX_ICEBERG_SNAPSHOT_ID
+        ):
+            raise ValueError("index_snapshot_id must be a positive integer no greater than 2^63-1")
+
         def _complete() -> None:
             conn = self._connect_sync()
             with conn:
@@ -1788,7 +1955,12 @@ class SqliteControlCatalog:
                     )
                 existing = _artifact_publication_from_row(row)
                 if existing.status == "INDEXED":
-                    return
+                    if existing.index_snapshot_id == index_snapshot_id:
+                        return
+                    raise ArtifactPublicationConflictError(
+                        f"artifact publication {publication_key} was indexed at snapshot "
+                        f"{existing.index_snapshot_id}, not {index_snapshot_id}"
+                    )
                 if existing.status != "UPLOADED":
                     raise ArtifactPublicationConflictError(
                         f"artifact publication {publication_key} cannot move from "
@@ -1805,7 +1977,7 @@ class SqliteControlCatalog:
                     "index_snapshot_id=?, last_error='', updated_at=?, completed_at=? "
                     "WHERE publication_key=?",
                     (
-                        int(index_snapshot_id),
+                        index_snapshot_id,
                         completed,
                         completed,
                         publication_key,
@@ -2675,16 +2847,212 @@ def _attempt_claim_from_row(row: sqlite3.Row) -> AttemptClaimRecord:
         settlement_status=row["settlement_status"],
         outcome_digest=row["outcome_digest"],
         outcome_json=row["outcome_json"],
+        artifact_request_json=row["artifact_request_json"],
+        artifact_request_digest=row["artifact_request_digest"],
+        artifact_publication_key=row["artifact_publication_key"],
+        legacy_unbound_eligible=bool(row["legacy_unbound_eligible"]),
         last_error=row["last_error"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         possibly_submitted_at=row["possibly_submitted_at"],
         acknowledged_at=row["acknowledged_at"],
+        finalizing_at=row["finalizing_at"],
         settled_at=row["settled_at"],
     )
 
 
+_ATTEMPT_CLAIM_EDGES = frozenset(
+    {
+        ("claimed", "possibly_submitted"),
+        ("possibly_submitted", "provider_acknowledged"),
+        ("provider_acknowledged", "finalizing"),
+        ("claimed", "settled"),
+        ("possibly_submitted", "settled"),
+        ("provider_acknowledged", "settled"),
+        ("finalizing", "settled"),
+    }
+)
+
+
+def _validate_attempt_claim_transition(
+    *,
+    expected_status: str,
+    target_status: str,
+    execution_nonce: str,
+    redaction_evidence_json: str,
+    provider_session_id: str,
+    provider_request_id: str,
+    settlement_status: str,
+    outcome_digest: str,
+    outcome_json: str,
+    artifact_request_json: str,
+    artifact_request_digest: str,
+    artifact_publication_key: str,
+    last_error: str,
+) -> None:
+    """Reject incomplete target receipts before any catalog mutation."""
+
+    if (expected_status, target_status) not in _ATTEMPT_CLAIM_EDGES:
+        raise ValueError(f"illegal attempt claim transition: {expected_status} to {target_status}")
+    if target_status == "possibly_submitted" and not execution_nonce:
+        raise ValueError("arming submission requires an execution nonce")
+    if execution_nonce and target_status != "possibly_submitted":
+        raise ValueError("execution nonce may only be recorded while arming submission")
+    if redaction_evidence_json and not redaction_evidence_json.strip():
+        raise ValueError("redaction evidence update must not be blank")
+
+    artifact_evidence = (
+        artifact_request_json,
+        artifact_request_digest,
+        artifact_publication_key,
+    )
+    terminal_evidence = (
+        settlement_status,
+        outcome_digest,
+        outcome_json,
+        *artifact_evidence,
+        last_error,
+    )
+    if target_status in {"possibly_submitted", "provider_acknowledged"}:
+        if any(terminal_evidence):
+            raise ValueError("non-terminal transition may not record terminal evidence")
+        if target_status == "provider_acknowledged":
+            if not redaction_evidence_json.strip():
+                raise ValueError("provider acknowledgement requires redaction evidence")
+            if not (provider_session_id.strip() or provider_request_id.strip()):
+                raise ValueError("provider acknowledgement requires a provider identity")
+        elif provider_session_id or provider_request_id:
+            raise ValueError(
+                "provider identity may only be recorded during provider acknowledgement"
+            )
+        return
+
+    if provider_session_id or provider_request_id:
+        raise ValueError("provider identity may only be recorded during provider acknowledgement")
+
+    if target_status == "finalizing":
+        if not redaction_evidence_json.strip():
+            raise ValueError("entering finalizing requires redaction evidence")
+        if settlement_status or last_error:
+            raise ValueError("terminal settlement evidence may only be recorded while settling")
+        if not all(value.strip() for value in artifact_evidence):
+            raise ValueError("entering finalizing requires a complete artifact request")
+        if not outcome_digest.strip() or not outcome_json.strip():
+            raise ValueError("entering finalizing requires a complete durable outcome")
+        return
+
+    if target_status == "settled":
+        missing = [
+            name
+            for name, value in (
+                ("redaction_evidence_json", redaction_evidence_json),
+                ("settlement_status", settlement_status),
+                ("outcome_digest", outcome_digest),
+                ("outcome_json", outcome_json),
+            )
+            if not value.strip()
+        ]
+        if missing:
+            raise ValueError(
+                "entering settled requires complete terminal evidence: " + ", ".join(missing)
+            )
+        if any(artifact_evidence) and not all(value.strip() for value in artifact_evidence):
+            raise ValueError("settlement artifact evidence must be complete when supplied")
+        if any(artifact_evidence) and expected_status != "finalizing":
+            raise ValueError("artifact request evidence may only be recorded while finalizing")
+        return
+
+    if any(artifact_evidence):
+        raise ValueError("artifact request evidence may only be recorded while finalizing")
+
+
+def _attempt_claim_settlement_source(record: AttemptClaimRecord) -> str:
+    """Recover the source state of a terminal transition from durable evidence."""
+
+    if record.finalizing_at or any(
+        (
+            record.artifact_request_json,
+            record.artifact_request_digest,
+            record.artifact_publication_key,
+        )
+    ):
+        return "finalizing"
+    if record.acknowledged_at:
+        return "provider_acknowledged"
+    if record.possibly_submitted_at:
+        return "possibly_submitted"
+    return "claimed"
+
+
+def _attempt_claim_transition_replay_matches(
+    record: AttemptClaimRecord,
+    *,
+    expected_status: str,
+    target_status: str,
+    redaction_evidence_json: str,
+    provider_session_id: str,
+    provider_request_id: str,
+    settlement_status: str,
+    outcome_digest: str,
+    outcome_json: str,
+    artifact_request_json: str,
+    artifact_request_digest: str,
+    artifact_publication_key: str,
+    last_error: str,
+) -> bool:
+    """Whether an already-committed target has the exact requested receipt."""
+
+    if target_status == "finalizing":
+        if expected_status != "provider_acknowledged":
+            return False
+        exact = (
+            ("redaction_evidence_json", redaction_evidence_json),
+            ("outcome_digest", outcome_digest),
+            ("outcome_json", outcome_json),
+            ("artifact_request_json", artifact_request_json),
+            ("artifact_request_digest", artifact_request_digest),
+            ("artifact_publication_key", artifact_publication_key),
+        )
+    elif target_status == "settled":
+        if expected_status != _attempt_claim_settlement_source(record):
+            return False
+        exact = (
+            ("redaction_evidence_json", redaction_evidence_json),
+            ("settlement_status", settlement_status),
+            ("outcome_digest", outcome_digest),
+            ("outcome_json", outcome_json),
+            ("last_error", last_error),
+        )
+    else:
+        return False
+
+    if any(getattr(record, field) != supplied for field, supplied in exact):
+        return False
+
+    # Provider identities and staged artifacts are inherited source evidence.
+    # Empty arguments preserve them; any explicitly repeated value is exact.
+    return all(
+        not supplied or getattr(record, field) == supplied
+        for field, supplied in (
+            ("provider_session_id", provider_session_id),
+            ("provider_request_id", provider_request_id),
+            ("artifact_request_json", artifact_request_json),
+            ("artifact_request_digest", artifact_request_digest),
+            ("artifact_publication_key", artifact_publication_key),
+        )
+    )
+
+
 def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecord:
+    raw_snapshot_id = row["index_snapshot_id"]
+    status = str(row["status"])
+    if type(raw_snapshot_id) is not int:
+        raise RuntimeError("local artifact publication has a lossy snapshot ID")
+    if status == "INDEXED":
+        if not 1 <= raw_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
+            raise RuntimeError("local INDEXED artifact publication snapshot ID is out of range")
+    elif raw_snapshot_id != 0:
+        raise RuntimeError("local unindexed artifact publication has a nonzero snapshot ID")
     return ArtifactPublicationRecord(
         publication_key=row["publication_key"],
         world_id=row["world_id"],
@@ -2692,14 +3060,14 @@ def _artifact_publication_from_row(row: sqlite3.Row) -> ArtifactPublicationRecor
         attempt_id=row["attempt_id"],
         idempotency_key=row["idempotency_key"],
         request_digest=row["request_digest"],
-        status=row["status"],
+        status=status,
         request_json=row["request_json"],
         records_json=row["records_json"],
         claimant=row["claimant"],
         lease_expires_at=float(row["lease_expires_at"]),
         retry_until_ms=int(row["retry_until_ms"]),
         attempt_count=int(row["attempt_count"]),
-        index_snapshot_id=int(row["index_snapshot_id"]),
+        index_snapshot_id=raw_snapshot_id,
         manifest_uri=row["manifest_uri"],
         last_error=row["last_error"],
         created_at=row["created_at"],

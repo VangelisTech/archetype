@@ -53,26 +53,50 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     methods = _service_methods(tree)
     errors: list[str] = []
-    required = {"publish", "reconcile", "_upload_bundle"}
+    required = {
+        "prepare",
+        "publish",
+        "publish_prepared",
+        "reconcile",
+        "_resume",
+        "_upload_bundle",
+    }
     missing = sorted(required - methods.keys())
     errors.extend(f"ArtifactBundleService is missing {name}()" for name in missing)
     if missing:
         return errors
 
+    prepare = methods["prepare"]
     publish = methods["publish"]
+    publish_prepared = methods["publish_prepared"]
     reconcile = methods["reconcile"]
+    resume = methods["_resume"]
     upload_bundle = methods["_upload_bundle"]
     _require_order(
         errors,
-        publish,
-        "publish",
+        prepare,
+        "prepare",
         "_bind_redaction_policy",
-        "_control_catalog",
+        "canonical_json",
     )
     _require_order(
         errors,
         publish,
         "publish",
+        "prepare",
+        "publish_prepared",
+    )
+    _require_order(
+        errors,
+        publish_prepared,
+        "publish_prepared",
+        "_request_from_preparation",
+        "_control_catalog",
+    )
+    _require_order(
+        errors,
+        publish_prepared,
+        "publish_prepared",
         "_safe_failure_detail",
         "fail_artifact_publication",
     )
@@ -82,6 +106,20 @@ def audit_path(path: Path = DEFAULT_TARGET) -> list[str]:
         "reconcile",
         "_safe_failure_detail",
         "fail_artifact_publication",
+    )
+    _require_order(
+        errors,
+        resume,
+        "_resume",
+        "_assert_object_root_safe",
+        "_upload_bundle",
+    )
+    _require_order(
+        errors,
+        resume,
+        "_resume",
+        "_assert_object_root_safe",
+        "_index_records",
     )
     _require_order(
         errors,
