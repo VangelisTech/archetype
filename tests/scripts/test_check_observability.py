@@ -1249,8 +1249,15 @@ def approved() -> None:
     import logging
     logging.getLogger("dependency").{method}(logging.Filter())
 """
-    manifests = _write_fixture(tmp_path, hosts=HOSTS, obs=OBS_VOCABULARY + source)
-    _assert_rejected(_audit(tmp_path))
+    manifests = _write_fixture(tmp_path, obs=OBS_VOCABULARY + source)
+    rejected = _audit(tmp_path)
+    assert not rejected.policy_errors
+    assert any(
+        violation.rule == "configuration_boundary"
+        and violation.qualified_scope == "archetype._obs.approved"
+        and violation.target.startswith(f"call:{method}:")
+        for violation in rejected.violations
+    )
 
     hosts = _with_host(
         "archetype._obs.approved",
