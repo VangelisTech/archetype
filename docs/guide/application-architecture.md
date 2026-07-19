@@ -96,7 +96,12 @@ only reviewed lower top-level family contracts declared in
 configure providers, exporters, storage backends, process hosts, or the
 service container. The application layer may import a registered top-level
 family contract; the reverse edge is forbidden. Undeclared top-level
-family-to-family dependencies are denied.
+family-to-family dependencies are denied. Every first-party package directly
+beneath `archetype` is classified as reserved infrastructure or registered as
+a domain family with one exact dependency disposition. Unclassified packages
+fail the architecture audit, and the complete registered family graph must be
+acyclic. Imports through the `archetype` root facade are resolved to the module
+that owns the exported package or symbol before these rules are applied.
 
 Naming states semantic ownership:
 
@@ -109,9 +114,9 @@ Naming states semantic ownership:
 - `service.py` contains application authority or orchestration.
 
 A `Component` is persistent ECS schema even though its implementation uses
-Pydantic. It is not an application DTO and does not belong in an app
-`models.py`. Conversely, a top-level path does not automatically make a symbol
-public. Supported names remain an explicit classification owned by
+Pydantic. It is not an application DTO and does not belong anywhere under
+`archetype.app`. Conversely, a top-level path does not automatically make a
+symbol public. Supported names remain an explicit classification owned by
 [API Stability](api-stability.md); concrete services and `ServiceContainer`
 remain internal.
 
@@ -367,13 +372,18 @@ Together, the repository's architecture and observability checkers must:
 
 - cover every declared source scope and fail if a required scope is empty;
 - reject missing, stale, duplicate, or empty top-level family registrations;
+- reject any first-party top-level package that lacks an explicit reserved-
+  infrastructure or registered-family classification;
 - require one exact cross-family dependency disposition for every registered
   top-level family;
+- reject cycles in the complete registered top-level family graph;
 - reject top-level-family imports of app, runtime, API, or CLI and reject
   undeclared top-level family-to-family imports;
+- resolve root-facade package and symbol imports to their owning module before
+  enforcing package direction;
 - allow application authority to consume registered top-level family
   contracts without treating that path as public-API promotion;
-- reject direct `Component` subclasses in any app-family `models.py`;
+- reject direct `Component` subclasses anywhere under `archetype.app`;
 - enforce the existing outer-package and application-family dependency rules;
 - confine `ActorCtx` to gateway/auth code and approved adapter construction;
 - restrict concrete cross-family construction to `container.py`;

@@ -37,9 +37,19 @@ forbidden_outward = [
   "archetype.api",
   "archetype.cli",
 ]
+reserved_infrastructure = [
+  "archetype.api",
+  "archetype.app",
+  "archetype.cli",
+  "archetype.contrib",
+  "archetype.core",
+  "archetype.runtime",
+]
 
-# Top-level domain families may import core and themselves implicitly. Every
-# reviewed family-to-family edge must name the exact lower family here.
+# Every first-party top-level package is classified above or registered as a
+# domain family below. Domain families may import core and themselves
+# implicitly. Every reviewed family-to-family edge must name the exact lower
+# family here, and the complete graph must remain acyclic.
 
 [[top_level_family_rule]]
 name = "datasets-domain-family"
@@ -514,6 +524,26 @@ owner = "experiments"
 issue = 561
 reason = "The provisional instruction sweep carries a type-only runtime dependency."
 expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue replaces the runtime type with an inward domain port."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_dependency"
+consumer = "archetype.experiments.eval_rollouts"
+target = "archetype._api"
+owner = "experiments"
+issue = 561
+reason = "The provisional rollout helper imports the root public-API marker from infrastructure."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns public classification without a domain-to-infrastructure edge."
+expires = "v0.5"
+
+[[exception]]
+rule = "top_level_family_dependency"
+consumer = "archetype.experiments.instruction_sweep"
+target = "archetype._api"
+owner = "experiments"
+issue = 561
+reason = "The provisional instruction sweep imports the root public-API marker from infrastructure."
+expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns public classification without a domain-to-infrastructure edge."
 expires = "v0.5"
 
 [[exception]]

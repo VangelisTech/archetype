@@ -15,6 +15,15 @@ checker = importlib.util.module_from_spec(SPEC)
 sys.modules["check_architecture"] = checker
 SPEC.loader.exec_module(checker)
 
+DEFAULT_RESERVED_INFRASTRUCTURE = (
+    "archetype.api",
+    "archetype.app",
+    "archetype.cli",
+    "archetype.contrib",
+    "archetype.core",
+    "archetype.runtime",
+)
+
 
 def _write_policy(root: Path, *, exception: str = "") -> Path:
     (root / "pyproject.toml").write_text(
@@ -52,14 +61,16 @@ def _write_family_policy(
     *,
     rules: str,
     exception: str = "",
+    reserved_infrastructure: tuple[str, ...] = DEFAULT_RESERVED_INFRASTRUCTURE,
 ) -> Path:
     (root / "pyproject.toml").write_text(
         '[project]\nname = "fixture"\nversion = "0.4.0"\n',
         encoding="utf-8",
     )
     policy = root / "architecture.toml"
+    reserved = "\n".join(f'  "{scope}",' for scope in reserved_infrastructure)
     policy.write_text(
-        """
+        f"""
 version = 3
 source_root = "src"
 
@@ -70,12 +81,27 @@ forbidden_outward = [
   "archetype.api",
   "archetype.cli",
 ]
+reserved_infrastructure = [
+{reserved}
+]
 """
         + rules
         + exception,
         encoding="utf-8",
     )
     return policy
+
+
+def _write_root_export_fixture(root: Path) -> None:
+    package = root / "src" / "archetype"
+    runtime = package / "runtime" / "__init__.py"
+    package.mkdir(parents=True, exist_ok=True)
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        '_EXPORTS = {"ArchetypeRuntime": ("archetype.runtime", "ArchetypeRuntime")}\n',
+        encoding="utf-8",
+    )
+    runtime.write_text("class ArchetypeRuntime:\n    pass\n", encoding="utf-8")
 
 
 def _write_component_family_fixture(root: Path) -> str:
@@ -249,6 +275,61 @@ allowed_families = []
     }
 
 
+def test_root_package_and_facade_imports_match_explicit_forbidden_imports(
+    tmp_path: Path,
+) -> None:
+    import_forms = (
+        "from archetype import runtime\n",
+        "from archetype import ArchetypeRuntime\n",
+        "from archetype.runtime import ArchetypeRuntime\n",
+    )
+    consumers = {
+        "core": "package_dependency",
+        "app": "package_dependency",
+        "alpha": "top_level_family_outward_dependency",
+    }
+
+    for consumer_scope, expected_rule in consumers.items():
+        for index, statement in enumerate(import_forms):
+            root = tmp_path / f"{consumer_scope}-{index}"
+            _write_root_export_fixture(root)
+            alpha = root / "src" / "archetype" / "alpha" / "contracts.py"
+            alpha.parent.mkdir(parents=True, exist_ok=True)
+            alpha.write_text("value = 1\n", encoding="utf-8")
+            consumer = root / "src" / "archetype" / consumer_scope / "probe.py"
+            consumer.parent.mkdir(parents=True, exist_ok=True)
+            consumer.write_text(statement, encoding="utf-8")
+            package_rule = ""
+            if consumer_scope in {"core", "app"}:
+                package_rule = f"""
+
+[[package_rule]]
+name = "{consumer_scope}-outward"
+consumer = "archetype.{consumer_scope}"
+forbidden = ["archetype.runtime"]
+"""
+            rules = (
+                """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+                + package_rule
+            )
+
+            result = checker.audit_repository(
+                _write_family_policy(root, rules=rules),
+                repo_root=root,
+            )
+
+            assert not result.policy_errors
+            assert [(violation.rule, violation.target) for violation in result.violations] == [
+                (expected_rule, "archetype.runtime")
+            ]
+
+
 def test_undeclared_top_level_family_dependency_fails(tmp_path: Path) -> None:
     alpha = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
     beta = tmp_path / "src" / "archetype" / "beta" / "contracts.py"
@@ -284,6 +365,162 @@ allowed_families = []
             "archetype.beta",
         )
     ]
+
+
+def test_unclassified_top_level_package_fails_and_reserved_package_passes(
+    tmp_path: Path,
+) -> None:
+    for name, reserved, expected_error in (
+        ("unclassified", DEFAULT_RESERVED_INFRASTRUCTURE, True),
+        (
+            "classified",
+            (*DEFAULT_RESERVED_INFRASTRUCTURE, "archetype.graph"),
+            False,
+        ),
+    ):
+        root = tmp_path / name
+        alpha = root / "src" / "archetype" / "alpha" / "contracts.py"
+        graph = root / "src" / "archetype" / "graph" / "contracts.py"
+        alpha.parent.mkdir(parents=True)
+        graph.parent.mkdir(parents=True)
+        alpha.write_text("value = 1\n", encoding="utf-8")
+        graph.write_text("value = 1\n", encoding="utf-8")
+        rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = []
+"""
+
+        result = checker.audit_repository(
+            _write_family_policy(
+                root,
+                rules=rules,
+                reserved_infrastructure=reserved,
+            ),
+            repo_root=root,
+        )
+
+        if expected_error:
+            assert result.policy_errors == [
+                "unclassified first-party top-level packages: archetype.graph"
+            ]
+        else:
+            assert result.ok
+
+
+def test_unclassified_internal_import_fails_and_declared_lower_family_passes(
+    tmp_path: Path,
+) -> None:
+    reserved = tuple(
+        scope for scope in DEFAULT_RESERVED_INFRASTRUCTURE if scope != "archetype.contrib"
+    )
+    for name, declare_contrib, should_pass in (
+        ("unclassified", False, False),
+        ("declared", True, True),
+    ):
+        root = tmp_path / name
+        alpha = root / "src" / "archetype" / "alpha" / "contracts.py"
+        contrib = root / "src" / "archetype" / "contrib" / "contracts.py"
+        alpha.parent.mkdir(parents=True)
+        contrib.parent.mkdir(parents=True)
+        alpha.write_text("from archetype.contrib import contracts\n", encoding="utf-8")
+        contrib.write_text("value = 1\n", encoding="utf-8")
+        allowed = '["archetype.contrib"]' if declare_contrib else "[]"
+        rules = f"""
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = {allowed}
+"""
+        if declare_contrib:
+            rules += """
+
+[[top_level_family_rule]]
+name = "contrib"
+consumer = "archetype.contrib"
+allowed_families = []
+"""
+
+        result = checker.audit_repository(
+            _write_family_policy(
+                root,
+                rules=rules,
+                reserved_infrastructure=reserved,
+            ),
+            repo_root=root,
+        )
+
+        if should_pass:
+            assert result.ok
+        else:
+            assert result.policy_errors == [
+                "unclassified first-party top-level packages: archetype.contrib"
+            ]
+            assert [(violation.rule, violation.target) for violation in result.violations] == [
+                ("top_level_family_dependency", "archetype.contrib")
+            ]
+
+
+def test_top_level_family_dependency_cycle_fails(tmp_path: Path) -> None:
+    for family in ("alpha", "beta"):
+        module = tmp_path / "src" / "archetype" / family / "contracts.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = ["archetype.beta"]
+
+[[top_level_family_rule]]
+name = "beta"
+consumer = "archetype.beta"
+allowed_families = ["archetype.alpha"]
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert result.policy_errors == [
+        "top-level family dependency cycle: archetype.alpha -> archetype.beta -> archetype.alpha"
+    ]
+
+
+def test_multi_level_top_level_family_dag_passes(tmp_path: Path) -> None:
+    for family in ("alpha", "beta", "gamma"):
+        module = tmp_path / "src" / "archetype" / family / "contracts.py"
+        module.parent.mkdir(parents=True)
+        module.write_text("value = 1\n", encoding="utf-8")
+    rules = """
+
+[[top_level_family_rule]]
+name = "alpha"
+consumer = "archetype.alpha"
+allowed_families = ["archetype.beta"]
+
+[[top_level_family_rule]]
+name = "beta"
+consumer = "archetype.beta"
+allowed_families = ["archetype.gamma"]
+
+[[top_level_family_rule]]
+name = "gamma"
+consumer = "archetype.gamma"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert result.ok
 
 
 def test_declared_family_edge_and_app_contract_import_pass(tmp_path: Path) -> None:
@@ -326,18 +563,23 @@ forbidden = [
     assert result.ok
 
 
-def test_direct_component_in_app_models_fails(tmp_path: Path) -> None:
+def test_direct_component_anywhere_in_app_fails(tmp_path: Path) -> None:
     family = tmp_path / "src" / "archetype" / "alpha" / "contracts.py"
     models = tmp_path / "src" / "archetype" / "app" / "widgets" / "models.py"
+    components = tmp_path / "src" / "archetype" / "app" / "widgets" / "components.py"
     family.parent.mkdir(parents=True)
     models.parent.mkdir(parents=True)
     family.write_text("value = 1\n", encoding="utf-8")
-    models.write_text(
-        "from archetype.core.component import Component as ECSComponent\n\n"
-        "class DurableWidget(ECSComponent):\n"
-        "    value: int = 0\n",
-        encoding="utf-8",
-    )
+    for path, class_name in (
+        (models, "DurableWidgetModel"),
+        (components, "DurableWidgetComponent"),
+    ):
+        path.write_text(
+            "from archetype.core.component import Component as ECSComponent\n\n"
+            f"class {class_name}(ECSComponent):\n"
+            "    value: int = 0\n",
+            encoding="utf-8",
+        )
     rules = """
 
 [[top_level_family_rule]]
@@ -355,8 +597,12 @@ allowed_families = []
     assert [(violation.rule, violation.target) for violation in result.violations] == [
         (
             "app_component_model",
-            "archetype.app.widgets.models.DurableWidget",
-        )
+            "archetype.app.widgets.components.DurableWidgetComponent",
+        ),
+        (
+            "app_component_model",
+            "archetype.app.widgets.models.DurableWidgetModel",
+        ),
     ]
 
 
