@@ -23,48 +23,104 @@ For a checkout, install the development environment with `make sync-dev`.
 
 ## Run a simulation
 
+Simulate a butterfly: run a chaotic map, fork the timeline, nudge the fork by
+one part in a billion, and diff the two histories. Because every tick persists
+as immutable rows, the counterfactual is a join — not a re-run.
+
 ```python
 import asyncio
+import os
 
 from daft import DataFrame, col
+from daft.functions import prompt
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
-class Position(Component):
-    x: float = 0.0
-    y: float = 0.0
+class Node(Component):
+    r: float = 3.9999  # chaotic regime of the logistic map
+    x: float = 0.5
 
 
-class Velocity(Component):
-    dx: float = 0.0
-    dy: float = 0.0
-
-
-class Move(AsyncProcessor):
-    components = (Position, Velocity)
+class LogisticMap(AsyncProcessor):
+    components = (Node,)
 
     async def process(self, df: DataFrame, **_) -> DataFrame:
-        return df.with_columns(
-            {
-                "position__x": col("position__x") + col("velocity__dx"),
-                "position__y": col("position__y") + col("velocity__dy"),
-            }
+        x = col("node__x")
+        return df.with_column("node__x", col("node__r") * x * (1.0 - x))
+
+
+class Analyst(Component):
+    evidence: str = ""
+    verdict: str = ""
+
+
+class Review(AsyncProcessor):
+    components = (Analyst,)
+
+    async def process(self, df: DataFrame, **_) -> DataFrame:
+        question = (
+            "Two runs of one simulation diverged after a 1e-9 nudge: "
+            + col("analyst__evidence")
+            + "\nIn one sentence: what kind of system is this?"
         )
+        return df.with_column("analyst__verdict", prompt(question, model="gpt-5-mini"))
 
 
 async def main() -> None:
     async with ArchetypeRuntime() as runtime:
-        world = runtime.world("demo", processors=[Move()])
-        await world.spawn(Position(), Velocity(dx=1, dy=2))
-        await world.run(steps=3)
+        prime = runtime.world("prime", processors=[LogisticMap()])
+        node = await prime.spawn(Node())
+        await prime.step()  # tick 0 persists the raw initial conditions
+        await prime.run(steps=12)
 
-        history = await world.query(Position)
-        print(history.collect().to_pylist())
+        # Fork the timeline; nudge the fork by one part in a billion.
+        last = (await prime.info()).tick - 1
+        x = (await prime.query(Node)).where(col("tick") == last).to_pylist()[0]["node__x"]
+        fork = await prime.fork("nudged")
+        await fork.update(node, Node(x=x + 1e-9))
+
+        await prime.run(steps=24)
+        await fork.run(steps=25)  # the nudge lands raw, then dynamics resume
+
+        # A counterfactual is a join over two histories, not a re-run.
+        a = (await prime.query(Node)).select(
+            (col("tick") - last).alias("k"), col("node__x").alias("a")
+        )
+        b = (await fork.query(Node)).select(
+            (col("tick") - last - 1).alias("k"), col("node__x").alias("b")
+        )
+        deltas = (
+            a.join(b, on="k")
+            .where(col("k") >= 0)
+            .with_column("delta", (col("a") - col("b")).abs())
+            .sort("k")
+            .to_pylist()
+        )
+        print("  ".join(f"k={row['k']}: {row['delta']:.0e}" for row in deltas[::6]))
+
+        # Put an agent at the end: evidence in, verdict into the same ledger.
+        if os.getenv("OPENAI_API_KEY"):
+            analyst = runtime.world("analyst", processors=[Review()])
+            evidence = ", ".join(f"tick {row['k']}: {row['delta']:.1e}" for row in deltas)
+            await analyst.spawn(Analyst(evidence=evidence))
+            await analyst.run(steps=2)  # spawns land raw; the review runs next tick
+            report = await analyst.query(Analyst)
+            print(report.where(col("tick") == 1).to_pylist()[0]["analyst__verdict"])
 
 
 asyncio.run(main())
 ```
+
+```text
+k=0: 1e-09  k=6: 3e-08  k=12: 1e-06  k=18: 3e-04  k=24: 2e-02
+```
+
+The nudge doubles every tick. The agent stage is optional — without
+`OPENAI_API_KEY` the script prints the divergence and stops. The full
+three-regime version of the counterfactual lives in
+[`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py);
+richer agent patterns in [`examples/05_llm_agents.py`](examples/05_llm_agents.py).
 
 For a regular script without `async`, use `with ArchetypeRuntime.sync() as
 runtime:` and omit `await`.
@@ -74,6 +130,8 @@ runtime:` and omit `await`.
 - Columnar processors run one DataFrame transform over every matching entity.
 - Every tick is append-only, so historical reads are ordinary queries.
 - Forks inherit source history and create an independent future.
+- Agents are entities: an LLM call is one more columnar processor writing to
+  the same ledger.
 - The service layer can authorize and audit mutations before a tick applies
   them.
 
