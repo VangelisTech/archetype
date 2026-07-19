@@ -22,6 +22,7 @@ from archetype.missions.transitions import (
 )
 
 REPOSITORY_CHANGE_GATE_NAME = "git_tree_change"
+WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION = 9
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REPLAY_REQUIRED_OUTCOME_FIELDS = frozenset(
     {
@@ -59,6 +60,9 @@ REPLAY_REQUIRED_OUTCOME_FIELDS = frozenset(
         "pushed",
     }
 )
+_PRE_WORKTREE_ARCHIVE_REQUIRED_OUTCOME_FIELDS = REPLAY_REQUIRED_OUTCOME_FIELDS - {
+    "worktree_archive_ref"
+}
 
 
 @dataclass(frozen=True)
@@ -138,10 +142,11 @@ def _assess_attempt_outcome(
     outcome: Mapping[str, Any],
     *,
     legacy_unbound: bool,
+    required_fields: frozenset[str],
 ) -> MissionAttemptAssessment:
     """Validate one outcome under either current or terminal-legacy semantics."""
 
-    missing = sorted(REPLAY_REQUIRED_OUTCOME_FIELDS - outcome.keys())
+    missing = sorted(required_fields - outcome.keys())
     if missing:
         raise ValueError("attempt outcome is not replayable; missing fields: " + ", ".join(missing))
     if str(outcome["attempt_id"]) != request.attempt_id:
@@ -324,7 +329,26 @@ def assess_attempt_outcome(
 ) -> MissionAttemptAssessment:
     """Validate a replayable outcome under the current write authority."""
 
-    return _assess_attempt_outcome(request, outcome, legacy_unbound=False)
+    return _assess_attempt_outcome(
+        request,
+        outcome,
+        legacy_unbound=False,
+        required_fields=REPLAY_REQUIRED_OUTCOME_FIELDS,
+    )
+
+
+def assess_pre_worktree_archive_outcome(
+    request: MissionAttemptRequest,
+    outcome: Mapping[str, Any],
+) -> MissionAttemptAssessment:
+    """Read durable v7/v8 evidence written before full-worktree capture."""
+
+    return _assess_attempt_outcome(
+        request,
+        outcome,
+        legacy_unbound=False,
+        required_fields=_PRE_WORKTREE_ARCHIVE_REQUIRED_OUTCOME_FIELDS,
+    )
 
 
 def assess_legacy_unbound_settled_outcome(
@@ -350,7 +374,12 @@ def assess_legacy_unbound_settled_outcome(
 
     # v7 accepted arbitrary extra keys. Authority-shaped names in its terminal
     # bytes are inert compatibility data, never current artifact provenance.
-    assessment = _assess_attempt_outcome(request, outcome, legacy_unbound=True)
+    assessment = _assess_attempt_outcome(
+        request,
+        outcome,
+        legacy_unbound=True,
+        required_fields=_PRE_WORKTREE_ARCHIVE_REQUIRED_OUTCOME_FIELDS,
+    )
     if assessment.attempt_status is not AttemptStatus.ACCEPTED:
         raise ValueError("legacy unbound finalization is not an accepted terminal outcome")
     return assessment

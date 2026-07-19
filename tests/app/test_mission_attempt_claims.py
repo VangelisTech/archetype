@@ -335,7 +335,7 @@ async def _seed_unbound_settled_claim(
     legacy_request_json = ""
     if as_v7:
         legacy_request = json.loads(acknowledged.request_json)
-        assert legacy_request.pop("claim_contract_version") == 8
+        assert legacy_request.pop("claim_contract_version") == 9
         assert legacy_request.pop("observation_tick") == request.observation_tick
         legacy_request_json = service._json(legacy_request)
         request_receipt = redaction.redact_record(
@@ -391,7 +391,7 @@ def _strip_claim_contract_marker(path: Any) -> None:
     ).fetchone()
     assert row is not None
     request_json = json.loads(row["request_json"])
-    assert request_json.pop("claim_contract_version") == 8
+    assert request_json.pop("claim_contract_version") == 9
     assert request_json.pop("observation_tick") == 11
     evidence = json.loads(row["redaction_evidence_json"])
     receipt = (
@@ -403,6 +403,38 @@ def _strip_claim_contract_marker(path: Any) -> None:
         .receipt
     )
     evidence["request"] = receipt.model_dump(mode="json")
+    connection.execute(
+        "UPDATE mission_attempt_claims SET request_json=?, redaction_evidence_json=?",
+        (
+            json.dumps(request_json, sort_keys=True, separators=(",", ":")),
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
+def _set_claim_contract_version(path: Any, version: int) -> None:
+    """Rewrite only the authenticated request marker for a compatibility fixture."""
+
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    row = connection.execute(
+        "SELECT request_json, redaction_evidence_json FROM mission_attempt_claims"
+    ).fetchone()
+    assert row is not None
+    request_json = json.loads(row["request_json"])
+    assert request_json["claim_contract_version"] == 9
+    request_json["claim_contract_version"] = version
+    evidence = json.loads(row["redaction_evidence_json"])
+    evidence["request"] = (
+        RedactionService()
+        .redact_record(
+            request_json,
+            scope="mission-attempt-request",
+        )
+        .receipt.model_dump(mode="json")
+    )
     connection.execute(
         "UPDATE mission_attempt_claims SET request_json=?, redaction_evidence_json=?",
         (
@@ -1876,6 +1908,86 @@ async def test_cold_replay_after_indexed_settlement_applies_without_runner_or_fi
     await cold_catalog.close()
 
 
+async def test_v8_settled_claim_without_worktree_archive_cold_replays(
+    tmp_path,
+) -> None:
+    path = tmp_path / "v8-settled-before-worktree-archive.db"
+    request, stored_outcome = await _seed_unbound_settled_claim(
+        path,
+        phase=FinalizationPhase.CHECKPOINTED,
+        required_phase=FinalizationPhase.CHECKPOINTED,
+        as_v7=False,
+    )
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    row = connection.execute(
+        "SELECT request_json, outcome_json, redaction_evidence_json FROM mission_attempt_claims"
+    ).fetchone()
+    assert row is not None
+    request_json = json.loads(row["request_json"])
+    assert request_json["claim_contract_version"] == 9
+    request_json["claim_contract_version"] = 8
+    outcome = json.loads(row["outcome_json"])
+    assert outcome.pop("worktree_archive_ref") == "fake://full-worktree"
+    redaction = RedactionService()
+    evidence = json.loads(row["redaction_evidence_json"])
+    evidence["request"] = redaction.redact_record(
+        request_json,
+        scope="mission-attempt-request",
+    ).receipt.model_dump(mode="json")
+    evidence["outcome"] = redaction.redact_record(
+        outcome,
+        scope="mission-attempt-outcome",
+    ).receipt.model_dump(mode="json")
+    canonical_request = json.dumps(request_json, sort_keys=True, separators=(",", ":"))
+    canonical_outcome = json.dumps(outcome, sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        "UPDATE mission_attempt_claims SET request_json=?, outcome_json=?, "
+        "outcome_digest=?, redaction_evidence_json=?",
+        (
+            canonical_request,
+            canonical_outcome,
+            hashlib.sha256(canonical_outcome.encode()).hexdigest(),
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    catalog = SqliteControlCatalog(path)
+    service = _claim_service(catalog)
+    claim_key = service.claim_key(
+        world_id="world-1",
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    projected = await service.get("world-1", claim_key)
+    assert projected is not None
+    assert projected.contract_version == 8
+    assert projected.legacy_unbound is False
+    assert service.settled_outcome(projected) == outcome
+    assert stored_outcome["worktree_archive_ref"] == "fake://full-worktree"
+
+    runner = _NoRunRunner()
+    replay = await MissionAttemptExecutionService(service, MissionService()).run(
+        _row(),
+        tick=100,
+        claimant="cold-v8-worker",
+        runner=runner,
+    )
+
+    assert replay is not None
+    assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+    assert replay.decision.action is AttemptRecoveryAction.SETTLED
+    assert replay.replayed is True
+    assert "worktree_archive_ref" not in replay.outcome
+    assert replay.updated_row["evidence__worktree_archive_ref"] == ""
+    assert replay.updated_row["finalization__legacy_unbound"] is False
+    assert runner.run_calls == 0
+    await catalog.close()
+
+
 @pytest.mark.parametrize(
     "phase",
     [FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED],
@@ -2122,6 +2234,7 @@ async def test_v8_authority_named_extras_without_staged_claim_fail_closed(
         as_v7=False,
         authority_extras=True,
     )
+    _set_claim_contract_version(path, 8)
     assert stored_outcome["finalization_bundle_id"] == "b" * 64
     catalog = SqliteControlCatalog(path)
     service = _claim_service(catalog)
@@ -2158,9 +2271,9 @@ async def test_claim_is_durable_before_submission_is_armed(tmp_path) -> None:
     assert acquired.outcome is AttemptClaimAcquireOutcome.ACQUIRED
     assert acquired.claim.status is AttemptClaimStatus.CLAIMED
     assert acquired.claim.fence_epoch == 1
-    assert acquired.claim.contract_version == 8
+    assert acquired.claim.contract_version == 9
     assert acquired.claim.legacy_unbound_eligible is False
-    assert json.loads(acquired.claim.request_json)["claim_contract_version"] == 8
+    assert json.loads(acquired.claim.request_json)["claim_contract_version"] == 9
     assert acquired.claim.possibly_submitted_at is None
 
     cold_catalog = SqliteControlCatalog(path)

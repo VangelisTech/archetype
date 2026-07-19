@@ -221,6 +221,22 @@ def test_worktree_archive_rejects_special_files(tmp_path: Path) -> None:
         )
 
 
+def test_worktree_archive_rejects_backslash_filename_instead_of_rewriting_it(
+    tmp_path: Path,
+) -> None:
+    worktree, recovery = _fixture(tmp_path)
+    (worktree / "folder\\file.txt").write_text("must remain one path component\n")
+
+    with pytest.raises(WorktreeArchiveError, match="unsafe path"):
+        capture_worktree_archive(
+            worktree,
+            tmp_path / "raw.tar",
+            baseline_sha="a" * 40,
+            head_sha="b" * 40,
+            recovery_files=recovery,
+        )
+
+
 def test_worktree_archive_rejects_path_race(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -549,6 +565,47 @@ def test_worktree_archive_sanitizer_quarantines_invalid_archive(tmp_path: Path) 
             logical_path="recovery/worktree.tar",
             redaction_service=RedactionService(),
         )
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "outside/file.txt",
+        "worktree/.git/config",
+        "worktree/.archetype-agent/provider-state.json",
+        "worktree/__pycache__/cached.pyc",
+        "worktree/.env",
+    ],
+)
+def test_worktree_archive_sanitizer_reapplies_capture_policy(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    content = b"tampered raw capture\n"
+    member = tarfile.TarInfo(member_name)
+    member.size = len(content)
+    source = tmp_path / "raw.tar"
+    manifest = _valid_manifest(
+        entries=[
+            _file_entry(
+                member_name,
+                size=len(content),
+                digest=hashlib.sha256(content).hexdigest(),
+            )
+        ]
+    )
+    _write_manifest_archive(source, manifest, (member, content))
+    destination = tmp_path / "sanitized.tar"
+
+    with pytest.raises(SecretQuarantineError, match="worktree-archive-policy"):
+        sanitize_worktree_archive(
+            source,
+            destination,
+            logical_path="recovery/worktree.tar",
+            redaction_service=RedactionService(),
+        )
+
+    assert not destination.exists()
 
 
 def test_worktree_archive_restore_checks_indexed_hash_and_clean_target(tmp_path: Path) -> None:

@@ -66,8 +66,8 @@ _COMPONENT_SCHEMA_FINGERPRINTS = {
         "256c0114555bcca6946672dc6f13d53e40a269725973be48bfe0d34af8913db9",
     ),
     "Evidence": (
-        "28f43c8dfce6be622bb3c4ba5cd1290a2e37b0d0e14f69612b9f02c4c4440b6a",
-        "927a2cacf9b114d191d398b5bea0f2ed4359e3266e374cc0d879d8b456cffdb2",
+        "fb83ecc02c9eac7b6a28a5ca154d67ebc162c35f98af6e43aa60a5255f6b514b",
+        "0f77b643f5e3f34b9998ce03ee0fe605d823a36c5941fe0e80d231ae6830d4c3",
     ),
     "FrictionLog": (
         "5f4e6c3260ff26412db2c2b3161e705e0e8e9f36293b4790c27132c41d8395d6",

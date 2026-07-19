@@ -379,7 +379,7 @@ the read boundary also normalizes any such row overmarked by an early
 phase-agnostic v8 backfill. Projection still requires the narrow accepted
 `published` or `indexed` legacy shape with no staged or finalized artifact
 authority. A qualifying replay exposes
-`Finalization.legacy_unbound=true` in the world row; current v8 writes always
+`Finalization.legacy_unbound=true` in the world row; current v9 writes always
 expose `false`. This is a compatibility classification, not synthesized
 artifact provenance: the canonical legacy outcome remains byte-for-byte
 unchanged. Migration-proven v7 rows remain exclusively legacy even if their
@@ -391,6 +391,10 @@ Terminal settlement accepts only a complete replayable sandbox outcome bound
 to the claimed attempt, idempotency key, attempt index, and normalized sandbox
 request. It validates provider status and `accepted`, validator and result
 shape, checkpoint coherence, finalization phase, and accepted commit evidence.
+Claim contract v9 adds `worktree_archive_ref` to that required evidence. Durable
+v7 and v8 rows retain their versioned replay contract: a missing archive
+reference projects as empty evidence instead of making an already-recorded
+attempt unreadable, while all new writes still require the field.
 For a direct non-finalizing outcome, the official execution service first uses
 strict current-write `MissionService.apply_attempt`; its authoritative
 `AttemptStatus` is the status stored by direct settlement and must agree with

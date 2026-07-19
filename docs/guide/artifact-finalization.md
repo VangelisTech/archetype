@@ -417,6 +417,9 @@ Non-indexed v7 claims remain ordinary historical replays. A narrowly valid
 legacy replay exposes `Finalization.legacy_unbound=true` while preserving its
 canonical outcome unchanged. That flag is an explicit compatibility
 classification, not a claim that historical artifact provenance was recovered.
+Claim contract v9 requires `worktree_archive_ref` on new replayable outcomes.
+Previously durable v7/v8 outcomes remain readable under their original field
+set and project an empty archive reference when none was recorded.
 
 The Iceberg append is the query visibility point. If a process dies after the
 append but before marking the control row `INDEXED`, a retry reads and verifies

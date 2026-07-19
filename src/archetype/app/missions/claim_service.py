@@ -34,8 +34,11 @@ from archetype.app.missions.models import (
     normalize_attempt_validators,
 )
 from archetype.app.missions.outcomes import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
+    MissionAttemptAssessment,
     assess_attempt_outcome,
     assess_legacy_unbound_settled_outcome,
+    assess_pre_worktree_archive_outcome,
 )
 from archetype.app.missions.transitions import (
     AttemptClaimAcquireOutcome,
@@ -66,7 +69,8 @@ from archetype.missions.transitions import (
 )
 
 _CLAIM_DOMAIN = "archetype.mission-attempt-claim.v1"
-_CURRENT_CLAIM_CONTRACT_VERSION = 8
+_CURRENT_CLAIM_CONTRACT_VERSION = WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION
+_PRE_WORKTREE_ARCHIVE_CLAIM_CONTRACT_VERSION = 8
 _LEGACY_CLAIM_CONTRACT_VERSION = 7
 _ARTIFACT_PUBLICATION_EXPIRED = "artifact_publication_expired"
 _MAX_LAST_ERROR_CHARS = 4096
@@ -360,7 +364,7 @@ class MissionAttemptClaimService:
         self._require_active_policy(current)
         durable_outcome = self._coerce_durable_outcome(current, outcome)
         request = self.recover_request(current)
-        assessment = assess_attempt_outcome(request, durable_outcome.value)
+        assessment = self._assess_claim_outcome(current, durable_outcome.value)
         if request.required_finalization_phase is not FinalizationPhase.INDEXED:
             raise ValueError("artifact finalization may only be staged for an indexed gate")
         if assessment.provider_status not in {
@@ -714,7 +718,7 @@ class MissionAttemptClaimService:
         self._require_active_policy(claim)
         self._validate_outcome(
             claim,
-            settlement=assess_attempt_outcome(self.recover_request(claim), outcome).attempt_status,
+            settlement=self._assess_claim_outcome(claim, outcome).attempt_status,
             outcome=outcome,
         )
         canonical = json.loads(self._json(outcome))
@@ -727,9 +731,7 @@ class MissionAttemptClaimService:
         )
         self._validate_outcome(
             claim,
-            settlement=assess_attempt_outcome(
-                self.recover_request(claim), redacted.value
-            ).attempt_status,
+            settlement=self._assess_claim_outcome(claim, redacted.value).attempt_status,
             outcome=redacted.value,
         )
         return redacted
@@ -864,7 +866,7 @@ class MissionAttemptClaimService:
         )
         finalized = self._rescan_enriched_outcome(claim, value)
         self._assert_safe_outcome_identity(finalized.value)
-        assessment = assess_attempt_outcome(self.recover_request(claim), finalized.value)
+        assessment = self._assess_claim_outcome(claim, finalized.value)
         self._validate_outcome(
             claim,
             settlement=assessment.attempt_status,
@@ -929,7 +931,7 @@ class MissionAttemptClaimService:
         value["finalization_error"] = _ARTIFACT_PUBLICATION_EXPIRED
         self._assert_safe_outcome_identity(value)
         rescanned = self._rescan_enriched_outcome(claim, value)
-        assessment = assess_attempt_outcome(self.recover_request(claim), rescanned.value)
+        assessment = self._assess_claim_outcome(claim, rescanned.value)
         if assessment.attempt_status not in {
             AttemptStatus.INCOMPLETE,
             AttemptStatus.REJECTED,
@@ -1162,7 +1164,7 @@ class MissionAttemptClaimService:
         )
         if defensive.value != outcome.value:
             raise ValueError("prepared attempt outcome is not safe for durability")
-        assessment = assess_attempt_outcome(self.recover_request(claim), outcome.value)
+        assessment = self._assess_claim_outcome(claim, outcome.value)
         self._validate_outcome(
             claim,
             settlement=assessment.attempt_status,
@@ -1398,6 +1400,8 @@ class MissionAttemptClaimService:
         if contract_version == _LEGACY_CLAIM_CONTRACT_VERSION:
             expected_value.pop("claim_contract_version")
             expected_value.pop("observation_tick")
+        else:
+            expected_value["claim_contract_version"] = contract_version
         if cls._json(expected_value) != request_json:
             raise ValueError("persisted attempt claim request is not canonical")
         expected_fingerprint = mission_attempt_request_fingerprint(
@@ -1543,6 +1547,7 @@ class MissionAttemptClaimService:
             raise ValueError("persisted attempt claim has an invalid contract version") from exc
         if version not in {
             _LEGACY_CLAIM_CONTRACT_VERSION,
+            _PRE_WORKTREE_ARCHIVE_CLAIM_CONTRACT_VERSION,
             _CURRENT_CLAIM_CONTRACT_VERSION,
         }:
             raise ValueError("persisted attempt claim has an unsupported contract version")
@@ -1598,6 +1603,17 @@ class MissionAttemptClaimService:
             raise ValueError("mission attempt request fingerprint is invalid")
 
     @classmethod
+    def _assess_claim_outcome(
+        cls,
+        claim: AttemptClaim,
+        outcome: Mapping[str, Any],
+    ) -> MissionAttemptAssessment:
+        request = cls.recover_request(claim)
+        if claim.contract_version < _CURRENT_CLAIM_CONTRACT_VERSION:
+            return assess_pre_worktree_archive_outcome(request, outcome)
+        return assess_attempt_outcome(request, outcome)
+
+    @classmethod
     def _validate_outcome(
         cls,
         claim: AttemptClaim,
@@ -1605,7 +1621,7 @@ class MissionAttemptClaimService:
         settlement: AttemptStatus,
         outcome: Mapping[str, Any],
     ) -> None:
-        assessment = assess_attempt_outcome(cls.recover_request(claim), outcome)
+        assessment = cls._assess_claim_outcome(claim, outcome)
         if settlement is not assessment.attempt_status:
             raise ValueError(
                 "attempt settlement status disagrees with its authoritative mission outcome"
@@ -1821,6 +1837,8 @@ class MissionAttemptClaimService:
                 # never be reinterpreted under the current indexed contract.
                 assessment = assess_legacy_unbound_settled_outcome(request, outcome)
                 legacy_unbound = True
+            elif contract_version < _CURRENT_CLAIM_CONTRACT_VERSION:
+                assessment = assess_pre_worktree_archive_outcome(request, outcome)
             else:
                 assessment = assess_attempt_outcome(request, outcome)
             if (

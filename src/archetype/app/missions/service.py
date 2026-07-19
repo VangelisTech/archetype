@@ -18,8 +18,10 @@ from archetype.app.missions.models import (
     normalize_attempt_validators,
 )
 from archetype.app.missions.outcomes import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     assess_attempt_outcome,
     assess_legacy_unbound_settled_outcome,
+    assess_pre_worktree_archive_outcome,
 )
 from archetype.app.missions.transitions import AttemptClaimStatus
 from archetype.missions.transitions import (
@@ -190,6 +192,7 @@ class MissionService:
             request,
             outcome,
             legacy_unbound=False,
+            pre_worktree_archive=False,
             expected_status=None,
         )
 
@@ -238,6 +241,9 @@ class MissionService:
             request,
             outcome,
             legacy_unbound=claim.legacy_unbound,
+            pre_worktree_archive=(
+                claim.contract_version < WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION
+            ),
             expected_status=settlement,
         )
 
@@ -248,6 +254,7 @@ class MissionService:
         outcome: Mapping[str, Any],
         *,
         legacy_unbound: bool,
+        pre_worktree_archive: bool,
         expected_status: AttemptStatus | None,
     ) -> dict[str, Any]:
         source = self._state(row)
@@ -272,11 +279,12 @@ class MissionService:
         if required_phase is not request.required_finalization_phase:
             raise ValueError("mission finalization gate changed after this attempt was prepared")
 
-        assessment = (
-            assess_legacy_unbound_settled_outcome(request, outcome)
-            if legacy_unbound
-            else assess_attempt_outcome(request, outcome)
-        )
+        if legacy_unbound:
+            assessment = assess_legacy_unbound_settled_outcome(request, outcome)
+        elif pre_worktree_archive:
+            assessment = assess_pre_worktree_archive_outcome(request, outcome)
+        else:
+            assessment = assess_attempt_outcome(request, outcome)
         if expected_status is not None and assessment.attempt_status is not expected_status:
             raise ValueError("settled outcome disagrees with its terminal claim status")
 
@@ -387,7 +395,7 @@ class MissionService:
                 "evidence__git_status_ref": str(outcome["git_status_ref"]),
                 "evidence__git_patch_ref": str(outcome["git_patch_ref"]),
                 "evidence__git_bundle_ref": str(outcome["git_bundle_ref"]),
-                "evidence__worktree_archive_ref": str(outcome["worktree_archive_ref"]),
+                "evidence__worktree_archive_ref": str(outcome.get("worktree_archive_ref", "")),
                 "evidence__context_ref": str(outcome["context_ref"]),
                 "frictionlog__entries_json": self._json(prior_friction),
             }

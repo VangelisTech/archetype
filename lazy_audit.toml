@@ -140,36 +140,36 @@ reason = "same grading-boundary site as the collect above: per-entity terminal r
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1321
+line = 1330
 method = "to_pylist"
 reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1373
+line = 1382
 method = "to_pylist"
 reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1386
+line = 1395
 method = "to_pylist"
 reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1440
+line = 1449
 method = "to_pylist"
 reason = "Existing-object metadata authorization boundary: only paths and sizes beneath one deterministic content-addressed destination enter Python so each candidate URI can pass shared redaction policy and exact-size eligibility before any remote byte read."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1473
+line = 1482
 method = "to_pylist"
 reason = "Existing-object byte-integrity boundary: one size-eligible, metadata-approved remote candidate is read through Daft and its bytes enter Python solely to verify exact size and SHA-256 before durable reuse."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1489
+line = 1498
 method = "to_pylist"
 reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."

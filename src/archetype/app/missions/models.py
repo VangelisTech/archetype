@@ -382,7 +382,7 @@ class AttemptClaim:
     acknowledged_at: str | None
     finalizing_at: str | None
     settled_at: str | None
-    contract_version: int = 8
+    contract_version: int = 9
     legacy_unbound_eligible: bool = False
     legacy_unbound: bool = False
 

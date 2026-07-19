@@ -129,7 +129,9 @@ def _sha256_file(path: Path) -> str:
 
 
 def _portable_path(value: str) -> str:
-    normalized = value.replace("\\", "/").strip("/")
+    if "\\" in value:
+        raise WorktreeArchiveError("worktree archive contains an unsafe path")
+    normalized = value.strip("/")
     path = PurePosixPath(normalized)
     if (
         not normalized
@@ -180,7 +182,7 @@ def _inventory(root: Path) -> tuple[dict[str, _InventoryEntry], list[dict[str, s
             try:
                 for child in children:
                     parts = (*prefix, child.name)
-                    relative = PurePosixPath(*parts).as_posix()
+                    relative = _portable_path(PurePosixPath(*parts).as_posix())
                     try:
                         info = child.stat(follow_symlinks=False)
                     except OSError as exc:
@@ -623,6 +625,24 @@ def _validate_manifest_header(
             raise WorktreeArchiveError("worktree archive file digest is invalid")
 
 
+def _import_policy_violation(entry: Mapping[str, Any]) -> str | None:
+    """Re-apply capture policy to untrusted raw-archive member names."""
+
+    parts = PurePosixPath(str(entry["path"])).parts
+    if len(parts) < 2 or parts[0] not in {"worktree", "recovery"}:
+        return "unexpected-namespace"
+    relative = tuple(parts[1:])
+    is_dir = entry["type"] == "directory"
+    reason = _exclusion_reason(relative, is_dir=is_dir)
+    if reason is not None:
+        return reason
+    for length in range(1, len(relative)):
+        reason = _exclusion_reason(relative[:length], is_dir=True)
+        if reason is not None:
+            return reason
+    return None
+
+
 def sanitize_worktree_archive(
     source: Path,
     destination: Path,
@@ -675,6 +695,12 @@ def sanitize_worktree_archive(
         sanitized_entries: list[dict[str, Any]] = []
         for entry in manifest["entries"]:
             name = str(entry["path"])
+            violation = _import_policy_violation(entry)
+            if violation is not None:
+                raise SecretQuarantineError(
+                    logical_path,
+                    (f"worktree-archive-policy-{violation}",),
+                )
             if entry["type"] == "directory":
                 (approved / PurePosixPath(name)).mkdir(parents=True, exist_ok=True)
                 sanitized_entries.append(dict(entry))
