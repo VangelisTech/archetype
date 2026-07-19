@@ -1,6 +1,7 @@
 dist/
 build/
 archetype_data/
+archetype_db/
 *.egg-info/
 __pycache__/
 .venv/

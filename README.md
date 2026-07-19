@@ -23,30 +23,54 @@ For a checkout, install the development environment with `make sync-dev`.
 
 ## Run a simulation
 
-The example runs a chaotic map, forks the world, and nudges the fork's state
-by 1e-9. Both branches run forward. Every tick persists as immutable rows, so
-the divergence is a join over the two histories, not a re-run.
+The world below steps the logistic map:
+
+```math
+x_{t+1} = r \, x_t \, (1 - x_t)
+```
+
+At `r = 3.9999` the map is chaotic: nearby trajectories separate
+exponentially. One world runs. A fork takes a 1e-9 nudge. A join over the two
+histories measures the separation. The blocks form one script.
+
+### State is components
 
 ```python
 import asyncio
-import os
 
 from daft import DataFrame, col
-from daft.functions import prompt
 
 from archetype import ArchetypeRuntime, AsyncProcessor, Component
 
 
 class Node(Component):
+    r: float = 3.9999
     x: float = 0.5
+```
 
+Components are typed state. Fields become Arrow columns; entities that share
+a component set share a table.
 
+### Behavior is processors
+
+```python
 class LogisticMap(AsyncProcessor):
     components = (Node,)
 
     async def process(self, df: DataFrame, **_) -> DataFrame:
         x = col("node__x")
-        return df.with_column("node__x", 3.9999 * x * (1.0 - x))
+        return df.with_column("node__x", col("node__r") * x * (1.0 - x))
+```
+
+A processor is one DataFrame transform, applied every tick to every entity
+that has the declared components.
+
+### Agents are state plus behavior
+
+```python
+import os
+
+from daft.functions import prompt
 
 
 class Analyst(Component):
@@ -60,36 +84,56 @@ class Review(AsyncProcessor):
     async def process(self, df: DataFrame, **_) -> DataFrame:
         ask = "In one sentence, what does this divergence imply? " + col("analyst__evidence")
         return df.with_column("analyst__verdict", prompt(ask, model="gpt-5-mini"))
+```
 
+An agent is a component for its state and a processor for its behavior. The
+model call is a columnar expression; its output persists like any other
+state.
 
+### A counterfactual is a join
+
+```python
+async def divergence(prime, fork, since: int) -> list[dict]:
+    base = (await prime.query(Node)).select("tick", "node__x")
+    nudged = (await fork.query(Node)).select(
+        (col("tick") - 1).alias("tick"), col("node__x").alias("nudged")
+    )
+    return (
+        base.join(nudged, on="tick")
+        .where(col("tick") >= since)
+        .with_column("delta", (col("node__x") - col("nudged")).abs())
+        .sort("tick")
+        .to_pylist()
+    )
+```
+
+Every tick persists as immutable rows, and a fork inherits its source's
+history. Comparing two runs is a query, not a re-run. An update persists
+before processors resume, so the fork writes one tick behind its source; its
+ticks shift by one in the join.
+
+### A world composes them
+
+```python
 async def main() -> None:
     async with ArchetypeRuntime() as runtime:
+        # simulate
         prime = runtime.world("prime", processors=[LogisticMap()])
         node = await prime.spawn(Node())
         await prime.run(steps=13)
 
-        # Fork at tick 12; nudge the fork.
+        # fork and nudge
         x12 = (await prime.query(Node)).where(col("tick") == 12).to_pylist()[0]["node__x"]
         fork = await prime.fork("nudged")
         await fork.update(node, Node(x=x12 + 1e-9))
         await prime.run(steps=24)
-        await fork.run(steps=25)  # updates persist first, so the fork runs one tick behind
+        await fork.run(steps=25)
 
-        # The counterfactual is a join of the two histories.
-        base = (await prime.query(Node)).select("tick", "node__x")
-        nudged = (await fork.query(Node)).select(
-            (col("tick") - 1).alias("tick"), col("node__x").alias("nudged")
-        )
-        deltas = (
-            base.join(nudged, on="tick")
-            .where(col("tick") >= 12)
-            .with_column("delta", (col("node__x") - col("nudged")).abs())
-            .sort("tick")
-            .to_pylist()
-        )
+        # measure
+        deltas = await divergence(prime, fork, since=12)
         print("  ".join(f"t{r['tick']}: {r['delta']:.0e}" for r in deltas[::6]))
 
-        # Optional: an agent reviews the divergence. Its verdict is world state too.
+        # review
         if os.getenv("OPENAI_API_KEY"):
             analyst = runtime.world("analyst", processors=[Review()])
             await analyst.spawn(Analyst(evidence=", ".join(f"{r['delta']:.0e}" for r in deltas)))
@@ -105,8 +149,9 @@ asyncio.run(main())
 t12: 1e-09  t18: 3e-08  t24: 1e-06  t30: 3e-04  t36: 2e-02
 ```
 
-The nudge doubles every tick. Without `OPENAI_API_KEY`, the script prints the
-divergence and skips the agent.
+The gap doubles each tick — the map's Lyapunov exponent, ln 2, read from the
+ledger. Without `OPENAI_API_KEY` the script prints the divergence and skips
+the agent.
 [`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py)
 runs three regimes;
 [`examples/05_llm_agents.py`](examples/05_llm_agents.py) shows richer agent
