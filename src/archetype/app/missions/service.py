@@ -10,15 +10,20 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.models import (
+    AttemptClaim,
     MissionAttemptRequest,
     mission_attempt_request_fingerprint,
     normalize_attempt_validators,
 )
 from archetype.app.missions.outcomes import (
     assess_attempt_outcome,
+    assess_legacy_unbound_settled_outcome,
 )
 from archetype.app.missions.transitions import (
+    AttemptClaimStatus,
+    AttemptStatus,
     FinalizationPhase,
     MissionStatus,
     MissionTaskState,
@@ -42,9 +47,12 @@ class MissionService:
 
     def prepare_attempt(self, row: Mapping[str, Any], *, tick: int) -> MissionAttemptRequest | None:
         # A world tick observes an attempt; it is not part of provider-submission
-        # identity. Keeping it out of the durable request lets recovery converge
-        # on the same claim when the unchanged task is revisited on a later tick.
-        _ = tick
+        # identity. It is persisted separately so artifact recovery retains the
+        # original observation while the unchanged claim converges on later ticks.
+        if type(tick) is not int:
+            raise TypeError("mission attempt observation tick must be an exact integer")
+        if tick < 0:
+            raise ValueError("mission attempt observation tick must be non-negative")
         source = self._state(row)
         finished = bool(row.get("mission__finished"))
         terminal = source.mission in {MissionStatus.SUCCEEDED, MissionStatus.FAILED}
@@ -147,6 +155,7 @@ class MissionService:
             previous_validator_details=tuple(prior),
             correlation=correlation,
             source=source,
+            observation_tick=tick,
         )
 
     def apply_attempt(
@@ -154,6 +163,92 @@ class MissionService:
         row: Mapping[str, Any],
         request: MissionAttemptRequest,
         outcome: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Apply one outcome under current write semantics."""
+
+        authority_fields = (
+            "artifact_publication_key",
+            "artifact_request_digest",
+            "artifact_producer_digest",
+            "artifact_redaction_policy_id",
+            "finalization_bundle_id",
+            "finalization_request_digest",
+            "finalization_producer_digest",
+            "finalization_redaction_policy_id",
+        )
+        snapshot = outcome.get("finalization_index_snapshot_id", 0)
+        if (
+            str(outcome.get("finalization_phase", "")) == FinalizationPhase.INDEXED.value
+            or any(str(outcome.get(field, "")).strip() for field in authority_fields)
+            or isinstance(snapshot, bool)
+            or snapshot not in (None, "", 0, "0")
+        ):
+            raise ValueError("indexed artifact authority requires a claim-bound settled projection")
+
+        return self._apply_attempt(
+            row,
+            request,
+            outcome,
+            legacy_unbound=False,
+            expected_status=None,
+        )
+
+    def _apply_settled_attempt(
+        self,
+        row: Mapping[str, Any],
+        request: MissionAttemptRequest,
+        outcome: Mapping[str, Any],
+        claim: AttemptClaim,
+    ) -> dict[str, Any]:
+        """Project claim-authenticated evidence for the execution workflow only."""
+
+        if claim.status is not AttemptClaimStatus.SETTLED:
+            raise ValueError("settled mission projection requires a terminal attempt claim")
+        if (
+            claim.attempt_id != request.attempt_id
+            or claim.idempotency_key != request.idempotency_key
+            or claim.mission_id != request.mission_id
+            or claim.task_id != request.task_id
+        ):
+            raise ValueError("settled attempt claim does not match its mission request")
+        outcome_json = self._json(outcome)
+        if (
+            outcome_json != claim.outcome_json
+            or hashlib.sha256(outcome_json.encode()).hexdigest() != claim.outcome_digest
+        ):
+            raise ValueError("settled mission projection changed the terminal outcome")
+        try:
+            settlement = AttemptStatus(claim.settlement_status)
+        except ValueError as exc:
+            raise ValueError("settled attempt claim has an invalid terminal status") from exc
+        if claim.legacy_unbound:
+            if not claim.legacy_unbound_eligible or claim.contract_version != 7:
+                raise ValueError("legacy unbound claim lacks migration eligibility")
+            if any(
+                (
+                    claim.artifact_request_json,
+                    claim.artifact_request_digest,
+                    claim.artifact_publication_key,
+                    claim.finalizing_at,
+                )
+            ):
+                raise ValueError("legacy unbound claim contains current artifact authority")
+        return self._apply_attempt(
+            row,
+            request,
+            outcome,
+            legacy_unbound=claim.legacy_unbound,
+            expected_status=settlement,
+        )
+
+    def _apply_attempt(
+        self,
+        row: Mapping[str, Any],
+        request: MissionAttemptRequest,
+        outcome: Mapping[str, Any],
+        *,
+        legacy_unbound: bool,
+        expected_status: AttemptStatus | None,
     ) -> dict[str, Any]:
         source = self._state(row)
         if bool(row.get("mission__finished")):
@@ -177,7 +272,13 @@ class MissionService:
         if required_phase is not request.required_finalization_phase:
             raise ValueError("mission finalization gate changed after this attempt was prepared")
 
-        assessment = assess_attempt_outcome(request, outcome)
+        assessment = (
+            assess_legacy_unbound_settled_outcome(request, outcome)
+            if legacy_unbound
+            else assess_attempt_outcome(request, outcome)
+        )
+        if expected_status is not None and assessment.attempt_status is not expected_status:
+            raise ValueError("settled outcome disagrees with its terminal claim status")
 
         details = list(outcome["validator_details"])
         if not details or any(not isinstance(value, dict) for value in details):
@@ -210,6 +311,32 @@ class MissionService:
             event = retry_event(attempt_status, exhausted=exhausted)
         transition = self._graph.transition(source, event)
 
+        # Migration-proven v7 outcomes may contain arbitrary extra keys whose
+        # names resemble the v8 artifact contract. Preserve those bytes in the
+        # terminal claim, but never project them as current authority.
+        finalization_bundle_id = (
+            "" if legacy_unbound else str(outcome.get("finalization_bundle_id", ""))
+        )
+        finalization_request_digest = (
+            "" if legacy_unbound else str(outcome.get("finalization_request_digest", ""))
+        )
+        finalization_producer_digest = (
+            "" if legacy_unbound else str(outcome.get("finalization_producer_digest", ""))
+        )
+        finalization_redaction_policy_id = (
+            "" if legacy_unbound else str(outcome.get("finalization_redaction_policy_id", ""))
+        )
+        finalization_index_snapshot_id = (
+            0 if legacy_unbound else outcome.get("finalization_index_snapshot_id", 0)
+        )
+        if (
+            type(finalization_index_snapshot_id) is not int
+            or not 0 <= finalization_index_snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID
+        ):
+            raise ValueError(
+                "finalization projection requires an exact signed 64-bit snapshot integer"
+            )
+
         updated = dict(row)
         updated.update(
             {
@@ -241,6 +368,12 @@ class MissionService:
                 "finalization__phase": actual_phase.value,
                 "finalization__idempotency_key": request.idempotency_key,
                 "finalization__manifest_ref": str(outcome["finalization_manifest_ref"]),
+                "finalization__bundle_id": finalization_bundle_id,
+                "finalization__request_digest": finalization_request_digest,
+                "finalization__producer_digest": finalization_producer_digest,
+                "finalization__redaction_policy_id": finalization_redaction_policy_id,
+                "finalization__index_snapshot_id": finalization_index_snapshot_id,
+                "finalization__legacy_unbound": legacy_unbound,
                 "finalization__error": str(outcome["finalization_error"]),
                 "evidence__results_json": self._json(outcome["results"]),
                 "evidence__trace_ref": str(outcome["trace_ref"]),

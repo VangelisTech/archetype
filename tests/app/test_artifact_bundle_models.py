@@ -12,8 +12,13 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactCandidate,
     ArtifactIndexRecord,
+    ArtifactPublicationStatus,
+    ArtifactPublishReceipt,
     ArtifactStoreConfig,
+    PreparedArtifactBundleRequest,
 )
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
+from archetype.app.storage.catalog import artifact_publication_key
 from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.contract("artifacts.bundle.publication_replay")
@@ -126,6 +131,71 @@ def test_bundle_request_policy_identity_is_canonical_and_bound_at_service_time()
     )
     assert bound.redaction_policy_id in bound.canonical_json()
     assert bound.digest() == request.digest()
+    assert bound.producer_digest() == request.producer_digest()
+    assert bound.request_digest() != request.request_digest()
+
+
+def test_publication_status_is_a_string_preserving_typed_enum():
+    assert ArtifactPublicationStatus.INDEXED == "indexed"
+    assert ArtifactPublicationStatus("uploaded") is ArtifactPublicationStatus.UPLOADED
+
+
+def test_publish_receipt_requires_exact_status_bound_signed_64_bit_snapshot():
+    values = {
+        "bundle_id": "b" * 64,
+        "world_id": "world-1",
+        "run_id": "run-1",
+        "attempt_id": "attempt-1",
+        "status": ArtifactPublicationStatus.INDEXED,
+        "manifest_uri": "s3://artifacts/manifest.json",
+        "index_snapshot_id": MAX_ICEBERG_SNAPSHOT_ID,
+        "request_digest": "c" * 64,
+        "producer_digest": "d" * 64,
+        "redaction_policy_id": "policy-v1",
+    }
+    assert ArtifactPublishReceipt(**values).index_snapshot_id == MAX_ICEBERG_SNAPSHOT_ID
+    for invalid in (MAX_ICEBERG_SNAPSHOT_ID + 1, 1.5, True):
+        with pytest.raises(ValidationError, match="index_snapshot_id|snapshot"):
+            ArtifactPublishReceipt(**{**values, "index_snapshot_id": invalid})
+
+    expired = ArtifactPublishReceipt(
+        **{
+            **values,
+            "status": ArtifactPublicationStatus.EXPIRED,
+            "manifest_uri": "",
+            "index_snapshot_id": 0,
+        }
+    )
+    assert expired.index_snapshot_id == 0
+
+
+def test_prepared_request_authenticates_exact_policy_producer_and_publication_identity():
+    request = ArtifactBundleRequest(**_request_data()).model_copy(
+        update={"redaction_policy_id": "policy:v1"}
+    )
+    prepared = PreparedArtifactBundleRequest(
+        request_json=request.canonical_json(),
+        request_digest=request.request_digest(),
+        publication_key=artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        ),
+        producer_digest=request.producer_digest(),
+        redaction_policy_id=request.redaction_policy_id,
+    )
+
+    assert prepared.request_digest != prepared.producer_digest
+    with pytest.raises(ValidationError, match="request_digest does not authenticate"):
+        PreparedArtifactBundleRequest(
+            **prepared.model_dump(exclude={"request_digest"}),
+            request_digest="b" * 64,
+        )
+    with pytest.raises(ValidationError, match="publication_key does not match"):
+        PreparedArtifactBundleRequest(
+            **prepared.model_dump(exclude={"publication_key"}),
+            publication_key="a" * 64,
+        )
 
 
 def test_bundle_request_rejects_blank_identity():

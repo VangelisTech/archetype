@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions import (
     MISSION_TRANSITION_GRAPH,
     Attempt,
     AttemptStatus,
     Checkpoint,
     Finalization,
+    FinalizationPhase,
     Mission,
     MissionService,
     MissionStatus,
@@ -165,6 +167,221 @@ def test_component_state_strings_are_enum_validated_without_breaking_arrow() -> 
     assert Checkpoint(status="disabled").status == "disabled"
     with pytest.raises(ValidationError):
         Finalization(phase="invented")
+
+
+def test_indexed_finalization_requires_authoritative_bundle_evidence() -> None:
+    with pytest.raises(ValidationError, match="indexed finalization requires"):
+        Finalization(phase=FinalizationPhase.INDEXED.value)
+
+    finalized = Finalization(
+        phase=FinalizationPhase.INDEXED.value,
+        manifest_ref="s3://artifacts/manifest.json",
+        bundle_id="b" * 64,
+        request_digest="c" * 64,
+        producer_digest="d" * 64,
+        redaction_policy_id="policy-v1",
+        index_snapshot_id=17,
+    )
+    assert finalized.phase == "indexed"
+    assert finalized.index_snapshot_id == 17
+    assert (
+        Finalization(
+            phase=FinalizationPhase.INDEXED.value,
+            manifest_ref="s3://artifacts/manifest.json",
+            bundle_id="b" * 64,
+            request_digest="c" * 64,
+            producer_digest="d" * 64,
+            redaction_policy_id="policy-v1",
+            index_snapshot_id=MAX_ICEBERG_SNAPSHOT_ID,
+        ).index_snapshot_id
+        == MAX_ICEBERG_SNAPSHOT_ID
+    )
+    for invalid_snapshot in (MAX_ICEBERG_SNAPSHOT_ID + 1, 1.5, True):
+        with pytest.raises(ValidationError, match="index_snapshot_id|snapshot"):
+            Finalization(
+                phase=FinalizationPhase.INDEXED.value,
+                manifest_ref="s3://artifacts/manifest.json",
+                bundle_id="b" * 64,
+                request_digest="c" * 64,
+                producer_digest="d" * 64,
+                redaction_policy_id="policy-v1",
+                index_snapshot_id=invalid_snapshot,
+            )
+
+    for phase in (FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED):
+        legacy = Finalization(
+            phase=phase.value,
+            manifest_ref="legacy://manifest",
+            legacy_unbound=True,
+        )
+        assert legacy.legacy_unbound is True
+        assert legacy.index_snapshot_id == 0
+    with pytest.raises(ValidationError, match="published or indexed"):
+        Finalization(
+            phase=FinalizationPhase.CHECKPOINTED.value,
+            legacy_unbound=True,
+        )
+    with pytest.raises(ValidationError, match="cannot contain current authority"):
+        Finalization(
+            phase=FinalizationPhase.INDEXED.value,
+            bundle_id="b" * 64,
+            legacy_unbound=True,
+        )
+
+
+def test_uploaded_and_legacy_published_never_impersonate_indexed_authority() -> None:
+    service = MissionService()
+    indexed_row = _row()
+    indexed_row["taskgate__required_finalization_phase"] = "indexed"
+
+    uploaded_request = service.prepare_attempt(indexed_row, tick=0)
+    assert uploaded_request is not None
+    uploaded = service.apply_attempt(
+        indexed_row,
+        uploaded_request,
+        _outcome(uploaded_request, accepted=True, phase="uploaded"),
+    )
+    assert uploaded["attempt__status"] == "incomplete"
+    assert uploaded["taskgate__status"] == "retryable"
+
+    published_request = service.prepare_attempt(indexed_row, tick=0)
+    assert published_request is not None
+    legacy_but_not_indexed = service.apply_attempt(
+        indexed_row,
+        published_request,
+        _outcome(published_request, accepted=True, phase="published"),
+    )
+    assert legacy_but_not_indexed["attempt__status"] == "incomplete"
+
+    legacy_row = _row()
+    legacy_request = service.prepare_attempt(legacy_row, tick=0)
+    assert legacy_request is not None
+    compatible = service.apply_attempt(
+        legacy_row,
+        legacy_request,
+        _outcome(legacy_request, accepted=True, phase="published"),
+    )
+    assert compatible["attempt__status"] == "accepted"
+    assert compatible["mission__status"] == "succeeded"
+
+
+@pytest.mark.parametrize("invalid_tick", [-1, 1.5, True])
+def test_prepare_attempt_requires_an_exact_non_negative_observation_tick(
+    invalid_tick: Any,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match="observation tick"):
+        MissionService().prepare_attempt(_row(), tick=invalid_tick)
+
+    request = MissionService().prepare_attempt(_row(), tick=23)
+    assert request is not None
+    assert request.observation_tick == 23
+
+
+@pytest.mark.parametrize("required_phase", list(FinalizationPhase))
+def test_current_apply_attempt_cannot_self_assert_indexed_authority(
+    required_phase: FinalizationPhase,
+) -> None:
+    service = MissionService()
+    row = _row()
+    row["taskgate__required_finalization_phase"] = required_phase.value
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+    outcome = _outcome(request, accepted=True, phase="indexed")
+
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        service.apply_attempt(row, request, outcome)
+
+    outcome.update(
+        {
+            "finalization_bundle_id": "b" * 64,
+            "finalization_request_digest": "c" * 64,
+            "finalization_producer_digest": "d" * 64,
+            "finalization_redaction_policy_id": "policy-v1",
+            "finalization_index_snapshot_id": 17,
+        }
+    )
+
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        service.apply_attempt(row, request, outcome)
+
+    outcome.update(
+        {
+            "artifact_publication_key": outcome["finalization_bundle_id"],
+            "artifact_request_digest": outcome["finalization_request_digest"],
+            "artifact_producer_digest": outcome["finalization_producer_digest"],
+            "artifact_redaction_policy_id": outcome["finalization_redaction_policy_id"],
+        }
+    )
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        service.apply_attempt(row, request, outcome)
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [MAX_ICEBERG_SNAPSHOT_ID, MAX_ICEBERG_SNAPSHOT_ID + 1, 1.5, True],
+)
+def test_current_apply_attempt_rejects_every_indexed_snapshot_representation(
+    snapshot: Any,
+) -> None:
+    service = MissionService()
+    row = _row()
+    row["taskgate__required_finalization_phase"] = FinalizationPhase.INDEXED.value
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+    outcome = _outcome(request, accepted=True, phase=FinalizationPhase.INDEXED.value)
+    outcome.update(
+        {
+            "finalization_bundle_id": "b" * 64,
+            "finalization_request_digest": "c" * 64,
+            "finalization_producer_digest": "d" * 64,
+            "finalization_redaction_policy_id": "policy-v1",
+            "finalization_index_snapshot_id": snapshot,
+            "artifact_publication_key": "b" * 64,
+            "artifact_request_digest": "c" * 64,
+            "artifact_producer_digest": "d" * 64,
+            "artifact_redaction_policy_id": "policy-v1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        service.apply_attempt(row, request, outcome)
+
+
+@pytest.mark.parametrize(
+    "staged_field",
+    [
+        "artifact_publication_key",
+        "artifact_request_digest",
+        "artifact_producer_digest",
+        "artifact_redaction_policy_id",
+    ],
+)
+def test_current_apply_attempt_rejects_each_staged_authority_marker(
+    staged_field: str,
+) -> None:
+    service = MissionService()
+    row = _row()
+    row["taskgate__required_finalization_phase"] = FinalizationPhase.INDEXED.value
+    request = service.prepare_attempt(row, tick=0)
+    assert request is not None
+    outcome = _outcome(request, accepted=True, phase=FinalizationPhase.INDEXED.value)
+    outcome.update(
+        {
+            "finalization_bundle_id": "b" * 64,
+            "finalization_request_digest": "c" * 64,
+            "finalization_producer_digest": "d" * 64,
+            "finalization_redaction_policy_id": "policy-v1",
+            "finalization_index_snapshot_id": 17,
+            "artifact_publication_key": "b" * 64,
+            "artifact_request_digest": "c" * 64,
+            "artifact_producer_digest": "d" * 64,
+            "artifact_redaction_policy_id": "policy-v1",
+        }
+    )
+    outcome[staged_field] = "changed-policy" if staged_field.endswith("policy_id") else "e" * 64
+
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        service.apply_attempt(row, request, outcome)
 
 
 def test_mission_projection_preserves_a_non_expiring_checkpoint() -> None:

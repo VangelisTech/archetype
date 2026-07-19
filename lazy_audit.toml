@@ -140,30 +140,36 @@ reason = "same grading-boundary site as the collect above: per-entity terminal r
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 957
+line = 1251
 method = "to_pylist"
 reason = "Artifact-manifest boundary: the caller-declared, size-bounded file set has already been hashed and MIME-classified by native Daft expressions; scalar metadata must enter Python to construct validated immutable index records and the canonical bundle manifest."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1009
+line = 1303
 method = "to_pylist"
 reason = "Object-store completion boundary: each caller-declared, size-bounded upload has executed through Daft and its returned object URI must enter Python to construct the portable manifest and deterministic artifact-index rows."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1022
+line = 1316
 method = "to_pylist"
 reason = "Single-object upload boundary: one generated bundle-manifest byte value is uploaded through Daft and its sole destination URI must enter the durable publication receipt and control-catalog record."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1037
+line = 1370
 method = "to_pylist"
-reason = "Content-addressed retry boundary: only object paths inside one deterministic artifact folder are materialized so imperative reconciliation can choose a stable existing upload rather than issue duplicate external I/O."
+reason = "Existing-object metadata authorization boundary: only paths and sizes beneath one deterministic content-addressed destination enter Python so each candidate URI can pass shared redaction policy and exact-size eligibility before any remote byte read."
 
 [[entries]]
 path = "src/archetype/app/artifacts/bundle_service.py"
-line = 1053
+line = 1403
+method = "to_pylist"
+reason = "Existing-object byte-integrity boundary: one size-eligible, metadata-approved remote candidate is read through Daft and its bytes enter Python solely to verify exact size and SHA-256 before durable reuse."
+
+[[entries]]
+path = "src/archetype/app/artifacts/bundle_service.py"
+line = 1419
 method = "to_pylist"
 reason = "Bundle-index idempotency boundary: the Iceberg query is filtered to one deterministic bundle and its bounded artifact rows must enter Python for exact conflict detection and missing-row selection before an append."

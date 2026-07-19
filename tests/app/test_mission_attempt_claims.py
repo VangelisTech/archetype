@@ -6,22 +6,33 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import sqlite3
 import time
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from archetype.app.artifacts.bundle_models import ArtifactBundleRequest, ArtifactStoreConfig
+from archetype.app.container import ServiceContainer
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions import (
     ATTEMPT_CLAIM_TRANSITION_GRAPH,
+    AttemptArtifactExpiration,
+    AttemptArtifactProjection,
+    AttemptArtifactPublication,
     AttemptClaimAcquireOutcome,
     AttemptClaimEvent,
     AttemptClaimStatus,
     AttemptClaimTransitionGraph,
     AttemptRecoveryAction,
     AttemptStatus,
+    FinalizationPhase,
+    MissionArtifactFinalizationExpiredError,
     MissionAttemptClaimService,
+    MissionAttemptExecutionService,
     MissionService,
     ProviderExecutionCapabilities,
     attempt_invocation_fingerprint,
@@ -36,7 +47,9 @@ from archetype.app.storage.catalog import (
     AttemptClaimPendingError,
     AttemptClaimStaleError,
     SqliteControlCatalog,
+    artifact_publication_key,
 )
+from archetype.core.config import StorageConfig, WorldConfig
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -85,10 +98,484 @@ def _row() -> dict[str, Any]:
     }
 
 
-def _request():
-    request = MissionService().prepare_attempt(_row(), tick=11)
+def _request(*, tick: int = 11):
+    request = MissionService().prepare_attempt(_row(), tick=tick)
     assert request is not None
     return request
+
+
+def _indexed_row() -> dict[str, Any]:
+    row = _row()
+    row["taskgate__required_finalization_phase"] = FinalizationPhase.INDEXED.value
+    return row
+
+
+def _indexed_request(*, tick: int = 11):
+    request = MissionService().prepare_attempt(_indexed_row(), tick=tick)
+    assert request is not None
+    return request
+
+
+def _artifact_projection(request: Any, policy_id: str) -> AttemptArtifactProjection:
+    world_id = str(request.correlation["world_id"])
+    run_id = str(request.correlation["run_id"])
+    request_json = json.dumps(
+        {
+            "attempt_id": request.attempt_id,
+            "idempotency_key": request.idempotency_key,
+            "redaction_policy_id": policy_id,
+            "run_id": run_id,
+            "source": "fake://checkpoint",
+            "world_id": world_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return AttemptArtifactProjection(
+        request_json=request_json,
+        request_digest=hashlib.sha256(request_json.encode()).hexdigest(),
+        publication_key=artifact_publication_key(
+            world_id,
+            run_id,
+            request.idempotency_key,
+        ),
+        producer_digest="c" * 64,
+        redaction_policy_id=policy_id,
+    )
+
+
+def _artifact_publication(
+    projection: AttemptArtifactProjection,
+) -> AttemptArtifactPublication:
+    return AttemptArtifactPublication(
+        status=FinalizationPhase.INDEXED,
+        bundle_id=projection.publication_key,
+        manifest_uri="s3://artifacts/manifest.json",
+        index_snapshot_id=17,
+        request_digest=projection.request_digest,
+        producer_digest=projection.producer_digest,
+        redaction_policy_id=projection.redaction_policy_id,
+    )
+
+
+def _unchecked_artifact_publication(
+    projection: AttemptArtifactProjection,
+    *,
+    index_snapshot_id: Any,
+) -> AttemptArtifactPublication:
+    """Bypass the frozen model to emulate a dishonest custom finalizer."""
+
+    publication = _artifact_publication(projection)
+    object.__setattr__(publication, "index_snapshot_id", index_snapshot_id)
+    return publication
+
+
+async def _advance_artifact_publication(
+    catalog: Any,
+    projection: AttemptArtifactProjection,
+    *,
+    status: str,
+    index_snapshot_id: int = 17,
+    claimant: str = "artifact-publisher",
+) -> Any:
+    """Advance the exact staged request through the real durable outbox API."""
+
+    request = json.loads(projection.request_json)
+    world_id = str(request["world_id"])
+    publication = await catalog.get_artifact_publication(
+        world_id,
+        projection.publication_key,
+    )
+    if publication is None:
+        _, publication = await catalog.acquire_artifact_publication(
+            world_id=world_id,
+            run_id=str(request["run_id"]),
+            attempt_id=str(request["attempt_id"]),
+            idempotency_key=str(request["idempotency_key"]),
+            request_digest=projection.producer_digest,
+            request_json=projection.request_json,
+            claimant=claimant,
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=60,
+        )
+    assert publication.publication_key == projection.publication_key
+
+    if status == "PENDING":
+        return publication
+    if status == "EXPIRED":
+        if publication.status != "EXPIRED":
+            await catalog.expire_artifact_publication(
+                world_id,
+                projection.publication_key,
+                claimant,
+                "test retry window elapsed",
+            )
+        return await catalog.get_artifact_publication(world_id, projection.publication_key)
+    if publication.status == "PENDING":
+        await catalog.record_artifact_uploads(
+            world_id,
+            projection.publication_key,
+            claimant,
+            '[{"uri":"s3://artifacts/result.json"}]',
+            "s3://artifacts/manifest.json",
+        )
+        publication = await catalog.get_artifact_publication(
+            world_id,
+            projection.publication_key,
+        )
+    if status == "UPLOADED":
+        return publication
+    if status != "INDEXED":
+        raise AssertionError(f"unsupported artifact publication status: {status}")
+    if publication is not None and publication.status != "INDEXED":
+        await catalog.complete_artifact_publication(
+            world_id,
+            projection.publication_key,
+            claimant,
+            index_snapshot_id,
+        )
+    return await catalog.get_artifact_publication(world_id, projection.publication_key)
+
+
+async def _stage_indexed_claim(
+    service: MissionAttemptClaimService,
+    *,
+    claimant: str = "worker",
+    lease_seconds: float = 900.0,
+    status: AttemptStatus = AttemptStatus.ACCEPTED,
+    outcome_extra: dict[str, Any] | None = None,
+) -> tuple[Any, AttemptArtifactProjection]:
+    request = _indexed_request()
+    acquired = await service.acquire(
+        request,
+        _capabilities(),
+        claimant=claimant,
+        lease_seconds=lease_seconds,
+    )
+    decision = await service.decide_recovery(
+        acquired.claim,
+        lease_seconds=lease_seconds,
+    )
+    consumed = await service.consume_execution(decision.authorization)
+    acknowledged = await service.acknowledge_provider(
+        consumed,
+        provider_session_id="session-indexed",
+        provider_request_id="request-indexed",
+    )
+    outcome = _outcome(
+        request=request,
+        status=status,
+        agent_session_id="session-indexed",
+    )
+    outcome.update(outcome_extra or {})
+    durable = service.prepare_durable_outcome(acknowledged, outcome)
+    projection = _artifact_projection(request, acknowledged.redaction_policy_id)
+    staged = await service.stage_finalization(
+        acknowledged,
+        outcome=durable,
+        projection=projection,
+    )
+    return staged, projection
+
+
+async def _seed_unbound_settled_claim(
+    path: Any,
+    *,
+    phase: FinalizationPhase,
+    as_v7: bool,
+    required_phase: FinalizationPhase = FinalizationPhase.INDEXED,
+    authority_extras: bool = False,
+) -> tuple[Any, dict[str, Any]]:
+    """Persist unbound evidence through the raw catalog, optionally as real v7."""
+
+    redaction = RedactionService()
+    catalog = SqliteControlCatalog(path)
+    service = _claim_service(catalog, redaction)
+    row = _row()
+    row["taskgate__required_finalization_phase"] = required_phase.value
+    request = MissionService().prepare_attempt(row, tick=11)
+    assert request is not None
+    acquired = await service.acquire(
+        request,
+        _capabilities(),
+        claimant="v7-worker",
+    )
+    decision = await service.decide_recovery(acquired.claim)
+    consumed = await service.consume_execution(decision.authorization)
+    acknowledged = await service.acknowledge_provider(
+        consumed,
+        provider_session_id="session-v7",
+        provider_request_id="request-v7",
+    )
+    outcome = _outcome(
+        request=request,
+        status=AttemptStatus.ACCEPTED,
+        agent_session_id="session-v7",
+        finalization_phase=phase.value,
+    )
+    if authority_extras:
+        outcome.update(
+            artifact_publication_key="b" * 64,
+            artifact_request_digest="c" * 64,
+            artifact_producer_digest="d" * 64,
+            artifact_redaction_policy_id=redaction.policy_id,
+            finalization_bundle_id="b" * 64,
+            finalization_request_digest="c" * 64,
+            finalization_producer_digest="d" * 64,
+            finalization_redaction_policy_id=redaction.policy_id,
+            finalization_index_snapshot_id=17,
+        )
+    redacted = redaction.redact_record(outcome, scope="mission-attempt-outcome")
+    assert redacted.value == outcome
+    error = redaction.redact_text("", scope="mission-attempt-last-error")
+    evidence_json = service._updated_redaction_evidence(
+        acknowledged,
+        outcome=redacted.receipt,
+        last_error=error.receipt,
+    )
+    legacy_request_json = ""
+    if as_v7:
+        legacy_request = json.loads(acknowledged.request_json)
+        assert legacy_request.pop("claim_contract_version") == 8
+        assert legacy_request.pop("observation_tick") == request.observation_tick
+        legacy_request_json = service._json(legacy_request)
+        request_receipt = redaction.redact_record(
+            legacy_request,
+            scope="mission-attempt-request",
+        ).receipt
+        legacy_evidence = json.loads(evidence_json)
+        legacy_evidence["request"] = request_receipt.model_dump(mode="json")
+        evidence_json = service._json(legacy_evidence)
+    outcome_json = service._json(outcome)
+    await catalog.transition_attempt_claim(
+        acknowledged.world_id,
+        acknowledged.claim_key,
+        acknowledged.claimant,
+        acknowledged.fence_epoch,
+        expected_status=AttemptClaimStatus.PROVIDER_ACKNOWLEDGED.value,
+        target_status=AttemptClaimStatus.SETTLED.value,
+        redaction_evidence_json=evidence_json,
+        settlement_status=AttemptStatus.ACCEPTED.value,
+        outcome_digest=hashlib.sha256(outcome_json.encode()).hexdigest(),
+        outcome_json=outcome_json,
+        last_error="",
+    )
+    await catalog.close()
+
+    if as_v7:
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "UPDATE mission_attempt_claims SET request_json=?",
+            (legacy_request_json,),
+        )
+        for column in (
+            "artifact_request_json",
+            "artifact_request_digest",
+            "artifact_publication_key",
+            "finalizing_at",
+            "legacy_unbound_eligible",
+        ):
+            connection.execute(f"ALTER TABLE mission_attempt_claims DROP COLUMN {column}")
+        connection.execute("UPDATE catalog_meta SET value='7' WHERE key='schema_version'")
+        connection.commit()
+        connection.close()
+    return request, outcome
+
+
+def _strip_claim_contract_marker(path: Any) -> None:
+    """Mimic a post-v8 raw mutation without granting migration provenance."""
+
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    row = connection.execute(
+        "SELECT request_json, redaction_evidence_json FROM mission_attempt_claims"
+    ).fetchone()
+    assert row is not None
+    request_json = json.loads(row["request_json"])
+    assert request_json.pop("claim_contract_version") == 8
+    assert request_json.pop("observation_tick") == 11
+    evidence = json.loads(row["redaction_evidence_json"])
+    receipt = (
+        RedactionService()
+        .redact_record(
+            request_json,
+            scope="mission-attempt-request",
+        )
+        .receipt
+    )
+    evidence["request"] = receipt.model_dump(mode="json")
+    connection.execute(
+        "UPDATE mission_attempt_claims SET request_json=?, redaction_evidence_json=?",
+        (
+            json.dumps(request_json, sort_keys=True, separators=(",", ":")),
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
+class _NoRunRunner:
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities:
+        return _capabilities()
+
+    async def run_attempt(self, **_: Any) -> dict[str, Any]:
+        self.run_calls += 1
+        raise AssertionError("FINALIZE recovery must not invoke the sandbox runner")
+
+
+class _RecoveryFinalizer:
+    def __init__(
+        self,
+        catalog: Any,
+        projection: AttemptArtifactProjection,
+        publication: AttemptArtifactPublication,
+        *,
+        durable_status: str = "INDEXED",
+        durable_snapshot_id: int = 17,
+    ) -> None:
+        self.catalog = catalog
+        self.projection = projection
+        self.publication = publication
+        self.durable_status = durable_status
+        self.durable_snapshot_id = durable_snapshot_id
+        self.prepare_calls = 0
+        self.publish_calls = 0
+
+    def prepare(self, *_: Any, **__: Any) -> AttemptArtifactProjection:
+        self.prepare_calls += 1
+        raise AssertionError("FINALIZE recovery must reuse the staged artifact request")
+
+    async def publish(
+        self,
+        projection: AttemptArtifactProjection,
+    ) -> AttemptArtifactPublication:
+        self.publish_calls += 1
+        assert projection == self.projection
+        if self.durable_status != "MISSING":
+            await _advance_artifact_publication(
+                self.catalog,
+                projection,
+                status=self.durable_status,
+                index_snapshot_id=self.durable_snapshot_id,
+            )
+        return self.publication
+
+
+class _ExpiredFinalizer:
+    def __init__(
+        self,
+        catalog: Any,
+        projection: AttemptArtifactProjection,
+        *,
+        bundle_id: str | None = None,
+    ) -> None:
+        self.catalog = catalog
+        self.projection = projection
+        self.bundle_id = bundle_id or projection.publication_key
+        self.prepare_calls = 0
+        self.publish_calls = 0
+
+    def prepare(self, *_: Any, **__: Any) -> AttemptArtifactProjection:
+        self.prepare_calls += 1
+        raise AssertionError("FINALIZE recovery must reuse the staged artifact request")
+
+    async def publish(
+        self,
+        projection: AttemptArtifactProjection,
+    ) -> AttemptArtifactPublication:
+        self.publish_calls += 1
+        assert projection == self.projection
+        await _advance_artifact_publication(
+            self.catalog,
+            projection,
+            status="EXPIRED",
+        )
+        raise MissionArtifactFinalizationExpiredError(
+            AttemptArtifactExpiration(
+                status="expired",
+                bundle_id=self.bundle_id,
+                request_digest=projection.request_digest,
+                producer_digest=projection.producer_digest,
+                redaction_policy_id=projection.redaction_policy_id,
+            )
+        )
+
+
+class _IndexedRunner:
+    def __init__(self, request: Any, *, status: AttemptStatus = AttemptStatus.ACCEPTED) -> None:
+        self.request = request
+        self.status = status
+        self.run_calls = 0
+
+    @property
+    def provider_execution_capabilities(self) -> ProviderExecutionCapabilities:
+        return _capabilities()
+
+    async def run_attempt(self, **kwargs: Any) -> dict[str, Any]:
+        self.run_calls += 1
+        await kwargs["authorize_execution"](kwargs["authorization"])
+        await kwargs["acknowledge_provider"]("session-indexed", "request-indexed")
+        return _outcome(
+            request=self.request,
+            status=self.status,
+            agent_session_id="session-indexed",
+        )
+
+
+class _StageObservingFinalizer:
+    def __init__(
+        self,
+        service: MissionAttemptClaimService,
+        catalog: Any,
+        request: Any,
+    ) -> None:
+        self.service = service
+        self.catalog = catalog
+        self.request = request
+        self.prepare_calls = 0
+        self.publish_calls = 0
+        self.observed_status: AttemptClaimStatus | None = None
+
+    def prepare(
+        self,
+        request: Any,
+        outcome: Any,
+        *,
+        redaction_policy_id: str,
+    ) -> AttemptArtifactProjection:
+        self.prepare_calls += 1
+        assert request == self.request
+        assert outcome["finalization_phase"] == "checkpointed"
+        assert request.observation_tick == self.request.observation_tick
+        return _artifact_projection(request, redaction_policy_id)
+
+    async def publish(
+        self,
+        projection: AttemptArtifactProjection,
+    ) -> AttemptArtifactPublication:
+        self.publish_calls += 1
+        claim_key = self.service.claim_key(
+            world_id="world-1",
+            mission_id=self.request.mission_id,
+            task_id=self.request.task_id,
+            attempt_id=self.request.attempt_id,
+        )
+        staged = await self.service.get("world-1", claim_key)
+        assert staged is not None
+        self.observed_status = staged.status
+        assert staged.status is AttemptClaimStatus.FINALIZING
+        assert staged.artifact_request_json == projection.request_json
+        await _advance_artifact_publication(
+            self.catalog,
+            projection,
+            status="INDEXED",
+        )
+        return _artifact_publication(projection)
 
 
 def _capabilities(**overrides: Any) -> ProviderExecutionCapabilities:
@@ -339,7 +826,9 @@ async def test_policy_drift_fails_closed_for_live_claim_but_terminal_replay_is_r
         await changed.renew(observed or acquired.claim)
 
     assert await original.get(acquired.claim.world_id, acquired.claim.claim_key) == before
-    outcome = _outcome()
+    # Legacy PUBLISHED evidence remains replayable under its compatible gate,
+    # even after the active redaction policy changes.
+    outcome = _outcome(finalization_phase=FinalizationPhase.PUBLISHED.value)
     settled = await original.settle(
         acquired.claim,
         attempt_status=AttemptStatus.REJECTED,
@@ -370,9 +859,88 @@ async def test_policy_drift_fails_closed_for_live_claim_but_terminal_replay_is_r
     await catalog.close()
 
 
+@pytest.mark.parametrize("required_phase", list(FinalizationPhase))
+async def test_unbound_raw_indexed_outcome_fails_closed_for_every_gate_policy(
+    tmp_path,
+    required_phase: FinalizationPhase,
+) -> None:
+    row = _row()
+    row["taskgate__required_finalization_phase"] = required_phase.value
+    request = MissionService().prepare_attempt(row, tick=1)
+    assert request is not None
+    catalog = SqliteControlCatalog(tmp_path / f"unbound-{required_phase.value}.db")
+    service = _claim_service(catalog)
+    acquired = await service.acquire(request, _capabilities(), claimant="worker")
+    decision = await service.decide_recovery(acquired.claim)
+    consumed = await service.consume_execution(decision.authorization)
+    acknowledged = await service.acknowledge_provider(
+        consumed,
+        provider_session_id="session-unbound",
+        provider_request_id="request-unbound",
+    )
+    raw_indexed = _outcome(
+        request=request,
+        status=AttemptStatus.REJECTED,
+        agent_session_id="session-unbound",
+        finalization_phase=FinalizationPhase.INDEXED.value,
+        finalization_manifest_ref="s3://artifacts/manifest.json",
+        finalization_bundle_id="b" * 64,
+        finalization_request_digest="c" * 64,
+        finalization_producer_digest="d" * 64,
+        finalization_redaction_policy_id=acknowledged.redaction_policy_id,
+        finalization_index_snapshot_id=17,
+    )
+
+    with pytest.raises(ValueError, match="staged authority|staged artifact request"):
+        service.prepare_durable_outcome(acknowledged, raw_indexed)
+
+    persisted = await service.get(acknowledged.world_id, acknowledged.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED
+    assert persisted.outcome_json == ""
+    await catalog.close()
+
+
+async def test_live_published_evidence_cannot_create_accepted_indexed_settlement(
+    tmp_path,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "published-indexed-live.db")
+    service = _claim_service(catalog)
+    request = _indexed_request(tick=23)
+    acquired = await service.acquire(request, _capabilities(), claimant="worker")
+    decision = await service.decide_recovery(acquired.claim)
+    consumed = await service.consume_execution(decision.authorization)
+    acknowledged = await service.acknowledge_provider(
+        consumed,
+        provider_session_id="session-live-published",
+        provider_request_id="request-live-published",
+    )
+    published = service.prepare_durable_outcome(
+        acknowledged,
+        _outcome(
+            request=request,
+            status=AttemptStatus.ACCEPTED,
+            agent_session_id="session-live-published",
+            finalization_phase=FinalizationPhase.PUBLISHED.value,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="settlement status disagrees"):
+        await service.settle(
+            acknowledged,
+            attempt_status=AttemptStatus.ACCEPTED,
+            outcome=published,
+        )
+
+    persisted = await service.get(acknowledged.world_id, acknowledged.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED
+    await catalog.close()
+
+
 async def test_attempt_claim_graph_is_complete_and_rejects_every_absent_edge() -> None:
     graph = AttemptClaimTransitionGraph()
-    assert len(ATTEMPT_CLAIM_TRANSITION_GRAPH) == 5
+    assert len(ATTEMPT_CLAIM_TRANSITION_GRAPH) == 7
     for (source, event), target in ATTEMPT_CLAIM_TRANSITION_GRAPH.items():
         transition = graph.transition(source.value, event.value)
         assert transition.source is source
@@ -383,6 +951,1198 @@ async def test_attempt_claim_graph_is_complete_and_rejects_every_absent_edge() -
     for source, event in all_pairs - set(ATTEMPT_CLAIM_TRANSITION_GRAPH):
         with pytest.raises(ValueError, match="illegal attempt claim transition"):
             graph.transition(source, event)
+
+
+async def test_stage_finalization_persists_exact_outcome_and_request_before_io(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "stage.db")
+    service = _claim_service(catalog)
+    staged, projection = await _stage_indexed_claim(service)
+
+    assert staged.status is AttemptClaimStatus.FINALIZING
+    assert staged.finalizing_at
+    assert staged.settled_at is None
+    assert staged.artifact_request_json == projection.request_json
+    assert staged.artifact_request_digest == projection.request_digest
+    assert staged.artifact_publication_key == projection.publication_key
+    assert service.staged_artifact_projection(staged) == projection
+    staged_outcome = json.loads(staged.outcome_json)
+    assert staged_outcome["finalization_phase"] == "checkpointed"
+    assert staged_outcome["artifact_publication_key"] == projection.publication_key
+    assert staged_outcome["artifact_request_digest"] == projection.request_digest
+    assert staged_outcome["artifact_producer_digest"] == projection.producer_digest
+    assert staged_outcome["artifact_redaction_policy_id"] == projection.redaction_policy_id
+    assert (await service.decide_recovery(staged)).action is AttemptRecoveryAction.FINALIZE
+    await catalog.close()
+
+
+async def test_execution_stages_accepted_attempt_before_artifact_publication_io(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "execute-indexed.db")
+    claims = _claim_service(catalog)
+    request = _indexed_request(tick=23)
+    runner = _IndexedRunner(request)
+    finalizer = _StageObservingFinalizer(claims, catalog, request)
+
+    execution = await MissionAttemptExecutionService(
+        claims,
+        MissionService(),
+        finalizer,
+    ).run(
+        _indexed_row(),
+        tick=23,
+        claimant="worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.decision.action is AttemptRecoveryAction.EXECUTE
+    assert execution.replayed is False
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.updated_row["mission__status"] == "succeeded"
+    assert execution.updated_row["finalization__phase"] == "indexed"
+    assert execution.updated_row["finalization__bundle_id"] == artifact_publication_key(
+        "world-1",
+        "run-1",
+        request.idempotency_key,
+    )
+    assert execution.updated_row["finalization__legacy_unbound"] is False
+    assert execution.claim.legacy_unbound is False
+    assert runner.run_calls == 1
+    assert finalizer.prepare_calls == 1
+    assert finalizer.publish_calls == 1
+    assert finalizer.observed_status is AttemptClaimStatus.FINALIZING
+    await catalog.close()
+
+
+async def test_recovered_execution_preserves_first_observation_tick_before_staging(
+    tmp_path,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "observation-tick-recovery.db")
+    claims = _claim_service(catalog)
+    first_request = _indexed_request(tick=11)
+    acquired = await claims.acquire(
+        first_request,
+        _capabilities(),
+        claimant="crashed-before-execution",
+        lease_seconds=0.05,
+    )
+    assert json.loads(acquired.claim.request_json)["observation_tick"] == 11
+    await asyncio.sleep(0.06)
+
+    runner = _IndexedRunner(first_request)
+    finalizer = _StageObservingFinalizer(claims, catalog, first_request)
+    execution = await MissionAttemptExecutionService(
+        claims,
+        MissionService(),
+        finalizer,
+    ).run(
+        _indexed_row(),
+        tick=99,
+        claimant="recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert execution.request.observation_tick == 11
+    assert finalizer.prepare_calls == 1
+    assert runner.run_calls == 1
+    await catalog.close()
+
+
+async def test_stale_stage_response_cannot_publish_or_settle_after_finalizer_takeover(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "stale-stage-response.db"
+    stale_catalog = SqliteControlCatalog(path)
+    stale_claims = _claim_service(stale_catalog)
+    request = _indexed_request(tick=23)
+    runner = _IndexedRunner(request)
+    stale_finalizer = _StageObservingFinalizer(stale_claims, stale_catalog, request)
+    stage_committed = asyncio.Event()
+    release_stage_response = asyncio.Event()
+    staged_records: list[Any] = []
+    transition = stale_catalog.transition_attempt_claim
+
+    async def delay_finalizing_response(*args: Any, **kwargs: Any) -> Any:
+        record = await transition(*args, **kwargs)
+        if kwargs.get("target_status") == AttemptClaimStatus.FINALIZING.value:
+            staged_records.append(record)
+            stage_committed.set()
+            await release_stage_response.wait()
+        return record
+
+    monkeypatch.setattr(stale_catalog, "transition_attempt_claim", delay_finalizing_response)
+    stale_run = asyncio.create_task(
+        MissionAttemptExecutionService(
+            stale_claims,
+            MissionService(),
+            stale_finalizer,
+        ).run(
+            _indexed_row(),
+            tick=23,
+            claimant="stale-worker",
+            runner=runner,
+            lease_seconds=0.08,
+        )
+    )
+
+    await asyncio.wait_for(stage_committed.wait(), timeout=2)
+    assert len(staged_records) == 1
+    stale_claim = await stale_claims.get("world-1", staged_records[0].claim_key)
+    assert stale_claim is not None
+    assert stale_claim.status is AttemptClaimStatus.FINALIZING
+    projection = stale_claims.staged_artifact_projection(stale_claim)
+    while time.time() <= stale_claim.lease_expires_at:
+        await asyncio.sleep(0.005)
+
+    recovery_catalog = SqliteControlCatalog(path)
+    recovery_claims = _claim_service(recovery_catalog)
+    recovery_runner = _NoRunRunner()
+    recovery_finalizer = _RecoveryFinalizer(
+        recovery_catalog,
+        projection,
+        _artifact_publication(projection),
+    )
+    try:
+        recovery = await MissionAttemptExecutionService(
+            recovery_claims,
+            MissionService(),
+            recovery_finalizer,
+        ).run(
+            _indexed_row(),
+            tick=24,
+            claimant="recovery-worker",
+            runner=recovery_runner,
+            lease_seconds=1,
+        )
+    finally:
+        release_stage_response.set()
+
+    assert recovery is not None
+    assert recovery.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert recovery.decision.action is AttemptRecoveryAction.FINALIZE
+    assert recovery.claim.status is AttemptClaimStatus.SETTLED
+    with pytest.raises(AttemptClaimStaleError):
+        await stale_run
+    with pytest.raises(ValueError, match="taken over"):
+        await stale_claims.settle(
+            stale_claim,
+            attempt_status=AttemptStatus.ACCEPTED,
+            outcome=recovery.outcome,
+        )
+
+    assert runner.run_calls == 1
+    assert stale_finalizer.prepare_calls == 1
+    assert stale_finalizer.publish_calls == 0
+    assert recovery_runner.run_calls == 0
+    assert recovery_finalizer.prepare_calls == 0
+    assert recovery_finalizer.publish_calls == 1
+    await stale_catalog.close()
+    await recovery_catalog.close()
+
+
+async def test_only_durable_indexed_row_can_upgrade_a_staged_outcome(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "durable-authority.db")
+    service = _claim_service(catalog)
+    staged, projection = await _stage_indexed_claim(service)
+    staged_outcome_receipt = json.loads(staged.redaction_evidence_json)["outcome"]
+
+    # A custom finalizer can fabricate this process-local DTO, but the claim
+    # API no longer accepts it as authority.
+    forged_receipt = _artifact_publication(projection)
+    prepare_with_receipt: Any = service.prepare_artifact_finalization_outcome
+    with pytest.raises(TypeError):
+        await prepare_with_receipt(staged, forged_receipt)
+
+    with pytest.raises(ValueError, match="authority is missing"):
+        await service.prepare_artifact_finalization_outcome(staged)
+    for durable_status in ("PENDING", "UPLOADED"):
+        publication = await _advance_artifact_publication(
+            catalog,
+            projection,
+            status=durable_status,
+        )
+        assert publication is not None and publication.status == durable_status
+        with pytest.raises(RuntimeError, match="has not reached INDEXED or EXPIRED"):
+            await service.prepare_artifact_finalization_outcome(staged)
+        persisted = await service.get(staged.world_id, staged.claim_key)
+        assert persisted is not None
+        assert persisted.status is AttemptClaimStatus.FINALIZING
+
+    forged = json.loads(staged.outcome_json)
+    forged.update(
+        finalization_phase=FinalizationPhase.INDEXED.value,
+        finalization_manifest_ref="s3://forged/manifest.json",
+        finalization_bundle_id=projection.publication_key,
+        finalization_request_digest=projection.request_digest,
+        finalization_producer_digest=projection.producer_digest,
+        finalization_redaction_policy_id=projection.redaction_policy_id,
+        finalization_index_snapshot_id=17,
+        finalization_error="",
+    )
+    forged_redacted = service.prepare_durable_outcome(staged, forged)
+    for arbitrary in (forged, forged_redacted):
+        with pytest.raises(ValueError, match="prepared finalization settlement"):
+            await service.settle(
+                staged,
+                attempt_status=AttemptStatus.ACCEPTED,
+                outcome=arbitrary,
+            )
+        persisted = await service.get(staged.world_id, staged.claim_key)
+        assert persisted is not None
+        assert persisted.status is AttemptClaimStatus.FINALIZING
+
+    indexed = await _advance_artifact_publication(
+        catalog,
+        projection,
+        status="INDEXED",
+    )
+    assert indexed is not None and indexed.status == "INDEXED"
+    finalized = await service.prepare_artifact_finalization_outcome(staged)
+    expected_scanned_bytes = len(service._json(finalized.value).encode())
+    assert finalized.receipt.scanned_bytes == expected_scanned_bytes
+    assert finalized.receipt.scanned_bytes > staged_outcome_receipt["scanned_bytes"]
+    with pytest.raises(ValueError, match="claim-bound settled projection"):
+        MissionService().apply_attempt(_indexed_row(), _indexed_request(), finalized.value)
+    with pytest.raises(ValueError, match="prepared finalization settlement"):
+        await service.settle(
+            staged,
+            attempt_status=AttemptStatus.ACCEPTED,
+            outcome=finalized,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="seal"):
+        await service.settle_finalized(
+            staged,
+            replace(finalized, attempt_status=AttemptStatus.REJECTED),
+        )
+    settled = await service.settle_finalized(
+        staged,
+        finalized,
+    )
+    assert settled.status is AttemptClaimStatus.SETTLED
+    assert service.settled_outcome(settled) == finalized.value
+    settled_outcome_receipt = json.loads(settled.redaction_evidence_json)["outcome"]
+    assert settled_outcome_receipt == finalized.receipt.model_dump(mode="json")
+    canonical, canonical_outcome, updated = await MissionAttemptExecutionService(
+        service,
+        MissionService(),
+    )._project_settled(
+        _indexed_row(),
+        _indexed_request(),
+        settled,
+    )
+    assert canonical == settled
+    assert canonical_outcome == finalized.value
+    assert updated["attempt__status"] == "accepted"
+    assert updated["mission__status"] == "succeeded"
+    await catalog.close()
+
+
+async def test_indexed_terminal_receipt_preserves_findings_and_covers_final_bytes(
+    tmp_path,
+) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "indexed-redaction-receipt.db")
+    service = _claim_service(catalog)
+    staged, projection = await _stage_indexed_claim(
+        service,
+        outcome_extra={"message": f"provider diagnostic {_SYNTHETIC_SECRET}"},
+    )
+    staged_receipt = json.loads(staged.redaction_evidence_json)["outcome"]
+    assert staged_receipt["status"] == "redacted"
+    assert "openai-api-key" in staged_receipt["rule_ids"]
+
+    await _advance_artifact_publication(catalog, projection, status="INDEXED")
+    finalized = await service.prepare_artifact_finalization_outcome(staged)
+    assert finalized.receipt.status == "redacted"
+    assert finalized.receipt.redaction_count == staged_receipt["redaction_count"]
+    assert list(finalized.receipt.rule_ids) == staged_receipt["rule_ids"]
+    assert finalized.receipt.scanned_bytes == len(service._json(finalized.value).encode())
+
+    settled = await service.settle_finalized(staged, finalized)
+    settled_receipt = json.loads(settled.redaction_evidence_json)["outcome"]
+    assert settled_receipt == finalized.receipt.model_dump(mode="json")
+    await catalog.close()
+
+
+async def test_cold_finalization_rejects_a_lossy_local_snapshot_id(tmp_path) -> None:
+    path = tmp_path / "lossy-local-snapshot.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+    )
+    publication = await _advance_artifact_publication(
+        first_catalog,
+        projection,
+        status="INDEXED",
+    )
+    assert publication is not None and publication.index_snapshot_id == 17
+    await first_catalog.close()
+
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE artifact_publications SET index_snapshot_id=? WHERE publication_key=?",
+        (17.5, projection.publication_key),
+    )
+    stored = connection.execute(
+        "SELECT typeof(index_snapshot_id), index_snapshot_id "
+        "FROM artifact_publications WHERE publication_key=?",
+        (projection.publication_key,),
+    ).fetchone()
+    connection.commit()
+    connection.close()
+    assert stored == ("real", 17.5)
+
+    await asyncio.sleep(0.06)
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    acquisition = await cold.acquire(
+        _indexed_request(),
+        _capabilities(),
+        claimant="cold-worker",
+        lease_seconds=1,
+    )
+    assert acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert acquisition.claim.status is AttemptClaimStatus.FINALIZING
+    with pytest.raises(RuntimeError, match="lossy snapshot ID"):
+        await cold.prepare_artifact_finalization_outcome(acquisition.claim)
+    persisted = await cold.get(acquisition.claim.world_id, acquisition.claim.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.FINALIZING
+    await cold_catalog.close()
+
+
+async def test_replaced_settled_claim_dto_is_not_projection_authority(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "forged-settled-projection.db")
+    claims = _claim_service(catalog)
+    staged, projection = await _stage_indexed_claim(claims)
+    forged_outcome = json.loads(staged.outcome_json)
+    forged_outcome.update(
+        finalization_phase=FinalizationPhase.INDEXED.value,
+        finalization_manifest_ref="s3://forged/manifest.json",
+        finalization_bundle_id=projection.publication_key,
+        finalization_request_digest=projection.request_digest,
+        finalization_producer_digest=projection.producer_digest,
+        finalization_redaction_policy_id=projection.redaction_policy_id,
+        finalization_index_snapshot_id=17,
+        finalization_error="",
+    )
+    forged_json = json.dumps(forged_outcome, sort_keys=True, separators=(",", ":"))
+    forged_claim = replace(
+        staged,
+        status=AttemptClaimStatus.SETTLED,
+        settlement_status=AttemptStatus.ACCEPTED.value,
+        outcome_json=forged_json,
+        outcome_digest=hashlib.sha256(forged_json.encode()).hexdigest(),
+        settled_at="2026-07-18T00:00:00+00:00",
+    )
+
+    missions = MissionService()
+    assert not hasattr(missions, "apply_settled_attempt")
+    execution = MissionAttemptExecutionService(claims, missions)
+    with pytest.raises(ValueError, match="not durably settled"):
+        await execution._project_settled(
+            _indexed_row(),
+            _indexed_request(),
+            forged_claim,
+        )
+
+    persisted = await claims.get(staged.world_id, staged.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.FINALIZING
+    assert (
+        await catalog.get_artifact_publication(staged.world_id, projection.publication_key) is None
+    )
+    await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("durable_status", "error_type", "message"),
+    [
+        ("MISSING", ValueError, "authority is missing"),
+        ("PENDING", RuntimeError, "has not reached INDEXED or EXPIRED"),
+        ("UPLOADED", RuntimeError, "has not reached INDEXED or EXPIRED"),
+    ],
+)
+async def test_forgeable_finalizer_dto_cannot_settle_without_terminal_durable_row(
+    tmp_path,
+    durable_status: str,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    path = tmp_path / f"forged-finalizer-{durable_status.lower()}.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+    )
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    finalizer = _RecoveryFinalizer(
+        cold_catalog,
+        projection,
+        _artifact_publication(projection),
+        durable_status=durable_status,
+    )
+    with pytest.raises(error_type, match=message):
+        await MissionAttemptExecutionService(
+            cold,
+            MissionService(),
+            finalizer,
+        ).run(
+            _indexed_row(),
+            tick=103,
+            claimant="recovery-worker",
+            runner=runner,
+            lease_seconds=1,
+        )
+
+    persisted = await cold.get(staged.world_id, staged.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.FINALIZING
+    assert persisted.outcome_json == staged.outcome_json
+    assert runner.run_calls == 0
+    assert finalizer.publish_calls == 1
+    await cold_catalog.close()
+
+
+async def test_attempt_artifact_publication_requires_exact_signed_64_bit_snapshot() -> None:
+    projection = _artifact_projection(_indexed_request(), RedactionService().policy_id)
+    publication = _artifact_publication(projection)
+    assert replace(publication, index_snapshot_id=MAX_ICEBERG_SNAPSHOT_ID).index_snapshot_id == (
+        MAX_ICEBERG_SNAPSHOT_ID
+    )
+    for invalid in (MAX_ICEBERG_SNAPSHOT_ID + 1, 1.5, True):
+        with pytest.raises((TypeError, ValueError), match="snapshot"):
+            replace(publication, index_snapshot_id=invalid)
+
+
+@pytest.mark.parametrize(
+    "forged_snapshot",
+    [MAX_ICEBERG_SNAPSHOT_ID + 1, 1.5, True],
+)
+async def test_custom_finalizer_snapshot_dto_cannot_override_durable_authority(
+    tmp_path,
+    forged_snapshot: Any,
+) -> None:
+    path = tmp_path / f"custom-snapshot-{forged_snapshot!s}.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+    )
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    forged_publication = _unchecked_artifact_publication(
+        projection,
+        index_snapshot_id=forged_snapshot,
+    )
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    execution_service = MissionAttemptExecutionService(
+        cold,
+        MissionService(),
+        _RecoveryFinalizer(
+            cold_catalog,
+            projection,
+            forged_publication,
+            durable_snapshot_id=MAX_ICEBERG_SNAPSHOT_ID,
+        ),
+    )
+    execution = await execution_service.run(
+        _indexed_row(),
+        tick=103,
+        claimant="snapshot-recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+    assert execution is not None
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.updated_row["finalization__index_snapshot_id"] == MAX_ICEBERG_SNAPSHOT_ID
+    assert runner.run_calls == 0
+    await cold_catalog.close()
+
+
+async def test_cold_finalizing_recovery_indexes_rejected_attempt_without_runner(tmp_path) -> None:
+    path = tmp_path / "cold-finalizing.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+        status=AttemptStatus.REJECTED,
+    )
+    assert staged.status is AttemptClaimStatus.FINALIZING
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    finalizer = _RecoveryFinalizer(
+        cold_catalog,
+        projection,
+        _artifact_publication(projection),
+    )
+    execution = await MissionAttemptExecutionService(
+        cold,
+        MissionService(),
+        finalizer,
+    ).run(
+        _indexed_row(),
+        tick=99,
+        claimant="recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert execution.decision.action is AttemptRecoveryAction.FINALIZE
+    assert execution.replayed is True
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.updated_row["attempt__status"] == "rejected"
+    assert execution.updated_row["taskgate__status"] == "retryable"
+    assert runner.run_calls == 0
+    assert finalizer.prepare_calls == 0
+    assert finalizer.publish_calls == 1
+    await cold_catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("provider_status", "settlement_status"),
+    [
+        (AttemptStatus.ACCEPTED, AttemptStatus.INCOMPLETE),
+        (AttemptStatus.REJECTED, AttemptStatus.REJECTED),
+    ],
+)
+async def test_cold_expired_finalization_settles_without_rerunning_same_attempt(
+    tmp_path,
+    provider_status: AttemptStatus,
+    settlement_status: AttemptStatus,
+) -> None:
+    path = tmp_path / f"expired-{provider_status.value}.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+        status=provider_status,
+    )
+    assert staged.status is AttemptClaimStatus.FINALIZING
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    expired = _ExpiredFinalizer(cold_catalog, projection)
+    execution = await MissionAttemptExecutionService(
+        cold,
+        MissionService(),
+        expired,
+    ).run(
+        _indexed_row(),
+        tick=101,
+        claimant="expiry-recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert execution.decision.action is AttemptRecoveryAction.FINALIZE
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.claim.settlement_status == settlement_status.value
+    assert execution.claim.legacy_unbound is False
+    assert execution.outcome["finalization_phase"] == FinalizationPhase.CHECKPOINTED.value
+    assert execution.outcome["finalization_error"] == "artifact_publication_expired"
+    assert execution.updated_row["attempt__status"] == settlement_status.value
+    assert execution.updated_row["taskgate__status"] == "retryable"
+    assert execution.updated_row["finalization__legacy_unbound"] is False
+    assert runner.run_calls == 0
+    assert expired.prepare_calls == 0
+    assert expired.publish_calls == 1
+    evidence = json.loads(execution.claim.redaction_evidence_json)
+    assert evidence["outcome"]["status"] == "clean"
+
+    replay_runner = _NoRunRunner()
+    replay = await MissionAttemptExecutionService(cold, MissionService()).run(
+        _indexed_row(),
+        tick=102,
+        claimant="expiry-replay-worker",
+        runner=replay_runner,
+    )
+    assert replay is not None
+    assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+    assert replay.decision.action is AttemptRecoveryAction.SETTLED
+    assert replay.claim == execution.claim
+    assert replay.outcome == execution.outcome
+    assert replay.updated_row == execution.updated_row
+    assert replay_runner.run_calls == 0
+
+    if provider_status is AttemptStatus.ACCEPTED:
+        retry_request = MissionService().prepare_attempt(execution.updated_row, tick=103)
+        assert retry_request is not None
+        retry_runner = _IndexedRunner(retry_request, status=AttemptStatus.FAILED)
+        retried = await MissionAttemptExecutionService(cold, MissionService()).run(
+            execution.updated_row,
+            tick=103,
+            claimant="next-attempt-worker",
+            runner=retry_runner,
+        )
+        assert retried is not None
+        assert retried.request.attempt_index == 2
+        assert retried.claim.claim_key != execution.claim.claim_key
+        assert retried.updated_row["attempt__status"] == AttemptStatus.FAILED.value
+        assert retried.updated_row["taskgate__status"] == "retryable"
+        assert retry_runner.run_calls == 1
+
+    await cold_catalog.close()
+
+
+async def test_forged_expiration_dto_cannot_override_durable_expired_row(tmp_path) -> None:
+    path = tmp_path / "expired-wrong-bundle.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(
+        first,
+        claimant="crashed-worker",
+        lease_seconds=0.05,
+    )
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    expired = _ExpiredFinalizer(cold_catalog, projection, bundle_id="e" * 64)
+    execution = await MissionAttemptExecutionService(
+        cold,
+        MissionService(),
+        expired,
+    ).run(
+        _indexed_row(),
+        tick=102,
+        claimant="expiry-recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.claim.settlement_status == AttemptStatus.INCOMPLETE.value
+    assert execution.outcome["finalization_error"] == "artifact_publication_expired"
+    assert execution.outcome.get("finalization_bundle_id", "") == ""
+    assert runner.run_calls == 0
+    assert expired.publish_calls == 1
+    await cold_catalog.close()
+
+
+async def test_expired_settlement_requires_the_exact_durable_artifact_row(tmp_path) -> None:
+    catalog = SqliteControlCatalog(tmp_path / "durable-expiration-authority.db")
+    claims = _claim_service(catalog)
+    staged, projection = await _stage_indexed_claim(claims)
+
+    with pytest.raises(ValueError, match="authority is missing"):
+        await claims.prepare_artifact_finalization_outcome(staged)
+    persisted = await claims.get(staged.world_id, staged.claim_key)
+    assert persisted is not None
+    assert persisted.status is AttemptClaimStatus.FINALIZING
+
+    publication = await _advance_artifact_publication(
+        catalog,
+        projection,
+        status="EXPIRED",
+    )
+    assert publication is not None and publication.status == "EXPIRED"
+    prepared = await claims.prepare_artifact_finalization_outcome(staged)
+    assert prepared.kind == "expired"
+    assert prepared.value["finalization_error"] == "artifact_publication_expired"
+    settled = await claims.settle_finalized(staged, prepared)
+    assert settled.status is AttemptClaimStatus.SETTLED
+    await catalog.close()
+
+
+async def test_actual_expired_artifact_publication_cold_settles_and_replays(
+    tmp_path,
+) -> None:
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    row = _indexed_row()
+    first_container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await first_container.world_service.create_world(
+            WorldConfig(name="mission-expiry-world"),
+            storage,
+        )
+        row.update(
+            world_id=str(world.world_id),
+            run_id=str(world.run_id),
+            entity_id=7,
+        )
+        request = MissionService().prepare_attempt(row, tick=107)
+        assert request is not None
+        catalog = first_container.storage_service.get_control_catalog(storage)
+        first = _claim_service(catalog, first_container.redaction_service)
+        acquired = await first.acquire(
+            request,
+            _capabilities(),
+            claimant="crashed-worker",
+            lease_seconds=0.05,
+        )
+        decision = await first.decide_recovery(
+            acquired.claim,
+            lease_seconds=0.05,
+        )
+        consumed = await first.consume_execution(decision.authorization)
+        acknowledged = await first.acknowledge_provider(
+            consumed,
+            provider_session_id="session-indexed",
+            provider_request_id="request-indexed",
+        )
+        durable = first.prepare_durable_outcome(
+            acknowledged,
+            _outcome(
+                request=request,
+                status=AttemptStatus.ACCEPTED,
+                agent_session_id="session-indexed",
+            ),
+        )
+        first_workflow = first_container.mission_attempt_workflow(storage)
+        finalizer = first_workflow.artifact_finalizer
+        projection = finalizer.prepare(
+            request,
+            durable.value,
+            redaction_policy_id=acknowledged.redaction_policy_id,
+        )
+        staged = await first.stage_finalization(
+            acknowledged,
+            outcome=durable,
+            projection=projection,
+        )
+        bundle_request = ArtifactBundleRequest.model_validate_json(projection.request_json)
+        assert bundle_request.tick == 107
+        artifact_outcome, artifact_claim = await catalog.acquire_artifact_publication(
+            world_id=bundle_request.world_id,
+            run_id=bundle_request.run_id,
+            attempt_id=bundle_request.attempt_id,
+            idempotency_key=bundle_request.idempotency_key,
+            request_digest=projection.producer_digest,
+            request_json=projection.request_json,
+            claimant="expiry-seed",
+            retry_until_ms=int(time.time() * 1000) + 60_000,
+            lease_seconds=1,
+        )
+        assert artifact_outcome == "acquired"
+        assert artifact_claim.status == "PENDING"
+        await catalog.expire_artifact_publication(
+            bundle_request.world_id,
+            projection.publication_key,
+            "expiry-seed",
+            "test retry window elapsed",
+        )
+        expired_artifact = await catalog.get_artifact_publication(
+            bundle_request.world_id,
+            projection.publication_key,
+        )
+        assert expired_artifact is not None
+        assert expired_artifact.status == "EXPIRED"
+        assert expired_artifact.records_json == "[]"
+        assert expired_artifact.manifest_uri == ""
+        assert staged.status is AttemptClaimStatus.FINALIZING
+    finally:
+        await first_container.shutdown()
+
+    await asyncio.sleep(0.06)
+    cold_container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        assert not cold_container.world_service.has_world(row["world_id"])
+        cold_catalog = cold_container.storage_service.get_control_catalog(storage)
+        cold_workflow = cold_container.mission_attempt_workflow(storage)
+        runner = _NoRunRunner()
+        execution = await cold_workflow.execution_service.run(
+            row,
+            tick=108,
+            claimant="expiry-recovery-worker",
+            runner=runner,
+            lease_seconds=1,
+        )
+
+        assert execution is not None
+        assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+        assert execution.decision.action is AttemptRecoveryAction.FINALIZE
+        assert execution.claim.status is AttemptClaimStatus.SETTLED
+        assert execution.claim.settlement_status == AttemptStatus.INCOMPLETE.value
+        assert execution.request.observation_tick == 107
+        assert execution.outcome["finalization_error"] == "artifact_publication_expired"
+        assert execution.outcome["finalization_phase"] == FinalizationPhase.CHECKPOINTED.value
+        assert execution.updated_row["taskgate__status"] == "retryable"
+        assert execution.updated_row["finalization__legacy_unbound"] is False
+        assert runner.run_calls == 0
+
+        replay_runner = _NoRunRunner()
+        replay = await cold_workflow.execution_service.run(
+            row,
+            tick=109,
+            claimant="expiry-replay-worker",
+            runner=replay_runner,
+        )
+        assert replay is not None
+        assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+        assert replay.decision.action is AttemptRecoveryAction.SETTLED
+        assert replay.claim == execution.claim
+        assert replay.outcome == execution.outcome
+        assert replay.updated_row == execution.updated_row
+        assert replay_runner.run_calls == 0
+
+        persisted_artifact = await cold_catalog.get_artifact_publication(
+            bundle_request.world_id,
+            projection.publication_key,
+        )
+        assert persisted_artifact == expired_artifact
+    finally:
+        await cold_container.shutdown()
+
+
+async def test_cold_replay_after_indexed_settlement_applies_without_runner_or_finalizer(
+    tmp_path,
+) -> None:
+    path = tmp_path / "indexed-settled-before-world-commit.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    staged, projection = await _stage_indexed_claim(first)
+    publication = await _advance_artifact_publication(
+        first_catalog,
+        projection,
+        status="INDEXED",
+    )
+    assert publication is not None and publication.status == "INDEXED"
+    finalized = await first.prepare_artifact_finalization_outcome(staged)
+    settled = await first.settle_finalized(
+        staged,
+        finalized,
+    )
+    assert settled.status is AttemptClaimStatus.SETTLED
+    (
+        canonical,
+        canonical_outcome,
+        projected_but_not_committed,
+    ) = await MissionAttemptExecutionService(first, MissionService())._project_settled(
+        _indexed_row(),
+        _indexed_request(),
+        settled,
+    )
+    assert canonical == settled
+    assert canonical_outcome == finalized.value
+    assert projected_but_not_committed["mission__status"] == "succeeded"
+    await first_catalog.close()
+
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _NoRunRunner()
+    replay = await MissionAttemptExecutionService(cold, MissionService()).run(
+        _indexed_row(),
+        tick=100,
+        claimant="cold-replay-worker",
+        runner=runner,
+    )
+
+    assert replay is not None
+    assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+    assert replay.decision.action is AttemptRecoveryAction.SETTLED
+    assert replay.replayed is True
+    assert replay.updated_row == projected_but_not_committed
+    assert replay.updated_row["finalization__legacy_unbound"] is False
+    assert replay.claim.legacy_unbound is False
+    assert runner.run_calls == 0
+    await cold_catalog.close()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED],
+)
+@pytest.mark.parametrize("authority_extras", [False, True])
+async def test_v7_unbound_terminal_claim_cold_replays_with_explicit_compatibility_marker(
+    tmp_path,
+    phase: FinalizationPhase,
+    authority_extras: bool,
+) -> None:
+    path = tmp_path / f"v7-{phase.value}-{authority_extras}.db"
+    request, stored_outcome = await _seed_unbound_settled_claim(
+        path,
+        phase=phase,
+        as_v7=True,
+        authority_extras=authority_extras,
+    )
+    changed_policy = RedactionService(RedactionPolicyConfig(scan_chunk_bytes=8192))
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog, changed_policy)
+
+    projected = await cold.get(
+        "world-1",
+        cold.claim_key(
+            world_id="world-1",
+            mission_id=request.mission_id,
+            task_id=request.task_id,
+            attempt_id=request.attempt_id,
+        ),
+    )
+    assert projected is not None
+    assert projected.status is AttemptClaimStatus.SETTLED
+    assert projected.contract_version == 7
+    assert projected.settlement_status == AttemptStatus.ACCEPTED.value
+    assert projected.legacy_unbound_eligible is True
+    assert projected.legacy_unbound is True
+    assert projected.artifact_request_json == ""
+    assert cold.recover_request(projected).observation_tick == 0
+    assert cold.settled_outcome(projected) == stored_outcome
+
+    runner = _NoRunRunner()
+    replay = await MissionAttemptExecutionService(cold, MissionService()).run(
+        _indexed_row(),
+        tick=100,
+        claimant="cold-v8-worker",
+        runner=runner,
+    )
+
+    assert replay is not None
+    assert replay.acquisition.outcome is AttemptClaimAcquireOutcome.DUPLICATE
+    assert replay.decision.action is AttemptRecoveryAction.SETTLED
+    assert replay.replayed is True
+    assert replay.outcome == stored_outcome
+    if authority_extras:
+        assert replay.outcome["artifact_publication_key"] == "b" * 64
+        assert replay.outcome["finalization_bundle_id"] == "b" * 64
+        assert replay.outcome["finalization_index_snapshot_id"] == 17
+    else:
+        assert "artifact_publication_key" not in replay.outcome
+        assert "finalization_bundle_id" not in replay.outcome
+    assert replay.updated_row["mission__status"] == "succeeded"
+    assert replay.updated_row["attempt__status"] == AttemptStatus.ACCEPTED.value
+    assert replay.updated_row["finalization__phase"] == phase.value
+    assert replay.updated_row["finalization__legacy_unbound"] is True
+    assert replay.updated_row["finalization__bundle_id"] == ""
+    assert replay.updated_row["finalization__request_digest"] == ""
+    assert replay.updated_row["finalization__producer_digest"] == ""
+    assert replay.updated_row["finalization__redaction_policy_id"] == ""
+    assert replay.updated_row["finalization__index_snapshot_id"] == 0
+    assert runner.run_calls == 0
+    with pytest.raises(ValueError, match="lacks migration eligibility"):
+        MissionService()._apply_settled_attempt(
+            _indexed_row(),
+            request,
+            stored_outcome,
+            replace(replay.claim, legacy_unbound_eligible=False),
+        )
+    assert (
+        await cold.settle(
+            replay.claim,
+            attempt_status=AttemptStatus.ACCEPTED,
+            outcome=stored_outcome,
+        )
+        == replay.claim
+    )
+    await cold_catalog.close()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        FinalizationPhase.CAPTURED,
+        FinalizationPhase.CHECKPOINTED,
+        FinalizationPhase.PUBLISHED,
+    ],
+)
+async def test_v7_nonindexed_terminal_claim_is_not_legacy_unbound_after_migration(
+    tmp_path,
+    phase: FinalizationPhase,
+) -> None:
+    path = tmp_path / f"v7-nonindexed-{phase.value}.db"
+    request, stored_outcome = await _seed_unbound_settled_claim(
+        path,
+        phase=phase,
+        required_phase=phase,
+        as_v7=True,
+    )
+    claim_key = MissionAttemptClaimService.claim_key(
+        world_id="world-1",
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+
+    catalog = SqliteControlCatalog(path)
+    raw = await catalog.get_attempt_claim("world-1", claim_key)
+    assert raw is not None
+    assert raw.legacy_unbound_eligible is False
+    projected = await _claim_service(catalog).get("world-1", claim_key)
+    assert projected is not None
+    assert projected.legacy_unbound_eligible is False
+    assert projected.legacy_unbound is False
+    assert _claim_service(catalog).settled_outcome(projected) == stored_outcome
+    await catalog.close()
+
+    # A catalog already upgraded by the original phase-agnostic migration may
+    # retain the overbroad durable bit. The read boundary must still normalize
+    # it instead of routing this ordinary legacy claim into INDEXED authority.
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE mission_attempt_claims SET legacy_unbound_eligible=1 WHERE claim_key=?",
+        (claim_key,),
+    )
+    connection.commit()
+    connection.close()
+
+    overmarked_catalog = SqliteControlCatalog(path)
+    overmarked_raw = await overmarked_catalog.get_attempt_claim("world-1", claim_key)
+    assert overmarked_raw is not None
+    assert overmarked_raw.legacy_unbound_eligible is True
+    normalized = await _claim_service(overmarked_catalog).get("world-1", claim_key)
+    assert normalized is not None
+    assert normalized.legacy_unbound_eligible is False
+    assert normalized.legacy_unbound is False
+    assert _claim_service(overmarked_catalog).settled_outcome(normalized) == stored_outcome
+    await overmarked_catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("contract_version", "case"),
+    [
+        pytest.param(7, "explicit-integer", id="explicit-7"),
+        pytest.param(7.0, "explicit-float", id="explicit-7.0"),
+        pytest.param("legacy", "malformed", id="malformed-version"),
+    ],
+)
+async def test_v7_migration_rejects_noncanonical_contract_version_markers(
+    tmp_path,
+    contract_version: object,
+    case: str,
+) -> None:
+    path = tmp_path / f"v7-noncanonical-version-{case}.db"
+    request, _ = await _seed_unbound_settled_claim(
+        path,
+        phase=FinalizationPhase.PUBLISHED,
+        as_v7=True,
+    )
+    claim_key = MissionAttemptClaimService.claim_key(
+        world_id="world-1",
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    connection = sqlite3.connect(path)
+    row = connection.execute(
+        "SELECT request_json FROM mission_attempt_claims WHERE claim_key=?",
+        (claim_key,),
+    ).fetchone()
+    assert row is not None
+    request_json = json.loads(row[0])
+    request_json["claim_contract_version"] = contract_version
+    connection.execute(
+        "UPDATE mission_attempt_claims SET request_json=? WHERE claim_key=?",
+        (json.dumps(request_json), claim_key),
+    )
+    connection.commit()
+    connection.close()
+
+    catalog = SqliteControlCatalog(path)
+    migrated = await catalog.get_attempt_claim("world-1", claim_key)
+    assert migrated is not None
+    assert migrated.legacy_unbound_eligible is False
+    await catalog.close()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED],
+)
+async def test_v8_raw_catalog_row_cannot_claim_v7_terminal_compatibility(
+    tmp_path,
+    phase: FinalizationPhase,
+) -> None:
+    path = tmp_path / f"v8-unbound-{phase.value}.db"
+    request, _ = await _seed_unbound_settled_claim(
+        path,
+        phase=phase,
+        as_v7=False,
+    )
+    _strip_claim_contract_marker(path)
+    catalog = SqliteControlCatalog(path)
+    service = _claim_service(catalog)
+    claim_key = service.claim_key(
+        world_id="world-1",
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    raw = await catalog.get_attempt_claim("world-1", claim_key)
+    assert raw is not None
+    assert raw.legacy_unbound_eligible is False
+
+    with pytest.raises(
+        ValueError,
+        match="indexed attempt outcome|authoritative outcome",
+    ):
+        await service.get("world-1", claim_key)
+
+    await catalog.close()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [FinalizationPhase.PUBLISHED, FinalizationPhase.INDEXED],
+)
+async def test_v8_authority_named_extras_without_staged_claim_fail_closed(
+    tmp_path,
+    phase: FinalizationPhase,
+) -> None:
+    path = tmp_path / f"v8-authority-extras-{phase.value}.db"
+    request, stored_outcome = await _seed_unbound_settled_claim(
+        path,
+        phase=phase,
+        as_v7=False,
+        authority_extras=True,
+    )
+    assert stored_outcome["finalization_bundle_id"] == "b" * 64
+    catalog = SqliteControlCatalog(path)
+    service = _claim_service(catalog)
+    claim_key = service.claim_key(
+        world_id="world-1",
+        mission_id=request.mission_id,
+        task_id=request.task_id,
+        attempt_id=request.attempt_id,
+    )
+    raw = await catalog.get_attempt_claim("world-1", claim_key)
+    assert raw is not None
+    assert raw.legacy_unbound_eligible is False
+    assert json.loads(raw.request_json)["claim_contract_version"] == 8
+
+    with pytest.raises(
+        ValueError,
+        match="staged artifact request|authoritative outcome",
+    ):
+        await service.get("world-1", claim_key)
+
+    await catalog.close()
 
 
 async def test_claim_is_durable_before_submission_is_armed(tmp_path) -> None:
@@ -398,6 +2158,9 @@ async def test_claim_is_durable_before_submission_is_armed(tmp_path) -> None:
     assert acquired.outcome is AttemptClaimAcquireOutcome.ACQUIRED
     assert acquired.claim.status is AttemptClaimStatus.CLAIMED
     assert acquired.claim.fence_epoch == 1
+    assert acquired.claim.contract_version == 8
+    assert acquired.claim.legacy_unbound_eligible is False
+    assert json.loads(acquired.claim.request_json)["claim_contract_version"] == 8
     assert acquired.claim.possibly_submitted_at is None
 
     cold_catalog = SqliteControlCatalog(path)
@@ -420,7 +2183,8 @@ async def test_same_attempt_reacquires_across_observation_ticks(tmp_path) -> Non
     later_request = MissionService().prepare_attempt(_row(), tick=12)
     assert first_request is not None
     assert later_request is not None
-    assert later_request == first_request
+    assert replace(later_request, observation_tick=11) == first_request
+    assert later_request.request_fingerprint == first_request.request_fingerprint
     assert "tick" not in first_request.correlation
 
     catalog = SqliteControlCatalog(tmp_path / "catalog.db")
@@ -441,6 +2205,7 @@ async def test_same_attempt_reacquires_across_observation_ticks(tmp_path) -> Non
     assert recovered.outcome is AttemptClaimAcquireOutcome.RECOVERED
     assert recovered.claim.claim_key == acquired.claim.claim_key
     assert recovered.claim.fence_epoch == acquired.claim.fence_epoch + 1
+    assert service.recover_request(recovered.claim).observation_tick == 11
     await catalog.close()
 
 
@@ -586,8 +2351,10 @@ async def test_restart_discovers_due_claim_and_fences_the_dead_worker(tmp_path) 
             uncertain.claim.fence_epoch,
             expected_status="possibly_submitted",
             target_status="settled",
+            redaction_evidence_json="{}",
             settlement_status="failed",
-            outcome_digest="stale",
+            outcome_digest=hashlib.sha256(b"{}").hexdigest(),
+            outcome_json="{}",
         )
 
     await original_catalog.close()

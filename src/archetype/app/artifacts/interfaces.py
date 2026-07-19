@@ -14,6 +14,7 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactPublishReceipt,
     ArtifactReconcileResult,
+    PreparedArtifactBundleRequest,
 )
 from archetype.app.artifacts.models import ArtifactProcessor, ArtifactReceipt, ArtifactWriteReceipt
 from archetype.core.component import Component
@@ -90,9 +91,18 @@ class iArtifactBundleService(Protocol):
     @property
     def enabled(self) -> bool: ...
 
+    def prepare(self, request: ArtifactBundleRequest) -> PreparedArtifactBundleRequest: ...
+
     async def publish(
         self,
         request: ArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt: ...
+
+    async def publish_prepared(
+        self,
+        prepared: PreparedArtifactBundleRequest,
         *,
         storage_config: StorageConfig | None = None,
     ) -> ArtifactPublishReceipt: ...

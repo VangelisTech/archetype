@@ -57,7 +57,9 @@ iAuditLog          -> iStorageService
 iMissionService    -> typed mission rows (no service dependency)
 iMissionAttemptClaimService -> ControlCatalog + iRedactionService
 iMissionAttemptExecutionService
-  -> iMissionService + iMissionAttemptClaimService + FencedAttemptRunner
+  -> iMissionService + iMissionAttemptClaimService
+  -> iMissionArtifactFinalizer + FencedAttemptRunner
+iMissionArtifactFinalizer -> iArtifactBundleService
 iSandboxService    -> registered iSandboxBackend providers
 ```
 
@@ -85,9 +87,10 @@ attempt; it is orchestration, not another composition root.
 | `iCommandScheduler` | `CommandScheduler` | application | Durable admission, leasing, dispatch, retry, settlement and outbox inspection |
 | `iAuditLog` | `AuditLog` | application, gateway, query | Append-only access rows and command-outbox projection |
 | `iResearchService` | `AutoResearchService` | application | Multi-run autoresearch workflow and research ledger |
-| `iMissionService` | `MissionService` | coding-agent orchestration | Validator normalization, policy-bound attempt identity, typed transition graph, retry/exhaustion, and evidence gates |
-| `iMissionAttemptClaimService` | `MissionAttemptClaimService` | coding-agent orchestration and recovery workers | Pre-durability quarantine/redaction receipts, durable acquisition, fencing, single-use execution grants, recovery decisions, acknowledgement, and semantically validated settlement |
-| `iMissionAttemptExecutionService` | `MissionAttemptExecutionService` | coding-agent processors and supervisors | Claim/arm, atomic provider-call admission, runner-lifetime lease heartbeat, acknowledgement, typed row application, settlement, and terminal replay |
+| `iMissionService` | `MissionService` | coding-agent orchestration | Validator normalization, policy-bound attempt identity, typed transition graph, retry/exhaustion, evidence gates, and current non-authority outcome application |
+| `iMissionAttemptClaimService` | `MissionAttemptClaimService` | coding-agent orchestration and recovery workers | Pre-durability quarantine/redaction receipts, durable acquisition, fencing, single-use execution grants, recovery decisions, acknowledgement, semantically validated settlement, and authenticated terminal-winner reread |
+| `iMissionArtifactFinalizer` | application-owned `MissionArtifactFinalizer` | mission attempt execution and recovery workers | Deterministic no-I/O request preparation plus exact staged-request publication through the artifact outbox; returned receipts are orchestration feedback while the claim authority rereads terminal catalog state |
+| `iMissionAttemptExecutionService` | `MissionAttemptExecutionService` | coding-agent processors and supervisors | Claim/arm, atomic provider-call admission, runner-lifetime lease heartbeat, acknowledgement, indexed artifact finalization, claim-bound settlement, durable-winner authentication, private settled-row application, and terminal replay |
 | `iSandboxService` | `SandboxService` | container, mission orchestration | Provider selection and process-local create/restore/resume/close lifetime |
 | `iSandboxBackend` | host-selected provider adapters | sandbox service | Provider-specific isolated execution and checkpoint recovery |
 
@@ -134,7 +137,10 @@ client, or authorization context. Consumers persist its result through the
 ordinary world tick. Preparation canonicalizes validator names, commands,
 return codes, timeouts, and defaults before external state exists, and binds
 the retry budget and required finalization phase into the durable request and
-its identities.
+its identities. Public current-write `apply_attempt` categorically rejects an
+`indexed` phase and every artifact staging, linkage, finalized-authority, or
+nonzero-snapshot field. It is the only public projection operation on
+`iMissionService`; the protocol exposes no settled-row application method.
 
 `iMissionAttemptClaimService` is the provider-submission control authority. It
 persists immutable request identity through the per-world storage control
@@ -153,16 +159,31 @@ original finding receipt through defensive validation. Non-terminal policy
 drift fails closed, while a settled sanitized record remains readable without
 requiring the retired policy implementation.
 
+When artifact finalization enriches that sanitized outcome, the claim authority
+rescans the exact terminal mapping before settlement. Its final receipt carries
+the terminal canonical byte count while retaining the original redaction
+status, count, and rule identifiers, so exact coverage cannot erase finding
+evidence.
+
 Arming creates one opaque execution nonce for the fence; `consume_execution`
 atomically spends that nonce under the live catalog lease, and acknowledgement
 requires that consumption. Settlement requires a complete replayable outcome
 whose status agrees with the authoritative mission-derived attempt status.
+Generic settlement rejects `finalizing`; only `settle_finalized` accepts the
+claim-bound, service-sealed result returned by the claim authority after it
+rereads an exact terminal `INDEXED` or `EXPIRED` artifact row from the same
+storage-bound control catalog and binds it to the staged request. A public
+receipt value is orchestration feedback, never settlement authority.
 Mission outcomes of `accepted` or `incomplete` derived from provider acceptance
 require consumed-grant evidence; checkpoint provider and agent session evidence
 must match the claim and its durable acknowledgement. The service owns no
 provider client or live sandbox handle. Its control-plane transaction does not
-advance a task; consumers replay a settled outcome through
-`iMissionService` and the ordinary world tick. See
+advance a task. Its `require_settled(world_id, claim_key)` operation rereads the
+catalog, requires the terminal winner, and authenticates its canonical payload
+at the boundary that creates projection authority. A detached or
+caller-replaced `AttemptClaim` DTO is never equivalent to that read. The
+execution service consumes this operation immediately before its private row
+transformation and the ordinary world tick. See
 [Agent mission transitions](agent-missions.md).
 
 `iMissionAttemptExecutionService` is the supported orchestration port for one
@@ -178,11 +199,25 @@ cancels and awaits the runner; caller cancellation cancels
 and awaits both local tasks. This cleanup makes no claim that a remote provider
 operation was terminated; that remains adapter-specific or reconciled from
 `possibly_submitted`. After successful runner completion, the service renews
-the claim once more before it validates evidence, applies the complete outcome
-through the claim service's pre-durability redaction boundary, projects only
-the sanitized value through `iMissionService`, and settles with the derived
-attempt status. If the claim is already settled, it applies the stored outcome
-through the same mission semantics without calling the runner. The
+the claim once more before it validates evidence through the claim service's
+pre-durability redaction boundary. When policy requires `indexed`, it asks
+`iMissionArtifactFinalizer.prepare` for an exact request without external I/O,
+atomically stages that request and sanitized outcome on the claim, then calls
+`publish` only with the reconstructed staged projection. Accepted and rejected
+attempts with restorable checkpoints use this path. A cold `finalizing` claim
+repeats publication only: it never calls the runner, model, validators,
+repository finalizer, or checkpoint capture. Only an exact durable `INDEXED`
+row may upgrade the outcome. Durable expiry likewise requires the exact
+`EXPIRED` artifact row and cannot be inferred from the claim or a process-local
+exception. Either result is authenticated, prepared, and sealed by the claim
+authority, then passed to `settle_finalized` before any mission projection.
+The execution service calls `iMissionAttemptClaimService.require_settled` with
+the stable world and claim keys, authenticates the durable winner returned by
+that reread, and invokes an implementation-private mission row transformer.
+This path is absent from `iMissionService`, so a caller-supplied claim value
+cannot mint settled projection authority. If the claim is already settled, the
+service follows that same reread-and-private-transform path without calling the
+runner or finalizer. The
 mission-owned `FencedAttemptRunner` protocol includes the provider-capability
 property and prevents a static dependency on the sandbox family while allowing
 its common kernel to conform structurally.
@@ -225,11 +260,18 @@ wiring root. It exposes:
 ```text
 application:      iRuntimeApplication
 command_gateway:  iCommandGateway
+mission_attempt_workflow(storage_config):
+  iMissionService + iMissionAttemptClaimService
+  + iMissionArtifactFinalizer + iMissionAttemptExecutionService
 ```
 
 Runtime consumes `application`; API dependency injection consumes
-`command_gateway`. Focused implementation tests may inspect internal members
-without creating compatibility.
+`command_gateway`. A trusted mission reconciler must request the explicit
+per-storage workflow: the factory binds the claim catalog and artifact
+finalizer to the same copied `StorageConfig`, including during cold recovery
+before a world has been opened in that process. There is no advertised
+unbound/default-catalog mission finalizer. Focused implementation tests may
+inspect internal members without creating compatibility.
 
 Shutdown stops new application admission, closes retained sandbox handles,
 flushes the audit projection, then closes container-owned world/storage

@@ -417,6 +417,31 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "missions.attempt.indexed_finalization"
+source = "docs/guide/agent-missions.md"
+section = "5. Durable pre-execution claim and recovery"
+owner = "missions"
+risk = "high"
+pytest = [
+  "tests/app/test_indexed_finalization_crash_oracle.py",
+  "tests/app/test_mission_attempt_claims.py",
+  "tests/app/test_mission_artifact_finalizer.py",
+  "tests/app/test_artifact_bundle_service.py::test_pending_retry_reuses_objects_and_original_lifecycle_clock",
+  "tests/app/test_artifact_bundle_service.py::test_uploaded_phase_reconciles_without_uploading_again",
+  "tests/app/test_artifact_bundle_service.py::test_indexed_rows_recover_when_catalog_completion_crashes",
+  "tests/app/test_artifact_bundle_service.py::test_binary_secret_quarantine_has_no_object_or_index_visibility",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_finalization_outbox_lifecycle_parity",
+  "tests/app/test_remote_catalog_parity.py::test_mission_attempt_finalization_staging_race_parity",
+]
+static = [
+  "scripts/check_architecture.py",
+  "scripts/check_pre_durability_redaction.py",
+]
+evals = ["mission_indexed_finalization_gate"]
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifact-finalization.md"
 section = "4. Pre-durability secret redaction"

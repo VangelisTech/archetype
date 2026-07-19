@@ -6,6 +6,7 @@
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.interfaces import (
+    iMissionArtifactFinalizer,
     iMissionAttemptClaimService,
     iMissionAttemptExecutionService,
     iMissionService,
@@ -13,6 +14,9 @@ from archetype.app.missions.interfaces import (
 from archetype.app.missions.models import (
     MISSION_COMPONENTS,
     Attempt,
+    AttemptArtifactExpiration,
+    AttemptArtifactProjection,
+    AttemptArtifactPublication,
     AttemptClaim,
     AttemptClaimAcquisition,
     AttemptRecoveryDecision,
@@ -24,8 +28,10 @@ from archetype.app.missions.models import (
     Finalization,
     FrictionLog,
     Mission,
+    MissionArtifactFinalizationExpiredError,
     MissionAttemptExecution,
     MissionAttemptRequest,
+    PreparedFinalizationSettlement,
     ProviderExecutionCapabilities,
     TaskGate,
     attempt_invocation_fingerprint,
@@ -55,6 +61,9 @@ from archetype.app.missions.transitions import (
 __all__ = [
     "MISSION_COMPONENTS",
     "Attempt",
+    "AttemptArtifactExpiration",
+    "AttemptArtifactProjection",
+    "AttemptArtifactPublication",
     "AttemptClaim",
     "AttemptClaimAcquisition",
     "AttemptClaimAcquireOutcome",
@@ -75,8 +84,10 @@ __all__ = [
     "FencedExecutionAuthorization",
     "FencedAttemptRunner",
     "Mission",
+    "MissionArtifactFinalizationExpiredError",
     "MissionStatus",
     "MissionAttemptRequest",
+    "PreparedFinalizationSettlement",
     "MissionAttemptClaimService",
     "MissionAttemptExecution",
     "MissionAttemptExecutionService",
@@ -93,6 +104,7 @@ __all__ = [
     "iMissionService",
     "iMissionAttemptClaimService",
     "iMissionAttemptExecutionService",
+    "iMissionArtifactFinalizer",
     "attempt_invocation_fingerprint",
     "mission_attempt_request_fingerprint",
 ]

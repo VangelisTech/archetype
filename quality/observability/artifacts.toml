@@ -5,6 +5,7 @@ family = "artifacts"
 [[disposition]]
 operations = [
   "interfaces.iArtifactBundleService.publish",
+  "interfaces.iArtifactBundleService.publish_prepared",
 ]
 signals = ["child"]
 emission_workflows = ["artifact.bundle.publish", "artifact.bundle.resume"]
@@ -48,6 +49,7 @@ operations = [
   "interfaces.iArtifactTableService.write_artifacts",
   "interfaces.iArtifactTableService.read_artifacts",
   "interfaces.iArtifactBundleService.enabled",
+  "interfaces.iArtifactBundleService.prepare",
   "interfaces.iArtifactBundleService.query",
   "models.ArtifactProcessor.process",
 ]
@@ -62,7 +64,7 @@ rationale = "No direct signal is approved for these artifact helpers and persist
 
 [[workflow]]
 id = "artifact.bundle.publish"
-qualified_scope = "archetype.app.artifacts.bundle_service.ArtifactBundleService.publish"
+qualified_scope = "archetype.app.artifacts.bundle_service.ArtifactBundleService.publish_prepared"
 signals = ["child"]
 outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
 authority = "The durable publication row and ArtifactPublishReceipt prove the operation outcome."

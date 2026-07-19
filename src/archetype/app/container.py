@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 
+from archetype.app.application.mission_artifacts import MissionArtifactFinalizer
 from archetype.app.application.service import RuntimeApplication
 from archetype.app.artifacts.bundle_models import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.app.artifacts.bundle_service import ArtifactBundleService
@@ -28,6 +30,9 @@ from archetype.app.commands.service import CommandScheduler
 from archetype.app.evaluation.service import EvaluationService
 from archetype.app.gateway.auth import reset_tick_counters
 from archetype.app.gateway.service import CommandGateway
+from archetype.app.missions.claim_service import MissionAttemptClaimService
+from archetype.app.missions.execution_service import MissionAttemptExecutionService
+from archetype.app.missions.service import MissionService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
@@ -39,6 +44,16 @@ from archetype.app.world.mutation import MutationService
 from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
 from archetype.core.config import StorageConfig
+
+
+@dataclass(frozen=True)
+class MissionAttemptWorkflow:
+    """One storage-bound internal mission attempt composition."""
+
+    mission_service: MissionService
+    claim_service: MissionAttemptClaimService
+    artifact_finalizer: MissionArtifactFinalizer
+    execution_service: MissionAttemptExecutionService
 
 
 class ServiceContainer:
@@ -122,6 +137,34 @@ class ServiceContainer:
         self.simulation_service.set_command_drain(self.application.drain_and_apply)
         # Per-tick RBAC quota resets at each tick boundary (bug B1).
         self.simulation_service.set_quota_reset(reset_tick_counters)
+
+    def mission_attempt_workflow(
+        self,
+        storage_config: StorageConfig,
+    ) -> MissionAttemptWorkflow:
+        """Bind claim and artifact-finalization authority to one storage identity."""
+
+        bound_storage = storage_config.model_copy(deep=True)
+        mission_service = MissionService()
+        claim_service = MissionAttemptClaimService(
+            self.storage_service.get_control_catalog(bound_storage),
+            redaction_service=self.redaction_service,
+        )
+        artifact_finalizer = MissionArtifactFinalizer(
+            self.artifact_bundle_service,
+            storage_config=bound_storage,
+        )
+        execution_service = MissionAttemptExecutionService(
+            claim_service,
+            mission_service,
+            artifact_finalizer,
+        )
+        return MissionAttemptWorkflow(
+            mission_service=mission_service,
+            claim_service=claim_service,
+            artifact_finalizer=artifact_finalizer,
+            execution_service=execution_service,
+        )
 
     async def shutdown(self) -> None:
         """Gracefully shut down all services."""

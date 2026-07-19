@@ -21,15 +21,28 @@ def test_negative_fixture_detects_claim_and_upload_bypasses(tmp_path: Path) -> N
     source.write_text(
         """
 class ArtifactBundleService:
-    async def publish(self):
-        await self._control_catalog()
+    def prepare(self):
+        self.canonical_json()
         self._bind_redaction_policy()
+
+    async def publish(self):
+        await self.publish_prepared()
+        self.prepare()
+
+    async def publish_prepared(self):
+        await self._control_catalog()
+        self._request_from_preparation()
         self._safe_failure_detail()
         self.fail_artifact_publication()
 
     async def reconcile(self):
         self._safe_failure_detail()
         self.fail_artifact_publication()
+
+    async def _resume(self):
+        self._upload_bundle()
+        self._index_records()
+        self._assert_object_root_safe()
 
     async def _upload_bundle(self):
         self._assert_materialized_metadata_safe()
@@ -44,7 +57,11 @@ class ArtifactBundleService:
     )
     errors = checker.audit_path(source)
     assert errors == [
-        "publish must call _bind_redaction_policy() before _control_catalog()",
+        "prepare must call _bind_redaction_policy() before canonical_json()",
+        "publish must call prepare() before publish_prepared()",
+        "publish_prepared must call _request_from_preparation() before _control_catalog()",
+        "_resume must call _assert_object_root_safe() before _upload_bundle()",
+        "_resume must call _assert_object_root_safe() before _index_records()",
         "_upload_bundle must call _sanitize_materialized() before _file_metadata()",
         "_upload_bundle must call _redaction_manifest() before _upload_bytes()",
     ]
@@ -55,14 +72,27 @@ def test_negative_fixture_detects_raw_durable_failure_details(tmp_path: Path) ->
     source.write_text(
         """
 class ArtifactBundleService:
-    async def publish(self):
+    def prepare(self):
         self._bind_redaction_policy()
+        self.canonical_json()
+
+    async def publish(self):
+        self.prepare()
+        await self.publish_prepared()
+
+    async def publish_prepared(self):
+        self._request_from_preparation()
         await self._control_catalog()
         self.fail_artifact_publication()
         self._safe_failure_detail()
 
     async def reconcile(self):
         self.fail_artifact_publication()
+
+    async def _resume(self):
+        self._assert_object_root_safe()
+        self._upload_bundle()
+        self._index_records()
 
     async def _upload_bundle(self):
         self._assert_materialized_metadata_safe()
@@ -76,7 +106,7 @@ class ArtifactBundleService:
         encoding="utf-8",
     )
     assert checker.audit_path(source) == [
-        "publish must call _safe_failure_detail() before fail_artifact_publication()",
+        "publish_prepared must call _safe_failure_detail() before fail_artifact_publication()",
         "reconcile must call _safe_failure_detail()",
     ]
 

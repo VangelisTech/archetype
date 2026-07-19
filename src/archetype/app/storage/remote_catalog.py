@@ -23,6 +23,7 @@ import logging
 
 import httpx
 
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.storage.catalog import (
     ArtifactPublicationConflictError,
     ArtifactPublicationExpiredError,
@@ -43,12 +44,18 @@ from archetype.app.storage.catalog import (
     OutboxRecord,
     SignatureRecord,
     WorldRecord,
+    _validate_attempt_claim_transition,
     artifact_publication_key,
     claim_scope_key,
 )
 from archetype.core.interfaces import StaleWriterError
 
 logger = logging.getLogger(__name__)
+
+_ATTEMPT_CLAIM_PROTOCOL_VERSION = 4
+_ATTEMPT_CLAIM_CAPABILITY = "attempt_claim_execution_v2"
+_ARTIFACT_SNAPSHOT_PROTOCOL_VERSION = 3
+_ARTIFACT_SNAPSHOT_CAPABILITY = "artifact_snapshot_decimal_v1"
 
 _ERROR_MAP: dict[str, type[Exception]] = {
     "attempt_claim_conflict": AttemptClaimConflictError,
@@ -110,6 +117,50 @@ class RemoteControlCatalog:
         assert last is not None
         last.raise_for_status()
         return last
+
+    async def _require_catalog_protocol(
+        self,
+        world_id: str,
+        *,
+        minimum_version: int,
+        capability: str,
+        feature: str,
+    ) -> None:
+        """Fail closed before a versioned write reaches an older Worker."""
+
+        response = await self._call(
+            "GET",
+            f"/w/{world_id}/status",
+            ignore_status=(404,),
+        )
+        body = response.json()
+        if not isinstance(body, dict):
+            raise RuntimeError(f"remote control catalog does not support {feature}")
+        capabilities = body.get("capabilities", ())
+        protocol_version = body.get("catalog_protocol_version")
+        if (
+            not isinstance(protocol_version, int)
+            or protocol_version < minimum_version
+            or not isinstance(capabilities, list)
+            or capability not in capabilities
+        ):
+            raise RuntimeError(f"remote control catalog does not support {feature}")
+
+    async def _require_attempt_claim_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ATTEMPT_CLAIM_PROTOCOL_VERSION,
+            capability=_ATTEMPT_CLAIM_CAPABILITY,
+            feature="attempt-claim execution v2",
+        )
+
+    async def _require_artifact_snapshot_protocol(self, world_id: str) -> None:
+        await self._require_catalog_protocol(
+            world_id,
+            minimum_version=_ARTIFACT_SNAPSHOT_PROTOCOL_VERSION,
+            capability=_ARTIFACT_SNAPSHOT_CAPABILITY,
+            feature="lossless artifact snapshot IDs",
+        )
 
     # ── worlds ───────────────────────────────────────────────────────────────
 
@@ -369,9 +420,10 @@ class RemoteControlCatalog:
             raise ValueError("attempt claim redaction_policy_id must not be empty")
         if not redaction_evidence_json.strip():
             raise ValueError("attempt claim redaction_evidence_json must not be empty")
+        await self._require_attempt_claim_protocol(world_id)
         response = await self._call(
             "POST",
-            f"/w/{world_id}/attempt-claims/acquire",
+            f"/w/{world_id}/attempt-claims/acquire-v2",
             {
                 "claim_key": claim_key,
                 "run_id": run_id,
@@ -411,17 +463,30 @@ class RemoteControlCatalog:
         settlement_status: str = "",
         outcome_digest: str = "",
         outcome_json: str = "",
+        artifact_request_json: str = "",
+        artifact_request_digest: str = "",
+        artifact_publication_key: str = "",
         last_error: str = "",
     ) -> AttemptClaimRecord:
-        if target_status == "possibly_submitted" and not execution_nonce:
-            raise ValueError("arming submission requires an execution nonce")
-        if execution_nonce and target_status != "possibly_submitted":
-            raise ValueError("execution nonce may only be recorded while arming submission")
-        if redaction_evidence_json and not redaction_evidence_json.strip():
-            raise ValueError("redaction evidence update must not be blank")
+        _validate_attempt_claim_transition(
+            expected_status=expected_status,
+            target_status=target_status,
+            execution_nonce=execution_nonce,
+            redaction_evidence_json=redaction_evidence_json,
+            provider_session_id=provider_session_id,
+            provider_request_id=provider_request_id,
+            settlement_status=settlement_status,
+            outcome_digest=outcome_digest,
+            outcome_json=outcome_json,
+            artifact_request_json=artifact_request_json,
+            artifact_request_digest=artifact_request_digest,
+            artifact_publication_key=artifact_publication_key,
+            last_error=last_error,
+        )
+        await self._require_attempt_claim_protocol(world_id)
         response = await self._call(
             "POST",
-            f"/w/{world_id}/attempt-claims/{claim_key}/transition",
+            f"/w/{world_id}/attempt-claims/{claim_key}/transition-v2",
             {
                 "claimant": claimant,
                 "fence_epoch": fence_epoch,
@@ -434,6 +499,9 @@ class RemoteControlCatalog:
                 "settlement_status": settlement_status,
                 "outcome_digest": outcome_digest,
                 "outcome_json": outcome_json,
+                "artifact_request_json": artifact_request_json,
+                "artifact_request_digest": artifact_request_digest,
+                "artifact_publication_key": artifact_publication_key,
                 "last_error": last_error,
             },
         )
@@ -449,9 +517,10 @@ class RemoteControlCatalog:
     ) -> AttemptClaimRecord:
         if not execution_nonce:
             raise ValueError("attempt execution nonce must not be empty")
+        await self._require_attempt_claim_protocol(world_id)
         response = await self._call(
             "POST",
-            f"/w/{world_id}/attempt-claims/{claim_key}/consume",
+            f"/w/{world_id}/attempt-claims/{claim_key}/consume-v2",
             {
                 "claimant": claimant,
                 "fence_epoch": fence_epoch,
@@ -581,9 +650,10 @@ class RemoteControlCatalog:
         lease_seconds: float = 900.0,
     ) -> tuple[str, ArtifactPublicationRecord]:
         publication_key = artifact_publication_key(world_id, run_id, idempotency_key)
+        await self._require_artifact_snapshot_protocol(world_id)
         response = await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/acquire",
+            f"/w/{world_id}/artifact-publications/acquire-v2",
             {
                 "publication_key": publication_key,
                 "run_id": run_id,
@@ -607,9 +677,10 @@ class RemoteControlCatalog:
         *,
         lease_seconds: float,
     ) -> ArtifactPublicationRecord:
+        await self._require_artifact_snapshot_protocol(world_id)
         response = await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/renew",
+            f"/w/{world_id}/artifact-publications/{publication_key}/renew-v2",
             {"claimant": claimant, "lease_seconds": lease_seconds},
         )
         return _artifact_publication_from_json(world_id, response.json())
@@ -622,9 +693,10 @@ class RemoteControlCatalog:
         records_json: str,
         manifest_uri: str,
     ) -> None:
+        await self._require_artifact_snapshot_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/uploads",
+            f"/w/{world_id}/artifact-publications/{publication_key}/uploads-v2",
             {
                 "claimant": claimant,
                 "records_json": records_json,
@@ -639,10 +711,18 @@ class RemoteControlCatalog:
         claimant: str,
         index_snapshot_id: int,
     ) -> None:
+        if (
+            isinstance(index_snapshot_id, bool)
+            or not isinstance(index_snapshot_id, int)
+            or index_snapshot_id <= 0
+            or index_snapshot_id > MAX_ICEBERG_SNAPSHOT_ID
+        ):
+            raise ValueError("index_snapshot_id must be a positive integer no greater than 2^63-1")
+        await self._require_artifact_snapshot_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/complete",
-            {"claimant": claimant, "index_snapshot_id": index_snapshot_id},
+            f"/w/{world_id}/artifact-publications/{publication_key}/complete-v2",
+            {"claimant": claimant, "index_snapshot_id": str(index_snapshot_id)},
         )
 
     async def fail_artifact_publication(
@@ -654,9 +734,10 @@ class RemoteControlCatalog:
         *,
         retry_at: float,
     ) -> None:
+        await self._require_artifact_snapshot_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/fail",
+            f"/w/{world_id}/artifact-publications/{publication_key}/fail-v2",
             {"claimant": claimant, "error": error, "retry_at": retry_at},
         )
 
@@ -667,9 +748,10 @@ class RemoteControlCatalog:
         claimant: str,
         error: str,
     ) -> None:
+        await self._require_artifact_snapshot_protocol(world_id)
         await self._call(
             "POST",
-            f"/w/{world_id}/artifact-publications/{publication_key}/expire",
+            f"/w/{world_id}/artifact-publications/{publication_key}/expire-v2",
             {"claimant": claimant, "error": error},
         )
 
@@ -754,16 +836,22 @@ def _attempt_claim_from_json(world_id: str, row: dict) -> AttemptClaimRecord:
         settlement_status=row.get("settlement_status", ""),
         outcome_digest=row.get("outcome_digest", ""),
         outcome_json=row.get("outcome_json", ""),
+        artifact_request_json=row.get("artifact_request_json", ""),
+        artifact_request_digest=row.get("artifact_request_digest", ""),
+        artifact_publication_key=row.get("artifact_publication_key", ""),
+        legacy_unbound_eligible=bool(row.get("legacy_unbound_eligible", False)),
         last_error=row.get("last_error", ""),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         possibly_submitted_at=row.get("possibly_submitted_at"),
         acknowledged_at=row.get("acknowledged_at"),
+        finalizing_at=row.get("finalizing_at"),
         settled_at=row.get("settled_at"),
     )
 
 
 def _artifact_publication_from_json(world_id: str, row: dict) -> ArtifactPublicationRecord:
+    index_snapshot_id = _remote_index_snapshot_id(row)
     return ArtifactPublicationRecord(
         publication_key=row["publication_key"],
         world_id=world_id,
@@ -778,13 +866,29 @@ def _artifact_publication_from_json(world_id: str, row: dict) -> ArtifactPublica
         lease_expires_at=float(row["lease_expires_at"]),
         retry_until_ms=int(row["retry_until_ms"]),
         attempt_count=int(row.get("attempt_count", 1)),
-        index_snapshot_id=int(row.get("index_snapshot_id", 0)),
+        index_snapshot_id=index_snapshot_id,
         manifest_uri=row.get("manifest_uri", ""),
         last_error=row.get("last_error", ""),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         completed_at=row.get("completed_at"),
     )
+
+
+def _remote_index_snapshot_id(row: dict) -> int:
+    """Parse only lossless Worker snapshot receipts."""
+
+    raw = row.get("index_snapshot_id", "0")
+    if row.get("status") != "INDEXED":
+        if raw == "0" or (type(raw) is int and raw == 0):
+            return 0
+        raise RuntimeError("remote artifact publication has an invalid unindexed snapshot ID")
+    if not (isinstance(raw, str) and raw.isascii() and raw.isdecimal() and not raw.startswith("0")):
+        raise RuntimeError("remote INDEXED artifact publication has a lossy snapshot ID")
+    parsed = int(raw)
+    if parsed <= 0 or parsed > MAX_ICEBERG_SNAPSHOT_ID:
+        raise RuntimeError("remote INDEXED artifact publication snapshot ID is out of range")
+    return parsed
 
 
 def _command_from_json(world_id: str, row: dict) -> CommandRecord:

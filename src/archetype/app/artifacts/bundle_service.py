@@ -41,13 +41,16 @@ from archetype.app.artifacts.bundle_models import (
     ArtifactStoreConfig,
     BoundedArtifactSourceResolver,
     MaterializedArtifact,
+    PreparedArtifactBundleRequest,
     _canonical_json,
 )
+from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.models import RedactionReceipt
 from archetype.app.storage.catalog import (
     ArtifactPublicationExpiredError,
     ArtifactPublicationRecord,
+    artifact_publication_key,
 )
 from archetype.app.storage.interfaces import iStorageService
 from archetype.app.world.interfaces import iWorldService
@@ -385,11 +388,33 @@ class ArtifactBundleService:
             else request.model_copy(update={"redaction_policy_id": policy_id})
         )
         self._assert_request_metadata_safe(bound)
+        self._assert_object_root_safe()
+        return bound
+
+    def _assert_object_root_safe(self) -> None:
+        """Quarantine unsafe destination metadata before the next external write."""
+
         self._redaction_service.assert_safe_metadata(
             self._normalized_object_uri(),
             field="artifact_store.object_uri",
         )
-        return bound
+
+    def prepare(self, request: ArtifactBundleRequest) -> PreparedArtifactBundleRequest:
+        """Bind and scan one request without touching sources, objects, or indexes."""
+
+        self._require_config()
+        bound = self._bind_redaction_policy(request)
+        return PreparedArtifactBundleRequest(
+            request_json=bound.canonical_json(),
+            request_digest=bound.request_digest(),
+            publication_key=artifact_publication_key(
+                bound.world_id,
+                bound.run_id,
+                bound.idempotency_key,
+            ),
+            producer_digest=bound.producer_digest(),
+            redaction_policy_id=bound.redaction_policy_id,
+        )
 
     def _assert_request_metadata_safe(self, request: ArtifactBundleRequest) -> None:
         values = {
@@ -422,6 +447,177 @@ class ArtifactBundleService:
                         field=f"artifact_index[{index}].{field}",
                     )
 
+    def _assert_records_bound_to_request(
+        self,
+        request: ArtifactBundleRequest,
+        bundle_id: str,
+        records: tuple[ArtifactIndexRecord, ...],
+        manifest_uri: str,
+        *,
+        created_at_ms: int,
+    ) -> None:
+        """Authenticate durable index rows against their exact publication request."""
+
+        if not records:
+            raise ValueError("artifact publication requires durable index records")
+        if len({record.artifact_id for record in records}) != len(records):
+            raise ValueError("artifact publication contains duplicate artifact IDs")
+        if len({record.logical_path for record in records}) != len(records):
+            raise ValueError("artifact publication contains duplicate logical paths")
+
+        common = {
+            "bundle_id": bundle_id,
+            "world_id": request.world_id,
+            "run_id": request.run_id,
+            "entity_id": request.entity_id,
+            "tick": request.tick,
+            "attempt_id": request.attempt_id,
+            "idempotency_key": request.idempotency_key,
+            "checkpoint_provider": request.checkpoint_provider,
+            "checkpoint_ref": request.checkpoint_ref,
+            "accepted": request.accepted,
+            "retention": request.retention,
+        }
+        for record in records:
+            for field, expected in common.items():
+                if getattr(record, field) != expected:
+                    raise ValueError(
+                        f"artifact record {record.artifact_id} {field} does not match "
+                        "its durable request"
+                    )
+
+        checkpoints = [
+            record
+            for record in records
+            if record.storage_kind == "provider_checkpoint"
+            or record.kind == "sandbox_checkpoint"
+            or record.logical_path == "sandbox.checkpoint"
+        ]
+        if len(checkpoints) != 1:
+            raise ValueError("artifact publication requires exactly one provider checkpoint record")
+        checkpoint = checkpoints[0]
+        expected_checkpoint_id = hashlib.sha256(
+            f"{bundle_id}\0sandbox.checkpoint\0{request.checkpoint_ref}".encode()
+        ).hexdigest()
+        expected_checkpoint = {
+            "artifact_id": expected_checkpoint_id,
+            "kind": "sandbox_checkpoint",
+            "logical_path": "sandbox.checkpoint",
+            "source_ref": request.checkpoint_ref,
+            "object_uri": request.checkpoint_ref,
+            "content_hash": "",
+            "size_bytes": -1,
+            "mime_type": "application/vnd.archetype.sandbox-checkpoint",
+            "restorable": request.checkpoint_restorable,
+            "created_at_ms": request.checkpoint_created_at_ms or created_at_ms,
+            "expires_at_ms": request.checkpoint_expires_at_ms,
+        }
+        for field, expected in expected_checkpoint.items():
+            if getattr(checkpoint, field) != expected:
+                raise ValueError(f"artifact checkpoint {field} does not match its durable request")
+
+        manifests = [
+            record
+            for record in records
+            if record.kind == "bundle_manifest"
+            or record.logical_path == "artifact-manifest.json"
+            or record.source_ref == "generated://artifact-manifest"
+        ]
+        if len(manifests) != 1:
+            raise ValueError("artifact publication requires exactly one bundle manifest record")
+        manifest = manifests[0]
+        expected_portable_expiry = self._portable_expires_at_ms(request, created_at_ms)
+        expected_manifest = {
+            "logical_path": "artifact-manifest.json",
+            "source_ref": "generated://artifact-manifest",
+            "object_uri": manifest_uri,
+            "storage_kind": "object",
+            "mime_type": "application/json",
+            "restorable": False,
+            "created_at_ms": created_at_ms,
+            "expires_at_ms": expected_portable_expiry,
+        }
+        for field, expected in expected_manifest.items():
+            if getattr(manifest, field) != expected:
+                raise ValueError(
+                    f"artifact manifest {field} does not match its durable publication"
+                )
+
+        candidate_counts = {candidate.logical_path: 0 for candidate in request.artifacts}
+        portable = [
+            record for record in records if record is not checkpoint and record is not manifest
+        ]
+        for record in (manifest, *portable):
+            if record.storage_kind != "object":
+                raise ValueError("portable artifact records must use object storage")
+            expected_id = self._artifact_id(bundle_id, record.logical_path, record.content_hash)
+            if record.artifact_id != expected_id:
+                raise ValueError(
+                    f"artifact record {record.logical_path!r} has a non-deterministic artifact ID"
+                )
+            expected_folder = self._object_folder(request, bundle_id, record.artifact_id)
+            folder = expected_folder.rstrip("/")
+            if record.object_uri != folder and not record.object_uri.startswith(folder + "/"):
+                raise ValueError(
+                    f"artifact record {record.logical_path!r} object URI is outside "
+                    "its content-addressed folder"
+                )
+            if record.created_at_ms != created_at_ms:
+                raise ValueError(
+                    f"artifact record {record.logical_path!r} changed its creation time"
+                )
+            if record.expires_at_ms != expected_portable_expiry:
+                raise ValueError(
+                    f"artifact record {record.logical_path!r} changed its retention deadline"
+                )
+
+        for record in portable:
+            matches: list[ArtifactCandidate] = []
+            for candidate in request.artifacts:
+                if record.kind != candidate.kind:
+                    continue
+                if candidate.recursive:
+                    prefix = candidate.logical_path.rstrip("/") + "/"
+                    if not record.logical_path.startswith(prefix):
+                        continue
+                    relative = record.logical_path[len(prefix) :]
+                    expected_source = candidate.source_ref.rstrip("/") + "/" + relative
+                    if record.source_ref != expected_source:
+                        continue
+                elif (
+                    record.logical_path != candidate.logical_path
+                    or record.source_ref != candidate.source_ref
+                ):
+                    continue
+                matches.append(candidate)
+            if len(matches) != 1:
+                raise ValueError(
+                    f"artifact record {record.logical_path!r} does not match exactly one "
+                    "declared candidate"
+                )
+            candidate_counts[matches[0].logical_path] += 1
+
+        for candidate in request.artifacts:
+            count = candidate_counts[candidate.logical_path]
+            if candidate.required and count == 0:
+                raise ValueError(
+                    f"required artifact candidate {candidate.logical_path!r} has no durable record"
+                )
+            if not candidate.recursive and count > 1:
+                raise ValueError(
+                    f"artifact candidate {candidate.logical_path!r} has multiple durable records"
+                )
+
+    def _portable_expires_at_ms(
+        self,
+        request: ArtifactBundleRequest,
+        created_at_ms: int,
+    ) -> int:
+        if request.artifact_expires_at_ms:
+            return request.artifact_expires_at_ms
+        retention_seconds = self._require_config().retention_seconds(request.retention)
+        return created_at_ms + retention_seconds * 1000 if retention_seconds else 0
+
     def _assert_materialized_metadata_safe(
         self,
         values: list[MaterializedArtifact],
@@ -451,8 +647,20 @@ class ArtifactBundleService:
         storage_config: StorageConfig | None = None,
     ) -> ArtifactPublishReceipt:
         """Upload and index one bundle, or return its original receipt."""
+
+        prepared = self.prepare(request)
+        return await self.publish_prepared(prepared, storage_config=storage_config)
+
+    async def publish_prepared(
+        self,
+        prepared: PreparedArtifactBundleRequest,
+        *,
+        storage_config: StorageConfig | None = None,
+    ) -> ArtifactPublishReceipt:
+        """Publish the exact prepared request, recovering only from durable JSON."""
+
         config = self._require_config()
-        request = self._bind_redaction_policy(request)
+        request = self._request_from_preparation(prepared)
         catalog = await self._control_catalog(request, storage_config)
         claimant = f"artifact-{uuid7()}"
         now_ms = int(time.time() * 1000)
@@ -467,8 +675,8 @@ class ArtifactBundleService:
                 run_id=request.run_id,
                 attempt_id=request.attempt_id,
                 idempotency_key=request.idempotency_key,
-                request_digest=request.digest(),
-                request_json=request.canonical_json(),
+                request_digest=prepared.producer_digest,
+                request_json=prepared.request_json,
                 claimant=claimant,
                 retry_until_ms=retry_until_ms,
                 lease_seconds=config.lease_seconds,
@@ -476,16 +684,16 @@ class ArtifactBundleService:
             if outcome == "duplicate":
                 return self._receipt(publication, duplicate=True)
             if outcome == "expired":
-                raise ArtifactPublicationExpiredError(
-                    publication.last_error
-                    or f"artifact publication {publication.publication_key} expired"
-                )
+                return self._receipt(publication, duplicate=True)
             try:
-                if outcome == "recovered":
-                    request = self._request_from_publication(
-                        publication,
-                        require_policy=publication.status == "PENDING",
-                    )
+                # The catalog request is authoritative after acquisition. This
+                # deliberately discards the caller's decoded object even for a
+                # fresh row, proving that mapping or scanner-code drift cannot
+                # alter an in-flight publication.
+                request = self._request_from_publication(
+                    publication,
+                    require_policy=publication.status == "PENDING",
+                )
                 return await self._resume(request, publication, claimant, catalog)
             except Exception as exc:
                 failure_detail = self._safe_failure_detail(exc)
@@ -585,8 +793,11 @@ class ArtifactBundleService:
                     publication,
                     require_policy=publication.status == "PENDING",
                 )
-                await self._resume(request, publication, claimant, catalog)
-                indexed += 1
+                receipt = await self._resume(request, publication, claimant, catalog)
+                if receipt.status is ArtifactPublicationStatus.EXPIRED:
+                    expired += 1
+                else:
+                    indexed += 1
             except Exception as exc:
                 failed += 1
                 if not owned:
@@ -625,6 +836,35 @@ class ArtifactBundleService:
             bundle_ids=tuple(bundle_ids),
         )
 
+    def _request_from_preparation(
+        self,
+        prepared: PreparedArtifactBundleRequest,
+    ) -> ArtifactBundleRequest:
+        """Authenticate a caller-supplied prepared identity before catalog I/O."""
+
+        # Revalidation matters for structural protocol implementations that are
+        # not instances of the concrete Pydantic model.
+        prepared = PreparedArtifactBundleRequest.model_validate(prepared, from_attributes=True)
+        request = ArtifactBundleRequest.model_validate_json(prepared.request_json)
+        if request.canonical_json() != prepared.request_json:
+            raise ValueError("prepared artifact request_json is not canonical")
+        if request.request_digest() != prepared.request_digest:
+            raise ValueError("prepared artifact request_digest does not match request_json")
+        if request.producer_digest() != prepared.producer_digest:
+            raise ValueError("prepared artifact producer_digest does not match request_json")
+        if request.redaction_policy_id != prepared.redaction_policy_id:
+            raise ValueError("prepared artifact policy does not match request_json")
+        expected_key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        if prepared.publication_key != expected_key:
+            raise ValueError("prepared artifact publication_key does not match request_json")
+        self._assert_request_metadata_safe(request)
+        self._assert_object_root_safe()
+        return request
+
     def _request_from_publication(
         self,
         publication: ArtifactPublicationRecord,
@@ -647,8 +887,17 @@ class ArtifactBundleService:
         )
         if request_identity != persisted_identity:
             raise ValueError("durable artifact request identity does not match its publication row")
-        if request.digest() != publication.request_digest:
+        if request.canonical_json() != publication.request_json:
+            raise ValueError("durable artifact request is not in canonical form")
+        if request.producer_digest() != publication.request_digest:
             raise ValueError("durable artifact request digest does not match its publication row")
+        expected_key = artifact_publication_key(
+            request.world_id,
+            request.run_id,
+            request.idempotency_key,
+        )
+        if expected_key != publication.publication_key:
+            raise ValueError("durable artifact request does not match its publication key")
         if require_policy and request.redaction_policy_id != self._redaction_service.policy_id:
             raise ValueError("durable artifact request requires an unavailable redaction policy")
         self._assert_request_metadata_safe(request)
@@ -662,6 +911,11 @@ class ArtifactBundleService:
         catalog: ControlCatalog,
     ) -> ArtifactPublishReceipt:
         config = self._require_config()
+        # The object destination is deployment configuration rather than part
+        # of the durable request. Recheck it on every cold recovery before a
+        # PENDING row can upload or an UPLOADED row can reach the index.
+        self._assert_object_root_safe()
+        created_at_ms = self._publication_created_at_ms(publication)
         records: tuple[ArtifactIndexRecord, ...]
         manifest_uri = publication.manifest_uri
         if publication.status == "PENDING":
@@ -672,9 +926,13 @@ class ArtifactBundleService:
                     claimant,
                     "artifact publication retry window elapsed before upload",
                 )
-                raise ArtifactPublicationExpiredError(
-                    f"artifact publication {publication.publication_key} expired"
+                expired = await catalog.get_artifact_publication(
+                    request.world_id,
+                    publication.publication_key,
                 )
+                if expired is None:
+                    raise RuntimeError("expired artifact publication disappeared from its catalog")
+                return self._receipt(expired, duplicate=False)
             async with self._lease_heartbeat(
                 catalog, request.world_id, publication.publication_key, claimant
             ):
@@ -686,22 +944,53 @@ class ArtifactBundleService:
                     records, manifest_uri = await self._upload_bundle(
                         request,
                         publication.publication_key,
-                        created_at_ms=self._publication_created_at_ms(publication),
+                        created_at_ms=created_at_ms,
                     )
-            records_json = _canonical_json([record.model_dump(mode="json") for record in records])
-            await catalog.record_artifact_uploads(
-                request.world_id,
+            self._assert_records_bound_to_request(
+                request,
                 publication.publication_key,
-                claimant,
-                records_json,
+                records,
                 manifest_uri,
+                created_at_ms=created_at_ms,
             )
+            records_json = _canonical_json([record.model_dump(mode="json") for record in records])
+            try:
+                await catalog.record_artifact_uploads(
+                    request.world_id,
+                    publication.publication_key,
+                    claimant,
+                    records_json,
+                    manifest_uri,
+                )
+            except ArtifactPublicationExpiredError as exc:
+                # Expiry can win after object upload but before its metadata
+                # commit. Normalize that storage race into the same typed
+                # terminal receipt returned when acquisition sees EXPIRED so
+                # mission finalization can settle in this invocation.
+                expired = await catalog.get_artifact_publication(
+                    request.world_id,
+                    publication.publication_key,
+                )
+                if expired is None or expired.status != "EXPIRED":
+                    raise RuntimeError(
+                        "artifact upload reported expiry without an authoritative "
+                        "EXPIRED publication"
+                    ) from exc
+                return self._receipt(expired, duplicate=False)
         else:
             records = tuple(
                 ArtifactIndexRecord.model_validate(value)
                 for value in json.loads(publication.records_json)
             )
             self._assert_records_safe(records)
+
+        self._assert_records_bound_to_request(
+            request,
+            publication.publication_key,
+            records,
+            manifest_uri,
+            created_at_ms=created_at_ms,
+        )
 
         await catalog.renew_artifact_publication(
             request.world_id,
@@ -719,6 +1008,8 @@ class ArtifactBundleService:
             }
             with _obs.span("artifact.index", attributes=index_attributes):
                 snapshot_id = await self._index_records(records)
+        if snapshot_id < 1:
+            raise RuntimeError("artifact index did not publish a positive snapshot")
         await catalog.complete_artifact_publication(
             request.world_id,
             publication.publication_key,
@@ -739,10 +1030,7 @@ class ArtifactBundleService:
         created_at_ms: int,
     ) -> tuple[tuple[ArtifactIndexRecord, ...], str]:
         config = self._require_config()
-        expires_at_ms = request.artifact_expires_at_ms
-        if not expires_at_ms:
-            retention_seconds = config.retention_seconds(request.retention)
-            expires_at_ms = created_at_ms + retention_seconds * 1000 if retention_seconds else 0
+        expires_at_ms = self._portable_expires_at_ms(request, created_at_ms)
 
         with tempfile.TemporaryDirectory(prefix="archetype-artifacts-") as temp_dir:
             destination = Path(temp_dir)
@@ -784,7 +1072,11 @@ class ArtifactBundleService:
             for row in metadata:
                 artifact_id = self._artifact_id(bundle_id, row["logical_path"], row["content_hash"])
                 destination = self._object_folder(request, bundle_id, artifact_id)
-                object_uri = self._existing_object(destination)
+                object_uri = self._existing_object(
+                    destination,
+                    content_hash=row["content_hash"],
+                    size_bytes=row["size_bytes"],
+                )
                 prepared = _PreparedArtifact(
                     **row,
                     artifact_id=artifact_id,
@@ -844,9 +1136,11 @@ class ArtifactBundleService:
             manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
             manifest_id = self._artifact_id(bundle_id, "artifact-manifest.json", manifest_hash)
             manifest_folder = self._object_folder(request, bundle_id, manifest_id)
-            manifest_uri = self._existing_object(manifest_folder) or self._upload_bytes(
-                manifest_bytes, manifest_folder
-            )
+            manifest_uri = self._existing_object(
+                manifest_folder,
+                content_hash=manifest_hash,
+                size_bytes=len(manifest_bytes),
+            ) or self._upload_bytes(manifest_bytes, manifest_folder)
             self._redaction_service.assert_safe_metadata(
                 manifest_uri,
                 field="artifact.manifest_uri",
@@ -1021,18 +1315,57 @@ class ArtifactBundleService:
         )
         return str(frame.select("object_uri").to_pylist()[0]["object_uri"])
 
-    def _existing_object(self, folder: str) -> str:
+    def _existing_object(
+        self,
+        folder: str,
+        *,
+        content_hash: str,
+        size_bytes: int,
+    ) -> str:
+        """Return only a byte-verified object from one content-addressed folder.
+
+        A process or transport crash may leave a truncated file in the target
+        folder before the PENDING publication records upload metadata. Folder
+        identity alone is therefore insufficient evidence for reuse.
+        """
+
         config = self._require_config()
         parsed = urlparse(folder)
         if parsed.scheme == "file":
             local = Path(unquote(parsed.path))
-            if not local.is_dir():
-                return ""
-            files = sorted(path.resolve().as_uri() for path in local.iterdir() if path.is_file())
-            return files[0] if files else ""
-        matches = daft.from_glob_path(f"{folder.rstrip('/')}/*", io_config=config.io_config).select(
-            "path"
-        )
+            if local.is_symlink():
+                candidates: list[Path] = []
+            elif local.is_file():
+                candidates = [local]
+            elif local.is_dir():
+                candidates = sorted(local.iterdir())
+            else:
+                candidates = []
+            for path in candidates:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                uri = path.resolve().as_uri()
+                self._redaction_service.assert_safe_metadata(
+                    uri,
+                    field="artifact.existing_object_uri",
+                )
+                try:
+                    if path.stat().st_size != size_bytes:
+                        continue
+                    digest = hashlib.sha256()
+                    with path.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1 << 20), b""):
+                            digest.update(chunk)
+                except OSError:
+                    continue
+                if digest.hexdigest() == content_hash:
+                    return uri
+            return ""
+        base = folder.rstrip("/")
+        matches = daft.from_glob_path(
+            f"{base}*",
+            io_config=config.io_config,
+        ).select("path", "size")
         try:
             rows = matches.to_pylist()
         except DaftCoreException as exc:
@@ -1041,8 +1374,41 @@ class ArtifactBundleService:
             if "Need at least 1 MicroPartition" not in str(exc):
                 raise
             return ""
-        paths = sorted(str(row["path"]) for row in rows)
-        return paths[0] if paths else ""
+        candidates = sorted(
+            str(row["path"])
+            for row in rows
+            if (
+                type(row.get("size")) is int
+                and row["size"] == size_bytes
+                and (str(row["path"]) == base or str(row["path"]).startswith(base + "/"))
+            )
+        )
+        for uri in candidates:
+            self._redaction_service.assert_safe_metadata(
+                uri,
+                field="artifact.existing_object_uri",
+            )
+            downloaded = (
+                daft.from_pydict({"object_uri": [uri]})
+                .with_column(
+                    "_bytes",
+                    download(
+                        col("object_uri"),
+                        max_connections=config.max_connections,
+                        on_error="null",
+                        io_config=config.io_config,
+                    ),
+                )
+                .select("_bytes")
+                .to_pylist()[0]["_bytes"]
+            )
+            if (
+                isinstance(downloaded, bytes)
+                and len(downloaded) == size_bytes
+                and hashlib.sha256(downloaded).hexdigest() == content_hash
+            ):
+                return uri
+        return ""
 
     async def _index_records(self, records: tuple[ArtifactIndexRecord, ...]) -> int:
         config = self._require_config()
@@ -1066,7 +1432,12 @@ class ArtifactBundleService:
         ]
         if missing:
             await iceberg.append_counted(table, daft.from_pylist(missing))
-        return int(iceberg.current_snapshot_id(table) or 0)
+        snapshot_id = iceberg.current_snapshot_id(table)
+        if type(snapshot_id) is not int:
+            raise ValueError("artifact index returned a non-integer snapshot identity")
+        if not 1 <= snapshot_id <= MAX_ICEBERG_SNAPSHOT_ID:
+            raise ValueError("artifact index snapshot is outside the positive signed 64-bit range")
+        return snapshot_id
 
     async def _control_catalog(
         self,
@@ -1267,11 +1638,22 @@ class ArtifactBundleService:
     def _receipt(
         self, publication: ArtifactPublicationRecord, *, duplicate: bool
     ) -> ArtifactPublishReceipt:
+        request = self._request_from_publication(publication, require_policy=False)
         records = tuple(
             ArtifactIndexRecord.model_validate(value)
             for value in json.loads(publication.records_json)
         )
         self._assert_records_safe(records)
+        if publication.status in {"UPLOADED", "INDEXED"}:
+            self._assert_records_bound_to_request(
+                request,
+                publication.publication_key,
+                records,
+                publication.manifest_uri,
+                created_at_ms=self._publication_created_at_ms(publication),
+            )
+        if publication.status == "INDEXED" and publication.index_snapshot_id < 1:
+            raise ValueError("indexed artifact publication lacks a positive snapshot")
         if publication.manifest_uri:
             self._redaction_service.assert_safe_metadata(
                 publication.manifest_uri,
@@ -1282,10 +1664,13 @@ class ArtifactBundleService:
             world_id=publication.world_id,
             run_id=publication.run_id,
             attempt_id=publication.attempt_id,
-            status=cast(ArtifactPublicationStatus, publication.status.lower()),
+            status=ArtifactPublicationStatus(publication.status.lower()),
             duplicate=duplicate,
             manifest_uri=publication.manifest_uri,
             index_snapshot_id=publication.index_snapshot_id,
+            request_digest=request.request_digest(),
+            producer_digest=request.producer_digest(),
+            redaction_policy_id=request.redaction_policy_id,
             records=records,
         )
 
