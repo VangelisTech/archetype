@@ -262,9 +262,9 @@ ownership:
 
 - evaluation receipt Components and value contracts move under #557;
 - artifact Components and reusable bundle/value contracts move under #558;
-- research ledger Components and provisional experiment dependencies await the
-  #561 design gate, which must replace its temporary architecture entries with
-  concrete implementation issues before it closes; and
+- research ledger Components and runner imports move under #585, trajectory
+  recorder imports under #586, and physical-AI rollout/sweep orchestration
+  under #589, as adjudicated by #561; and
 - the root `app/models.py` boundary-model split remains owned by #560.
 
 The exact temporary edges are recorded in `quality/architecture.toml`; no

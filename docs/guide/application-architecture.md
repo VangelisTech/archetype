@@ -151,6 +151,15 @@ src/archetype/app/
   container.py       sole concrete cross-family wiring root
 ```
 
+The mission-adjacent package map is adjudicated in
+[Agent Mission Transitions, section 7](agent-missions.md#7-adjacent-capability-package-map).
+It assigns the provisional experiment modules to future `research`,
+`trajectories`, and `physical_ai` families, keeps HTN and missions as
+independent leaves, separates dataset identity from evaluation contracts, and
+creates no new top-level family edge. Those target packages enter this concrete
+layout only as their focused implementation issues land; the current source
+tree and manifest remain the implementation truth until then.
+
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
 top-level family once those values have moved. A generic `services/` bucket
@@ -431,11 +440,14 @@ Component placement.
 The remaining reverse edges from provisional `archetype.experiments` and the
 remaining Components under app-family `models.py` are preserved only by exact
 migration entries. Evaluation and artifacts point to relocation issues #557
-and #558. Research and provisional experiment ownership point temporarily to
-design gate #561; every such expiry condition requires Issue #561 to replace
-itself with the concrete implementation issue it creates. Mission Components
-and pure world transitions have moved under #559, so no mission migration
-exception remains. These entries make no app symbol supported.
+and #558. The design gate in #561 has been adjudicated: research Components and
+runner imports now point to #585, trajectory recorder imports point to #586,
+and physical-AI rollout/sweep reverse imports point to #589. The transcript,
+physical-AI domain, ontology, HTN-adapter, and final umbrella-removal stages are
+Issues #587, #588, #590, #591, and #592. No architecture exception remains
+owned by Issue #561. Mission Components and pure world transitions moved under
+Issue #559, so no mission migration exception remains. These entries make no
+app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

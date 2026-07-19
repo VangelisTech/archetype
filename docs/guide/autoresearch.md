@@ -33,8 +33,13 @@ emits one audit row per loop.
 The provisional `archetype.experiments` package currently models lifecycle
 state as ordinary Components, so runs become entities in an archetype world —
 forkable, time-travelable, and queryable with the same tools as any other
-simulation state. These module paths may move into a coding-mission family;
-the runtime behavior described above is the supported contract.
+simulation state. The package decision is now adjudicated: these ledger
+Components move to an independent top-level `archetype.research` family under
+[#585](https://github.com/VangelisTech/archetype/issues/585), while the workflow
+and its world/simulation coordination remain under `archetype.app.research`.
+They do not move into missions. Until #585 lands, the current module paths are
+implementation truth; the runtime behavior described above is the supported
+contract.
 
 | Component | Role |
 |---|---|
@@ -55,6 +60,11 @@ from archetype.experiments import ingest_runner_state, load_runner_state_db
 rows = load_runner_state_db("/path/to/runner/state.db")
 await ingest_runner_state(world_id, rows, container)
 ```
+
+That container-backed helper is a provisional maintainer seam, not a supported
+application API. Issue #585 separates pure row decoding from ingestion and
+routes writes through the supported runtime/application path without changing
+the stored `Run` schema.
 
 After ingestion, runs are queryable as entities in the world — filter by `experiment_name`, join with `Result`, time-travel to a historical snapshot, or fork the world to explore "what if run X had won instead."
 

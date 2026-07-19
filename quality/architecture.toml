@@ -467,9 +467,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments"
 target = "archetype.app.research.models"
 owner = "experiments"
-issue = 561
+issue = 585
 reason = "The provisional experiments package re-exports research ledger components from app."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue eliminates the reverse import."
+expiry_condition = "Remove when #585 moves the research ledger Components to archetype.research and deletes the provisional re-export."
 expires = "v0.5"
 
 [[exception]]
@@ -477,9 +477,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.loaders"
 target = "archetype.app.research.models"
 owner = "experiments"
-issue = 561
+issue = 585
 reason = "The provisional runner-state loader imports the app-owned Run component."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue gives the loader a top-level domain owner."
+expiry_condition = "Remove when #585 moves the pure runner decoder and Run Component to archetype.research."
 expires = "v0.5"
 
 [[exception]]
@@ -487,9 +487,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.recorders"
 target = "archetype.app.models"
 owner = "experiments"
-issue = 561
+issue = 586
 reason = "The provisional recorder imports application command and episode result models."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue separates domain recording from app boundaries."
+expiry_condition = "Remove when #586 moves structural trajectory transforms to a leaf family with no app-model import."
 expires = "v0.5"
 
 [[exception]]
@@ -497,9 +497,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.eval_rollouts"
 target = "archetype.app.models"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional rollout helper imports an application episode contract."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns the helper a non-reverse dependency boundary."
+expiry_condition = "Remove when #589 moves rollout orchestration behind an approved application/runtime boundary."
 expires = "v0.5"
 
 [[exception]]
@@ -507,9 +507,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.eval_rollouts"
 target = "archetype.runtime"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional rollout helper carries a type-only runtime dependency."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue replaces the runtime type with an inward domain port."
+expiry_condition = "Remove when #589 moves rollout orchestration out of the top-level domain package."
 expires = "v0.5"
 
 [[exception]]
@@ -517,9 +517,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.instruction_sweep"
 target = "archetype.app.models"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional instruction sweep imports an application episode contract."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns the sweep a non-reverse dependency boundary."
+expiry_condition = "Remove when #589 moves instruction-sweep orchestration behind an approved application/runtime boundary."
 expires = "v0.5"
 
 [[exception]]
@@ -527,9 +527,9 @@ rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.instruction_sweep"
 target = "archetype.runtime"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional instruction sweep carries a type-only runtime dependency."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue replaces the runtime type with an inward domain port."
+expiry_condition = "Remove when #589 moves instruction-sweep orchestration out of the top-level domain package."
 expires = "v0.5"
 
 [[exception]]
@@ -537,9 +537,9 @@ rule = "top_level_family_dependency"
 consumer = "archetype.experiments.eval_rollouts"
 target = "archetype._api"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional rollout helper imports the root public-API marker from infrastructure."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns public classification without a domain-to-infrastructure edge."
+expiry_condition = "Remove when #589 resolves public classification at the runtime/application boundary."
 expires = "v0.5"
 
 [[exception]]
@@ -547,9 +547,9 @@ rule = "top_level_family_dependency"
 consumer = "archetype.experiments.instruction_sweep"
 target = "archetype._api"
 owner = "experiments"
-issue = 561
+issue = 589
 reason = "The provisional instruction sweep imports the root public-API marker from infrastructure."
-expiry_condition = "Before #561 closes, replace this design-gate entry with its concrete implementation issue; remove it when that issue assigns public classification without a domain-to-infrastructure edge."
+expiry_condition = "Remove when #589 resolves public classification at the runtime/application boundary."
 expires = "v0.5"
 
 [[exception]]
@@ -587,9 +587,9 @@ rule = "app_component_model"
 consumer = "archetype.app.research.models"
 target = "archetype.app.research.models.Experiment"
 owner = "research"
-issue = 561
-reason = "Experiment is persistent ECS schema whose final family awaits the research design gate."
-expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Experiment a top-level family owner."
+issue = 585
+reason = "Experiment is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Experiment to archetype.research.components without duplicating its class identity."
 expires = "v0.5"
 
 [[exception]]
@@ -597,9 +597,9 @@ rule = "app_component_model"
 consumer = "archetype.app.research.models"
 target = "archetype.app.research.models.Run"
 owner = "research"
-issue = 561
-reason = "Run is persistent ECS schema whose final family awaits the research design gate."
-expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Run a top-level family owner."
+issue = 585
+reason = "Run is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Run to archetype.research.components without duplicating its class identity."
 expires = "v0.5"
 
 [[exception]]
@@ -607,9 +607,9 @@ rule = "app_component_model"
 consumer = "archetype.app.research.models"
 target = "archetype.app.research.models.Result"
 owner = "research"
-issue = 561
-reason = "Result is persistent ECS schema whose final family awaits the research design gate."
-expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives Result a top-level family owner."
+issue = 585
+reason = "Result is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves Result to archetype.research.components without duplicating its class identity."
 expires = "v0.5"
 
 [[exception]]
@@ -617,7 +617,7 @@ rule = "app_component_model"
 consumer = "archetype.app.research.models"
 target = "archetype.app.research.models.BranchHead"
 owner = "research"
-issue = 561
-reason = "BranchHead is persistent ECS schema whose final family awaits the research design gate."
-expiry_condition = "Before #561 closes, replace this entry with the concrete implementation issue created by that design; remove it when that issue gives BranchHead a top-level family owner."
+issue = 585
+reason = "BranchHead is persistent ECS schema adjudicated to the top-level research family."
+expiry_condition = "Remove when #585 moves BranchHead to archetype.research.components without duplicating its class identity."
 expires = "v0.5"
