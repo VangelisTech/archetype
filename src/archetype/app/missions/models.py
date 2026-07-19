@@ -27,6 +27,7 @@ from archetype.missions.transitions import (
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION = 9
 
 
 @dataclass(frozen=True)

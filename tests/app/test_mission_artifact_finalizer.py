@@ -348,6 +348,24 @@ def test_mission_projection_rejects_missing_required_recovery_reference(tmp_path
         )
 
 
+def test_pre_v9_mission_projection_allows_missing_worktree_archive(tmp_path):
+    finalizer, _bundles, policy_id = _finalizer(tmp_path)
+    outcome = _outcome()
+    assert outcome.pop("worktree_archive_ref")
+
+    projection = finalizer.prepare(
+        _request(),
+        outcome,
+        redaction_policy_id=policy_id,
+        claim_contract_version=8,
+    )
+
+    request = ArtifactBundleRequest.model_validate_json(projection.request_json)
+    by_path = {candidate.logical_path: candidate for candidate in request.artifacts}
+    assert "recovery/full-worktree.tar" not in by_path
+    assert by_path["recovery/repository.bundle"].required is True
+
+
 @pytest.mark.asyncio
 async def test_container_wires_the_authoritative_mission_artifact_adapter(tmp_path):
     container = ServiceContainer(

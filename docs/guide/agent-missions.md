@@ -395,10 +395,11 @@ Claim contract v9 adds `worktree_archive_ref` to that required evidence. Durable
 v7 and v8 rows retain their versioned replay contract: a missing archive
 reference projects as empty evidence instead of making an already-recorded
 attempt unreadable, while all new writes still require the field.
-For a direct non-finalizing outcome, the official execution service first uses
-strict current-write `MissionService.apply_attempt`; its authoritative
-`AttemptStatus` is the status stored by direct settlement and must agree with
-the outcome's provider semantics. A finalized `INDEXED` or `EXPIRED` outcome
+For a direct non-finalizing outcome, the official execution service assesses
+and projects through the authenticated claim contract before settlement;
+public callers of `MissionService.apply_attempt` still use strict current-write
+semantics. The authoritative `AttemptStatus` stored by direct settlement must
+agree with the outcome's provider semantics. A finalized `INDEXED` or `EXPIRED` outcome
 uses the claim-bound order instead: authenticate the terminal durable row,
 construct and seal the prepared settlement, settle `finalizing -> settled`,
 reread and authenticate the winning row through `require_settled`, and only

@@ -210,6 +210,7 @@ class MissionAttemptExecutionService:
                 request,
                 sanitized_outcome,
                 redaction_policy_id=active_claim.redaction_policy_id,
+                claim_contract_version=active_claim.contract_version,
             )
             active_claim = await self._claims.stage_finalization(
                 active_claim,

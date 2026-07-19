@@ -11,10 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
-from archetype.app.missions.models import (
-    MissionAttemptRequest,
-    attempt_invocation_fingerprint,
-)
+from archetype.app.missions.models import MissionAttemptRequest, attempt_invocation_fingerprint
 from archetype.missions.transitions import (
     AttemptStatus,
     CheckpointStatus,
@@ -22,7 +19,6 @@ from archetype.missions.transitions import (
 )
 
 REPOSITORY_CHANGE_GATE_NAME = "git_tree_change"
-WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION = 9
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 REPLAY_REQUIRED_OUTCOME_FIELDS = frozenset(
     {

@@ -419,7 +419,10 @@ canonical outcome unchanged. That flag is an explicit compatibility
 classification, not a claim that historical artifact provenance was recovered.
 Claim contract v9 requires `worktree_archive_ref` on new replayable outcomes.
 Previously durable v7/v8 outcomes remain readable under their original field
-set and project an empty archive reference when none was recorded.
+set and project an empty archive reference when none was recorded. If a
+nonterminal v7/v8 claim reconciles into indexed finalization, its authenticated
+contract version also makes the archive bundle candidate optional; current v9
+claims still require that candidate before staging.
 
 The Iceberg append is the query visibility point. If a process dies after the
 append but before marking the control row `INDEXED`, a retry reads and verifies

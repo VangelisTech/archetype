@@ -578,10 +578,13 @@ class _StageObservingFinalizer:
         service: MissionAttemptClaimService,
         catalog: Any,
         request: Any,
+        *,
+        expected_contract_version: int = 9,
     ) -> None:
         self.service = service
         self.catalog = catalog
         self.request = request
+        self.expected_contract_version = expected_contract_version
         self.prepare_calls = 0
         self.publish_calls = 0
         self.observed_status: AttemptClaimStatus | None = None
@@ -592,11 +595,13 @@ class _StageObservingFinalizer:
         outcome: Any,
         *,
         redaction_policy_id: str,
+        claim_contract_version: int,
     ) -> AttemptArtifactProjection:
         self.prepare_calls += 1
         assert request == self.request
         assert outcome["finalization_phase"] == "checkpointed"
         assert request.observation_tick == self.request.observation_tick
+        assert claim_contract_version == self.expected_contract_version
         return _artifact_projection(request, redaction_policy_id)
 
     async def publish(
@@ -2052,6 +2057,72 @@ async def test_v8_acknowledged_claim_reconciles_cached_outcome_without_worktree_
     assert "worktree_archive_ref" not in execution.outcome
     assert execution.updated_row["evidence__worktree_archive_ref"] == ""
     assert runner.run_calls == 1
+    await cold_catalog.close()
+
+
+async def test_v8_acknowledged_indexed_claim_finalizes_cached_outcome_without_archive(
+    tmp_path,
+) -> None:
+    path = tmp_path / "v8-indexed-before-worktree-archive.db"
+    first_catalog = SqliteControlCatalog(path)
+    first = _claim_service(first_catalog)
+    request = _indexed_request()
+    acquired = await first.acquire(
+        request,
+        _capabilities(),
+        claimant="v8-indexed-worker",
+        lease_seconds=0.05,
+    )
+    decision = await first.decide_recovery(acquired.claim, lease_seconds=0.05)
+    consumed = await first.consume_execution(decision.authorization)
+    acknowledged = await first.acknowledge_provider(
+        consumed,
+        provider_session_id="session-indexed",
+        provider_request_id="request-indexed",
+    )
+    assert acknowledged.status is AttemptClaimStatus.PROVIDER_ACKNOWLEDGED
+    _set_claim_contract_version(path, 8)
+    await first_catalog.close()
+    await asyncio.sleep(0.06)
+
+    cached_outcome = _outcome(
+        request=request,
+        status=AttemptStatus.ACCEPTED,
+        agent_session_id="session-indexed",
+    )
+    assert cached_outcome.pop("worktree_archive_ref") == "fake://full-worktree"
+    cold_catalog = SqliteControlCatalog(path)
+    cold = _claim_service(cold_catalog)
+    runner = _CachedOutcomeRunner(cached_outcome)
+    finalizer = _StageObservingFinalizer(
+        cold,
+        cold_catalog,
+        request,
+        expected_contract_version=8,
+    )
+    execution = await MissionAttemptExecutionService(
+        cold,
+        MissionService(),
+        finalizer,
+    ).run(
+        _indexed_row(),
+        tick=100,
+        claimant="v8-indexed-recovery-worker",
+        runner=runner,
+        lease_seconds=1,
+    )
+
+    assert execution is not None
+    assert execution.acquisition.outcome is AttemptClaimAcquireOutcome.RECOVERED
+    assert execution.decision.action is AttemptRecoveryAction.RECONCILE
+    assert execution.claim.status is AttemptClaimStatus.SETTLED
+    assert execution.claim.contract_version == 8
+    assert execution.outcome["finalization_phase"] == FinalizationPhase.INDEXED.value
+    assert "worktree_archive_ref" not in execution.outcome
+    assert execution.updated_row["evidence__worktree_archive_ref"] == ""
+    assert runner.run_calls == 1
+    assert finalizer.prepare_calls == 1
+    assert finalizer.publish_calls == 1
     await cold_catalog.close()
 
 

@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from archetype.app.missions.models import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     AttemptArtifactProjection,
     AttemptArtifactPublication,
     AttemptClaim,
@@ -185,6 +186,7 @@ class iMissionArtifactFinalizer(Protocol):
         outcome: Mapping[str, Any],
         *,
         redaction_policy_id: str,
+        claim_contract_version: int = WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     ) -> AttemptArtifactProjection: ...
 
     async def publish(

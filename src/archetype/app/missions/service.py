@@ -12,13 +12,13 @@ from typing import Any
 
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.models import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     AttemptClaim,
     MissionAttemptRequest,
     mission_attempt_request_fingerprint,
     normalize_attempt_validators,
 )
 from archetype.app.missions.outcomes import (
-    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     assess_attempt_outcome,
     assess_legacy_unbound_settled_outcome,
     assess_pre_worktree_archive_outcome,

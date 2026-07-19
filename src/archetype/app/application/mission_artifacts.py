@@ -12,6 +12,7 @@ from archetype.app.artifacts.bundle_models import PreparedArtifactBundleRequest
 from archetype.app.artifacts.interfaces import iArtifactBundleService
 from archetype.app.missions.interfaces import iMissionArtifactFinalizer
 from archetype.app.missions.models import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     AttemptArtifactExpiration,
     AttemptArtifactProjection,
     AttemptArtifactPublication,
@@ -88,6 +89,7 @@ class MissionArtifactFinalizer(iMissionArtifactFinalizer):
         outcome: Mapping[str, Any],
         *,
         redaction_policy_id: str,
+        claim_contract_version: int = WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     ) -> AttemptArtifactProjection:
         """Return a deterministic, scanned projection without publication I/O."""
 
@@ -95,6 +97,7 @@ class MissionArtifactFinalizer(iMissionArtifactFinalizer):
             request,
             outcome,
             redaction_policy_id=redaction_policy_id,
+            claim_contract_version=claim_contract_version,
         )
         prepared = self._artifact_bundles.prepare(bundle_request)
         if prepared.redaction_policy_id != redaction_policy_id:
@@ -175,7 +178,13 @@ class MissionArtifactFinalizer(iMissionArtifactFinalizer):
         outcome: Mapping[str, Any],
         *,
         redaction_policy_id: str,
+        claim_contract_version: int,
     ) -> ArtifactBundleRequest:
+        if (
+            type(claim_contract_version) is not int
+            or not 1 <= claim_contract_version <= WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION
+        ):
+            raise ValueError("mission artifact preparation requires a supported claim contract")
         if str(outcome.get("attempt_id", "")) != request.attempt_id:
             raise ValueError("artifact outcome does not match the mission attempt_id")
         if str(outcome.get("idempotency_key", "")) != request.idempotency_key:
@@ -201,9 +210,13 @@ class MissionArtifactFinalizer(iMissionArtifactFinalizer):
 
         artifacts: list[ArtifactCandidate] = []
         for field, logical_path, kind, recursive, required in _MISSION_ARTIFACT_CANDIDATES:
+            candidate_required = required and not (
+                field == "worktree_archive_ref"
+                and claim_contract_version < WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION
+            )
             source_ref = str(outcome.get(field) or "")
             if not source_ref:
-                if required:
+                if candidate_required:
                     raise ValueError(f"mission artifact outcome requires {field}")
                 continue
             artifacts.append(
@@ -212,7 +225,7 @@ class MissionArtifactFinalizer(iMissionArtifactFinalizer):
                     logical_path=logical_path,
                     kind=kind,
                     recursive=recursive,
-                    required=required,
+                    required=candidate_required,
                 )
             )
 

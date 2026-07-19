@@ -18,6 +18,7 @@ from pydantic import JsonValue
 
 from archetype.app.limits import MAX_ICEBERG_SNAPSHOT_ID
 from archetype.app.missions.models import (
+    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     AttemptArtifactExpiration,
     AttemptArtifactProjection,
     AttemptArtifactPublication,
@@ -34,7 +35,6 @@ from archetype.app.missions.models import (
     normalize_attempt_validators,
 )
 from archetype.app.missions.outcomes import (
-    WORKTREE_ARCHIVE_OUTCOME_CONTRACT_VERSION,
     MissionAttemptAssessment,
     assess_attempt_outcome,
     assess_legacy_unbound_settled_outcome,
