@@ -66,6 +66,11 @@ consumer = "archetype.experiments"
 allowed_families = []
 
 [[top_level_family_rule]]
+name = "graph-domain-family"
+consumer = "archetype.graph"
+allowed_families = []
+
+[[top_level_family_rule]]
 name = "htn-domain-family"
 consumer = "archetype.htn"
 allowed_families = []
