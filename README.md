@@ -23,15 +23,18 @@ For a checkout, install the development environment with `make sync-dev`.
 
 ## Run a simulation
 
-The world below steps the logistic map:
+The example simulates the logistic map in its chaotic regime, where two
+trajectories that start almost together drift apart at a fixed exponential
+rate:
 
 ```math
 x_{t+1} = r \, x_t \, (1 - x_t)
 ```
 
-At `r = 3.9999` the map is chaotic: nearby trajectories separate
-exponentially. One world runs. A fork takes a 1e-9 nudge. A join over the two
-histories measures the separation. The blocks form one script.
+The script runs one world, forks it, changes the fork's state by 1e-9, and
+runs both forward. Each tick is stored, so the divergence between the two
+runs is computed by joining their histories. The code blocks below form one
+script.
 
 ### State is components
 
@@ -48,8 +51,8 @@ class Node(Component):
     x: float = 0.5
 ```
 
-Components are typed state. Fields become Arrow columns; entities that share
-a component set share a table.
+A component is a typed bundle of state. Each field becomes an Arrow column,
+and entities with the same set of components are stored in the same table.
 
 ### Behavior is processors
 
@@ -62,8 +65,8 @@ class LogisticMap(AsyncProcessor):
         return df.with_column("node__x", col("node__r") * x * (1.0 - x))
 ```
 
-A processor is one DataFrame transform, applied every tick to every entity
-that has the declared components.
+A processor declares the components it needs and transforms every matching
+entity as one DataFrame. The world applies it on every tick.
 
 ### Agents are state plus behavior
 
@@ -86,9 +89,9 @@ class Review(AsyncProcessor):
         return df.with_column("analyst__verdict", prompt(ask, model="gpt-5-mini"))
 ```
 
-An agent is a component for its state and a processor for its behavior. The
-model call is a columnar expression; its output persists like any other
-state.
+An agent is built from the same two pieces: a component to hold its state
+and a processor for its behavior. Here the processor's transform is a model
+call, and the response is stored like any other column.
 
 ### A counterfactual is a join
 
@@ -107,10 +110,11 @@ async def divergence(prime, fork, since: int) -> list[dict]:
     )
 ```
 
-Every tick persists as immutable rows, and a fork inherits its source's
-history. Comparing two runs is a query, not a re-run. An update persists
-before processors resume, so the fork writes one tick behind its source; its
-ticks shift by one in the join.
+Both worlds keep every tick as immutable rows, and the fork also inherits
+the history from before the split, so comparing the two runs is an ordinary
+query. Note the one-tick shift: an update persists first and processors
+resume on the next tick, so the fork trails its source by one tick in the
+join.
 
 ### A world composes them
 
@@ -149,11 +153,11 @@ asyncio.run(main())
 t12: 1e-09  t18: 3e-08  t24: 1e-06  t30: 3e-04  t36: 2e-02
 ```
 
-The gap doubles each tick — the map's Lyapunov exponent, ln 2, read from the
-ledger. Without `OPENAI_API_KEY` the script prints the divergence and skips
-the agent.
+The gap roughly doubles each tick, matching the map's Lyapunov exponent of
+ln 2. Without `OPENAI_API_KEY` the script skips the agent stage and only
+prints the divergence.
 [`examples/02_fork_counterfactual.py`](examples/02_fork_counterfactual.py)
-runs three regimes;
+runs the same comparison across three regimes, and
 [`examples/05_llm_agents.py`](examples/05_llm_agents.py) shows richer agent
 patterns.
 
