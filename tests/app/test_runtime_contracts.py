@@ -430,6 +430,13 @@ class TestVendorNeutralObservability:
         from archetype import _obs
 
         monkeypatch.setattr(_obs, "_configured", False)
+        # Exercise first-host selection even when another test installed the
+        # process-global provider earlier in this xdist worker.
+        monkeypatch.setattr(
+            _obs.trace,
+            "get_tracer_provider",
+            _obs.trace.ProxyTracerProvider,
+        )
         monkeypatch.setenv("LOGFIRE_SEND_TO_LOGFIRE", "1")
         monkeypatch.delenv("ARCHETYPE_LOG", raising=False)
 
