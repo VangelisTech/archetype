@@ -127,7 +127,6 @@ _EXPECTED_TASK_IDS = frozenset(case.task_id for case in SPEC_CASES)
 _RUNTIME_TYPE_ONLY_APP_IMPORTS = frozenset(
     {
         "archetype.app.evaluation.interfaces",
-        "archetype.app.evaluation.models",
         "archetype.app.research.contracts",
     }
 )
@@ -658,8 +657,8 @@ def task_receipt_authority_firewall() -> list[GraderResult]:
     receipt/artifact component may name an authority decision. A PASS means one
     grader passed under one pinned contract — the layer above owns meaning.
     """
-    from archetype.app.evaluation.models import EvalReceipt
     from archetype.artifacts.components import ArtifactMeta, AssetRef
+    from archetype.evaluation.components import EvalReceipt
 
     forbidden = {
         "accepted",

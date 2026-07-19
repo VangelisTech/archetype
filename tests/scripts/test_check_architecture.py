@@ -308,6 +308,35 @@ allowed_families = []
     }
 
 
+def test_evaluation_family_scope_rejects_synthetic_reverse_app_dependency(
+    tmp_path: Path,
+) -> None:
+    """#557 acceptance: an evaluation-family module importing app authority fails."""
+    contracts = tmp_path / "src" / "archetype" / "evaluation" / "contracts.py"
+    contracts.parent.mkdir(parents=True)
+    contracts.write_text(
+        "from archetype.app.evaluation.service import EvaluationService\n",
+        encoding="utf-8",
+    )
+    rules = """
+
+[[top_level_family_rule]]
+name = "evaluation-domain-family"
+consumer = "archetype.evaluation"
+allowed_families = []
+"""
+
+    result = checker.audit_repository(
+        _write_family_policy(tmp_path, rules=rules),
+        repo_root=tmp_path,
+    )
+
+    assert not result.policy_errors
+    assert {(violation.rule, violation.target) for violation in result.violations} == {
+        ("top_level_family_outward_dependency", "archetype.app.evaluation.service"),
+    }
+
+
 def test_root_package_and_facade_imports_match_explicit_forbidden_imports(
     tmp_path: Path,
 ) -> None:

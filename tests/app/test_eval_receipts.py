@@ -19,16 +19,12 @@ import pytest
 from uuid_utils import uuid7
 
 from archetype.app.container import ServiceContainer
-from archetype.app.evaluation.models import (
-    EvalReceipt,
-    GraderContract,
-    Outcome,
-    subject_digest,
-)
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.storage.catalog import ClaimConflictError, SqliteControlCatalog, claim_scope_key
 from archetype.core.component import Component
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
+from archetype.evaluation.components import EvalReceipt
+from archetype.evaluation.contracts import GraderContract, Outcome, subject_digest
 
 pytestmark = [
     pytest.mark.asyncio,

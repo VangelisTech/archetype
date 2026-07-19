@@ -201,9 +201,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "CandidateContext": ("archetype.app.research.contracts", "CandidateContext"),
     "EvaluationResult": ("archetype.app.research.contracts", "EvaluationResult"),
     # Durable evaluation types
-    "Outcome": ("archetype.app.evaluation.models", "Outcome"),
-    "GraderContract": ("archetype.app.evaluation.models", "GraderContract"),
-    "EvalReceipt": ("archetype.app.evaluation.models", "EvalReceipt"),
+    "Outcome": ("archetype.evaluation.contracts", "Outcome"),
+    "GraderContract": ("archetype.evaluation.contracts", "GraderContract"),
+    "EvalReceipt": ("archetype.evaluation.components", "EvalReceipt"),
 }
 
 

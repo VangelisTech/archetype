@@ -112,7 +112,7 @@ def test_runtime_gate_rejects_concrete_service_imports_even_when_type_only(
         "    import archetype.app.evaluation.interfaces\n",
         "from typing import TYPE_CHECKING\n"
         "if TYPE_CHECKING:\n"
-        "    from archetype.app.evaluation.models import EvaluationResult\n",
+        "    from archetype.app.research.contracts import AutoResearchConfig\n",
     ],
 )
 def test_runtime_gate_allows_declared_contract_imports_under_type_checking(

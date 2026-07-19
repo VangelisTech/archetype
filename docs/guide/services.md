@@ -143,5 +143,6 @@ FastAPI consumes `iCommandGateway`; the CLI remains an HTTP client.
 - artifacts: `src/archetype/app/artifacts/`
 - artifact domain contracts and schemas: `src/archetype/artifacts/`
 - evaluation: `src/archetype/app/evaluation/`
+- evaluation domain contracts and receipt schema: `src/archetype/evaluation/`
 - research: `src/archetype/app/research/`
 - audit: `src/archetype/app/audit/`

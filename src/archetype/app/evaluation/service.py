@@ -33,17 +33,17 @@ from uuid_utils import UUID
 
 from archetype.app.artifacts.interfaces import iArtifactService
 from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
-from archetype.app.evaluation.models import (
-    EvalReceipt,
+from archetype.app.models import EpisodeResult
+from archetype.app.query.interfaces import iQueryService
+from archetype.core.component import Component
+from archetype.core.config import StorageConfig
+from archetype.evaluation.components import EvalReceipt
+from archetype.evaluation.contracts import (
     GraderContract,
     Outcome,
     evaluation_identity_digest,
     subject_digest,
 )
-from archetype.app.models import EpisodeResult
-from archetype.app.query.interfaces import iQueryService
-from archetype.core.component import Component
-from archetype.core.config import StorageConfig
 
 
 class EvaluationService:

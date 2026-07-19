@@ -260,10 +260,12 @@ is explicit and is not inferred from either side of the annotation.
 The artifacts family completed this migration under #558: `ArtifactMeta` and
 `AssetRef` live in `archetype.artifacts.components`, the typed-table and
 content-addressing contracts live in `archetype.artifacts.contracts`, and the
-bundle value contracts live in `archetype.artifacts.bundles`. Current paths
+bundle value contracts live in `archetype.artifacts.bundles`. The evaluation
+family completed it under #557: `EvalReceipt` lives in
+`archetype.evaluation.components`, and the grading value contracts and
+identity digests live in `archetype.evaluation.contracts`. Current paths
 that predate this rule are migration state, not alternate ownership:
 
-- evaluation receipt Components and value contracts move under #557;
 - research ledger Components and runner imports move under #585, trajectory
   recorder imports under #586, and physical-AI rollout/sweep orchestration
   under #589, as adjudicated by #561; and
