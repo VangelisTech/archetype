@@ -1631,11 +1631,10 @@ class _SourceAnalyzer(ast.NodeVisitor):
             "logging.config.stopListening",
         }:
             return "logging_configuration"
-        receiver = (
-            _resolved_name(node.func.value, self.bindings)
-            if isinstance(node.func, ast.Attribute)
-            else ""
-        )
+        receiver_node = node.func.value if isinstance(node.func, ast.Attribute) else None
+        receiver = _resolved_name(receiver_node, self.bindings)
+        if not receiver and isinstance(receiver_node, ast.Call):
+            receiver = _assignment_binding(receiver_node, self.bindings)
         if tail in {
             "addFilter",
             "removeFilter",

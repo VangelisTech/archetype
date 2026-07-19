@@ -1237,19 +1237,26 @@ def sibling() -> None:
     _assert_rejected(_audit(tmp_path))
 
 
-def test_obs_host_adapter_can_register_logging_configuration(tmp_path: Path) -> None:
-    source = """
+@pytest.mark.parametrize("method", ["addFilter", "removeFilter"])
+def test_obs_host_adapter_can_register_logging_configuration(
+    tmp_path: Path,
+    method: str,
+) -> None:
+    source = f"""
 from __future__ import annotations
 
 def approved() -> None:
     import logging
-    logging.getLogger("dependency").addFilter(logging.Filter())
+    logging.getLogger("dependency").{method}(logging.Filter())
 """
+    manifests = _write_fixture(tmp_path, hosts=HOSTS, obs=OBS_VOCABULARY + source)
+    _assert_rejected(_audit(tmp_path))
+
     hosts = _with_host(
         "archetype._obs.approved",
         "logging_configuration",
     )
-    _write_fixture(tmp_path, hosts=hosts, obs=OBS_VOCABULARY + source)
+    (manifests / "hosts.toml").write_text(dedent(hosts).lstrip(), encoding="utf-8")
 
     assert _audit(tmp_path).ok
 
