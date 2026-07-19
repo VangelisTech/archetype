@@ -14,7 +14,10 @@ from archetype.app.storage.catalog import (
     AttemptClaimConflictError,
     AttemptClaimStaleError,
     CommandAdmission,
+    RecoverySweepStaleError,
     artifact_publication_key,
+    recovery_exception_key,
+    recovery_sweep_key,
 )
 from archetype.app.storage.remote_catalog import RemoteControlCatalog
 from archetype.app.storage.service import StorageService
@@ -63,6 +66,139 @@ def _artifact_protocol_response() -> httpx.Response:
             ],
         },
     )
+
+
+def _recovery_protocol_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "status": "active",
+            "catalog_protocol_version": 5,
+            "capabilities": ["fleet_recovery_v1"],
+        },
+    )
+
+
+_RECOVERY_CURSOR = "f" * 64
+_RECOVERY_STORAGE_FINGERPRINT = "a" * 64
+_RECOVERY_WORLD_ID = "world-1"
+_RECOVERY_KIND = "mission_model_recovery"
+_RECOVERY_SUBJECT_KEY = "c" * 64
+_RECOVERY_SWEEP_KEY = recovery_sweep_key(
+    _RECOVERY_STORAGE_FINGERPRINT,
+    _RECOVERY_WORLD_ID,
+    _RECOVERY_KIND,
+)
+_RECOVERY_EXCEPTION_KEY = recovery_exception_key(_RECOVERY_SWEEP_KEY, _RECOVERY_SUBJECT_KEY)
+
+
+def _world_discovery_row(world_id: str, **overrides):
+    row = {
+        "world_id": world_id,
+        "name": None,
+        "run_id": None,
+        "parent_world_id": None,
+        "status": "active",
+        "tick_head": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def _recovery_sweep_row(**overrides):
+    storage_fingerprint = overrides.get("storage_fingerprint", _RECOVERY_STORAGE_FINGERPRINT)
+    world_id = overrides.get("world_id", _RECOVERY_WORLD_ID)
+    kind = overrides.get("kind", _RECOVERY_KIND)
+    status = overrides.get("status", "leased")
+    row = {
+        "sweep_key": recovery_sweep_key(storage_fingerprint, world_id, kind),
+        "storage_fingerprint": storage_fingerprint,
+        "world_id": world_id,
+        "kind": kind,
+        "status": status,
+        "cursor": _RECOVERY_CURSOR,
+        "cycle": 1,
+        "claimant": "worker-1",
+        "lease_expires_at_ms": 1_000_100,
+        "fence_epoch": 1,
+        "active_subject_key": "c" * 64,
+        "consecutive_failures": 0,
+        "max_consecutive_failures": 3,
+        "next_due_at_ms": 1_000_000,
+        "last_error_code": "",
+        "last_error_detail": "",
+        "created_at_ms": 999_000,
+        "updated_at_ms": 1_000_000,
+        "paused_at_ms": 1_000_000 if status == "paused" else None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _recovery_exception_row(**overrides):
+    storage_fingerprint = overrides.get("storage_fingerprint", _RECOVERY_STORAGE_FINGERPRINT)
+    world_id = overrides.get("world_id", _RECOVERY_WORLD_ID)
+    kind = overrides.get("kind", _RECOVERY_KIND)
+    subject_key = overrides.get("subject_key", _RECOVERY_SUBJECT_KEY)
+    sweep_key = overrides.get("sweep_key", recovery_sweep_key(storage_fingerprint, world_id, kind))
+    status = overrides.get("status", "retry_wait")
+    row = {
+        "exception_key": recovery_exception_key(sweep_key, subject_key),
+        "sweep_key": sweep_key,
+        "storage_fingerprint": storage_fingerprint,
+        "world_id": world_id,
+        "kind": kind,
+        "subject_key": subject_key,
+        "authority_key": "e" * 64,
+        "status": status,
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "retry_at_ms": 1_000_020,
+        "last_error_code": "handler_failed",
+        "last_error_detail": "provider timeout",
+        "created_at_ms": 1_000_000,
+        "updated_at_ms": 1_000_000,
+        "resolved_at_ms": 1_000_000 if status == "resolved" else None,
+        "dead_lettered_at_ms": 1_000_000 if status == "dead_letter" else None,
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("decoder", "row_factory", "identity_field"),
+    [
+        (
+            _remote_catalog._recovery_sweep_from_json,
+            _recovery_sweep_row,
+            "sweep_key",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row,
+            "exception_key",
+        ),
+    ],
+)
+async def test_remote_recovery_decoders_require_exact_response_fields(
+    decoder, row_factory, identity_field
+):
+    exact = row_factory()
+    assert getattr(decoder("world-1", exact), identity_field) == exact[identity_field]
+
+    missing = dict(exact)
+    missing.pop(identity_field)
+    with pytest.raises(
+        RuntimeError,
+        match=rf"invalid field set: missing=\['{identity_field}'\], unexpected=\[\]",
+    ):
+        decoder("world-1", missing)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"invalid field set: missing=\[\], unexpected=\['future_field'\]",
+    ):
+        decoder("world-1", {**exact, "future_field": "untrusted"})
 
 
 async def test_remote_catalog_configuration_requires_token(monkeypatch):
@@ -1256,5 +1392,900 @@ async def test_artifact_mutation_v2_route_404_fails_closed_after_probe():
             "/ns/test/w/world-1/status",
             "/ns/test/w/world-1/artifact-publications/publication-1/complete-v2",
         ]
+    finally:
+        await catalog.close()
+
+
+async def test_remote_world_discovery_page_encodes_cursor_and_limit():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            _recovery_protocol_response(),
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "world_id": "world/2",
+                        "name": "alpha",
+                        "run_id": "run-1",
+                        "parent_world_id": None,
+                        "status": "destroyed",
+                        "tick_head": 2,
+                    }
+                ],
+            ),
+        ],
+        requests,
+    )
+    try:
+        page = await catalog.list_worlds_page(after_world_id="world/1", limit=7)
+        assert [record.world_id for record in page] == ["world/2"]
+        assert page[0].status == "destroyed"
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/__fleet_recovery_protocol__/status",
+            "/ns/test/worlds",
+        ]
+        assert dict(requests[1].url.params) == {
+            "after_world_id": "world/1",
+            "limit": "7",
+        }
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("rows", "after_world_id", "limit", "message"),
+    [
+        (
+            [
+                {"world_id": "world-1", "status": "active"},
+                {"world_id": "world-2", "status": "active"},
+            ],
+            "",
+            1,
+            "page size",
+        ),
+        (
+            [
+                _world_discovery_row("world-2"),
+                _world_discovery_row("world-1"),
+            ],
+            "",
+            2,
+            "unordered",
+        ),
+        (
+            [_world_discovery_row("world-1")],
+            "world-1",
+            2,
+            "out-of-cursor",
+        ),
+    ],
+)
+async def test_remote_world_discovery_rejects_untrusted_pages(rows, after_world_id, limit, message):
+    catalog = await _catalog_with([_recovery_protocol_response(), httpx.Response(200, json=rows)])
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await catalog.list_worlds_page(
+                after_world_id=after_world_id,
+                limit=limit,
+            )
+    finally:
+        await catalog.close()
+
+
+async def test_remote_world_discovery_requires_fleet_capability_before_read():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                404,
+                json={
+                    "error": "not_found",
+                    "catalog_protocol_version": 4,
+                    "capabilities": [],
+                },
+            )
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="fleet recovery v1"):
+            await catalog.list_worlds_page(limit=10)
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/__fleet_recovery_protocol__/status"
+        ]
+    finally:
+        await catalog.close()
+
+
+async def test_remote_recovery_transport_is_versioned_typed_and_scoped():
+    requests: list[httpx.Request] = []
+    created = _recovery_sweep_row(
+        status="idle",
+        cursor="",
+        cycle=0,
+        claimant="",
+        lease_expires_at_ms=0,
+        fence_epoch=0,
+        active_subject_key="",
+    )
+    leased = _recovery_sweep_row()
+    checkpointed = _recovery_sweep_row(cursor=_RECOVERY_CURSOR)
+    exception = _recovery_exception_row()
+    catalog = await _catalog_with(
+        [
+            _recovery_protocol_response(),
+            httpx.Response(200, json=created),
+            _recovery_protocol_response(),
+            httpx.Response(200, json={"outcome": "acquired", "sweep": leased}),
+            _recovery_protocol_response(),
+            httpx.Response(200, json=checkpointed),
+            _recovery_protocol_response(),
+            httpx.Response(200, json=exception),
+            _recovery_protocol_response(),
+            httpx.Response(200, json=exception),
+            _recovery_protocol_response(),
+            httpx.Response(200, json=[exception]),
+        ],
+        requests,
+    )
+    try:
+        ensured = await catalog.ensure_recovery_sweep(
+            "a" * 64,
+            "world-1",
+            "mission_model_recovery",
+            max_consecutive_failures=3,
+        )
+        outcome, acquired = await catalog.lease_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            lease_ms=100,
+        )
+        saved = await catalog.checkpoint_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            acquired.fence_epoch,
+            cursor=_RECOVERY_CURSOR,
+            active_subject_key="c" * 64,
+        )
+        retried = await catalog.retry_recovery_exception(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            acquired.fence_epoch,
+            subject_key="c" * 64,
+            authority_key="e" * 64,
+            expected_attempt_count=0,
+            error_code="handler_failed",
+            error_detail="provider timeout",
+            retry_delay_ms=20,
+            max_attempts=3,
+        )
+        fetched = await catalog.get_recovery_exception(
+            "world-1", "mission_model_recovery", retried.exception_key
+        )
+        due = await catalog.list_recovery_exceptions(
+            "world-1",
+            kind="mission_model_recovery",
+            status="retry_wait",
+            due_only=True,
+            limit=7,
+        )
+
+        assert ensured.status == "idle"
+        assert outcome == "acquired" and acquired.fence_epoch == 1
+        assert saved.cursor == _RECOVERY_CURSOR
+        assert fetched == retried
+        assert due == [retried]
+        assert [request.url.path for request in requests] == [
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/recovery/sweeps/ensure-v1",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/recovery/sweeps/lease-v1",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/recovery/sweeps/checkpoint-v1",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/recovery/exceptions/retry-v1",
+            "/ns/test/w/world-1/status",
+            f"/ns/test/w/world-1/recovery/exceptions/{_RECOVERY_EXCEPTION_KEY}",
+            "/ns/test/w/world-1/status",
+            "/ns/test/w/world-1/recovery/exceptions",
+        ]
+        assert dict(requests[-1].url.params) == {
+            "limit": "7",
+            "kind": "mission_model_recovery",
+            "status": "retry_wait",
+            "due_only": "1",
+        }
+        retry_payload = json.loads(requests[7].content)
+        assert retry_payload["expected_attempt_count"] == 0
+        assert retry_payload["subject_key"] == "c" * 64
+    finally:
+        await catalog.close()
+
+
+async def test_remote_recovery_capability_and_stale_fence_fail_closed():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "status": "active",
+                    "catalog_protocol_version": 4,
+                    "capabilities": [],
+                },
+            )
+        ],
+        requests,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="fleet recovery v1"):
+            await catalog.lease_recovery_sweep(
+                "world-1", "mission_model_recovery", "worker", lease_ms=100
+            )
+        assert [request.url.path for request in requests] == ["/ns/test/w/world-1/status"]
+    finally:
+        await catalog.close()
+
+    validation_requests: list[httpx.Request] = []
+    validation_catalog = await _catalog_with([], validation_requests)
+    try:
+        with pytest.raises(ValueError, match="lowercase SHA-256"):
+            await validation_catalog.checkpoint_recovery_sweep(
+                "world-1",
+                "mission_model_recovery",
+                "worker",
+                1,
+                cursor="raw-page-token",
+            )
+        assert validation_requests == []
+    finally:
+        await validation_catalog.close()
+
+    stale_catalog = await _catalog_with(
+        [
+            _recovery_protocol_response(),
+            httpx.Response(
+                412,
+                json={
+                    "error": "recovery_sweep_stale",
+                    "message": "lease expired before checkpoint",
+                },
+            ),
+        ]
+    )
+    try:
+        with pytest.raises(RecoverySweepStaleError, match="lease expired"):
+            await stale_catalog.checkpoint_recovery_sweep(
+                "world-1",
+                "mission_model_recovery",
+                "worker",
+                1,
+                cursor=_RECOVERY_CURSOR,
+            )
+    finally:
+        await stale_catalog.close()
+
+
+async def test_remote_recovery_mutations_reject_transition_target_drift():
+    checkpoint_catalog = await _catalog_with(
+        [
+            _recovery_protocol_response(),
+            httpx.Response(200, json=_recovery_sweep_row(status="paused")),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="outside the transition graph"):
+            await checkpoint_catalog.checkpoint_recovery_sweep(
+                "world-1",
+                "mission_model_recovery",
+                "worker-1",
+                1,
+                cursor=_RECOVERY_CURSOR,
+            )
+    finally:
+        await checkpoint_catalog.close()
+
+    retry_catalog = await _catalog_with(
+        [
+            _recovery_protocol_response(),
+            httpx.Response(200, json=_recovery_exception_row(status="resolved")),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="outside the transition graph"):
+            await retry_catalog.retry_recovery_exception(
+                "world-1",
+                "mission_model_recovery",
+                "worker-1",
+                1,
+                subject_key="c" * 64,
+                authority_key="e" * 64,
+                expected_attempt_count=0,
+                error_code="handler_failed",
+                error_detail="provider timeout",
+                retry_delay_ms=20,
+                max_attempts=3,
+            )
+    finally:
+        await retry_catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("invalid_fence", "error_type"),
+    [
+        (True, TypeError),
+        (1.5, TypeError),
+        ("1", TypeError),
+        (-1, ValueError),
+        (1 << 53, ValueError),
+        (1 << 63, ValueError),
+    ],
+)
+async def test_every_remote_recovery_mutation_rejects_non_portable_fences(
+    invalid_fence, error_type
+):
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    calls = (
+        lambda: catalog.renew_recovery_sweep(
+            "world-1", "artifact_publication", "worker", invalid_fence, lease_ms=100
+        ),
+        lambda: catalog.checkpoint_recovery_sweep(
+            "world-1", "artifact_publication", "worker", invalid_fence, cursor=""
+        ),
+        lambda: catalog.yield_recovery_sweep(
+            "world-1",
+            "artifact_publication",
+            "worker",
+            invalid_fence,
+            next_delay_ms=0,
+        ),
+        lambda: catalog.fail_recovery_sweep(
+            "world-1",
+            "artifact_publication",
+            "worker",
+            invalid_fence,
+            error_code="handler_failed",
+            error_detail="",
+            retry_delay_ms=0,
+        ),
+        lambda: catalog.pause_recovery_sweep(
+            "world-1",
+            "artifact_publication",
+            "worker",
+            invalid_fence,
+            error_code="capability_unavailable",
+            error_detail="",
+        ),
+        lambda: catalog.redrive_recovery_sweep(
+            "world-1",
+            "artifact_publication",
+            expected_fence_epoch=invalid_fence,
+        ),
+        lambda: catalog.retry_recovery_exception(
+            "world-1",
+            "artifact_publication",
+            "worker",
+            invalid_fence,
+            subject_key="c" * 64,
+            authority_key="e" * 64,
+            expected_attempt_count=0,
+            error_code="handler_failed",
+            error_detail="",
+            retry_delay_ms=0,
+            max_attempts=3,
+        ),
+        lambda: catalog.resolve_recovery_exception(
+            "world-1", "artifact_publication", "worker", invalid_fence, "d" * 64
+        ),
+        lambda: catalog.redrive_recovery_exception(
+            "world-1",
+            "artifact_publication",
+            "worker",
+            invalid_fence,
+            "d" * 64,
+            expected_attempt_count=1,
+        ),
+    )
+    try:
+        for call in calls:
+            with pytest.raises(error_type):
+                await call()
+        assert requests == []
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("body", "limit", "message"),
+    [
+        ({"not": "a-list"}, 2, "page size"),
+        ([_recovery_exception_row(), _recovery_exception_row()], 1, "page size"),
+        (
+            sorted(
+                [
+                    _recovery_exception_row(subject_key="1" * 64),
+                    _recovery_exception_row(subject_key="2" * 64),
+                ],
+                key=lambda row: (row["retry_at_ms"], row["exception_key"]),
+                reverse=True,
+            ),
+            2,
+            "strictly ordered",
+        ),
+        ([_recovery_exception_row(exception_key="raw-key")], 2, "invalid exception_key"),
+    ],
+)
+async def test_remote_recovery_exception_lists_reject_untrusted_pages(body, limit, message):
+    catalog = await _catalog_with([_recovery_protocol_response(), httpx.Response(200, json=body)])
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await catalog.list_recovery_exceptions("world-1", limit=limit)
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ([_recovery_sweep_row()] * 8, "closed kind set"),
+        ([_recovery_sweep_row(kind="eighth_recovery_kind")], "invalid kind"),
+        ([_recovery_sweep_row(cycle=1 << 53)], "out-of-range cycle"),
+        (
+            [
+                _recovery_sweep_row(kind="mission_model_recovery"),
+                _recovery_sweep_row(kind="artifact_publication"),
+            ],
+            "strictly ordered",
+        ),
+        ([_recovery_sweep_row(), _recovery_sweep_row()], "duplicate kind"),
+    ],
+)
+async def test_remote_recovery_sweep_lists_reject_untrusted_closed_set(body, message):
+    catalog = await _catalog_with([_recovery_protocol_response(), httpx.Response(200, json=body)])
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await catalog.list_recovery_sweeps("world-1")
+    finally:
+        await catalog.close()
+
+
+async def test_remote_recovery_kind_set_is_closed_before_transport():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    try:
+        with pytest.raises(ValueError, match="unsupported recovery kind"):
+            await catalog.lease_recovery_sweep(
+                "world-1", "eighth_recovery_kind", "worker", lease_ms=100
+            )
+        assert requests == []
+    finally:
+        await catalog.close()
+
+
+async def test_remote_recovery_durable_inputs_require_exact_safe_types():
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([], requests)
+    try:
+        with pytest.raises(ValueError, match="lowercase SHA-256"):
+            await catalog.ensure_recovery_sweep(
+                "a" * 62 + "  ",
+                "world-1",
+                "artifact_publication",
+                max_consecutive_failures=3,
+            )
+        with pytest.raises(TypeError, match="permanent must be a boolean"):
+            await catalog.retry_recovery_exception(
+                "world-1",
+                "artifact_publication",
+                "worker",
+                1,
+                subject_key="c" * 64,
+                authority_key="e" * 64,
+                expected_attempt_count=0,
+                error_code="handler_failed",
+                error_detail="",
+                retry_delay_ms=0,
+                max_attempts=3,
+                permanent=1,
+            )
+        for error_code, error_detail in ((1, ""), ("handler_failed", 1)):
+            with pytest.raises(TypeError, match="must be a string"):
+                await catalog.fail_recovery_sweep(
+                    "world-1",
+                    "artifact_publication",
+                    "worker",
+                    1,
+                    error_code=error_code,
+                    error_detail=error_detail,
+                    retry_delay_ms=0,
+                )
+        assert requests == []
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "message"),
+    [
+        (
+            200,
+            {
+                "status": "active",
+                "catalog_protocol_version": True,
+                "capabilities": ["fleet_recovery_v1"],
+            },
+            "does not support",
+        ),
+        (
+            200,
+            {
+                "status": "active",
+                "catalog_protocol_version": 5,
+                "capabilities": ["fleet_recovery_v1", 1],
+            },
+            "does not support",
+        ),
+        (
+            200,
+            {
+                "status": "active",
+                "catalog_protocol_version": 5,
+                "capabilities": ["fleet_recovery_v1", "fleet_recovery_v1"],
+            },
+            "does not support",
+        ),
+        (
+            200,
+            {
+                "status": "active",
+                "catalog_protocol_version": 5,
+                "capabilities": [],
+            },
+            "does not support",
+        ),
+        (
+            200,
+            {
+                "status": "active",
+                "catalog_protocol_version": 5,
+                "capabilities": ["fleet_recovery_v1"],
+                "future_field": True,
+            },
+            "invalid recovery probe",
+        ),
+        (
+            404,
+            {
+                "error": "different_error",
+                "catalog_protocol_version": 5,
+                "capabilities": ["fleet_recovery_v1"],
+            },
+            "invalid recovery probe",
+        ),
+    ],
+)
+async def test_remote_recovery_probe_is_exact(status_code, body, message):
+    requests: list[httpx.Request] = []
+    catalog = await _catalog_with([httpx.Response(status_code, json=body)], requests)
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await catalog.list_worlds_page(limit=1)
+        assert len(requests) == 1
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda row: row.pop("name"), "invalid field set"),
+        (lambda row: row.update(future_field=True), "invalid field set"),
+        (lambda row: row.update(tick_head=True), "lossy tick_head"),
+        (lambda row: row.update(tick_head=1 << 53), "lossy tick_head"),
+        (lambda row: row.update(name=1), "non-string name"),
+        (lambda row: row.update(status="paused"), "invalid status"),
+        (lambda row: row.update(world_id=1), "invalid world identity"),
+    ],
+)
+async def test_remote_world_discovery_requires_exact_lossless_rows(mutate, message):
+    row = _world_discovery_row("world-1")
+    mutate(row)
+    catalog = await _catalog_with([_recovery_protocol_response(), httpx.Response(200, json=[row])])
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await catalog.list_worlds_page(limit=1)
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"outcome": "acquired", "sweep": _recovery_sweep_row(), "future": True},
+        {"outcome": "acquired"},
+    ],
+)
+async def test_remote_recovery_lease_requires_exact_envelope(body):
+    catalog = await _catalog_with([_recovery_protocol_response(), httpx.Response(200, json=body)])
+    try:
+        with pytest.raises(RuntimeError, match="invalid envelope"):
+            await catalog.lease_recovery_sweep(
+                "world-1", "mission_model_recovery", "worker-1", lease_ms=100
+            )
+    finally:
+        await catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("decoder", "row", "message"),
+    [
+        (
+            _remote_catalog._recovery_sweep_from_json,
+            _recovery_sweep_row(sweep_key="0" * 64),
+            "non-deterministic sweep_key",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row(sweep_key="0" * 64),
+            "non-deterministic sweep_key",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row(exception_key="0" * 64),
+            "non-deterministic exception_key",
+        ),
+    ],
+)
+async def test_remote_recovery_receipts_recompute_deterministic_identity(decoder, row, message):
+    with pytest.raises(RuntimeError, match=message):
+        decoder("world-1", row)
+
+
+@pytest.mark.parametrize(
+    ("decoder", "row", "message"),
+    [
+        (
+            _remote_catalog._recovery_sweep_from_json,
+            _recovery_sweep_row(status="paused", paused_at_ms=None),
+            "paused sweep",
+        ),
+        (
+            _remote_catalog._recovery_sweep_from_json,
+            _recovery_sweep_row(paused_at_ms=1_000_000),
+            "non-paused sweep",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row(resolved_at_ms=1_000_000),
+            "terminal timestamps",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row(status="dead_letter", dead_lettered_at_ms=None),
+            "dead-letter exception",
+        ),
+        (
+            _remote_catalog._recovery_exception_from_json,
+            _recovery_exception_row(status="resolved", resolved_at_ms=None),
+            "no resolved_at_ms",
+        ),
+    ],
+)
+async def test_remote_recovery_receipts_enforce_status_correlated_timestamps(decoder, row, message):
+    with pytest.raises(RuntimeError, match=message):
+        decoder("world-1", row)
+
+
+async def _invoke_recovery_receipt_case(catalog, case):
+    if case == "ensure_policy":
+        return await catalog.ensure_recovery_sweep(
+            _RECOVERY_STORAGE_FINGERPRINT,
+            "world-1",
+            "mission_model_recovery",
+            max_consecutive_failures=3,
+        )
+    if case in {"lease_claimant", "lease_delay"}:
+        return await catalog.lease_recovery_sweep(
+            "world-1", "mission_model_recovery", "worker-1", lease_ms=100
+        )
+    if case == "renew_fence":
+        return await catalog.renew_recovery_sweep(
+            "world-1", "mission_model_recovery", "worker-1", 1, lease_ms=100
+        )
+    if case == "checkpoint_cursor":
+        return await catalog.checkpoint_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            cursor=_RECOVERY_CURSOR,
+            active_subject_key=_RECOVERY_SUBJECT_KEY,
+        )
+    if case == "yield_delay":
+        return await catalog.yield_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            next_delay_ms=20,
+        )
+    if case == "failure_error":
+        return await catalog.fail_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            error_code="handler_failed",
+            error_detail="provider timeout",
+            retry_delay_ms=20,
+        )
+    if case == "pause_error":
+        return await catalog.pause_recovery_sweep(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            error_code="capability_unavailable",
+            error_detail="provider unavailable",
+        )
+    if case == "sweep_redrive_fence":
+        return await catalog.redrive_recovery_sweep(
+            "world-1", "mission_model_recovery", expected_fence_epoch=1
+        )
+    if case in {"retry_subject", "retry_authority", "retry_attempt", "retry_policy"}:
+        return await catalog.retry_recovery_exception(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            subject_key=_RECOVERY_SUBJECT_KEY,
+            authority_key="e" * 64,
+            expected_attempt_count=0,
+            error_code="handler_failed",
+            error_detail="provider timeout",
+            retry_delay_ms=20,
+            max_attempts=3,
+        )
+    if case == "resolve_key":
+        return await catalog.resolve_recovery_exception(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            _RECOVERY_EXCEPTION_KEY,
+        )
+    if case == "exception_redrive_attempt":
+        return await catalog.redrive_recovery_exception(
+            "world-1",
+            "mission_model_recovery",
+            "worker-1",
+            1,
+            _RECOVERY_EXCEPTION_KEY,
+            expected_attempt_count=1,
+        )
+    if case == "lookup_key":
+        return await catalog.get_recovery_exception(
+            "world-1", "mission_model_recovery", _RECOVERY_EXCEPTION_KEY
+        )
+    raise AssertionError(f"unknown receipt case {case}")
+
+
+@pytest.mark.parametrize(
+    ("case", "receipt", "message"),
+    [
+        (
+            "ensure_policy",
+            _recovery_sweep_row(max_consecutive_failures=4),
+            "different max_consecutive_failures",
+        ),
+        (
+            "lease_claimant",
+            {"outcome": "acquired", "sweep": _recovery_sweep_row(claimant="other")},
+            "different claimant",
+        ),
+        (
+            "lease_delay",
+            {
+                "outcome": "acquired",
+                "sweep": _recovery_sweep_row(lease_expires_at_ms=1_000_101),
+            },
+            "different delay",
+        ),
+        ("renew_fence", _recovery_sweep_row(fence_epoch=2), "different fence_epoch"),
+        ("checkpoint_cursor", _recovery_sweep_row(cursor=""), "different cursor"),
+        (
+            "yield_delay",
+            _recovery_sweep_row(
+                status="idle",
+                lease_expires_at_ms=0,
+                active_subject_key="",
+                next_due_at_ms=1_000_021,
+            ),
+            "different delay",
+        ),
+        (
+            "failure_error",
+            _recovery_sweep_row(
+                status="retry_wait",
+                lease_expires_at_ms=0,
+                next_due_at_ms=1_000_020,
+                last_error_code="handler_failed",
+                last_error_detail="different error",
+            ),
+            "different last_error_detail",
+        ),
+        (
+            "pause_error",
+            _recovery_sweep_row(
+                status="paused",
+                lease_expires_at_ms=0,
+                last_error_code="capability_unavailable",
+                last_error_detail="different error",
+            ),
+            "different last_error_detail",
+        ),
+        (
+            "sweep_redrive_fence",
+            _recovery_sweep_row(
+                status="idle",
+                claimant="",
+                lease_expires_at_ms=0,
+                fence_epoch=3,
+                active_subject_key="",
+                next_due_at_ms=1_000_000,
+            ),
+            "different fence_epoch",
+        ),
+        (
+            "retry_subject",
+            _recovery_exception_row(subject_key="1" * 64),
+            "different subject_key",
+        ),
+        (
+            "retry_authority",
+            _recovery_exception_row(authority_key="0" * 64),
+            "different authority_key",
+        ),
+        (
+            "retry_attempt",
+            _recovery_exception_row(attempt_count=2),
+            "different attempt_count",
+        ),
+        (
+            "retry_policy",
+            _recovery_exception_row(max_attempts=4),
+            "different max_attempts",
+        ),
+        (
+            "resolve_key",
+            _recovery_exception_row(subject_key="1" * 64, status="resolved"),
+            "different exception_key",
+        ),
+        (
+            "exception_redrive_attempt",
+            _recovery_exception_row(attempt_count=2),
+            "different attempt_count",
+        ),
+        (
+            "lookup_key",
+            _recovery_exception_row(subject_key="1" * 64),
+            "different exception_key",
+        ),
+    ],
+)
+async def test_remote_recovery_mutation_receipts_bind_to_request(case, receipt, message):
+    response_json = receipt
+    catalog = await _catalog_with(
+        [_recovery_protocol_response(), httpx.Response(200, json=response_json)]
+    )
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            await _invoke_recovery_receipt_case(catalog, case)
     finally:
         await catalog.close()

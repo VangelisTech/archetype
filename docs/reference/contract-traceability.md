@@ -39,6 +39,7 @@ machine authority; this page is its review surface.
 | `missions.transition.evidence_gated` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 2. Typed mission/task/attempt transition graph | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `missions.attempt.claim_fenced` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Durable pre-execution claim and recovery | pytest: 6; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `missions.attempt.indexed_finalization` | `missions` | high | [docs/guide/agent-missions.md](../guide/agent-missions.md) — 5. Durable pre-execution claim and recovery | pytest: 9; static: 2; eval: 1 | `pr`, `main`, `release` |
+| `recovery.control.fenced` | `recovery` | high | [docs/guide/fleet-recovery.md](../guide/fleet-recovery.md) — 4. Catalog clock, leases, and fencing | pytest: 5; static: 1 | `pr`, `main`, `release` |
 | `security.redaction.pre_durability` | `redaction` | high | [docs/guide/artifact-finalization.md](../guide/artifact-finalization.md) — 4. Pre-durability secret redaction | pytest: 12; static: 2; eval: 1 | `pr`, `main`, `release` |
 
 Profile membership states where a contract must be enforced. Eval suite

@@ -101,6 +101,7 @@ nav:
       - Sandbox Execution: guide/sandbox-execution.md
       - World Lifecycle: guide/world-lifecycle.md
       - Durable Discovery: guide/durable-discovery.md
+      - Fleet Recovery Catalog Authority: guide/fleet-recovery.md
       - Atomic Visibility: guide/atomic-visibility.md
       - Artifacts: guide/artifacts.md
       - Artifact Finalization: guide/artifact-finalization.md

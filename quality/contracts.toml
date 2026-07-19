@@ -478,6 +478,24 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "recovery.control.fenced"
+source = "docs/guide/fleet-recovery.md"
+section = "4. Catalog clock, leases, and fencing"
+owner = "recovery"
+risk = "high"
+pytest = [
+  "tests/app/test_recovery_transition_authority.py",
+  "tests/app/test_recovery_catalog.py",
+  "tests/app/test_remote_catalog_client.py",
+  "tests/app/test_remote_catalog_parity.py",
+  "tests/app/test_atomic_visibility.py",
+]
+static = ["scripts/check_architecture.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "security.redaction.pre_durability"
 source = "docs/guide/artifact-finalization.md"
 section = "4. Pre-durability secret redaction"

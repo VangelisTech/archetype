@@ -23,6 +23,7 @@ The current contract set is split across design docs and executable tests.
 | [Execution Hierarchy](execution-hierarchy.md) | Step/run/episode/rollout | Simulation levels and rollout fork semantics. |
 | [World Lifecycle](world-lifecycle.md) | Create/fork/destroy | Append-only lifecycle, info-class downgrade, fork sharing/copy rules. |
 | [Durable Discovery](durable-discovery.md) | Control catalog and cold reads | Catalog authority, `discover_worlds`/`open_world_readonly`, fail-closed cold queries. |
+| [Fleet Recovery Catalog Authority](fleet-recovery.md) | Storage-scoped recovery scheduling | Durable world paging, catalog-clock leases, fencing, recurring sweep state, and sparse exception evidence; bounded service and host orchestration are outside this substrate. |
 | [Atomic Visibility](atomic-visibility.md) | Tick commit identity | Manifest-published ticks, commit tokens, writer fencing, epoch-0 legacy reads. |
 | [Artifacts](artifacts.md) | External-artifact ingestion | Typed Iceberg tables, Daft file processors, content identity, and claim-backed receipt compatibility. |
 | [Artifact Finalization](artifact-finalization.md) | Sandbox evidence durability | Provider checkpoints, portable bundle publication/replay, pre-durability redaction, indexing, and retention. |
@@ -88,6 +89,8 @@ This specification covers:
 - idempotency expectations and non-idempotent boundaries
 - typed external artifacts and dataset/evaluation identity
 - typed coding-agent mission transitions and completed-attempt evidence gates
+- storage-scoped fleet-recovery discovery, scheduling leases, fencing, and
+  exception evidence
 
 This specification does not authorize direct edits to `src/archetype/core/`.
 It defines the behavior that higher layers must preserve and that future
