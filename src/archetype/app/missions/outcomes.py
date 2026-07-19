@@ -15,7 +15,7 @@ from archetype.app.missions.models import (
     MissionAttemptRequest,
     attempt_invocation_fingerprint,
 )
-from archetype.app.missions.transitions import (
+from archetype.missions.transitions import (
     AttemptStatus,
     CheckpointStatus,
     FinalizationPhase,

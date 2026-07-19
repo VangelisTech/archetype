@@ -2,8 +2,9 @@
 
 **Document type:** Normative.
 
-**Scope:** Provider-neutral mission, task, and completed-attempt state under
-`src/archetype/app/missions/`.
+**Scope:** Reusable mission ECS state and pure transitions under
+`src/archetype/missions/`, plus durable attempt authority and orchestration
+under `src/archetype/app/missions/`.
 
 This specification owns when a coding task may advance. Sandbox execution,
 provider credentials, artifact publication, and repository automation are
@@ -11,7 +12,17 @@ separate capabilities and cannot bypass this authority.
 
 ## 1. Ownership and persistence boundary
 
-The `missions` family owns:
+The top-level `archetype.missions` domain owns:
+
+- the persistent `Mission`, `TaskGate`, `Attempt`, `Checkpoint`,
+  `Finalization`, `Commit`, `Evidence`, and `FrictionLog` Components;
+- their component-local validators and serialization contracts;
+- mission, task, completed-attempt, checkpoint, and finalization value enums;
+- the pure mission/task/attempt world-transition graph and deterministic
+  validation; and
+- no claim, storage, authorization, provider, or orchestration authority.
+
+The internal `archetype.app.missions` family owns:
 
 - immutable task-plan parsing;
 - deterministic task and attempt identity;
@@ -19,13 +30,15 @@ The `missions` family owns:
 - fail-closed recovery decisions and claim-fenced attempt orchestration;
 - retry and exhaustion policy;
 - validator, commit, checkpoint, and finalization gates;
-- the typed mission and attempt-claim transition graphs; and
-- terminal mission state.
+- the typed attempt-claim transition graph; and
+- application DTOs, errors, ports, and concrete services.
 
 It does not own a provider client, live sandbox handle, credential, world
-lifecycle, or ingress authorization decision. `MissionService` is a pure
-transformer over one persisted ECS row. A world processor may call it, but the
-world tick remains the commit boundary for the returned row.
+lifecycle, or ingress authorization decision. `MissionService` remains an
+app-internal pure transformer over one persisted ECS row and consumes the
+top-level mission transition domain. This extraction does not promote or
+rename that service. A world processor may call it, but the world tick remains
+the commit boundary for the returned row.
 
 `MissionAttemptClaimService` is the separate control-plane authority used
 before external provider I/O. It persists through the storage family's
@@ -43,6 +56,9 @@ settlement operations. For an indexed gate it also consumes the mission-owned
 artifact family without giving either family authority over the other's state
 machine.
 
+The Components and world-state types above are exported from
+`archetype.missions` and defined once in `components.py` and `transitions.py`.
+They are not re-exported from `archetype.app.missions` or the `archetype` root.
 The component columns are strings because LanceDB's Pydantic-to-Arrow bridge
 does not support Python enum fields. That storage constraint does not make
 states free-form: `MissionStatus`, `TaskStatus`, `AttemptStatus`,
@@ -546,6 +562,10 @@ lets reconciliation prove a safe result.
 
 ## 6. Executable enforcement
 
+- `tests/missions/test_domain_contracts.py` pins every moved Component's
+  Pydantic and Arrow schema fingerprints, default serialization, single class
+  identity, full legal/illegal transition matrix, deliberate family exports,
+  and app-owned authority boundary.
 - `tests/app/test_mission_transition_authority.py` exhausts every graph edge,
   terminal rejection, validator normalization, stale plan and policy requests,
   evidence gate, retry, and multi-task advancement.
@@ -587,7 +607,9 @@ lets reconciliation prove a safe result.
 - `quality/contracts.toml` registers
   `missions.transition.evidence_gated`, `missions.attempt.claim_fenced`, and
   `missions.attempt.indexed_finalization` as blocking PR contracts.
-- `quality/architecture.toml` limits the claim service to mission-owned models
-  and the storage control catalog, permits only mission-family dependencies in
-  the execution service, and lets the sandbox consume only the immutable fenced
-  authorization and recovery action.
+- `quality/architecture.toml` registers `archetype.missions` as a leaf
+  top-level family, rejects reverse or undeclared family imports, limits the
+  claim service to mission-owned app models and the storage control catalog,
+  permits only mission-family dependencies in the execution service, and lets
+  the sandbox consume only the app-owned immutable fenced authorization and
+  recovery action.

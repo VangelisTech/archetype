@@ -16,7 +16,6 @@ from archetype.app.missions import (
     AttemptClaimAcquireOutcome,
     AttemptClaimStatus,
     AttemptRecoveryAction,
-    AttemptStatus,
     MissionAttemptClaimService,
     MissionService,
     ProviderExecutionCapabilities,
@@ -24,6 +23,7 @@ from archetype.app.missions import (
 )
 from archetype.app.redaction.service import RedactionService
 from archetype.app.storage.catalog import SqliteControlCatalog
+from archetype.missions import AttemptStatus
 from evals.graders import state_check
 from evals.harness import EvalHarness
 from evals.types import GraderResult

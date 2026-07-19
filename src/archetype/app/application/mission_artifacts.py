@@ -23,8 +23,8 @@ from archetype.app.missions.models import (
     MissionArtifactFinalizationExpiredError,
     MissionAttemptRequest,
 )
-from archetype.app.missions.transitions import FinalizationPhase
 from archetype.core.config import StorageConfig
+from archetype.missions.transitions import FinalizationPhase
 
 # field, portable path, kind, recursive, required.  Tuple order is fixed for
 # debuggability; ArtifactBundleRequest canonicalization independently sorts by

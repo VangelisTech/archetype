@@ -24,14 +24,14 @@ from archetype.app.missions.models import (
     MissionArtifactFinalizationExpiredError,
     MissionAttemptRequest,
 )
-from archetype.app.missions.transitions import (
+from archetype.app.redaction import RedactionService
+from archetype.core.config import StorageConfig
+from archetype.missions.transitions import (
     FinalizationPhase,
     MissionStatus,
     MissionTaskState,
     TaskStatus,
 )
-from archetype.app.redaction import RedactionService
-from archetype.core.config import StorageConfig
 
 pytestmark = pytest.mark.contract("missions.attempt.indexed_finalization")
 

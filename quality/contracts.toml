@@ -391,7 +391,10 @@ source = "docs/guide/agent-missions.md"
 section = "2. Typed mission/task/attempt transition graph"
 owner = "missions"
 risk = "high"
-pytest = ["tests/app/test_mission_transition_authority.py"]
+pytest = [
+  "tests/app/test_mission_transition_authority.py",
+  "tests/missions/test_domain_contracts.py",
+]
 static = ["scripts/check_architecture.py"]
 evals = ["agent_mission_transition_authority"]
 benchmarks = []

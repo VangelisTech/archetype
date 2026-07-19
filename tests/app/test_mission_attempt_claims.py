@@ -28,8 +28,6 @@ from archetype.app.missions import (
     AttemptClaimStatus,
     AttemptClaimTransitionGraph,
     AttemptRecoveryAction,
-    AttemptStatus,
-    FinalizationPhase,
     MissionArtifactFinalizationExpiredError,
     MissionAttemptClaimService,
     MissionAttemptExecutionService,
@@ -50,6 +48,7 @@ from archetype.app.storage.catalog import (
     artifact_publication_key,
 )
 from archetype.core.config import StorageConfig, WorldConfig
+from archetype.missions import AttemptStatus, FinalizationPhase
 
 pytestmark = [
     pytest.mark.asyncio,
