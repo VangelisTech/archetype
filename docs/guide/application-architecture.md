@@ -146,6 +146,13 @@ commit, settle a durable outcome, or choose a retry. The owning family's typed
 result and durable record remain authoritative when telemetry is disabled,
 dropped, or failing.
 
+Every callable member of every application-family `Protocol`, wherever that
+protocol is declared inside the family package, has one exact observation
+disposition in `quality/observability/<family>.toml`. The manifest records
+intent without turning telemetry into a dependency or authority edge. See
+[Observability](observability.md#6-family-dispositions) for the complete
+manifest and root/child policy.
+
 ## 5. Core world and application-family ownership
 
 `StorageService` resolves and pools an `iAsyncStore`. `WorldService` owns the
@@ -299,7 +306,7 @@ belongs to the workflow and its validators.
 
 ## 11. Static enforcement
 
-The architecture checker must:
+Together, the repository's architecture and observability checkers must:
 
 - cover every declared source scope and fail if a required scope is empty;
 - enforce outer package and family dependency rules;
@@ -308,7 +315,10 @@ The architecture checker must:
 - reject concrete-service inheritance;
 - reject live-world, container, backend-client, and concrete-service leaks;
 - verify active protocol consumer/implementation mappings;
-- support exact, owned, release-expiring migration exceptions; and
+- confine provider/exporter and logging configuration to explicit process-host
+  callables and require one exact observation disposition for every callable
+  application-family protocol member;
+- support exact, owned migration exceptions with objective expiry conditions;
 - report the forbidden edge, governing rule, and supported alternative.
 
 Representative invalid fixtures prove every rule fires. Passing the current
@@ -325,6 +335,14 @@ services and the container are not top-level exports.
 `quality/architecture.toml` contains the complete allowed family DAG and zero
 migration exceptions. `scripts/check_architecture.py` enforces package
 direction, protocol imports, concrete construction, and concrete inheritance.
+
+Independent manifests under `quality/observability/` declare each family's
+operation dispositions. `scripts/check_observability.py` enforces their exact
+coverage and the vendor-neutral signal/configuration boundary without a live
+collector. It validates root syntax and exclusivity but does not invent
+runtime topology: the three existing gateway decorators remain children, and
+#515 owns coherent ingress roots. The existing footgun reviewer complements
+this deterministic audit with semantic observability review.
 
 `MissionService` remains pure transition authority over persisted row values.
 The same family now owns `MissionAttemptClaimService`, a control-catalog-backed

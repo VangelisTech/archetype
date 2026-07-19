@@ -1,0 +1,362 @@
+version = 1
+owner = "core"
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore._ensure_table"
+target = "log:error:f'Error creating LanceDB table {table_name}: {e}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "unsafe_log_value"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._debug_log"
+target = "log:debug:f'[archetype] {json.dumps(payload)}':sensitive-value"
+owner = "core"
+issue = 530
+reason = "The pre-existing debug diagnostic exports a serialized payload; #530 owns its removal without changing core execution behavior."
+expiry_condition = "Remove when #530 replaces payload export with bounded event categories or removes the diagnostic."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore._ensure_table"
+target = "log:error:f'Error creating LanceDB table {table_name}: {e}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_existing_table_df"
+target = "log:error:'Error reading existing table %s: %s':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_archetype_df"
+target = "log:error:f'Error reading archetype table {table_name}: {e}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.get_archetype_df"
+target = "log:error:f'Error reading archetype table {table_name}: {e}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.append"
+target = "log:info:f'Append skipped (lancedb): archetype={table_id} empty schema':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_lancedb_store.py"
+qualified_scope = "archetype.core.aio.async_lancedb_store.AsyncLancedbStore.append"
+target = "log:info:f'Append skipped (lancedb): archetype={table_id} rows=0':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_store.py"
+qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
+target = "log:info:f'Append skipped (store): archetype={table_id} empty schema':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_store.py"
+qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
+target = "log:error:f'Append collect failed for {table_id}: {e}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_store.py"
+qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
+target = "log:error:f'Append collect failed for {table_id}: {e}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_store.py"
+qualified_scope = "archetype.core.aio.async_store.AsyncStore.append"
+target = "log:info:f'Append skipped (store): archetype={table_id} rows=0':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_system.py"
+qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
+target = "log:debug:f'[archetype] processor_start: {proc_name} (priority={proc_instance.priority}, archetype={archetype_name})':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_system.py"
+qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
+target = "log:debug:f'[archetype] processor_end: {proc_name} (rows_out={row_count})':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_system.py"
+qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
+target = "log:error:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_system.py"
+qualified_scope = "archetype.core.aio.async_system.AsyncSystem.execute"
+target = "log:error:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_updater.py"
+qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
+target = "log:info:f'Update skipped (empty schema): archetype={Archetype.get_name(sig)}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_updater.py"
+qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
+target = "log:info:f'Append committed: archetype={Archetype.get_name(sig)} world_id={world_id} run_id={run_id} tick={tick} duration_ms={duration_ms:.3f}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_updater.py"
+qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
+target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/aio/async_updater.py"
+qualified_scope = "archetype.core.aio.async_updater.AsyncUpdateManager.update"
+target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._move_entity"
+target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration Failed: No entity: {entity_id}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._move_entity"
+target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration Failed: Multiple entities: {entity_id}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/aio/async_world.py"
+qualified_scope = "archetype.core.aio.async_world.AsyncWorld._debug_log"
+target = "log:debug:f'[archetype] {json.dumps(payload)}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/hooks.py"
+qualified_scope = "archetype.core.hooks.HookRegistry.fire"
+target = "log:warning:'Hook %s failed on %s: %s':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/hooks.py"
+qualified_scope = "archetype.core.hooks.SyncHookRegistry.fire"
+target = "log:warning:'Hook %s failed on %s: %s':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/hooks.py"
+qualified_scope = "archetype.core.hooks._fire_detached"
+target = "log:warning:'Detached hook %s failed on %s: %s':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/querier.py"
+qualified_scope = "archetype.core.sync.querier.QueryManager.query_archetype"
+target = "log:info:f'Querying {Archetype.get_name(sig)} with {df.count_rows()} rows':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/system.py"
+qualified_scope = "archetype.core.sync.system.SyncSystem.execute"
+target = "log:exception:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/sync/system.py"
+qualified_scope = "archetype.core.sync.system.SyncSystem.execute"
+target = "log:exception:f'Error processing archetype {sig}: {e} with processor {proc_instance} of type {type(proc_instance)}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/updater.py"
+qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
+target = "log:info:f'Update skipped (empty schema): archetype={Archetype.get_name(sig)}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/updater.py"
+qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
+target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/core/sync/updater.py"
+qualified_scope = "archetype.core.sync.updater.UpdateManager.update"
+target = "log:error:f'Error updating table {Archetype.get_name(sig)}: {e}':exception"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic exports raw exception text or stack details."
+expiry_condition = "Remove when #530 replaces exception content with a bounded error classification."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/world.py"
+qualified_scope = "archetype.core.sync.world.SyncWorld._move_entity"
+target = "log:warning:f'World {self.name} ({self.world_id}): Entity Migration ambiguous: {len(rows)} rows for entity {entity_id} at tick {self.tick - 1}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/world.py"
+qualified_scope = "archetype.core.sync.world.SyncWorld.remove_entity"
+target = "log:warning:f'World {self.name} ({self.world_id}): Entity Removal Failed: No entity: {entity_id}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/world.py"
+qualified_scope = "archetype.core.sync.world.SyncWorld.add_components"
+target = "log:warning:f'add_components: entity {entity_id} not found':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."
+
+[[legacy]]
+rule = "eager_log_interpolation"
+path = "src/archetype/core/sync/world.py"
+qualified_scope = "archetype.core.sync.world.SyncWorld.add_components"
+target = "log:debug:f'add_components: components already in archetype for entity {entity_id}':interpolation"
+owner = "core"
+issue = 530
+reason = "This existing core diagnostic eagerly renders values before stdlib logging handles the record."
+expiry_condition = "Remove when #530 migrates this call to parameterized stdlib logging."

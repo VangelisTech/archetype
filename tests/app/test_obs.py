@@ -94,6 +94,8 @@ def test_invalid_names_and_values_are_safe_noops(monkeypatch):
 
     with _obs.span("dynamic.secret.Bearer-token", tick=True, world_id="not-a-uuid"):
         result = "application-result"
+    with _obs.span("gate.get_world_info"):
+        pass
 
     assert result == "application-result"
     assert exporter.get_finished_spans() == ()
@@ -274,7 +276,7 @@ def test_context_binding_is_nested_safe_and_restored(monkeypatch):
             "archetype.correlation.digest": correlation_digest,
             "archetype.world.id": world_id,
         }
-        with _obs.span("gate.get_world_info"):
+        with _obs.span("gateway.get_world_info"):
             pass
     assert _obs.capture_context() == {}
 
@@ -531,6 +533,8 @@ def test_signal_vocabulary_is_immutable_and_namespaced():
         "archetype.attempt.digest",
         "archetype.idempotency.digest",
     }.isdisjoint(_obs.METRIC_LABEL_KEYS)
+    assert _obs.LEGACY_SPAN_NAMES == frozenset({"world.execute", "world.materialize"})
+    assert dict(_obs.SPAN_NAME_ALIASES) == {}
 
 
 def test_outcome_helper_is_bounded_and_advisory(monkeypatch):

@@ -338,7 +338,7 @@ def test_rendered_no_findings_evidence_is_specific_and_digest_bound():
     rendered = render_evidence(normalized, digest)
 
     assert "no findings" in rendered
-    assert "2 changed file(s), 22 detector categories" in rendered
+    assert "2 changed file(s), 24 detector categories" in rendered
     assert "old.py" in rendered
     assert evidence_marker(HEAD_SHA, 0, digest) in rendered
 
@@ -589,3 +589,13 @@ def test_required_categories_track_the_skill_rulebook():
     other silently changes what the gate enforces — so drift fails here.
     """
     assert _skill_category_slugs() == REQUIRED_CATEGORIES
+
+
+def test_observability_categories_extend_failure_and_unwind_review():
+    assert len(REQUIRED_CATEGORIES) == 24
+    assert REQUIRED_CATEGORIES[-2:] == (
+        "observability-boundary-and-authority",
+        "telemetry-safety-and-cardinality",
+    )
+    assert "fail-open-failure-paths" in REQUIRED_CATEGORIES
+    assert "error-path-unwind" in REQUIRED_CATEGORIES

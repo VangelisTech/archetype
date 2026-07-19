@@ -66,22 +66,14 @@ SPAN_NAMES: Final[frozenset[str]] = frozenset(
 )
 
 # ``world.execute`` and ``world.materialize`` describe legacy lazy-plan phases,
-# not proven execution timing.  #518/#519 own their replacement.  ``gate.*``
-# is normalized until #514 updates and expires the old call sites.
+# not proven execution timing.  #518/#519 own their replacement.
 LEGACY_SPAN_NAMES: Final[frozenset[str]] = frozenset(
     {
-        "gate.create_world",
-        "gate.get_world_info",
         "world.execute",
         "world.materialize",
     }
 )
-SPAN_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "gate.create_world": "gateway.create_world",
-        "gate.get_world_info": "gateway.get_world_info",
-    }
-)
+SPAN_NAME_ALIASES: Final[Mapping[str, str]] = MappingProxyType({})
 
 TRACE_ATTRIBUTE_KEYS: Final[frozenset[str]] = frozenset(
     {

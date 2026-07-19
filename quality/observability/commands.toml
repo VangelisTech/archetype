@@ -1,0 +1,28 @@
+version = 1
+owner = "commands"
+family = "commands"
+
+[[disposition]]
+operations = [
+  "interfaces.iCommandScheduler.validate_deferred",
+  "interfaces.iCommandScheduler.require_world",
+  "interfaces.iCommandScheduler.admit",
+  "interfaces.iCommandScheduler.admit_batch",
+  "interfaces.iCommandScheduler.admit_spawn",
+  "interfaces.iCommandScheduler.drain_and_apply",
+  "interfaces.iCommandScheduler.pending_count",
+  "interfaces.iCommandScheduler.records",
+  "interfaces.iCommandScheduler.history",
+  "interfaces.iCommandScheduler.cancel_world",
+  "interfaces.iCommandScheduler.read_outbox",
+  "interfaces.iCommandScheduler.mark_outbox_projected",
+  "interfaces.iCommandScheduler.outbox_progress",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "The durable command ledger, lease/settlement state, and transactional outbox remain authoritative."
+evidence = [
+  "docs/guide/durable-commands.md",
+  "tests/app/test_durable_commands.py",
+]
+rationale = "The scheduler has no approved direct signal; durable admission and settlement are the recovery authority."

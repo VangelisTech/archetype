@@ -14,8 +14,11 @@ from urllib.parse import unquote, urlparse
 
 import daft
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from archetype import ArchetypeRuntime, Component
+from archetype import ArchetypeRuntime, Component, _obs
 from archetype.app.artifacts.bundle_models import (
     ArtifactBundleRequest,
     ArtifactCandidate,
@@ -24,6 +27,7 @@ from archetype.app.artifacts.bundle_models import (
 )
 from archetype.app.artifacts.bundle_service import (
     _ARTIFACT_INDEX_TABLE,
+    ArtifactBundleService,
     CheckpointArtifactSourceResolver,
 )
 from archetype.app.container import ServiceContainer
@@ -129,6 +133,84 @@ def _local_uri_path(uri: str) -> Path:
     parsed = urlparse(uri)
     assert parsed.scheme == "file"
     return Path(unquote(parsed.path))
+
+
+async def test_span_attributes_use_only_canonical_safe_coordinates(tmp_path):
+    request = ArtifactBundleRequest(
+        world_id="019bf5a0-4f24-7000-8000-000000000001",
+        run_id="019bf5a0-4f24-7000-8000-000000000002",
+        entity_id=7,
+        tick=3,
+        attempt_id="raw-attempt-must-not-be-exported",
+        idempotency_key="raw-idempotency-key-must-not-be-exported",
+        checkpoint_ref="test-checkpoint://snapshot-1",
+        checkpoint_provider="test",
+        artifacts=(
+            ArtifactCandidate(
+                source_ref=str(tmp_path / "result.json"),
+                logical_path="results/result.json",
+                kind="result",
+            ),
+        ),
+    )
+
+    assert ArtifactBundleService._span_attributes(request) == {
+        "archetype.world.id": request.world_id,
+        "archetype.run.id": request.run_id,
+        "archetype.entity.id": 7,
+        "archetype.tick": 3,
+    }
+
+
+async def test_publication_spans_emit_only_canonical_safe_coordinates(tmp_path, monkeypatch):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(_obs, "_tracer", provider.get_tracer("archetype"))
+
+    artifact_config = ArtifactStoreConfig.local(tmp_path / "artifacts")
+    world_storage = StorageConfig(uri=tmp_path / "world", namespace="world")
+    source = tmp_path / "result.json"
+    source.write_text('{"passed":true}\n')
+    container = ServiceContainer(artifact_store_config=artifact_config)
+    try:
+        world = await container.world_service.create_world(
+            WorldConfig(name="artifact-span-world"), world_storage
+        )
+        request = _request(
+            world,
+            source,
+            idempotency_key="raw-idempotency-must-not-be-exported",
+        ).model_copy(update={"attempt_id": "raw-attempt-must-not-be-exported"})
+
+        receipt = await container.artifact_bundle_service.publish(
+            request,
+            storage_config=world_storage,
+        )
+    finally:
+        await container.shutdown()
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert set(spans) == {"artifact.publish", "artifact.upload", "artifact.index"}
+    coordinates = {
+        "archetype.world.id": request.world_id,
+        "archetype.run.id": request.run_id,
+        "archetype.entity.id": request.entity_id,
+        "archetype.tick": request.tick,
+    }
+    assert dict(spans["artifact.publish"].attributes or {}) == coordinates
+    assert dict(spans["artifact.upload"].attributes or {}) == {
+        **coordinates,
+        "archetype.artifact.bundle.digest": receipt.bundle_id,
+    }
+    assert dict(spans["artifact.index"].attributes or {}) == {
+        **coordinates,
+        "archetype.artifact.bundle.digest": receipt.bundle_id,
+        "archetype.artifact.count": len(receipt.records),
+    }
+    exported = repr([span.attributes for span in spans.values()])
+    assert request.attempt_id not in exported
+    assert request.idempotency_key not in exported
 
 
 async def test_publish_is_idempotent_and_queryable_after_cold_restart(tmp_path):

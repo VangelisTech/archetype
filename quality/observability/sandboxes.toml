@@ -1,0 +1,31 @@
+version = 1
+owner = "sandboxes"
+family = "sandboxes"
+
+[[disposition]]
+operations = [
+  "interfaces.iSandboxSession.sandbox_id",
+  "interfaces.iSandboxSession.provider_execution_capabilities",
+  "interfaces.iSandboxSession.run_attempt",
+  "interfaces.iSandboxSession.close",
+  "interfaces.iSandboxBackend.create",
+  "interfaces.iSandboxBackend.restore",
+  "interfaces.iSandboxBackend.resume",
+  "interfaces.iSandboxBackend.authenticate",
+  "interfaces.iSandboxService.register_backend",
+  "interfaces.iSandboxService.create",
+  "interfaces.iSandboxService.restore",
+  "interfaces.iSandboxService.resume",
+  "interfaces.iSandboxService.authenticate",
+  "interfaces.iSandboxService.session",
+  "interfaces.iSandboxService.close",
+  "interfaces.iSandboxService.shutdown",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "Typed sandbox session state, provider receipts, checkpoints, and mission attempt records remain authoritative."
+evidence = [
+  "docs/guide/sandbox-execution.md",
+  "tests/app/test_sandbox_kernel.py",
+]
+rationale = "Sandbox lifecycle and execution have no approved direct signal; provider and durable mission evidence own state transitions."

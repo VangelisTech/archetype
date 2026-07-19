@@ -29,6 +29,21 @@ benchmarks = []
 profiles = ["pr", "main", "release"]
 
 [[contract]]
+id = "observability.repository.enforced"
+source = "docs/guide/observability.md"
+section = "6. Family dispositions"
+owner = "observability"
+risk = "high"
+pytest = [
+    "tests/scripts/test_check_observability.py",
+    "tests/scripts/test_footgun_review_gate.py",
+]
+static = ["scripts/check_observability.py"]
+evals = []
+benchmarks = []
+profiles = ["pr", "main", "release"]
+
+[[contract]]
 id = "sandboxes.attempt.phase_order"
 source = "docs/guide/sandbox-execution.md"
 section = "3. Six-phase attempt protocol"

@@ -66,6 +66,7 @@ These documents are the current orientation pack for contributors:
 | [Repository Harness](repository-harness.md) | Evidence types, dependency boundary, and how to choose the smallest executable oracle |
 | [Specification Overview](specification.md) | Umbrella contract and historical context |
 | [Application Architecture](application-architecture.md) | Normative supported boundaries, service ownership, dependency order, and lint inputs |
+| [Observability](observability.md) | Safe signal vocabulary, family dispositions, process-host ownership, and telemetry authority boundaries |
 | [Command Gate](command-gate.md) | Policy enforcement point, roles, and audit emission |
 | [Service Protocols](service-protocols.md) | Normative app service interfaces |
 | [Runtime](runtime.md) | Script-boundary runtime contract |
@@ -192,6 +193,7 @@ make test             # full parallel pytest suite
 make test-contract    # tests carrying approved contract IDs
 make test-integration # multi-layer tests
 make test-process     # subprocess/crash/independent-writer tests
+make observability-audit # signal safety and exact family dispositions
 make static           # format, lint, types, lock, contracts, benchmarks
 make eval-conformance # blocking regression + specification evidence
 make eval-reliability # blocking retry/replay/crash/recovery evidence
@@ -207,6 +209,14 @@ Test directories identify the owning subsystem. Orthogonal markers identify
 evidence type and cost: `unit`, `contract(<id>)`, `integration`, `race`,
 `process`, `smoke`, `external`, and `slow`. Do not move a test merely to make a
 profile select it; mark it and keep it beside its owner.
+
+Adding, removing, or renaming a callable member of any `Protocol` anywhere
+under an application family also updates that family's exact
+`quality/observability/<family>.toml` disposition. Do not use wildcard or
+class-wide rows. Add an internal workflow row only when that exact non-protocol
+operation is intentionally instrumented. The deterministic audit owns syntax
+and declared coverage; the existing footgun reviewer owns semantic
+observability boundary, authority, safety, and cardinality review.
 
 ### Before you open a PR
 

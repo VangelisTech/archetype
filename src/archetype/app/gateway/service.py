@@ -147,7 +147,7 @@ class CommandGateway:
 
     # Lifecycle ------------------------------------------------------
 
-    @instrument("gate.create_world")
+    @instrument("gateway.create_world")
     async def create_world(self, ctx, config, storage_config=None, cache_config=None):
         self._gate(Command(type=CommandType.CREATE_WORLD), ctx)
         info = await self._application.create_world(config, storage_config, cache_config)
@@ -178,7 +178,7 @@ class CommandGateway:
         await self._application.destroy_world(world_id)
         await self._emit(ctx, "destroy_world", world_id)
 
-    @instrument("gate.get_world_info")
+    @instrument("gateway.get_world_info")
     async def get_world_info(self, ctx, world_id):
         self._gate(Command(type=CommandType.GET_WORLD_INFO), ctx)
         info = await self._application.get_world_info(world_id)

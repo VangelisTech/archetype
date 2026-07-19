@@ -1,0 +1,85 @@
+version = 1
+owner = "storage"
+family = "storage"
+
+[[disposition]]
+operations = [
+  "catalog.ControlCatalog.register_world",
+  "catalog.ControlCatalog.set_world_status",
+  "catalog.ControlCatalog.set_world_run",
+  "catalog.ControlCatalog.get_world",
+  "catalog.ControlCatalog.list_worlds",
+  "catalog.ControlCatalog.register_signature",
+  "catalog.ControlCatalog.list_signatures",
+  "catalog.ControlCatalog.max_manifest_tick",
+  "catalog.ControlCatalog.acquire_attempt_claim",
+  "catalog.ControlCatalog.transition_attempt_claim",
+  "catalog.ControlCatalog.consume_attempt_execution",
+  "catalog.ControlCatalog.renew_attempt_claim",
+  "catalog.ControlCatalog.get_attempt_claim",
+  "catalog.ControlCatalog.list_due_attempt_claims",
+  "catalog.ControlCatalog.acquire_artifact_publication",
+  "catalog.ControlCatalog.get_artifact_publication",
+  "catalog.ControlCatalog.renew_artifact_publication",
+  "catalog.ControlCatalog.record_artifact_uploads",
+  "catalog.ControlCatalog.complete_artifact_publication",
+  "catalog.ControlCatalog.fail_artifact_publication",
+  "catalog.ControlCatalog.expire_artifact_publication",
+  "catalog.ControlCatalog.list_due_artifact_publications",
+  "catalog.ControlCatalog.admit_commands",
+  "catalog.ControlCatalog.lease_commands",
+  "catalog.ControlCatalog.fail_command",
+  "catalog.ControlCatalog.release_commands",
+  "catalog.ControlCatalog.list_commands",
+  "catalog.ControlCatalog.pending_command_count",
+  "catalog.ControlCatalog.max_reserved_entity_id",
+  "catalog.ControlCatalog.read_outbox",
+  "catalog.ControlCatalog.mark_outbox_projected",
+  "catalog.ControlCatalog.close",
+  "interfaces.iStorageService.has_injected_session",
+  "interfaces.iStorageService.require_iceberg_identity",
+  "interfaces.iStorageService.get_control_catalog",
+  "interfaces.iStorageService.get_or_create_store",
+  "interfaces.iStorageService.get_iceberg_context",
+  "interfaces.iStorageService.shutdown",
+]
+signals = ["none"]
+outcomes = ["propagated_failure", "handled_outcome", "retryable_attempt"]
+authority = "Store/catalog state, fencing epochs, leases, transactional rows, and durable receipts remain authoritative."
+evidence = [
+  "docs/guide/atomic-visibility.md",
+  "docs/guide/service-protocols.md",
+  "tests/app/test_atomic_visibility.py",
+  "tests/app/test_remote_catalog_parity.py",
+]
+rationale = "Storage has no approved direct signal; catalog transactions and backend receipts are the durability authority."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/app/storage/service.py"
+qualified_scope = "archetype.app.storage.service.StorageService.shutdown"
+target = "log:exception:'Failed to shut down store %r':exception"
+owner = "storage"
+issue = 517
+reason = "Best-effort store shutdown currently exports raw exception stack details."
+expiry_condition = "Remove when #517 records a bounded store-shutdown failure without backend or exception content."
+
+[[legacy]]
+rule = "raw_exception_logging"
+path = "src/archetype/app/storage/service.py"
+qualified_scope = "archetype.app.storage.service.StorageService.shutdown"
+target = "log:exception:'Failed to close control catalog %r':exception"
+owner = "storage"
+issue = 517
+reason = "Best-effort control-catalog shutdown currently exports raw exception stack details."
+expiry_condition = "Remove when #517 records a bounded catalog-shutdown failure without backend or exception content."
+
+[[legacy]]
+rule = "unsafe_log_value"
+path = "src/archetype/app/storage/catalog.py"
+qualified_scope = "archetype.app.storage.catalog.SqliteControlCatalog._connect_sync"
+target = "log:warning:'catalog %s: journal_mode=%s (WAL unavailable)':sensitive-value"
+owner = "storage"
+issue = 517
+reason = "The existing WAL fallback diagnostic exports a catalog path; #517 owns a bounded replacement that preserves catalog behavior."
+expiry_condition = "Remove when #517 replaces the path value with a bounded storage-backend category."
