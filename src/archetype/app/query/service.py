@@ -306,6 +306,12 @@ class QueryService:
                     f"catalog descriptor for table {record.table_id} does not match "
                     "the physical schema; refusing to read (fail closed)"
                 )
+            if not set(proj_cols).issubset(physical.names):
+                # Component names are stable catalog discovery keys, but a
+                # same-named component may have gained fields since this table
+                # was written. It cannot satisfy the current component
+                # contract, so exclude it before building the lazy projection.
+                continue
             df = await store.get_existing_table_df(
                 record.table_id,
                 world_id,

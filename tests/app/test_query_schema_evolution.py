@@ -40,6 +40,6 @@ async def test_component_query_tolerates_added_fields(tmp_path):
             [Node], str(world.world_id), str(world.run_id), storage
         )
 
-        assert result.to_pylist() == [{"node__x": 2.0, "node__r": 4.0}]
+        assert result.select("node__x", "node__r").to_pylist() == [{"node__x": 2.0, "node__r": 4.0}]
     finally:
         await fresh.shutdown()
