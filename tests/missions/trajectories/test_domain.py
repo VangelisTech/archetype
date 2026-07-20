@@ -1,13 +1,13 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for typed trajectory/event-log experiment components."""
+"""Tests for typed mission trajectory schemas and pure transforms."""
 
 import pyarrow as pa
 
 from archetype.app.models import Command, CommandType, EpisodeResult
 from archetype.core.component import Component
-from archetype.experiments import (
+from archetype.missions.trajectories import (
     Trajectory,
     TrajectoryAction,
     TrajectoryCommandEvent,
@@ -15,15 +15,13 @@ from archetype.experiments import (
     TrajectoryReward,
     TrajectoryTurn,
     Turn,
-    turns_to_components,
-)
-from archetype.experiments.recorders import (
     actions_from_observations,
     audit_rows_to_events,
     commands_to_events,
     observations_from_post_tick_events,
     reward_row,
     trajectory_from_episode_result,
+    turns_to_components,
 )
 
 

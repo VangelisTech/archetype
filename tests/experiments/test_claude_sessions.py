@@ -9,7 +9,7 @@ from archetype.experiments.claude_sessions import (
     load_claude_session,
     load_claude_sessions,
 )
-from archetype.experiments.trajectories import Trajectory, TrajectoryTurn
+from archetype.missions.trajectories import Trajectory, TrajectoryTurn
 
 
 def _line(line_type: str, content, *, ts: str, **extra) -> str:

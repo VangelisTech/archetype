@@ -12,25 +12,39 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Helpers that turn existing runtime artifacts into typed trajectory rows."""
+"""Pure structural transforms into typed trajectory rows and filtered frames."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from archetype.app.models import Command, EpisodeResult
-from archetype.experiments.trajectories import (
+from daft import DataFrame, col
+
+from archetype.core.component import Component
+from archetype.missions.trajectories.components import (
     Trajectory,
     TrajectoryAction,
     TrajectoryCommandEvent,
     TrajectoryObservation,
     TrajectoryReward,
+    TrajectoryTurn,
+)
+from archetype.missions.trajectories.contracts import (
+    CommandRecord,
+    EpisodeRecord,
+    TrajectorySelection,
+    Turn,
 )
 
 
+def turns_to_components(trajectory_id: str, turns: list[Turn]) -> list[TrajectoryTurn]:
+    """Materialize typed rows for an authored turn sequence."""
+    return [turn.to_component(trajectory_id, seq) for seq, turn in enumerate(turns)]
+
+
 def command_to_event(
-    command: Command,
+    command: CommandRecord,
     *,
     trajectory_id: str,
     seq: int,
@@ -41,7 +55,7 @@ def command_to_event(
         seq=seq,
         command_id=str(command.id),
         tick=command.tick,
-        command_type=command.type.value,
+        command_type=str(getattr(command.type, "value", command.type)),
         priority=command.priority,
         version=command.version,
     )
@@ -69,7 +83,7 @@ def audit_row_to_event(
 
 
 def commands_to_events(
-    commands: Iterable[Command],
+    commands: Iterable[CommandRecord],
     *,
     trajectory_id: str,
 ) -> list[TrajectoryCommandEvent]:
@@ -91,7 +105,7 @@ def audit_rows_to_events(
 
 
 def trajectory_from_episode_result(
-    episode: EpisodeResult,
+    episode: EpisodeRecord,
     *,
     rollout_id: str = "",
     run_id: str = "",
@@ -160,3 +174,23 @@ def reward_row(
     seq: int = 0,
 ) -> TrajectoryReward:
     return TrajectoryReward(trajectory_id=trajectory_id, seq=seq, reward=reward)
+
+
+def filter_trajectory_rows(
+    df: DataFrame,
+    component: type[Component],
+    selection: TrajectorySelection,
+) -> DataFrame:
+    """Lazily filter one typed trajectory table by fields it actually stores."""
+    requested = selection.requested()
+    unsupported = sorted(set(requested) - set(component.model_fields))
+    if unsupported:
+        names = ", ".join(unsupported)
+        raise ValueError(
+            f"{component.__name__} does not store requested trajectory filter field(s): "
+            f"{names}; filter the Trajectory header or use fields stored on this component"
+        )
+    prefix = component.get_prefix()
+    for field_name, values in requested.items():
+        df = df.where(col(f"{prefix}{field_name}").is_in(list(values)))
+    return df

@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from archetype.core.component import Component
-from archetype.experiments.trajectories import Trajectory, Turn, turns_to_components
+from archetype.missions.trajectories import Trajectory, Turn, turns_to_components
 
 logger = logging.getLogger(__name__)
 

@@ -5,17 +5,10 @@
 [[top_level_family_rule]]
 name = "experiments-domain-family"
 consumer = "archetype.experiments"
-allowed_families = ["archetype.physical_ai"]
-
-[[exception]]
-rule = "top_level_family_outward_dependency"
-consumer = "archetype.experiments.recorders"
-target = "archetype.app.models"
-owner = "experiments"
-issue = 586
-reason = "The provisional recorder imports application command and episode result models."
-expiry_condition = "Remove when #586 moves structural trajectory transforms under archetype.missions with no app-model import."
-expires = "v0.5"
+allowed_families = [
+  "archetype.missions",
+  "archetype.physical_ai",
+]
 
 [[exception]]
 rule = "top_level_family_outward_dependency"

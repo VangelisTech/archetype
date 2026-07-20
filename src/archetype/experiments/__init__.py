@@ -23,26 +23,8 @@ from archetype.experiments.claude_sessions import (
     load_claude_session,
     load_claude_sessions,
 )
-from archetype.experiments.trajectories import (
-    Trajectory,
-    TrajectoryAction,
-    TrajectoryCommandEvent,
-    TrajectoryObservation,
-    TrajectoryReward,
-    TrajectoryTurn,
-    Turn,
-    turns_to_components,
-)
 
 __all__ = [
-    "Trajectory",
-    "TrajectoryAction",
-    "TrajectoryCommandEvent",
-    "TrajectoryObservation",
-    "TrajectoryReward",
-    "TrajectoryTurn",
-    "Turn",
     "load_claude_session",
     "load_claude_sessions",
-    "turns_to_components",
 ]

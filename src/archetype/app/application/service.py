@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from archetype.app.audit.interfaces import iAuditLog
     from archetype.app.commands.interfaces import iCommandScheduler
     from archetype.app.evaluation.interfaces import iEvaluationService
-    from archetype.app.missions.interfaces import iAgentMissionService
+    from archetype.app.missions.interfaces import iAgentMissionService, iTrajectoryService
     from archetype.app.query.interfaces import iQueryService
     from archetype.app.research.interfaces import iResearchService
     from archetype.app.world.interfaces import iMutationService, iSimulationService, iWorldService
@@ -83,6 +83,7 @@ class RuntimeApplication:
         artifacts: iArtifactService | None = None,
         artifact_bundles: iArtifactBundleService | None = None,
         evaluations: iEvaluationService | None = None,
+        trajectories: iTrajectoryService | None = None,
         agent_missions: Callable[..., iAgentMissionService] | None = None,
     ) -> None:
         self._mutations = mutations
@@ -96,6 +97,7 @@ class RuntimeApplication:
         self._artifacts = artifacts
         self._artifact_bundles = artifact_bundles
         self._evaluations = evaluations
+        self._trajectories = trajectories
         self._agent_missions = agent_missions
 
         self._state_lock = asyncio.Lock()
@@ -494,6 +496,51 @@ class RuntimeApplication:
             raise RuntimeError("evaluation service is not wired")
         async with self._admit():
             return await self._evaluations.evaluate(str(world_id), components, **kwargs)
+
+    async def query_trajectory(
+        self,
+        component,
+        world_id,
+        run_id,
+        storage_config=None,
+        **kwargs,
+    ):
+        if self._trajectories is None:
+            raise RuntimeError("trajectory service is not wired")
+        async with self._admit():
+            storage_config = self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.query(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
+
+    async def grade_trajectory(
+        self,
+        component,
+        world_id,
+        run_id,
+        *,
+        graders,
+        storage_config=None,
+        **kwargs,
+    ):
+        if self._trajectories is None:
+            raise RuntimeError("trajectory service is not wired")
+        async with self._admit():
+            storage_config = self._resolve_storage(world_id, storage_config)
+            return await self._trajectories.grade(
+                component,
+                world_id=str(world_id),
+                run_id=str(run_id),
+                graders=graders,
+                storage_config=storage_config,
+                lineage=await self._resolve_lineage(world_id, run_id, storage_config),
+                **kwargs,
+            )
 
     # Deferred commands ---------------------------------------------
 

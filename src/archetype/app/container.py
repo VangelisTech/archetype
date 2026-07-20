@@ -33,6 +33,7 @@ from archetype.app.missions.agent_service import AgentMissionService
 from archetype.app.missions.claim_service import MissionAttemptClaimService
 from archetype.app.missions.execution_service import MissionAttemptExecutionService
 from archetype.app.missions.service import MissionService
+from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
 from archetype.app.redaction.service import RedactionService
@@ -104,6 +105,10 @@ class ServiceContainer:
             redaction_service=self.redaction_service,
         )
         self.evaluation_service = EvaluationService(self.query_service, self.artifact_service)
+        self.trajectory_service = TrajectoryService(
+            self.query_service,
+            self.evaluation_service,
+        )
 
         # External providers remain optional host adapters. The composition
         # root owns only the provider-neutral registry and live-handle drain.
@@ -132,6 +137,7 @@ class ServiceContainer:
             artifacts=self.artifact_service,
             artifact_bundles=self.artifact_bundle_service,
             evaluations=self.evaluation_service,
+            trajectories=self.trajectory_service,
             research=self.autoresearch_service,
             agent_missions=AgentMissionService,
         )

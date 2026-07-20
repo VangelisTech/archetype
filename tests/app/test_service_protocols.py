@@ -38,8 +38,10 @@ from archetype.app.missions.interfaces import (
     iMissionAttemptClaimService,
     iMissionAttemptExecutionService,
     iMissionService,
+    iTrajectoryService,
 )
 from archetype.app.missions.service import MissionService
+from archetype.app.missions.trajectory_service import TrajectoryService
 from archetype.app.query.interfaces import iQueryService
 from archetype.app.query.service import QueryService
 from archetype.app.redaction.interfaces import iRedactionService
@@ -73,6 +75,7 @@ SERVICE_PROTOCOLS = (
     (MissionAttemptClaimService, iMissionAttemptClaimService),
     (MissionAttemptExecutionService, iMissionAttemptExecutionService),
     (MissionArtifactFinalizer, iMissionArtifactFinalizer),
+    (TrajectoryService, iTrajectoryService),
     (RedactionService, iRedactionService),
     (EvaluationService, iEvaluationService),
     (AutoResearchService, iResearchService),
@@ -118,6 +121,7 @@ async def test_container_wiring_conforms_to_every_family_protocol(tmp_path) -> N
             (workflow.claim_service, iMissionAttemptClaimService),
             (workflow.execution_service, iMissionAttemptExecutionService),
             (workflow.artifact_finalizer, iMissionArtifactFinalizer),
+            (container.trajectory_service, iTrajectoryService),
             (container.redaction_service, iRedactionService),
             (container.evaluation_service, iEvaluationService),
             (container.autoresearch_service, iResearchService),

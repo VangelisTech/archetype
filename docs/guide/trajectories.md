@@ -1,178 +1,168 @@
 ---
-title: Trajectory Analysis
-description: Evaluate and compare agent trajectories using LLM-based labeling
+title: Mission Trajectories
+description: Persist, select, and grade lightweight mission evidence
 ---
 
-Trajectory analysis uses the recommended runtime script pattern: define
-components for the data, stage processors and resources on a runtime world,
-run the pipeline, then fork to compare evaluation criteria.
+A trajectory is a lightweight, typed index over what happened during a mission
+or rollout. It is evidence: it can be queried and graded, but it never decides
+whether a task advances.
 
-The full runnable example is in [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/archetype/blob/main/examples/06_trajectory_analysis.py).
+Archetype stores the header, turns, commands, observations, actions, and rewards
+as separate Component rows. It does not hide the record in one JSON document,
+and it does not make raw transcripts part of mission state.
 
-## Components
+## Ownership
 
-### Trajectory
+| File | Responsibility |
+|---|---|
+| `archetype.missions.trajectories.components` | Persistent Arrow-safe schemas. |
+| `archetype.missions.trajectories.contracts` | In-memory authoring values, structural inputs, and typed selection. |
+| `archetype.missions.trajectories.transforms` | Pure row and lazy DataFrame transforms; no service access. |
+| `archetype.app.missions.trajectory_service` | Internal composition of persisted query access and evaluation graders. |
+| `RuntimeWorld.query_trajectory()` | Recommended filtered read path. |
+| `RuntimeWorld.grade_trajectory()` | Recommended query-then-grade path. |
 
-Stores a complete agent session as JSON-encoded turns:
+The app service owns no trajectory truth. Query storage remains authoritative
+for rows, evaluation remains authoritative for grader execution and receipts,
+and mission processors remain authoritative for task transitions.
 
-```python
-class Trajectory(Component):
-    trajectory_id: str = ""
-    source: str = ""
-    turns_json: str = "[]"
-    total_turns: int = 0
-    total_tokens: int = 0
-    duration_seconds: float = 0.0
-    outcome: str = ""
-    tags_json: str = "[]"
-    metadata_json: str = "{}"
-```
+## Persistent rows
 
-Build from structured `Turn` dataclasses:
+| Component | One row represents |
+|---|---|
+| `Trajectory` | Header and coordinates for one trajectory. |
+| `TrajectoryTurn` | One historical conversational or tool-use turn. |
+| `TrajectoryCommandEvent` | One command or audit event. |
+| `TrajectoryObservation` | One observed tick or external event. |
+| `TrajectoryAction` | One action aligned to the trajectory sequence. |
+| `TrajectoryReward` | One reward observation. |
 
-```python
-trajectory = Trajectory.from_turns(
-    trajectory_id="session-abc123",
-    turns=[
-        Turn(role="user", content="Fix the login bug", tokens=12),
-        Turn(role="assistant", content="I'll check auth.py", tokens=45),
-        Turn(role="tool_call", tool_name="Read",
-             tool_input='{"path": "auth.py"}', content="", tokens=8),
-        Turn(role="tool_result", content="def login(): ...", tokens=120),
-        Turn(role="assistant", content="Found the bug, applying fix", tokens=200),
-    ],
-    source="claude-code",
-    outcome="success: fixed null check in login handler",
-    tags=["bugfix", "auth"],
-)
-```
+Every child row carries `trajectory_id` and `seq`. This normalization keeps the
+tables independently queryable and avoids rewriting a large payload whenever
+one observation changes.
 
-### Turn
+`Trajectory.episode_id` is retained as string-valued runtime metadata for
+historical rows. It is not the integer dataset-episode identity in the
+evaluation ontology.
 
-A dataclass (not a Component) representing one step in a trajectory:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `role` | `str` | `"user"`, `"assistant"`, `"tool_call"`, `"tool_result"`, `"system"` |
-| `content` | `str` | Main content of the turn |
-| `tool_name` | `str \| None` | Tool called (for `tool_call`/`tool_result` roles) |
-| `tool_input` | `str \| None` | JSON tool input |
-| `tool_output` | `str \| None` | JSON tool output |
-| `tokens` | `int` | Token count for this turn |
-| `duration_ms` | `float` | Wall-clock duration |
-| `error` | `str \| None` | Error message if present |
-| `metadata` | `dict` | Arbitrary metadata |
-
-### Label
-
-An evaluation result attached to a trajectory:
-
-```python
-class Label(Component):
-    technique: str = ""
-    description: str = ""
-    value: str = ""
-    score: float = 0.0
-    rationale: str = ""
-    sampled: bool = True
-```
-
-Each `(Trajectory, Label)` entity represents one labeling technique applied to one trajectory. To compare techniques, fork the world and swap the `Label.description`.
-
-## Processors
-
-Three pipeline stages, priority-ordered within a single tick:
-
-| Processor | Priority | Purpose |
-|-----------|----------|---------|
-| `SamplingProcessor` | 10 | Marks which trajectories to evaluate based on `SamplingConfig` |
-| `LabelingProcessor` | 20 | Calls LLM to produce value/score/rationale for sampled entities |
-| `ScoringProcessor` | 30 | Clamps scores to [0, 1] |
-
-### SamplingProcessor
-
-Reads `SamplingConfig` from resources and sets `label__sampled = True/False`. Never drops rows — all entities are preserved for post-hoc analysis.
-
-```python
-@dataclass
-class SamplingConfig:
-    max_trajectories: int = 0    # 0 = all
-    min_turns: int = 0
-    max_turns: int = 0           # 0 = no limit
-    require_tags: list[str] | None = None
-    exclude_tags: list[str] | None = None
-    outcome_filter: str | None = None
-```
-
-### LabelingProcessor
-
-Reads `LabelingConfig` from resources. Splits the DataFrame into sampled/unsampled, calls `daft.functions.prompt` on sampled rows with the evaluation prompt, parses the response into `label__value`, `label__score`, `label__rationale`, and rejoins.
-
-```python
-@dataclass
-class LabelingConfig:
-    model: str = "gpt-5-mini"
-    max_output_tokens: int = 512
-```
-
-### ScoringProcessor
-
-Clamps `label__score` to [0, 1].
-
-## Wiring It Up
-
-Recommended runtime setup:
+## Author and publish evidence
 
 ```python
 from archetype import ArchetypeRuntime
-from archetype.core.config import RunConfig, StorageConfig
+from archetype.missions.trajectories import (
+    Trajectory,
+    TrajectoryReward,
+    Turn,
+    turns_to_components,
+)
+
+turns = [
+    Turn(role="user", content="Fix the login regression", tokens=6),
+    Turn(role="assistant", content="Patched and validated", tokens=18),
+]
+header = Trajectory.from_turns(
+    "mission-42:task-auth:attempt-1",
+    turns,
+    run_id="run-42",
+    task_id="auth",
+    source="coding-agent",
+    terminal=True,
+    outcome="accepted",
+)
 
 async with ArchetypeRuntime() as runtime:
-    world = runtime.world(
-        "trajectory-eval",
-        storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
-        processors=[SamplingProcessor(), LabelingProcessor(), ScoringProcessor()],
-        resources=[
-            SamplingConfig(min_turns=3),
-            LabelingConfig(model="gpt-5-mini"),
-        ],
+    world = runtime.world("mission-evidence", storage="./data")
+    await world.spawn(header)
+    await world.spawn_many(
+        [[row] for row in turns_to_components(header.trajectory_id, turns)]
     )
-
-    for trajectory in trajectories:
-        for technique, description in label_specs:
-            label = Label(technique=technique, description=description)
-            await world.spawn(trajectory, label)
-
-    await world.step(config=RunConfig(num_steps=1))
-
-    df = await world.query(Trajectory, Label)
-    rows = df.collect().to_pylist()
+    await world.spawn(
+        TrajectoryReward(trajectory_id=header.trajectory_id, reward=1.0)
+    )
+    await world.run(steps=1)
 ```
 
-## Fork-Based Comparison
+The spawned values become visible together at the tick commit boundary. Use
+artifact publication, not Component rows, for large or secret-bearing source
+material.
 
-Clone the world and run an independent branch:
+## Select one trajectory table
+
+`TrajectorySelection` is explicit and table-local. A filter must name a field
+stored by the requested Component; Archetype does not perform an implicit join.
 
 ```python
-fork = await world.fork(
-    "strict-eval",
-    storage=StorageConfig(uri="./trajectory_data", namespace="trajectories"),
+from archetype.missions.trajectories import (
+    TrajectoryReward,
+    TrajectorySelection,
 )
-await fork.step(config=RunConfig(num_steps=1))
+
+selection = TrajectorySelection(
+    trajectory_ids=("mission-42:task-auth:attempt-1",),
+)
+rewards = await world.query_trajectory(
+    TrajectoryReward,
+    selection=selection,
+)
 ```
 
-Forks share resource instances by default. For a strict-vs-lenient comparison,
-stage distinct resources on separate worlds or attach replacement resources
-through the runtime before running the fork.
+The result is a lazy Daft DataFrame. The application service asks the query
+service for persisted rows, then applies selection as DataFrame expressions;
+it does not collect the frame.
 
-Both worlds persist to the same storage by default, partitioned by `world_id`. Query either one at any tick.
+For example, `TrajectoryReward` stores `trajectory_id` but not `task_id`.
+Selecting rewards by `task_ids` therefore fails with a precise error. Query the
+`Trajectory` header by task first, then carry the selected trajectory IDs into
+the reward query.
 
-## When to Use
+## Grade a selection
 
-| Scenario | Trajectory analysis? |
-|----------|---------------------|
-| Evaluating recorded agent sessions | Yes |
-| Comparing labeling criteria (A/B) | Yes, with `world.fork()` |
-| Benchmarking prompt variations | Yes |
-| Real-time agent processing per tick | No, use regular processors |
-| Simple data transforms | No, use DataFrame expressions |
+`grade_trajectory()` performs the same read and selection, then delegates the
+lazy frame to the evaluation service's grader runner.
+
+```python
+def total_reward(frame):
+    rows = frame.collect().to_pylist()  # the grader chooses its execution boundary
+    return sum(row["trajectoryreward__reward"] for row in rows)
+
+outputs = await world.grade_trajectory(
+    TrajectoryReward,
+    selection=selection,
+    graders=[total_reward],
+)
+```
+
+Those outputs are ephemeral analysis. Use `world.evaluate()` with a
+`GraderContract` when the result must become a durable evaluation receipt.
+
+Sync scripts use the same names through `ArchetypeRuntime.sync()`.
+
+## Pure transforms
+
+The family provides structural transforms for existing command, audit,
+episode, tick, action, and reward values. They accept only the fields they need
+and do not import application DTOs:
+
+```python
+from archetype.missions.trajectories import (
+    audit_rows_to_events,
+    trajectory_from_episode_result,
+)
+
+header = trajectory_from_episode_result(episode, rollout_id="rollout-7")
+events = audit_rows_to_events(audit_rows, trajectory_id=header.trajectory_id)
+```
+
+This keeps reusable evidence construction below the application layer while
+allowing application models that satisfy the structural contracts to pass
+through without translation objects.
+
+## Transcript boundary
+
+Raw coding-agent transcripts, tool inputs and outputs, frames, and other large
+or secret-bearing content are artifacts. They require pre-durability redaction,
+stable source/content identity, and typed artifact-table publication.
+
+`TrajectoryTurn` remains the one class identity for historical Component rows;
+that compatibility does not make unredacted Component writes the preferred
+transcript-ingestion path.

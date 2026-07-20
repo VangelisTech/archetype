@@ -32,7 +32,7 @@ from daft.functions import lower, startswith
 from archetype.app.container import ServiceContainer
 from archetype.core.config import RunConfig, StorageConfig, WorldConfig
 from archetype.experiments.claude_sessions import load_claude_sessions
-from archetype.experiments.trajectories import Trajectory, TrajectoryTurn
+from archetype.missions.trajectories import Trajectory, TrajectoryTurn
 
 CORRECTION_OPENERS = [
     "no ",

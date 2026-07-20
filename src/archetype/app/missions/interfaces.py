@@ -10,6 +10,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from daft import DataFrame
 
+from archetype.app.evaluation.interfaces import GraderOutput, TrajectoryGrader
 from archetype.app.missions.models import (
     AttemptArtifactProjection,
     AttemptArtifactPublication,
@@ -25,7 +26,9 @@ from archetype.app.missions.models import (
 )
 from archetype.app.redaction.models import RedactedRecord
 from archetype.core.component import Component
+from archetype.core.config import StorageConfig
 from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
+from archetype.missions.trajectories import TrajectorySelection
 from archetype.missions.transitions import AttemptStatus
 
 
@@ -56,6 +59,38 @@ class iAgentMissionService(Protocol):
 
     @property
     def world_id(self) -> object: ...
+
+
+@runtime_checkable
+class iTrajectoryService(Protocol):
+    """Query and optionally grade one persisted trajectory table."""
+
+    async def query(
+        self,
+        component: type[Component],
+        *,
+        world_id: str,
+        run_id: str,
+        selection: TrajectorySelection | None = None,
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+    ) -> DataFrame: ...
+
+    async def grade(
+        self,
+        component: type[Component],
+        *,
+        world_id: str,
+        run_id: str,
+        graders: Sequence[TrajectoryGrader],
+        selection: TrajectorySelection | None = None,
+        storage_config: StorageConfig | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+        lineage: list[tuple[str, str, int]] | None = None,
+    ) -> list[GraderOutput]: ...
 
 
 @runtime_checkable

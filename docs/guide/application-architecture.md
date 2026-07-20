@@ -179,10 +179,12 @@ is gone. HTN resolution now lives under `archetype.missions.planning`. The
 physical-AI Components, processors, policy contracts, and external-boundary
 helpers now live in the registered `archetype.physical_ai` family. Research
 ledger Components and the pure runner decoder live in `archetype.research`,
-while `archetype.app.research` retains workflow authority. The remaining work
-moves mission trajectory projections and removes the experiments umbrella. The
-current source tree and machine manifest remain implementation truth until each
-move lands.
+while `archetype.app.research` retains workflow authority. Typed trajectory
+schemas and pure transforms live under `archetype.missions.trajectories`; the
+mission trajectory service composes query and evaluation ports. The remaining
+work removes transcript and physical-workflow code from the experiments
+umbrella. The current source tree and machine manifest remain implementation
+truth until each move lands.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -269,7 +271,7 @@ gateway, runtime, API, or CLI boundary.
 | Commands | Durable admission, order, leasing, dispatch, retry, settlement and dead letters | Control catalog plus world and mutation ports |
 | Audit | Transactional journal/outbox and analytical projection | Storage or control-authority ports |
 | Research | Multi-run research workflows | World and simulation ports plus explicit evaluator callbacks |
-| Missions | V1 graph materialization, tick/external-I/O composition, receipt validation, and terminal projection. The family processors retain transition authority. Legacy claim/fence/finalization orchestration remains compatibility-only. | V1 consumes a structural mission world and family-owned sandbox resource; legacy modules consume redaction, control-catalog, runner, and artifact-finalizer ports. |
+| Missions | V1 graph materialization, tick/external-I/O composition, receipt validation, terminal projection, and trajectory query/evaluation composition. Family processors retain transition authority; trajectory evidence cannot advance tasks. Legacy claim/fence/finalization orchestration remains compatibility-only. | V1 consumes a structural mission world and family-owned sandbox resource. Trajectory reads consume query and evaluation ports. Legacy modules consume redaction, control-catalog, runner, and artifact-finalizer ports. |
 | Sandboxes | Agent Missions V1 providers live under `archetype.missions.sandboxes`. `archetype.app.sandboxes` is the retained six-phase compatibility kernel. | V1 providers implement the family-owned `AgentMissionSandbox` protocol; legacy adapters consume legacy mission authorization. |
 | RuntimeApplication | Canonical actor-free application facade and per-world operation serialization | Approved family workflow ports only |
 | CommandGateway | Authorization, safe downgrade, access-audit notification, delegation | RuntimeApplication port, authorizer, audit-journal port |
@@ -499,13 +501,13 @@ digests live in `archetype.evaluation.contracts`, and
 while importing those domain definitions inward.
 
 The remaining reverse edges from provisional `archetype.experiments` are
-preserved only by exact migration entries: trajectory recorder imports point
-to #586, and rollout/sweep reverse imports point to #589. The research,
-physical-AI, ontology, and HTN namespace stages have landed; the transcript,
-workflow, and final umbrella-removal work remains. No architecture exception
-remains owned by Issues #561 or #585. Mission Components and pure world
-transitions moved under Issue #559, so no mission migration exception remains.
-These entries make no app symbol supported.
+preserved only by exact migration entries for rollout/sweep orchestration under
+Issue #589. The research, trajectory, physical-AI, ontology, and HTN namespace
+stages have landed; transcript publication, physical workflow, and final
+umbrella-removal work remains. No architecture exception remains owned by
+Issues #561, #585, or #586. Mission Components and pure world transitions moved
+under Issue #559, so no mission migration exception remains. These entries make
+no app symbol supported.
 
 Independent manifests under `quality/observability/` declare each family's
 operation dispositions. `scripts/check_observability.py` enforces their exact

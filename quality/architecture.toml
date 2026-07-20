@@ -22,6 +22,7 @@ types = [
   "ServiceContainer",
   "SimulationService",
   "StorageService",
+  "TrajectoryService",
   "WorldService",
 ]
 composition_roots = [
@@ -154,10 +155,12 @@ name = "mission-family"
 consumer = "archetype.app.missions"
 allowed_app = [
   "archetype.app.missions",
+  "archetype.app.evaluation.interfaces",
   "archetype.app.errors",
   "archetype.app.limits",
   "archetype.app.redaction.interfaces",
   "archetype.app.redaction.models",
+  "archetype.app.query.interfaces",
   "archetype.app.storage.catalog",
 ]
 
@@ -331,6 +334,16 @@ allowed_app = [
 ]
 
 [[module_rule]]
+module = "archetype.app.missions.trajectory_service"
+allowed_interfaces = [
+  "archetype.app.evaluation.interfaces.GraderOutput",
+  "archetype.app.evaluation.interfaces.TrajectoryGrader",
+  "archetype.app.evaluation.interfaces.iEvaluationService",
+  "archetype.app.query.interfaces.iQueryService",
+]
+allowed_app = []
+
+[[module_rule]]
 module = "archetype.app.missions.claim_service"
 allowed_interfaces = ["archetype.app.redaction.interfaces.iRedactionService"]
 allowed_app = [
@@ -417,6 +430,7 @@ allowed_interfaces = [
   "archetype.app.commands.interfaces.iCommandScheduler",
   "archetype.app.evaluation.interfaces.iEvaluationService",
   "archetype.app.missions.interfaces.iAgentMissionService",
+  "archetype.app.missions.interfaces.iTrajectoryService",
   "archetype.app.query.interfaces.iQueryService",
   "archetype.app.research.interfaces.iResearchService",
   "archetype.app.world.interfaces.iMutationService",

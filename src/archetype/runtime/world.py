@@ -45,6 +45,7 @@ from archetype.artifacts.contracts import ArtifactProcessor, ArtifactReceipt, Ar
 from archetype.core.component import Component
 from archetype.core.config import CacheConfig, RunConfig, StorageConfig, WorldConfig
 from archetype.core.hooks import HookEvent
+from archetype.missions.trajectories import TrajectorySelection
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -662,6 +663,52 @@ class RuntimeWorld:
                 entity_ids=entity_ids,
             )
 
+    async def query_trajectory(
+        self,
+        component_type: type[Component],
+        *,
+        selection: TrajectorySelection | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        """Return one trajectory table filtered by its typed index fields."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            info = await self._resolve_info(wid)
+            return await self._app.query_trajectory(
+                component_type,
+                str(wid),
+                str(info.run_id or ""),
+                storage_config=self._state.storage_config,
+                selection=selection,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+
+    async def grade_trajectory(
+        self,
+        component_type: type[Component],
+        *,
+        graders: Sequence[TrajectoryGrader],
+        selection: TrajectorySelection | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> list[GraderOutput]:
+        """Query one trajectory table and run graders over the lazy frame."""
+        async with self._state.op_lock:
+            wid = await self._ensure_id()
+            info = await self._resolve_info(wid)
+            return await self._app.grade_trajectory(
+                component_type,
+                str(wid),
+                str(info.run_id or ""),
+                graders=graders,
+                storage_config=self._state.storage_config,
+                selection=selection,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+
     async def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         """Return recent audit-log rows for this world."""
         async with self._state.op_lock:
@@ -932,6 +979,42 @@ class SyncRuntimeWorld:
         self, *component_types: type[Component], entity_ids: list[int] | None = None
     ) -> DataFrame:
         return self._run(lambda: self._world.query(*component_types, entity_ids=entity_ids))
+
+    def query_trajectory(
+        self,
+        component_type: type[Component],
+        *,
+        selection: TrajectorySelection | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> DataFrame:
+        return self._run(
+            lambda: self._world.query_trajectory(
+                component_type,
+                selection=selection,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+        )
+
+    def grade_trajectory(
+        self,
+        component_type: type[Component],
+        *,
+        graders: Sequence[TrajectoryGrader],
+        selection: TrajectorySelection | None = None,
+        ticks: list[int] | None = None,
+        entity_ids: list[int] | None = None,
+    ) -> list[GraderOutput]:
+        return self._run(
+            lambda: self._world.grade_trajectory(
+                component_type,
+                graders=graders,
+                selection=selection,
+                ticks=ticks,
+                entity_ids=entity_ids,
+            )
+        )
 
     def history(self, *, limit: int = 100, **filters: Any) -> DataFrame:
         return self._run(lambda: self._world.history(limit=limit, **filters))

@@ -47,6 +47,8 @@ operations = [
   "interfaces.iRuntimeApplication.reconcile_artifact_bundles",
   "interfaces.iRuntimeApplication.run_graders",
   "interfaces.iRuntimeApplication.evaluate",
+  "interfaces.iRuntimeApplication.query_trajectory",
+  "interfaces.iRuntimeApplication.grade_trajectory",
   "interfaces.iRuntimeApplication.agent_mission_service",
 ]
 signals = ["none"]

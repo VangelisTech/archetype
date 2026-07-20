@@ -9,6 +9,8 @@ operations = [
   "interfaces.iAgentMissionService.close",
   "interfaces.iAgentMissionService.query",
   "interfaces.iAgentMissionService.world_id",
+  "interfaces.iTrajectoryService.query",
+  "interfaces.iTrajectoryService.grade",
   "agent_service.MissionWorld.info",
   "agent_service.MissionWorld.query",
   "agent_service.MissionWorld.reserve_ids",
@@ -52,5 +54,6 @@ evidence = [
   "docs/guide/legacy-mission-attempt-kernel.md",
   "tests/app/test_mission_attempt_claims.py",
   "tests/app/test_mission_transition_authority.py",
+  "tests/app/test_trajectory_service.py",
 ]
 rationale = "Mission and attempt workflows have no approved direct signal; durable claims and transition validators own truth."

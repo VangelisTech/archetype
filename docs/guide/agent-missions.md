@@ -502,10 +502,11 @@ archetype.missions
 ├── coding_agents/     # implemented V1 state + transition package
 ├── sandboxes/         # family-owned execution resources
 ├── planning/          # HTN resolver; AgentTask/DependsOn adapter is future work
-└── trajectories/      # future mission evidence/projection vocabulary
+└── trajectories/      # typed evidence schemas, authoring values, pure transforms
 
 archetype.app.missions
-└── agent_service.py   # composition and durable workflow boundary
+├── agent_service.py       # composition and durable workflow boundary
+└── trajectory_service.py  # query/evaluation composition
 
 archetype.physical_ai  # physical state, policies, and external-step processors
 
@@ -519,7 +520,7 @@ The cleanup direction is:
 | Former `archetype.htn` | Moved to `archetype.missions.planning`; adapting solved plans into task entities and dependency relations remains future work. |
 | Former `archetype.datasets` | Removed; retained evidence identity now lives in `archetype.evaluation.contracts`. |
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
-| Trajectory helpers | Keep pure projections under missions; compose query- and evaluation-backed workflows in the app layer. |
+| Trajectory helpers | Moved under `archetype.missions.trajectories`; the app service composes query and evaluation without owning evidence or transitions. |
 | Physical-AI prototypes | Moved into the registered `archetype.physical_ai` family; application rollout/evaluation workflows remain separate. |
 | Research ledger state | Moved into `archetype.research`; `archetype.app.research` retains world/simulation orchestration. |
 | Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |

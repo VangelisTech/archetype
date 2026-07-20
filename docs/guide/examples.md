@@ -221,9 +221,11 @@ Requires an OpenAI API key (or any provider via `daft.set_provider()`).
 
 ---
 
-## 6. Trajectory Analysis
+## 6. Mission Trajectory Analysis
 
-Ingest agent trajectories, label them with LLM-based evaluation, and compare techniques via world forking. Demonstrates the full ECS pattern: components, processors, resources, and forking in a single script.
+Persist normalized trajectory headers, turns, and rewards, then select and
+grade one trajectory through the runtime-owned application service. The example
+is deterministic and requires no model credentials.
 
 ```bash
 uv run python examples/06_trajectory_analysis.py
@@ -233,10 +235,10 @@ Source: [`examples/06_trajectory_analysis.py`](https://github.com/VangelisTech/a
 
 **What it demonstrates:**
 
-- **Components**: `Trajectory` (JSON-encoded turns), `Label` (evaluation result)
-- **Processors**: `SamplingProcessor` (filter), `LabelingProcessor` (LLM eval), `ScoringProcessor` (normalize)
-- **Resources**: `SamplingConfig`, `LabelingConfig` staged on `runtime.world(..., resources=[...])`
-- **Fork-based comparison**: Clone a world with `world.fork(...)` and run an independent branch
+- **Normalized evidence**: header, turn, and reward rows remain independently queryable.
+- **Typed selection**: `TrajectorySelection` applies only fields stored by the requested table.
+- **Application composition**: `query_trajectory()` uses persisted query access; `grade_trajectory()` delegates graders to evaluation.
+- **No duplicate trajectory model**: the example consumes `archetype.missions.trajectories` directly.
 
 ---
 
