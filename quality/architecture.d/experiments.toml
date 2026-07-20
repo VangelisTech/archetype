@@ -9,26 +9,6 @@ allowed_families = ["archetype.physical_ai"]
 
 [[exception]]
 rule = "top_level_family_outward_dependency"
-consumer = "archetype.experiments"
-target = "archetype.app.research.models"
-owner = "experiments"
-issue = 585
-reason = "The provisional experiments package re-exports research ledger components from app."
-expiry_condition = "Remove when #585 moves the research ledger Components to archetype.research and deletes the provisional re-export."
-expires = "v0.5"
-
-[[exception]]
-rule = "top_level_family_outward_dependency"
-consumer = "archetype.experiments.loaders"
-target = "archetype.app.research.models"
-owner = "experiments"
-issue = 585
-reason = "The provisional runner-state loader imports the app-owned Run component."
-expiry_condition = "Remove when #585 moves the pure runner decoder and Run Component to archetype.research."
-expires = "v0.5"
-
-[[exception]]
-rule = "top_level_family_outward_dependency"
 consumer = "archetype.experiments.recorders"
 target = "archetype.app.models"
 owner = "experiments"

@@ -13,8 +13,8 @@
 # limitations under the License.
 
 """
-Experiment Components
-=====================
+Research Components
+===================
 
 Experiment, Run, Result, BranchHead: the ECS schema for autoresearch
 lifecycle state. Each is a first-class archetype Component, which means

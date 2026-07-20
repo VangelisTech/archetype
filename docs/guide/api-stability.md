@@ -55,10 +55,11 @@ and is landing incrementally. Dataset evidence identity now lives in
 gone. The former `archetype.htn` resolver now lives under
 `archetype.missions.planning`; its future adapter to mission task entities is
 not yet a supported authoring surface. The mixed `experiments` package is
-being staged into research and mission-owned trajectory modules; its physical
-state and processors have already moved to `physical_ai`. The surviving future
-family paths remain provisional until an implementation issue explicitly
-graduates a surface.
+being staged into mission-owned trajectory modules; its physical state and
+processors have moved to `physical_ai`, while research ledger state and its
+pure runner decoder now live in `archetype.research`. The surviving family
+paths remain provisional until an implementation issue explicitly graduates a
+surface.
 
 Do not build a compatibility promise around those module paths yet. New
 applications use `ArchetypeRuntime` and supported extension types. A future

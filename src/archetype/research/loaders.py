@@ -13,17 +13,16 @@
 # limitations under the License.
 
 """
-Experiment Loaders
-==================
+Research Loaders
+================
 
 Ingest external state into experiment Components, starting with
 archetype-runner's SQLite registry.
 
-Direct artifact path (no CommandGateway / RBAC) following the
-``scripts/ingest_claude_sessions.py`` pattern: SQLite → list of Run
-Components → ``world.create_entity(...)``. The runner's SQLite uses
-WAL mode, so these reads are safe even while the runner is actively
-writing.
+The decoder is deliberately pure with respect to Archetype state: SQLite rows
+become ``Run`` Components, and callers choose the supported runtime or
+application write boundary. The runner's SQLite uses WAL mode, so these reads
+are safe even while the runner is actively writing.
 """
 
 from __future__ import annotations
@@ -31,12 +30,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from archetype.app.research.models import Run
-
-if TYPE_CHECKING:
-    from archetype.core.aio import AsyncWorld
+from archetype.research.components import Run
 
 
 def _iso_to_ms(iso_str: str | None) -> int:
@@ -110,40 +105,3 @@ def load_runner_state_db(path: str | Path | None = None) -> list[Run]:
         return runs
     finally:
         conn.close()
-
-
-async def ingest_runner_state(
-    world: AsyncWorld,
-    path: str | Path | None = None,
-) -> int:
-    """Read archetype-runner's ``state.db`` and spawn one entity per run.
-
-    Thin wrapper over ``load_runner_state_db`` that calls
-    ``world.create_entity`` for each loaded Run. Entities are
-    in-memory after this call; caller should run one
-    ``simulation_service.step`` to materialize them to storage
-    if durable persistence is required.
-
-    Args:
-        world: The archetype world to load runs into.
-        path: Path to the runner's SQLite registry. If None, defaults
-            to ``~/.archetype-runner/state.db``.
-
-    Returns:
-        The number of Run entities spawned.
-
-    Example:
-        >>> container = ServiceContainer()
-        >>> world = await container.world_service.create_world(
-        ...     WorldConfig(name="runner-fleet"),
-        ...     StorageConfig(namespace="experiments"),
-        ... )
-        >>> count = await ingest_runner_state(world)
-        >>> await container.simulation_service.step(
-        ...     world.world_id, RunConfig(num_steps=1)
-        ... )
-    """
-    runs = load_runner_state_db(path)
-    for run in runs:
-        await world.create_entity([run])
-    return len(runs)

@@ -48,8 +48,8 @@ from archetype.app.research.contracts import (
     Evaluator,
     IterationResult,
 )
-from archetype.app.research.models import BranchHead, Experiment, Result, Run, RunStatus
 from archetype.core.config import RunConfig, WorldConfig
+from archetype.research import BranchHead, Experiment, Result, Run, RunStatus
 
 if TYPE_CHECKING:
     from archetype.app.world.interfaces import iSimulationService, iWorldService

@@ -15,9 +15,9 @@ from archetype import ArchetypeRuntime, AutoResearchConfig, EvaluationResult
 from archetype.app.gateway.auth.errors import GuardrailError
 from archetype.app.gateway.auth.models import ActorCtx
 from archetype.app.models import EpisodeConfig
-from archetype.app.research.models import Run, RunStatus
 from archetype.core.component import Component
 from archetype.core.config import StorageConfig
+from archetype.research import Run, RunStatus
 
 TARGET = 3.0
 

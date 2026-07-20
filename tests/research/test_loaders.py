@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from archetype.experiments import Run
-from archetype.experiments.loaders import _iso_to_ms, load_runner_state_db
+from archetype.research import Run
+from archetype.research.loaders import _iso_to_ms, load_runner_state_db
 
 
 def _make_runner_state_db(

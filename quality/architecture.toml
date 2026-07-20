@@ -382,7 +382,6 @@ allowed_interfaces = [
 ]
 allowed_app = [
   "archetype.app.research.contracts",
-  "archetype.app.research.models",
   "archetype.app.models",
 ]
 

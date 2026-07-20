@@ -61,7 +61,6 @@ FORBIDDEN_APP_IMPORTS_API = {
 ALLOWED_APP_IMPORTS_EXPERIMENTS = {
     "archetype.app.models",
     "archetype.app.research.contracts",
-    "archetype.app.research.models",
 }
 
 # Raw-service shapes a @public_api callable may not accept.

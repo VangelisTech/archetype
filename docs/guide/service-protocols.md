@@ -302,11 +302,13 @@ bundle value contracts live in `archetype.artifacts.bundles`. The evaluation
 family completed it under #557: `EvalReceipt` lives in
 `archetype.evaluation.components`, and the grading value contracts and
 identity digests live in `archetype.evaluation.contracts`. Current paths
-that predate this rule are migration state, not alternate ownership:
+that predate this rule are migration state, not alternate ownership. The
+research family completed #585: ledger Components and the pure runner decoder
+live under `archetype.research`, while loop coordination remains under
+`archetype.app.research`.
 
-- research ledger Components and runner imports move under #585, trajectory
-  recorder imports under #586, and physical-AI rollout/sweep orchestration
-  under #589, as adjudicated by #561; and
+- trajectory recorder imports remain under #586 and physical-AI rollout/sweep
+  orchestration remains under #589, as adjudicated by #561; and
 - the root `app/models.py` boundary-model split remains owned by #560.
 
 The exact temporary edges are recorded in `quality/architecture.toml`; no

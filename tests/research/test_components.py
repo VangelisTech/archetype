@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for experiment Components — Experiment, Run, Result, BranchHead."""
+"""Tests for research Components — Experiment, Run, Result, BranchHead."""
 
 import json
 
@@ -9,7 +9,7 @@ import pyarrow as pa
 import pytest
 
 from archetype.core.component import Component
-from archetype.experiments import (
+from archetype.research import (
     BranchHead,
     Experiment,
     Result,

@@ -30,16 +30,12 @@ emits one audit row per loop.
 
 ## What's Implemented
 
-The provisional `archetype.experiments` package currently models lifecycle
-state as ordinary Components, so runs become entities in an archetype world —
-forkable, time-travelable, and queryable with the same tools as any other
-simulation state. The package decision is now adjudicated: these ledger
-Components move to an independent top-level `archetype.research` family under
-[#585](https://github.com/VangelisTech/archetype/issues/585), while the workflow
-and its world/simulation coordination remain under `archetype.app.research`.
-They do not move into missions. Until #585 lands, the current module paths are
-implementation truth; the runtime behavior described above is the supported
-contract.
+`archetype.research` models lifecycle state as ordinary Components, so runs
+become entities in an archetype world—forkable, time-travelable, and queryable
+with the same tools as any other simulation state. It owns the reusable ledger
+schema and the pure runner-registry decoder. The workflow and its
+world/simulation coordination remain under `archetype.app.research`; research
+state does not move into missions.
 
 | Component | Role |
 |---|---|
@@ -55,16 +51,17 @@ The library deliberately does not define what "better" means. `Result.outputs_js
 `archetype-runner` is a separate tool that executes coding agents in VMs and records agent runs to SQLite. Its records can be ingested into an archetype world row-for-row:
 
 ```python
-from archetype.experiments import ingest_runner_state, load_runner_state_db
+from archetype.research import load_runner_state_db
 
-rows = load_runner_state_db("/path/to/runner/state.db")
-await ingest_runner_state(world_id, rows, container)
+runs = load_runner_state_db("/path/to/runner/state.db")
+for run in runs:
+    await world.spawn(run)
+await world.run(steps=1)  # publish the imported state at one tick boundary
 ```
 
-That container-backed helper is a provisional maintainer seam, not a supported
-application API. Issue #585 separates pure row decoding from ingestion and
-routes writes through the supported runtime/application path without changing
-the stored `Run` schema.
+Decoding has no world authority: it only returns `Run` Components. The caller
+submits those values through the same runtime boundary as any other spawn, so
+ingestion does not need a second container- or service-shaped API.
 
 After ingestion, runs are queryable as entities in the world — filter by `experiment_name`, join with `Result`, time-travel to a historical snapshot, or fork the world to explore "what if run X had won instead."
 
@@ -207,7 +204,7 @@ preserves the historical boundary and retained Archetype interfaces. The large b
 ## References
 
 - Andrej Karpathy's framing of autonomous software optimization and branch-frontier agent workflows
-- `src/archetype/experiments/` — the current component implementations
+- `src/archetype/research/` — research ledger Components and runner decoder
 - `archetype-runner` — the agent-in-VM runner whose registry feeds this schema
 - `src/archetype/experiments/eval_rollouts.py` — packaged batched rollout orchestration
 - `everettVT/robot-evals` — external LIBERO harness, GPU entrypoints, and run ledgers

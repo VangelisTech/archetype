@@ -177,10 +177,12 @@ The mission-adjacent cleanup direction is recorded in
 Dataset evidence identity has moved into evaluation and the datasets umbrella
 is gone. HTN resolution now lives under `archetype.missions.planning`. The
 physical-AI Components, processors, policy contracts, and external-boundary
-helpers now live in the registered `archetype.physical_ai` family. The remaining
-work moves mission trajectory projections and removes the experiments umbrella.
-The current source tree and machine manifest remain implementation truth until
-each move lands.
+helpers now live in the registered `archetype.physical_ai` family. Research
+ledger Components and the pure runner decoder live in `archetype.research`,
+while `archetype.app.research` retains workflow authority. The remaining work
+moves mission trajectory projections and removes the experiments umbrella. The
+current source tree and machine manifest remain implementation truth until each
+move lands.
 
 Every application family co-locates its internal protocols, boundary models,
 and authority implementation. It imports reusable domain values from their
@@ -473,8 +475,9 @@ still present but are not called by `runtime.missions(...)`.
 
 `quality/architecture.toml` and the fragments in `quality/architecture.d/`
 contain both the application-family DAG and the registered top-level family
-dispositions for `artifacts`, `datasets`, `evaluation`, `experiments`,
-`graph`, `htn`, `missions`, `projections`, and `research`.
+dispositions for `artifacts`, `evaluation`,
+`experiments`, `graph`, `missions`, `physical_ai`, `projections`, and
+`research`.
 `scripts/check_architecture.py` enforces their package direction, protocol
 imports, concrete construction, concrete inheritance, and persistent
 Component placement.
@@ -495,14 +498,12 @@ digests live in `archetype.evaluation.contracts`, and
 `archetype.app.evaluation` retains orchestration and receipt-write authority
 while importing those domain definitions inward.
 
-The remaining reverse edges from provisional `archetype.experiments` and the
-remaining Components under app-family `models.py` are preserved only by exact
-migration entries. The design gate in #561 has been adjudicated: research
-Components and runner imports now point to #585, trajectory recorder imports
-point to #586, and physical-AI rollout/sweep reverse imports point to #589.
-The physical-AI domain, ontology, and HTN namespace stages have landed; the
-transcript, workflow, and final umbrella-removal work remains. No architecture
-exception remains owned by Issue #561. Mission Components and pure world
+The remaining reverse edges from provisional `archetype.experiments` are
+preserved only by exact migration entries: trajectory recorder imports point
+to #586, and rollout/sweep reverse imports point to #589. The research,
+physical-AI, ontology, and HTN namespace stages have landed; the transcript,
+workflow, and final umbrella-removal work remains. No architecture exception
+remains owned by Issues #561 or #585. Mission Components and pure world
 transitions moved under Issue #559, so no mission migration exception remains.
 These entries make no app symbol supported.
 
