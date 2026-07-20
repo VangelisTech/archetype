@@ -364,3 +364,36 @@ def test_missing_allowlist_entry_fails(tmp_path):
         assert new_sites, "boundary_module.py gated site must be flagged as missing"
     finally:
         mod._project_root = orig_root  # type: ignore[method-assign]
+
+
+def test_allowlist_entry_does_not_authorize_replacement_call_at_same_line(tmp_path, monkeypatch):
+    """A same-method replacement at the pinned line is a new call site."""
+    source = tmp_path / "src" / "mypkg" / "migration.py"
+    source.parent.mkdir(parents=True)
+    _write_py(
+        source.parent,
+        source.name,
+        """\
+        def whole_table_export(frame):
+            return frame.to_pylist()
+        """,
+    )
+    _write_toml(
+        tmp_path,
+        [
+            {
+                "path": "src/mypkg/migration.py",
+                "line": 2,
+                "method": "to_pylist",
+                "qualname": "single_row_migration",
+                "reason": "Single-row migration extract at the storage boundary.",
+            }
+        ],
+    )
+
+    import check_lazy_audit as mod
+
+    monkeypatch.setattr(mod, "_project_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_lazy_audit.py"])
+
+    assert mod.main() == 1
