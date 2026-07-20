@@ -8,7 +8,7 @@ machine authority; this page is its review surface.
 | Contract | Owner | Risk | Normative source | Executable evidence | Profiles |
 | --- | --- | --- | --- | --- | --- |
 | `observability.signals.safe` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 1. Safe signal contract | pytest: 2 | `pr`, `main`, `release` |
-| `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 3 | `pr`, `main`, `release` |
+| `observability.logging.correlated` | `observability` | medium | [docs/guide/observability.md](../guide/observability.md) — 5. Process-host ownership | pytest: 2 | `pr`, `main`, `release` |
 | `observability.repository.enforced` | `observability` | high | [docs/guide/observability.md](../guide/observability.md) — 6. Family dispositions | pytest: 2; static: 1 | `pr`, `main`, `release` |
 | `sandboxes.attempt.phase_order` | `sandboxes` | high | [docs/guide/sandbox-execution.md](../guide/sandbox-execution.md) — 3. Six-phase attempt protocol | pytest: 2; static: 1; eval: 1 | `pr`, `main`, `release` |
 | `sandboxes.environment.pinned` | `sandboxes` | high | [docs/guide/sandbox-execution.md](../guide/sandbox-execution.md) — 9. Pinned environment inventory | pytest: 3; static: 1 | `pr`, `main`, `release` |

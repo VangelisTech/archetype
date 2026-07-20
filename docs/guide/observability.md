@@ -180,9 +180,11 @@ handler attached to the `archetype` package logger receives the same enriched
 correlation fields without moving the filter onto that foreign handler or the
 root logger.
 
-The old `contrib.logfire_observer.logfire_hooks()` entry point is a deprecated,
-warning-only shim that returns no hooks. It cannot create a second tick root,
-retain an open-span table, or bypass the safe signal boundary.
+The former `contrib.logfire_observer` hook surface has been removed. The private
+`archetype._obs` boundary owns the retained vendor-neutral vocabulary; process
+hosts select Logfire or OTLP exporters. There is no alternate hook factory that
+can create a second tick root, retain an open-span table, or bypass the safe
+signal boundary.
 
 ## 6. Family dispositions
 

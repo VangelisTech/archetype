@@ -45,7 +45,6 @@ reserved_infrastructure = [
   "archetype.api",
   "archetype.app",
   "archetype.cli",
-  "archetype.contrib",
   "archetype.core",
   "archetype.runtime",
 ]

@@ -25,7 +25,6 @@ DEFAULT_RESERVED_INFRASTRUCTURE = (
     "archetype.api",
     "archetype.app",
     "archetype.cli",
-    "archetype.contrib",
     "archetype.core",
     "archetype.runtime",
 )
@@ -642,9 +641,7 @@ allowed_families = []
 def test_unclassified_internal_import_fails_and_declared_lower_family_passes(
     tmp_path: Path,
 ) -> None:
-    reserved = tuple(
-        scope for scope in DEFAULT_RESERVED_INFRASTRUCTURE if scope != "archetype.contrib"
-    )
+    reserved = DEFAULT_RESERVED_INFRASTRUCTURE
     for name, declare_contrib, should_pass in (
         ("unclassified", False, False),
         ("declared", True, True),

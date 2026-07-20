@@ -517,7 +517,7 @@ The cleanup direction is:
 | `archetype.experiments` | Remove; keep only code with a clear owner under missions, research, or physical AI. |
 | Trajectory helpers | Keep pure projections under missions; compose query- and evaluation-backed workflows in the app layer. |
 | Physical-AI prototypes | Give them a dedicated `archetype.physical_ai` family rather than an experiments umbrella. |
-| `archetype.contrib` observability helpers | Fold the retained vocabulary into `archetype._obs`. |
+| Former `archetype.contrib` observability shim | Removed; retained vendor-neutral vocabulary lives in `archetype._obs`. |
 
 Those moves are not prerequisites for V1 and should not be smuggled into its
 transition protocol. They are the next repository-shape refactor.
