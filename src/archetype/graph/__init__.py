@@ -15,6 +15,7 @@ from archetype.graph.components import ChildOf, Policy, Relation, require_relati
 from archetype.graph.depth import Depth, DepthProcessor, toposorted
 from archetype.graph.edges import WorldLike, edges, link, unlink
 from archetype.graph.frames import between, live_edge_ids, with_source, with_target
+from archetype.graph.traverse import ancestors, descendants, neighborhood
 from archetype.graph.view import GraphView
 
 __all__ = [
@@ -25,16 +26,19 @@ __all__ = [
     "GraphView",
     "Policy",
     "Relation",
+    "WorldLike",
+    "ancestors",
+    "between",
     "cascade",
     "dangling_edges",
-    "toposorted",
-    "WorldLike",
-    "between",
+    "descendants",
     "edges",
     "link",
     "live_edge_ids",
+    "neighborhood",
     "require_relation",
     "sync",
+    "toposorted",
     "unlink",
     "with_source",
     "with_target",
