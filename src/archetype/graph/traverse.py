@@ -48,6 +48,8 @@ def neighborhood(
     root_ids = list(roots)
     if not root_ids:
         raise ValueError("neighborhood requires at least one root")
+    if direction not in ("out", "in"):
+        raise ValueError(f"direction must be 'out' or 'in', got {direction!r}")
 
     prefix = rel.get_prefix()
     from_col, to_col = (f"{prefix}source", f"{prefix}target")
