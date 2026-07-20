@@ -11,12 +11,8 @@ from typing import TYPE_CHECKING
 from daft import DataFrame
 
 from archetype.core.config import StorageConfig
-from archetype.missions.contracts import (
-    AgentMissionConfig,
-    AgentTask,
-    MissionResult,
-    SubmittedMission,
-)
+from archetype.missions.coding_agents.contracts import AgentMissionConfig
+from archetype.missions.contracts import AgentTask, MissionResult, SubmittedMission
 
 if TYPE_CHECKING:
     from pathlib import Path

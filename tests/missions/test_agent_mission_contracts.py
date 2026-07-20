@@ -8,22 +8,20 @@ from __future__ import annotations
 import pytest
 
 from archetype.missions import (
-    AgentMissionSandbox,
     AgentTask,
     CommandValidator,
     MissionSubmission,
     RepositoryPublicationPolicy,
 )
 from archetype.missions.coding_agents import (
-    AgentTaskEvidence,
+    AGENT_OUTPUT_COMPONENTS,
+    AGENT_TASK_COMPONENTS,
+    AgentExecution,
     AgentTaskPolicy,
-    AgentTaskValidators,
+    TaskDispatch,
+    TaskValidator,
+    ValidationResult,
     agent_mission_processors,
-)
-from archetype.missions.contracts import (
-    ExecutionOutcome,
-    TaskExecutionReceipt,
-    ValidatorResult,
 )
 
 
@@ -53,8 +51,9 @@ def test_submission_is_an_explicit_typed_dag_without_a_planner_switch() -> None:
     )
     assert AgentTaskPolicy().publication_policy == RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
     assert "decompose" not in AgentTask.__dataclass_fields__
+    assert "max_attempts" not in AgentTask.__dataclass_fields__
     assert [type(processor).__name__ for processor in agent_mission_processors()] == [
-        "TaskGateProcessor",
+        "TaskDecisionProcessor",
         "TaskReadinessProcessor",
         "TaskDispatchProcessor",
         "MissionRollupProcessor",
@@ -82,46 +81,29 @@ def test_submission_rejects_invalid_relationships(tasks, message: str) -> None:
         MissionSubmission(repository="repo", branch="agent/test", tasks=tasks)
 
 
-def test_typed_validators_and_receipts_are_arrow_encoded_only_inside_components() -> None:
-    validator = CommandValidator(
-        name="red",
-        command=("pytest", "-q", "tests/test_bug.py"),
+def test_validators_dispatches_and_outputs_are_first_class_state() -> None:
+    validator = TaskValidator(
+        name="expected-red",
+        command=["pytest", "-q", "tests/test_bug.py"],
         expected_returncode=1,
     )
-    component = AgentTaskValidators.from_specs((validator,))
-    assert component.specs() == (validator,)
-
-    receipt = TaskExecutionReceipt(
-        mission_id=1,
+    dispatch = TaskDispatch(dispatch_id="dispatch", sequence=1)
+    result = ValidationResult(
         task_id=2,
-        attempt_id="attempt",
-        attempt_index=1,
-        outcome=ExecutionOutcome.ACCEPTED,
-        validator_results=(
-            ValidatorResult(
-                name=validator.name,
-                command=validator.command,
-                returncode=1,
-                passed=True,
-                stdout="expected red test",
-            ),
-        ),
-        commit_sha="abc123",
+        validator_id=3,
+        execution_id=4,
+        dispatch_id=dispatch.dispatch_id,
+        dispatch_sequence=dispatch.sequence,
+        revision="abc123",
+        expected_returncode=validator.expected_returncode,
+        actual_returncode=1,
     )
-    evidence = AgentTaskEvidence.from_receipt(receipt)
-    assert evidence.validator_results() == receipt.validator_results
 
-
-class _Sandbox:
-    async def run_many(self, requests):
-        return ()
-
-    async def close_mission(self, mission_id: int) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-
-def test_sandbox_is_a_narrow_world_resource_protocol() -> None:
-    assert isinstance(_Sandbox(), AgentMissionSandbox)
+    assert result.passed is True
+    assert "passed" not in ValidationResult.model_fields
+    assert "specs_json" not in TaskValidator.model_fields
+    assert "attempt" not in " ".join(
+        component.__name__.lower()
+        for component in (*AGENT_TASK_COMPONENTS, *AGENT_OUTPUT_COMPONENTS)
+    )
+    assert AgentExecution.model_fields["status"].default == "starting"

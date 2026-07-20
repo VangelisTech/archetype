@@ -59,14 +59,17 @@ import asyncio
 
 from archetype import ArchetypeRuntime
 from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
-from archetype.missions.sandboxes.modal import ModalSandboxBackend
+from archetype.missions.sandboxes.modal import ModalSandboxBackend, ModalSandboxConfig
 
 
 MISSION_CONFIG = AgentMissionConfig(
     sandbox_backend=ModalSandboxBackend(
-        auth_volume_name="archetype-codex-auth",
-        github_secret_name="archetype-github",
+        ModalSandboxConfig(
+            auth_volume_name="archetype-codex-auth",
+            github_secret_name="archetype-github",
+        )
     ),
+    sandbox_environment="modal-codex-v1@sha256:<reviewed-image-digest>",
     max_ticks=40,
 )
 

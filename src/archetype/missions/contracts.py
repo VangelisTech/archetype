@@ -1,13 +1,12 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Typed authoring and execution contracts for coding-agent missions."""
+"""Typed authoring and result contracts for coding-agent missions."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -28,34 +27,6 @@ class CommandValidator:
             raise ValueError("validator timeout_seconds must be positive")
 
 
-@dataclass(frozen=True)
-class ValidatorResult:
-    """Observed result of one validator invocation."""
-
-    name: str
-    command: tuple[str, ...]
-    returncode: int
-    passed: bool
-    stdout: str = ""
-    stderr: str = ""
-
-
-@dataclass(frozen=True)
-class ArtifactRef:
-    """Provider-neutral reference to one output produced by an attempt."""
-
-    kind: str
-    uri: str
-
-
-@dataclass(frozen=True)
-class Friction:
-    """One structured obstacle reported while executing a task."""
-
-    kind: str
-    message: str
-
-
 class RepositoryPublicationPolicy(StrEnum):
     """Repository finalization required before a task may be accepted."""
 
@@ -70,7 +41,7 @@ class AgentTask:
     prompt: str
     validators: tuple[CommandValidator, ...]
     depends_on: tuple[str, ...] = ()
-    max_attempts: int = 3
+    max_dispatches: int = 3
     publication_policy: RepositoryPublicationPolicy = RepositoryPublicationPolicy.COMMIT_AND_PUSH
 
     def __post_init__(self) -> None:
@@ -80,8 +51,8 @@ class AgentTask:
             raise ValueError(f"task {self.name!r} prompt must not be empty")
         if not self.validators:
             raise ValueError(f"task {self.name!r} requires at least one validator")
-        if self.max_attempts < 1:
-            raise ValueError(f"task {self.name!r} max_attempts must be positive")
+        if self.max_dispatches < 1:
+            raise ValueError(f"task {self.name!r} max_dispatches must be positive")
         try:
             policy = RepositoryPublicationPolicy(self.publication_policy)
         except ValueError as exc:
@@ -146,86 +117,6 @@ class MissionSubmission:
 
 
 @dataclass(frozen=True)
-class TaskExecutionRequest:
-    """One processor-authorized task attempt sent to the sandbox resource."""
-
-    mission_id: int
-    task_id: int
-    task_name: str
-    repository: str
-    branch: str
-    base_ref: str
-    prompt: str
-    validators: tuple[CommandValidator, ...]
-    publication_policy: RepositoryPublicationPolicy
-    attempt_id: str
-    attempt_index: int
-    previous_session_id: str = ""
-    previous_validator_results: tuple[ValidatorResult, ...] = ()
-
-    def __post_init__(self) -> None:
-        try:
-            policy = RepositoryPublicationPolicy(self.publication_policy)
-        except ValueError as exc:
-            raise ValueError("unsupported repository publication policy") from exc
-        object.__setattr__(self, "publication_policy", policy)
-
-
-class ExecutionOutcome(StrEnum):
-    """Facts a sandbox may report; processors assign their mission meaning."""
-
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-    FAILED = "failed"
-
-
-@dataclass(frozen=True)
-class TaskExecutionReceipt:
-    """Typed observation returned by the sandbox resource."""
-
-    mission_id: int
-    task_id: int
-    attempt_id: str
-    attempt_index: int
-    outcome: ExecutionOutcome
-    validator_results: tuple[ValidatorResult, ...]
-    sandbox_id: str = ""
-    worktree: str = ""
-    agent_session_id: str = ""
-    commit_sha: str = ""
-    commit_message: str = ""
-    pushed: bool = False
-    error: str = ""
-    artifacts: tuple[ArtifactRef, ...] = ()
-    friction: tuple[Friction, ...] = ()
-
-
-@runtime_checkable
-class AgentMissionSandbox(Protocol):
-    """World resource that executes processor-authorized task attempts."""
-
-    async def run_many(
-        self, requests: tuple[TaskExecutionRequest, ...]
-    ) -> tuple[TaskExecutionReceipt, ...]: ...
-
-    async def close_mission(self, mission_id: int) -> None: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class AgentMissionConfig:
-    """Process-level Agent Missions configuration bound once to a runtime handle."""
-
-    sandbox: AgentMissionSandbox
-    max_ticks: int = 100
-
-    def __post_init__(self) -> None:
-        if self.max_ticks < 1:
-            raise ValueError("AgentMissionConfig.max_ticks must be positive")
-
-
-@dataclass(frozen=True)
 class SubmittedMission:
     """Stable entity identities produced by ``missions.submit``."""
 
@@ -246,8 +137,8 @@ class TaskResult:
     task_id: int
     name: str
     status: str
-    attempts: int
-    commit_sha: str
+    dispatches: int
+    commit_shas: tuple[str, ...]
     reason: str = ""
 
 

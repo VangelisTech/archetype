@@ -1,7 +1,7 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in data-centric state transition processors for Agent Missions."""
+"""Data-centric transition authority for Agent Missions."""
 
 from __future__ import annotations
 
@@ -16,65 +16,198 @@ from archetype.core.aio.async_processor import AsyncProcessor
 from archetype.core.resources import Resources
 from archetype.graph import GraphView
 from archetype.missions.coding_agents.components import (
+    AgentCommit,
+    AgentExecution,
     AgentMissionRecord,
     AgentMissionState,
-    AgentTaskAttempt,
     AgentTaskPolicy,
     AgentTaskRecord,
     AgentTaskState,
+    TaskDispatch,
+    ValidationResult,
 )
+from archetype.missions.coding_agents.contracts import AgentExecutionStatus
 from archetype.missions.coding_agents.transitions import (
-    AgentAttemptStatus,
     AgentMissionStatus,
     AgentTaskStatus,
 )
-from archetype.missions.relationships import DependsOn, PartOfMission
+from archetype.missions.relationships import DependsOn, Guards, PartOfMission
 
 
-class TaskGateProcessor(AsyncProcessor):
-    """Consume one sandbox receipt and accept, retry, or fail the task."""
+class TaskDecisionProcessor(AsyncProcessor):
+    """Accept, retry, or exhaust from current revision-bound observations."""
 
-    components = (AgentTaskState, AgentTaskAttempt, AgentTaskPolicy)
+    components = (AgentTaskState, TaskDispatch, AgentTaskPolicy)
     priority = 10
 
-    async def process(self, df: DataFrame, **_: Any) -> DataFrame:
-        state = AgentTaskState.get_prefix()
-        attempt = AgentTaskAttempt.get_prefix()
-        policy = AgentTaskPolicy.get_prefix()
-        original = tuple(df.column_names)
+    async def process(
+        self,
+        df: DataFrame,
+        resources: Resources | None = None,
+        **_: Any,
+    ) -> DataFrame:
+        if resources is None:
+            raise KeyError("TaskDecisionProcessor requires world resources")
+        view = resources.require(GraphView)
+        executions = view.frame(AgentExecution)
+        guards = view.frame(Guards)
+        if executions is None or guards is None:
+            return df
 
-        dispatched = cast(Expression, col(f"{state}status") == AgentTaskStatus.DISPATCHED.value)
-        unsettled = ~col(f"{attempt}settled")
+        execution = AgentExecution.get_prefix()
+        validation = ValidationResult.get_prefix()
+        commit = AgentCommit.get_prefix()
+        guard = Guards.get_prefix()
+        terminal = executions.where(
+            col(f"{execution}status").is_in(
+                [
+                    AgentExecutionStatus.EXITED.value,
+                    AgentExecutionStatus.ERRORED.value,
+                    AgentExecutionStatus.INTERRUPTED.value,
+                ]
+            )
+        ).select(
+            col("entity_id").alias("_execution_id"),
+            col(f"{execution}task_id").alias("_summary_task_id"),
+            col(f"{execution}dispatch_id").alias("_summary_dispatch_id"),
+            col(f"{execution}status").alias("_execution_status"),
+            col(f"{execution}final_revision").alias("_final_revision"),
+            col(f"{execution}error").alias("_execution_error"),
+        )
+
+        guard_counts = guards.groupby(f"{guard}target").agg(
+            col("entity_id").count().alias("_guard_count")
+        )
+        summary = terminal.join(
+            guard_counts,
+            left_on="_summary_task_id",
+            right_on=f"{guard}target",
+            how="left",
+        )
+
+        validations = view.frame(ValidationResult)
+        if validations is not None:
+            guarded_results = validations.join(
+                guards.select(f"{guard}source", f"{guard}target"),
+                left_on=f"{validation}validator_id",
+                right_on=f"{guard}source",
+            ).where(col(f"{validation}task_id") == col(f"{guard}target"))
+            guarded_results = guarded_results.join(
+                terminal,
+                left_on=f"{validation}execution_id",
+                right_on="_execution_id",
+            ).where(
+                (col(f"{validation}task_id") == col("_summary_task_id"))
+                & (col(f"{validation}dispatch_id") == col("_summary_dispatch_id"))
+                & (col(f"{validation}revision") == col("_final_revision"))
+            )
+            guarded_results = guarded_results.with_column(
+                "_passed",
+                when(
+                    col(f"{validation}actual_returncode")
+                    == col(f"{validation}expected_returncode"),
+                    then=lit(1),
+                ).otherwise(lit(0)),
+            )
+            validation_counts = guarded_results.groupby(
+                "_summary_task_id",
+                "_summary_dispatch_id",
+                "_execution_id",
+            ).agg(
+                col("entity_id").count().alias("_validation_count"),
+                col("_passed").sum().alias("_passed_count"),
+            )
+            summary = summary.join(
+                validation_counts,
+                left_on=["_summary_task_id", "_summary_dispatch_id", "_execution_id"],
+                right_on=["_summary_task_id", "_summary_dispatch_id", "_execution_id"],
+                how="left",
+            )
+        else:
+            summary = summary.with_column("_validation_count", lit(0))
+            summary = summary.with_column("_passed_count", lit(0))
+
+        commits = view.frame(AgentCommit)
+        if commits is not None:
+            final_commits = commits.join(
+                terminal,
+                left_on=f"{commit}execution_id",
+                right_on="_execution_id",
+            ).where(
+                (col(f"{commit}task_id") == col("_summary_task_id"))
+                & (col(f"{commit}dispatch_id") == col("_summary_dispatch_id"))
+                & (col(f"{commit}sha") == col("_final_revision"))
+                & col(f"{commit}pushed")
+                & col(f"{commit}final_revision")
+            )
+            commit_counts = final_commits.groupby(
+                "_summary_task_id",
+                "_summary_dispatch_id",
+                "_execution_id",
+            ).agg(col("entity_id").count().alias("_final_commit_count"))
+            summary = summary.join(
+                commit_counts,
+                left_on=["_summary_task_id", "_summary_dispatch_id", "_execution_id"],
+                right_on=["_summary_task_id", "_summary_dispatch_id", "_execution_id"],
+                how="left",
+            )
+        else:
+            summary = summary.with_column("_final_commit_count", lit(0))
+
+        original = tuple(df.column_names)
+        dispatch = TaskDispatch.get_prefix()
+        df = df.join(
+            summary,
+            left_on=["entity_id", f"{dispatch}dispatch_id"],
+            right_on=["_summary_task_id", "_summary_dispatch_id"],
+            how="left",
+        )
+        state = AgentTaskState.get_prefix()
+        policy = AgentTaskPolicy.get_prefix()
+        dispatched = cast(
+            Expression,
+            col(f"{state}status") == AgentTaskStatus.DISPATCHED.value,
+        )
+        has_terminal = col("_execution_id").not_null()
+        exited = cast(
+            Expression,
+            col("_execution_status") == AgentExecutionStatus.EXITED.value,
+        )
+        guard_count = col("_guard_count").fill_null(0)
+        validation_count = col("_validation_count").fill_null(0)
+        passed_count = col("_passed_count").fill_null(0)
+        final_commit_count = col("_final_commit_count").fill_null(0)
+        positive_guard_count = cast(
+            Expression,
+            guard_count > 0,  # ty: ignore[unsupported-operator]
+        )
+        complete_validation = validation_count == guard_count
+        passing_validation = passed_count == guard_count
+        published_revision = cast(Expression, final_commit_count == 1)
         accepted = (
             dispatched
-            & unsettled
-            & cast(
-                Expression,
-                col(f"{attempt}status") == AgentAttemptStatus.ACCEPTED.value,
-            )
+            & has_terminal
+            & exited
+            & positive_guard_count
+            & complete_validation
+            & passing_validation
+            & published_revision
         )
-        rejected = (
-            dispatched
-            & unsettled
-            & col(f"{attempt}status").is_in(
-                [AgentAttemptStatus.REJECTED.value, AgentAttemptStatus.FAILED.value]
-            )
-        )
-        retryable = rejected & (col(f"{attempt}attempt_index") < col(f"{policy}max_attempts"))
+        rejected = dispatched & has_terminal & ~accepted
+        retryable = rejected & (col(f"{dispatch}sequence") < col(f"{policy}max_dispatches"))
         exhausted = rejected & ~retryable
-        consumed = accepted | rejected
-
-        reason = when(exhausted, then=col(f"{attempt}error").fill_null(""))
-        reason = reason.otherwise(col(f"{state}reason"))
+        failure_reason = when(
+            col("_execution_error").fill_null("") != "",
+            then=col("_execution_error"),
+        ).otherwise(lit("validation or repository publication failed"))
         df = df.with_columns(
             {
                 f"{state}status": when(accepted, then=lit(AgentTaskStatus.ACCEPTED.value))
                 .when(retryable, then=lit(AgentTaskStatus.READY.value))
                 .when(exhausted, then=lit(AgentTaskStatus.FAILED.value))
                 .otherwise(col(f"{state}status")),
-                f"{state}reason": reason,
-                f"{attempt}settled": when(consumed, then=lit(True)).otherwise(
-                    col(f"{attempt}settled")
+                f"{state}reason": when(exhausted, then=failure_reason).otherwise(
+                    col(f"{state}reason")
                 ),
             }
         )
@@ -82,7 +215,7 @@ class TaskGateProcessor(AsyncProcessor):
 
 
 class TaskReadinessProcessor(AsyncProcessor):
-    """Move PENDING tasks to READY when every DependsOn target is accepted."""
+    """Move pending tasks to ready when every prerequisite is accepted."""
 
     components = (AgentTaskRecord, AgentTaskState)
     priority = 20
@@ -140,69 +273,58 @@ class TaskReadinessProcessor(AsyncProcessor):
         return unblocked.select(*original)
 
 
-_BEGIN_ATTEMPT = DataType.struct(
+_BEGIN_DISPATCH = DataType.struct(
     {
         "task_status": DataType.string(),
-        "attempt_id": DataType.string(),
-        "attempt_index": DataType.int64(),
-        "attempt_status": DataType.string(),
-        "settled": DataType.bool(),
+        "dispatch_id": DataType.string(),
+        "sequence": DataType.int64(),
     }
 )
 
 
-@daft.func(return_dtype=_BEGIN_ATTEMPT)
-def _begin_attempt(
+@daft.func(return_dtype=_BEGIN_DISPATCH)
+def _begin_dispatch(
     entity_id: int,
     task_status: str,
-    attempt_id: str,
-    attempt_index: int,
-    attempt_status: str,
-    settled: bool,
+    dispatch_id: str,
+    sequence: int,
 ) -> dict[str, Any]:
     if task_status != AgentTaskStatus.READY.value:
         return {
             "task_status": task_status,
-            "attempt_id": attempt_id,
-            "attempt_index": attempt_index,
-            "attempt_status": attempt_status,
-            "settled": settled,
+            "dispatch_id": dispatch_id,
+            "sequence": sequence,
         }
-    next_index = attempt_index + 1
-    identity = hashlib.sha256(f"{entity_id}:{next_index}".encode()).hexdigest()
+    next_sequence = sequence + 1
+    identity = hashlib.sha256(f"{entity_id}:{next_sequence}".encode()).hexdigest()
     return {
         "task_status": AgentTaskStatus.DISPATCHED.value,
-        "attempt_id": identity,
-        "attempt_index": next_index,
-        "attempt_status": AgentAttemptStatus.PENDING.value,
-        "settled": False,
+        "dispatch_id": identity,
+        "sequence": next_sequence,
     }
 
 
 class TaskDispatchProcessor(AsyncProcessor):
-    """Turn READY rows into durable execution intents after gate processing."""
+    """Turn ready tasks into durable external-work intent."""
 
-    components = (AgentTaskRecord, AgentTaskState, AgentTaskAttempt)
+    components = (AgentTaskRecord, AgentTaskState, TaskDispatch)
     priority = 30
 
     async def process(self, df: DataFrame, **_: Any) -> DataFrame:
         state = AgentTaskState.get_prefix()
-        attempt = AgentTaskAttempt.get_prefix()
+        dispatch = TaskDispatch.get_prefix()
         df = df.with_column(
             "_agent_mission_dispatch",
-            _begin_attempt(
+            _begin_dispatch(
                 col("entity_id"),
                 col(f"{state}status"),
-                col(f"{attempt}attempt_id"),
-                col(f"{attempt}attempt_index"),
-                col(f"{attempt}status"),
-                col(f"{attempt}settled"),
+                col(f"{dispatch}dispatch_id"),
+                col(f"{dispatch}sequence"),
             ),
         )
         df = df.with_column(f"{state}status", col("_agent_mission_dispatch")["task_status"])
-        for field in ("attempt_id", "attempt_index", "status", "settled"):
-            source = "attempt_status" if field == "status" else field
-            df = df.with_column(f"{attempt}{field}", col("_agent_mission_dispatch")[source])
+        for field in ("dispatch_id", "sequence"):
+            df = df.with_column(f"{dispatch}{field}", col("_agent_mission_dispatch")[field])
         return df.exclude("_agent_mission_dispatch")
 
 
@@ -288,10 +410,10 @@ class MissionRollupProcessor(AsyncProcessor):
 
 
 def agent_mission_processors() -> tuple[AsyncProcessor, ...]:
-    """Return the complete built-in V1 transition pipeline."""
+    """Return the complete built-in task transition pipeline."""
 
     return (
-        TaskGateProcessor(),
+        TaskDecisionProcessor(),
         TaskReadinessProcessor(),
         TaskDispatchProcessor(),
         MissionRollupProcessor(),

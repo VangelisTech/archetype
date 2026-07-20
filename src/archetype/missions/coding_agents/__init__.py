@@ -1,23 +1,32 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Batteries-included coding-agent mission family."""
+"""Batteries-included coding-agent mission behavior."""
 
 from archetype.missions.coding_agents.components import (
+    AGENT_OUTPUT_COMPONENTS,
     AGENT_TASK_COMPONENTS,
+    AgentArtifact,
+    AgentCheckpoint,
+    AgentCommit,
+    AgentExecution,
+    AgentFrictionLog,
     AgentMissionRecord,
     AgentMissionState,
-    AgentTaskAttempt,
-    AgentTaskEvidence,
     AgentTaskPolicy,
     AgentTaskRecord,
     AgentTaskState,
-    AgentTaskValidators,
     AgentTaskWorkspace,
+    FilesystemManifest,
+    Sandbox,
+    TaskDispatch,
+    TaskValidator,
+    ValidationResult,
 )
 from archetype.missions.coding_agents.contracts import (
     AgentExecutionResult,
     AgentExecutionStatus,
+    AgentMissionConfig,
     AgentProcessObservation,
     CodingAgentDriver,
     CommitObservation,
@@ -33,52 +42,55 @@ from archetype.missions.coding_agents.harness import (
 )
 from archetype.missions.coding_agents.processors import (
     MissionRollupProcessor,
+    TaskDecisionProcessor,
     TaskDispatchProcessor,
-    TaskGateProcessor,
     TaskReadinessProcessor,
     agent_mission_processors,
 )
-from archetype.missions.coding_agents.resources import (
-    AgentMissionSandboxResource,
-    TaskExecutionOutbox,
-)
+from archetype.missions.coding_agents.resources import TaskDispatchOutbox
 from archetype.missions.coding_agents.transitions import (
-    AgentAttemptStatus,
     AgentMissionStatus,
     AgentTaskStatus,
 )
 
 __all__ = [
+    "AGENT_OUTPUT_COMPONENTS",
     "AGENT_TASK_COMPONENTS",
+    "AgentArtifact",
+    "AgentCheckpoint",
+    "AgentCommit",
+    "AgentExecution",
     "AgentExecutionResult",
     "AgentExecutionStatus",
-    "AgentAttemptStatus",
+    "AgentFrictionLog",
+    "AgentMissionConfig",
     "AgentMissionRecord",
-    "AgentMissionSandboxResource",
     "AgentMissionState",
     "AgentMissionStatus",
-    "AgentTaskAttempt",
-    "AgentTaskEvidence",
+    "AgentProcessObservation",
     "AgentTaskPolicy",
     "AgentTaskRecord",
     "AgentTaskState",
     "AgentTaskStatus",
-    "AgentTaskValidators",
     "AgentTaskWorkspace",
-    "AgentProcessObservation",
     "CodexDriver",
     "CodingAgentDriver",
     "CodingAgentHarness",
     "CodingAgentHarnessConfig",
     "CommitObservation",
     "DispatchedValidator",
+    "FilesystemManifest",
     "FrictionObservation",
     "MissionRollupProcessor",
+    "Sandbox",
+    "TaskDecisionProcessor",
+    "TaskDispatch",
+    "TaskDispatchOutbox",
     "TaskDispatchProcessor",
     "TaskDispatchRequest",
-    "TaskExecutionOutbox",
-    "TaskGateProcessor",
     "TaskReadinessProcessor",
+    "TaskValidator",
     "ValidationObservation",
+    "ValidationResult",
     "agent_mission_processors",
 ]

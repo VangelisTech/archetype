@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from daft import DataFrame, Expression, col
 
@@ -16,34 +16,51 @@ from archetype.core.config import StorageConfig
 from archetype.core.hooks import PostTick
 from archetype.graph import GraphView
 from archetype.missions.coding_agents import (
-    AgentMissionSandboxResource,
-    TaskExecutionOutbox,
-    agent_mission_processors,
-)
-from archetype.missions.coding_agents.components import (
+    AgentCommit,
+    AgentExecution,
+    AgentExecutionResult,
+    AgentExecutionStatus,
+    AgentFrictionLog,
+    AgentMissionConfig,
     AgentMissionRecord,
     AgentMissionState,
-    AgentTaskAttempt,
-    AgentTaskEvidence,
     AgentTaskPolicy,
     AgentTaskRecord,
     AgentTaskState,
-    AgentTaskValidators,
     AgentTaskWorkspace,
+    CodexDriver,
+    CodingAgentHarness,
+    CodingAgentHarnessConfig,
+    Sandbox,
+    TaskDispatch,
+    TaskDispatchOutbox,
+    TaskValidator,
+    ValidationResult,
+    agent_mission_processors,
 )
 from archetype.missions.coding_agents.transitions import AgentMissionStatus
 from archetype.missions.contracts import (
-    AgentMissionConfig,
     AgentTask,
-    ExecutionOutcome,
     MissionResult,
     MissionSubmission,
-    RepositoryPublicationPolicy,
     SubmittedMission,
-    TaskExecutionReceipt,
     TaskResult,
 )
-from archetype.missions.relationships import DependsOn, PartOfMission
+from archetype.missions.relationships import (
+    DependsOn,
+    Executes,
+    Guards,
+    PartOfMission,
+    ProducedBy,
+    RunsIn,
+)
+from archetype.missions.sandboxes import (
+    SandboxIdentity,
+    SandboxKey,
+    SandboxService,
+    SandboxSpec,
+    SandboxStatus,
+)
 
 
 class MissionWorld(Protocol):
@@ -74,12 +91,7 @@ class MissionWorldInfo(Protocol):
 
 
 class AgentMissionService:
-    """Compose and drive the batteries-included coding-agent mission workflow.
-
-    Transition policy remains in the installed family processors. This service
-    owns bundle and world lifecycle, graph materialization, post-commit I/O, and
-    typed result projection.
-    """
+    """Materialize task graphs and compose committed ticks with external I/O."""
 
     def __init__(
         self,
@@ -87,29 +99,39 @@ class AgentMissionService:
         world_factory: Callable[..., MissionWorld],
         name: str,
         config: AgentMissionConfig,
+        sandbox_service: SandboxService,
         storage: str | Path | StorageConfig | None = None,
     ) -> None:
         view = GraphView()
-        outbox = TaskExecutionOutbox()
+        outbox = TaskDispatchOutbox()
         world = world_factory(
             name,
             storage=storage,
             processors=list(agent_mission_processors()),
-            resources=[
-                view,
-                outbox,
-                AgentMissionSandboxResource(config.sandbox),
-            ],
+            resources=[view, outbox],
             hooks=[
                 (PostTick, view.on_post_tick),
                 (PostTick, outbox.on_post_tick),
             ],
         )
+        driver = config.driver or CodexDriver(
+            model=config.model,
+            workspace=config.workspace,
+        )
         self._world = world
         self._view = view
         self._outbox = outbox
-        self._sandbox = config.sandbox
+        self._sandboxes = sandbox_service
+        self._sandbox_provider = config.sandbox_backend.name
+        self._sandbox_environment = config.sandbox_environment
+        self._workspace = config.workspace
+        self._harness = CodingAgentHarness(
+            driver,
+            CodingAgentHarnessConfig(workspace=config.workspace),
+        )
         self._max_ticks = config.max_ticks
+        self._sandbox_entities: dict[str, tuple[int, Sandbox]] = {}
+        self._mission_sandboxes: dict[int, str] = {}
 
     async def submit(
         self,
@@ -120,7 +142,7 @@ class AgentMissionService:
         name: str = "agent-mission",
         base_ref: str = "main",
     ) -> SubmittedMission:
-        """Materialize one explicit task DAG into mission, task, and edge entities."""
+        """Materialize one explicit task and validator graph."""
 
         submission = MissionSubmission(
             repository=repository,
@@ -156,15 +178,23 @@ class AgentMissionService:
                     base_ref=submission.base_ref,
                 ),
                 AgentTaskPolicy(
-                    max_attempts=task.max_attempts,
+                    max_dispatches=task.max_dispatches,
                     publication_policy=task.publication_policy.value,
                 ),
-                AgentTaskValidators.from_specs(task.validators),
                 AgentTaskState(),
-                AgentTaskAttempt(),
-                AgentTaskEvidence(),
+                TaskDispatch(),
             )
             await self._world.spawn(PartOfMission(source=task_id, target=mission_id))
+            for validator in task.validators:
+                validator_id = await self._world.spawn(
+                    TaskValidator(
+                        name=validator.name,
+                        command=list(validator.command),
+                        expected_returncode=validator.expected_returncode,
+                        timeout_seconds=validator.timeout_seconds,
+                    )
+                )
+                await self._world.spawn(Guards(source=validator_id, target=task_id))
         for task in submission.tasks:
             for dependency in task.depends_on:
                 await self._world.spawn(
@@ -181,7 +211,7 @@ class AgentMissionService:
         *,
         max_ticks: int | None = None,
     ) -> MissionResult:
-        """Drive ticks and sandbox receipts until one submitted mission is terminal."""
+        """Drive ticks and stage observations until one mission is terminal."""
 
         limit = max_ticks if max_ticks is not None else self._max_ticks
         if limit < 1:
@@ -190,20 +220,14 @@ class AgentMissionService:
         for _ in range(limit):
             await self._world.step()
             requests = self._outbox.drain()
-            if requests:
-                receipts = await self._execute(requests)
-                for receipt in receipts:
-                    await self._world.update(
-                        receipt.task_id,
-                        AgentTaskAttempt.from_receipt(receipt),
-                        AgentTaskEvidence.from_receipt(receipt),
-                    )
+            for result, sandbox_status in await self._execute(requests):
+                await self._stage_result(result, sandbox_status)
 
             status = self._mission_status(mission.mission_id)
             if status in {AgentMissionStatus.SUCCEEDED, AgentMissionStatus.FAILED}:
-                result = await self._result(mission)
-                await self._sandbox.close_mission(mission.mission_id)
-                return result
+                await self._close_mission_sandbox(mission.mission_id)
+                await self._world.step()
+                return await self._result(mission)
 
         status = self._mission_status(mission.mission_id)
         raise RuntimeError(
@@ -213,7 +237,7 @@ class AgentMissionService:
 
     async def close(self) -> None:
         failures: list[BaseException] = []
-        for close in (self._sandbox.close, self._world.shutdown):
+        for close in (self._sandboxes.shutdown, self._world.shutdown):
             try:
                 await close()
             except BaseException as exc:
@@ -236,66 +260,137 @@ class AgentMissionService:
         return self._world.world_id
 
     async def _execute(self, requests):
-        try:
-            receipts = tuple(await self._sandbox.run_many(requests))
-        except Exception as exc:
-            receipts = tuple(
-                TaskExecutionReceipt(
+        results: list[tuple[AgentExecutionResult, SandboxStatus]] = []
+        for request in requests:
+            key = SandboxKey(f"mission:{request.mission_id}")
+            spec = SandboxSpec(
+                provider=self._sandbox_provider,
+                environment=self._sandbox_environment,
+                workdir=self._workspace,
+                metadata=(
+                    ("mission", str(request.mission_id)),
+                    ("branch", request.branch),
+                ),
+            )
+            try:
+                session = await self._sandboxes.acquire(key, spec)
+                result = await self._harness.execute(session, request)
+                sandbox_status = await session.status()
+            except Exception as exc:
+                sandbox_status = SandboxStatus.ERRORED
+                result = AgentExecutionResult(
                     mission_id=request.mission_id,
                     task_id=request.task_id,
-                    attempt_id=request.attempt_id,
-                    attempt_index=request.attempt_index,
-                    outcome=ExecutionOutcome.FAILED,
-                    validator_results=(),
+                    dispatch_id=request.dispatch_id,
+                    dispatch_sequence=request.dispatch_sequence,
+                    status=AgentExecutionStatus.ERRORED,
+                    sandbox=SandboxIdentity(
+                        self._sandbox_provider,
+                        f"unavailable-{request.dispatch_id}",
+                        self._sandbox_environment,
+                    ),
+                    worktree=self._workspace,
+                    agent_session_id="",
+                    agent_returncode=-1,
+                    starting_revision=request.task_base_revision,
+                    final_revision="",
                     error=f"{type(exc).__name__}: {exc}",
                 )
-                for request in requests
+            results.append((result, sandbox_status))
+        return tuple(results)
+
+    async def _stage_result(
+        self,
+        result: AgentExecutionResult,
+        sandbox_status: SandboxStatus,
+    ) -> None:
+        retained_sandbox = self._sandbox_entities.get(result.sandbox.sandbox_id)
+        if retained_sandbox is None:
+            sandbox_state = Sandbox(
+                provider=result.sandbox.provider,
+                sandbox_id=result.sandbox.sandbox_id,
+                environment=result.sandbox.environment,
+                worktree=result.worktree,
+                status=sandbox_status.value,
             )
+            sandbox_entity = await self._world.spawn(sandbox_state)
+            self._sandbox_entities[result.sandbox.sandbox_id] = (
+                sandbox_entity,
+                sandbox_state,
+            )
+            self._mission_sandboxes[result.mission_id] = result.sandbox.sandbox_id
+        else:
+            sandbox_entity, _ = retained_sandbox
 
-        request_by_attempt = {request.attempt_id: request for request in requests}
-        if len(receipts) != len(request_by_attempt):
-            raise ValueError("sandbox must return exactly one receipt per execution request")
-        seen: set[str] = set()
-        for receipt in receipts:
-            if receipt.attempt_id in seen:
-                raise ValueError(f"sandbox returned duplicate receipt {receipt.attempt_id}")
-            seen.add(receipt.attempt_id)
-            try:
-                request = request_by_attempt[receipt.attempt_id]
-            except KeyError as exc:
-                raise ValueError(
-                    f"sandbox returned an unknown attempt {receipt.attempt_id}"
-                ) from exc
-            self._validate_receipt(request, receipt)
-        return receipts
+        execution_id = await self._world.spawn(
+            AgentExecution(
+                task_id=result.task_id,
+                dispatch_id=result.dispatch_id,
+                dispatch_sequence=result.dispatch_sequence,
+                status=result.status.value,
+                sandbox_id=result.sandbox.sandbox_id,
+                agent_session_id=result.agent_session_id,
+                agent_returncode=result.agent_returncode,
+                starting_revision=result.starting_revision,
+                final_revision=result.final_revision,
+                error=result.error,
+            )
+        )
+        await self._world.spawn(Executes(source=execution_id, target=result.task_id))
+        await self._world.spawn(RunsIn(source=execution_id, target=sandbox_entity))
 
-    @staticmethod
-    def _validate_receipt(request, receipt: TaskExecutionReceipt) -> None:
-        if (
-            receipt.mission_id,
-            receipt.task_id,
-            receipt.attempt_index,
-        ) != (request.mission_id, request.task_id, request.attempt_index):
-            raise ValueError("sandbox receipt identity does not match its request")
+        for observed in result.validation:
+            output_id = await self._world.spawn(
+                ValidationResult(
+                    task_id=result.task_id,
+                    validator_id=observed.validator_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    dispatch_sequence=result.dispatch_sequence,
+                    revision=observed.revision,
+                    expected_returncode=observed.expected_returncode,
+                    actual_returncode=observed.actual_returncode,
+                    stdout=observed.stdout,
+                    stderr=observed.stderr,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+        for observed in result.commits:
+            output_id = await self._world.spawn(
+                AgentCommit(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    sha=observed.sha,
+                    message=observed.message,
+                    branch=observed.branch,
+                    pushed=observed.pushed,
+                    final_revision=observed.final_revision,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
+        for observed in result.friction:
+            output_id = await self._world.spawn(
+                AgentFrictionLog(
+                    task_id=result.task_id,
+                    execution_id=execution_id,
+                    dispatch_id=result.dispatch_id,
+                    kind=observed.kind,
+                    message=observed.message,
+                )
+            )
+            await self._world.spawn(ProducedBy(source=output_id, target=execution_id))
 
-        requested = {validator.name: validator for validator in request.validators}
-        observed = {result.name: result for result in receipt.validator_results}
-        if len(observed) != len(receipt.validator_results):
-            raise ValueError("sandbox receipt validator names must be unique")
-        if receipt.outcome is ExecutionOutcome.ACCEPTED:
-            if set(observed) != set(requested):
-                raise ValueError("accepted receipt must contain every requested validator")
-            for name, validator in requested.items():
-                result = observed[name]
-                if result.command != validator.command or not result.passed:
-                    raise ValueError("accepted receipt contains invalid validator evidence")
-            if not receipt.commit_sha:
-                raise ValueError("accepted coding task receipt requires a commit SHA")
-            if (
-                request.publication_policy is RepositoryPublicationPolicy.COMMIT_AND_PUSH
-                and not receipt.pushed
-            ):
-                raise ValueError("accepted coding task receipt must satisfy commit-and-push policy")
+    async def _close_mission_sandbox(self, mission_id: int) -> None:
+        await self._sandboxes.close(SandboxKey(f"mission:{mission_id}"))
+        sandbox_id = self._mission_sandboxes.get(mission_id)
+        if sandbox_id is None:
+            return
+        entity_id, sandbox_state = self._sandbox_entities[sandbox_id]
+        await self._world.update(
+            entity_id,
+            sandbox_state.model_copy(update={"status": SandboxStatus.CLOSED.value}),
+        )
 
     def _mission_status(self, mission_id: int) -> AgentMissionStatus | None:
         frame = self._view.frame(AgentMissionState)
@@ -312,11 +407,7 @@ class AgentMissionService:
 
     async def _result(self, mission: SubmittedMission) -> MissionResult:
         mission_frame = self._view.frame(AgentMissionRecord, AgentMissionState)
-        task_frame = self._view.frame(
-            AgentTaskRecord,
-            AgentTaskState,
-            AgentTaskAttempt,
-        )
+        task_frame = self._view.frame(AgentTaskRecord, AgentTaskState, TaskDispatch)
         if mission_frame is None or task_frame is None:
             raise RuntimeError("terminal mission state is not queryable")
         mission_rows = mission_frame.where(
@@ -327,20 +418,37 @@ class AgentMissionService:
         mission_row = mission_rows[0]
 
         task_ids = dict(mission.task_ids)
-        task_rows = {
-            int(row["entity_id"]): row
-            for row in task_frame.where(col("entity_id").is_in(list(task_ids.values()))).to_pylist()
-        }
+        task_projection = task_frame.where(col("entity_id").is_in(list(task_ids.values())))
+        commits = self._view.frame(AgentCommit)
+        commit = AgentCommit.get_prefix()
+        if commits is not None:
+            task_projection = task_projection.join(
+                commits.select(
+                    col(f"{commit}task_id").alias("_commit_task_id"),
+                    col(f"{commit}sha").alias("_commit_sha"),
+                ),
+                left_on="entity_id",
+                right_on="_commit_task_id",
+                how="left",
+            )
+        projection_rows = task_projection.to_pylist()
+        task_rows: dict[int, dict[str, Any]] = {}
+        commits_by_task: dict[int, list[str]] = {}
+        for row in projection_rows:
+            task_id = int(row["entity_id"])
+            task_rows.setdefault(task_id, row)
+            if row.get("_commit_sha") is not None:
+                commits_by_task.setdefault(task_id, []).append(str(row["_commit_sha"]))
         record = AgentTaskRecord.get_prefix()
         state = AgentTaskState.get_prefix()
-        attempt = AgentTaskAttempt.get_prefix()
+        dispatch = TaskDispatch.get_prefix()
         tasks = tuple(
             TaskResult(
                 task_id=task_id,
                 name=str(task_rows[task_id][f"{record}name"]),
                 status=str(task_rows[task_id][f"{state}status"]),
-                attempts=int(task_rows[task_id][f"{attempt}attempt_index"]),
-                commit_sha=str(task_rows[task_id][f"{attempt}commit_sha"]),
+                dispatches=int(task_rows[task_id][f"{dispatch}sequence"]),
+                commit_shas=tuple(commits_by_task.get(task_id, ())),
                 reason=str(task_rows[task_id][f"{state}reason"]),
             )
             for _, task_id in mission.task_ids

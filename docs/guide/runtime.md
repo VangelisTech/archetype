@@ -222,8 +222,9 @@ interchange boundary.
 `runtime.missions(name, config=..., storage=...)` returns an async
 `RuntimeMissions` handle. It configures one mission-capable world with the
 built-in Components, graph view, transition processors, post-tick outbox, and
-injected `AgentMissionSandbox` resource. Authors submit typed tasks and never
-wire that bundle themselves.
+injected Sandbox Backend and coding-agent driver. The family-owned Sandbox
+Service retains live Sessions. Authors submit typed tasks and never wire that
+bundle themselves.
 
 The handle owns the specialized mission-world lifetime. Closing it closes the
 sandbox resource and its world handle; closing it does not close the parent
@@ -253,7 +254,10 @@ world = runtime.attach(world_id, storage=...)
 
 missions = runtime.missions(
     "software-factory",
-    config=AgentMissionConfig(sandbox=my_sandbox),
+    config=AgentMissionConfig(
+        sandbox_backend=my_backend,
+        sandbox_environment="provider-image@sha256:digest",
+    ),
     storage=...,
 )
 submitted = await missions.submit(

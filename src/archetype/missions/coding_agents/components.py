@@ -1,29 +1,20 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in ECS state for coding-agent missions."""
+"""Persistent ECS state for the coding-agent software factory."""
 
 from __future__ import annotations
-
-import json
-from dataclasses import asdict
 
 from pydantic import field_validator, model_validator
 
 from archetype.core.component import Component
+from archetype.missions.coding_agents.contracts import AgentExecutionStatus
 from archetype.missions.coding_agents.transitions import (
-    AgentAttemptStatus,
     AgentMissionStatus,
     AgentTaskStatus,
 )
-from archetype.missions.contracts import (
-    ArtifactRef,
-    CommandValidator,
-    Friction,
-    RepositoryPublicationPolicy,
-    TaskExecutionReceipt,
-    ValidatorResult,
-)
+from archetype.missions.contracts import RepositoryPublicationPolicy
+from archetype.missions.sandboxes.contracts import SandboxStatus
 
 
 class AgentMissionRecord(Component):
@@ -36,7 +27,7 @@ class AgentMissionRecord(Component):
 
 
 class AgentMissionState(Component):
-    """Current mission rollup derived from its task entities."""
+    """Current mission rollup derived from related task entities."""
 
     status: str = AgentMissionStatus.RUNNING.value
     reason: str = ""
@@ -48,14 +39,14 @@ class AgentMissionState(Component):
 
 
 class AgentTaskRecord(Component):
-    """Immutable task name and goal prompt."""
+    """Immutable task name and atomic goal prompt."""
 
     name: str = ""
     prompt: str = ""
 
 
 class AgentTaskWorkspace(Component):
-    """Repository work surface required by the sandbox resource."""
+    """Repository coordinates shared by every dispatch of one task."""
 
     repository: str = ""
     branch: str = ""
@@ -63,16 +54,16 @@ class AgentTaskWorkspace(Component):
 
 
 class AgentTaskPolicy(Component):
-    """Attempt and repository-publication policy for one task."""
+    """Dispatch budget and repository publication policy."""
 
-    max_attempts: int = 3
+    max_dispatches: int = 3
     publication_policy: str = RepositoryPublicationPolicy.COMMIT_AND_PUSH.value
 
-    @field_validator("max_attempts")
+    @field_validator("max_dispatches")
     @classmethod
-    def _positive_attempts(cls, value: int) -> int:
+    def _positive_dispatches(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("max_attempts must be positive")
+            raise ValueError("max_dispatches must be positive")
         return value
 
     @field_validator("publication_policy")
@@ -81,30 +72,8 @@ class AgentTaskPolicy(Component):
         return RepositoryPublicationPolicy(value).value
 
 
-class AgentTaskValidators(Component):
-    """Arrow-safe private encoding of the typed validator authoring contract."""
-
-    specs_json: str = "[]"
-
-    @classmethod
-    def from_specs(cls, specs: tuple[CommandValidator, ...]) -> AgentTaskValidators:
-        return cls(specs_json=json.dumps([asdict(spec) for spec in specs], sort_keys=True))
-
-    def specs(self) -> tuple[CommandValidator, ...]:
-        values = json.loads(self.specs_json)
-        return tuple(
-            CommandValidator(
-                name=str(value["name"]),
-                command=tuple(str(argument) for argument in value["command"]),
-                expected_returncode=int(value["expected_returncode"]),
-                timeout_seconds=int(value["timeout_seconds"]),
-            )
-            for value in values
-        )
-
-
 class AgentTaskState(Component):
-    """Processor-owned task lifecycle."""
+    """Processor-owned task decision state."""
 
     status: str = AgentTaskStatus.PENDING.value
     reason: str = ""
@@ -115,98 +84,170 @@ class AgentTaskState(Component):
         return AgentTaskStatus(value).value
 
 
-class AgentTaskAttempt(Component):
-    """Latest task attempt; earlier values remain available by tick."""
+class TaskDispatch(Component):
+    """Latest committed permission to execute a task; history retains prior intent."""
 
-    attempt_id: str = ""
-    attempt_index: int = 0
-    status: str = AgentAttemptStatus.IDLE.value
-    settled: bool = True
+    dispatch_id: str = ""
+    sequence: int = 0
+
+    @model_validator(mode="after")
+    def _valid_identity(self) -> TaskDispatch:
+        if self.sequence < 0:
+            raise ValueError("dispatch sequence must not be negative")
+        if self.sequence == 0 and self.dispatch_id:
+            raise ValueError("an undispatched task cannot have a dispatch identity")
+        if self.sequence > 0 and not self.dispatch_id:
+            raise ValueError("a dispatched task requires a dispatch identity")
+        return self
+
+
+class TaskValidator(Component):
+    """One executable repository guard materialized as its own entity."""
+
+    name: str = ""
+    command: list[str] = []
+    expected_returncode: int = 0
+    timeout_seconds: int = 900
+
+    @model_validator(mode="after")
+    def _valid_spec(self) -> TaskValidator:
+        if not self.name.strip():
+            raise ValueError("validator name must not be empty")
+        if not self.command or any(not argument for argument in self.command):
+            raise ValueError("validator command must contain non-empty arguments")
+        if self.timeout_seconds < 1:
+            raise ValueError("validator timeout_seconds must be positive")
+        return self
+
+
+class Sandbox(Component):
+    """Observed lifecycle of a filesystem and process container."""
+
+    provider: str = ""
     sandbox_id: str = ""
+    environment: str = ""
     worktree: str = ""
-    agent_session_id: str = ""
-    commit_sha: str = ""
-    commit_message: str = ""
-    pushed: bool = False
+    status: str = SandboxStatus.PROVISIONING.value
     error: str = ""
 
     @field_validator("status")
     @classmethod
     def _valid_status(cls, value: str) -> str:
-        return AgentAttemptStatus(value).value
+        return SandboxStatus(value).value
 
-    @model_validator(mode="after")
-    def _valid_attempt(self) -> AgentTaskAttempt:
-        if self.attempt_index < 0:
-            raise ValueError("attempt_index must not be negative")
-        if self.attempt_index == 0 and self.attempt_id:
-            raise ValueError("an idle attempt cannot have an attempt_id")
-        if self.attempt_index > 0 and not self.attempt_id:
-            raise ValueError("a started attempt requires an attempt_id")
-        return self
 
+class AgentExecution(Component):
+    """Factual process observation for one task dispatch."""
+
+    task_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    status: str = AgentExecutionStatus.STARTING.value
+    sandbox_id: str = ""
+    agent_session_id: str = ""
+    agent_returncode: int = -1
+    starting_revision: str = ""
+    final_revision: str = ""
+    error: str = ""
+
+    @field_validator("status")
     @classmethod
-    def from_receipt(cls, receipt: TaskExecutionReceipt) -> AgentTaskAttempt:
-        return cls(
-            attempt_id=receipt.attempt_id,
-            attempt_index=receipt.attempt_index,
-            status=receipt.outcome.value,
-            settled=False,
-            sandbox_id=receipt.sandbox_id,
-            worktree=receipt.worktree,
-            agent_session_id=receipt.agent_session_id,
-            commit_sha=receipt.commit_sha,
-            commit_message=receipt.commit_message,
-            pushed=receipt.pushed,
-            error=receipt.error,
-        )
+    def _valid_status(cls, value: str) -> str:
+        return AgentExecutionStatus(value).value
 
 
-class AgentTaskEvidence(Component):
-    """Validator, artifact, and friction evidence for the latest attempt."""
+class ValidationResult(Component):
+    """One validator observation bound to exact execution and revision identity."""
 
-    validator_results_json: str = "[]"
-    artifacts_json: str = "[]"
-    friction_json: str = "[]"
+    task_id: int = 0
+    validator_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    dispatch_sequence: int = 0
+    revision: str = ""
+    expected_returncode: int = 0
+    actual_returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
 
-    @classmethod
-    def from_receipt(cls, receipt: TaskExecutionReceipt) -> AgentTaskEvidence:
-        return cls(
-            validator_results_json=json.dumps(
-                [asdict(result) for result in receipt.validator_results], sort_keys=True
-            ),
-            artifacts_json=json.dumps([asdict(ref) for ref in receipt.artifacts], sort_keys=True),
-            friction_json=json.dumps(
-                [asdict(finding) for finding in receipt.friction], sort_keys=True
-            ),
-        )
+    @property
+    def passed(self) -> bool:
+        return self.actual_returncode == self.expected_returncode
 
-    def validator_results(self) -> tuple[ValidatorResult, ...]:
-        return tuple(
-            ValidatorResult(
-                name=str(value["name"]),
-                command=tuple(str(argument) for argument in value["command"]),
-                returncode=int(value["returncode"]),
-                passed=bool(value["passed"]),
-                stdout=str(value.get("stdout", "")),
-                stderr=str(value.get("stderr", "")),
-            )
-            for value in json.loads(self.validator_results_json)
-        )
 
-    def artifacts(self) -> tuple[ArtifactRef, ...]:
-        return tuple(ArtifactRef(**value) for value in json.loads(self.artifacts_json))
+class AgentCommit(Component):
+    """One Git commit observed during a task dispatch."""
 
-    def friction(self) -> tuple[Friction, ...]:
-        return tuple(Friction(**value) for value in json.loads(self.friction_json))
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    sha: str = ""
+    message: str = ""
+    branch: str = ""
+    pushed: bool = False
+    final_revision: bool = False
+
+
+class AgentCheckpoint(Component):
+    """Optional provider-native recovery point for a sandbox."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    provider: str = ""
+    checkpoint_id: str = ""
+    uri: str = ""
+    created_at_ms: int = 0
+    restorable: bool = False
+    error: str = ""
+
+
+class FilesystemManifest(Component):
+    """Optional content-addressed observation of sandbox filesystem state."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    digest: str = ""
+    uri: str = ""
+    entry_count: int = 0
+
+
+class AgentFrictionLog(Component):
+    """One timestamped, queryable obstacle rather than an embedded JSON list."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    kind: str = ""
+    message: str = ""
+
+
+class AgentArtifact(Component):
+    """Content-addressed reference to a large output produced by an execution."""
+
+    task_id: int = 0
+    execution_id: int = 0
+    dispatch_id: str = ""
+    digest: str = ""
+    uri: str = ""
+    media_type: str = "application/octet-stream"
+    size_bytes: int = 0
 
 
 AGENT_TASK_COMPONENTS = (
     AgentTaskRecord,
     AgentTaskWorkspace,
     AgentTaskPolicy,
-    AgentTaskValidators,
     AgentTaskState,
-    AgentTaskAttempt,
-    AgentTaskEvidence,
+    TaskDispatch,
+)
+
+AGENT_OUTPUT_COMPONENTS = (
+    ValidationResult,
+    AgentCommit,
+    AgentCheckpoint,
+    FilesystemManifest,
+    AgentFrictionLog,
+    AgentArtifact,
 )

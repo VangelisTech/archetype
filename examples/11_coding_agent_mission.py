@@ -27,22 +27,23 @@ from archetype import ArchetypeRuntime
 from archetype.core.config import StorageConfig
 from archetype.missions import AgentMissionConfig, AgentTask, CommandValidator
 from archetype.missions.sandboxes import (
-    ModalAgentMissionSandbox,
-    ModalAgentSandboxConfig,
+    ModalSandboxBackend,
+    ModalSandboxConfig,
 )
 
 ISSUE = "https://github.com/VangelisTech/archetype/issues/543"
 REPOSITORY = "VangelisTech/archetype"
 
 MISSION_CONFIG = AgentMissionConfig(
-    sandbox=ModalAgentMissionSandbox(
-        ModalAgentSandboxConfig(
+    sandbox_backend=ModalSandboxBackend(
+        ModalSandboxConfig(
             app_name="archetype-agent-missions",
             auth_volume_name="archetype-codex-auth",
             github_secret_name="archetype-github",
-            model=os.environ.get("CODING_AGENT_MODEL", ""),
         )
     ),
+    sandbox_environment=os.environ.get("CODING_AGENT_ENVIRONMENT", "modal-codex-development"),
+    model=os.environ.get("CODING_AGENT_MODEL", ""),
     max_ticks=40,
 )
 
@@ -178,7 +179,10 @@ async def main() -> None:
 
     print(f"Result:  {result.status} after {result.ticks_completed} ticks")
     for task in result.tasks:
-        print(f"  {task.name}: {task.status} ({task.attempts} attempt(s), {task.commit_sha})")
+        print(
+            f"  {task.name}: {task.status} "
+            f"({task.dispatches} dispatch(es), {', '.join(task.commit_shas)})"
+        )
     print(f"Pushed:  https://github.com/{REPOSITORY}/tree/{branch}")
 
 

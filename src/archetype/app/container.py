@@ -48,6 +48,8 @@ from archetype.app.world.service import WorldService
 from archetype.app.world.simulation import SimulationService
 from archetype.artifacts.bundles import ArtifactSourceResolver, ArtifactStoreConfig
 from archetype.core.config import StorageConfig
+from archetype.missions.coding_agents.contracts import AgentMissionConfig
+from archetype.missions.sandboxes.service import SandboxService as MissionSandboxService
 
 
 @dataclass(frozen=True)
@@ -155,12 +157,22 @@ class ServiceContainer:
             trajectories=self.trajectory_service,
             research=self.autoresearch_service,
             physical_ai=self.physical_ai_service,
-            agent_missions=AgentMissionService,
+            agent_missions=self._agent_mission_service,
         )
         self.command_gateway = CommandGateway(self.application, self.audit_log)
         self.simulation_service.set_command_drain(self.application.drain_and_apply)
         # Per-tick RBAC quota resets at each tick boundary (bug B1).
         self.simulation_service.set_quota_reset(reset_tick_counters)
+
+    @staticmethod
+    def _agent_mission_service(*, config: AgentMissionConfig, **kwargs) -> AgentMissionService:
+        """Compose one mission-owned sandbox lifetime beneath the app workflow."""
+
+        return AgentMissionService(
+            config=config,
+            sandbox_service=MissionSandboxService((config.sandbox_backend,)),
+            **kwargs,
+        )
 
     def mission_attempt_workflow(
         self,

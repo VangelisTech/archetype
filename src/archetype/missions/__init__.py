@@ -3,6 +3,7 @@
 
 """Reusable mission ECS components and pure world-state transitions."""
 
+from archetype.missions.coding_agents.contracts import AgentMissionConfig
 from archetype.missions.components import (
     MISSION_COMPONENTS,
     Attempt,
@@ -15,23 +16,22 @@ from archetype.missions.components import (
     TaskGate,
 )
 from archetype.missions.contracts import (
-    AgentMissionConfig,
-    AgentMissionSandbox,
     AgentTask,
-    ArtifactRef,
     CommandValidator,
-    ExecutionOutcome,
-    Friction,
     MissionResult,
     MissionSubmission,
     RepositoryPublicationPolicy,
     SubmittedMission,
-    TaskExecutionReceipt,
-    TaskExecutionRequest,
     TaskResult,
-    ValidatorResult,
 )
-from archetype.missions.relationships import DependsOn, PartOfMission
+from archetype.missions.relationships import (
+    DependsOn,
+    Executes,
+    Guards,
+    PartOfMission,
+    ProducedBy,
+    RunsIn,
+)
 from archetype.missions.transitions import (
     MISSION_TRANSITION_GRAPH,
     AttemptStatus,
@@ -48,9 +48,7 @@ from archetype.missions.transitions import (
 
 __all__ = [
     "AgentMissionConfig",
-    "AgentMissionSandbox",
     "AgentTask",
-    "ArtifactRef",
     "MISSION_COMPONENTS",
     "MISSION_TRANSITION_GRAPH",
     "Attempt",
@@ -61,11 +59,11 @@ __all__ = [
     "CommandValidator",
     "DependsOn",
     "Evidence",
-    "ExecutionOutcome",
+    "Executes",
     "Finalization",
     "FinalizationPhase",
-    "Friction",
     "FrictionLog",
+    "Guards",
     "Mission",
     "MissionResult",
     "MissionSubmission",
@@ -76,12 +74,11 @@ __all__ = [
     "MissionTransitionEvent",
     "MissionTransitionGraph",
     "PartOfMission",
+    "ProducedBy",
+    "RunsIn",
     "SubmittedMission",
     "TaskGate",
-    "TaskExecutionReceipt",
-    "TaskExecutionRequest",
     "TaskResult",
     "TaskStatus",
-    "ValidatorResult",
     "retry_event",
 ]

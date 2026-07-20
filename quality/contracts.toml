@@ -494,7 +494,7 @@ profiles = ["pr", "main", "release"]
 [[contract]]
 id = "missions.agent_v1.validator_gated"
 source = "docs/guide/agent-missions.md"
-section = "4. Commit and transition protocol"
+section = "4. State and transition protocol"
 owner = "missions"
 risk = "high"
 pytest = [

@@ -1,15 +1,17 @@
 # Copyright 2026 Vangelis Technologies Inc.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Focused transport contracts for the minimal Modal mission resource."""
+"""Focused transport contracts for the Modal Sandbox Backend and Session."""
 
 from __future__ import annotations
 
 import pytest
 
+from archetype.missions.sandboxes import ProcessRequest, SandboxBackend
 from archetype.missions.sandboxes.modal import (
-    ModalAgentSandboxConfig,
-    _ModalMissionSession,
+    ModalSandboxBackend,
+    ModalSandboxConfig,
+    ModalSandboxSession,
 )
 
 
@@ -48,12 +50,13 @@ class _Sandbox:
 async def test_codex_exec_closes_modal_stdin_before_waiting() -> None:
     sandbox = _Sandbox()
 
-    result = await _ModalMissionSession._exec_on(
+    result = await ModalSandboxSession._exec_on(
         sandbox,
-        "codex",
-        "exec",
-        timeout=30,
-        close_stdin=True,
+        ProcessRequest(
+            ("codex", "exec"),
+            timeout_seconds=30,
+            close_stdin=True,
+        ),
     )
 
     assert sandbox.process.stdin.eof is True
@@ -61,7 +64,9 @@ async def test_codex_exec_closes_modal_stdin_before_waiting() -> None:
     assert result.stdout == "out"
 
 
-def test_modal_adapter_has_no_commit_without_push_mode() -> None:
-    assert "push" not in ModalAgentSandboxConfig.__dataclass_fields__
-    with pytest.raises(ValueError, match="commit-and-push policy"):
-        ModalAgentSandboxConfig(github_secret_name="")
+def test_modal_backend_has_no_task_outcome_or_commit_without_push_mode() -> None:
+    backend = ModalSandboxBackend()
+    assert isinstance(backend, SandboxBackend)
+    assert "push" not in ModalSandboxConfig.__dataclass_fields__
+    with pytest.raises(ValueError, match="GitHub secret"):
+        ModalSandboxConfig(github_secret_name="")
